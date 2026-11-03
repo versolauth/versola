@@ -224,14 +224,15 @@ object ListValues:
     case AntifraudValueType.cidr => normalized.endsWith("/32") || normalized.endsWith("/128")
     case _ => false
 
-  /** The kinds of value some request carries today, so that an entry of the kind can match. A `device_id`, `ja4_hash`
-    * or `asn` entry would be accepted, audited and shown in a dry run, and match nothing, until P1-1 and P1-3 fill
-    * the signals; such an entry is refused instead. */
+  /** The kinds of value some request carries today, so that an entry of the kind can match. A `device_id` or `ja4_hash`
+    * entry would be accepted, audited and shown in a dry run, and match nothing, until P1-1 fills the signal; such an
+    * entry is refused instead. An `asn` entry matches the AS of the request's address when the ASN database is on. */
   val live: Set[AntifraudValueType] = Set(
     AntifraudValueType.phone_hash,
     AntifraudValueType.prefix,
     AntifraudValueType.ip,
     AntifraudValueType.cidr,
+    AntifraudValueType.asn,
     AntifraudValueType.ua_hash,
     AntifraudValueType.email_domain,
   )

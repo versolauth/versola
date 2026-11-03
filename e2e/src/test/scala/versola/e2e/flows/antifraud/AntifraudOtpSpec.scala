@@ -1,6 +1,6 @@
 package versola.e2e.flows.antifraud
 
-import versola.e2e.support.AntifraudFixture.ListEntry
+import versola.e2e.support.AntifraudFixture.{AsnDatabase, ListEntry}
 import versola.e2e.support.AntifraudInstance.Decision
 import versola.e2e.support.{*, given}
 import zio.*
@@ -284,6 +284,85 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         shadowed.decision.rules == List("shadow_list:ip"),
         shadowed.decision.outcome.contains("sent"),
       )
+    },
+  )
+
+  /** An address of the hosting network of the fixture's ASN database, one of 250 so that no count of an address is shared. */
+  private def hostingIp(): String = s"${AsnDatabase.HostingNetwork}.${1 + scala.util.Random.nextInt(250)}"
+
+  private def carrierIp(): String = s"${AsnDatabase.CarrierNetwork}.${1 + scala.util.Random.nextInt(250)}"
+
+  /** Takes the seeded `asn` entries out and waits until both instances have reloaded the lists, so that the case that follows meets none. A request
+    * the entry refuses takes no step of its number's limit, so the polls can use one number. */
+  private def removed(f: AntifraudFixture, s: Flows.Setup): UIO[Unit] =
+    (AntifraudFixture.unseedAsn *> ZIO.foreachDiscard(List(f.a, f.b))(instance =>
+      awaited(s"${instance.name} to drop the asn entry")(attempt(instance, s, hostingIp()).map(a => Option.when(!a.refused)(()))),
+    )).orDie
+
+  private def asnSuite = suite("the ASN of the address")(
+    test("a request from a hosting network fires asn_hosting and is challenged, one from a carrier's network does not") {
+      for
+        f <- ZIO.service[AntifraudFixture]
+        s <- f.nextSetup
+        hosting <- attempt(f.a, s, hostingIp())
+        carrier <- attempt(f.a, s, carrierIp())
+      yield assertTrue(
+        // 20 is the weight of the rule, and the fixture challenges from 15.
+        hosting.decision.decision == "Challenge",
+        hosting.decision.rules == List("asn_hosting"),
+        hosting.decision.score == 20,
+        hosting.decision.outcome.contains("challenged"),
+        hosting.decision.asn.contains(AsnDatabase.HostingAsn),
+        hosting.decision.asnClass.contains("hosting"),
+        carrier.answeredWithCodeStep,
+        carrier.decision.decision == "Allow",
+        carrier.decision.rules.isEmpty,
+        carrier.decision.outcome.contains("sent"),
+        carrier.decision.asn.contains(AsnDatabase.CarrierAsn),
+        carrier.decision.asnClass.contains("other"),
+      )
+    },
+    test("a deny entry for the hosting AS refuses a request from it on the other instance too, and leaves the carrier's alone") {
+      for
+        f <- ZIO.service[AntifraudFixture]
+        s <- f.nextSetup
+        // The polls that wait for the entry take steps of a number's limit: they use a number of their own.
+        probe <- f.nextSetup
+        gone <- f.nextSetup
+        result <- (for
+          until <- Clock.instant.map(_.plusSeconds(120))
+          _ <- seeded(f.a, probe)(ListEntry("deny", "asn", AsnDatabase.HostingAsn.toString, expiresAt = Some(until)))
+          denied <- attempt(f.a, s, hostingIp())
+          onB <- awaited("instance B to reload the lists")(attempt(f.b, s, hostingIp()).map(a => Option.when(a.refused)(a)))
+          carrier <- attempt(f.a, s, carrierIp())
+        yield assertTrue(
+          denied.refused,
+          denied.decision.decision == "Block",
+          denied.decision.rules.contains("deny_list:asn"),
+          denied.decision.outcome.contains("blocked"),
+          onB.decision.rules.contains("deny_list:asn"),
+          carrier.answeredWithCodeStep,
+          carrier.decision.decision == "Allow",
+          carrier.decision.rules.isEmpty,
+          carrier.decision.outcome.contains("sent"),
+        )).ensuring(removed(f, gone))
+      yield result
+    },
+    test("the event log has the AS and its class of each step, and none for an address that is in no AS") {
+      for
+        f <- ZIO.service[AntifraudFixture]
+        s <- f.nextSetup
+        _ <- attempt(f.a, s, hostingIp())
+        _ <- attempt(f.a, s, carrierIp())
+        _ <- attempt(f.a, s, randomIp())
+        expected = Set[(String, Option[Int], Option[String])](
+          ("challenged", Some(AsnDatabase.HostingAsn), Some("hosting")),
+          ("sent", Some(AsnDatabase.CarrierAsn), Some("other")),
+          ("sent", None, None),
+        )
+        // The writer takes a batch about every second.
+        rows <- awaited("the events to be written")(AntifraudFixture.eventsOf(s.clientId).map(r => Option.when(r.toSet == expected)(r)))
+      yield assertTrue(rows.toSet == expected, rows.size == 3)
     },
   )
 
@@ -616,5 +695,5 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
     },
   )
 
-  def spec = suite("Antifraud decision of an OTP request")(velocitySuite, listsSuite, settingsSuite, challengeSuite) @@
+  def spec = suite("Antifraud decision of an OTP request")(velocitySuite, listsSuite, settingsSuite, asnSuite, challengeSuite) @@
     TestAspect.sequential @@ TestAspect.withLiveClock @@ TestAspect.timeout(15.minutes)

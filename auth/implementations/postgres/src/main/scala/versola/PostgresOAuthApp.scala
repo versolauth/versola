@@ -82,6 +82,7 @@ import versola.user.{PostgresUserRepository, UserController, UserRegistrationSyn
 import versola.util.*
 import versola.util.SequentialLayers.*
 import versola.util.http.VersolaApp
+import versola.util.net.{AsnResolver, AsnSettings}
 import versola.util.postgres.{PostgresConfig, PostgresConfigSnapshotRepository, PostgresHikariDataSource, PostgresWalMetrics}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
@@ -296,6 +297,11 @@ object PostgresOAuthApp extends VersolaApp("auth"):
           ZIO.fail(Config.Error.InvalidData(message = message)),
         ).as(settings)
 
+  /** `antifraud.asn`: every key, and the whole block, may be left out of a config written before it existed; the feature is then off. */
+  private val antifraudAsnSettings: ZLayer[ConfigProvider, Config.Error, AsnSettings] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("antifraud", Config.Nested("asn", AsnSettings.config))))
+
   /** `antifraud.challenge` */
   private val antifraudChallengeSettings: ZLayer[ConfigProvider, Config.Error, PowChallengeVerifier.Settings] =
     ZLayer.fromZIO:
@@ -391,6 +397,10 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AntifraudTuningStore.live >++>
       VelocityCounters.live >++>
       Antifraud.live >++>
+      // The database the ASN of a request's address is looked up in: read from `antifraud.asn.file`, refreshed in the
+      // background, nothing at all while the block is absent.
+      antifraudAsnSettings >++>
+      AsnResolver.live >++>
       AntifraudEvents.live >++>
       AntifraudCounters.live >++>
       antifraudDetectorSettings >++>

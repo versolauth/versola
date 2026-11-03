@@ -645,10 +645,14 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
                   max-broad-ttl = "30 days" }  # the longest a network, mail-domain or prefix entry may live (optional)
        detectors { enabled = false, interval = "1 minute", retention = "90 days" }
        challenge { enabled = true, ttl = "2 minutes", max-attempts = 5, pause = "20 seconds" }
+       asn      { file = "", url = "", refresh-interval = "24 hours" }   # optional block, see "ASN signal": empty file is off
      }
      ```
      `decision.fake-send-delay` and `challenge.pause` are the newest keys: an `env.conf` generated before they exist has to be
      given the lines (or be regenerated) before `auth` of this version starts, as for any other key.
+
+     The `asn` block is the one block that may be left out (and so is each of its keys, `hosting-keywords` included): a
+     config written before it existed keeps loading, with the signal off.
   3. **Never changed**: constants of the service, named in the code of the component and not keys of anything: the event
      queue and batch sizes, the velocity counters' `max-keys`, `stripes`, `share-from`, `max-flush-rows` and
      `max-load-keys`, the SMS budget's `max-ranges`, the lists' hit flush, weights, traffic share and startup timeout, and
@@ -739,7 +743,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `asn` or `prefix` and the window `1m`, `10m`, `1h` or `24h` (for example `velocity_phone_1h`), `velocity_known_user`,
   and `<kind>:<value type>` for the kind `deny_list`, `fake_list`, `allow_list`, `shadow_list` or `watch_list` and the
   value type of a list entry (`phone_hash`, `prefix`, `ip`, `cidr`, `asn`, `device_id`, `ua_hash`, `ja4_hash`,
-  `email_domain`; for example `deny_list:cidr`). The two stand-ins of a failed evaluation are not rules.
+  `email_domain`; for example `deny_list:cidr`), and `asn_hosting` (the ASN signal, see "ASN signal"). The two stand-ins of a
+  failed evaluation are not rules.
 
   *Recommended start against SMS pumping.* Leave `mode` at `shadow`, turn on `decision.enabled` and put the limits in
   (`PUT` replaces every key, so read the settings first, and send the `ETag` of that read back as `If-Match`, or use `PATCH` for just the keys you change):
@@ -761,12 +766,13 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
       },
       "smsLimits": {"default": {"sentPerHour": 300, "minVolume": 0, "minConversion": 0.1}, "byPrefix": {}},
       "ruleWeights": {},
-      "shadowRules": []
+      "shadowRules": ["asn_hosting"]
     }
   }
   ```
 
-  (`ip` and `asn` weights stay low: carrier-grade NAT shares addresses. Size `smsLimits` from the range statistics first.)
+  (`ip` and `asn` weights stay low: carrier-grade NAT shares addresses. `asn_hosting` starts as a shadow rule: see how much
+  honest traffic comes through hosting-class networks (consumer relays and VPNs) before it counts. Size `smsLimits` from the range statistics first.)
   Run it for at least a week and read what it says it would do: `would_action` in `af_event` against traffic you know to be
   good, `antifraud_decisions_total{action="Allow",would_action!="Allow"}`, `antifraud_rules_fired_total` for the rules
   that carry it, `antifraud_sms_budget_refused_total{mode="shadow"}` for the ranges the budget would have closed, the proposals of the detectors. Raise a
@@ -827,7 +833,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 
 - **Antifraud lists (`af_list_entry` and `af_list_audit`, migration `V0020`)** hold values the antifraud rules
   recognise at once (a destination hash, a number prefix, an IP or network, a user-agent hash, the mail domain of an
-  address a code is asked for; an ASN, a device or a JA4 hash is refused until a request carries one, P1-1 and P1-3,
+  address a code is asked for, an ASN; a device or a JA4 hash is refused until a request carries one, P1-1,
   since such an entry would match nothing): `deny` blocks, `fake` answers as if the step succeeded, `watch` only adds to the score, `allow`
   outweighs score-based rules but never a `deny` of the same or a narrower value. The migration only adds tables. They
   are **off by default** (`antifraud.lists.enabled`, `false`): nothing is read and no rule is contributed until it is
@@ -946,8 +952,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `<phone|ip|device|asn|prefix>` with `perMinute`, `perTenMinutes`, `perHour`, `perDay` and `weight` (phone 50, device 60,
   prefix 30, ip 20, asn 20) and `trustedDiscount` (40): the most requests a key may have in the window, 0 for no limit; a
   rule fires above it and adds its `weight` to the score the decision thresholds turn into an action. **Keep `ip` and `asn` weights low:** in carrier-grade NAT networks (common in KZ and the CIS) thousands of
-  subscribers share one IPv4 address; a device key outweighs them, and ASN classes (mobile, hosting) can scale the limits
-  once P1-3 provides them. A request of a known user (`device.known` or `session.recent_success` `true` in the rule
+  subscribers share one IPv4 address; a device key outweighs them. The `asn` key is filled from the ASN database (see
+  "ASN signal" below) and counts nothing while it is off. A request of a known user (`device.known` or `session.recent_success` `true` in the rule
   context, filled by later tasks) that fired a velocity rule gets `trustedDiscount` taken off its score.
   *Counting what is attacker-chosen.* Memory is bounded by `max-keys` per kind (five kinds). Estimated, not measured on a
   JVM: a key seen for the first time costs about 0.4 to 0.8 KB (its text, the map entry, and one 8-byte bucket per
@@ -1003,6 +1009,96 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   complete on every instance **within two refresh intervals plus one flush-and-load cycle**; the instance that took the
   request forgets at once. An instance that starts later does not replay old resets. Metrics:
   `antifraud_counters_reset_total{scope}` and `antifraud_counters_reset_failed_total{what="poll"|"delete"}`.
+- **ASN signal (`af_event.asn` and `asn_class`, migration `V0028`).** The autonomous system (AS) that announces the client's
+  IP address is a signal the rules use: a data centre or a hosting provider is where scripts, proxies and VPN exits live, a
+  carrier or a broadband provider is where people live, and a flood from one AS is a campaign. **Off by default**, and
+  nothing changes until it is turned on. The lookup is made by `auth` in memory, from a database it holds; **no request
+  ever calls anything outside the process**, so the signal costs a binary search (about a microsecond) and cannot fail
+  or wait.
+  - *Source.* The free `ip2asn-combined.tsv.gz` of [iptoasn.com](https://iptoasn.com) (a public-domain dedication, PDDL;
+    check the terms of whatever mirror you use): one range per line, `range_start`, `range_end`, `AS_number`,
+    `country_code`, `AS_description`, tab-separated, IPv4 and IPv6 together, gzipped or plain (told by the first bytes, not
+    by the name). A range of AS 0 is the space nobody announces and is not held. `auth` reads it with no new dependency;
+    a file in this format from another source works as well.
+  - *Switching it on.* `antifraud.asn.file` is where the database is: put the file there (or let `url` fetch it) and restart.
+    The service reads it before it starts serving, in about half a second for the 500 thousand ranges the real file has,
+    and holds some 30 MB for them. An empty `file` (the default, and what a config without the block means) is off: the
+    signals are absent, every lookup counts as `unavailable`, no rule of it fires and no `asn` entry matches. A file that is
+    missing or is not a database is a warning in the log and the same as off; it never stops the service from starting.
+    A line that is not a range (a wrong address, too few columns, a range that overlaps the one before) is left out and
+    counted in a warning; a file with more than a tenth of its lines wrong is taken for a wrong file (an error page, another
+    format) and is not used at all. An AS number above 2147483647 (private use, never in the public table) is left out, and a file of
+    more than 4 million ranges (the real one has about half a million) or that unpacks to more than 1 GiB fails to read.
+  - *Refresh.* The file is written by a download from `antifraud.asn.url` (`https` preferred; an `http` mirror inside the
+    network is accepted; a redirect is not followed, so the URL must serve the file itself) at the start if there is no
+    file yet, and then every `antifraud.asn.refresh-interval` (24 hours; the source is updated daily). The download goes
+    to a temporary file next to `file` (so that directory must be writable by `auth`), is read as a database, and only then
+    moved over `file` in one atomic step: a half-written or wrong download never replaces a good database, and the one in
+    use is never changed under a request. **On any failure (an unreachable server, an error status, a download over
+    5 minutes or 256 MB, a file that is not a database) the previous database stays in use**, the failure is a warning in
+    the log (naming the host, never the whole URL, which may carry a token) and
+    `antifraud_asn_database_refresh_failed_total` counts it: **alert on it increasing**, and on
+    `time() - antifraud_asn_database_loaded_timestamp_seconds` growing past a few intervals. Without a `url` the file is
+    looked at every `refresh-interval` and read again when its modification time has changed, so an operator (or a cron
+    job) can replace it; replace it by writing a new file and renaming it over the old one. With several instances,
+    each downloads for itself; point them at a shared mirror rather than the public site if there are many. A download
+    is one `send-http` line at `INFO` (the peer is external).
+  - *Metrics.* `antifraud_asn_lookups_total{result}` with `hit` (the address is in an announced range), `miss` (it is in
+    none, or the text is no address) and `unavailable` (no database is loaded: the feature is off, or the file is not
+    there yet); `antifraud_asn_database_loaded_timestamp_seconds` (when the file in use was written, not when it was read:
+    a stale file shows its age) and `antifraud_asn_database_ranges` (a database that suddenly holds a fraction of its usual
+    size is a wrong file). The request is looked up once, when the antifraud decision is made on an OTP request; the
+    events that follow read it again from memory and are not counted again. With `antifraud.decision.enabled = false`
+    nothing is looked up.
+  - *The class.* An AS is `hosting` when its description contains one of `antifraud.asn.hosting-keywords`, compared
+    case-insensitively as a whole word or phrase (between characters that are not letters or digits, runs of white space
+    counting as one), and `other` otherwise. The default list is: `hosting`, `cloud`, `datacenter`,
+    `data center`, `data-center`, `vps`, `dedicated`, `colocation`, `amazon`, `aws`, `google cloud`, `google-cloud`,
+    `microsoft`, `azure`, `digitalocean`, `ovh`, `hetzner`, `linode`, `vultr`, `choopa`, `alibaba`, `oracle`,
+    `contabo`, `leaseweb`, `m247`, `scaleway`, `online s.a.s`, `ionos`, `godaddy`, `rackspace`, `tencent`, `huawei cloud`.
+    Setting `hosting-keywords` replaces the list (an empty list classifies nothing as hosting). **A name is a guess:** a
+    keyword is never found inside a longer word (`cloud` is not in `Cloudy`, `dedicated` not in `Undedicated`), but a
+    provider with a plain name is `other`, and a carrier with one of the words in its name (`Cloud` in a mobile brand) is
+    `hosting`. And people sit behind hosting-class addresses too: Apple's Private Relay egresses through CDN space
+    (Akamai, Cloudflare, Fastly), corporate VPNs exit in clouds, a cloud company's residential arm shares its name
+    (`GOOGLE-FIBER`); the default list therefore names cloud arms (`google cloud`), not the company, and leaves Akamai
+    out (Linode, its hosting arm, is listed). That is why the rule is weighed low, starts as a shadow rule, and why the
+    exact tool is the list: an `asn` entry corrects one network, whatever its name says.
+  - *What a request carries.* For an OTP request with an address the context gets the AS number (`asn`, which the
+    `asn` velocity key and the `asn` list entries read) and the signal `asn_class` (`hosting` or `other`). An address that
+    is no literal (the proxy sent a name) or is in no AS carries neither. The address is the request's `auth.ip`, with the caveat
+    of the velocity counters: it is the client's only if the proxy in front sets the header as configured.
+  - *Rules.* The rule `asn_hosting` fires when `asn_class` is `hosting`. It is not forcing: it adds its weight, **20 by
+    default**, to the score, and a score alone turns into an action through the tuned `challengeAt` and `blockAt`. Its
+    weight is tuned by name in `ruleWeights` (`{"asn_hosting": 40}`) and it can run as a `shadowRules` entry first (listed
+    as `shadow:asn_hosting`, no weight), the way to see how much honest traffic comes from a VPN before it counts. The
+    per-AS velocity limit is the existing `thresholds.asn` (`perMinute`, `perTenMinutes`, `perHour`, `perDay`, `weight`; all
+    limits 0, weight 20). **A limit on an AS is a limit on everyone in it.** A mobile carrier's AS is millions of
+    subscribers behind a handful of gateways, so it is a hard number to set and a limit low enough for a hosting provider
+    refuses a town; leave the limits 0 and the weight low until the traffic shows one AS that sends a campaign, and set
+    the limit for that. Like the other counts it counts the requests of the AS that were let through (a refused request is
+    not counted), per minute, 10 minutes, hour and day, in memory per instance and shared through `af_velocity` like the
+    others; the AS number is stored there as plain digits.
+  - *List entries.* `asn` is now an accepted `valueType` of the lists (`64500` or `AS64500`, stored as `64500`): `deny`
+    blocks, `fake` fakes, `watch` adds the watch weight. It is **not allowable**: an `allow` on an AS is refused, as it
+    would exempt a whole network from the score (allow an exact `ip` instead, which outranks an `asn` deny). An `asn` entry
+    names many clients, so it needs `expiresAt`, and the share-of-traffic guard applies: the dry run
+    (`/antifraud/lists/preview`) now counts the events of the last 24 hours with that AS (`af_event.asn`), so an entry for
+    a carrier that would have matched most of the traffic is refused unless it is a shadow entry. Without a database an
+    `asn` entry matches nothing. By specificity an `asn` entry outranks only a mail domain: an address, a network, a number
+    prefix, a fingerprint and a user agent all decide over it.
+  - *The migration.* `V0028` adds two nullable columns to `af_event`, `asn INTEGER` and `asn_class TEXT`, with no default and
+    no index: a catalog change on the partitioned table, no rewrite, compatible with the previous release (whose inserts do
+    not name them), and not undoable except by a dump (like every migration). Events written without the signal have both
+    empty.
+  - *Personal data.* An AS number names a network of thousands to millions of subscribers and is not personal data. The
+    IP address it was derived from is **not stored**: not in `af_event`, not in `af_velocity` (which keeps its keyed hash of the
+    network, as before), not in the `receive-http` line beyond the `auth.ip` it already carries. The ASN and its class are
+    on that line under `antifraud` (`asn`, `asn_class`) next to the decision. The database file holds public registry data
+    only. Put the country of the AS to no use but the signal: it says where the network is registered, not where a user is.
+  - *Where it does not apply.* The sign-in forms and the OTP request go to `auth` directly, through the deployment's proxy,
+    not through `edge`; `auth` already has the client address (the tenant's `ipHeader`), so the lookup is in `auth`. The
+    code that does it is in `util` (`versola.util.net`), so that `edge` can use it for policies later; `edge` does not use it today.
 
 - **Antifraud detectors and proposals (`af_proposal`, migration `V0022`).** Every `antifraud.detectors.interval` (1
   minute) each instance runs two detectors over the last minutes of `af_dest_stats` and **proposes** list entries; it
