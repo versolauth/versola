@@ -37,6 +37,9 @@ case class AntifraudEvent(
       * database; empty while it is off or for an address in no AS. The address itself is never stored. */
     asn: Option[Int] = None,
     asnClass: Option[String] = None,
+    /** The ISO 3166-1 alpha-2 country of the request's address (upper case), from the country database alone (see
+      * [[GeoRules]]); empty while it is off and for an address it has no country for. The address itself is never stored. */
+    country: Option[String] = None,
 )
 
 enum AntifraudAction:

@@ -38,12 +38,12 @@ class PostgresAntifraudEventRepository(
         batchUpdate(events): event =>
           sql"""
             INSERT INTO af_event (id, at, tenant_id, client_id, conversation_id, action, outcome, channel,
-                                  subject_hash, dest_prefix, user_agent, decision, score, rules, would_action, asn, asn_class)
+                                  subject_hash, dest_prefix, user_agent, decision, score, rules, would_action, asn, asn_class, country)
             VALUES (
               ${event.id}, ${event.at}, ${event.tenantId.map(identity[String])}, ${event.clientId: String},
               ${event.conversationId}, ${event.action.toString}, ${event.outcome.toString},
               ${event.channel.toString}, ${event.subjectHash}, ${event.destPrefix}, ${event.userAgent},
-              ${event.decision}, ${event.score}, ${event.rules}, ${event.wouldAction}, ${event.asn}, ${event.asnClass}
+              ${event.decision}, ${event.score}, ${event.rules}, ${event.wouldAction}, ${event.asn}, ${event.asnClass}, ${event.country}
             )
           """.update
       .unit

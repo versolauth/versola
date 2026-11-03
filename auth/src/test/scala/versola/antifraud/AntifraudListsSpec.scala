@@ -86,6 +86,7 @@ object AntifraudListsSpec extends UnitSpecBase:
       destPrefix: Option[String] = None,
       tenantId: Option[TenantId] = Some(tenant),
       asn: Option[Int] = None,
+      signals: Map[String, String] = Map.empty,
   ) = AntifraudContext(
     tenantId = tenantId,
     clientId = ClientId("c"),
@@ -97,7 +98,7 @@ object AntifraudListsSpec extends UnitSpecBase:
     asn = asn,
     userAgent = None,
     ja4 = None,
-    signals = Map.empty,
+    signals = signals,
   )
 
   private def make(repository: FakeRepository, config: AntifraudLists.Settings = settings) =
@@ -382,6 +383,7 @@ object AntifraudListsSpec extends UnitSpecBase:
         wide <- allow(AntifraudValueType.cidr, "10.0.0.0/8")
         prefix <- allow(AntifraudValueType.prefix, "49")
         domain <- allow(AntifraudValueType.email_domain, "gmail.com")
+        country <- allow(AntifraudValueType.country, "KZ")
         ua <- allow(AntifraudValueType.ua_hash, ListSnapshot.sha256Hex("x"))
         ja4 <- allow(AntifraudValueType.ja4_hash, "t13d")
         host <- allow(AntifraudValueType.cidr, "10.0.0.1/32")
@@ -392,7 +394,7 @@ object AntifraudListsSpec extends UnitSpecBase:
         phone <- allow(AntifraudValueType.phone_hash, "h")
         // the same broad values are fine for a deny
         denied <- add(lists, AntifraudListType.deny, AntifraudValueType.cidr, "10.0.0.0/8").either.map(_.isRight)
-      yield assertTrue(asn, asnWritten, wide, prefix, domain, ua, ja4, !host, !host6, !ip, device, !phone, denied)
+      yield assertTrue(asn, asnWritten, wide, prefix, domain, country, ua, ja4, !host, !host6, !ip, device, !phone, denied)
     },
     test("an entry of a kind no request carries yet is refused, so that nothing is listed that cannot match") {
       val (lists, _) = make(FakeRepository())
@@ -426,6 +428,77 @@ object AntifraudListsSpec extends UnitSpecBase:
         watched == Decision(DecisionAction.Allow, 20, List("watch_list:asn")),
         other == Decision.allow,
         none == Decision.allow,
+      )
+    },
+    test("a country entry is accepted in either case, stored in upper case, and matches the country signal of the request") {
+      val (lists, _) = make(FakeRepository())
+      def in(country: String) = ctx(signals = Map(GeoRules.CountrySignal -> country))
+      for
+        written <- add(lists, AntifraudListType.deny, AntifraudValueType.country, "kz")
+        watch <- add(lists, AntifraudListType.watch, AntifraudValueType.country, "Ru")
+        blocked <- decide(lists)(in("KZ"))
+        watched <- decide(lists)(in("RU"))
+        other <- decide(lists)(in("DE"))
+        none <- decide(lists)(ctx())
+      yield assertTrue(
+        written.value == "KZ",
+        watch.value == "RU",
+        blocked.action == DecisionAction.Block,
+        blocked.firedRules == List("deny_list:country"),
+        watched == Decision(DecisionAction.Allow, 20, List("watch_list:country")),
+        other == Decision.allow,
+        // without a country database the request has no country, and the entry matches nothing
+        none == Decision.allow,
+      )
+    },
+    test("a country entry is refused when it is not an alpha-2 code, and an allow on one is refused with the reason") {
+      val (lists, _) = make(FakeRepository())
+      def deny(value: String) = add(lists, AntifraudListType.deny, AntifraudValueType.country, value).either.map(_.isLeft)
+      for
+        three <- deny("KAZ")
+        digit <- deny("K1")
+        empty <- deny(" ")
+        unknown <- deny("zz")
+        allow <- add(lists, AntifraudListType.allow, AntifraudValueType.country, "KZ").either
+      yield assertTrue(
+        three,
+        digit,
+        empty,
+        unknown,
+        allow.swap.exists(e => e.isInstanceOf[InvalidListEntry] && e.getMessage.contains("exact subject")),
+      )
+    },
+    test("a country entry names a whole population, so it needs an expiry no longer than max-broad-ttl, and a tenant's applies to its own requests") {
+      val (lists, _) = make(FakeRepository(), settings.copy(maxBroadTtl = 30.days))
+      def create(expiresAt: Option[Instant], tenantId: Option[TenantId] = None, value: String = "KZ") =
+        lists
+          .create(
+            NewListEntry(
+              listType = AntifraudListType.deny,
+              valueType = AntifraudValueType.country,
+              value = value,
+              tenantId = tenantId,
+              expiresAt = expiresAt,
+              reason = None,
+              source = "manual",
+              shadow = false,
+            ),
+            operator,
+          )
+          .either
+      def in(tenantId: TenantId) = ctx(tenantId = Some(tenantId), signals = Map(GeoRules.CountrySignal -> "KZ"))
+      for
+        permanent <- create(None)
+        tooLong <- create(Some(Instant.EPOCH.plusSeconds(31 * 86400)))
+        atLimit <- create(Some(Instant.EPOCH.plusSeconds(30 * 86400)), tenantId = Some(tenant))
+        own <- decide(lists)(in(tenant))
+        foreign <- decide(lists)(in(TenantId("tenant-b")))
+      yield assertTrue(
+        permanent.isLeft,
+        tooLong.swap.exists(_.getMessage.contains("30 days")),
+        atLimit.isRight,
+        own.action == DecisionAction.Block,
+        foreign == Decision.allow,
       )
     },
     test("a request with no ASN (the database is off) matches no asn entry") {

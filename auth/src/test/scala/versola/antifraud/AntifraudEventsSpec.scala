@@ -6,7 +6,16 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PhoneRegion, TenantId}
 import versola.oauth.conversation.model.AuthId
 import versola.util.http.Observability
-import versola.util.net.{AsnClassifier, AsnDatabase, AsnDatabaseLoader, AsnResolver}
+import versola.util.net.{
+  AsnClassifier,
+  AsnDatabase,
+  AsnDatabaseLoader,
+  AsnResolver,
+  DbIpCountryFormat,
+  GeoResolver,
+  RangeDatabase,
+  RangeDatabaseLoader,
+}
 import versola.util.{Email, Phone, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.json.*
@@ -55,6 +64,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
       tuning: Tuning = AntifraudTestSettings.tuning,
       sizing: AntifraudEvents.Sizing = smallSizing,
       asn: AsnResolver = AsnResolver.off,
+      geo: GeoResolver = GeoResolver.off,
   ): ZIO[Scope, Nothing, AntifraudEvents] =
     (for
       _ <- e.repository.maintainPartitions.succeedsWith(())
@@ -72,6 +82,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
       ZLayer.succeed[AntifraudTuning](AntifraudTestSettings.fixed(tuning)),
       ZLayer.succeed[VelocityCounters](velocity),
       ZLayer.succeed[AsnResolver](asn),
+      ZLayer.succeed[GeoResolver](geo),
       SecureRandom.live,
       SecureRandom.live >>> SecurityService.live,
     )
@@ -91,6 +102,46 @@ object AntifraudEventsSpec extends UnitSpecBase:
         .database,
     ),
     AsnClassifier(AsnClassifier.defaultKeywords),
+  )
+
+  /** The two databases of the country signal: ASN ranges (a hosting provider registered in DE, a carrier in KZ, a second carrier
+    * in AM and a cloud in US that the country database knows nothing of, and one with no registration country), and country
+    * ranges that disagree with the carrier's registration (UZ for the KZ one, in lower case, as a file may spell it) and cover
+    * an address that no AS announces (TR). `100.64.0.1` is in neither country range. */
+  private val countryAsn: AsnResolver = AsnResolver(
+    AsnDatabaseLoader.fixed(
+      AsnDatabase
+        .read(
+          ByteArrayInputStream(
+            List(
+              "5.45.64.0\t5.45.79.255\t24940\tDE\tHETZNER-AS Hetzner Online GmbH",
+              "203.0.113.0\t203.0.113.255\t64500\tKZ\tKAZTELECOM-AS JSC Kazakhtelecom",
+              "192.0.2.0\t192.0.2.255\t64501\tAM\tARMENTEL Example Telecom",
+              "198.18.0.0\t198.18.255.255\t64502\tUS\tEXAMPLE-CLOUD Example Cloud Hosting",
+              "100.64.0.0\t100.64.0.255\t64503\tZZ\tNO-COUNTRY Example Carrier",
+            ).mkString("\n").getBytes(StandardCharsets.UTF_8),
+          ),
+        )
+        .database,
+    ),
+    AsnClassifier(AsnClassifier.defaultKeywords),
+  )
+
+  private val countries: GeoResolver = GeoResolver(
+    RangeDatabaseLoader.fixed(
+      RangeDatabase
+        .read(
+          ByteArrayInputStream(
+            List(
+              "5.45.64.0,5.45.79.255,FR",
+              "203.0.113.0,203.0.113.255,uz",
+              "198.51.100.0,198.51.100.255,TR",
+            ).mkString("\n").getBytes(StandardCharsets.UTF_8),
+          ),
+          DbIpCountryFormat,
+        )
+        .database,
+    ),
   )
 
   private val t0 = Instant.parse("2026-10-21T10:00:30Z")
@@ -243,6 +294,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
             ZLayer.succeed[AntifraudTuning](AntifraudTuning.off),
             ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
             ZLayer.succeed[AsnResolver](AsnResolver.off),
+            ZLayer.succeed[GeoResolver](GeoResolver.off),
             SecureRandom.live,
             SecureRandom.live >>> SecurityService.live,
           ).provideEnvironment(ZEnvironment(scope)).fork.flatMap(_.join)
@@ -302,6 +354,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
               ZLayer.succeed[AntifraudTuning](AntifraudTuning.off),
               ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
               ZLayer.succeed[AsnResolver](AsnResolver.off),
+              ZLayer.succeed[GeoResolver](GeoResolver.off),
               SecureRandom.live,
               SecureRandom.live >>> SecurityService.live,
             )
@@ -336,6 +389,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
               ZLayer.succeed[AntifraudTuning](AntifraudTuning.off),
               ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
               ZLayer.succeed[AsnResolver](AsnResolver.off),
+              ZLayer.succeed[GeoResolver](GeoResolver.off),
               SecureRandom.live,
               SecureRandom.live >>> SecurityService.live,
             )
@@ -377,6 +431,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
               ZLayer.succeed[AntifraudTuning](AntifraudTuning.off),
               ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
               ZLayer.succeed[AsnResolver](AsnResolver.off),
+              ZLayer.succeed[GeoResolver](GeoResolver.off),
               SecureRandom.live,
               SecureRandom.live >>> SecurityService.live,
             )
@@ -470,6 +525,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
               ZLayer.succeed[AntifraudTuning](AntifraudTuning.off),
               ZLayer.succeed[VelocityCounters](AntifraudTestSettings.velocityOff),
               ZLayer.succeed[AsnResolver](AsnResolver.off),
+              ZLayer.succeed[GeoResolver](GeoResolver.off),
               SecureRandom.live,
               SecureRandom.live >>> SecurityService.live,
             )
@@ -1030,7 +1086,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
             carrier.map(_.signals.get(AntifraudLists.EmailDomainSignal)).contains(Some("example.com")),
             unknown.flatMap(_.asn).isEmpty,
             unknown.map(_.signals.contains(AsnRules.ClassSignal)).contains(false),
-            // The country the database gives is no signal: nothing reads it yet.
+            // The country the ASN database gives is no signal of its own (the country signal is [[GeoRules]]'s).
             hosting.map(_.signals.keySet.filter(_.startsWith("asn_"))).contains(Set(AsnRules.ClassSignal)),
           )
       },
@@ -1237,6 +1293,205 @@ object AntifraudEventsSpec extends UnitSpecBase:
             decision <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
             after <- lookups
           yield assertTrue(decision == Decision.allow, after == before)
+      },
+    ),
+    suite("the country signal")(
+      test("the context carries the country the country database gives, whatever the AS is registered in, and none where it has none") {
+        val e = env
+        val seen = new AtomicReference[Option[AntifraudContext]](None)
+        val engine = new Antifraud:
+          def evaluate(ctx: AntifraudContext): UIO[Decision] = ZIO.succeed(seen.set(Some(ctx))).as(Decision.allow)
+        def country(ip: String, events: AntifraudEvents) =
+          Observability.setIp(ip) *> events.decideOtpRequest(clientId, None, Right(phone), repeated = false) *>
+            ZIO.succeed(seen.get.flatMap(_.signals.get(GeoRules.CountrySignal)))
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(
+              e,
+              small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)),
+              antifraud = engine,
+              asn = countryAsn,
+              geo = countries,
+            )
+            // The country database's answer, not the registration of the AS (KZ); its lower-case code is the upper-case one.
+            overRegistration <- country("203.0.113.7", events)
+            // A hosting network gets the country database's answer too (not the DE of the AS).
+            hostingWithGeo <- country("5.45.64.1", events)
+            // No AS announces the address, and the country database knows it.
+            noAs <- country("198.51.100.9", events)
+            // The country database has nothing: no country, whatever the AS is registered in (AM for a carrier, US for a cloud).
+            carrierRegistered <- country("192.0.2.5", events)
+            hostingRegistered <- country("198.18.0.1", events)
+            noCountry <- country("100.64.0.1", events)
+            unknown <- country("172.31.0.1", events)
+          yield assertTrue(
+            overRegistration.contains("UZ"),
+            hostingWithGeo.contains("FR"),
+            noAs.contains("TR"),
+            carrierRegistered.isEmpty,
+            hostingRegistered.isEmpty,
+            noCountry.isEmpty,
+            unknown.isEmpty,
+          )
+      },
+      test("with the ASN database alone, whatever it knows of the AS and its country, there is no country signal") {
+        val e = env
+        val seen = new AtomicReference[Option[AntifraudContext]](None)
+        val engine = new Antifraud:
+          def evaluate(ctx: AntifraudContext): UIO[Decision] = ZIO.succeed(seen.set(Some(ctx))).as(Decision.allow)
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine, asn = countryAsn)
+            _ <- Observability.setIp("5.45.64.1")
+            _ <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            hosting = seen.get
+            _ <- Observability.setIp("203.0.113.7")
+            _ <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            carrier = seen.get
+          yield assertTrue(
+            hosting.flatMap(_.asn).contains(24940),
+            hosting.exists(c => !c.signals.contains(GeoRules.CountrySignal)),
+            carrier.flatMap(_.asn).contains(64500),
+            carrier.exists(c => !c.signals.contains(GeoRules.CountrySignal)),
+          )
+      },
+      test("without the databases there is no country signal, with only the ASN database none either, and the AS is still found") {
+        val e = env
+        val seen = new AtomicReference[Option[AntifraudContext]](None)
+        val engine = new Antifraud:
+          def evaluate(ctx: AntifraudContext): UIO[Decision] = ZIO.succeed(seen.set(Some(ctx))).as(Decision.allow)
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            none <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
+            _ <- Observability.setIp("203.0.113.7")
+            _ <- none.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            withoutDatabases = seen.get
+            asnOnly <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine, asn = countryAsn)
+            _ <- asnOnly.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            carrier = seen.get
+          yield assertTrue(
+            withoutDatabases.exists(c => !c.signals.contains(GeoRules.CountrySignal)),
+            carrier.exists(c => c.asn.contains(64500) && !c.signals.contains(GeoRules.CountrySignal)),
+          )
+      },
+      test("a request that has no address has no country, and the lookups are not made") {
+        val e = env
+        val seen = new AtomicReference[Option[AntifraudContext]](None)
+        val engine = new Antifraud:
+          def evaluate(ctx: AntifraudContext): UIO[Decision] = ZIO.succeed(seen.set(Some(ctx))).as(Decision.allow)
+        def lookups = Metric.counter("antifraud_geo_lookups_total").tagged(Set(MetricLabel("result", "hit"))).value.map(_.count)
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(
+              e,
+              small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)),
+              antifraud = engine,
+              asn = countryAsn,
+              geo = countries,
+            )
+            before <- lookups
+            _ <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            after <- lookups
+          yield assertTrue(seen.get.exists(c => c.ip.isEmpty && !c.signals.contains(GeoRules.CountrySignal)), after == before)
+      },
+      test("the event written for a step carries the country, and none where there is none, and never the address") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small, sizing = smallSizing.copy(queueCapacity = 10), asn = countryAsn, geo = countries)
+            _ <- Observability.setIp("5.45.64.1")
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent)
+            _ <- events.otpChecked(authId, clientId, None, Right(phone), AntifraudOutcome.verified)
+            _ <- Observability.setIp("172.31.0.1")
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent)
+            _ <- Observability.setIp("203.0.113.7")
+            _ <- events.otpRequested(authId, clientId, None, Left(Email("a@example.com")), AntifraudOutcome.suppressed)
+            _ <- Observability.setIp("198.18.0.1")
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent)
+            // In an AS registered in AM, which the country database has no range for: no country, not AM.
+            _ <- Observability.setIp("192.0.2.5")
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent)
+            _ <- TestClock.adjust(0.seconds)
+            _ <- TestClock.adjust(1.second)
+            written = e.repository.insertBatch.calls.flatten
+          yield assertTrue(
+            written.map(_.country) == List(Some("FR"), Some("FR"), None, Some("UZ"), None, None),
+            written.forall(w => !w.toString.contains("5.45.64.1") && !w.toString.contains("203.0.113.7")),
+          )
+      },
+      test("an event of a request with no address, or that runs with no database, has no country") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small, sizing = smallSizing.copy(queueCapacity = 10))
+            _ <- Observability.setIp("5.45.64.1")
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent)
+            _ <- TestClock.adjust(0.seconds)
+            written = e.repository.insertBatch.calls.flatten
+          yield assertTrue(written.map(_.country) == List(None))
+      },
+      test("the country is on the request's log context after the decision and after the step that follows, with no address in it") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(
+              e,
+              small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)),
+              asn = countryAsn,
+              geo = countries,
+            )
+            _ <- Observability.setIp("203.0.113.7")
+            decision <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            afterDecision <- logContext.get.map(_.get(Observability.antifraud))
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent, Some(decision))
+            afterEvent <- logContext.get.map(_.get(Observability.antifraud))
+          yield assertTrue(
+            afterDecision.flatMap(_.country).contains("UZ"),
+            afterEvent.flatMap(_.country).contains("UZ"),
+            afterEvent.exists(d => !d.toJson.contains("203.0.113.7")),
+          )
+      },
+      test("a step that was not decided here (a check of a code) still puts the country on the request's log context") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small, asn = countryAsn, geo = countries)
+            _ <- Observability.setIp("198.51.100.9")
+            _ <- events.otpChecked(authId, clientId, None, Right(phone), AntifraudOutcome.wrong_code)
+            details <- logContext.get.map(_.get(Observability.antifraud))
+          yield assertTrue(details.flatMap(_.country).contains("TR"))
+      },
+      test("a request is counted once in the geo lookups: the decision looks the address up, the events only read it again") {
+        val e = env
+        def lookups(result: String) = Metric.counter("antifraud_geo_lookups_total").tagged(Set(MetricLabel("result", result))).value.map(_.count)
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), geo = countries)
+            before <- lookups("hit")
+            _ <- Observability.setIp("198.51.100.9")
+            decision <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.sent, Some(decision))
+            _ <- events.otpChecked(authId, clientId, None, Right(phone), AntifraudOutcome.verified)
+            after <- lookups("hit")
+          yield assertTrue(after - before == 1.0)
       },
     ),
   ) @@ TestAspect.sequential

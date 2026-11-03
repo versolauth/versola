@@ -107,6 +107,18 @@ object ListSnapshotSpec extends UnitSpecBase:
           s.lookup(ctx(signals = Map("email_domain" -> " Mailinator.com ")), now).decisive.isDefined,
         )
       },
+      test("matches a country from the signal, in either case, and not another or none") {
+        val s = snapshot(entry(AntifraudListType.deny, AntifraudValueType.country, "KZ"))
+        def hit(signals: Map[String, String]) = s.lookup(ctx(signals = signals), now).decisive.isDefined
+        assertTrue(
+          hit(Map(GeoRules.CountrySignal -> "KZ")),
+          hit(Map(GeoRules.CountrySignal -> " kz ")),
+          !hit(Map(GeoRules.CountrySignal -> "DE")),
+          !hit(Map.empty),
+          // a mail domain that spells the code is not a country
+          !hit(Map("email_domain" -> "kz")),
+        )
+      },
       test("an asn above Int.MaxValue is matched as unsigned") {
         val s = snapshot(entry(AntifraudListType.deny, AntifraudValueType.asn, "4200000000"))
         assertTrue(s.lookup(ctx(asn = Some(4200000000L.toInt)), now).decisive.isDefined)
@@ -206,6 +218,29 @@ object ListSnapshotSpec extends UnitSpecBase:
           s.lookup(ctx(destPrefix = Some("491512"), asn = Some(64500)), now).decisive.map(_.listType).contains(AntifraudListType.deny),
         )
       },
+      test("a country ranks just above a mail domain and below an autonomous system, a prefix and a network") {
+        val kz = Map(GeoRules.CountrySignal -> "KZ", "email_domain" -> "example.com")
+        def winner(entries: ListedValue*)(c: AntifraudContext) = snapshot(entries*).lookup(c, now).decisive.map(_.listType)
+        assertTrue(
+          winner(
+            entry(AntifraudListType.deny, AntifraudValueType.email_domain, "example.com"),
+            entry(AntifraudListType.fake, AntifraudValueType.country, "KZ"),
+          )(ctx(signals = kz)).contains(AntifraudListType.fake),
+          winner(
+            entry(AntifraudListType.deny, AntifraudValueType.country, "KZ"),
+            entry(AntifraudListType.fake, AntifraudValueType.asn, "64500"),
+          )(ctx(signals = kz, asn = Some(64500))).contains(AntifraudListType.fake),
+          winner(
+            entry(AntifraudListType.deny, AntifraudValueType.country, "KZ"),
+            entry(AntifraudListType.allow, AntifraudValueType.cidr, "203.0.113.7/32"),
+          )(ctx(signals = kz, ip = Some("203.0.113.7"))).contains(AntifraudListType.allow),
+          // on a tie of the same kind the harsher decides, as for every kind
+          winner(
+            entry(AntifraudListType.fake, AntifraudValueType.country, "KZ", tenantId = Some(tenant)),
+            entry(AntifraudListType.deny, AntifraudValueType.country, "KZ"),
+          )(ctx(signals = kz)).contains(AntifraudListType.deny),
+        )
+      },
       test("a user agent or a JA4 fingerprint never outvotes a network or an address") {
         val ua = "Mozilla/5.0 (test)"
         val s = snapshot(
@@ -238,6 +273,8 @@ object ListSnapshotSpec extends UnitSpecBase:
           ListValues.normalize(AntifraudValueType.ip, "::ffff:1.2.3.4") == Right("1.2.3.4"),
           ListValues.normalize(AntifraudValueType.asn, "as64500") == Right("64500"),
           ListValues.normalize(AntifraudValueType.email_domain, "Example.COM") == Right("example.com"),
+          ListValues.normalize(AntifraudValueType.country, "kz") == Right("KZ"),
+          ListValues.normalize(AntifraudValueType.country, " De ") == Right("DE"),
           ListValues.normalize(AntifraudValueType.ua_hash, ListSnapshot.sha256Hex("x").toUpperCase) == Right(ListSnapshot.sha256Hex("x")),
         )
       },
@@ -252,6 +289,11 @@ object ListSnapshotSpec extends UnitSpecBase:
           AntifraudValueType.asn -> "4294967296",
           AntifraudValueType.ua_hash -> "Mozilla",
           AntifraudValueType.email_domain -> "a@b.com",
+          AntifraudValueType.country -> "KAZ",
+          AntifraudValueType.country -> "K",
+          AntifraudValueType.country -> "K1",
+          AntifraudValueType.country -> "Қ",
+          AntifraudValueType.country -> "ZZ",
           AntifraudValueType.device_id -> "  ",
         )
         assertTrue(bad.forall((t, v) => ListValues.normalize(t, v).isLeft))

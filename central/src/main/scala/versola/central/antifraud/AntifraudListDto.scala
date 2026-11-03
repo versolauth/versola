@@ -18,7 +18,7 @@ object AntifraudListType:
 
 /** What the `value` of an entry is compared with. */
 enum AntifraudValueType derives JsonCodec:
-  case phone_hash, prefix, ip, cidr, asn, device_id, ua_hash, ja4_hash, email_domain
+  case phone_hash, prefix, ip, cidr, asn, device_id, ua_hash, ja4_hash, email_domain, country
 
 object AntifraudValueType:
   given Schema[AntifraudValueType] = JsonStringSchema.of
