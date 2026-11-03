@@ -742,8 +742,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   rule names, status) and keeps no antifraud state, passing the calls to `auth`'s internal `/antifraud/...` routes. `edge`
   takes no part in a decision. Auth keeps in memory, per instance: the settings and the lists (reread every
   `tuning.refresh-interval` and `lists.refresh-interval`; a request never queries the database), the velocity counters
-  (at most 20000 keys of each of five kinds; a full table of 100000 keys is an estimated 50 to 80 MB, more for keys busy
-  all day, and the other instances' counts are held too, about the same again for each),
+  (at most 20000 keys of each of five kinds, see the velocity bullet below),
   the SMS budget's counts over the last hour (at most 10000 ranges), the list hit counters, the event queue, and the
   ASN and country databases (some 30 MB for the ASN one). A restart loses what was queued and unwritten of the events, the
   budget's counts and up to the flush interval of the other counts. Postgres holds the tables of the migrations above; the
@@ -820,7 +819,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 
 - **SMS budget, velocity counters, detectors and the challenge: what to know when deploying.** The SMS budget
   (`antifraud.sms-budget.prefix-length`, the tuned `smsLimits`) and the velocity counters (`antifraud.velocity.enabled`, the
-  tuned `thresholds`) hold their counts in memory per instance, so a limit holds to within the number of instances
+  tuned `thresholds`) hold their counts in memory per instance (an estimate, not a measurement: a key seen for the first time
+  costs about 0.4 to 0.8 KB, so a full table of 100000 keys, the five kinds of 20000, is about 50 to 80 MB, a key busy all
+  day up to about 90 to 130 KB, and the other instances' counts are held too, about the same again for each of them), so a limit holds to within the number of instances
   and starts again from zero after a restart; both limits are off by default (`0`). **A closed range refuses every
   code to it, the legitimate users' included**: size `sentPerHour` above the real peak of the busiest range before it is
   turned on, see the Velocity counters and SMS budget page of the documentation (`antifraud/velocity`). Changing the
@@ -828,7 +829,10 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   off by default) only propose list entries; there is no way yet to approve a proposal. The challenge needs no table and no new
   page: its state is the conversation's (`auth_conversations.challenge_failed` and `challenge_solved`, `V0025`), its token is
   signed with the key of `security.antifraud-subject-secret`, and `challenge.pause` travels in the conversation with no
-  migration. Only the proof of work is built. For the work a difficulty asks, see the Challenge and Fake page of the
+  migration. Only the proof of work is built. The `pow` defaults (`minDifficulty` 14, `maxDifficulty` 18, `scoreStep` 15, in zero bits
+  of a hash) come from a measurement in headless Chromium with 4 workers (2.7 M hashes/s per thread): 14 bits 13 ms, 16 bits
+  33 ms, 18 bits 77 ms mean (p90 165 ms), 20 bits 219 ms (p90 460 ms); a mid-range phone takes 3 to 5 times that, which is
+  why the default maximum is 18 bits. For the work a difficulty asks, see the Challenge and Fake page of the
   documentation (`antifraud/challenge`).
 
 - **ASN signal (`af_event.asn` and `asn_class`, migration `V0028`).** Off by default; with an empty `antifraud.asn.file` every
