@@ -108,6 +108,8 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22.12'
+          cache: npm
+          cache-dependency-path: central-ui/package-lock.json
 
       - name: Build forms
         working-directory: central-ui
@@ -142,22 +144,12 @@ jobs:
           POSTGRES_PORT=5433 docker compose -f services.yml up -d --build --wait postgres
 
 
-      - name: Run tests
-        if: github.event_name != 'push'
-        env:
-          POSTGRES_HOST: localhost:5432
-          POSTGRES_TLS_HOST: localhost:5433
-        run: sbt test
-
-      - name: Run tests with coverage
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          POSTGRES_HOST: localhost:5432
-          POSTGRES_TLS_HOST: localhost:5433
-        run: sbt coverage test coverageReport coverageAggregate
+      # These two run before the root tests on purpose. `sbt coverage test` instruments the classes it
+      # compiles, so whatever runs after it recompiles util and the rest from scratch (about 40 s more on a
+      # push to main, on top of the instrumented build itself); here they reuse what `Compile` built.
 
       # loadgen/mockapi aren't part of root's aggregate (see build.sbt), so neither `sbt
-      # test` nor `sbt coverage test` above touches them -- same reasoning as `tools/compile`
+      # test` nor `sbt coverage test` below touches them -- same reasoning as `tools/compile`
       # above, and the same gap `e2e` closes for itself with its own explicit step below.
       # Both set `coverageEnabled := false`, so this deliberately runs outside the coverage
       # step rather than being folded into it. Needs only the `postgres` service already up
@@ -173,11 +165,25 @@ jobs:
           POSTGRES_HOST: localhost:5432
         run: sbt "loadgen/test" "mockapi/test"
 
-      # tools (gen-env.scala) isn't in root's aggregate either, so `sbt test` above never ran its
+      # tools (gen-env.scala) isn't in root's aggregate either, so `sbt test` below never runs its
       # specs: SecretSchemaSpec is the secret schema versola-cli reads. Needs no database.
       - name: Run tools tests
         if: github.event_name != 'release'
         run: sbt "tools/test"
+
+      - name: Run tests
+        if: github.event_name != 'push'
+        env:
+          POSTGRES_HOST: localhost:5432
+          POSTGRES_TLS_HOST: localhost:5433
+        run: sbt test
+
+      - name: Run tests with coverage
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          POSTGRES_HOST: localhost:5432
+          POSTGRES_TLS_HOST: localhost:5433
+        run: sbt coverage test coverageReport coverageAggregate
 
       - name: Publish coverage badge to gist
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -339,6 +345,8 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22.12'
+          cache: npm
+          cache-dependency-path: central-ui/package-lock.json
 
       - name: Build forms
         working-directory: central-ui
