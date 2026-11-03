@@ -84,14 +84,22 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
   /** Seeds `entries` and waits until `instance` enforces them, which a deny entry of a network nobody else uses (added
     * in the same transaction, so in the same snapshot) says: a request from it is refused by that entry. Every poll
     * comes from another address of the network, so that the address limit does not refuse the polls before the entry
-    * is there to. */
+    * is there to. A case that asks the other instance before it reloads too uses [[seededOn]] with both. */
   private def seeded(instance: AntifraudInstance, s: Flows.Setup)(entries: ListEntry*): Task[Unit] =
+    seededOn(List(instance), s)(entries*)
+
+  /** [[seeded]] for every one of `instances`: each reloads the lists on its own clock, so the entry is enforced by one
+    * before the other has it, and a request the other answers in between meets none of them. */
+  private def seededOn(instances: List[AntifraudInstance], s: Flows.Setup)(entries: ListEntry*): Task[Unit] =
     val bits = UUID.randomUUID().getLeastSignificantBits
     val network = s"10.${(bits >>> 8) & 0xff}.${bits & 0xff}"
     AntifraudFixture.seed(ListEntry("deny", "cidr", s"$network.0/24") :: entries.toList) *>
-      awaited("the lists to be reloaded", timeout = 30.seconds, every = 500.millis)(
-        attempt(instance, s, s"$network.${1 + scala.util.Random.nextInt(250)}").map(a => Option.when(a.decision.rules.contains("deny_list:cidr"))(())),
-      )
+      ZIO.foreachDiscard(instances): instance =>
+        awaited(s"${instance.name} to reload the lists", timeout = 30.seconds, every = 500.millis)(
+          attempt(instance, s, s"$network.${1 + scala.util.Random.nextInt(250)}").map(a =>
+            Option.when(a.decision.rules.contains("deny_list:cidr"))(()),
+          ),
+        )
 
   /** The same as [[seeded]], with the entries made through central's admin API (`POST /antifraud/global/lists`, as an operator
     * does), so that what auth enforces is what the API accepted and stored: through central, auth's validation and Postgres,
@@ -444,8 +452,9 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         central <- ZIO.service[CentralApi]
         operator = central.asAdmin(operatorId)
         s <- f.nextSetup
-        // a watch entry on a network of its own: 20 by default, which is a challenge at the fixture's challengeAt (15)
-        _ <- seeded(f.a, s)(ListEntry("watch", "cidr", s"$network.0/24"))
+        // a watch entry on a network of its own: 20 by default, which is a challenge at the fixture's challengeAt (15).
+        // Both instances answer before the change, so both must have the entry first.
+        _ <- seededOn(List(f.a, f.b), s)(ListEntry("watch", "cidr", s"$network.0/24"))
         read <- operator.get("/antifraud/settings")
         etag <- ZIO.fromOption(read.response.headers.get("ETag")).orElseFail(RuntimeException("no ETag on the read"))
         json <- read.obj
