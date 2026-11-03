@@ -64,7 +64,8 @@ fire. A stand that is to exercise the ASN signal needs a small synthetic TSV (th
 as `antifraud.asn.file` that maps the loadgen's source pools to a few ASNs, at least one with a hosting-looking
 description (the distributed attack's pool, say) and one with a carrier-looking one (the legitimate pool). Building that
 file and the runs against it is the runbook's job (`versolauth/loadgen-runbook`); nothing here generates it, and the
-profiles in `auth-profiles/` leave `antifraud.asn` out, so the signal is off in every run made from them.
+profiles in `auth-profiles/` leave `antifraud.asn` out, so the signal is off in every run made from them. The country signal
+(`antifraud.geo`) likewise needs a synthetic country CSV (DB-IP's three columns) next to the ASN TSV, or every request has none.
 
 ### Attack shapes not covered (follow-ups)
 

@@ -646,13 +646,14 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
        detectors { enabled = false, interval = "1 minute", retention = "90 days" }
        challenge { enabled = true, ttl = "2 minutes", max-attempts = 5, pause = "20 seconds" }
        asn      { file = "", url = "", refresh-interval = "24 hours" }   # optional block, see "ASN signal": empty file is off
+       geo      { file = "", url = "", refresh-interval = "7 days" }     # optional block, see "Country signal": empty file is off
      }
      ```
      `decision.fake-send-delay` and `challenge.pause` are the newest keys: an `env.conf` generated before they exist has to be
      given the lines (or be regenerated) before `auth` of this version starts, as for any other key.
 
-     The `asn` block is the one block that may be left out (and so is each of its keys, `hosting-keywords` included): a
-     config written before it existed keeps loading, with the signal off.
+     The `asn` and `geo` blocks are the only ones that may be left out (and so is each of their keys, `hosting-keywords`
+     included): a config written before they existed keeps loading, with the signal off.
   3. **Never changed**: constants of the service, named in the code of the component and not keys of anything: the event
      queue and batch sizes, the velocity counters' `max-keys`, `stripes`, `share-from`, `max-flush-rows` and
      `max-load-keys`, the SMS budget's `max-ranges`, the lists' hit flush, weights, traffic share and startup timeout, and
@@ -743,7 +744,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `asn` or `prefix` and the window `1m`, `10m`, `1h` or `24h` (for example `velocity_phone_1h`), `velocity_known_user`,
   and `<kind>:<value type>` for the kind `deny_list`, `fake_list`, `allow_list`, `shadow_list` or `watch_list` and the
   value type of a list entry (`phone_hash`, `prefix`, `ip`, `cidr`, `asn`, `device_id`, `ua_hash`, `ja4_hash`,
-  `email_domain`; for example `deny_list:cidr`), and `asn_hosting` (the ASN signal, see "ASN signal"). The two stand-ins of a
+  `email_domain`, `country`; for example `deny_list:cidr`), and `asn_hosting` (the ASN signal, see "ASN signal"). The two stand-ins of a
   failed evaluation are not rules.
 
   *Recommended start against SMS pumping.* Leave `mode` at `shadow`, turn on `decision.enabled` and put the limits in
@@ -1095,10 +1096,41 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
     IP address it was derived from is **not stored**: not in `af_event`, not in `af_velocity` (which keeps its keyed hash of the
     network, as before), not in the `receive-http` line beyond the `auth.ip` it already carries. The ASN and its class are
     on that line under `antifraud` (`asn`, `asn_class`) next to the decision. The database file holds public registry data
-    only. Put the country of the AS to no use but the signal: it says where the network is registered, not where a user is.
+    only. The country of the AS is used only as the fallback of the country signal, for a network that is not `hosting` (see
+    "Country signal"): it says where the network is registered, not where a user is.
   - *Where it does not apply.* The sign-in forms and the OTP request go to `auth` directly, through the deployment's proxy,
     not through `edge`; `auth` already has the client address (the tenant's `ipHeader`), so the lookup is in `auth`. The
     code that does it is in `util` (`versola.util.net`), so that `edge` can use it for policies later; `edge` does not use it today.
+
+- **Country signal (`af_event.country`, migration `V0029`).** The country of the client's IP address, from a database `auth` holds
+  in memory like the ASN one (no request calls anything outside the process). **Off by default.**
+  - *Config.* An optional block, each key with its default:
+    ```
+    antifraud {
+      geo { file = "", url = "", refresh-interval = "7 days" }   # empty file is off; the block may be left out
+    }
+    ```
+    `url` is held as a secret in memory and only its host is logged (the same now holds for `antifraud.asn.url`, whose
+    config keys and values are unchanged). It may hold `{yyyy}` and `{mm}`, the year and the month (UTC) of the download:
+    a month with no file yet (a 404) is retried once with the month before. Refresh, failure handling and the writable
+    directory next to `file` are as for the ASN database.
+  - *Source.* DB-IP IP to Country Lite, CC BY 4.0, attribution required; one file, gzip or plain, CSV with the first
+    address, the last address and the ISO 3166-1 alpha-2 code of each range, IPv4 and IPv6 together. A range with `ZZ`
+    (or no code) is not held.
+  - *Metrics.* `antifraud_geo_lookups_total{result}` (`hit`, `miss`, `unavailable`), `antifraud_geo_database_loaded_timestamp_seconds`,
+    `antifraud_geo_database_ranges` and `antifraud_geo_database_refresh_failed_total`; the `antifraud_asn_*` series are
+    unchanged.
+  - *What a request carries.* The context signal `country` (upper-case code) is the country database's answer; where it has
+    none, the country the AS is registered in (`antifraud.asn`), but only for a network whose class is `other`; else it is
+    absent. It is on the `receive-http` line under `antifraud` and in `af_event.country`. No rule reads it: it is read by the
+    `country` list entries.
+  - *List entries.* `country` is a `valueType` of the lists (two letters, stored upper-case): `deny`, `fake` or `watch`, never
+    `allow`; it needs `expiresAt` and `max-broad-ttl` applies; by specificity it ranks above a mail domain and below an AS. The
+    dry run counts the events of the last 24 hours with that `af_event.country`. Without a database a `country` entry
+    matches nothing.
+  - *The migration.* `V0029` adds one nullable column to `af_event`, `country TEXT`, with no default and no index; compatible
+    with the previous release and not undoable except by a dump. Its `ALTER` runs under `lock_timeout = 5s`: if it fails,
+    run the migration again.
 
 - **Antifraud detectors and proposals (`af_proposal`, migration `V0022`).** Every `antifraud.detectors.interval` (1
   minute) each instance runs two detectors over the last minutes of `af_dest_stats` and **proposes** list entries; it
