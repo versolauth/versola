@@ -234,6 +234,17 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
           rows <- env.repository.list(userId1)
         yield assertTrue(!reset, rows.size == 1, rows.head.expiresAt.isEmpty)
       },
+      test("replacing or deleting the temporary password revokes the first-login token issued with it") {
+        for
+          _ <- TestClock.setTime(baseInstant)
+          _ <- bootstrap(env, userId1, token(1))
+          _ <- env.repository.createTemporary(userId1, pass(2), salt(2), baseInstant.plusSeconds(3600))
+          afterReplace <- env.repository.consumeFirstLoginToken(token(1))
+          _ <- bootstrap(env, userId2, token(2))
+          _ <- env.repository.deleteTemporary(userId2)
+          afterDelete <- env.repository.consumeFirstLoginToken(token(2))
+        yield assertTrue(afterReplace.isEmpty, afterDelete.isEmpty)
+      },
       test("a token is bound to its user: another user's reset leaves it alone") {
         for
           _ <- TestClock.setTime(baseInstant)

@@ -111,16 +111,21 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
         sql"""DELETE FROM user_passwords WHERE user_id = $userId AND expires_at IS NOT NULL
            """.update.run()
 
+        // A reset replaces the credential the first-login link was issued with, so it revokes the link too:
+        // whoever resets because the link leaked must not leave it working for the rest of the 24 hours.
+        sql"""DELETE FROM first_login_tokens WHERE user_id = $userId""".update.run()
+
         sql"""INSERT INTO user_passwords (user_id, password, salt, created_at, expires_at)
               VALUES ($userId, $passwordHash, $salt, $now, $expiresAt)
            """.update.run()
       }.unit
 
   override def deleteTemporary(userId: UserId): Task[Unit] =
-    xa.connectMeasured("delete-temporary-password"):
+    xa.transactMeasured("delete-temporary-password") {
       sql"""DELETE FROM user_passwords WHERE user_id = $userId AND expires_at IS NOT NULL
          """.update.run()
-    .unit
+      sql"""DELETE FROM first_login_tokens WHERE user_id = $userId""".update.run()
+    }.unit
 
   override def createBootstrapCredential(
       userId: UserId,

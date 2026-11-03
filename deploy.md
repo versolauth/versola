@@ -1385,25 +1385,37 @@ first-login link for admin: <edge-url>/login/central-admin?first_login_token=<to
 Opening it starts the console login (edge passes the token on to `auth`'s `/authorize`) with the
 password already passed, then the usual set-password step. The token is 256 random bits, stored only
 as a SHA-256, valid as long as the temporary password, **spent by the first request that presents it**
-and deleted when a permanent password is set. It is a secret until then. The link is the one place the
-token is printed: it is in that log line (so also in whatever ships `auth`'s logs, an `otel-exporter`
-log pipeline included), never in a file and never in the access log (query parameters are logged only
-if listed in `logQuery`). Auth does not keep the raw token: the database holds its hash. The one
-exception is a client that requires **PAR** or a signed request object (JAR): there the token travels
-inside the pushed or signed request, and `pushed_authorization_requests` holds it until the request
-is consumed or expires. Without `first-login-url` no token is issued. The migration `V0031` adds the
-`first_login_tokens` table.
+and deleted when a permanent password is set, when the temporary password is replaced (Console →
+**Reset Password** of the admin) or deleted, and when the user is deleted. It is a secret until then.
+The link is the one place the token is printed: it is in that log line (so also in whatever ships
+`auth`'s logs, an `otel-exporter` log pipeline included) and in the request line of any reverse proxy
+in front of `edge`: **the nginx that `versola` runs on a vps logs the full request line, query string
+included**, so the token is in that proxy's access log until it is spent. `auth`'s own access log
+records query parameters only if listed in `logQuery`. Auth does not keep the raw token: the database
+holds its hash. The one exception is a client that requires **PAR** or a signed request object (JAR):
+there the token travels inside the pushed or signed request, and `pushed_authorization_requests`
+holds it until the request is consumed or expires. Without `first-login-url` no token is issued. The
+migration `V0031` adds the `first_login_tokens` table (and its entry in `cleanup.tables`).
 
 Open the link yourself, in the browser you will sign in with. Do not paste it into chat or mail: a
-link preview that follows it spends the token, and you are left with an ordinary sign-in page.
+link preview that follows it spends the token, and you are left with an ordinary sign-in page. The
+token is spent before the login is created, so an error at that moment (a database or `central`
+outage) burns it as well. A browser that already has a session ignores the token and does not spend it.
 
-A lost or spent link, or a temporary password that was mistyped, is replaced without waiting for the
-24 hours: start `auth` **once** with `BOOTSTRAP_RESET=1` and remove the variable afterwards. It drops
-the unused temporary password and token and bootstrap issues new ones (a new link line). Left set, it
-resets on every start and on every replica, so only the last replica's link works and the temporary
-password never expires. It is refused, with a warning in the log, once the admin has a permanent
-password. The password path stays for Kubernetes and for operators who prefer
-it: `versola up` still prints which bundle file holds `ADMIN_BOOTSTRAP_PASSWORD`:
+A spent or lost link does **not** take the temporary password with it: it is still valid for its 24
+hours, and the password path below is the immediate way in. To get a new link without waiting, start
+`auth` with `BOOTSTRAP_RESET=1` in its environment. This is a manual, operator-level step with no
+command of its own yet: the vps compose gives the container `auth.secrets.env` and an `environment:`
+block, the variable has to be in one of them, and `docker restart` does **not** re-read either, so the
+container has to be recreated (`docker compose up -d` on the bundle). `versola` rewrites
+`auth.secrets.env` from OpenBao, which drops a line added by hand, and replica containers read their
+own copy. Do it with a **single** `auth` replica running, and remove the variable afterwards. It drops
+the unused temporary password and token and bootstrap issues a new token and a new link line (the
+temporary password keeps its value, with a fresh 24 hours). Left set, it resets on every start and
+on every replica, so only the last replica's link works and the temporary password never expires. It is
+refused, with a warning in the log, once the admin has a permanent password. The password path stays
+for Kubernetes and for operators who prefer it: `versola up` still prints which bundle file holds
+`ADMIN_BOOTSTRAP_PASSWORD`:
 
 ```bash
 grep ADMIN_BOOTSTRAP_PASSWORD <bundle printed by versola up>/auth.secrets.env

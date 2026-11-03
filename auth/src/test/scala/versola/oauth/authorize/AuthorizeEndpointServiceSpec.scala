@@ -346,6 +346,16 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           spentTimes = env.passwordRepository.consumeFirstLoginToken.times
         yield assertTrue(spentTimes == 0)
       },
+      test("an id_token_hint that does not verify fails the request before any token is read") {
+        val env = Env()
+        // Only the unverifiable-hint case: a hint that verifies takes the (None, Some(userId)) branch, which never
+        // reads the token; that ordering is not pinned by a test here.
+        for
+          _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+          result <- env.service.authorize(baseRequest.copy(idTokenHint = Some("not-a-jwt"), firstLoginToken = Some("t"))).exit
+          spentTimes = env.passwordRepository.consumeFirstLoginToken.times
+        yield assertTrue(result.isFailure, spentTimes == 0)
+      },
       test("prompt=none never spends the token") {
         val env = Env()
         for

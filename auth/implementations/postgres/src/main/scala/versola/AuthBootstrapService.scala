@@ -108,7 +108,7 @@ object AuthBootstrapService:
               )
               _ <- ZIO.when(created):
                 ZIO.logInfo(s"Set temporary bootstrap password for admin user '${cfg.login}'") *>
-                  // The only place the token appears: `versola up` reads this line. It is a secret for up to
+                  // The only place the token appears: whoever deploys (versola-cli, #82) reads this line. It is a secret for up to
                   // 24 hours, single use, and bound to a password change; it is never written to a file.
                   ZIO.foreachDiscard(link): (url, token) =>
                     ZIO.logInfo(s"first-login link for admin: $url?${FirstLoginToken.ParamName}=$token")

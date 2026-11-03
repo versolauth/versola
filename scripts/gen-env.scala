@@ -2081,6 +2081,12 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |      interval   = "12 hours"
        |    }
        |    {
+       |      table-name = "first_login_tokens"
+       |      batch-size = 1000
+       |      interval   = "12 hours"
+       |      key-column = "user_id"
+       |    }
+       |    {
        |      table-name = "user_agents"
        |      batch-size = 1000
        |      interval   = "10 minutes"
