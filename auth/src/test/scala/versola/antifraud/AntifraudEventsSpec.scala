@@ -561,6 +561,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
             before <- Metric.counter("antifraud_decisions_total").tagged(Set(
@@ -648,6 +649,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(None)
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
             _ <- events.decideOtpRequest(clientId, Some(long), Right(phone), repeated = false)
           yield assertTrue(seen.get.flatMap(_.userAgent) == Some(long))
@@ -740,6 +742,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
             _ <- Observability.setIp("203.0.113.7")
@@ -769,6 +772,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small)
             decision <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
@@ -826,6 +830,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(
               e,
@@ -871,6 +876,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(client))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(
               e,
@@ -920,6 +926,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
             listed <- events.decideOtpRequest(clientId, None, Left(Email("User@Example.COM")), repeated = false)
@@ -947,6 +954,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(
               e,
@@ -1066,6 +1074,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine, asn = resolver)
             _ <- Observability.setIp("5.45.64.1")
@@ -1098,6 +1107,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
             _ <- Observability.setIp("5.45.64.1")
@@ -1112,6 +1122,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine, asn = resolver)
             decision <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
@@ -1131,6 +1142,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <-
               build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine, tuning = tuned, asn = resolver)
@@ -1159,6 +1171,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(
               e,
@@ -1237,6 +1250,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), asn = resolver)
             _ <- Observability.setIp("5.45.64.1")
@@ -1272,6 +1286,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), asn = resolver)
             before <- lookups("hit")
@@ -1307,6 +1322,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(
               e,
@@ -1336,6 +1352,92 @@ object AntifraudEventsSpec extends UnitSpecBase:
             unknown.isEmpty,
           )
       },
+      test("the context carries the number's country and the tenant's regions in the signals, from a KZ number and a restricted tenant") {
+        val kz = PhoneRegion(region = "KZ", dialCode = "+7", length = 10, regex = ".*", registration = true)
+        val uz = PhoneRegion(region = "uz", dialCode = "+998", length = 9, regex = ".*", registration = false)
+        val e = env
+        val seen = new AtomicReference[Option[AntifraudContext]](None)
+        val engine = new Antifraud:
+          def evaluate(ctx: AntifraudContext): UIO[Decision] = ZIO.succeed(seen.set(Some(ctx))).as(Decision.allow)
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(List(kz, uz, kz.copy(dialCode = "+77")))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
+            _ <- events.decideOtpRequest(clientId, None, Right(Phone("+77011234567")), repeated = false)
+            sms = seen.get
+            _ <- events.decideOtpRequest(clientId, None, Left(Email("a@example.com")), repeated = false)
+            mail = seen.get
+          yield assertTrue(
+            sms.flatMap(_.signals.get(GeoRules.PhoneCountrySignal)).contains("KZ"),
+            // Upper case, once each, in the order the tenant listed them.
+            sms.flatMap(_.signals.get(GeoRules.TenantRegionsSignal)).contains("KZ,UZ"),
+            // An email address has no number, and so no country of its own; the tenant's regions are still the tenant's.
+            mail.exists(c => !c.signals.contains(GeoRules.PhoneCountrySignal)),
+            mail.flatMap(_.signals.get(GeoRules.TenantRegionsSignal)).contains("KZ,UZ"),
+          )
+      },
+      test("without phoneRegions there is no tenant_regions signal, and a number whose region cannot be told has no phone_country") {
+        val e = env
+        val seen = new AtomicReference[Option[AntifraudContext]](None)
+        val engine = new Antifraud:
+          def evaluate(ctx: AntifraudContext): UIO[Decision] = ZIO.succeed(seen.set(Some(ctx))).as(Decision.allow)
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
+            _ <- events.decideOtpRequest(clientId, None, Right(Phone("+77011234567")), repeated = false)
+            unrestricted = seen.get
+            // Not a number of any region: the libphonenumber table has none for it.
+            _ <- events.decideOtpRequest(clientId, None, Right(Phone("+10000000000")), repeated = false)
+            unknown = seen.get
+          yield assertTrue(
+            unrestricted.exists(c => !c.signals.contains(GeoRules.TenantRegionsSignal)),
+            unrestricted.flatMap(_.signals.get(GeoRules.PhoneCountrySignal)).contains("KZ"),
+            unknown.exists(c => !c.signals.contains(GeoRules.PhoneCountrySignal)),
+          )
+      },
+      test("country_mismatch fires for a KZ number asked for from a carrier in UZ, not from a hosting network, nor from an unknown address") {
+        val e = env
+        val tuned = AntifraudTestSettings.tuning.copy(challengeAt = 20)
+        val engine = AntifraudTestSettings.engine(
+          AntifraudTestSettings.decision.copy(enabled = true, timeout = 1.second, failureAction = DecisionAction.Block),
+          List(GeoRules.ruleSet),
+          tuned,
+        )
+        val kz = PhoneRegion(region = "KZ", dialCode = "+7", length = 10, regex = ".*", registration = true)
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(List(kz))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(
+              e,
+              small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)),
+              antifraud = engine,
+              tuning = tuned,
+              asn = countryAsn,
+              geo = countries,
+            )
+            kzNumber = Right(Phone("+77011234567"))
+            // The carrier's range is UZ in the country database: both rules fire, 20 each.
+            _ <- Observability.setIp("203.0.113.7")
+            carrier <- events.decideOtpRequest(clientId, None, kzNumber, repeated = false)
+            // The hosting range is FR there, and a VPN exit says nothing about the person.
+            _ <- Observability.setIp("5.45.64.1")
+            hosting <- events.decideOtpRequest(clientId, None, kzNumber, repeated = false)
+            // The country database has no range for this one.
+            _ <- Observability.setIp("192.0.2.5")
+            noCountry <- events.decideOtpRequest(clientId, None, kzNumber, repeated = false)
+          yield assertTrue(
+            carrier == Decision(DecisionAction.Challenge, 40, List("country_mismatch", "country_outside_regions")),
+            hosting == Decision.allow,
+            noCountry == Decision.allow,
+          )
+      },
       test("with the ASN database alone, whatever it knows of the AS and its country, there is no country signal") {
         val e = env
         val seen = new AtomicReference[Option[AntifraudContext]](None)
@@ -1344,6 +1446,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine, asn = countryAsn)
             _ <- Observability.setIp("5.45.64.1")
@@ -1367,6 +1470,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             none <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
             _ <- Observability.setIp("203.0.113.7")
@@ -1389,6 +1493,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(
               e,
@@ -1447,6 +1552,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(
               e,
@@ -1483,6 +1589,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), geo = countries)
             before <- lookups("hit")
