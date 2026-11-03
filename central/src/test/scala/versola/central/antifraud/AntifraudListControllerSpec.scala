@@ -16,6 +16,7 @@ import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
+import java.nio.file.{Files, Paths}
 import java.time.Instant
 import java.util.UUID
 
@@ -217,6 +218,27 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
           limit = Some(PageLimit(10)),
           offset = Some(PageOffset(20)),
         ),
+      )
+    },
+    test("list filters by the country value type, and the type is a name of the OpenAPI enum") {
+      val service = stub[AntifraudListService]
+      val url = base.addQueryParams(QueryParams("valueType" -> "country"))
+      val spec = Files.readString(List(
+        "central/open-api/central.yaml",
+        "open-api/central.yaml",
+        "../central/open-api/central.yaml",
+      ).map(Paths.get(_)).find(Files.exists(_)).get)
+      val declared = "(?m)^    AntifraudValueType:\\n      type: string\\n      enum: \\[([^\\]]*)\\]".r.findFirstMatchIn(
+        spec,
+      ).map(_.group(1).split(",").map(_.trim).toSet)
+      for
+        _ <- service.list.succeedsWith(ListEntriesResponse(Nil))
+        response <- runAs(Request.get(url), service)
+      yield assertTrue(
+        response.status == Status.Ok,
+        service.list.calls.head._1.valueType.contains(AntifraudValueType.country),
+        "\"country\"".fromJson[AntifraudValueType] == Right(AntifraudValueType.country),
+        declared.exists(names => names.contains("country") && names.forall(name => AntifraudValueType.values.exists(_.toString == name))),
       )
     },
     test("list with nothing asked passes nothing on; an unknown value, a non-number or a page out of range is 400") {

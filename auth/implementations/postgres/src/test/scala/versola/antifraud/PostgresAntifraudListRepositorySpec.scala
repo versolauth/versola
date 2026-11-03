@@ -276,13 +276,29 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
           rules = Nil,
           asn = Some(24940),
           asnClass = Some("hosting"),
+          country = Some("DE"),
         )
         _ <- xa.connect(sql"DELETE FROM af_event WHERE at >= ${at.minusSeconds(3600).atOffset(java.time.ZoneOffset.UTC)}".update.run())
         _ <- events.insertBatch(
           List(
             base,
-            base.copy(id = UUID.randomUUID(), subjectHash = "h2", destPrefix = Some("491612"), userAgent = Some("other"), asn = Some(64500)),
-            base.copy(id = UUID.randomUUID(), subjectHash = "h3", destPrefix = Some("33123"), userAgent = None, asn = None, asnClass = None),
+            base.copy(
+              id = UUID.randomUUID(),
+              subjectHash = "h2",
+              destPrefix = Some("491612"),
+              userAgent = Some("other"),
+              asn = Some(64500),
+              country = Some("KZ"),
+            ),
+            base.copy(
+              id = UUID.randomUUID(),
+              subjectHash = "h3",
+              destPrefix = Some("33123"),
+              userAgent = None,
+              asn = None,
+              asnClass = None,
+              country = None,
+            ),
             base.copy(id = UUID.randomUUID(), at = at.minusSeconds(48 * 3600), subjectHash = "h1"),
           ),
         )
@@ -294,6 +310,9 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         byOtherAsn <- repository.preview(AntifraudValueType.asn, "64500", None, since)
         byNoAsn <- repository.preview(AntifraudValueType.asn, "65000", None, since)
         byHugeAsn <- repository.preview(AntifraudValueType.asn, "4200000000", None, since)
+        byCountry <- repository.preview(AntifraudValueType.country, "DE", None, since)
+        byOtherCountry <- repository.preview(AntifraudValueType.country, "KZ", None, since)
+        byNoCountry <- repository.preview(AntifraudValueType.country, "FR", None, since)
       yield assertTrue(
         byPhone == ListPreview(matched = Some(1), total = 3),
         byUa == ListPreview(matched = Some(1), total = 3),
@@ -303,6 +322,10 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         byOtherAsn == ListPreview(matched = Some(1), total = 3),
         byNoAsn == ListPreview(matched = Some(0), total = 3),
         byHugeAsn == ListPreview(matched = Some(0), total = 3),
+        // The same for the country: the event of 48 hours ago is out of the window, the one with no country is in the total only.
+        byCountry == ListPreview(matched = Some(1), total = 3),
+        byOtherCountry == ListPreview(matched = Some(1), total = 3),
+        byNoCountry == ListPreview(matched = Some(0), total = 3),
       )
       // PostgresAntifraudEventRepositorySpec runs at the same time and drops the partitions of af_event; when it
       // does so in the middle of this, the test is repeated.
@@ -330,6 +353,7 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
           userAgent = Some("Mozilla/5.0 (tenants)"),
           score = None,
           rules = Nil,
+          country = Some("DE"),
         )
         _ <- xa.connect(sql"DELETE FROM af_event WHERE at >= ${at.minusSeconds(3600).atOffset(java.time.ZoneOffset.UTC)}".update.run())
         _ <- events.insertBatch(
@@ -349,12 +373,16 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         ofB <- repository.preview(AntifraudValueType.phone_hash, "h1", b, since)
         uaOfA <- repository.preview(AntifraudValueType.ua_hash, ua, a, since)
         ipOfB <- repository.preview(AntifraudValueType.ip, "10.0.0.1", b, since)
+        countryOfA <- repository.preview(AntifraudValueType.country, "DE", a, since)
+        countryGlobal <- repository.preview(AntifraudValueType.country, "DE", None, since)
       yield assertTrue(
         global == ListPreview(matched = Some(5), total = 6),
         ofA == ListPreview(matched = Some(1), total = 2),
         ofB == ListPreview(matched = Some(3), total = 3),
         uaOfA == ListPreview(matched = Some(2), total = 2),
         ipOfB == ListPreview(matched = None, total = 3),
+        countryOfA == ListPreview(matched = Some(2), total = 2),
+        countryGlobal == ListPreview(matched = Some(6), total = 6),
       )
     } @@ TestAspect.eventually,
     test("a preview of a prefix reads the rolled-up requests of the range, of the entry's tenant, and a longer prefix is its range") {
