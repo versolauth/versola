@@ -18,7 +18,12 @@ If one item fails, the release does not go out.
 - [ ] New migrations work with the previous version running (additive, see
       `.claude/rules/database-migrations.md`).
 - [ ] A secret was added or changed: `SecretSchema.Revision` in `scripts/gen-env.scala` is raised.
-- [ ] `release.json` lists compatibility for the new version (to be added once #823 lands).
+- [ ] `docker/versola-tools/release.json` is filled in for this version: `version` is the tag,
+      `rollingFrom` lists the versions whose running services work on this schema (additive
+      migrations, see above; when in doubt leave a version out, the CLI then asks the operator),
+      `freshDatabaseFrom` the versions with no in-place way in (`0.6.*`), `notes` the release page.
+      Then run `bash .github/scripts/check-release-manifest.sh <tag>` with the tag you are about to
+      publish; the tag build runs the same script and a published tag cannot be reused.
 - [ ] No critical or high scanner finding is open past its SLA in `SECURITY.md`.
 - [ ] Release notes have a **Breaking / operator action** section, even if it says "none": rolling
       from which versions, which need a fresh database, new secrets, flags or ports, known gaps.

@@ -953,6 +953,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The manifest's `version` has to be the tag being published (release.md: run the same script with
+      # the tag before Publish, a published tag cannot be reused). Fails before the image is built and
+      # pushed (versola-tools only: the other images build in parallel jobs), so no versola-tools image says it is a version whose compatibility nobody wrote down.
+      # The tag goes through env:, like the "Extract version from tag" step below.
+      - name: Check the release manifest matches the tag
+        if: ${{ github.event_name == 'release' }}
+        env:
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+        run: bash .github/scripts/check-release-manifest.sh "$RELEASE_TAG_NAME"
+
       # Downloads the sbt-native-packager output that "Stage services for
       # release images" (in the build job) already produced and uploaded --
       # Dockerfile.tools compiles gen-env.scala ahead of time via this
@@ -1334,6 +1344,15 @@ jobs:
       # reaches the JVM and `docker stop` ends in exit code 137 after the grace period.
       - name: Check the service images start the JVM with exec
         run: .github/scripts/check-entrypoint-exec.sh
+
+      # The compatibility manifest versola-tools ships (release.json, versolauth/versola#823): well-formed,
+      # no version both "rolling" and "fresh database". The entrypoint tests next to it run
+      # entrypoint.sh with a stub java (no JVM, no docker). jq is on the runner image.
+      - name: Check the release manifest and the tools entrypoint
+        run: |
+          bash .github/scripts/check-release-manifest.sh
+          sh docker/versola-tools/test/entrypoint-release-manifest.test.sh
+          sh docker/versola-tools/test/entrypoint-registry.test.sh
 
   # Pod placement (nodeSelector / tolerations / affinity) in both charts: that
   # global values reach every pod, that a component's own value replaces them

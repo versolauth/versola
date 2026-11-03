@@ -18,7 +18,7 @@ fail() { echo "FAIL $1" >&2; failures=$((failures + 1)); }
 
 mkdir -p "$work/app/central-ui" "$work/bin"
 for f in entrypoint.sh compose.fragment.vps.yml.template compose.fragment.yml.template openbao.hcl.vps.template openbao.hcl.template \
-  nginx.conf.template proxy_params.conf.template mtls-init.sh step-ca-intermediates.sh; do
+  nginx.conf.template proxy_params.conf.template mtls-init.sh step-ca-intermediates.sh release.json; do
   cp "$tools/$f" "$work/app/$f"
 done
 # gen-env's output, as the entrypoint copies it; the stub leaves a marker so a run can be told to have
