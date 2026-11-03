@@ -84,7 +84,7 @@ grep -qF 'CENTRAL_MTLS_DOMAIN: "central-mtls.example.com"' "$frag" && pass "the 
 [ "$(tail -1 "$work/java.args")" = "--some-flag=1" ] && pass "the entrypoint's own arguments still reach gen-env" || fail "the entrypoint's own arguments still reach gen-env"
 cmp -s "$tools/mtls-init.sh" "$work/out.d/mtls-init.sh" && cmp -s "$tools/step-ca-intermediates.sh" "$work/out.d/step-ca-intermediates.sh" \
   && pass "the scripts are in the bundle" || fail "the scripts are in the bundle"
-[ "$(stat -f %Lp "$work/out.d/mtls-init.sh" 2>/dev/null || stat -c %a "$work/out.d/mtls-init.sh")" = 644 ] && pass "the scripts are world-readable" || fail "the scripts are world-readable"
+[ "$(stat -c %a "$work/out.d/mtls-init.sh" 2>/dev/null || stat -f %Lp "$work/out.d/mtls-init.sh")" = 644 ] && pass "the scripts are world-readable" || fail "the scripts are world-readable"
 run_entrypoint vps
 grep -qF 'MTLS_DOMAIN: ""' "$frag" && grep -qF 'CENTRAL_MTLS_DOMAIN: ""' "$frag" && pass "without names the environment is empty" || fail "without names the environment is empty"
 # MTLS_CERT_DAYS: digits, at most 100 years, vps only, and it reaches mtls-init's environment.
