@@ -60,6 +60,14 @@ of `legit` (2000 for 2400 sign-ins: a few share one, as behind a NAT), the distr
 met by the next. With `header = ""` nothing is sent and the whole run is one client to the counters and the lists,
 which is how the runs before `velocity` were made. No device identifier is sent (none exists before P1-1).
 
+Where the ASN comes from (P1-3): the addresses above are in `10.0.0.0/8` and no public AS announces them, so against
+the real iptoasn database every loadgen request is a `miss` and the `asn_hosting` rule and the `asn` velocity key never
+fire. A stand that is to exercise the ASN signal needs a small synthetic TSV (the `ip2asn-combined` format, a few lines)
+as `antifraud.asn.file` that maps the loadgen's source pools to a few ASNs, at least one with a hosting-looking
+description (the distributed attack's pool, say) and one with a carrier-looking one (the legitimate pool). Building that
+file and the runs against it is the runbook's job (`versolauth/loadgen-runbook`); nothing here generates it, and the
+profiles in `auth-profiles/` leave `antifraud.asn` out, so the signal is off in every run made from them.
+
 ### Attack shapes not covered (follow-ups)
 
 - **Many devices**: the sources vary (above), the device does not, since nothing issues one before P1-1; a

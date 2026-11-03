@@ -28,12 +28,25 @@ final class CentralApi(
     edgeSurface: Option[Option[ClientSSLConfig]] = None,
     /** The user id edge says the admin is (see `AntifraudListController`): sent as a query parameter of a `GET` and as a body field of the rest. */
     admin: Option[String] = None,
+    /** The tenant of the admin's token, which edge adds to the tenant routes of the antifraud lists (`/antifraud/lists...`) as a
+      * query parameter of a `GET` and a body field of the rest; the operator's routes get none. */
+    callerTenant: Option[String] = None,
+    /** Headers set on every call (an `If-Match`, say). */
+    extraHeaders: List[(String, String)] = Nil,
 ):
 
   /** The same API as seen by an admin whom edge has identified: `userId`, which edge adds from the verified token and which
     * overwrites what a caller sent. */
   def asAdmin(userId: String): CentralApi =
-    CentralApi(client, config, credentials, bearer, edgeSurface, Some(userId))
+    CentralApi(client, config, credentials, bearer, edgeSurface, Some(userId), callerTenant, extraHeaders)
+
+  /** The same, as the admin of the tenant `tenantId`: edge also adds `callerTenantId` to the tenant routes of the lists. */
+  def asTenantAdmin(userId: String, tenantId: String): CentralApi =
+    CentralApi(client, config, credentials, bearer, edgeSurface, Some(userId), Some(tenantId), extraHeaders)
+
+  /** The same, with a header on every call. */
+  def withHeader(name: String, value: String): CentralApi =
+    CentralApi(client, config, credentials, bearer, edgeSurface, admin, callerTenant, extraHeaders.filterNot(_._1 == name) :+ (name -> value))
 
   /** The same API as seen by a caller presenting different Basic credentials. */
   def withCredentials(user: String, secret: String): CentralApi =
@@ -109,17 +122,25 @@ final class CentralApi(
   def raw(method: Method, path: String, body: String, query: (String, String)*): Task[ApiResult] =
     send(method, path, query, Some(body))
 
-  /** What edge does to a `GET`: puts the caller in the query, replacing a parameter of the same name. */
-  private def callerQuery(method: Method, query: List[(String, String)]): List[(String, String)] =
-    admin.filter(_ => method == Method.GET).fold(query): userId =>
+  /** The routes edge tells the tenant of the token (see `BootstrapService.centralInjects`). */
+  private def tenantRoute(path: String): Boolean = path == "/antifraud/lists" || path.startsWith("/antifraud/lists/")
+
+  /** What edge does to a `GET`: puts the caller in the query, replacing a parameter of the same name, and the tenant of the
+    * token on a tenant route of the lists. */
+  private def callerQuery(method: Method, path: String, query: List[(String, String)]): List[(String, String)] =
+    val named = admin.filter(_ => method == Method.GET).fold(query): userId =>
       query.filterNot((name, _) => name == "userId") :+ ("userId" -> userId)
+    callerTenant.filter(_ => method == Method.GET && tenantRoute(path)).fold(named): tenant =>
+      named.filterNot((name, _) => name == "callerTenantId") :+ ("callerTenantId" -> tenant)
 
   /** What edge does to any other call that has a JSON object body: puts the caller in it. A call without a body gets one
     * (`{}`) so that the user id can be put in it; real edge does not, so central refuses (400) such a call. */
-  private def callerBody(method: Method, body: Option[String]): Option[String] =
+  private def callerBody(method: Method, path: String, body: Option[String]): Option[String] =
     admin.filter(_ => method != Method.GET).fold(body): userId =>
       val fields = body.flatMap(_.fromJson[Json.Obj].toOption).fold(Chunk.empty[(String, Json)])(_.fields)
-      Some(Json.Obj(fields.filterNot((name, _) => name == "userId") :+ ("userId" -> Json.Str(userId))).toJson)
+      val tenant = callerTenant.filter(_ => tenantRoute(path)).map(t => "callerTenantId" -> Json.Str(t))
+      val kept = fields.filterNot((name, _) => name == "userId" || (tenant.isDefined && name == "callerTenantId"))
+      Some(Json.Obj((kept :+ ("userId" -> Json.Str(userId))) ++ tenant).toJson)
 
   private def send(
       method: Method,
@@ -132,11 +153,12 @@ final class CentralApi(
       base <- ZIO.fromEither(URL.decode(s"$origin$path")).mapError(RuntimeException(_))
       request = Request(
         method = method,
-        url = base.addQueryParams(callerQuery(method, query.toList)),
-        body = callerBody(method, body).fold(Body.empty)(Body.fromString(_)),
+        url = base.addQueryParams(callerQuery(method, path, query.toList)),
+        body = callerBody(method, path, body).fold(Body.empty)(Body.fromString(_)),
       )
-      withType = callerBody(method, body).fold(request)(_ => request.addHeader(Header.ContentType(MediaType.application.json)))
-      withBasic = credentials.fold(withType)((user, secret) => withType.addHeader(Authorization.Basic(user, secret)))
+      withType = callerBody(method, path, body).fold(request)(_ => request.addHeader(Header.ContentType(MediaType.application.json)))
+      withHeaders = extraHeaders.foldLeft(withType)((r, header) => r.addHeader(Header.Custom(header._1, header._2)))
+      withBasic = credentials.fold(withHeaders)((user, secret) => withHeaders.addHeader(Authorization.Basic(user, secret)))
       authorized = bearer.fold(withBasic)(token => withBasic.addHeader(Authorization.Bearer(token)))
       connection = edgeSurface.flatten.fold(client)(client.ssl(_))
       // Without a certificate the connection still has to trust central's own, or it would fail on that

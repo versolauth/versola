@@ -44,5 +44,6 @@ trait AntifraudListRepository:
     * not counted) the records of counter resets older than `before`, but never the newest, which the generations count from. */
   def pruneAudit(before: Instant, limit: Int): Task[Int]
 
-  /** The changes of one entry, or of all, the latest first. */
-  def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]]
+  /** The changes of one entry, or of all, the latest first; with `visibleTo`, only those of global entries and that
+    * tenant's. */
+  def audit(entryId: Option[UUID], limit: Int, visibleTo: Option[TenantId]): Task[List[AntifraudListAudit]]

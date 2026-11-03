@@ -52,7 +52,7 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         e = entry(AntifraudListType.fake, AntifraudValueType.cidr, "10.0.0.0/8", tenant, Some(at.plusSeconds(3600)))
         stored <- repository.upsert(e, "alice", at)
         listed <- repository.list(AntifraudListFilter.all, 10, 0)
-        audit <- repository.audit(None, 10)
+        audit <- repository.audit(None, 10, None)
       yield assertTrue(
         stored == e,
         listed == List(e),
@@ -82,7 +82,7 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         tenantScoped <- repository.upsert(entry(tenantId = Some(TenantId("t"))), "alice", at)
         otherList <- repository.upsert(entry(AntifraudListType.watch), "alice", at)
         listed <- repository.list(AntifraudListFilter.all, 10, 0)
-        audit <- repository.audit(Some(first.id), 10)
+        audit <- repository.audit(Some(first.id), 10, None)
       yield assertTrue(
         again.id == first.id,
         again.expiresAt.contains(at.plusSeconds(60)),
@@ -127,6 +127,37 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         active.find(_.id == later.id).flatMap(_.expiresAt).contains(at.plusSeconds(10)),
       )
     },
+    test("a listing and the audit can be limited to what a tenant sees: the global entries and its own") {
+      for
+        repository <- clean
+        a = Some(TenantId("tenant-a"))
+        b = Some(TenantId("tenant-b"))
+        global <- repository.upsert(entry(value = "g"), "x", at)
+        own <- repository.upsert(entry(value = "a", tenantId = a), "x", at.plusSeconds(1))
+        other <- repository.upsert(entry(value = "b", tenantId = b), "x", at.plusSeconds(2))
+        seenByA <- repository.list(AntifraudListFilter.all.copy(visibleTo = a), 10, 0)
+        seenByB <- repository.list(AntifraudListFilter.all.copy(visibleTo = b), 10, 0)
+        everything <- repository.list(AntifraudListFilter.all, 10, 0)
+        onlyOwn <- repository.list(AntifraudListFilter(None, None, Some(a), visibleTo = a), 10, 0)
+        noneOfOthers <- repository.list(AntifraudListFilter(None, None, Some(b), visibleTo = a), 10, 0)
+        auditA <- repository.audit(None, 10, a)
+        auditAll <- repository.audit(None, 10, None)
+        auditOfOthers <- repository.audit(Some(other.id), 10, a)
+        auditOfOwn <- repository.audit(Some(own.id), 10, a)
+        auditOfGlobal <- repository.audit(Some(global.id), 10, a)
+      yield assertTrue(
+        seenByA.map(_.id).toSet == Set(global.id, own.id),
+        seenByB.map(_.id).toSet == Set(global.id, other.id),
+        everything.size == 3,
+        onlyOwn.map(_.id) == List(own.id),
+        noneOfOthers.isEmpty,
+        auditA.map(_.entryId).toSet == Set(global.id, own.id),
+        auditAll.size == 3,
+        auditOfOthers.isEmpty,
+        auditOfOwn.size == 1,
+        auditOfGlobal.size == 1,
+      )
+    },
     test("deletes an entry, records who did, and says so when there was none") {
       for
         repository <- clean
@@ -134,7 +165,7 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         removed <- repository.delete(e.id, "bob", at.plusSeconds(5))
         again <- repository.delete(e.id, "bob", at.plusSeconds(6))
         listed <- repository.list(AntifraudListFilter.all, 10, 0)
-        audit <- repository.audit(Some(e.id), 10)
+        audit <- repository.audit(Some(e.id), 10, None)
       yield assertTrue(
         removed,
         !again,
@@ -152,7 +183,7 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         old <- repository.upsert(entry(value = "old", expiresAt = Some(at.plusSeconds(1))), "x", at)
         n <- repository.purgeExpired(at.plusSeconds(2), 1000)
         listed <- repository.list(AntifraudListFilter.all, 10, 0)
-        audit <- repository.audit(Some(old.id), 10)
+        audit <- repository.audit(Some(old.id), 10, None)
       yield assertTrue(n == 1, listed.map(_.id) == List(live.id), audit.map(a => (a.action, a.actor)).head == (AntifraudListAction.expire, "system"))
     },
     test("every change bumps the version and nothing else does") {
@@ -189,7 +220,7 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         none <- repository.pruneAudit(at, 10)
         some <- repository.pruneAudit(at.plusSeconds(50), 3)
         rest <- repository.pruneAudit(at.plusSeconds(50), 3)
-        left <- repository.audit(None, 100)
+        left <- repository.audit(None, 100, None)
       yield assertTrue(
         first == 2,
         second == 2,
@@ -243,13 +274,15 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
           userAgent = Some(ua),
           score = None,
           rules = Nil,
+          asn = Some(24940),
+          asnClass = Some("hosting"),
         )
         _ <- xa.connect(sql"DELETE FROM af_event WHERE at >= ${at.minusSeconds(3600).atOffset(java.time.ZoneOffset.UTC)}".update.run())
         _ <- events.insertBatch(
           List(
             base,
-            base.copy(id = UUID.randomUUID(), subjectHash = "h2", destPrefix = Some("491612"), userAgent = Some("other")),
-            base.copy(id = UUID.randomUUID(), subjectHash = "h3", destPrefix = Some("33123"), userAgent = None),
+            base.copy(id = UUID.randomUUID(), subjectHash = "h2", destPrefix = Some("491612"), userAgent = Some("other"), asn = Some(64500)),
+            base.copy(id = UUID.randomUUID(), subjectHash = "h3", destPrefix = Some("33123"), userAgent = None, asn = None, asnClass = None),
             base.copy(id = UUID.randomUUID(), at = at.minusSeconds(48 * 3600), subjectHash = "h1"),
           ),
         )
@@ -257,10 +290,19 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
         byPhone <- repository.preview(AntifraudValueType.phone_hash, "h1", None, since)
         byUa <- repository.preview(AntifraudValueType.ua_hash, ListSnapshot.sha256Hex(ua), None, since)
         byIp <- repository.preview(AntifraudValueType.ip, "10.0.0.1", None, since)
+        byAsn <- repository.preview(AntifraudValueType.asn, "24940", None, since)
+        byOtherAsn <- repository.preview(AntifraudValueType.asn, "64500", None, since)
+        byNoAsn <- repository.preview(AntifraudValueType.asn, "65000", None, since)
+        byHugeAsn <- repository.preview(AntifraudValueType.asn, "4200000000", None, since)
       yield assertTrue(
         byPhone == ListPreview(matched = Some(1), total = 3),
         byUa == ListPreview(matched = Some(1), total = 3),
         byIp == ListPreview(matched = None, total = 3),
+        // The event of 48 hours ago is out of the window; the one with no ASN is in the total and not in the match.
+        byAsn == ListPreview(matched = Some(1), total = 3),
+        byOtherAsn == ListPreview(matched = Some(1), total = 3),
+        byNoAsn == ListPreview(matched = Some(0), total = 3),
+        byHugeAsn == ListPreview(matched = Some(0), total = 3),
       )
       // PostgresAntifraudEventRepositorySpec runs at the same time and drops the partitions of af_event; when it
       // does so in the middle of this, the test is repeated.
@@ -354,7 +396,7 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
           "bob",
           at.plusSeconds(1),
         )
-        audit <- repository.audit(Some(first.id), 10)
+        audit <- repository.audit(Some(first.id), 10, None)
       yield assertTrue(
         again.id == first.id,
         audit.map(_.action) == List(AntifraudListAction.update, AntifraudListAction.create),
@@ -388,8 +430,8 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec:
           "addHits" -> impatient.addHits(List(ListHit(id, 1, at))),
           "purgeExpired" -> impatient.purgeExpired(at, 10).unit,
           "pruneAudit" -> impatient.pruneAudit(at, 10).unit,
-          "audit of all" -> impatient.audit(None, 10).unit,
-          "audit of one" -> impatient.audit(Some(id), 10).unit,
+          "audit of all" -> impatient.audit(None, 10, None).unit,
+          "audit of one" -> impatient.audit(Some(id), 10, None).unit,
         )
         exits <- ZIO.foreach(calls)((name, call) => call.exit.map(name -> _))
         _ <- holder.join

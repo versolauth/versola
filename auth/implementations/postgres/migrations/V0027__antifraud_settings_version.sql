@@ -1,0 +1,11 @@
+-- The version of the settings row, which the admin API returns as the ETag and asks back in If-Match (or in the body) when
+-- the settings are replaced: two admins who read the same version cannot both write, the second is told (412) and reads
+-- again, where before the last write silently won.
+--
+-- The counter is the row's own and moves with every change made through the repository (replace, reset, the first row
+-- auth's bootstrap writes). It is a different thing from af_settings_version, which stays the signal that makes the
+-- instances reload and is read by tooling that tunes the row by hand; a change made by hand in SQL should bump `version` too,
+-- or an admin who read the row before it can overwrite it without knowing.
+--
+-- A row that exists gets 1; "no row" is version 0 in the API.
+ALTER TABLE af_settings ADD COLUMN version BIGINT NOT NULL DEFAULT 1;

@@ -146,7 +146,14 @@ object ObservabilitySpec extends ZIOSpecDefault:
           },
           Method.GET / "antifraud" -> Handler.fromFunctionZIO[Request] { _ =>
             Observability.updateAntifraud(Observability.AntifraudDetails("otp_request", "Allow", 0, Nil, None, None, None, None))(
-              _.copy(decision = "Block", score = 12, rules = List("deny_list"), outcome = Some("blocked")),
+              _.copy(
+                decision = "Block",
+                score = 12,
+                rules = List("deny_list"),
+                outcome = Some("blocked"),
+                asn = Some(24940),
+                asnClass = Some("hosting"),
+              ),
             ).as(Response.text("ok"))
           },
           Method.GET / "labeled" -> Handler.fromFunctionZIO[Request] { _ =>
@@ -334,8 +341,14 @@ object ObservabilitySpec extends ZIOSpecDefault:
       yield assertTrue(
         rendered.contains("\"antifraud\":{\"action\":\"otp_request\",\"decision\":\"Block\",\"score\":12,\"rules\":[\"deny_list\"]"),
         rendered.contains("\"outcome\":\"blocked\""),
+        rendered.contains("\"asn\":24940"),
+        rendered.contains("\"asn_class\":\"hosting\""),
       )
     }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+    test("the antifraud check says nothing of an ASN when there is none, and carries no address") {
+      val json = Observability.AntifraudDetails("otp_request", "Allow", 0, Nil, None, None, None, None).toJson
+      assertTrue(!json.contains("asn"), !json.contains("\"ip\""))
+    },
     // Closes the ErrorDetails.description default-None gap (line 530): every other error test
     // supplies an explicit description, so the default value itself never runs.
     test("renders error details with no description when setError is called without one") {

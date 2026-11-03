@@ -39,7 +39,8 @@ enum AntifraudValueType derives JsonCodec:
   /** A network, `address/length`. */
   case cidr
 
-  /** An autonomous system number. */
+  /** An autonomous system number (`64500` or `AS64500`), against [[AntifraudContext.asn]]: the AS the ASN database gives the
+    * request's address. */
   case asn
   case device_id
 
@@ -111,7 +112,7 @@ object ListEntrySource:
   val Manual = "manual"
 
 /** How many events of a window an entry would have matched; `matched` is `None` for a value the event log has no
-  * column for (an address, a device, a fingerprint, an ASN, a mail domain). */
+  * column for (an address, a device, a fingerprint, a mail domain). */
 case class ListPreview(matched: Option[Long], total: Long) derives JsonCodec
 
 enum AntifraudListAction derives JsonCodec:
@@ -143,11 +144,14 @@ case class AntifraudListAudit(
     previous: Option[PreviousListValues],
 ) derives JsonCodec
 
-/** @param tenantId `None` does not filter; `Some(None)` is the global entries only */
+/** @param tenantId  `None` does not filter; `Some(None)` is the global entries only
+  * @param visibleTo `Some(t)` leaves the global entries and tenant `t`'s (what a tenant admin sees, see [[AntifraudScope]])
+  */
 case class AntifraudListFilter(
     listType: Option[AntifraudListType],
     valueType: Option[AntifraudValueType],
     tenantId: Option[Option[TenantId]],
+    visibleTo: Option[TenantId] = None,
 )
 
 object AntifraudListFilter:

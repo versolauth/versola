@@ -33,8 +33,10 @@ import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
   *     exempt a population from every score-based rule, and one on a device id would exempt whoever presents the id,
   *     which a client chooses until P1-1 issues it. Such an entry is refused at creation. It never cancels a forcing
   *     rule, nor the SMS budget, which is decided outside the score.
-  *  1. An entry of a kind no request carries yet (`device_id`, `ja4_hash`, `asn`, see [[ListValues.live]]) is refused
-  *     too: accepted, it would be audited and shown in a dry run and match nothing.
+  *  1. An entry of a kind no request carries yet (`device_id`, `ja4_hash`, see [[ListValues.live]]) is refused
+  *     too: accepted, it would be audited and shown in a dry run and match nothing. An `asn` entry is a `deny`, `fake` or
+  *     `watch` (never an `allow`) and matches the AS the ASN database gives the request's address; without a database
+  *     (`antifraud.asn.file` empty) it matches nothing, as an `ip` entry would for a request with no address.
   *  1. `watch` entries are independent of that: any match fires `watch_list:<value type>` with weight `watch-weight`, which an
   *     allow outweighs along with the rest of the score.
   *
@@ -79,7 +81,19 @@ trait AntifraudLists:
 
   def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]]
 
-  def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]]
+  /** The changes of one entry or of all, latest first; with `visibleTo`, those of global entries and that tenant's. */
+  def audit(entryId: Option[UUID], limit: Int, visibleTo: Option[TenantId]): Task[List[AntifraudListAudit]]
+
+  /** The entry, if there is one (for a caller that has to check whose it is before it changes it). */
+  def find(id: UUID): Task[Option[AntifraudListEntry]]
+
+  /** What this instance holds of the lists, read from memory (see [[ListsStatus]]). */
+  def status: UIO[ListsStatus]
+
+/** What an instance knows of its lists, for the status endpoint: whether they are on, when the snapshot it enforces was built
+  * (`None` before the first load), how many entries it holds and how many rows it skipped as not valid for their type, and what
+  * the last failed refresh said (cleared by the next successful one). */
+case class ListsStatus(enabled: Boolean, loadedAt: Option[Instant], size: Int, skipped: Int, lastError: Option[String])
 
 /** The new entry is not valid: a value that does not fit its type, or one the safety rules refuse. */
 final class InvalidListEntry(message: String) extends RuntimeException(message)
@@ -165,6 +179,9 @@ object AntifraudLists:
     /** The version of `af_list_version` the snapshot was built at, and when it was built. */
     val loadedVersion = AtomicLong(-1L)
     val loadedAt = AtomicReference(Instant.MIN)
+
+    /** What the last refresh that failed said; empty once one has succeeded. */
+    val lastError = AtomicReference(Option.empty[String])
 
     def replace(snapshot: ListSnapshot): Unit = current.set(snapshot)
 
@@ -330,8 +347,22 @@ object AntifraudLists:
     override def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]] =
       page(limit, offset) *> repository.list(filter, limit, offset)
 
-    override def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]] =
-      page(limit, 0) *> repository.audit(entryId, limit)
+    override def audit(entryId: Option[UUID], limit: Int, visibleTo: Option[TenantId]): Task[List[AntifraudListAudit]] =
+      page(limit, 0) *> repository.audit(entryId, limit, visibleTo)
+
+    override def find(id: UUID): Task[Option[AntifraudListEntry]] = repository.find(id)
+
+    override def status: UIO[ListsStatus] =
+      ZIO.succeed:
+        val snapshot = cache.snapshot
+        val loadedAt = cache.loadedAt.get
+        ListsStatus(
+          enabled = settings.enabled,
+          loadedAt = Option.when(loadedAt != Instant.MIN)(loadedAt),
+          size = snapshot.size,
+          skipped = snapshot.skipped,
+          lastError = cache.lastError.get,
+        )
 
     private def page(limit: Int, offset: Int): IO[InvalidListEntry, Unit] =
       ZIO.fail(InvalidListEntry(s"limit is 1 to $MaxLimit, offset is 0 or more")).unless(limit >= 1 && limit <= MaxLimit && offset >= 0).unit
@@ -353,14 +384,16 @@ object AntifraudLists:
                 *> ZIO
                   .logWarning(s"${snapshot.skipped} antifraud list entries have a value that is not valid for their type and are ignored")
                   .when(snapshot.skipped > 0)
+          _ = cache.lastError.set(None)
           // Read, or found unchanged: either way the lists are as new as the table.
           _ <- AntifraudListMetrics.refreshed(now)
         yield true).foldCauseZIO(
           cause =>
-            AntifraudListMetrics.refreshFailed *> ZIO.logWarningCause(
-              "could not refresh the antifraud lists, keeping the previous ones",
-              cause,
-            ).as(false),
+            ZIO.succeed(cache.lastError.set(Some(Option(cause.squash.getMessage).getOrElse(cause.squash.getClass.getSimpleName).take(300)))) *>
+              AntifraudListMetrics.refreshFailed *> ZIO.logWarningCause(
+                "could not refresh the antifraud lists, keeping the previous ones",
+                cause,
+              ).as(false),
           ZIO.succeed(_),
         )
 

@@ -1,10 +1,10 @@
 package versola.e2e.flows.antifraud
 
-import versola.e2e.support.AntifraudFixture.ListEntry
+import versola.e2e.support.AntifraudFixture.{AsnDatabase, ListEntry}
 import versola.e2e.support.AntifraudInstance.Decision
 import versola.e2e.support.{*, given}
 import zio.*
-import zio.http.Client
+import zio.http.{Client, Status}
 import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
@@ -23,13 +23,15 @@ import java.util.UUID
   * Every case has a number of its own and addresses it picked at random, so neither a rerun nor another case counts
   * against it.
   *
-  * Lists are seeded in SQL (as the repository stores them) because no endpoint changes them yet.
+  * Lists are seeded in SQL (as the repository stores them), which is quick and needs nothing but the database; two cases make
+  * theirs through central's admin API, which is how an entry reaches the lists in a deployment (`seededThroughApi`), and
+  * one changes the settings the same way, through central with `If-Match`.
   */
-object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & OAuthClient]:
+object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & OAuthClient & CentralApi]:
 
-  override val bootstrap: ZLayer[Any, Any, AntifraudFixture & E2EConfig & Client & OAuthClient] =
+  override val bootstrap: ZLayer[Any, Any, AntifraudFixture & E2EConfig & Client & OAuthClient & CentralApi] =
     val clients = (E2EConfig.live ++ Client.default) >+> OAuthClient.live
-    clients >+> AntifraudFixture.layer
+    clients >+> CentralApi.live >+> AntifraudFixture.layer
 
   private val Path = "/challenge/phone"
 
@@ -91,6 +93,23 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         attempt(instance, s, s"$network.${1 + scala.util.Random.nextInt(250)}").map(a => Option.when(a.decision.rules.contains("deny_list:cidr"))(())),
       )
 
+  /** The same as [[seeded]], with the entries made through central's admin API (`POST /antifraud/global/lists`, as an operator
+    * does), so that what auth enforces is what the API accepted and stored: through central, auth's validation and Postgres,
+    * and then the reload of the instances. */
+  private def seededThroughApi(instance: AntifraudInstance, s: Flows.Setup)(entries: ListEntry*): ZIO[CentralApi, Throwable, Unit] =
+    val bits = UUID.randomUUID().getLeastSignificantBits
+    val network = s"10.${(bits >>> 8) & 0xff}.${bits & 0xff}"
+    for
+      central <- ZIO.service[CentralApi]
+      _ <- AntifraudFixture.seedThroughApi(
+        central,
+        ListEntry("deny", "cidr", s"$network.0/24", expiresAt = Some(java.time.Instant.now().plusSeconds(3600))) :: entries.toList,
+      )
+      _ <- awaited("the lists to be reloaded", timeout = 30.seconds, every = 500.millis)(
+        attempt(instance, s, s"$network.${1 + scala.util.Random.nextInt(250)}").map(a => Option.when(a.decision.rules.contains("deny_list:cidr"))(())),
+      )
+    yield ()
+
   private def velocitySuite = suite("velocity across instances")(
     test("the limit on a number fires on the other instance after flush and load, and a refused request sends no code") {
       val limit = AntifraudFixture.PhoneLimitPerHour
@@ -146,7 +165,24 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
   )
 
   private def listsSuite = suite("lists over HTTP")(
-    test("a deny entry refuses the request on both instances and sends no code") {
+    test("an entry made through the central API is enforced by auth on the OTP request, on both instances, and sends no code") {
+      for
+        f <- ZIO.service[AntifraudFixture]
+        s <- f.nextSetup
+        ip = randomIp()
+        _ <- seededThroughApi(f.a, s)(ListEntry("deny", "ip", ip))
+        onA <- attempt(f.a, s, ip)
+        onB <- awaited("instance B to reload the lists")(attempt(f.b, s, ip).map(a => Option.when(a.refused)(a)))
+      yield assertTrue(
+        onA.refused,
+        onA.decision.decision == "Block",
+        onA.decision.rules == List("deny_list:ip"),
+        onA.decision.outcome.contains("blocked"),
+        onB.decision.outcome.contains("blocked"),
+        onB.decision.rules == List("deny_list:ip"),
+      )
+    },
+    test("a deny entry seeded in SQL refuses the request on both instances and sends no code") {
       for
         f <- ZIO.service[AntifraudFixture]
         s <- f.nextSetup
@@ -158,9 +194,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         onA.refused,
         onA.decision.decision == "Block",
         onA.decision.rules == List("deny_list:ip"),
-        onA.decision.outcome.contains("blocked"),
         onB.decision.outcome.contains("blocked"),
-        onB.decision.rules == List("deny_list:ip"),
       )
     },
     test("a fake entry answers like a send and sends nothing, where the same number from another address gets a code") {
@@ -249,6 +283,198 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         shadowed.decision.decision == "Allow",
         shadowed.decision.rules == List("shadow_list:ip"),
         shadowed.decision.outcome.contains("sent"),
+      )
+    },
+  )
+
+  /** An address of the hosting network of the fixture's ASN database, one of 250 so that no count of an address is shared. */
+  private def hostingIp(): String = s"${AsnDatabase.HostingNetwork}.${1 + scala.util.Random.nextInt(250)}"
+
+  private def carrierIp(): String = s"${AsnDatabase.CarrierNetwork}.${1 + scala.util.Random.nextInt(250)}"
+
+  /** Takes the seeded `asn` entries out and waits until both instances have reloaded the lists, so that the case that follows meets none. A request
+    * the entry refuses takes no step of its number's limit, so the polls can use one number. */
+  private def removed(f: AntifraudFixture, s: Flows.Setup): UIO[Unit] =
+    (AntifraudFixture.unseedAsn *> ZIO.foreachDiscard(List(f.a, f.b))(instance =>
+      awaited(s"${instance.name} to drop the asn entry")(attempt(instance, s, hostingIp()).map(a => Option.when(!a.refused)(()))),
+    )).orDie
+
+  private def asnSuite = suite("the ASN of the address")(
+    test("a request from a hosting network fires asn_hosting and is challenged, one from a carrier's network does not") {
+      for
+        f <- ZIO.service[AntifraudFixture]
+        s <- f.nextSetup
+        hosting <- attempt(f.a, s, hostingIp())
+        carrier <- attempt(f.a, s, carrierIp())
+      yield assertTrue(
+        // 20 is the weight of the rule, and the fixture challenges from 15.
+        hosting.decision.decision == "Challenge",
+        hosting.decision.rules == List("asn_hosting"),
+        hosting.decision.score == 20,
+        hosting.decision.outcome.contains("challenged"),
+        hosting.decision.asn.contains(AsnDatabase.HostingAsn),
+        hosting.decision.asnClass.contains("hosting"),
+        carrier.answeredWithCodeStep,
+        carrier.decision.decision == "Allow",
+        carrier.decision.rules.isEmpty,
+        carrier.decision.outcome.contains("sent"),
+        carrier.decision.asn.contains(AsnDatabase.CarrierAsn),
+        carrier.decision.asnClass.contains("other"),
+      )
+    },
+    test("a deny entry for the hosting AS refuses a request from it on the other instance too, and leaves the carrier's alone") {
+      for
+        f <- ZIO.service[AntifraudFixture]
+        s <- f.nextSetup
+        // The polls that wait for the entry take steps of a number's limit: they use a number of their own.
+        probe <- f.nextSetup
+        gone <- f.nextSetup
+        result <- (for
+          until <- Clock.instant.map(_.plusSeconds(120))
+          _ <- seeded(f.a, probe)(ListEntry("deny", "asn", AsnDatabase.HostingAsn.toString, expiresAt = Some(until)))
+          denied <- attempt(f.a, s, hostingIp())
+          onB <- awaited("instance B to reload the lists")(attempt(f.b, s, hostingIp()).map(a => Option.when(a.refused)(a)))
+          carrier <- attempt(f.a, s, carrierIp())
+        yield assertTrue(
+          denied.refused,
+          denied.decision.decision == "Block",
+          denied.decision.rules.contains("deny_list:asn"),
+          denied.decision.outcome.contains("blocked"),
+          onB.decision.rules.contains("deny_list:asn"),
+          carrier.answeredWithCodeStep,
+          carrier.decision.decision == "Allow",
+          carrier.decision.rules.isEmpty,
+          carrier.decision.outcome.contains("sent"),
+        )).ensuring(removed(f, gone))
+      yield result
+    },
+    test("the event log has the AS and its class of each step, and none for an address that is in no AS") {
+      for
+        f <- ZIO.service[AntifraudFixture]
+        s <- f.nextSetup
+        _ <- attempt(f.a, s, hostingIp())
+        _ <- attempt(f.a, s, carrierIp())
+        _ <- attempt(f.a, s, randomIp())
+        expected = Set[(String, Option[Int], Option[String])](
+          ("challenged", Some(AsnDatabase.HostingAsn), Some("hosting")),
+          ("sent", Some(AsnDatabase.CarrierAsn), Some("other")),
+          ("sent", None, None),
+        )
+        // The writer takes a batch about every second.
+        rows <- awaited("the events to be written")(AntifraudFixture.eventsOf(s.clientId).map(r => Option.when(r.toSet == expected)(r)))
+      yield assertTrue(rows.toSet == expected, rows.size == 3)
+    },
+  )
+
+  /** The settings, changed through central with `If-Match`. They are one row for the whole fixture, so the change is one no
+    * other case reacts to (the weight of a rule only this case fires: `watch_list:cidr`) and is put back afterwards. */
+  private def settingsSuite = suite("settings over HTTP")(
+    test("a change made through central with If-Match is picked up by both instances; the same If-Match again is 412 and changes nothing") {
+      val operatorId = "00000000-0000-0000-0000-0000000e2e04"
+      val bits = UUID.randomUUID().getLeastSignificantBits
+      val network = s"10.${(bits >>> 8) & 0xff}.${bits & 0xff}"
+      def someIp = s"$network.${1 + scala.util.Random.nextInt(250)}"
+      def withWeight(settings: Json.Obj, weight: Option[Int]): Json.Obj =
+        val weights = weight.fold(Json.Obj())(w => Json.Obj("watch_list:cidr" -> Json.Num(w)))
+        Json.Obj(settings.fields.filterNot(_._1 == "ruleWeights") :+ ("ruleWeights" -> weights))
+      for
+        f <- ZIO.service[AntifraudFixture]
+        central <- ZIO.service[CentralApi]
+        operator = central.asAdmin(operatorId)
+        s <- f.nextSetup
+        // a watch entry on a network of its own: 20 by default, which is a challenge at the fixture's challengeAt (15)
+        _ <- seeded(f.a, s)(ListEntry("watch", "cidr", s"$network.0/24"))
+        read <- operator.get("/antifraud/settings")
+        etag <- ZIO.fromOption(read.response.headers.get("ETag")).orElseFail(RuntimeException("no ETag on the read"))
+        json <- read.obj
+        original = Json.Obj(json.fields.filterNot(_._1 == "version"))
+        // put back on whatever version the row is at by then, whether or not the case gets that far
+        restore = operator.get("/antifraud/settings").flatMap: current =>
+          current.obj.flatMap: o =>
+            ZIO.foreachDiscard(current.response.headers.get("ETag")): version =>
+              operator
+                .withHeader("If-Match", version)
+                .put("/antifraud/settings", Json.Obj("settings" -> withWeight(Json.Obj(o.fields.filterNot(_._1 == "version")), None)))
+        result <- (for
+          beforeA <- attempt(f.a, s, someIp)
+          beforeB <- attempt(f.b, s, someIp)
+          // 100 is over the fixture's blockAt (50)
+          changed <- operator.withHeader("If-Match", etag).put("/antifraud/settings", Json.Obj("settings" -> withWeight(original, Some(100))))
+          changedJson <- changed.obj
+          staleAgain <- operator.withHeader("If-Match", etag).put("/antifraud/settings", Json.Obj("settings" -> withWeight(original, Some(1))))
+          afterA <- awaited("instance A to take the new weight", timeout = 30.seconds, every = 500.millis)(
+            attempt(f.a, s, someIp).map(a => Option.when(a.decision.decision == "Block")(a)),
+          )
+          afterB <- awaited("instance B to take the new weight", timeout = 30.seconds, every = 500.millis)(
+            attempt(f.b, s, someIp).map(a => Option.when(a.decision.decision == "Block")(a)),
+          )
+          now <- operator.get("/antifraud/settings").flatMap(_.obj)
+        yield assertTrue(
+          beforeA.decision.decision == "Challenge",
+          beforeB.decision.decision == "Challenge",
+          changed.status == Status.Ok,
+          changedJson.int("version") == json.int("version").map(_ + 1),
+          changed.response.headers.get("ETag").contains(s"\"${json.int("version").getOrElse(0) + 1}\""),
+          staleAgain.status == Status.PreconditionFailed,
+          afterA.decision.rules.contains("watch_list:cidr"),
+          afterB.decision.rules.contains("watch_list:cidr"),
+          // the stale change wrote nothing: the weight is the one the first change set
+          now.obj("ruleWeights").flatMap(_.int("watch_list:cidr")).contains(100),
+        )).ensuring(restore.ignore)
+      yield result
+    },
+    test("a PATCH of one key leaves the others untouched and bumps the version; null removes the entry again") {
+      val operatorId = "00000000-0000-0000-0000-0000000e2e05"
+      for
+        central <- ZIO.service[CentralApi]
+        operator = central.asAdmin(operatorId)
+        before <- operator.get("/antifraud/settings").flatMap(_.obj)
+        patched <- operator.patch("/antifraud/settings", Json.Obj("ruleWeights" -> Json.Obj("watch_list:cidr" -> Json.Num(77))))
+        patchedJson <- patched.obj
+        removed <- operator.patch("/antifraud/settings", Json.Obj("ruleWeights" -> Json.Obj("watch_list:cidr" -> Json.Null)))
+        removedJson <- removed.obj
+        invalid <- operator.patch("/antifraud/settings", Json.Obj("blockAt" -> Json.Num(-1)))
+        after <- operator.get("/antifraud/settings").flatMap(_.obj)
+        others = (json: Json.Obj) => json.fields.filterNot(f => f._1 == "ruleWeights" || f._1 == "version").toMap
+        v = before.int("version").getOrElse(0)
+      yield assertTrue(
+        patched.status == Status.Ok,
+        patchedJson.int("version").contains(v + 1),
+        patchedJson.obj("ruleWeights").flatMap(_.int("watch_list:cidr")).contains(77),
+        others(patchedJson) == others(before),
+        removed.status == Status.Ok,
+        removedJson.int("version").contains(v + 2),
+        removedJson.obj("ruleWeights") == before.obj("ruleWeights"),
+        // a patch the settings would not survive is refused and writes nothing
+        invalid.status == Status.BadRequest,
+        after.int("version").contains(v + 2),
+        others(after) == others(before),
+      )
+    },
+    test("a PUT without If-Match succeeds after another writer changed the row, and replaces what that writer wrote") {
+      val operatorId = "00000000-0000-0000-0000-0000000e2e06"
+      for
+        central <- ZIO.service[CentralApi]
+        operator = central.asAdmin(operatorId)
+        read <- operator.get("/antifraud/settings")
+        etag <- ZIO.fromOption(read.response.headers.get("ETag")).orElseFail(RuntimeException("no ETag on the read"))
+        json <- read.obj
+        original = Json.Obj(json.fields.filterNot(_._1 == "version"))
+        // another writer changes the row, so the version read above is stale
+        other <- operator.patch("/antifraud/settings", Json.Obj("ruleWeights" -> Json.Obj("watch_list:cidr" -> Json.Num(5))))
+        stale <- operator.withHeader("If-Match", etag).put("/antifraud/settings", Json.Obj("settings" -> original))
+        // without a version the same desired state is written, and the other writer's key goes with what it replaced
+        replaced <- operator.put("/antifraud/settings", Json.Obj("settings" -> original))
+        replacedJson <- replaced.obj
+        after <- operator.get("/antifraud/settings").flatMap(_.obj)
+        v = json.int("version").getOrElse(0)
+      yield assertTrue(
+        other.status == Status.Ok,
+        stale.status == Status.PreconditionFailed,
+        replaced.status == Status.Ok,
+        replacedJson.int("version").contains(v + 2),
+        after.obj("ruleWeights") == json.obj("ruleWeights"),
+        after.int("version").contains(v + 2),
       )
     },
   )
@@ -469,5 +695,5 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
     },
   )
 
-  def spec = suite("Antifraud decision of an OTP request")(velocitySuite, listsSuite, challengeSuite) @@
+  def spec = suite("Antifraud decision of an OTP request")(velocitySuite, listsSuite, settingsSuite, asnSuite, challengeSuite) @@
     TestAspect.sequential @@ TestAspect.withLiveClock @@ TestAspect.timeout(15.minutes)

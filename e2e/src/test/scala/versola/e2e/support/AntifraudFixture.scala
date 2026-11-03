@@ -35,6 +35,8 @@ object AntifraudInstance:
       score: Int,
       rules: List[String],
       outcome: Option[String],
+      asn: Option[Int] = None,
+      asnClass: Option[String] = None,
   )
 
   private def decision(line: String): Option[Decision] =
@@ -52,6 +54,8 @@ object AntifraudInstance:
       decision = decision,
       score = antifraud.get("score").collect { case Json.Num(n) => n.intValue }.getOrElse(0),
       outcome = text(antifraud, "outcome"),
+      asn = antifraud.get("asn").collect { case Json.Num(n) => n.intValue },
+      asnClass = text(antifraud, "asn_class"),
       rules = antifraud.get("rules").collect { case Json.Arr(items) => items.toList.collect { case Json.Str(s) => s } }.getOrElse(Nil),
     )
 
@@ -80,7 +84,7 @@ final case class AntifraudFixture(a: AntifraudInstance, b: AntifraudInstance, pr
 object AntifraudFixture:
 
   /** How many setups are registered up front. */
-  val Setups = 20
+  val Setups = 24
 
   /** Limit on codes to one number in an hour (a request over it is refused), and on requests from one address. Low
     * enough for a spec to reach, high enough that the cases of a spec that each use a number of their own do not. */
@@ -98,7 +102,9 @@ object AntifraudFixture:
 
   /** Appended to the running auth's `env.conf`, which has the whole `antifraud` block (every key is required; see gen-env), so these only change what the specs need. `timeout` is lengthened from the 20 ms a production evaluation is held
     * to, so that a busy CI machine does not turn a decision into `antifraud_error` (a fail-open `Challenge`). */
-  private def antifraudConfig(sync: Duration): String =
+  private def antifraudConfig(sync: Duration, asnFile: Path): String =
+    // A path as a HOCON string: backslashes and quotes escaped.
+    val quoted = asnFile.toString.replace("\\", "\\\\").replace("\"", "\\\"")
     s"""
        |antifraud {
        |  decision { enabled = true, timeout = "5 seconds" }
@@ -115,17 +121,38 @@ object AntifraudFixture:
        |    enabled = true
        |    refresh-interval = "1 second"
        |  }
+       |  # The ASN database the specs' addresses are looked up in: the two networks of [[AntifraudFixture.AsnDatabase]].
+       |  asn {
+       |    file = "$quoted"
+       |  }
        |}
        |""".stripMargin
 
   private case class Started(process: Process, log: Path, instance: AntifraudInstance)
 
-  private def launch(name: String, config: E2EConfig, client: Client, ports: Ports): ZIO[Scope, Throwable, AntifraudInstance] =
+  /** The ASN database of the instances, in the iptoasn format: a hosting network (AS 64512, `Example Hosting GmbH`) and a
+    * carrier's (AS 64513, `Example Mobile`), in the documentation ranges `198.51.100.0/24` and `203.0.113.0/24`, which no
+    * real address of the suite's other cases is in. */
+  object AsnDatabase:
+    val HostingAsn = 64512
+    val CarrierAsn = 64513
+    val HostingNetwork = "198.51.100"
+    val CarrierNetwork = "203.0.113"
+    val contents: String =
+      s"$HostingNetwork.0\t$HostingNetwork.255\t$HostingAsn\tDE\tExample Hosting GmbH\n" +
+        s"$CarrierNetwork.0\t$CarrierNetwork.255\t$CarrierAsn\tKZ\tExample Mobile\n"
+
+  private val asnFile: ZIO[Scope, Throwable, Path] =
+    ZIO.acquireRelease(
+      ZIO.attemptBlocking(Files.writeString(Files.createTempFile("e2e-af-asn-", ".tsv").nn, AsnDatabase.contents).nn),
+    )(file => ZIO.attemptBlocking(Files.deleteIfExists(file)).ignore)
+
+  private def launch(name: String, config: E2EConfig, client: Client, ports: Ports, asn: Path): ZIO[Scope, Throwable, AntifraudInstance] =
     ZIO.acquireRelease(
       ZIO.attemptBlocking:
         val conf = Files.createTempFile(s"e2e-af-$name-", ".conf").nn
         val log = Files.createTempFile(s"e2e-af-$name-", ".log").nn
-        Files.writeString(conf, Files.readString(Path.of(config.authEnvConf)) + antifraudConfig(SyncInterval))
+        Files.writeString(conf, Files.readString(Path.of(config.authEnvConf)) + antifraudConfig(SyncInterval, asn))
         val builder = ProcessBuilder(config.authLauncher, s"-Denv.path=$conf")
           .redirectErrorStream(true)
           .redirectOutput(log.toFile)
@@ -192,7 +219,8 @@ object AntifraudFixture:
         _ <- tuned
         // Both at once: each waits for central and loads the configuration. The tuning is stored before they start, which
         // is when they first read it.
-        instances <- launch("antifraud-a", config, client, APorts) <&> launch("antifraud-b", config, client, BPorts)
+        asn <- asnFile
+        instances <- launch("antifraud-a", config, client, APorts, asn) <&> launch("antifraud-b", config, client, BPorts, asn)
         unused <- Ref.make(setups)
       yield AntifraudFixture(instances._1, instances._2, unused)
 
@@ -262,8 +290,8 @@ object AntifraudFixture:
       yield ()
 
   /** What the specs seed the lists with, the way [[versola.antifraud.AntifraudListRepository.upsert]] stores an entry:
-    * the row, and the bump of `af_list_version` that tells the instances to reload. There is no endpoint that
-    * changes the lists yet, and a row written by hand is otherwise not seen until the instances' full reload (a minute).
+    * the row, and the bump of `af_list_version` that tells the instances to reload. A row written by hand is otherwise not
+    * seen until the instances' full reload (a minute). [[seedThroughApi]] makes them through central's admin API instead.
     */
   final case class ListEntry(
       listType: String,
@@ -291,6 +319,52 @@ object AntifraudFixture:
           rows.getInt(1)
         finally connection.close()
     yield steps
+
+  /** What the event log holds for `clientId`: the outcome of each step and the AS and class it was recorded with. */
+  def eventsOf(clientId: String): Task[List[(String, Option[Int], Option[String])]] =
+    database: connection =>
+      val query = connection.prepareStatement("SELECT outcome, asn, asn_class FROM af_event WHERE client_id = ?").nn
+      query.setString(1, clientId)
+      val rows = query.executeQuery().nn
+      val found = List.newBuilder[(String, Option[Int], Option[String])]
+      while rows.next() do
+        val asn = rows.getInt(2)
+        // `wasNull` speaks of the column read last.
+        val present = !rows.wasNull()
+        found += ((rows.getString(1).nn, Option.when(present)(asn), Option(rows.getString(3))))
+      found.result()
+
+  /** Removes the `asn` entries the specs seeded, so that a rerun, and the cases of the suite that follow, meet none. */
+  def unseedAsn: Task[Unit] =
+    database: connection =>
+      connection.setAutoCommit(false)
+      connection.createStatement().nn.executeUpdate("DELETE FROM af_list_entry WHERE value_type = 'asn' AND source = 'e2e'")
+      connection.createStatement().nn.executeUpdate("UPDATE af_list_version SET version = version + 1 WHERE id = 1")
+      connection.commit()
+
+  /** The same entries made through central's admin API, as an operator does (`POST /antifraud/global/lists`), which is what
+    * auth then enforces: the way an entry reaches the lists in a deployment. Auth validates them (a broad entry needs an
+    * expiry, an `allow` is for an exact subject), so a case that seeds something it refuses fails here, which seeding SQL does
+    * not. The entries are global, as the SQL ones are; a reload (one second in the specs) is awaited by the caller. */
+  def seedThroughApi(central: CentralApi, entries: List[ListEntry]): Task[Unit] =
+    val operator = central.asAdmin(OperatorId)
+    ZIO.foreachDiscard(entries): entry =>
+      val body = Json.Obj(
+        Chunk(
+          "listType" -> Json.Str(entry.listType),
+          "valueType" -> Json.Str(entry.valueType),
+          "value" -> Json.Str(entry.value),
+          "shadow" -> Json.Bool(entry.shadow),
+          "reason" -> Json.Str("e2e"),
+        ) ++ entry.expiresAt.map(at => "expiresAt" -> Json.Str(at.toString)),
+      )
+      operator.post("/antifraud/global/lists", body).flatMap: created =>
+        ZIO.fail(
+          RuntimeException(s"central refused the list entry $entry: ${created.status} ${created.body}"),
+        ).unless(created.status == zio.http.Status.Created)
+
+  /** The user id edge would add for the operator who makes the entries. */
+  private val OperatorId = "00000000-0000-0000-0000-0000000e2e03"
 
   def seed(entries: List[ListEntry]): Task[Unit] =
     for
