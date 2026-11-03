@@ -1941,7 +1941,8 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |}
        |
        |# Antifraud (deploy.md, "Antifraud configuration"): the switches, the retention that bounds how long personal data is
-       |# kept, and the intervals. All keys are required. Everything is off: thresholds, weights and limits are not here,
+       |# kept, and the intervals. All keys are required, except the `asn` block, which a config written before it existed
+       |# may leave out. Everything is off: thresholds, weights and limits are not here,
        |# they are tuned through central's admin API (`/antifraud/settings`) without a restart.
        |antifraud {
        |  retention          = "14 days"   # the event log
@@ -1980,6 +1981,13 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |    ttl          = "2 minutes"
        |    max-attempts = 5
        |    pause        = "20 seconds"   # what a request that cannot answer a challenge waits before its ask for the code is honoured
+       |  }
+       |  # The ASN of a client address, from a local iptoasn.com database (deploy.md, "ASN signal"). Empty `file` is off.
+       |  asn {
+       |    file             = ""          # path of ip2asn-combined.tsv (or .tsv.gz); empty switches the signal off
+       |    url              = ""          # where to download a fresher one to `file` (empty: none; the file is reread when it changes)
+       |    refresh-interval = "24 hours"
+       |    # hosting-keywords = ["hosting", "cloud", "datacenter"]   # optional: the words of an AS name that make it `hosting`; default list in deploy.md
        |  }
        |}
        |$authMutualTlsBlock$authEstBlock
