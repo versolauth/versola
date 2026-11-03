@@ -49,7 +49,7 @@ test.describe('otp', () => {
     const navigations: string[] = [];
     page.on('framenavigated', (frame) => frame === page.mainFrame() && navigations.push(frame.url()));
 
-    await page.getByRole('button', { name: t.resend_button }).click();
+    await page.getByRole('button', { name: t.resend_link }).click();
 
     await expect(page.getByText(t.resend_in.replace('{seconds}', '45'))).toBeVisible();
     expect(navigations).toEqual([]);
@@ -60,7 +60,7 @@ test.describe('otp', () => {
     await page.route('**/challenge/otp/resend*', (route) =>
       route.fulfill({ contentType: 'application/json', body: JSON.stringify({ next: '/challenge', otp: false }) }));
 
-    await page.getByRole('button', { name: t.resend_button }).click();
+    await page.getByRole('button', { name: t.resend_link }).click();
 
     await expect(page.getByText('next page')).toBeVisible();
   });
@@ -117,7 +117,7 @@ test.describe('otp', () => {
   test('offers a resend once the wait is over, and posts it with the CSRF value', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'otp', { step });
 
-    await page.getByRole('button', { name: t.resend_button }).click();
+    await page.getByRole('button', { name: t.resend_link }).click();
 
     await expectSubmissions(submitted, 1);
     expect(submitted[0].path).toBe('/challenge/otp/resend');
@@ -128,7 +128,7 @@ test.describe('otp', () => {
     const { t } = await renderForm(page, 'otp', { step: { ...step, resendAfter: 30 } });
 
     await expect(page.getByText(/Resend available in (29|30)s/)).toBeVisible();
-    await expect(page.getByRole('button', { name: t.resend_button })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: t.resend_link })).toHaveCount(0);
   });
 
   test('locks the input while the server says so', async ({ page }) => {
@@ -185,7 +185,7 @@ test.describe('otp', () => {
 
     // Next to the code, not instead of it: the field and the resend stay.
     await expect(page.locator('input[name="code"]')).toBeVisible();
-    await expect(page.getByRole('button', { name: t.resend_button })).toBeVisible();
+    await expect(page.getByRole('button', { name: t.resend_link })).toBeVisible();
     await page.getByRole('button', { name: t.passkey_button }).click();
 
     await expectSubmissions(submitted, 1);

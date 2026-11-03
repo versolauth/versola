@@ -177,9 +177,12 @@ function OtpForm(props: { config: FormConfig }) {
           }}
         >
           <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
-          <button type="submit" class="btn btn-secondary">
-            {t().resend_button}
-          </button>
+          {/* A line, not a button: the code is the way in and asking for another is the exception, so it does not weigh as
+              much as the one alternative below. */}
+          <p class="resend-line">
+            {t().resend_prompt}{' '}
+            <button type="submit" class="link-button">{t().resend_link}</button>
+          </p>
         </form>
       </Show>
       {/* Another way to pass this step, as the server says it may be passed now and this browser can: last, under the code
