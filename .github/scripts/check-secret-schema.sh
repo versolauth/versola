@@ -182,6 +182,34 @@ for target in "${TARGETS[@]}"; do
   echo "    checked $target"
 done
 
+# A vps bundle with POSTGRES_MODE=bundled (versola-tools' entrypoint.sh) hands gen-env the container's
+# own address, 127.0.0.1:5432, and relies on three things the generator decides: a URL per service
+# for that address on the shared database and the service's own schema, `sslmode=disable` because
+# the container speaks no TLS (a loopback host is the one case gen-env writes that), and one role
+# name the container can create, the same in all three configs -- the entrypoint creates that role,
+# the database and the schemas, so a config that said otherwise would point a service at nothing.
+# The password is the schema's vps POSTGRES_PASSWORD, which the loop above already compares.
+echo "==> vps, bundled Postgres"
+mkdir -p "$work/vps-bundled"
+(
+  cd "$work/vps-bundled"
+  ENV_NAME=ci-check AUTH_URL=https://ci.invalid POSTGRES_HOST=127.0.0.1:5432 \
+    scala-cli run --server=false "$repo_root/scripts/gen-env.scala" <<< "vps" >/dev/null
+)
+bundled_dir="$work/vps-bundled/.local/env/vps"
+role=""
+for svc in "${SERVICES[@]}"; do
+  conf="$bundled_dir/$svc.conf"
+  url="$(sed -n '/^postgres {/,/^}/s/^  url = "\(.*\)"$/\1/p' "$conf")"
+  user="$(sed -n '/^postgres {/,/^}/s/^  user = "\(.*\)"$/\1/p' "$conf")"
+  want="jdbc:postgresql://127.0.0.1:5432/auth?currentSchema=$svc&sslmode=disable"
+  [ "$url" = "$want" ] || fail "bundled/$svc: postgres.url is '$url', expected '$want'"
+  [[ "$user" =~ ^[a-z_][a-z0-9_]*$ ]] || fail "bundled/$svc: postgres.user '$user' is not a role name the container can create"
+  if [ -z "$role" ]; then role="$user"; elif [ "$user" != "$role" ]; then fail "bundled: auth, central and edge name different Postgres users"; fi
+  grep -q '^  password = \${POSTGRES_PASSWORD}$' "$conf" || fail "bundled/$svc: postgres.password is not the POSTGRES_PASSWORD placeholder"
+done
+echo "    checked vps, bundled Postgres"
+
 echo
 if [ "$failed" -ne 0 ]; then
   cat >&2 <<'MSG'
