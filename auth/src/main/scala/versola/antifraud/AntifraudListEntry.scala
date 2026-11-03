@@ -143,11 +143,14 @@ case class AntifraudListAudit(
     previous: Option[PreviousListValues],
 ) derives JsonCodec
 
-/** @param tenantId `None` does not filter; `Some(None)` is the global entries only */
+/** @param tenantId  `None` does not filter; `Some(None)` is the global entries only
+  * @param visibleTo `Some(t)` leaves the global entries and tenant `t`'s (what a tenant admin sees, see [[AntifraudScope]])
+  */
 case class AntifraudListFilter(
     listType: Option[AntifraudListType],
     valueType: Option[AntifraudValueType],
     tenantId: Option[Option[TenantId]],
+    visibleTo: Option[TenantId] = None,
 )
 
 object AntifraudListFilter:

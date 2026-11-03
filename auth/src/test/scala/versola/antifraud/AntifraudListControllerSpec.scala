@@ -71,13 +71,23 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       response <- client.batched(signed)
     yield response
 
-  /** The entry as central sends it: the entry's fields and `userId`. */
-  private def entryBody(entry: String) = Body.fromString(entry.dropRight(1) + s""","userId":"$userId"}""")
+  /** The scope central says a call is made in: the operator's, or a tenant admin's of `tenant-a`. */
+  private val operatorScope = """"scope":"operator""""
+  private val tenantScope = """"scope":"tenant","callerTenantId":"tenant-a""""
+
+  /** The entry as central sends it: the entry's fields, `userId` and the scope (the operator's unless said). */
+  private def entryBody(entry: String, scope: String = operatorScope) =
+    Body.fromString(entry.dropRight(1) + s""","userId":"$userId",$scope}""")
 
   private val prefixEntry = """{"listType":"deny","valueType":"prefix","value":"4915","tenantId":"tenant-a","reason":"sms pumping"}"""
 
-  private def withUser(params: (String, String)*) =
-    base.addQueryParams(QueryParams(("userId" -> userId), params*))
+  /** The query of a `GET` or a `DELETE`, in the operator's scope unless the parameters say otherwise. */
+  private def withParams(first: (String, String), more: (String, String)*) =
+    val all = ("scope" -> "operator") :: first :: more.toList
+    base.addQueryParams(QueryParams(all.head, all.tail*))
+
+  private def asTenant(first: (String, String)*) =
+    base.addQueryParams(QueryParams("scope" -> "tenant", ("callerTenantId" -> "tenant-a") +: first*))
 
   def spec = suite("AntifraudListController")(
     test("a request without a token, or with one signed by another key, is 401 and reaches nothing") {
@@ -93,7 +103,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
           ),
         )
         anonymous <- client.batched(Request.get(base))
-        forged <- call(lists, Request.get(withUser()), wrongKey)
+        forged <- call(lists, Request.get(base), wrongKey)
       yield assertTrue(anonymous.status == Status.Unauthorized, forged.status == Status.Unauthorized, lists.list.calls.isEmpty)
     },
     test("POST creates the entry as the user central names and answers 201 with it") {
@@ -159,18 +169,16 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         reason <- invalid.body.asString
       yield assertTrue(invalid.status == Status.BadRequest, reason == "not an IP address")
     },
-    test("a malformed body, an unknown list type, and a missing or malformed userId are 400") {
+    test("a malformed body, an unknown list type, and a missing or malformed userId on a change are 400") {
       val lists = stub[AntifraudLists]
       for
         malformed <- call(lists, Request.post(base, Body.fromString("{")))
         unknown <- call(lists, Request.post(base, entryBody("""{"listType":"nope","valueType":"ip","value":"1.1.1.1"}""")))
         noUserInBody <- call(lists, Request.post(base, Body.fromString(prefixEntry)))
         badUserInBody <- call(lists, Request.post(base, Body.fromString(prefixEntry.dropRight(1) + ""","userId":"nope"}""")))
-        noUser <- call(lists, Request.get(base))
-        badUser <- call(lists, Request.get(base.addQueryParam("userId", "nope")))
-        noUserOnDelete <- call(lists, Request.delete(base.addQueryParam("id", entryId.toString)))
+        noUserOnDelete <- call(lists, Request.delete(withParams("id" -> entryId.toString)))
       yield assertTrue(
-        List(malformed, unknown, noUserInBody, badUserInBody, noUser, badUser, noUserOnDelete).map(_.status) == List.fill(7)(Status.BadRequest),
+        List(malformed, unknown, noUserInBody, badUserInBody, noUserOnDelete).map(_.status) == List.fill(5)(Status.BadRequest),
         lists.create.calls.isEmpty,
         lists.list.calls.isEmpty,
         lists.delete.calls.isEmpty,
@@ -186,7 +194,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("GET lists with the filter and the page") {
       val lists = stub[AntifraudLists]
-      val url = withUser("listType" -> "deny", "valueType" -> "prefix", "tenantId" -> "tenant-a", "limit" -> "10", "offset" -> "20")
+      val url = withParams("listType" -> "deny", "valueType" -> "prefix", "tenantId" -> "tenant-a", "limit" -> "10", "offset" -> "20")
       for
         _ <- lists.list.succeedsWith(List(stored))
         response <- call(lists, Request.get(url))
@@ -208,7 +216,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       "GET lists: global=true asks for the global entries; with a tenant, an unknown value, a bad number or flag, or a page out of range it is 400",
     ) {
       val lists = stub[AntifraudLists]
-      def get(params: (String, String)*) = call(lists, Request.get(withUser(params*)))
+      def get(first: (String, String), more: (String, String)*) = call(lists, Request.get(withParams(first, more*)))
       for
         _ <- lists.list.succeedsWith(Nil)
         global <- get("global" -> "true")
@@ -234,19 +242,168 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("DELETE answers 204 as the named user, 404 for an entry that is not there, 400 for a bad id") {
       val lists = stub[AntifraudLists]
-      def delete(id: String) = call(lists, Request.delete(withUser("id" -> id)))
+      def delete(id: String) = call(lists, Request.delete(withParams("id" -> id, "userId" -> userId)))
       for
+        _ <- lists.find.succeedsWith(Some(stored))
         _ <- lists.delete.succeedsWith(true)
         gone <- delete(entryId.toString)
         _ <- lists.delete.succeedsWith(false)
+        raced <- delete(entryId.toString)
+        _ <- lists.find.succeedsWith(None)
         missing <- delete(entryId.toString)
         malformed <- delete("nope")
       yield assertTrue(
         gone.status == Status.NoContent,
+        raced.status == Status.NotFound,
         missing.status == Status.NotFound,
         malformed.status == Status.BadRequest,
         lists.delete.calls.size == 2,
         lists.delete.calls.head == (entryId, userId),
+      )
+    },
+    test("a call that does not say its scope is 400 and reaches nothing: a missing scope is never the operator's") {
+      val lists = stub[AntifraudLists]
+      val noScope = Body.fromString(prefixEntry.dropRight(1) + s""","userId":"$userId"}""")
+      val tenantWithoutTenant = Body.fromString(prefixEntry.dropRight(1) + s""","userId":"$userId","scope":"tenant"}""")
+      val unknownScope = Body.fromString(prefixEntry.dropRight(1) + s""","userId":"$userId","scope":"root"}""")
+      for
+        create <- call(lists, Request.post(base, noScope))
+        preview <- call(lists, Request.post(base / "preview", noScope))
+        tenantless <- call(lists, Request.post(base, tenantWithoutTenant))
+        unknown <- call(lists, Request.post(base, unknownScope))
+        list <- call(lists, Request.get(base))
+        listTenantless <- call(lists, Request.get(base.addQueryParam("scope", "tenant")))
+        delete <- call(lists, Request.delete(base.addQueryParams(QueryParams("id" -> entryId.toString, "userId" -> userId))))
+        audit <- call(lists, Request.get(base / "audit"))
+      yield assertTrue(
+        List(create, preview, tenantless, unknown, list, listTenantless, delete, audit).map(_.status) == List.fill(8)(Status.BadRequest),
+        lists.create.calls.isEmpty,
+        lists.preview.calls.isEmpty,
+        lists.list.calls.isEmpty,
+        lists.find.calls.isEmpty,
+        lists.delete.calls.isEmpty,
+        lists.audit.calls.isEmpty,
+      )
+    },
+    test("a tenant admin adds entries of its own tenant: one that names no tenant gets its own, another tenant's is 403") {
+      val lists = stub[AntifraudLists]
+      val other = """{"listType":"deny","valueType":"prefix","value":"4915","tenantId":"tenant-b"}"""
+      val unnamed = """{"listType":"deny","valueType":"prefix","value":"4915"}"""
+      for
+        _ <- lists.create.succeedsWith(stored)
+        own <- call(lists, Request.post(base, entryBody(prefixEntry, tenantScope)))
+        defaulted <- call(lists, Request.post(base, entryBody(unnamed, tenantScope)))
+        refused <- call(lists, Request.post(base, entryBody(other, tenantScope)))
+        refusedPreview <- call(lists, Request.post(base / "preview", entryBody(other, tenantScope)))
+      yield assertTrue(
+        own.status == Status.Created,
+        defaulted.status == Status.Created,
+        lists.create.calls.map(_._1.tenantId) == List(Some(tenant), Some(tenant)),
+        refused.status == Status.Forbidden,
+        refusedPreview.status == Status.Forbidden,
+        lists.create.calls.size == 2,
+        lists.preview.calls.isEmpty,
+      )
+    },
+    test("a tenant admin previews within its tenant") {
+      val lists = stub[AntifraudLists]
+      val unnamed = """{"listType":"deny","valueType":"prefix","value":"4915"}"""
+      for
+        _ <- lists.preview.succeedsWith(ListPreview(matched = Some(1), total = 10))
+        ok <- call(lists, Request.post(base / "preview", entryBody(unnamed, tenantScope)))
+      yield assertTrue(ok.status == Status.Ok, lists.preview.calls.map(_.tenantId) == List(Some(tenant)))
+    },
+    test("the operator adds a global entry, or one of any tenant") {
+      val lists = stub[AntifraudLists]
+      val global = """{"listType":"deny","valueType":"prefix","value":"4915"}"""
+      for
+        _ <- lists.create.succeedsWith(stored)
+        everyone <- call(lists, Request.post(base, entryBody(global)))
+        another <- call(lists, Request.post(base, entryBody(prefixEntry.replace("tenant-a", "tenant-b"))))
+      yield assertTrue(
+        everyone.status == Status.Created,
+        another.status == Status.Created,
+        lists.create.calls.map(_._1.tenantId) == List(None, Some(TenantId("tenant-b"))),
+      )
+    },
+    test("a tenant admin lists the global entries and its tenant's, and may narrow to its own tenant or to the global ones, not to another's") {
+      val lists = stub[AntifraudLists]
+      def get(params: (String, String)*) = call(lists, Request.get(asTenant(params*)))
+      for
+        _ <- lists.list.succeedsWith(Nil)
+        all <- get()
+        own <- get("tenantId" -> "tenant-a")
+        global <- get("global" -> "true")
+        other <- get("tenantId" -> "tenant-b")
+        calls = lists.list.calls.map(_._1)
+      yield assertTrue(
+        all.status == Status.Ok,
+        own.status == Status.Ok,
+        global.status == Status.Ok,
+        other.status == Status.Forbidden,
+        calls.size == 3,
+        calls.head == AntifraudListFilter(None, None, None, visibleTo = Some(tenant)),
+        calls(1).tenantId == Some(Some(tenant)),
+        calls(2).tenantId == Some(None),
+        calls.forall(_.visibleTo.contains(tenant)),
+      )
+    },
+    test("the operator lists every tenant's entries, narrowed as it asks") {
+      val lists = stub[AntifraudLists]
+      for
+        _ <- lists.list.succeedsWith(Nil)
+        all <- call(lists, Request.get(withParams("limit" -> "5")))
+        other <- call(lists, Request.get(withParams("tenantId" -> "tenant-b")))
+        calls = lists.list.calls.map(_._1)
+      yield assertTrue(
+        all.status == Status.Ok,
+        other.status == Status.Ok,
+        calls.head.visibleTo.isEmpty,
+        calls(1) == AntifraudListFilter(None, None, Some(Some(TenantId("tenant-b"))), visibleTo = None),
+      )
+    },
+    test("a tenant admin removes its own tenant's entries: another tenant's or a global one is 403 and stays, a missing one is 404") {
+      val lists = stub[AntifraudLists]
+      def delete = call(lists, Request.delete(asTenant("id" -> entryId.toString, "userId" -> userId)))
+      for
+        _ <- lists.delete.succeedsWith(true)
+        _ <- lists.find.succeedsWith(Some(stored))
+        own <- delete
+        _ <- lists.find.succeedsWith(Some(stored.copy(tenantId = Some(TenantId("tenant-b")))))
+        other <- delete
+        _ <- lists.find.succeedsWith(Some(stored.copy(tenantId = None)))
+        global <- delete
+        _ <- lists.find.succeedsWith(None)
+        missing <- delete
+      yield assertTrue(
+        own.status == Status.NoContent,
+        other.status == Status.Forbidden,
+        global.status == Status.Forbidden,
+        missing.status == Status.NotFound,
+        lists.delete.calls.size == 1,
+      )
+    },
+    test("the operator removes an entry of any tenant, and a global one") {
+      val lists = stub[AntifraudLists]
+      def delete = call(lists, Request.delete(withParams("id" -> entryId.toString, "userId" -> userId)))
+      for
+        _ <- lists.delete.succeedsWith(true)
+        _ <- lists.find.succeedsWith(Some(stored.copy(tenantId = Some(TenantId("tenant-b")))))
+        other <- delete
+        _ <- lists.find.succeedsWith(Some(stored.copy(tenantId = None)))
+        global <- delete
+      yield assertTrue(other.status == Status.NoContent, global.status == Status.NoContent, lists.delete.calls.size == 2)
+    },
+    test("a tenant admin reads the audit of the entries it can see; the operator reads all of it") {
+      val lists = stub[AntifraudLists]
+      for
+        _ <- lists.audit.succeedsWith(Nil)
+        tenantRead <- call(lists, Request.get((base / "audit").addQueryParams(QueryParams("scope" -> "tenant", "callerTenantId" -> "tenant-a"))))
+        operatorRead <- call(lists, Request.get((base / "audit").addQueryParams(QueryParams("scope" -> "operator"))))
+      yield assertTrue(
+        tenantRead.status == Status.Ok,
+        operatorRead.status == Status.Ok,
+        lists.audit.calls == List((None, 100, Some(tenant)), (None, 100, None)),
       )
     },
     test("GET audit answers the records") {
@@ -268,13 +425,13 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- lists.audit.succeedsWith(List(record))
         ok <-
-          call(lists, Request.get((base / "audit").addQueryParams(QueryParams("userId" -> userId, "entryId" -> entryId.toString, "limit" -> "5"))))
+          call(lists, Request.get((base / "audit").addQueryParams(QueryParams("scope" -> "operator", "entryId" -> entryId.toString, "limit" -> "5"))))
         body <- ok.body.asString
-        badId <- call(lists, Request.get((base / "audit").addQueryParams(QueryParams("userId" -> userId, "entryId" -> "nope"))))
+        badId <- call(lists, Request.get((base / "audit").addQueryParams(QueryParams("scope" -> "operator", "entryId" -> "nope"))))
       yield assertTrue(
         ok.status == Status.Ok,
         body.fromJson[List[AntifraudListAudit]] == Right(List(record)),
-        lists.audit.calls.head == (Some(entryId), 5),
+        lists.audit.calls.head == (Some(entryId), 5, None),
         badId.status == Status.BadRequest,
       )
     },

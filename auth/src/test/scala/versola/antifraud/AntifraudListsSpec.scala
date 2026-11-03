@@ -71,7 +71,7 @@ object AntifraudListsSpec extends UnitSpecBase:
     override def addHits(hits: List[ListHit]): Task[Unit] =
       if failHits then ZIO.fail(RuntimeException("db down")) else ZIO.succeed { written = written ++ hits }
 
-    override def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]] = ZIO.succeed(audits)
+    override def audit(entryId: Option[UUID], limit: Int, visibleTo: Option[TenantId]): Task[List[AntifraudListAudit]] = ZIO.succeed(audits)
 
   // The longest an entry may live is longer than the year the helpers below give theirs; the limit has specs of its own.
   private val settings = AntifraudTestSettings.lists.copy(enabled = true, maxBroadTtl = 400.days)
@@ -251,6 +251,36 @@ object AntifraudListsSpec extends UnitSpecBase:
         _ <- lists.refresh
         gone <- decide(lists)(ctx(subjectHash = Some("d")))
       yield assertTrue(kept.action == DecisionAction.Block, gone == Decision.allow)
+    },
+    test("the status has the size and age of the snapshot, and the message of the last refresh that failed until one works") {
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
+      for
+        cold <- lists.status
+        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
+        _ <- lists.refresh
+        loaded <- lists.status
+        _ <- TestClock.adjust(10.seconds)
+        _ <- ZIO.succeed { repository.failLoad = true }
+        _ <- lists.refresh
+        failed <- lists.status
+        _ <- ZIO.succeed { repository.failLoad = false; repository.changed() }
+        _ <- lists.refresh
+        recovered <- lists.status
+        off <- make(repository, settings.copy(enabled = false))._1.status
+      yield assertTrue(
+        cold == ListsStatus(enabled = true, loadedAt = None, size = 0, skipped = 0, lastError = None),
+        loaded.enabled,
+        loaded.size == 1,
+        loaded.loadedAt.isDefined,
+        loaded.lastError.isEmpty,
+        failed.size == 1,
+        failed.loadedAt == loaded.loadedAt,
+        failed.lastError.contains("db down"),
+        recovered.lastError.isEmpty,
+        recovered.loadedAt.exists(at => loaded.loadedAt.exists(at.isAfter)),
+        !off.enabled,
+      )
     },
     test("starting reads the table, a change made elsewhere shows within the refresh interval, and the hits are written") {
       val repository = FakeRepository()
@@ -589,7 +619,7 @@ object AntifraudListsSpec extends UnitSpecBase:
         zero <- lists.list(AntifraudListFilter.all, 0, 0).either
         huge <- lists.list(AntifraudListFilter.all, 501, 0).either
         negative <- lists.list(AntifraudListFilter.all, 10, -1).either
-        auditHuge <- lists.audit(None, 501).either
+        auditHuge <- lists.audit(None, 501, None).either
       yield assertTrue(
         ok.isRight,
         List(zero, huge, negative, auditHuge).forall(_.left.exists(_.isInstanceOf[InvalidListEntry])),
