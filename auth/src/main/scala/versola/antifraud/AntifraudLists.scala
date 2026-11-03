@@ -29,12 +29,16 @@ import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
   *     on unless one of them forces an action: allow never overrides a forcing rule of another source, such as a
   *     blocked destination range).
   *  1. **Allow is for exact subjects only** (a destination hash, an address or a /32 or /128 network): an allow
-  *     outweighs the whole score, so one on a network, ASN, prefix, mail domain, fingerprint or user agent would
+  *     outweighs the whole score, so one on a network, ASN, country, prefix, mail domain, fingerprint or user agent would
   *     exempt a population from every score-based rule, and one on a device id would exempt whoever presents the id,
   *     which a client chooses until P1-1 issues it. Such an entry is refused at creation. It never cancels a forcing
   *     rule, nor the SMS budget, which is decided outside the score.
-  *  1. An entry of a kind no request carries yet (`device_id`, `ja4_hash`, `asn`, see [[ListValues.live]]) is refused
-  *     too: accepted, it would be audited and shown in a dry run and match nothing.
+  *  1. An entry of a kind no request carries yet (`device_id`, `ja4_hash`, see [[ListValues.live]]) is refused
+  *     too: accepted, it would be audited and shown in a dry run and match nothing. An `asn` entry is a `deny`, `fake` or
+  *     `watch` (never an `allow`) and matches the AS the ASN database gives the request's address; without a database
+  *     (`antifraud.asn.file` empty) it matches nothing, as an `ip` entry would for a request with no address. A `country` entry (an
+  *     ISO alpha-2 code, kept in upper case) is of the same three kinds, never an `allow`, matches the signal [[GeoRules.CountrySignal]], and
+  *     ranks just above a mail domain and below an AS; it matches nothing without a country database.
   *  1. `watch` entries are independent of that: any match fires `watch_list:<value type>` with weight `watch-weight`, which an
   *     allow outweighs along with the rest of the score.
   *
@@ -42,7 +46,7 @@ import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
   *  - An entry that names many clients (anything but an exact subject, a network wider than /24 or /48) must have an
   *    `expiresAt`, and so must one whose `source` is not `manual` (an automated entry).
   *  - A `cidr` entry is not wider than /8 (IPv4) or /32 (IPv6): `0.0.0.0/0` is every client, and a network a registry
-  *    hands to one provider is not narrower than that. A broad `cidr` (wider than /24 or /48), `email_domain` or `prefix` entry lives at most
+  *    hands to one provider is not narrower than that. A broad `cidr` (wider than /24 or /48), `email_domain`, `prefix` or `country` entry lives at most
   *    `max-broad-ttl` (30 days by default): a block of many clients is made for an attack and is made again, not kept.
   *  - `source` is the server's: `manual` for a request of the API, `detector:<kind>` for an approved proposal. A client
   *    cannot name its own, so it cannot call an entry `manual` to be rid of the expiry an automated one must have.
@@ -79,7 +83,19 @@ trait AntifraudLists:
 
   def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]]
 
-  def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]]
+  /** The changes of one entry or of all, latest first; with `visibleTo`, those of global entries and that tenant's. */
+  def audit(entryId: Option[UUID], limit: Int, visibleTo: Option[TenantId]): Task[List[AntifraudListAudit]]
+
+  /** The entry, if there is one (for a caller that has to check whose it is before it changes it). */
+  def find(id: UUID): Task[Option[AntifraudListEntry]]
+
+  /** What this instance holds of the lists, read from memory (see [[ListsStatus]]). */
+  def status: UIO[ListsStatus]
+
+/** What an instance knows of its lists, for the status endpoint: whether they are on, when the snapshot it enforces was built
+  * (`None` before the first load), how many entries it holds and how many rows it skipped as not valid for their type, and what
+  * the last failed refresh said (cleared by the next successful one). */
+case class ListsStatus(enabled: Boolean, loadedAt: Option[Instant], size: Int, skipped: Int, lastError: Option[String])
 
 /** The new entry is not valid: a value that does not fit its type, or one the safety rules refuse. */
 final class InvalidListEntry(message: String) extends RuntimeException(message)
@@ -102,7 +118,7 @@ object AntifraudLists:
     * @param enabled          off by default: no entry is read and no rule is contributed
     * @param refreshInterval  how often the snapshot is rebuilt from the table, so how long a change takes to reach another instance
     * @param auditRetention   how long the audit records of changes are kept
-    * @param maxBroadTtl      the longest an entry of kind `cidr`, `email_domain` or `prefix` may be made to live
+    * @param maxBroadTtl      the longest an entry of kind `cidr`, `email_domain`, `prefix` or `country` may be made to live
     */
   case class Settings(
       enabled: Boolean,
@@ -165,6 +181,9 @@ object AntifraudLists:
     /** The version of `af_list_version` the snapshot was built at, and when it was built. */
     val loadedVersion = AtomicLong(-1L)
     val loadedAt = AtomicReference(Instant.MIN)
+
+    /** What the last refresh that failed said; empty once one has succeeded. */
+    val lastError = AtomicReference(Option.empty[String])
 
     def replace(snapshot: ListSnapshot): Unit = current.set(snapshot)
 
@@ -330,8 +349,22 @@ object AntifraudLists:
     override def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]] =
       page(limit, offset) *> repository.list(filter, limit, offset)
 
-    override def audit(entryId: Option[UUID], limit: Int): Task[List[AntifraudListAudit]] =
-      page(limit, 0) *> repository.audit(entryId, limit)
+    override def audit(entryId: Option[UUID], limit: Int, visibleTo: Option[TenantId]): Task[List[AntifraudListAudit]] =
+      page(limit, 0) *> repository.audit(entryId, limit, visibleTo)
+
+    override def find(id: UUID): Task[Option[AntifraudListEntry]] = repository.find(id)
+
+    override def status: UIO[ListsStatus] =
+      ZIO.succeed:
+        val snapshot = cache.snapshot
+        val loadedAt = cache.loadedAt.get
+        ListsStatus(
+          enabled = settings.enabled,
+          loadedAt = Option.when(loadedAt != Instant.MIN)(loadedAt),
+          size = snapshot.size,
+          skipped = snapshot.skipped,
+          lastError = cache.lastError.get,
+        )
 
     private def page(limit: Int, offset: Int): IO[InvalidListEntry, Unit] =
       ZIO.fail(InvalidListEntry(s"limit is 1 to $MaxLimit, offset is 0 or more")).unless(limit >= 1 && limit <= MaxLimit && offset >= 0).unit
@@ -353,14 +386,16 @@ object AntifraudLists:
                 *> ZIO
                   .logWarning(s"${snapshot.skipped} antifraud list entries have a value that is not valid for their type and are ignored")
                   .when(snapshot.skipped > 0)
+          _ = cache.lastError.set(None)
           // Read, or found unchanged: either way the lists are as new as the table.
           _ <- AntifraudListMetrics.refreshed(now)
         yield true).foldCauseZIO(
           cause =>
-            AntifraudListMetrics.refreshFailed *> ZIO.logWarningCause(
-              "could not refresh the antifraud lists, keeping the previous ones",
-              cause,
-            ).as(false),
+            ZIO.succeed(cache.lastError.set(Some(Option(cause.squash.getMessage).getOrElse(cause.squash.getClass.getSimpleName).take(300)))) *>
+              AntifraudListMetrics.refreshFailed *> ZIO.logWarningCause(
+                "could not refresh the antifraud lists, keeping the previous ones",
+                cause,
+              ).as(false),
           ZIO.succeed(_),
         )
 

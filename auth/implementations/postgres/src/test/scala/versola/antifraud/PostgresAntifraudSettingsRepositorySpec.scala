@@ -8,75 +8,79 @@ import zio.test.*
 
 import java.time.Instant
 
-object PostgresAntifraudSettingsRepositorySpec extends PostgresSpec:
+object PostgresAntifraudSettingsRepositorySpec extends PostgresSpec, AntifraudSettingsRepositorySpec:
+
+  import AntifraudSettingsRepositorySpec.*
 
   private given DbCodec[Instant] = DbCodec.InstantCodec
 
-  private val at = Instant.parse("2026-10-26T10:00:00Z")
-
-  private val tuned = Tuning.off.copy(
-    mode = TuningMode.enforce,
-    blockAt = 100,
-    pow = PowDifficulty(minDifficulty = 10, maxDifficulty = 20, scoreStep = 5),
-    smsLimits = SmsLimits(SmsLimit(10, 0, 0.1), Map("49" -> SmsLimit(2, 5, 0.2))),
-    ruleWeights = Map("velocity_phone_1h" -> 40),
-    shadowRules = Set("velocity_ip_1m"),
-  )
+  override lazy val environment =
+    ZLayer:
+      for
+        xa <- ZIO.service[TransactorZIO]
+      yield Env(PostgresAntifraudSettingsRepository(xa))
 
   /** Empty, as the migration leaves it; the version row is kept, since a change creates it. */
-  private val clean: ZIO[TransactorZIO, Throwable, PostgresAntifraudSettingsRepository] =
+  override def beforeEach(env: Env) =
     for
       xa <- ZIO.service[TransactorZIO]
       _ <- xa.connect(sql"DELETE FROM af_settings".update.run())
       _ <- xa.connect(sql"DELETE FROM af_settings_version".update.run())
-    yield PostgresAntifraudSettingsRepository(xa)
+    yield ()
 
-  def spec = suite("PostgresAntifraudSettingsRepository")(
-    test("the table is empty before the first change, with version 0") {
-      for
-        repository <- clean
-        row <- repository.find
-        version <- repository.version
-      yield assertTrue(row.isEmpty, version == 0L)
-    },
-    test("seeding writes the first row once and never over a row an operator saved") {
-      for
-        repository <- clean
-        first <- repository.seed(Tuning.off, "bootstrap", at)
-        second <- repository.seed(Tuning.off, "bootstrap", at)
-        _ <- repository.put(tuned, "alice", at)
-        third <- repository.seed(Tuning.off, "bootstrap", at)
-        row <- repository.find
-        version <- repository.version
-      yield assertTrue(first, !second, !third, row.contains(tuned), version == 2L)
-    },
-    test("a value that is not a Tuning fails the read the way the codec reports it, and the row is left as it is") {
-      for
-        repository <- clean
-        xa <- ZIO.service[TransactorZIO]
-        _ <- xa.connect(sql"""INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, '{"challengeAt": "many"}'::jsonb, 'hand', $at)""".update.run())
-        failure <- repository.find.flip
-        raw <- xa.connect(sql"SELECT settings::text FROM af_settings WHERE id = 1".query[String].run().head)
-      yield assertTrue(failure.isInstanceOf[SqlException], failure.getMessage.contains("challengeAt(expected an Int)"), raw.contains("many"))
-    },
-    test("a row written before a key existed reads with the key's default: shadow for the mode, off for the rest") {
-      for
-        repository <- clean
-        xa <- ZIO.service[TransactorZIO]
-        _ <- xa.connect(sql"""INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, '{"blockAt": 80, "shadowRules": ["velocity_ip_1m"]}'::jsonb, 'old', $at)""".update.run())
-        stored <- repository.find
-      yield assertTrue(stored.contains(Tuning.off.copy(blockAt = 80, shadowRules = Set("velocity_ip_1m"))), stored.exists(_.mode == TuningMode.shadow))
-    },
-    test("a put replaces the row as a whole and moves the version") {
-      for
-        repository <- clean
-        _ <- repository.seed(Tuning.off, "bootstrap", at)
-        v0 <- repository.version
-        _ <- repository.put(tuned, "alice", at)
-        stored <- repository.find
-        _ <- repository.put(Tuning.off, "bob", at.plusSeconds(60))
-        reset <- repository.find
-        v2 <- repository.version
-      yield assertTrue(stored.contains(tuned), reset.contains(Tuning.off), v2 == v0 + 2)
-    },
-  ) @@ TestAspect.sequential
+  override def implementationCases(env: Env) =
+    List(
+      test("a value that is not a Tuning fails the read the way the codec reports it, and the row is left as it is") {
+        for
+          xa <- ZIO.service[TransactorZIO]
+          _ <- xa.connect(
+            sql"""INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, '{"challengeAt": "many"}'::jsonb, 'hand', $at)""".update.run(),
+          )
+          failure <- env.repository.find.flip
+          raw <- xa.connect(sql"SELECT settings::text FROM af_settings WHERE id = 1".query[String].run().head)
+        yield assertTrue(failure.isInstanceOf[SqlException], failure.getMessage.contains("challengeAt(expected an Int)"), raw.contains("many"))
+      },
+      test("a row written before a key existed reads with the key's default: shadow for the mode, off for the rest") {
+        for
+          xa <- ZIO.service[TransactorZIO]
+          _ <- xa.connect(
+            sql"""INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, '{"blockAt": 80, "shadowRules": ["velocity_ip_1m"]}'::jsonb, 'old', $at)""".update.run(),
+          )
+          stored <- env.repository.find
+        yield assertTrue(
+          stored.map(_.tuning).contains(Tuning.off.copy(blockAt = 80, shadowRules = Set("velocity_ip_1m"))),
+          stored.exists(_.tuning.mode == TuningMode.shadow),
+        )
+      },
+      test("every method fails on its statement timeout instead of waiting for a lock") {
+        for
+          xa <- ZIO.service[TransactorZIO]
+          _ <- env.repository.seed(Tuning.off, "bootstrap", at)
+          impatient = PostgresAntifraudSettingsRepository(xa, statementTimeout = 200.millis)
+          // A transaction that holds the table, as a long migration or a stuck writer would.
+          holder <- xa.transact:
+            sql"LOCK TABLE af_settings IN ACCESS EXCLUSIVE MODE".update.run()
+            Thread.sleep(3000)
+          .fork
+          _ <- Live.live(ZIO.sleep(500.millis))
+          find <- Live.live(impatient.find.exit)
+          put <- Live.live(impatient.put(tuned, "alice", at, Some(1)).exit)
+          seed <- Live.live(impatient.seed(Tuning.off, "bootstrap", at).exit)
+          _ <- holder.join
+          healthy <- impatient.find
+        yield assertTrue(find.isFailure, put.isFailure, seed.isFailure, healthy.map(_.version).contains(1L))
+      },
+      test("the timeout covers the version read, which sees a table that is not locked") {
+        for
+          xa <- ZIO.service[TransactorZIO]
+          impatient = PostgresAntifraudSettingsRepository(xa, statementTimeout = 200.millis)
+          holder <- xa.transact:
+            sql"LOCK TABLE af_settings_version IN ACCESS EXCLUSIVE MODE".update.run()
+            Thread.sleep(3000)
+          .fork
+          _ <- Live.live(ZIO.sleep(500.millis))
+          version <- Live.live(impatient.version.exit)
+          _ <- holder.join
+        yield assertTrue(version.isFailure)
+      },
+    )

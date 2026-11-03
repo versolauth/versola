@@ -119,9 +119,26 @@ tags:
   - name: Edges
     description: Registered edge deployments and their signing keys.
   - name: Antifraud lists
-    description: Values the antifraud rules block, fake, watch or allow at once. Stored and enforced by auth.
+    description: |
+      Values the antifraud rules block, fake, watch or allow at once. Stored and enforced by auth.
+
+      **Who may change what.** There are two families of routes, and the route decides the scope, not the request.
+      `/antifraud/lists/...` is for the admin of a tenant (`antifraud:read`, `antifraud:manage`): it acts in the tenant of the
+      access token, which edge puts in as `callerTenantId`. It lists the global entries and the tenant's own, adds entries
+      of that tenant only (an entry that names no tenant is the tenant's; one that names another is `403`), removes the
+      tenant's entries only (another tenant's or a global one is `403`), and reads the audit of the entries it can see.
+      `/antifraud/global/lists/...` is for the operator of the deployment (`antifraud:operate`): global entries and any
+      tenant's, no restriction. `antifraud:operate` is seeded into the default tenant's administrator role only.
   - name: Antifraud settings
-    description: Thresholds, rule weights, shadow rules, limits on codes sent and the proof-of-work difficulty that are tuned during an attack. Stored and applied by auth, without a restart.
+    description: |
+      Thresholds, rule weights, shadow rules, limits on codes sent and the proof-of-work difficulty that are tuned during an
+      attack. Stored and applied by auth, without a restart. Reading is `antifraud:read`; changing or resetting them is the
+      operator's (`antifraud:operate`). The settings are versioned: a read gives `version` and the same number as the
+      `ETag`, a change is made on a version (`If-Match`), and one made on a version the settings have left is `412`.
+  - name: Antifraud operations
+    description: |
+      What an operator does and reads while running the antifraud: clearing counters (`antifraud:operate`), the names a rule
+      can be fired under and the state of an auth instance (`antifraud:read`).
   - name: Service
     description: Operational endpoints that return `404 Not Found` in production.
 
@@ -2581,10 +2598,11 @@ paths:
   /antifraud/lists:
     get:
       tags: [Antifraud lists]
-      summary: List entries
+      summary: List entries (a tenant's)
       description: |
-        Entries of the lists, newest first. Narrow with `tenantId` (one tenant's) or `global` (the entries that apply to
-        every tenant).
+        The entries a tenant admin sees, newest first: the global ones and those of the tenant of the access token. Narrow
+        with `tenantId` (the admin's own tenant only; another is `403`) or `global` (the global entries only). Needs
+        `antifraud:read`; the operator lists every tenant's through `/antifraud/global/lists`.
       operationId: listAntifraudListEntries
       parameters:
         - name: listType
@@ -2608,7 +2626,6 @@ paths:
         - name: offset
           in: query
           schema: { type: integer, minimum: 0, default: 0 }
-        - $ref: '#/components/parameters/UserIdQuery'
       responses:
         '200':
           description: The entries.
@@ -2616,21 +2633,26 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AntifraudListEntriesResponse' }
         '400':
-          description: A parameter is not valid (including a missing `userId`), or `tenantId` and `global` were both given.
+          description: A parameter is not valid (including a missing `callerTenantId`, which edge adds), or `tenantId` and `global` were both given.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: "`tenantId` names a tenant other than the admin's."
     post:
       tags: [Antifraud lists]
-      summary: Add an entry
+      summary: Add an entry (a tenant's)
       description: |
-        Adds an entry, or refreshes the expiry, reason and source of the one for the same list, kind of value, value and
-        tenant (the response is then that entry, with its own `id`). This instance of auth applies it at once, the others
-        within `antifraud.lists.refresh-interval`. Every change is recorded in the audit.
+        Adds an entry of the admin's tenant, or refreshes the expiry, reason and source of the one for the same list, kind of
+        value, value and tenant (the response is then that entry, with its own `id`). The entry is the tenant's whether
+        the body names the tenant or not; a body that names another tenant is `403`. A global entry is the operator's, through
+        `/antifraud/global/lists`. This instance of auth applies it at once, the others within
+        `antifraud.lists.refresh-interval`. Every change is recorded in the audit.
 
-        An entry with no `tenantId` applies to every tenant. Auth refuses (`400`, with the reason as text) a value that does not fit its kind; an `allow` for anything but an exact subject; an entry that
+        Auth refuses (`400`, with the reason as text) a value that does not fit its kind (and a device id or a JA4
+        hash, which no request carries yet); an `allow` for anything but an exact subject; an entry that
         names many clients, or whose `source` is not `manual`, without `expiresAt`; an `expiresAt` in the past; and
         an enforcing (not `shadow`) entry that would have matched more than `antifraud.lists.max-traffic-share` of the last
-        24 hours of events: add it as `shadow` first.
+        24 hours of events: add it as `shadow` first. Needs `antifraud:manage`.
       operationId: createAntifraudListEntry
       requestBody:
         required: true
@@ -2648,12 +2670,15 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: No admin identity, or the admin may not change entries of that tenant.
+          description: The body names a tenant other than the admin's.
     delete:
       tags: [Antifraud lists]
-      summary: Remove an entry
+      summary: Remove an entry (a tenant's)
       operationId: deleteAntifraudListEntry
-      description: The entry is named in the body, where edge adds `userId` for a request that is not a `GET`.
+      description: |
+        The entry is named in the body, where edge adds `userId` and `callerTenantId` for a request that is not a `GET`.
+        Only an entry of the admin's tenant is removed: another tenant's or a global one is `403` and stays. Needs
+        `antifraud:manage`.
       requestBody:
         required: true
         content:
@@ -2663,7 +2688,8 @@ paths:
               properties:
                 id: { type: string, format: uuid }
                 userId: { $ref: '#/components/schemas/UserId' }
-              required: [id, userId]
+                callerTenantId: { $ref: '#/components/schemas/TenantId' }
+              required: [id, userId, callerTenantId]
       responses:
         '204':
           description: Removed and recorded in the audit.
@@ -2671,18 +2697,23 @@ paths:
           description: "`id` is missing from the body or not a UUID."
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The entry belongs to another tenant, or is a global one.
         '404':
           description: There is no such entry.
 
   /antifraud/lists/preview:
     post:
       tags: [Antifraud lists]
-      summary: Preview what an entry would match
+      summary: Preview what an entry would match (a tenant's)
       description: |
         How many of the last 24 hours of events the entry would have matched, with the same validation as adding it and
-        nothing stored. `matched` is `null` for a kind of value the event log has no column for (an address, a network,
-        an ASN, a device, a JA4 hash, a mail domain): the share guard cannot judge those, so give them an expiry and add
-        them as `shadow` first. The count is over every tenant's events, so only an admin who may add the entry may preview it.
+        nothing stored, as the admin's tenant's entry (it is previewed as the entry `POST /antifraud/lists` would make; a body
+        that names another tenant is `403`). `matched` is `null` for a kind of value the event log has no column for (an
+        address, a network, a mail domain): the share guard cannot judge those, so give them an expiry and add
+        them as `shadow` first. For an ASN or a country it is the events of that AS or country, which the event log has once `antifraud.asn.file` or
+        `antifraud.geo.file` is set (events written before, or without the database, have none). The count is over every tenant's events until the guard is made per tenant. Needs
+        `antifraud:manage`.
       operationId: previewAntifraudListEntry
       requestBody:
         required: true
@@ -2704,12 +2735,16 @@ paths:
           description: The body is not valid, or auth refused the entry.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The body names a tenant other than the admin's.
 
   /antifraud/lists/audit:
     get:
       tags: [Antifraud lists]
-      summary: Changes of the lists
-      description: Who added, removed or let expire which entry, latest first.
+      summary: Changes of the lists (a tenant's)
+      description: |
+        Who added, removed or let expire which entry, latest first, for the entries the admin can see: the global ones and
+        the tenant's. Needs `antifraud:read`.
       operationId: listAntifraudListAudit
       parameters:
         - name: entryId
@@ -2719,7 +2754,146 @@ paths:
           in: query
           description: 1 to 500. Defaults to 100.
           schema: { type: integer, minimum: 1, maximum: 500 }
-        - $ref: '#/components/parameters/UserIdQuery'
+      responses:
+        '200':
+          description: The records.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AntifraudListAuditResponse' }
+        '400':
+          description: A parameter is not valid.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─────────────────────────────── Antifraud lists: the operator's routes ───────────────────────────────
+  /antifraud/global/lists:
+    get:
+      tags: [Antifraud lists]
+      summary: List entries (the operator's)
+      description: |
+        Entries of every tenant and the global ones, newest first, with no restriction. Narrow with `tenantId` (one tenant's)
+        or `global` (the entries that apply to every tenant). Needs `antifraud:operate`.
+      operationId: listAntifraudGlobalListEntries
+      parameters:
+        - name: listType
+          in: query
+          schema: { $ref: '#/components/schemas/AntifraudListType' }
+        - name: valueType
+          in: query
+          schema: { $ref: '#/components/schemas/AntifraudValueType' }
+        - name: tenantId
+          in: query
+          description: Only this tenant's entries. Excludes `global`.
+          schema: { $ref: '#/components/schemas/TenantId' }
+        - name: global
+          in: query
+          description: "`true` for the global entries only. Excludes `tenantId`."
+          schema: { type: boolean }
+        - name: limit
+          in: query
+          description: 1 to 500. Defaults to 100.
+          schema: { type: integer, minimum: 1, maximum: 500 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: The entries.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AntifraudListEntriesResponse' }
+        '400':
+          description: A parameter is not valid, or `tenantId` and `global` were both given.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Antifraud lists]
+      summary: Add an entry (the operator's)
+      description: |
+        As `POST /antifraud/lists`, with no restriction on the tenant: an entry with no `tenantId` is a global one and applies
+        to every tenant; one with a `tenantId` is that tenant's. Needs `antifraud:operate`.
+      operationId: createAntifraudGlobalListEntry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AntifraudListEntryRequest' }
+      responses:
+        '201':
+          description: The entry as stored.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AntifraudListEntry' }
+        '400':
+          description: The body is not valid, or auth refused the entry (text body with the reason).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Antifraud lists]
+      summary: Remove an entry (the operator's)
+      operationId: deleteAntifraudGlobalListEntry
+      description: Removes a global entry or any tenant's. The entry is named in the body, where edge adds `userId`. Needs `antifraud:operate`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string, format: uuid }
+                userId: { $ref: '#/components/schemas/UserId' }
+              required: [id, userId]
+      responses:
+        '204':
+          description: Removed and recorded in the audit.
+        '400':
+          description: "`id` is missing from the body or not a UUID."
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: There is no such entry.
+
+  /antifraud/global/lists/preview:
+    post:
+      tags: [Antifraud lists]
+      summary: Preview what an entry would match (the operator's)
+      description: As `POST /antifraud/lists/preview`, with no restriction on the tenant. Needs `antifraud:operate`.
+      operationId: previewAntifraudGlobalListEntry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AntifraudListEntryRequest' }
+      responses:
+        '200':
+          description: The counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  matched: { type: [integer, 'null'] }
+                  total: { type: integer }
+                required: [total]
+        '400':
+          description: The body is not valid, or auth refused the entry.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /antifraud/global/lists/audit:
+    get:
+      tags: [Antifraud lists]
+      summary: Changes of the lists (the operator's)
+      description: Who added, removed or let expire which entry, of every tenant and the global ones, latest first. Needs `antifraud:operate`.
+      operationId: listAntifraudGlobalListAudit
+      parameters:
+        - name: entryId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          description: 1 to 500. Defaults to 100.
+          schema: { type: integer, minimum: 1, maximum: 500 }
       responses:
         '200':
           description: The records.
@@ -2737,23 +2911,39 @@ paths:
       tags: [Antifraud settings]
       summary: The settings
       description: |
-        What applies to the whole deployment. The migration seeds the row with everything off, so there is always one.
-        Nothing in auth's configuration sets these values.
+        What applies to the whole deployment, with the `version` of the row next to the settings and the same number as the
+        `ETag`: a change may be made on it (see `PUT` and `PATCH`). Auth's bootstrap seeds the row with everything off when the service starts
+        (the migration only creates the table), so there is one once a start has finished; before that a read gives
+        everything off at version `0`. Nothing in auth's configuration sets these values. Needs `antifraud:read`.
       operationId: getAntifraudSettings
       responses:
         '200':
-          description: The settings.
+          description: The settings and their version.
+          headers:
+            ETag:
+              description: The version, quoted (`"3"`).
+              schema: { type: string }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AntifraudSettings' }
+              schema: { $ref: '#/components/schemas/AntifraudSettingsVersioned' }
         '401':
           $ref: '#/components/responses/Unauthorized'
     put:
       tags: [Antifraud settings]
       summary: Replace the settings
       description: |
-        Replaces the settings with `settings`, every key of it. This instance of auth applies it at once, the others within
-        `antifraud.tuning.refresh-interval`, with no restart and no loss of the counters.
+        Replaces the settings with `settings`, every key of it: the declared desired state. Naming the version is optional.
+
+        - **With the version they were read at** (the `ETag` of the read, sent as `If-Match`, preferred; or `version` in the body for a
+          client that cannot set headers; when both are given they must agree) the replace is a compare-and-set: two admins who
+          read the same version cannot both write, the second gets `412`, reads again, and decides.
+        - **Without it** the settings are replaced whatever they hold, **and the caller takes responsibility for what it
+          overwrites**. This is the mode for service-to-service clients and tooling that hold the desired state themselves and
+          reapply it. A person tuning during an attack should use `PATCH`, or name the version.
+
+        The response has the new `version` and `ETag` either way, and the version moves on every change. This instance of auth
+        applies it at once, the others within `antifraud.tuning.refresh-interval`, with no restart and no loss of the counters.
+        Needs `antifraud:operate`.
 
         `shadowRules` are evaluated and listed in the fired rules as `shadow:<name>` but add no weight and force nothing;
         `ruleWeights` replace the weight of a rule by its name (not of one that forces an action). Auth refuses (`400`, with
@@ -2761,6 +2951,11 @@ paths:
         and combinations that can only be a mistake (`challengeAt` above `blockAt`, `blockAt` under 10, `pow.maxDifficulty` over
         24, a limit on codes of 1 to 19).
       operationId: putAntifraudSettings
+      parameters:
+        - name: If-Match
+          in: header
+          description: The version the settings were read at (the `ETag`, quoted or not). Optional; without it the settings are replaced whatever they hold. Preferred to `version` in the body.
+          schema: { type: string }
       requestBody:
         required: true
         content:
@@ -2770,22 +2965,106 @@ paths:
               properties:
                 settings: { $ref: '#/components/schemas/AntifraudSettings' }
                 userId: { $ref: '#/components/schemas/UserId' }
+                version:
+                  type: integer
+                  minimum: 0
+                  description: The version the settings were read at, for a client that cannot send `If-Match`. Optional.
               required: [settings, userId]
       responses:
         '200':
-          description: The settings as stored.
+          description: The settings as stored, at their new version.
+          headers:
+            ETag:
+              description: The new version, quoted.
+              schema: { type: string }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AntifraudSettings' }
+              schema: { $ref: '#/components/schemas/AntifraudSettingsVersioned' }
         '400':
-          description: The body is not valid, or auth refused the settings (text body with the reason).
+          description: The body is not valid, `If-Match` is not a version or differs from `version`, or auth refused the settings (text body with the reason).
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '412':
+          description: A version was named and the settings are no longer at it. The `ETag` has the version they are at.
+          headers:
+            ETag:
+              schema: { type: string }
+    patch:
+      tags: [Antifraud settings]
+      summary: Change some of the settings
+      description: |
+        A JSON merge patch (RFC 7396) of the settings: the body is a partial settings document. Members it names are changed,
+        objects merge recursively, a member that is `null` is removed (a `smsLimits.byPrefix` or `ruleWeights` entry goes; a
+        member every settings document has reads as its default again: `mode` as `shadow`, the thresholds as 0 and so on, and
+        that is written), and a string, number or array replaces what is there
+        (`shadowRules` is replaced as a whole). Everything it does not name is left as it is. Auth applies the patch to the stored
+        settings, checks the result as a whole as `PUT` does (`400`, with the reason, and nothing is written when it is not
+        valid), and answers all the settings with their new version. Unlike a `PUT`, a patch need not carry `mode` or any other
+        member: it names only what it changes. The body is `application/merge-patch+json`;
+        `application/json` is taken too, and any other type is `415`.
+
+        Naming the version is optional, as for `PUT`: with `If-Match` (or `version` in the body) the patch is made on that
+        version and is `412` when the settings have moved on; without it, a change made by someone else between auth's read
+        and write makes auth apply the patch again, once, on what they wrote. This is the call for tuning during an attack, from
+        the console or a script: it changes the thresholds it names and cannot overwrite anyone's other change.
+        Needs `antifraud:operate`.
+
+        For example, to raise `blockAt` to 80 and drop the limit for numbers starting with `49`:
+
+        ```json
+        PATCH /antifraud/settings
+        Content-Type: application/merge-patch+json
+
+        { "blockAt": 80, "smsLimits": { "byPrefix": { "49": null } } }
+        ```
+      operationId: patchAntifraudSettings
+      parameters:
+        - name: If-Match
+          in: header
+          description: The version the patch is made on (the `ETag` of a read, quoted or not). Optional.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/AntifraudSettingsPatch' }
+            example: { blockAt: 80, smsLimits: { byPrefix: { '49': null } } }
+          application/json:
+            schema: { $ref: '#/components/schemas/AntifraudSettingsPatch' }
+      responses:
+        '200':
+          description: All the settings as stored, at their new version.
+          headers:
+            ETag:
+              description: The new version, quoted.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AntifraudSettingsVersioned' }
+        '400':
+          description: The body is not a JSON object, `If-Match` is not a version or differs from `version`, or the settings with the patch applied are not valid (text body with the reason).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '412':
+          description: A version was named and the settings are no longer at it, or the retry without one lost a second race. The `ETag` has the version they are at.
+          headers:
+            ETag:
+              schema: { type: string }
+        '415':
+          description: The body is neither `application/merge-patch+json` nor `application/json`.
     delete:
       tags: [Antifraud settings]
       summary: Reset the settings
       operationId: deleteAntifraudSettings
-      description: Puts everything off. The caller is in the body, where edge adds `userId` for a request that is not a `GET`.
+      description: |
+        Puts everything off, and moves the version as any change does. It may name the version it is made on (`If-Match`),
+        and need not: it is the way back from a bad state. The caller is in the body, where edge adds `userId` for a
+        request that is not a `GET`. Needs `antifraud:operate`.
+      parameters:
+        - name: If-Match
+          in: header
+          description: The version to reset; optional.
+          schema: { type: string }
       requestBody:
         required: true
         content:
@@ -2799,7 +3078,89 @@ paths:
         '204':
           description: Reset.
         '400':
-          description: The body is not valid.
+          description: The body is not valid, or `If-Match` is not a version.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '412':
+          description: "`If-Match` named a version the settings have left."
+          headers:
+            ETag:
+              schema: { type: string }
+
+  # ─────────────────────────────── Antifraud operations ───────────────────────────────
+  /antifraud/counters/reset:
+    post:
+      tags: [Antifraud operations]
+      summary: Reset counters
+      description: |
+        Clears the velocity counters, the SMS budget, or both: all of them, or those of one value (a phone, an address or a
+        range of numbers). It is the support path for "my number gets no code" and for a range that was closed. Auth hashes
+        a phone, clears the memory of every instance (they pick the reset up within `antifraud.tuning.refresh-interval`) and the
+        stored rows, and records who did it. `valueType` and `value` go together. Needs `antifraud:operate`.
+      operationId: resetAntifraudCounters
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AntifraudCountersResetRequest' }
+      responses:
+        '202':
+          description: Accepted; applied by every instance within the interval.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  generation:
+                    type: integer
+                    description: The number of the reset, which every instance picks up and clears its memory for.
+                required: [generation]
+        '400':
+          description: The body is not valid, or auth refused it (text body with the reason).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /antifraud/rules:
+    get:
+      tags: [Antifraud operations]
+      summary: The rule names
+      description: |
+        The names a rule can be fired under, which `ruleWeights` and `shadowRules` of the settings and the rules of a decision
+        are made of: `velocity_<phone|ip|device|asn|prefix>_<1m|10m|1h|24h>`, `velocity_known_user`, and for every kind of
+        value `deny_list:<type>`, `fake_list:<type>`, `allow_list:<type>`, `watch_list:<type>` and `shadow_list:<type>`. Needs
+        `antifraud:read`.
+      operationId: getAntifraudRules
+      responses:
+        '200':
+          description: The names.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rules:
+                    type: array
+                    items: { type: string }
+                required: [rules]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /antifraud/status:
+    get:
+      tags: [Antifraud operations]
+      summary: The state of the antifraud
+      description: |
+        What one auth instance says of its antifraud (the one that answers: another may be behind, the ages say by how much):
+        whether the decision and the lists are on, the version of the settings it holds and how long since it last checked them
+        against the database, the age, size and skipped entries of the snapshot of the lists it enforces, and the message of the
+        last refresh that failed, if one did. Needs `antifraud:read`.
+      operationId: getAntifraudStatus
+      responses:
+        '200':
+          description: The state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AntifraudStatus' }
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -2872,15 +3233,6 @@ components:
       description: The credentials are missing, malformed or not accepted.
 
   parameters:
-    UserIdQuery:
-      name: userId
-      in: query
-      required: true
-      description: |
-        The admin who asks, set by edge from the verified access token (the antifraud endpoints are registered with an
-        inject rule that overwrites what the caller sent); auth records it as who made a change. Requests that are not a
-        `GET` carry it as the body field of the same name. A request without it is `400`.
-      schema: { $ref: '#/components/schemas/UserId' }
     TenantIdQuery:
       name: tenantId
       in: query
@@ -6742,7 +7094,12 @@ components:
         subject only, and never overrides a deny of the same specificity.
     AntifraudValueType:
       type: string
-      enum: [phone_hash, prefix, ip, cidr, asn, device_id, ua_hash, ja4_hash, email_domain]
+      enum: [phone_hash, prefix, ip, cidr, asn, ua_hash, email_domain, country]
+      description: |
+        What an entry's `value` is compared with. A device id and a JA4 hash are not offered: no request carries one yet, so
+        an entry of those kinds would match nothing, and auth refuses it (`400`). An `asn` and a `country` entry match nothing
+        while the database that gives the request's AS (`antifraud.asn.file`) or country (`antifraud.geo.file`, the geolocation of the address, not the country its AS is registered in) is off.
+        Neither is ever an `allow`, and a `country` entry always needs `expiresAt`.
     AntifraudListEntryRequest:
       type: object
       description: Give `value`, or for a `phone_hash` entry `phone` instead.
@@ -6753,8 +7110,8 @@ components:
           type: string
           description: |
             What is matched, up to 256 characters: the keyed hash (`phone_hash`), digits of a number without the `+`
-            (`prefix`, at most 4), an address, a network `address/length`, an AS number, a device id, the lower-case hex
-            SHA-256 of a user agent, a JA4 fingerprint or a domain name.
+            (`prefix`, at most 6), an address, a network `address/length`, an AS number (`64500` or `AS64500`), the lower-case hex
+            SHA-256 of a user agent, a domain name or an ISO 3166-1 alpha-2 country code (`kz` is stored as `KZ`).
         phone:
           type: string
           description: |
@@ -6762,13 +7119,21 @@ components:
             and keeps the hash, never the number. Rotating `security.antifraud-subject-secret` stops such entries from matching.
         tenantId:
           allOf: [{ $ref: '#/components/schemas/TenantId' }]
-          description: "The tenant the entry applies to. Omitted: every tenant (operators only)."
+          description: |
+            The tenant the entry applies to. On `/antifraud/lists` it is the admin's own tenant, which is what an entry that names
+            none gets; another tenant is `403`. On `/antifraud/global/lists` (the operator's) any tenant, and omitted: every
+            tenant (a global entry).
         expiresAt: { type: string, format: date-time }
         reason: { type: string }
         shadow:
           type: boolean
           description: Matched and counted, enforces nothing (the fired rule is `shadow_list:<value type>`). Defaults to `false`.
         userId: { $ref: '#/components/schemas/UserId' }
+        callerTenantId:
+          allOf: [{ $ref: '#/components/schemas/TenantId' }]
+          description: |
+            The tenant of the admin's access token, which edge adds on `/antifraud/lists` (what a caller sent is replaced). A
+            request to central without it on that route is `400`; on `/antifraud/global/lists` it is ignored.
       required: [listType, valueType, userId]
     AntifraudListEntry:
       type: object
@@ -6830,6 +7195,67 @@ components:
             shadow: { type: boolean }
           required: [source, shadow]
       required: [id, at, action, actor, entryId, listType, valueType, value]
+    AntifraudSettingsVersioned:
+      description: The settings, flat as ever, with the `version` of the row next to them (0 where there is none).
+      allOf:
+        - $ref: '#/components/schemas/AntifraudSettings'
+        - type: object
+          properties:
+            version:
+              type: integer
+              minimum: 0
+              description: Changes with every change of the settings. The same number is the `ETag`; a change is made on it.
+          required: [version]
+    AntifraudSettingsPatch:
+      type: object
+      description: |
+        A partial settings document, a JSON merge patch (RFC 7396): any members of `AntifraudSettings` (none is required, `mode`
+        included), nested objects with only the members to change, `null` for a member to remove (it then reads as its default).
+        `userId` is added by edge and is not part of the patch.
+      additionalProperties: true
+    AntifraudCountersResetRequest:
+      type: object
+      properties:
+        scope:
+          type: string
+          enum: [velocity, budget, all]
+          description: The velocity counters, the SMS budget, or both.
+        valueType:
+          type: string
+          enum: [phone, ip, prefix]
+          description: "With `value`, narrows the reset to that value. Absent: every key of the scope."
+        value:
+          type: string
+          description: A phone number (auth hashes it), an address or a range of numbers; goes with `valueType`.
+        userId: { $ref: '#/components/schemas/UserId' }
+      required: [scope, userId]
+    AntifraudStatus:
+      type: object
+      description: What one auth instance says of its antifraud.
+      properties:
+        decision:
+          type: object
+          properties:
+            enabled: { type: boolean, description: "`antifraud.decision.enabled` of that instance." }
+          required: [enabled]
+        lists:
+          type: object
+          properties:
+            enabled: { type: boolean, description: "`antifraud.lists.enabled`." }
+            snapshotAgeSeconds: { type: integer, minimum: 0, description: Age of the snapshot being enforced; absent before the first load. }
+            size: { type: integer, description: Entries in the snapshot. }
+            skipped: { type: integer, description: Rows left out of it as not valid for their kind. }
+            lastRefreshError: { type: string, description: What the last refresh that failed said; absent once one has succeeded. }
+          required: [enabled, size, skipped]
+        tuning:
+          type: object
+          properties:
+            available: { type: boolean, description: "False until the settings have been read once; decisions follow `failure-action` until then." }
+            version: { type: integer, description: The version of the settings it holds, as the `ETag` of `GET /antifraud/settings`. }
+            ageSeconds: { type: integer, minimum: 0, description: Seconds since it last checked them against the database successfully. }
+            lastRefreshError: { type: string, description: What the last refresh that failed said; absent once one has succeeded. }
+          required: [available]
+      required: [decision, lists, tuning]
     AntifraudVelocityLimit:
       type: object
       description: The most requests a key may have in each window (0 for no limit); a rule fires above it and adds `weight` to the score.

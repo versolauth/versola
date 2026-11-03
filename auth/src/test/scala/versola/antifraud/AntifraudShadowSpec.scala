@@ -66,7 +66,12 @@ object AntifraudShadowSpec extends UnitSpecBase:
       },
       test("a decision that is not made in shadow is the plain one: acted on as it says, and would-be the same") {
         val d = Decision(DecisionAction.Block, 9, List("x"))
-        assertTrue(d.wouldAction == DecisionAction.Block, Decision.allow.wouldAction == DecisionAction.Allow, !Decision.allow.noteworthy, d.noteworthy)
+        assertTrue(
+          d.wouldAction == DecisionAction.Block,
+          Decision.allow.wouldAction == DecisionAction.Allow,
+          !Decision.allow.noteworthy,
+          d.noteworthy,
+        )
       },
       test("a rule that only records is still listed as shadow:<name> and adds nothing, in either mode") {
         for
@@ -147,7 +152,8 @@ object AntifraudShadowSpec extends UnitSpecBase:
           (write *> Metric.gauge(name).value.map(_.value)).repeatUntil(_ == expected).timeout(5.seconds).map(_.contains(expected))
         for
           tuning <- set("antifraud_tuning_refreshed_timestamp_seconds", AntifraudMetrics.tuningRefreshed(at), at.getEpochSecond.toDouble)
-          lists <- set("antifraud_lists_refreshed_timestamp_seconds", AntifraudListMetrics.refreshed(at.plusSeconds(5)), at.getEpochSecond.toDouble + 5)
+          lists <-
+            set("antifraud_lists_refreshed_timestamp_seconds", AntifraudListMetrics.refreshed(at.plusSeconds(5)), at.getEpochSecond.toDouble + 5)
         yield assertTrue(tuning, lists)
       },
     ),
@@ -208,7 +214,9 @@ object AntifraudShadowSpec extends UnitSpecBase:
           refused(sms(SmsLimit(sentPerHour = 0, minVolume = 5, minConversion = 0.1))).isDefined,
           refused(sms(SmsLimit(sentPerHour = 20, minVolume = 20, minConversion = 0.1))).isEmpty,
           refused(sms(SmsLimit(sentPerHour = 0, minVolume = 0, minConversion = 0.1))).isEmpty,
-          refused(enforcing.copy(smsLimits = SmsLimits(SmsLimit(), Map("49" -> SmsLimit(sentPerHour = 3, minVolume = 0, minConversion = 0.1))))).isDefined,
+          refused(enforcing.copy(smsLimits =
+            SmsLimits(SmsLimit(), Map("49" -> SmsLimit(sentPerHour = 3, minVolume = 0, minConversion = 0.1))),
+          )).isDefined,
         )
       },
       test("a rule's weight or shadow flag has to name a rule there is: a typo is refused, a rule of the catalogue is not") {
@@ -216,6 +224,7 @@ object AntifraudShadowSpec extends UnitSpecBase:
           refused(enforcing.copy(ruleWeights = Map("velocity_phone_1h" -> 10))).isEmpty,
           refused(enforcing.copy(ruleWeights = Map("deny_list:ip" -> 10, "watch_list:email_domain" -> 5))).isEmpty,
           refused(enforcing.copy(shadowRules = Set("velocity_known_user", "shadow_list:ua_hash"))).isEmpty,
+          refused(enforcing.copy(ruleWeights = Map("asn_hosting" -> 40), shadowRules = Set("asn_hosting"))).isEmpty,
           refused(enforcing.copy(ruleWeights = Map("velocity_phone_2h" -> 10))).exists(_.contains("velocity_phone_2h")),
           refused(enforcing.copy(shadowRules = Set("velocity_fone_1h"))).exists(_.contains("velocity_fone_1h")),
           refused(enforcing.copy(shadowRules = Set(Antifraud.ErrorRule))).isDefined,
@@ -224,24 +233,30 @@ object AntifraudShadowSpec extends UnitSpecBase:
       test("the catalogue is the rules the engine's sources contribute: one per key and window, one per kind of list and of value") {
         val names = Antifraud.ruleNames
         assertTrue(
-          names.size == 5 * 4 + 1 + 9 * 5,
+          names.size == 5 * 4 + 1 + 10 * 5 + 1,
           names.contains("velocity_prefix_24h"),
           names.contains("velocity_known_user"),
           names.contains("fake_list:prefix"),
-          VelocityRules.rules(VelocityRules.Thresholds().copy(phone = VelocityRules.Limit(1, 1, 1, 1, 1), ip = VelocityRules.Limit(1, 1, 1, 1, 1),
-            device = VelocityRules.Limit(1, 1, 1, 1, 1), asn = VelocityRules.Limit(1, 1, 1, 1, 1), prefix = VelocityRules.Limit(1, 1, 1, 1, 1)))
+          names.contains("asn_hosting"),
+          VelocityRules.rules(VelocityRules.Thresholds().copy(
+            phone = VelocityRules.Limit(1, 1, 1, 1, 1),
+            ip = VelocityRules.Limit(1, 1, 1, 1, 1),
+            device = VelocityRules.Limit(1, 1, 1, 1, 1),
+            asn = VelocityRules.Limit(1, 1, 1, 1, 1),
+            prefix = VelocityRules.Limit(1, 1, 1, 1, 1),
+          ))
             .forall(r => names.contains(r.name)),
         )
       },
       test("the store refuses them when put, and stores nothing") {
         val store = AntifraudTuningStore.Impl(new AntifraudSettingsRepository:
-          def put(tuning: Tuning, actor: String, at: Instant) = ZIO.unit
+          def put(tuning: Tuning, actor: String, at: Instant, expectedVersion: Option[Long]) = ZIO.some(1L)
           def seed(tuning: Tuning, actor: String, at: Instant) = ZIO.succeed(true)
           def find = ZIO.none
           def version = ZIO.succeed(0L))
         for
-          typo <- store.put(enforcing.copy(ruleWeights = Map("nope" -> 3)), "alice").either
-          order <- store.put(enforcing.copy(challengeAt = 90, blockAt = 50), "alice").either
+          typo <- store.put(enforcing.copy(ruleWeights = Map("nope" -> 3)), "alice", None).either
+          order <- store.put(enforcing.copy(challengeAt = 90, blockAt = 50), "alice", None).either
         yield assertTrue(typo.left.exists(_.isInstanceOf[InvalidTuning]), order.left.exists(_.isInstanceOf[InvalidTuning]))
       },
     ),

@@ -16,6 +16,10 @@ import scala.jdk.CollectionConverters.*
   * @param rejected   codes entered that were not
   * @param failed     calls that did not complete (transport, unexpected status, malformed page)
   * @param notEntered codes that were not entered, as a user who gave up (counted, not sent as a verify)
+  * @param challenged requests that were challenged: put a proof of work (script client) or left pending (plain client).
+  *                   Counted apart from `refused`: a challenged request that pays is not a refused one
+  * @param solved     of the challenged, the ones that did the work and were sent the code
+  * @param paidByWaiting of the challenged, the ones of a plain client that waited the pause, asked again and were sent it
   */
 case class OtpOutcomes(
     requested: Long,
@@ -26,11 +30,29 @@ case class OtpOutcomes(
     rejected: Long,
     failed: Long,
     notEntered: Long,
+    challenged: Long = 0L,
+    solved: Long = 0L,
+    paidByWaiting: Long = 0L,
 ) derives JsonCodec
 
 final class Tally:
-  val requested, sent, refused, other, verified, rejected, failed, notEntered = LongAdder()
+  val requested, sent, refused, other, verified, rejected, failed, notEntered, challenged, solved, paidByWaiting = LongAdder()
   private val reasons = ConcurrentHashMap[String, LongAdder]()
+
+  /** Adds what `that` counted: a scenario that keeps the requests of its groups apart reports them together too. */
+  def absorb(that: Tally): Unit =
+    requested.add(that.requested.sum)
+    sent.add(that.sent.sum)
+    refused.add(that.refused.sum)
+    other.add(that.other.sum)
+    verified.add(that.verified.sum)
+    rejected.add(that.rejected.sum)
+    failed.add(that.failed.sum)
+    notEntered.add(that.notEntered.sum)
+    challenged.add(that.challenged.sum)
+    solved.add(that.solved.sum)
+    paidByWaiting.add(that.paidByWaiting.sum)
+    that.failures.foreach((reason, n) => reasons.computeIfAbsent(reason, _ => LongAdder()).add(n))
 
   def fail(reason: String): Unit =
     failed.increment()
@@ -49,4 +71,7 @@ final class Tally:
       rejected = rejected.sum,
       failed = failed.sum,
       notEntered = notEntered.sum,
+      challenged = challenged.sum,
+      solved = solved.sum,
+      paidByWaiting = paidByWaiting.sum,
     )

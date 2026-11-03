@@ -3,6 +3,7 @@ package versola.loadgen.antifraud
 import zio.Config
 import zio.config.magnolia.deriveConfig
 import zio.config.typesafe.TypesafeConfigProvider
+import zio.json.*
 import zio.test.*
 import zio.{Duration, durationInt}
 
@@ -42,6 +43,14 @@ object AntifraudSpec extends ZIOSpecDefault:
       smsBusiestRange = 0,
       auth = AuthAntifraudMetrics.empty,
     )
+
+  private def group(p50: Double, reached: Long, sent: Long): TimingGroup = TimingGroup(sent, sent, 0, 0, reached, p50, p50 + 5, p50 + 10, p50 + 12)
+
+  private val solvedStats: ChallengeSnapshot =
+    val stats = ChallengeStats()
+    stats.received.increment()
+    stats.recordSolve(5000L, 200L)
+    stats.snapshot.get
 
   private def verdictOf(comparisons: List[Comparison], call: String): Verdict = comparisons.find(_.call == call).get.verdict
 
@@ -315,9 +324,148 @@ object AntifraudSpec extends ZIOSpecDefault:
           sources = SourcesConfig(header = "X-Forwarded-For", legit = 10, distributed = 5),
         )
         assertTrue(
-          config.selected == AntifraudScenario.values.toList,
+          config.selected == AntifraudScenario.values.toList.filterNot(_ == AntifraudScenario.FakeTiming),
           config.selected.drop(2).head == AntifraudScenario.PrefixAttack,
+          // it needs a list entry that was made beforehand: only when asked for by name
+          !config.selected.contains(AntifraudScenario.FakeTiming),
+          config.copy(scenarios = List(AntifraudScenario.FakeTiming)).selected == List(AntifraudScenario.FakeTiming),
+          config.metricsUrls == List("u"),
+          config.copy(authMetricsUrls = List("a", "b")).metricsUrls == List("a", "b"),
+          config.otp.client == OtpClient.Script,
         )
+      },
+      test("the keys of the challenge client, the plain client, the fake timing and the instances decode, and default when left out") {
+        val file = List("loadgen/antifraud/loadgen.conf", "antifraud/loadgen.conf").map(Path.of(_)).find(Files.exists(_)).get
+        val extra =
+          """antifraud {
+            |  auth-metrics-urls = ["http://localhost:9104/metrics", "http://localhost:9114/metrics"]
+            |  otp.client = plain
+            |  challenge { max-rounds = 2, max-difficulty = 20, pause = 5s, pause-slack = 500ms, max-asks = 4, solver-threads = 2 }
+            |  fake-timing { requests = 50, rate = 10.0, tolerance = 30ms, warmup = 5, fake-prefix = "491599" }
+            |}
+            |""".stripMargin
+        val tmp = Files.createTempFile("af-extra", ".conf")
+        Files.writeString(tmp, s"include file(\"${file.toAbsolutePath}\")\n$extra")
+        for
+          config <- TypesafeConfigProvider.fromHoconFile(tmp.toFile).kebabCase.load(Config.Nested("antifraud", deriveConfig[AntifraudConfig]))
+          shipped <- TypesafeConfigProvider.fromHoconFile(file.toFile).kebabCase.load(Config.Nested("antifraud", deriveConfig[AntifraudConfig]))
+        yield assertTrue(
+          config.metricsUrls.size == 2,
+          config.otp.client == OtpClient.Plain,
+          config.challenge == ChallengeClientConfig(maxRounds = 2, maxDifficulty = 20, pause = 5.seconds, pauseSlack = 500.millis, maxAsks = 4, solverThreads = 2),
+          config.fakeTiming == FakeTimingConfig(requests = 50, rate = 10.0, tolerance = 30.millis, warmup = 5, fakePrefix = Some("491599")),
+          shipped.otp.client == OtpClient.Script,
+          shipped.challenge == ChallengeClientConfig(),
+          shipped.fakeTiming.tolerance == 25.millis,
+        )
+      },
+    ),
+    suite("TargetsConfig")(
+      test("auth-url alone is one instance, auth-urls are all of them") {
+        val one = versola.loadgen.config.TargetsConfig("http://a", "e", "m", "o")
+        assertTrue(
+          one.allAuthUrls == List("http://a"),
+          one.copy(authUrls = List("http://a", "http://b")).allAuthUrls == List("http://a", "http://b"),
+        )
+      },
+      test("the targets decode with and without auth-urls") {
+        val base = """auth-url = "http://a", edge-url = "e", mock-url = "m", origin = "o""""
+        for
+          one <- TypesafeConfigProvider.fromHoconString(base).kebabCase.load(deriveConfig[versola.loadgen.config.TargetsConfig])
+          two <- TypesafeConfigProvider.fromHoconString(base + """, auth-urls = ["http://a", "http://b"]""").kebabCase.load(deriveConfig[versola.loadgen.config.TargetsConfig])
+        yield assertTrue(one.allAuthUrls == List("http://a"), two.allAuthUrls == List("http://a", "http://b"))
+      },
+    ),
+    suite("reports")(
+      test("a report written before the challenge fields existed still decodes, with those fields at zero or none") {
+        val old =
+          """{"label":"off","startedAt":"2026-10-29T10:00:00Z","scenarios":[{"scenario":"normal","seconds":1.0,"arrivals":1,"waited":0,
+            |"latencies":{"otp-request":{"count":1,"errors":0,"p50Ms":1.0,"p99Ms":2.0,"maxMs":2.0}},
+            |"otp":{"requested":1,"sent":1,"refused":0,"other":0,"verified":1,"rejected":0,"failed":0,"notEntered":0},
+            |"failures":{},"smsSent":1,"smsRanges":1,"smsBusiestRange":1,
+            |"auth":{"enqueued":1.0,"written":1.0,"dropped":{},"smsRefused":0.0,"smsBudgetFull":0.0,"queueSize":0.0}}]}""".stripMargin
+        val decoded = old.fromJson[AntifraudReport]
+        assertTrue(
+          decoded.isRight,
+          decoded.exists(_.scenarios.head.otp.challenged == 0L),
+          decoded.exists(_.scenarios.head.challenge.isEmpty),
+          decoded.exists(_.client == "script"),
+        )
+      },
+      test("a report with the new fields round-trips") {
+        val timing = FakeTimingCheck.judge(
+          fake = TimingGroup(25, 25, 0, 0, 0, 80.0, 90.0, 95.0, 96.0),
+          real = TimingGroup(25, 25, 0, 0, 25, 81.0, 92.0, 99.0, 100.0),
+          toleranceMs = 25.0,
+          minSamples = 20,
+        )
+        val scenario = result("fake-timing").copy(fakeTiming = Some(timing), challenge = Some(solvedStats))
+        val report = AntifraudReport("challenge", "now", List(scenario), client = "plain", instances = List("http://a", "http://b"))
+        assertTrue(report.toJson.fromJson[AntifraudReport] == Right(report))
+      },
+      test("the text names the client and the instances, and keeps challenged, solved and refused apart") {
+        val o = OtpOutcomes(requested = 10, sent = 8, refused = 1, other = 1, verified = 0, rejected = 0, failed = 0, notEntered = 0, challenged = 6, solved = 5, paidByWaiting = 0)
+        val scenario = result("normal", "otp-request" -> 5.0).copy(otp = o)
+        val report = AntifraudReport("challenge", "now", List(scenario), client = "script", instances = List("http://a", "http://b"))
+        val text = ReportText.render(report, Comparison.compare(report, None, 10.0, 5.0), Checks.of(report, 0.1, 0.01), 10.0, 5.0)
+        assertTrue(
+          text.contains("Client: `script`; auth instances: http://a, http://b."),
+          text.contains("| challenged | solved | paid by waiting |"),
+          text.contains("| 10 | 8 | 1 | 6 | 5 | 0 | 1 |"),
+        )
+      },
+    ),
+    suite("FakeTimingCheck")(
+        test("a fake that answers as a real one does, and is never sent, passes") {
+          val result = FakeTimingCheck.judge(group(82.0, 0, 30), group(80.0, 30, 30), 25.0, 20)
+          assertTrue(result.passed, result.problems.isEmpty, result.medianGapMs == 2.0, result.p99GapMs == 2.0)
+        },
+        test("a fake that is 60 ms faster than a real send fails on the medians") {
+          val result = FakeTimingCheck.judge(group(20.0, 0, 30), group(80.0, 30, 30), 25.0, 20)
+          assertTrue(!result.passed, result.medianGapMs == -60.0, result.problems.exists(_.contains("medians differ")))
+        },
+        test("a fake number that was sent a code means the entry did not apply, whatever the timing says") {
+          val result = FakeTimingCheck.judge(group(80.0, 12, 30), group(80.0, 30, 30), 25.0, 20)
+          assertTrue(!result.passed, result.problems.exists(_.contains("12 of the fake numbers were sent a code")))
+        },
+        test("no real number reaching the stub, or too few requests, fail it: nothing was compared") {
+          val unwired = FakeTimingCheck.judge(group(80.0, 0, 30), group(80.0, 0, 30), 25.0, 20)
+          val few = FakeTimingCheck.judge(group(80.0, 0, 5), group(80.0, 5, 30), 25.0, 20)
+          assertTrue(
+            !unwired.passed, unwired.setupProblems.size == 1,
+            !few.passed, few.setupProblems.exists(_.contains("only 5 fake")),
+          )
+        },
+        test("the checks of a report carry the gap and the fake numbers sent") {
+          val timing = FakeTimingCheck.judge(group(20.0, 3, 30), group(80.0, 30, 30), 25.0, 20)
+          val report = AntifraudReport("x", "now", List(result("fake-timing").copy(fakeTiming = Some(timing))))
+          val checks = Checks.of(report, 0.1, 0.01).filter(_.scenario == "fake-timing")
+          assertTrue(
+            checks.size == 3,
+            checks.find(_.name.startsWith("fake vs real")).exists(c => c.value == 60.0 && c.verdict == Verdict.Fail),
+            checks.find(_.name == "fake numbers sent a code").exists(c => c.value == 3.0 && c.verdict == Verdict.Fail),
+          )
+        },
+    ),
+    suite("metrics of several instances")(
+      test("the counters and the queues of the instances are added") {
+        val a = AuthAntifraudMetrics.parse(exposition)
+        val b = AuthAntifraudMetrics.parse(exposition.replace("120.0", "30.0").replace("queue_size 17.0", "queue_size 3.0"))
+        val sum = a.plus(b)
+        assertTrue(sum.enqueued == 150.0, sum.written == 200.0, sum.dropped("queue_full") == 6.0, sum.queueSize == 20.0, sum.smsRefused == 80.0)
+      },
+      test("a run's delta over instances is the delta of the sums") {
+        val before = AuthAntifraudMetrics.parse(exposition).plus(AuthAntifraudMetrics.parse(exposition))
+        val after = before.plus(AuthAntifraudMetrics.parse(exposition))
+        assertTrue(after.minus(before).enqueued == 120.0)
+      },
+    ),
+    suite("Comparison of the resend")(
+      test("the ask of a plain client for its code is a protected call, held to the ceiling and not the noise") {
+        val base = AntifraudReport("off", "t", List(result("normal", "otp-resend" -> 20.0)))
+        val run = AntifraudReport("x", "t", List(result("normal", "otp-resend" -> 28.0)))
+        val comparisons = Comparison.compare(run, Some(base), ceilingMs = 10.0, toleranceMs = 5.0)
+        assertTrue(verdictOf(comparisons, "otp-resend") == Verdict.Pass)
       },
     ),
   )

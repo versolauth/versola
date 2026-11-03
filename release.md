@@ -28,6 +28,9 @@ If one item fails, the release does not go out.
 - [ ] Release notes have a **Breaking / operator action** section, even if it says "none": rolling
       from which versions, which need a fresh database, new secrets, flags or ports, known gaps.
 - [ ] Docs PRs in `versola-website` are ready, `about/changelog` updated.
+- [ ] The bundled Postgres image in `docker/versola-tools/compose.fragment.vps.yml.template` is the latest
+      minor of its major (tag and digest; Dependabot does not watch a `.yml.template`). Never move it to a
+      new major in a release: existing data directories refuse to start until dumped and restored.
 
 ## After the release
 

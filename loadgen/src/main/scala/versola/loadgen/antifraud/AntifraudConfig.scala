@@ -1,7 +1,7 @@
 package versola.loadgen.antifraud
 
 import zio.config.magnolia.DeriveConfig
-import zio.{Config, Duration}
+import zio.{Config, Duration, durationInt}
 
 /** What `role = antifraud` needs beyond the blocks every role shares: the OTP flow driven with and
   * without antifraud (#771, P0-7).
@@ -15,6 +15,8 @@ import zio.{Config, Duration}
   * @param redirectUri      the redirect URI that client was registered with
   * @param scope            requested on every authorization; needs `offline_access`, or there is nothing to refresh
   * @param authMetricsUrl   `auth`'s diagnostics `/metrics` (`DPORT`), read before and after each scenario
+  * @param authMetricsUrls  the diagnostics of every `auth` instance when there are several (`targets.auth-urls`): the
+  *                         counters are summed over them, and the queue sizes. Empty: just `authMetricsUrl`
   * @param reportPath       where the JSON report is written
   * @param baselinePath     the JSON report of the run to compare this one with, normally the "off" run
   * @param scenarios        which scenarios run, in this order; all of [[AntifraudScenario]] when empty
@@ -26,6 +28,8 @@ import zio.{Config, Duration}
   *                         an attack scenario above it fails the effectiveness check whatever the latency says
   * @param legitRefusalCeiling the most of legitimate users' requests that may be refused (0.01); the check of the
   *                         false positives, over `normal` and over the legitimate users of `mixed-attack`
+  * @param challenge        how the client answers a challenge, and how long a plain client waits (see [[ChallengeClientConfig]])
+  * @param fakeTiming       the `fake-timing` scenario (see [[FakeTimingConfig]])
   * @param controlTolerance added p99 on `/token` and refresh above which the control is reported as failed: the
   *                         measurement's noise floor, since the true figure is zero (nothing of antifraud is on that path)
   */
@@ -59,16 +63,83 @@ case class AntifraudConfig(
     addedLatencyCeiling: Duration,
     seed: Option[Long],
     sources: SourcesConfig,
+    authMetricsUrls: List[String] = Nil,
+    challenge: ChallengeClientConfig = ChallengeClientConfig(),
+    fakeTiming: FakeTimingConfig = FakeTimingConfig(),
 ):
-  def selected: List[AntifraudScenario] = if scenarios.isEmpty then AntifraudScenario.values.toList else scenarios
+  /** The scenarios that run: the ones named, or all but `fake-timing` (it needs a list entry seeded beforehand, and is
+    * only run when asked for by name). */
+  def selected: List[AntifraudScenario] =
+    if scenarios.isEmpty then AntifraudScenario.values.toList.filterNot(_ == AntifraudScenario.FakeTiming) else scenarios
 
-/** How the code of a one-time password reaches this process.
+  /** The diagnostics endpoints of the instances under test. */
+  def metricsUrls: List[String] = if authMetricsUrls.nonEmpty then authMetricsUrls else List(authMetricsUrl)
+
+/** How the code of a one-time password reaches this process, and what kind of client asks for it.
   *
   * `stub`: `auth` runs with `env = prod`, which is the only mode that sends a code, and its `otp-provider`
   * points at [[SmsStubConfig]]; the code is read from what the stub received, as a phone would. `fixed`: a
   * non-prod `auth` generates the same code every time and sends nothing (so no send is ever counted).
+  *
+  * `client` is the kind of client that asks for the code: `script` sends the form the way the pages with script do
+  * (`proof_inline`) and answers a proof-of-work challenge by solving it (see [[OtpClient]]); `plain` posts the form with
+  * none of that, and a request that is left pending waits the pause and asks again.
   */
-case class OtpDeliveryConfig(source: OtpSource, length: Int)
+case class OtpDeliveryConfig(source: OtpSource, length: Int, client: OtpClient = OtpClient.Script)
+
+/** What asks for the codes. */
+enum OtpClient(val wire: String):
+  /** A browser with script: submits inline, is given a proof of work to solve when it is challenged, and solves it. */
+  case Script extends OtpClient("script")
+
+  /** A form post with no script: cannot be given a proof, so a challenged request is left pending and its ask for the
+    * code is honoured only after `antifraud.challenge.pause`. */
+  case Plain extends OtpClient("plain")
+
+object OtpClient:
+  given DeriveConfig[OtpClient] = DeriveConfig[String].mapOrFail: value =>
+    values.find(_.wire == value).toRight(Config.Error.InvalidData(message = s"unknown otp client: $value; expected script or plain"))
+
+/** How the client answers a challenge.
+  *
+  * @param maxRounds     proofs answered in a row for one request before the client gives up (3: the browser's)
+  * @param maxDifficulty the most zero bits the client will work for; a challenge above it is left unanswered and counted
+  *                      so (what the client is not willing to pay, and a bound on a search that would not end)
+  * @param pause         what `auth` makes a plain client wait (`antifraud.challenge.pause` of the auth profile: keep them
+  *                      equal): the ask for the code is made this long after the request was left pending
+  * @param pauseSlack    added to `pause` so that the ask is not made a moment too early, and the wait between asks that were
+  * @param maxAsks       asks a plain client makes before it gives up on a pending request (an `auth` without the pause
+  *                      never honours one)
+  * @param solverThreads proofs solved at once, a thread each; 0 is the number of processors. The solving is this process's
+  *                      CPU: with more challenges than it can solve the wait for a thread is not in the solve time,
+  *                      but it is in `requestTotal`
+  */
+case class ChallengeClientConfig(
+    maxRounds: Int = 3,
+    maxDifficulty: Int = 26,
+    pause: Duration = 20.seconds,
+    pauseSlack: Duration = 1.second,
+    maxAsks: Int = 3,
+    solverThreads: Int = 0,
+)
+
+/** The `fake-timing` scenario: `requests` requests for a code to numbers on a `fake` list entry, and as many to real
+  * ones, at `rate` a second together, alternating. The entry is made before the run (`loadgen-runbook`:
+  * `scripts/antifraud-local`), by prefix (`fake-prefix`: every number starting with it is fake) or by number
+  * (`fake-numbers`, used in turn).
+  *
+  * @param warmup    real requests first, unmeasured: `auth` makes a fake send wait as long as the real ones have been taking,
+  *                  and has to have seen some
+  * @param tolerance the largest difference of the two medians that passes: what a person timing the answers could not tell
+  */
+case class FakeTimingConfig(
+    requests: Int = 200,
+    rate: Double = 5.0,
+    tolerance: Duration = 25.millis,
+    warmup: Int = 20,
+    fakePrefix: Option[String] = None,
+    fakeNumbers: List[String] = Nil,
+)
 
 enum OtpSource(val wire: String):
   case Stub extends OtpSource("stub")
@@ -165,6 +236,11 @@ enum AntifraudScenario(val wire: String):
 
   /** Wrong codes entered for numbers a code was requested for. */
   case VerifyGuessing extends AntifraudScenario("verify-guessing")
+
+  /** Codes asked for numbers on a `fake` list entry and for real numbers, and how long `auth` took to answer each: a fake
+    * send that answers differently from a real one tells the person who times it which codes are never delivered. Run only
+    * when named, since it needs the entry. */
+  case FakeTiming extends AntifraudScenario("fake-timing")
 
 object AntifraudScenario:
   def fromWire(value: String): Option[AntifraudScenario] = values.find(_.wire == value)

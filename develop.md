@@ -155,9 +155,10 @@ The script first asks for the environment **Name** (default `local`):
     working.
 - **`vps`** — also runs non-interactively, for a real server deployed with
   `versola bootstrap vps` / `versola configure vps` (see [`deploy.md`](deploy.md)).
-  auth/central/edge run with `network_mode: host` there, and Postgres is a native
-  install on the server rather than a container this manages, so real network calls
-  point at `127.0.0.1` (Postgres at `POSTGRES_HOST`) instead of a Compose service name,
+  auth/central/edge run with `network_mode: host` there, and Postgres is by default a
+  native install or a managed cluster rather than a container this manages (with
+  `POSTGRES_MODE=bundled` the compose file also runs one, see below), so real network
+  calls point at `127.0.0.1` (Postgres at `POSTGRES_HOST`) instead of a Compose service name,
   and the public URL is the actual domain (`AUTH_URL`, e.g. `https://id.versola.io`)
   instead of a local port. The reverse proxy in front of them is not configured here:
   `versola-cli` generates and runs it. Files are written to `.local/env/vps/`.
@@ -169,6 +170,21 @@ The script first asks for the environment **Name** (default `local`):
   role lives on a server this script doesn't control — the password generated here
   becomes the real one only on the first `configure` against an empty OpenBao, and
   `versola-cli` then writes the SQL that gives the role that password to a file and prints the command to run it (deploy.md, "Database, role and schemas").
+
+  **`POSTGRES_MODE=bundled`** (an input of `versola-tools`, next to `POSTGRES_HOST`; default `external`, which
+  leaves the bundle exactly as it was) adds a `postgres` service to the compose file: the pinned
+  `postgres:<major>.<minor>` image on `network_mode: host`, listening on `127.0.0.1:5432` only, a
+  `pg_isready` healthcheck that `migrate`, `central`, `auth` and `edge` wait for, and the external volume
+  `versola-postgres-data-vps` for its data (`PGDATA=/var/lib/postgresql/data`, no major in the path). Its
+  first start (an empty data directory, and only then) creates the database and, through
+  `postgres-init-schemas.sh`, the role from the configs `gen-env` wrote (`VERSOLA_PG_ROLE`, not a
+  superuser) owning it and the `auth`, `central` and `edge` schemas, so there is no manual SQL; the
+  superuser `postgres` is left without a password and loopback TCP needs `scram-sha-256`. The
+  password comes from a `postgres.secrets.env` that holds `POSTGRES_PASSWORD` and nothing else of auth's
+  secrets; `versola-cli` writes it next to the other `*.secrets.env`. `POSTGRES_HOST` is then
+  `127.0.0.1:5432` (the default; any other value is refused), the URLs get `sslmode=disable` from the
+  loopback rule above, and `POSTGRES_CA_FILE` is refused. The check is
+  `sh docker/versola-tools/test/entrypoint-postgres-mode.test.sh`.
 - **any other name** — runs interactively, prompting for service URLs and Postgres
   credentials. Files are written to `.local/env/<name>/` (`auth.conf`, `central.conf`,
   `edge.conf`).

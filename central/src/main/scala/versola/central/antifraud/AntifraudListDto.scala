@@ -18,7 +18,7 @@ object AntifraudListType:
 
 /** What the `value` of an entry is compared with. */
 enum AntifraudValueType derives JsonCodec:
-  case phone_hash, prefix, ip, cidr, asn, device_id, ua_hash, ja4_hash, email_domain
+  case phone_hash, prefix, ip, cidr, asn, device_id, ua_hash, ja4_hash, email_domain, country
 
 object AntifraudValueType:
   given Schema[AntifraudValueType] = JsonStringSchema.of
@@ -29,7 +29,8 @@ enum AntifraudListAction derives JsonCodec:
 /** A request to add or preview an entry. Give `value`, or for a `phone_hash` entry `phone` instead (auth hashes it). There is no
   * `source`: auth says `manual` for every request of this API, so a client cannot name its own.
   * `userId` is the admin, which edge puts in from the verified token (see [[AntifraudListController]]); it is what auth
-  * records as who added the entry. The same body goes to auth. */
+  * records as who added the entry; `callerTenantId` is the tenant of that token, which a tenant route needs and an operator
+  * route ignores. Auth is sent the entry with the caller's scope, which central sets from the route, not from this body. */
 case class NewListEntryRequest(
     listType: AntifraudListType,
     valueType: AntifraudValueType,
@@ -40,9 +41,12 @@ case class NewListEntryRequest(
     reason: Option[String],
     shadow: Option[Boolean],
     userId: UserId,
+    callerTenantId: Option[TenantId],
 ) derives JsonCodec, Schema
 
-case class DeleteListEntryRequest(id: UUID, userId: UserId) derives JsonCodec, Schema
+/** `callerTenantId` is, like `userId`, what edge adds from the verified token; a tenant route reads it (see
+  * [[AntifraudCaller]]), an operator route does not. */
+case class DeleteListEntryRequest(id: UUID, userId: UserId, callerTenantId: Option[TenantId]) derives JsonCodec, Schema
 
 /** What a listing is narrowed to; `global` is the global entries only. */
 case class ListEntriesQuery(

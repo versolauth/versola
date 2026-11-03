@@ -2,11 +2,13 @@ package versola.antifraud
 
 import com.typesafe.config.ConfigFactory
 import versola.util.UnitSpecBase
+import versola.util.net.{AsnSettings, GeoSettings}
 import zio.*
 import zio.config.magnolia.deriveConfig
 import zio.config.typesafe.*
 import zio.test.*
 
+import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
 
 /** The `antifraud` block a deployment's env.conf has: every key is required, and the block `scripts/gen-env.scala` writes
@@ -37,13 +39,78 @@ object AntifraudConfigSpec extends UnitSpecBase:
         detectors <- load(generated, Config.Nested("antifraud", Config.Nested("detectors", deriveConfig[AntifraudDetectors.Settings])))
         challenge <- load(generated, Config.Nested("antifraud", Config.Nested("challenge", deriveConfig[PowChallengeVerifier.Settings])))
         tuning <- load(generated, Config.Nested("antifraud", Config.Nested("tuning", deriveConfig[AntifraudTuningStore.Settings])))
+        asn <- load(generated, Config.Nested("antifraud", Config.Nested("asn", AsnSettings.config)))
+        geo <- load(generated, Config.Nested("antifraud", Config.Nested("geo", GeoSettings.config)))
       yield assertTrue(
         all == AntifraudTestSettings.events,
         lists == AntifraudTestSettings.lists,
         detectors == AntifraudTestSettings.detectors,
         challenge == AntifraudTestSettings.challenge,
         tuning == AntifraudTuningStore.Settings(refreshInterval = 5.seconds),
+        asn.copy(url = AntifraudTestSettings.asn.url) == AntifraudTestSettings.asn,
+        asn.url.length == 0,
+        !asn.enabled,
+        geo.copy(url = AntifraudTestSettings.geo.url) == AntifraudTestSettings.geo,
+        geo.url.length == 0,
+        geo.refreshInterval == 7.days,
+        !geo.enabled,
       )
+    },
+    test("the asn block is the one block a config may leave out: without it the feature is off") {
+      val lines = generated.linesIterator.toList
+      val from = lines.indexWhere(_.trim.startsWith("# The ASN of a client address"))
+      val to = lines.indexWhere(_.trim.startsWith("}"), lines.indexWhere(_.trim.startsWith("asn {")))
+      val without = (lines.take(from) ++ lines.drop(to + 1)).mkString("\n")
+      for
+        loaded <- events(without)
+        asn <- load(without, Config.Nested("antifraud", Config.Nested("asn", AsnSettings.config)))
+      yield assertTrue(
+        from > 0,
+        to > from,
+        !without.contains("asn {"),
+        loaded == AntifraudTestSettings.events,
+        asn.copy(url = AsnSettings.off.url) == AsnSettings.off,
+      )
+    },
+    test("the geo block is the other one a config may leave out: without it the feature is off") {
+      val lines = generated.linesIterator.toList
+      val from = lines.indexWhere(_.trim.startsWith("# The country of a client address"))
+      val to = lines.indexWhere(_.trim.startsWith("}"), lines.indexWhere(_.trim.startsWith("geo {")))
+      val without = (lines.take(from) ++ lines.drop(to + 1)).mkString("\n")
+      for
+        loaded <- events(without)
+        geo <- load(without, Config.Nested("antifraud", Config.Nested("geo", GeoSettings.config)))
+      yield assertTrue(
+        from > 0,
+        to > from,
+        !without.contains("geo {"),
+        loaded == AntifraudTestSettings.events,
+        geo.copy(url = GeoSettings.off.url) == GeoSettings.off,
+        !geo.enabled,
+      )
+    },
+    test("a geo block with a file and a url that has the month in it is read as written") {
+      val written = generated.replace(
+        "file             = \"\"          # path of dbip-country",
+        "file             = \"/var/lib/versola/geo.csv.gz\"          # path of dbip-country",
+      )
+        .replace(
+          "url              = \"\"          # where to download a fresher one to `file`, `",
+          "url              = \"https://download.db-ip.com/free/dbip-country-lite-{yyyy}-{mm}.csv.gz\"          # where to download a fresher one to `file`, `",
+        )
+      load(written, Config.Nested("antifraud", Config.Nested("geo", GeoSettings.config))).map: geo =>
+        assertTrue(
+          geo.file == "/var/lib/versola/geo.csv.gz",
+          geo.enabled,
+          String(geo.url, StandardCharsets.UTF_8) == "https://download.db-ip.com/free/dbip-country-lite-{yyyy}-{mm}.csv.gz",
+        )
+    },
+    test("an asn block with a file and keywords is read as written") {
+      val written = generated
+        .replace("file             = \"\"", "file             = \"/var/lib/versola/asn.tsv.gz\"")
+        .replace("# hosting-keywords = [\"hosting\", \"cloud\", \"datacenter\"]", "hosting-keywords = [\"hosting\", \"cloud\"]")
+      load(written, Config.Nested("antifraud", Config.Nested("asn", AsnSettings.config))).map: asn =>
+        assertTrue(asn.file == "/var/lib/versola/asn.tsv.gz", asn.enabled, asn.hostingKeywords == List("hosting", "cloud"))
     },
     test("a key a deployment leaves out is an error, not a default") {
       val without = generated.replace("retention          = \"14 days\"", "")
