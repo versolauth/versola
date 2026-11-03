@@ -1,6 +1,7 @@
 package versola.central.antifraud
 
 import org.scalamock.stubs.ZIOStubs
+import versola.central.configuration.tenants.TenantId
 import versola.central.users.{AuthClient, UserId}
 import versola.util.PageLimit
 import zio.*
@@ -23,6 +24,7 @@ object AntifraudListServiceSpec extends ZIOSpecDefault, ZIOStubs:
     reason = None,
     shadow = None,
     userId = admin,
+    callerTenantId = None,
   )
 
   private val stored = ListEntryResponse(
@@ -44,31 +46,32 @@ object AntifraudListServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val noQuery = ListEntriesQuery(listType = None, valueType = None, tenantId = None, global = None, limit = None, offset = None)
 
   def spec = suite("AntifraudListService")(
-    test("every call goes to auth with the admin's userId, and the answers come back") {
+    test("every call goes to auth, the ones that change something with the admin's userId, and the answers come back") {
       val auth = stub[AuthClient]
       val service = AntifraudListService.Impl(auth)
-      val delete = DeleteListEntryRequest(id = entryId, userId = admin)
+      val delete = DeleteListEntryRequest(id = entryId, userId = admin, callerTenantId = None)
+      val caller = AntifraudCaller.Tenant(TenantId("tenant-a"))
       for
         _ <- auth.createAntifraudListEntry.succeedsWith(stored)
         _ <- auth.previewAntifraudListEntry.succeedsWith(PreviewResponse(matched = None, total = 0))
         _ <- auth.listAntifraudListEntries.succeedsWith(List(stored))
         _ <- auth.deleteAntifraudListEntry.succeedsWith(())
         _ <- auth.antifraudListAudit.succeedsWith(Nil)
-        created <- service.create(request)
-        previewed <- service.preview(request)
-        listed <- service.list(noQuery, admin)
-        _ <- service.delete(delete)
-        audited <- service.audit(Some(entryId), Some(PageLimit(3)), admin)
+        created <- service.create(request, caller)
+        previewed <- service.preview(request, AntifraudCaller.Operator)
+        listed <- service.list(noQuery, caller)
+        _ <- service.delete(delete, AntifraudCaller.Operator)
+        audited <- service.audit(Some(entryId), Some(PageLimit(3)), caller)
       yield assertTrue(
         created == stored,
         previewed == PreviewResponse(matched = None, total = 0),
         listed == ListEntriesResponse(List(stored)),
         audited == AuditResponse(Nil),
-        auth.createAntifraudListEntry.calls == List(request),
-        auth.previewAntifraudListEntry.calls == List(request),
-        auth.listAntifraudListEntries.calls == List((noQuery, admin)),
-        auth.deleteAntifraudListEntry.calls == List(delete),
-        auth.antifraudListAudit.calls == List((Some(entryId), Some(PageLimit(3)), admin)),
+        auth.createAntifraudListEntry.calls == List((request, caller)),
+        auth.previewAntifraudListEntry.calls == List((request, AntifraudCaller.Operator)),
+        auth.listAntifraudListEntries.calls == List((noQuery, caller)),
+        auth.deleteAntifraudListEntry.calls == List((delete, AntifraudCaller.Operator)),
+        auth.antifraudListAudit.calls == List((Some(entryId), Some(PageLimit(3)), caller)),
       )
     },
     test("auth's refusals come through unchanged") {
@@ -76,9 +79,9 @@ object AntifraudListServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val service = AntifraudListService.Impl(auth)
       for
         _ <- auth.createAntifraudListEntry.failsWith(AntifraudListError.Invalid("not an IP address"))
-        invalid <- service.create(request).either
+        invalid <- service.create(request, AntifraudCaller.Operator).either
         _ <- auth.deleteAntifraudListEntry.failsWith(AntifraudListError.NotFound)
-        missing <- service.delete(DeleteListEntryRequest(id = entryId, userId = admin)).either
+        missing <- service.delete(DeleteListEntryRequest(id = entryId, userId = admin, callerTenantId = None), AntifraudCaller.Operator).either
       yield assertTrue(
         invalid == Left(AntifraudListError.Invalid("not an IP address")),
         missing == Left(AntifraudListError.NotFound),
