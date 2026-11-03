@@ -14,6 +14,8 @@ import versola.oauth.client.model.{
   PasskeyAuthFlow,
   PasskeySettings,
   PrimaryCredential,
+  RegistrationCredential,
+  RegistrationFlow,
   ScopeToken,
 }
 import versola.oauth.conversation.CodeAlternativeFixtures as Alt
@@ -667,6 +669,53 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- altPassing(env, None)
           _ <- env.webAuthnService.finishAssertion.succeedsWith(stranger)
           result <- env.service.checkPasskeyAssertion(authId, altRecord, assertionResponse, None)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          env.conversationRepository.overwrite.calls.forall(!_._2.amr.contains(PassedAuthFactor.passkey)),
+        )
+      },
+      test(
+        "the ceremony is the same for a user, a number that is nobody's and a registration: discoverable, with no allow list, so the options tell nothing",
+      ) {
+        val env = Env()
+        val nobody = altRecord.copy(userId = None)
+        val registering = nobody.copy(
+          registrationFlow = Some(RegistrationFlow(credential = RegistrationCredential.phone, steps = Nil, roleIds = Set.empty)),
+          registrationStep = Some(0),
+        )
+        for
+          _ <- env.webAuthnService.startAssertion.succeedsWith(PasskeyCeremony("req-state", "{}"))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          user <- env.service.startPasskeyAssertion(authId, altRecord, altStep, passkeySettings)
+          noUser <- env.service.startPasskeyAssertion(authId, nobody, altStep, passkeySettings)
+          registration <- env.service.startPasskeyAssertion(authId, registering, altStep, passkeySettings)
+        yield assertTrue(
+          user == "{}",
+          noUser == user,
+          registration == user,
+          env.webAuthnService.startAssertion.calls.size == 3,
+          env.webAuthnService.startUserAssertion.calls.isEmpty,
+        )
+      },
+      test("a passkey asserted in a conversation with no user is refused as another user's is, and none is recorded") {
+        val env = Env()
+        for
+          _ <- altPassing(env, None)
+          result <- env.service.checkPasskeyAssertion(authId, altRecord.copy(userId = None), assertionResponse, None)
+        yield assertTrue(
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
+          env.conversationRepository.overwrite.calls.forall(!_._2.amr.contains(PassedAuthFactor.passkey)),
+        )
+      },
+      test("a passkey asserted in a registration is refused, even the one of the user the number later becomes") {
+        val env = Env()
+        val registering = altRecord.copy(
+          registrationFlow = Some(RegistrationFlow(credential = RegistrationCredential.phone, steps = Nil, roleIds = Set.empty)),
+          registrationStep = Some(0),
+        )
+        for
+          _ <- altPassing(env, None)
+          result <- env.service.checkPasskeyAssertion(authId, registering, assertionResponse, None)
         yield assertTrue(
           result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
           env.conversationRepository.overwrite.calls.forall(!_._2.amr.contains(PassedAuthFactor.passkey)),

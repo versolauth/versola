@@ -1225,6 +1225,10 @@ object ConversationService:
         settings: PasskeySettings,
     ): Task[String] =
       val ceremony = (step.passkeyOnly, conversation.userId) match
+        // Chosen from the code page: the same ceremony for every conversation, with an empty allow list (passkeys are resident,
+        // so the authenticator offers what it holds). A ceremony restricted to the user's passkeys would list them for a
+        // number that has an account and nothing for one that has none, and the options would tell which numbers are accounts.
+        case _ if step.codeStep.isDefined => webAuthnService.startAssertion(settings)
         case (true, Some(userId)) => webAuthnService.startUserAssertion(settings, userId)
         // A passkey-only step without a user cannot be told apart from a discoverable assertion
         // that would accept anyone, so it never starts one.
@@ -1351,7 +1355,13 @@ object ConversationService:
                                   case (Some(user), passkeyOpt) =>
                                     // If the conversation already has a verified userId (from session/hint),
                                     // reject a passkey that belongs to a different user.
-                                    if conversation.userId.exists(_ != outcome.userId) then
+                                    // A passkey chosen in place of a code is only accepted for the user the conversation identifies: for
+                                    // a number that is nobody's, and for a registration, which has no account yet, whoever asserts is
+                                    // refused the same way as one who holds another user's passkey.
+                                    val identityMismatch =
+                                      if cred.codeStep.isDefined then conversation.isRegistering || !conversation.userId.contains(outcome.userId)
+                                      else conversation.userId.exists(_ != outcome.userId)
+                                    if identityMismatch then
                                       Observability.setError("identity_mismatch") *>
                                         accessDenied(authId, conversation)
                                     else
