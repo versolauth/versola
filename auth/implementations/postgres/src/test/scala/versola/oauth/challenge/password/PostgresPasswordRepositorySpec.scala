@@ -14,5 +14,5 @@ object PostgresPasswordRepositorySpec extends PostgresSpec, PasswordRepositorySp
 
   override def beforeEach(env: PasswordRepositorySpec.Env) =
     ZIO.serviceWithZIO[TransactorZIO] { xa =>
-      xa.connect(sql"TRUNCATE TABLE user_passwords".update.run())
+      xa.connect(sql"TRUNCATE TABLE user_passwords, first_login_tokens".update.run())
     }.unit

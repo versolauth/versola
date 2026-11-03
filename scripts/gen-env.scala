@@ -1724,6 +1724,10 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
 
   section("\n── Auth bootstrap admin user ──────────────────────────────────────────────")
   val bootstrapLogin = prompt("  Admin login [admin]: ", "admin", flag = "admin-login")
+  // Where the one-time first-login link starts (issue #824): edge's login of the "central-admin" preset below.
+  // On vps the admin has no fixed demo password, so auth prints a link that opens that login with a token and
+  // goes straight to "set a permanent password". Elsewhere the temporary or demo password stays the way in.
+  val firstLoginUrlLine = if isVps then s"""  first-login-url = "$edgeUrl/login/central-admin"\n""" else ""
   // vps's default here is a freshly random value, not the fixed
   // "Admin1234!" the other envs use -- unlike Postgres's password (see
   // pgPassDefault above), nothing outside this script already owns this
@@ -1918,7 +1922,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |  login = "$bootstrapLogin"
        |  password = ${secretField((isVps || isKubernetes), bootstrapPassword, "ADMIN_BOOTSTRAP_PASSWORD")}
        |  admin-user-id = "$adminUserId"
-       |}
+       |${firstLoginUrlLine}}
        |
        |security {
        |  access-tokens-secret         = ${secretField(useOpenBao, accessTokensSecret, "ACCESS_TOKENS_SECRET")}

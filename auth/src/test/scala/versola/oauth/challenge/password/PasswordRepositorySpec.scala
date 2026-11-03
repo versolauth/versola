@@ -138,7 +138,124 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
           rows <- env.repository.list(userId1)
         yield assertTrue(stale == Left(PasswordHistoryChanged), rows.size == 1)
       },
+
+      // First-login token of the bootstrap admin (issue #824).
+      test("a bootstrap credential is created once; a second attempt finds a usable one and changes nothing") {
+        for
+          _ <- TestClock.setTime(baseInstant)
+          first <- bootstrap(env, userId1, token(1))
+          second <- bootstrap(env, userId1, token(2))
+          rows <- env.repository.list(userId1)
+          viaFirst <- env.repository.consumeFirstLoginToken(token(1))
+          viaSecond <- env.repository.consumeFirstLoginToken(token(2))
+        yield assertTrue(first, !second, rows.size == 1, viaFirst == Some(userId1), viaSecond.isEmpty)
+      },
+      test("of several replicas bootstrapping at once exactly one issues the credential and the link") {
+        for
+          _ <- TestClock.setTime(baseInstant)
+          results <- ZIO.collectAllPar((1 to 6).toList.map(n => bootstrap(env, userId1, token(n))))
+          rows <- env.repository.list(userId1)
+        yield assertTrue(results.count(identity) == 1, rows.size == 1)
+      },
+      test("a token is spent by its first use only") {
+        for
+          _ <- TestClock.setTime(baseInstant)
+          _ <- bootstrap(env, userId1, token(1))
+          first <- env.repository.consumeFirstLoginToken(token(1))
+          again <- env.repository.consumeFirstLoginToken(token(1))
+        yield assertTrue(first == Some(userId1), again.isEmpty)
+      },
+      test("two concurrent uses of one token: only one wins") {
+        for
+          _ <- TestClock.setTime(baseInstant)
+          _ <- bootstrap(env, userId1, token(1))
+          results <- ZIO.collectAllPar(List.fill(4)(env.repository.consumeFirstLoginToken(token(1))))
+        yield assertTrue(results.count(_.isDefined) == 1)
+      },
+      test("an unknown token spends nothing") {
+        for
+          _ <- TestClock.setTime(baseInstant)
+          _ <- bootstrap(env, userId1, token(1))
+          unknown <- env.repository.consumeFirstLoginToken(token(9))
+          stillThere <- env.repository.consumeFirstLoginToken(token(1))
+        yield assertTrue(unknown.isEmpty, stillThere == Some(userId1))
+      },
+      test("an expired token is refused") {
+        for
+          _ <- TestClock.setTime(baseInstant)
+          _ <- bootstrap(env, userId1, token(1))
+          _ <- TestClock.adjust(25.hours)
+          expired <- env.repository.consumeFirstLoginToken(token(1))
+        yield assertTrue(expired.isEmpty)
+      },
+      test("an expired temporary password is replaced, together with its token, on the next bootstrap") {
+        for
+          _ <- TestClock.setTime(baseInstant)
+          _ <- bootstrap(env, userId1, token(1))
+          _ <- TestClock.adjust(25.hours)
+          again <- bootstrap(env, userId1, token(2))
+          rows <- env.repository.list(userId1)
+          old <- env.repository.consumeFirstLoginToken(token(1))
+          fresh <- env.repository.consumeFirstLoginToken(token(2))
+        yield assertTrue(again, rows.size == 1, old.isEmpty, fresh == Some(userId1))
+      },
+      test("setting a permanent password kills the token") {
+        for
+          _ <- TestClock.setTime(baseInstant)
+          _ <- bootstrap(env, userId1, token(1))
+          _ <- createChecked(env, userId1, pass(1), salt(1), 5, 1)
+          afterSet <- env.repository.consumeFirstLoginToken(token(1))
+        yield assertTrue(afterSet.isEmpty)
+      },
+      test("a bootstrap is not issued for a user who has a permanent password") {
+        for
+          _ <- TestClock.setTime(baseInstant)
+          _ <- createChecked(env, userId1, pass(1), salt(1), 5, 1)
+          created <- bootstrap(env, userId1, token(1))
+          viaToken <- env.repository.consumeFirstLoginToken(token(1))
+        yield assertTrue(!created, viaToken.isEmpty)
+      },
+      test("reset drops the unused temporary credential and its token; the next bootstrap issues new ones") {
+        for
+          _ <- TestClock.setTime(baseInstant)
+          _ <- bootstrap(env, userId1, token(1))
+          reset <- env.repository.resetBootstrapCredential(userId1)
+          rowsAfterReset <- env.repository.list(userId1)
+          oldToken <- env.repository.consumeFirstLoginToken(token(1))
+          again <- bootstrap(env, userId1, token(2))
+          newToken <- env.repository.consumeFirstLoginToken(token(2))
+        yield assertTrue(reset, rowsAfterReset.isEmpty, oldToken.isEmpty, again, newToken == Some(userId1))
+      },
+      test("reset is refused once a permanent password exists and deletes nothing") {
+        for
+          _ <- TestClock.setTime(baseInstant)
+          _ <- createChecked(env, userId1, pass(1), salt(1), 5, 1)
+          reset <- env.repository.resetBootstrapCredential(userId1)
+          rows <- env.repository.list(userId1)
+        yield assertTrue(!reset, rows.size == 1, rows.head.expiresAt.isEmpty)
+      },
+      test("a token is bound to its user: another user's reset leaves it alone") {
+        for
+          _ <- TestClock.setTime(baseInstant)
+          _ <- bootstrap(env, userId1, token(1))
+          _ <- env.repository.resetBootstrapCredential(userId2)
+          stillThere <- env.repository.consumeFirstLoginToken(token(1))
+        yield assertTrue(stillThere == Some(userId1))
+      },
     )
+
+  def token(n: Int): Array[Byte] = Array.fill(32)(n.toByte)
+
+  /** What auth's bootstrap does on start: a temporary password good for 24 hours and a token valid as long. */
+  def bootstrap(env: PasswordRepositorySpec.Env, userId: UserId, tokenHash: Array[Byte]) =
+    Clock.instant.flatMap: now =>
+      env.repository.createBootstrapCredential(
+        userId = userId,
+        passwordHash = pass(7),
+        salt = salt(7),
+        expiresAt = now.plusSeconds(24 * 3600),
+        firstLoginTokenHash = Some(tokenHash),
+      )
 
 object PasswordRepositorySpec:
   case class Env(repository: PasswordRepository)

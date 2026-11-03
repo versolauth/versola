@@ -108,8 +108,9 @@ paths:
         `state` for this login and redirects the browser to Auth's authorization endpoint.
 
         The caller may tune the authentication request with a fixed whitelist of query
-        parameters: `acr_values`, `max_age`, `prompt`, `login_hint` and `ui_locales`. Any other
-        query parameter is ignored. Everything that decides the security of the flow
+        parameters: `acr_values`, `max_age`, `prompt`, `login_hint`, `ui_locales` and
+        `first_login_token` (the one-time token of the bootstrap admin's first-login link, passed on
+        to Auth unchanged and spent there). Any other query parameter is ignored. Everything that decides the security of the flow
         (`client_id`, `redirect_uri`, `state`, PKCE) belongs to the preset and edge.
       tags: [Login]
       security: []
@@ -144,6 +145,12 @@ paths:
           schema:
             type: string
           description: Hint about the identifier the user is expected to sign in with.
+        - name: first_login_token
+          in: query
+          required: false
+          schema:
+            type: string
+          description: One-time token of the bootstrap admin's first-login link; see Auth's `/authorize`.
         - name: ui_locales
           in: query
           required: false
