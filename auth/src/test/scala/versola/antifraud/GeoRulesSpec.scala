@@ -7,12 +7,12 @@ import zio.test.*
 
 object GeoRulesSpec extends UnitSpecBase:
 
-  private def ctx(signals: Map[String, String]) = AntifraudContext(
+  private def ctx(signals: Map[String, String], destPrefix: Option[String] = Some("7701")) = AntifraudContext(
     tenantId = None,
     clientId = ClientId("c"),
     action = AntifraudAction.otp_request,
     subjectHash = Some("h"),
-    destPrefix = Some("7701"),
+    destPrefix = destPrefix,
     deviceId = None,
     ip = Some("203.0.113.7"),
     asn = None,
@@ -26,11 +26,13 @@ object GeoRulesSpec extends UnitSpecBase:
       phone: Option[String] = None,
       regions: Option[String] = None,
       asnClass: Option[String] = None,
+      email: Boolean = false,
   ) = ctx(
     country.map(GeoRules.CountrySignal -> _).toMap ++
       phone.map(GeoRules.PhoneCountrySignal -> _) ++
       regions.map(GeoRules.TenantRegionsSignal -> _) ++
       asnClass.map(AsnRules.ClassSignal -> _),
+    destPrefix = Option.when(!email)("7701"),
   )
 
   private val challenging = AntifraudTestSettings.tuning.copy(challengeAt = 20, blockAt = 100)
@@ -96,6 +98,15 @@ object GeoRulesSpec extends UnitSpecBase:
       },
       test("does not fire without an address country") {
         decide(geo(regions = Some("KZ"))).map(d => assertTrue(d == Decision.allow))
+      },
+      test("does not fire for an email request from outside the regions: phoneRegions says which numbers a tenant serves") {
+        for
+          email <- decide(geo(country = Some("NL"), regions = Some("KZ"), email = true))
+          phone <- decide(geo(country = Some("NL"), regions = Some("KZ")))
+        yield assertTrue(email == Decision.allow, phone == outside)
+      },
+      test("fires for a number whose region cannot be told: the regions and the address are all it compares") {
+        decide(geo(country = Some("NL"), regions = Some("KZ"), phone = None)).map(d => assertTrue(d == outside))
       },
       test("does not fire for a hosting network, and does for any other class") {
         for

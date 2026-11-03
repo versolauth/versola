@@ -804,7 +804,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
       },
       "smsLimits": {"default": {"sentPerHour": 300, "minVolume": 0, "minConversion": 0.1}, "byPrefix": {}},
       "ruleWeights": {},
-      "shadowRules": ["asn_hosting", "country_mismatch", "country_outside_regions"]
+      "shadowRules": ["asn_hosting"]
     }
   }
   ```
@@ -1161,10 +1161,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
     unchanged.
   - *What a request carries.* The context signal `country` (upper-case code) is the country database's answer and nothing
     else: without the geo file it is absent, whatever the ASN database knows (the country an AS is registered in is not where
-    its subscribers are). It is on the `receive-http` line under `antifraud` and in `af_event.country`. It is read by the
-    `country` list entries and by two rules that add 20 to the score and force nothing: `country_mismatch` (the country differs from the
-    country of the number's calling code) and `country_outside_regions` (the tenant restricts `phoneRegions` and the country is not
-    among them), both silent for a request from a hosting-class network; start both in `shadowRules`.
+    its subscribers are). It is on the `receive-http` line under `antifraud` and in `af_event.country`. No rule reads it: it is read by the
+    `country` list entries.
   - *List entries.* `country` is a `valueType` of the lists (two letters, stored upper-case): `deny`, `fake` or `watch`, never
     `allow`; it needs `expiresAt` and `max-broad-ttl` applies; by specificity it ranks above a mail domain and below an AS. The
     dry run counts the events of the last 24 hours with that `af_event.country`. Without a database a `country` entry

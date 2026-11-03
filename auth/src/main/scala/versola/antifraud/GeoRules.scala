@@ -21,6 +21,10 @@ import zio.*
   * they are; only the fired rules in `antifraud.rules` of the `receive-http` line and `af_event.rules` show how large that
   * population is for a tenant, and the operator weighs the rule against it before it counts.
   *
+  * `country_outside_regions` is for requests that name a phone number only: `phoneRegions` says which numbers a tenant serves, not
+  * where its users live, so an email request from outside the regions says nothing. A number whose region cannot be told still
+  * counts for it (the tenant's regions and the address are all it compares).
+  *
   * Neither rule fires for a request from a hosting network ([[AsnClass.hosting]]): the address of a data centre, a cloud or a
   * proxy is where a VPN exit is, which says nothing about where the person is, so the address's country is no evidence of
   * anything in that case, and `asn_hosting` ([[AsnRules]]) is the rule that speaks of such a network. The rules count what
@@ -29,8 +33,8 @@ import zio.*
   * A rule's `test` is pure, so what they read is in the context's `signals`, put there by [[AntifraudEvents]]: the country
   * of the address ([[CountrySignal]]), the country of the number ([[PhoneCountrySignal]], from its E.164 country calling
   * code, absent for an email address and for a number whose region cannot be told) and the countries the tenant takes
-  * ([[TenantRegionsSignal]], absent for a tenant that has not restricted `phoneRegions`). A signal that is not there makes the
-  * rule that needs it not fire.
+  * ([[TenantRegionsSignal]], absent for a tenant that has not restricted `phoneRegions`), and the context's `destPrefix` says whether the
+  * destination is a number. A signal that is not there makes the rule that needs it not fire.
   */
 object GeoRules:
 
@@ -63,6 +67,10 @@ object GeoRules:
   /** The address is in a data centre, a cloud or a hosting provider, whose country says nothing about the person. */
   private def hosted(ctx: AntifraudContext): Boolean = ctx.signals.get(AsnRules.ClassSignal).contains(AsnClass.hosting.toString)
 
+  /** The request names a phone number (the context's `destPrefix` is the leading digits of one; an email address carries none),
+    * so `phoneRegions`, which says which numbers a tenant serves, has something to say about it. */
+  private def phoneDestination(ctx: AntifraudContext): Boolean = ctx.destPrefix.isDefined
+
   val mismatch: AntifraudRule = AntifraudRule(
     name = MismatchRule,
     weight = MismatchWeight,
@@ -79,7 +87,7 @@ object GeoRules:
     weight = OutsideRegionsWeight,
     forces = None,
     test = ctx =>
-      !hosted(ctx) && (for
+      phoneDestination(ctx) && !hosted(ctx) && (for
         country <- ctx.signals.get(CountrySignal)
         regions <- ctx.signals.get(TenantRegionsSignal)
       yield !regions.split(RegionSeparator).contains(country)).contains(true),
