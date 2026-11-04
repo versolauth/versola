@@ -11,8 +11,8 @@ import java.util.UUID
 /** The per-user report with auth's part in it (#469): a sign-in, a token and a revocation of a real user, and what an administrator
   * did to them, in one list, newest first, from central's `GET /audit/reports/user`.
   *
-  * Ignored until auth's per-user audit endpoints (`GET /audit/events?userId=` and `/summary`, stream B of the audit log)
-  * are on `main`: without them the report is `partial: ["auth"]`, which `AdminAuditSpec` asserts. Remove the aspect then.
+  * Needs an auth that serves `GET /audit/events?userId=` and `/summary` (stream B of the audit log): without them the report is
+  * `partial: ["auth"]`, which `AdminAuditSpec` asserts.
   */
 object AdminAuditReportWithAuthSpec extends E2ESpec:
 
@@ -43,11 +43,11 @@ object AdminAuditReportWithAuthSpec extends E2ESpec:
           clientSecret = Some(s.clientSecret),
           redirectUri = Some(s.redirectUri),
         ).success
-        _ <- central.delete("/users/sessions", "id" -> userId.toString)
+        _ <- central.delete("/users/sessions", "userId" -> userId.toString)
         // the writer of each service rests up to a second between batches
         result <- central.get("/audit/reports/user", "userId" -> userId.toString)
           .repeat(Schedule.spaced(500.millis) *> Schedule.recurUntil[ApiResult](r =>
-            r.body.contains("token.issued") && r.body.contains("admin.user-session.delete"),
+            r.body.contains("token.issued") && r.body.contains("admin.user-session.delete") && r.body.contains("session.ended"),
           ))
           .timeout(30.seconds)
           .someOrElseZIO(central.get("/audit/reports/user", "userId" -> userId.toString))
@@ -55,6 +55,7 @@ object AdminAuditReportWithAuthSpec extends E2ESpec:
         events = body.objs("events")
         kinds = events.flatMap(_.str("kind")).toSet
         times = events.flatMap(_.str("at"))
+        traceOf = (kind: String) => events.filter(_.str("kind").contains(kind)).flatMap(_.str("traceId")).toSet
       yield assertTrue(
         result.status == Status.Ok,
         body.get("partial").contains(Json.Arr()),
@@ -64,7 +65,10 @@ object AdminAuditReportWithAuthSpec extends E2ESpec:
         events.filter(_.str("source").contains("auth")).nonEmpty,
         events.filter(_.str("source").contains("central")).nonEmpty,
         times == times.sorted(using Ordering.String.reverse),
+        // central's row of the revocation and auth's row of its effect are one trace: the request's trace context reaches auth
+        traceOf("admin.user-session.delete").nonEmpty,
+        traceOf("admin.user-session.delete") == traceOf("session.ended"),
         body.obj("summary").exists(_.objs("adminActions").exists(_.str("kind").contains("admin.user-session.delete"))),
       )
-    } @@ TestAspect.ignore,
+    },
   )

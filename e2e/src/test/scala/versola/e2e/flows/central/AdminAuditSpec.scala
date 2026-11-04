@@ -189,9 +189,10 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
         body <- first.obj
         actions <- adminActions(first)
         events = body.objs("events")
-        // a second look: the first one is in it
-        second <- reportWhere(asAdmin, id)(result => adminActions(result).map(_.exists(_.str("kind").contains("admin.audit.queried"))))
-        asked <- adminActions(second)
+        // a second look: the first one is in it, among the rows and not among the administrators' changes
+        second <- reportWhere(asAdmin, id)(result => result.obj.map(_.objs("events").exists(_.str("kind").contains("admin.audit.queried"))))
+        asked <- second.obj.map(_.objs("events"))
+        changes <- adminActions(second)
       yield assertTrue(
         created.status == Status.Created,
         patched.status.isSuccess,
@@ -211,6 +212,7 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
         events.flatMap(_.str("at")) == events.flatMap(_.str("at")).sorted(using Ordering.String.reverse),
         body.obj("window").exists(w => w.str("from").nonEmpty && w.str("to").nonEmpty && w.str("retentionFrom").nonEmpty),
         asked.exists(a => a.str("kind").contains("admin.audit.queried") && a.str("actorId").contains(admin) && a.str("targetId").contains(id)),
+        changes.nonEmpty && changes.forall(a => a.str("kind").exists(_.startsWith("admin.")) && !a.str("kind").exists(kind => kind.endsWith(".queried") || kind.endsWith(".viewed"))),
       )
     },
     test("a report is refused for a user that is no UUID, a page size out of range and a caller without the central credential") {
