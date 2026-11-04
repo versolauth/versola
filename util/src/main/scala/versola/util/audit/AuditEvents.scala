@@ -79,13 +79,16 @@ object AuditEvents:
 
   /** Starts the writer and the partition maintenance; both stop with the scope, and what is still queued is written once more on
     * the way out, within a bound. `source`, `nodeId` and `catalog` are the service's: every event it records carries the first two,
-    * and is rated and counted by the third. */
+    * and is rated and counted by the third. `table` is the table the service's repository writes and maintains, which the lines the
+    * service logs about its partitions name (with `<table>_default`, the default partition); a service that shares its database with
+    * another names its own, and passes the same constant to its repository. */
   def live(
       source: AuditSource,
       nodeId: String,
       catalog: AuditCatalog,
+      table: String = AuditEventRepository.DefaultTable,
   ): ZLayer[AuditEventRepository & Settings & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
-    liveWith(Sizing.standard)(source, nodeId, catalog)
+    liveWith(Sizing.standard)(source, nodeId, catalog, table)
 
   def liveWith(
       sizing: Sizing,
@@ -93,6 +96,7 @@ object AuditEvents:
       source: AuditSource,
       nodeId: String,
       catalog: AuditCatalog,
+      table: String = AuditEventRepository.DefaultTable,
   ): ZLayer[AuditEventRepository & Settings & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
     ZLayer.fromZIO:
       for
@@ -110,7 +114,7 @@ object AuditEvents:
         inHand <- Ref.make(List.empty[AuditEvent])
         suspects <- Ref.make(Map.empty[UUID, Int])
         report <- EventReport.make(source, catalog, sizing.reportWindow)
-        _ <- Maintenance(repository, settings, sizing, source).run
+        _ <- Maintenance(repository, settings, sizing, source, table).run
         // Before the writer, so that its last report is made after the writer's last drain.
         _ <- report.run
         _ <- Writer(queue, repository, sizing, source, report, intake, closing, inHand, suspects).run
@@ -615,7 +619,7 @@ object AuditEvents:
     * internal error (XX). */
   private val infrastructureClasses = List("08", "53", "55", "57", "58", "40", "XX")
 
-  private class Maintenance(repository: AuditEventRepository, settings: Settings, sizing: Sizing, source: AuditSource):
+  private class Maintenance(repository: AuditEventRepository, settings: Settings, sizing: Sizing, source: AuditSource, table: String):
 
     private val once: IO[Unit, Unit] =
       Clock.instant.flatMap: now =>
@@ -632,7 +636,7 @@ object AuditEvents:
                 AuditMetrics.inDefault(source, report.daysLeftInDefault.size) *>
                   ZIO.when(report.daysLeftInDefault.nonEmpty)(
                     ZIO.logWarning(
-                      s"audit events of ${report.daysLeftInDefault.mkString(", ")} sit in audit_event_default, since the days had no partition when " +
+                      s"audit events of ${report.daysLeftInDefault.mkString(", ")} sit in ${table}_default, since the days had no partition when " +
                         "they were written; they are never moved, and the days get no partition until the rows are past the retention",
                     ),
                   ) *> daysAhead(today),
@@ -657,10 +661,10 @@ object AuditEvents:
           else
             AuditMetrics.partitionOwnerMismatch(source, true) *>
               ZIO.logError(
-                s"the audit event partitions are not maintained: the table audit_event is owned by ${ownership.owner} and the service " +
+                s"the audit event partitions are not maintained: the table $table is owned by ${ownership.owner} and the service " +
                   s"connects as ${ownership.role}, which is neither that role nor a member of it. Run as ${ownership.owner} or a superuser: " +
-                  s"ALTER TABLE audit_event OWNER TO ${quoted(ownership.role)}, and the same for audit_event_default. Until then no partition " +
-                  s"is created or dropped, and the events of a day without a partition are written to audit_event_default. Checked again at " +
+                  s"ALTER TABLE $table OWNER TO ${quoted(ownership.role)}, and the same for ${table}_default. Until then no partition " +
+                  s"is created or dropped, and the events of a day without a partition are written to ${table}_default. Checked again at " +
                   s"the next run, in ${sizing.maintenanceInterval.render}, or at a restart",
               ).as(false),
       )

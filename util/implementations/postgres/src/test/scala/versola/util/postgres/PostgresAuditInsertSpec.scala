@@ -54,7 +54,12 @@ object PostgresAuditInsertSpec extends PostgresSpec:
 
   private def count(xa: TransactorZIO, name: String): Task[Long] = table.count(xa, name)
 
-  private val reset = table.reset
+  /** The copy of a service that shares its database with another and names its own table, in a schema of its own, where no
+    * `audit_event` exists: what is written there was written by the name given. */
+  private val Named = "central_audit_event"
+  private val named = AuditTestTable("audit_insert_spec_named", Named)
+
+  private val reset = table.reset *> named.reset
 
   val spec = suite("AuditInsert.insertBatch")(
     test("stores every column of the event") {
@@ -174,4 +179,46 @@ object PostgresAuditInsertSpec extends PostgresSpec:
         left <- count(xa, "audit_event")
       yield assertTrue(result.isFailure, left == 0L)
     },
+    suite("a table of another name")(
+      test("the events are written to the table named, once each, and nowhere else") {
+        val first = event()
+        val second = event()
+        for
+          xa <- ZIO.service[TransactorZIO]
+          _ <- named.inTransaction(xa)(AuditInsert.insertBatch(List(first, second), table = Named))
+          _ <- named.inTransaction(xa)(AuditInsert.insertBatch(List(first), table = Named))
+          stored <- named.rows(xa)
+          inDefault <- named.count(xa, s"${Named}_default")
+          elsewhere <- count(xa, "audit_event")
+        yield assertTrue(stored.map(_.id).toSet == Set(first.id, second.id), stored.size == 2, inDefault == 2L, elsewhere == 0L)
+      },
+      test("a call that names no table writes to audit_event, as before") {
+        for
+          xa <- ZIO.service[TransactorZIO]
+          _ <- inTransaction(xa)(AuditInsert.insertBatch(List(event())))
+          audited <- count(xa, "audit_event")
+          other <- named.count(xa, Named)
+        yield assertTrue(audited == 1L, other == 0L)
+      },
+      test("the default name is not a fallback: where only the named table exists, a call that names none fails and stores nothing") {
+        for
+          xa <- ZIO.service[TransactorZIO]
+          result <- named.inTransaction(xa)(AuditInsert.insertBatch(List(event()))).exit
+          stored <- named.count(xa, Named)
+        yield assertTrue(result.isFailure, stored == 0L)
+      },
+      test("a name that is not a plain identifier is refused before anything is sent, and is not quoted back") {
+        val refused =
+          List("audit_event; DROP TABLE audit_event", "Audit_Event", "audit-event", "public.audit_event", "\"audit_event\"", "", "a" * 51, "1_event")
+        for
+          xa <- ZIO.service[TransactorZIO]
+          results <- ZIO.foreach(refused)(name => inTransaction(xa)(AuditInsert.insertBatch(List(event()), table = name)).exit.map(name -> _))
+          left <- count(xa, "audit_event")
+        yield assertTrue(
+          results.forall((_, exit) => exit.isFailure),
+          results.forall((name, exit) => name.isEmpty || !exit.causeOption.exists(_.prettyPrint.contains(name))),
+          left == 0L,
+        )
+      },
+    ),
   ) @@ TestAspect.sequential @@ TestAspect.before(reset) @@ TestAspect.timeout(60.seconds)

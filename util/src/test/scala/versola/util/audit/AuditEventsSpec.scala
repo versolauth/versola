@@ -186,8 +186,9 @@ object AuditEventsSpec extends UnitSpecBase:
       settings: AuditEvents.Settings,
       source: AuditSource = svcA,
       sizing: AuditEvents.Sizing = sizing,
+      table: String = "audit_event",
   ): ZIO[Scope, Nothing, AuditEvents] =
-    AuditEvents.liveWith(sizing)(source, nodeId, catalog).build.map(_.get[AuditEvents]).provideSome[Scope](
+    AuditEvents.liveWith(sizing)(source, nodeId, catalog, table).build.map(_.get[AuditEvents]).provideSome[Scope](
       ZLayer.succeed[AuditEventRepository](repository),
       ZLayer.succeed(settings),
       tracingLayer,
@@ -1227,6 +1228,30 @@ object AuditEventsSpec extends UnitSpecBase:
             mismatch <- gauge("audit_partition_owner_mismatch", edge)
           yield assertTrue(mismatch == 1.0, f.repository.maintainPartitions.calls.isEmpty)
       },
+      test("what the log tells the operator names the table of the repository, and the days left in its default partition") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false)
+            _ <- f.repository.ownership.succeedsWith(TableOwnership(owner = "migrator", role = "versola-central", mayAlter = false))
+            _ <- buildOn(f.repository, block, source = edge, table = "central_audit_event")
+            lines <- (settle *> ZTestLogger.logOutput).map(_.toList.map(_.message()).filter(_.contains("partitions are not maintained")))
+          yield assertTrue(
+            lines.size == 1,
+            lines.head.contains("the table central_audit_event is owned by migrator"),
+            lines.head.contains("ALTER TABLE central_audit_event OWNER TO \"versola-central\", and the same for central_audit_event_default"),
+            !lines.head.contains("audit_event_default") || lines.head.contains("central_audit_event_default"),
+            !lines.head.replace("central_audit_event", "").contains("audit_event"),
+          )
+      }.provideLayer(ZTestLogger.default),
+      test("the days left in the default partition are reported by the default partition of the table named") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false)
+            _ <- f.repository.maintainPartitions.succeedsWith(noReport.copy(daysLeftInDefault = List(LocalDate.parse("2026-11-04"))))
+            _ <- buildOn(f.repository, block, source = edge, table = "central_audit_event")
+            lines <- (settle *> ZTestLogger.logOutput).map(_.toList.map(_.message()).filter(_.contains("sit in")))
+          yield assertTrue(lines.size == 1, lines.head.contains("sit in central_audit_event_default"))
+      }.provideLayer(ZTestLogger.default),
       test("a role that owns the table clears the gauge") {
         ZIO.scoped:
           for

@@ -26,3 +26,7 @@ trait AuditEventRepository:
   /** Who owns the table and who the service is: partitions can be created and dropped only by the owner (or a member of the owning
     * role), and a deployment that migrated as another role finds that out on the first run. */
   def ownership: Task[TableOwnership]
+
+/** The table of an audit log unless the service names another (see `AuditEvents.live`). */
+object AuditEventRepository:
+  val DefaultTable = "audit_event"
