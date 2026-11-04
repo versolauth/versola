@@ -48,11 +48,12 @@ CREATE INDEX audit_event_user_idx ON audit_event (user_id, at) WHERE user_id IS 
 -- here is not attached and the service reports it (audit_events_in_default) until the rows age out of retention.
 CREATE TABLE audit_event_default PARTITION OF audit_event DEFAULT;
 
--- The trigger below refuses UPDATE, DELETE and TRUNCATE of audit_event unless the transaction sets versola.audit_maintenance to
--- 'on', which only the service's own retention does, when it prunes the default partition (dropping a day's partition fires no
--- row trigger). The row trigger is an AFTER trigger rather than BEFORE, because PostgreSQL 12, the oldest version the antifraud
--- log supports, allows no BEFORE ROW trigger on a partitioned table (13 does); raising in AFTER rolls the statement back all the
--- same. It is cloned onto every partition created or attached later; the TRUNCATE trigger is on the table itself.
+-- A guard against mistakes. The triggers below refuse UPDATE and DELETE of a row, and TRUNCATE of audit_event itself, unless the
+-- transaction sets versola.audit_maintenance to 'on', which only the service's own retention does, when it prunes the default
+-- partition (dropping a day's partition fires no row trigger). The row trigger is cloned onto every partition created or attached
+-- later; the TRUNCATE trigger is on the table itself, so a TRUNCATE of the parent is refused and a TRUNCATE of a single day's
+-- partition is not. The row trigger is an AFTER trigger rather than BEFORE, because PostgreSQL 12, the oldest version the antifraud
+-- log supports, allows no BEFORE ROW trigger on a partitioned table (13 does); raising in AFTER rolls the statement back all the same.
 CREATE FUNCTION audit_event_immutable() RETURNS trigger AS $$
 BEGIN
     IF current_setting('versola.audit_maintenance', true) IS DISTINCT FROM 'on' THEN

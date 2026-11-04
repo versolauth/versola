@@ -69,6 +69,28 @@ trait CentralAuditRepositorySpec extends DatabaseSpecBase[CentralAuditRepository
           read <- env.repository.userEvents(user, wide._1, wide._2, None, 10)
         yield assertTrue(read == List(written))
       },
+      test("the administrators' changes to a user are the admin rows that are not a look or a query, however many of those there are") {
+        val looks = (10 to 40).toList.map(n => event(n, at = day.plusSeconds(100 + n), kind = "admin.user.viewed"))
+        val queries = (50 to 60).toList.map(n => event(n, at = day.plusSeconds(200 + n), kind = "admin.audit.queried"))
+        for
+          _ <- env.repository.insertBatch(
+            looks ++ queries ++ List(
+              event(1, at = day.plusSeconds(10), kind = "admin.user.update"),
+              event(2, at = day.plusSeconds(20), kind = "admin.user-password.action:reset"),
+              event(3, at = day.plusSeconds(30), kind = "admin.secret.revealed"),
+              // not an administrator's: another source's kind about the same user
+              event(4, at = day.plusSeconds(40), kind = "login.completed"),
+              event(5, at = day.plusSeconds(25), userId = Some(other), kind = "admin.user.update"),
+            ),
+          )
+          few <- env.repository.adminActions(user, wide._1, wide._2, 3)
+          all <- env.repository.adminActions(user, wide._1, wide._2, 100)
+        yield assertTrue(
+          // newest first, and the bound counts changes only: the looks, newer than all of them, do not take its places
+          few.map(_.id.toString.takeRight(1)) == List("3", "2", "1"),
+          all.map(_.kind.value) == List("admin.secret.revealed", "admin.user-password.action:reset", "admin.user.update"),
+        )
+      },
       test("an address of the old form is read back as written") {
         val written = event(2).copy(ip = Some("10.1.2.3"))
         for

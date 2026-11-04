@@ -1,0 +1,26 @@
+# Alert rules for what central records of administrators' actions (#469). Prometheus rule-group format: loaded as it is by
+# Prometheus (`rule_files`) and by VictoriaMetrics' vmalert (`-rule`). See dashboards/alerts/README.md.
+#
+# The audit writer's own alerts (events dropped, refused, failed, the queue) are in versola-audit.rules.yaml. Every rule here sums
+# by namespace. The counters are created by the first increment, so a single occurrence on a fresh pod is not seen by
+# increase(); an occurrence that repeats is.
+groups:
+  - name: versola-audit-central
+    rules:
+      - alert: AuditActorMissing
+        expr: sum by (namespace) (increase(audit_actor_missing_total[15m])) > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Administrators' actions are recorded without an actor in {{ $labels.namespace }}"
+          description: "Calls to central's admin API reached it without the actor edge adds (reason=absent), or with one that is no user and no client (reason=invalid), for an hour: the audit rows say 'service' with no id. Either an edge has not read the registrations of the central resource yet (it syncs every few minutes after central's start), or something calls central around edge, or the inject rules of the central resource were changed."
+
+      - alert: AuditReportWithoutAuth
+        expr: sum by (namespace, reason) (increase(audit_report_partial_total[15m])) > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "The per-user audit report is served without auth's part in {{ $labels.namespace }} ({{ $labels.reason }})"
+          description: "For an hour the per-user report (GET /audit/reports/user) was served from central's rows alone. reason=endpoint_missing: auth answers 404 to GET /audit/events (an older auth, or a path that does not match): it does not pass by itself. reason=unavailable: auth is down, busy or answers 5xx. reason=unreadable: auth's answer could not be read."

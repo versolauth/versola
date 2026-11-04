@@ -57,3 +57,13 @@ that repeats is seen. The two stale-age rules read gauges the service sets after
 silent while lists are off (the default), and they catch a refresh that hangs, which moves no failure counter.
 `antifraud_lists_refreshed_timestamp_seconds`, `antifraud_tuning_refreshed_timestamp_seconds`,
 `antifraud_partition_days_ahead` and `antifraud_counters_reset_failed_total` arrive with the antifraud shadow and store changes.
+
+## Central's audit log
+
+`versola-audit-central.rules.yaml` holds the alerts of what central records of administrators' actions. The audit writer's own
+alerts are in `versola-audit.rules.yaml`.
+
+| Alert | Fires when | For | Severity |
+| --- | --- | --- | --- |
+| `AuditActorMissing` | `audit_actor_missing_total` grows: a call to the admin API had no actor, or one that is no user and no client | 1h | warning |
+| `AuditReportWithoutAuth` | `audit_report_partial_total` grows: the per-user report was served without auth's part (`reason`: `endpoint_missing`, `unavailable`, `unreadable`) | 1h | warning |

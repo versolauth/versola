@@ -68,15 +68,15 @@ info:
     a success, a failure with the request's error code, or a denial. The log holds the names of the fields an
     update carried, never their values. The event is handed to the audit queue after the handler has answered.
     A change that is made in auth (sessions, refresh tokens, passkeys, passwords, claims, limits and the antifraud
-    lists, settings and counters) is recorded by auth when it succeeds, with the administrator as the actor; central
-    records the attempts of those that fail or are denied, and the secret a password reset hands back.
+    lists, settings and counters) is recorded here with its outcome too, and auth records its effect: the two rows carry
+    the same trace id.
     Certificates central issues are recorded as `cert.enrolled`, `cert.renewed` and `cert.revoked`, by the client,
     the edge or the system.
 
-    The administrator is the one edge has authenticated. Edge adds three headers to every call and replaces
-    any a client sent: `X-Versola-Actor` (the `sub` of the access token), `X-Versola-Actor-Tenant` (its tenant) and
-    `X-Versola-Actor-Client` (the client it was issued to). A call that carries none, from a caller that
-    reaches central without edge, is recorded as made by a service. Central passes the administrator on to auth
+    The administrator is the one edge has authenticated. Edge adds four query parameters to every call and removes
+    any a client sent under the same names: `actorId` (the `sub` of the access token), `actorTenantId` (its tenant),
+    `actorClientId` (the client it was issued to) and `actorSessionId` (the session, when the token has one). A call that
+    carries none, from a caller that reaches central without edge, is recorded as made by a service. Central passes the administrator on to auth
     as `actorId` (a query parameter, or a field of the body) on the calls it makes for the request, so that auth records
     who asked.
 
@@ -3256,6 +3256,8 @@ paths:
           description: "`userId`, a time, `limit` or `cursor` is not valid, `to` is before `from`, or auth refused the window."
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Four reports are already running and none finished within five seconds (`audit_report_busy`). Ask again.
 
   # ─────────────────────────────── Service ───────────────────────────────
   /service/users/outbox/flush:
@@ -7423,6 +7425,12 @@ components:
         nextCursor:
           type: string
           description: Opaque. Absent on the last page.
+        truncated:
+          type: boolean
+          description: |
+            True when central's rows of this page, or the administrators' changes in the summary, were more than their bounds
+            (500 rows per page, 100 changes) and the oldest were left out. The cut rows are not on the next page; ask for a
+            narrower window.
         partial:
           type: array
           description: "The services whose part is missing: `[\"auth\"]` when auth did not answer. Empty otherwise."

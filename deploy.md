@@ -702,11 +702,20 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   }
   ```
 
-  A call that reaches central without the headers edge adds (`X-Versola-Actor`, `X-Versola-Actor-Tenant`, `X-Versola-Actor-Client`) is
-  not refused: it is recorded as made by a `service` with no id. Edge adds them to every admin route since this release, and central's
+  A call that reaches central without the query parameters edge adds (`actorId`, `actorTenantId`, `actorClientId`, `actorSessionId`) is
+  not refused: it is recorded as made by a `service` with no id, and counted in `audit_actor_missing_total{reason}` (an alert is in
+  `dashboards/alerts/versola-audit-central.rules.yaml`). Edge adds them to every admin route since this release, and central's
   bootstrap brings the registrations of the existing `central` resource up to date at start (it adds those inject rules to endpoints
-  an earlier release registered and leaves what an operator added alone); until edge has synced them, admin actions are recorded without an actor.
-  Edge's sync is the refresh interval (5 minutes by default).
+  an earlier release registered, removes the header rules an earlier form of this feature registered, and leaves what an operator added
+  alone); until edge has synced them, admin actions are recorded without an actor. Edge's sync is the refresh interval (5 minutes by
+  default).
+
+  `audit:read` is not tenant-scoped, like `users:read`: a holder reads the report of any user.
+
+  Where an action is made in auth (sessions, refresh tokens, passkeys, passwords, claims, limits, the antifraud settings), central records
+  its outcome and auth records its effect; the two rows carry the same trace id. The per-user report shows both as they are. A report
+  served without auth's part is counted in `audit_report_partial_total{reason}`; a page whose central rows were more than the bounds has
+  `truncated: true`.
 
 - **Antifraud configuration.** Each antifraud key has exactly one home. What is tuned during an attack (the mode,
   thresholds, weights, limits, the SMS budget's limits, the proof-of-work difficulty, shadow rules) is stored settings,

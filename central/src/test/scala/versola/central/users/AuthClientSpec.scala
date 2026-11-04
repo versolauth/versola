@@ -582,7 +582,7 @@ object AuthClientSpec extends ZIOSpecDefault:
       yield assertTrue(
         invalid == Left(AuthAuditError.Invalid("from is before the retention")),
         unavailable == Left(AuthAuditError.Unavailable("auth answered 500")),
-        missing == Left(AuthAuditError.Unavailable("auth answered 404")),
+        missing == Left(AuthAuditError.EndpointMissing),
         // any other answer is not a thing auth should say: a failure, not a part left out
         forbidden.left.exists(_.isInstanceOf[RuntimeException]),
       )

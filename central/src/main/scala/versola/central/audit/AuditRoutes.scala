@@ -25,9 +25,8 @@ object AuditRoutes:
   enum Entry:
     /** An administrator's change, recorded whatever its outcome. `revealsSecret`: a success hands a secret back (a new
       * client secret, a private key, a one-time token, a temporary password), which is an `admin.secret.revealed` event of
-      * its own on top of the change. `effectInAuth`: the change is made in auth, which records it (`account.*`, `session.ended`,
-      * `antifraud.*`), so central records the attempt only when it did not succeed. */
-    case Change(resource: String, operation: String, target: Target, targetType: String, revealsSecret: Boolean, effectInAuth: Boolean)
+      * its own on top of the change. */
+    case Change(resource: String, operation: String, target: Target, targetType: String, revealsSecret: Boolean)
 
     /** A read that is an event in itself (`admin.user.viewed`, `admin.audit.queried`), recorded on success. */
     case Read(kind: AuditKind, target: Target, targetType: String)
@@ -42,20 +41,6 @@ object AuditRoutes:
   val AdminUserViewed: AuditKind = CentralAudit.AdminUserViewed
   val AdminAuditQueried: AuditKind = CentralAudit.AdminAuditQueried
 
-  /** The resources whose change is made in auth: it answers for the success, central for the attempts that failed. */
-  val effectInAuth: Set[String] = Set(
-    "user-claims",
-    "user-session",
-    "user-user-agent",
-    "user-refresh-token",
-    "user-limits",
-    "user-passkey",
-    "user-password",
-    "antifraud-list",
-    "antifraud-settings",
-    "antifraud-counters",
-  )
-
   private def change(resource: String, operation: String, target: Target, targetType: Option[String] = None, revealsSecret: Boolean = false) =
     Entry.Change(
       resource = resource,
@@ -63,7 +48,6 @@ object AuditRoutes:
       target = target,
       targetType = targetType.getOrElse(resource),
       revealsSecret = revealsSecret,
-      effectInAuth = effectInAuth.contains(resource),
     )
 
   private val create = "create"

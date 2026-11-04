@@ -33,21 +33,47 @@ final class CentralApi(
     callerTenant: Option[String] = None,
     /** Headers set on every call (an `If-Match`, say). */
     extraHeaders: List[(String, String)] = Nil,
+    /** Query parameters set on every call. */
+    extraQuery: List[(String, String)] = Nil,
 ):
 
   /** The same API as seen by an admin whom edge has identified: `userId`, which edge adds from the verified token and which
     * overwrites what a caller sent. */
   def asAdmin(userId: String): CentralApi =
-    CentralApi(client, config, credentials, bearer, edgeSurface, Some(userId), callerTenant, extraHeaders)
+    CentralApi(client, config, credentials, bearer, edgeSurface, Some(userId), callerTenant, extraHeaders, extraQuery)
 
   /** The same, as the admin of the tenant `tenantId`: edge also adds `callerTenantId` to the tenant routes of the lists. */
   def asTenantAdmin(userId: String, tenantId: String): CentralApi =
-    CentralApi(client, config, credentials, bearer, edgeSurface, Some(userId), Some(tenantId), extraHeaders)
+    CentralApi(client, config, credentials, bearer, edgeSurface, Some(userId), Some(tenantId), extraHeaders, extraQuery)
 
-  /** The same, with a header on every call. Naming the administrator the way edge does (`X-Versola-Actor`) without
-    * the `userId` that `asAdmin` also puts in a query or a body: for a call that reads a `userId` of its own. */
+  /** The same, with a header on every call (an `If-Match`, say). */
   def withHeader(name: String, value: String): CentralApi =
-    CentralApi(client, config, credentials, bearer, edgeSurface, admin, callerTenant, extraHeaders.filterNot(_._1 == name) :+ (name -> value))
+    CentralApi(
+      client,
+      config,
+      credentials,
+      bearer,
+      edgeSurface,
+      admin,
+      callerTenant,
+      extraHeaders.filterNot(_._1 == name) :+ (name -> value),
+      extraQuery,
+    )
+
+  /** The same, with a query parameter on every call. Naming the administrator the way edge does (`actorId`) without the `userId`
+    * that `asAdmin` also puts in a query or a body: for a call that reads a `userId` of its own. */
+  def withQuery(name: String, value: String): CentralApi =
+    CentralApi(
+      client,
+      config,
+      credentials,
+      bearer,
+      edgeSurface,
+      admin,
+      callerTenant,
+      extraHeaders,
+      extraQuery.filterNot(_._1 == name) :+ (name -> value),
+    )
 
   /** The same API as seen by a caller presenting different Basic credentials. */
   def withCredentials(user: String, secret: String): CentralApi =
@@ -128,6 +154,10 @@ final class CentralApi(
 
   /** What edge does to a `GET`: puts the caller in the query, replacing a parameter of the same name, and the tenant of the
     * token on a tenant route of the lists. */
+  /** What edge adds to every call (`BootstrapService.actorInjects`), besides the field or parameter that the antifraud routes read. */
+  private def actorQuery: List[(String, String)] =
+    admin.toList.flatMap(userId => List("actorId" -> userId) ++ callerTenant.map("actorTenantId" -> _))
+
   private def callerQuery(method: Method, path: String, query: List[(String, String)]): List[(String, String)] =
     val named = admin.filter(_ => method == Method.GET).fold(query): userId =>
       query.filterNot((name, _) => name == "userId") :+ ("userId" -> userId)
@@ -154,16 +184,11 @@ final class CentralApi(
       base <- ZIO.fromEither(URL.decode(s"$origin$path")).mapError(RuntimeException(_))
       request = Request(
         method = method,
-        url = base.addQueryParams(callerQuery(method, path, query.toList)),
+        url = base.addQueryParams(callerQuery(method, path, query.toList) ++ extraQuery ++ actorQuery),
         body = callerBody(method, path, body).fold(Body.empty)(Body.fromString(_)),
       )
       withType = callerBody(method, path, body).fold(request)(_ => request.addHeader(Header.ContentType(MediaType.application.json)))
-      // What edge adds to every call (`BootstrapService.actorInjects`), besides the field or parameter above that the antifraud routes read.
-      withActor = admin.fold(withType): userId =>
-        callerTenant.fold(withType.addHeader(Header.Custom("X-Versola-Actor", userId)))(tenant =>
-          withType.addHeader(Header.Custom("X-Versola-Actor", userId)).addHeader(Header.Custom("X-Versola-Actor-Tenant", tenant)),
-        )
-      withHeaders = extraHeaders.foldLeft(withActor)((r, header) => r.addHeader(Header.Custom(header._1, header._2)))
+      withHeaders = extraHeaders.foldLeft(withType)((r, header) => r.addHeader(Header.Custom(header._1, header._2)))
       withBasic = credentials.fold(withHeaders)((user, secret) => withHeaders.addHeader(Authorization.Basic(user, secret)))
       authorized = bearer.fold(withBasic)(token => withBasic.addHeader(Authorization.Bearer(token)))
       connection = edgeSurface.flatten.fold(client)(client.ssl(_))

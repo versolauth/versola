@@ -301,7 +301,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val antifraud = prod.filter((_, path) => path.startsWith("/antifraud/"))
       // what the controllers read from the body or the query; the actor headers have a test of their own
       def injected(method: String, path: String) =
-        BootstrapService.centralInjects(method, path).filter(_.target != InjectTarget.header).map(r => (r.target, r.name, r.expression))
+        BootstrapService.centralInjects(method, path).filterNot(_.name.startsWith("actor")).map(r => (r.target, r.name, r.expression))
       val user = (method: String) => (if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub")
       assertTrue(
         antifraud.size == 17,
@@ -342,7 +342,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("the tenant routes of the lists are told the tenant of the token as well, reads included, and the operator routes are not") {
       def injected(method: String, path: String) =
-        BootstrapService.centralInjects(method, path).filter(_.target != InjectTarget.header).map(r => (r.target, r.name, r.expression)).toSet
+        BootstrapService.centralInjects(method, path).filterNot(_.name.startsWith("actor")).map(r => (r.target, r.name, r.expression)).toSet
       val tenant = (method: String) => (if method == "GET" then InjectTarget.query else InjectTarget.body, "callerTenantId", "token.tenant_id")
       val user = (method: String) => (if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub")
       val tenantRoutes = List(
@@ -424,24 +424,28 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         !holders("antifraud:read").contains("viewer"),
       )
     },
-    test("every endpoint central serves to the console is told who the caller is by headers, and the service endpoints are not") {
-      val headers = BootstrapService.actorInjects.map(r => (r.target, r.name, r.expression))
+    test("every endpoint central serves to the console is told who the caller is by query parameters, and the service endpoints are not") {
+      val params = BootstrapService.actorInjects.map(r => (r.target, r.name, r.expression))
       def injected(method: String, path: String) =
-        BootstrapService.centralInjects(method, path).filter(_.target == InjectTarget.header).map(r => (r.target, r.name, r.expression))
+        BootstrapService.centralInjects(method, path).filter(_.name.startsWith("actor")).map(r => (r.target, r.name, r.expression))
       val prod = BootstrapService.centralEndpoints(EnvName.Prod)
       val service = BootstrapService.centralEndpoints(EnvName.Test("local")).filter(_._2.startsWith("/service/"))
       assertTrue(
-        headers == Vector(
-          (InjectTarget.header, "X-Versola-Actor", "token.sub"),
-          (InjectTarget.header, "X-Versola-Actor-Tenant", "token.tenant_id"),
-          (InjectTarget.header, "X-Versola-Actor-Client", "token.client_id"),
+        params == Vector(
+          (InjectTarget.query, "actorId", "token.sub"),
+          (InjectTarget.query, "actorTenantId", "token.tenant_id"),
+          (InjectTarget.query, "actorClientId", "token.client_id"),
+          // a token without a session sends none: the rule evaluates to nothing and edge does not forward it
+          (InjectTarget.query, "actorSessionId", "has(token.sid) ? token.sid : ''"),
         ),
         prod.nonEmpty,
-        // reads and changes alike, a call without a body as well as one with: the header needs neither
-        prod.forall((method, path) => injected(method, path) == headers),
+        // reads and changes alike, a call without a body as well as one with: a query parameter needs neither
+        prod.forall((method, path) => injected(method, path) == params),
+        // no header is injected
+        prod.forall((method, path) => BootstrapService.centralInjects(method, path).forall(_.target != InjectTarget.header)),
         service.nonEmpty,
         service.forall((method, path) => BootstrapService.centralInjects(method, path).isEmpty),
-        // the user routes keep `userId` for the target: nothing here is injected into a body or a query
+        // the user routes keep `userId` for the target: nothing here is injected into a body, and the names are the actor's own
         BootstrapService.centralInjects("POST", "/users/password/reset") == BootstrapService.actorInjects,
         BootstrapService.centralInjects("DELETE", "/configuration/clients") == BootstrapService.actorInjects,
         prod.contains("GET" -> "/audit/reports/user"),
@@ -482,6 +486,12 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
           maxAge = None,
         )
       val user = InjectRule(InjectTarget.body, "userId", "token.sub")
+      val retired = Vector(
+        InjectRule(InjectTarget.header, "X-Versola-Actor", "token.sub"),
+        InjectRule(InjectTarget.header, "X-Versola-Actor-Tenant", "token.tenant_id"),
+        InjectRule(InjectTarget.header, "X-Versola-Actor-Client", "token.client_id"),
+      )
+      val customHeader = InjectRule(InjectTarget.header, "X-Custom", "token.sub")
       val custom = InjectRule(InjectTarget.query, "custom", "token.sub")
       def wanted(method: String, path: String) = record(method, path, BootstrapService.centralInjects(method, path))
       val catalogue =
@@ -491,6 +501,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
           wanted("GET", "/users"),
           wanted("PUT", "/antifraud/settings"),
           wanted("POST", "/users"),
+          wanted("DELETE", "/users"),
         )
       // as an earlier release left them: a tenant route with the user only, one with a rule the code no longer has, a custom allow
       // rule on another, an operator's own rule on a user route, and one that is current
@@ -500,6 +511,8 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         record("PUT", "/antifraud/settings", Vector(user)),
         record("GET", "/users", Vector(custom)),
         record("POST", "/users", BootstrapService.actorInjects),
+        // registered by the first form of the actor injection: headers, and an operator's own header beside them
+        record("DELETE", "/users", retired :+ customHeader),
         record("GET", "/antifraud/gone", Vector.empty),
       )
       val drifted = BootstrapService.injectDrift(existing, catalogue)
@@ -510,11 +523,14 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
           "GET" -> "/antifraud/lists",
           "PUT" -> "/antifraud/settings",
           "GET" -> "/users",
+          "DELETE" -> "/users",
         ),
         // the antifraud endpoints have exactly the current rules, as they always had
         drifted.filter(_.path.startsWith("/antifraud/")).forall(e => e.inject == BootstrapService.centralInjects(e.method, e.path)),
         // another endpoint keeps what an operator added and gains the code's rules
         of("GET", "/users").exists(e => e.inject.toSet == (BootstrapService.actorInjects :+ custom).toSet),
+        // the retired header rules are gone, the query rules are in, and the operator's own header stays
+        of("DELETE", "/users").exists(e => e.inject.toSet == (BootstrapService.actorInjects :+ customHeader).toSet),
         // the rest of the record is the operator's: the custom allow rule stays
         of("POST", "/antifraud/lists").flatMap(_.allowExpression).contains("token.sub != ''"),
         // a second pass finds nothing to do

@@ -600,7 +600,8 @@ object AuthClient:
           case Status.ServiceUnavailable =>
             val seconds = response.headers.get("Retry-After").flatMap(_.trim.toLongOption).getOrElse(1L)
             ZIO.fail(AuthClient.AuditBusy(Duration.fromSeconds(seconds.max(1L).min(2L))))
-          case status if status.isServerError || status == Status.NotFound =>
+          case Status.NotFound => ZIO.succeed(Left(AuthAuditError.EndpointMissing))
+          case status if status.isServerError =>
             ZIO.succeed(Left(AuthAuditError.Unavailable(s"auth answered ${status.code}")))
           case status => ZIO.fail(new RuntimeException(s"Auth call failed: ${status.code}"))
 

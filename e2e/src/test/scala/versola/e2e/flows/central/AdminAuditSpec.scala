@@ -120,6 +120,32 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
           stored.map(_.severity).forall(Set("info", "notice").contains),
         )
     },
+    test("a request that carries the actor's own parameters is recorded with the token's actor: edge replaces them") {
+      for
+        c <- ZIO.service[E2EConfig]
+        auth <- ZIO.service[OAuthClient]
+        edge <- ZIO.service[EdgeApi]
+        session <- ProvisionerCredential.session(auth, c, List("resource://central"))
+        id <- CentralApi.id("audit-spoof")
+        spoof = "00000000-0000-0000-0000-00000000dead"
+        created <- edge.proxyDpop(
+          Method.POST,
+          "central",
+          "/configuration/clients/service",
+          session,
+          Some(serviceBody(id)),
+          query = List("actorId" -> spoof, "actorTenantId" -> "someone-elses", "actorClientId" -> "someone-else", "actorSessionId" -> "forged"),
+        )
+        _ <- edge.proxyDpop(Method.DELETE, "central", "/configuration/clients", session, query = List("clientId" -> id))
+        stored <- rows(id)(_.exists(_.kind == "admin.client.delete"))
+      yield assertTrue(
+        created.status == Status.Created,
+        stored.nonEmpty,
+        // the token's actor, not the one the caller wrote
+        stored.forall(row => row.actorType == "client" && row.actorId.contains(c.provisionerClientId)),
+        stored.forall(row => !row.actorId.contains(spoof) && !row.tenantId.contains("someone-elses")),
+      )
+    },
     test("rotating a client secret is of high severity and reveals a secret once more") {
       for
         c <- ZIO.service[E2EConfig]
@@ -149,7 +175,7 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
       for
         central <- ZIO.service[CentralApi]
         admin = UUID.randomUUID().toString
-        asAdmin = central.withHeader("X-Versola-Actor", admin)
+        asAdmin = central.withQuery("actorId", admin)
         login <- CentralApi.login("audit")
         renamed <- CentralApi.login("audit-renamed")
         created <- asAdmin.post("/users", Fixtures.user(login = Some(login)))

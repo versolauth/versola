@@ -2,6 +2,8 @@ package versola.central.audit
 
 import versola.central.CentralConfig
 import versola.central.audit.AuditRoutes.{Entry, Target}
+import versola.central.configuration.clients.ClientId
+import versola.central.configuration.tenants.TenantId
 import versola.central.users.UserId
 import versola.util.audit.*
 import versola.util.http.Observability
@@ -24,23 +26,27 @@ import java.nio.charset.StandardCharsets
   * line, not the response.
   *
   * ==Who is the administrator==
-  * Edge says so: it adds `X-Versola-Actor` (the `sub` of the verified token), `X-Versola-Actor-Tenant` and `X-Versola-Actor-Client`
-  * to every call (see `BootstrapService.centralInjects`), overwriting what a client sent. Headers and not body fields, because a
-  * `userId` field of a body is the target user on the user routes, and a call without a body has nothing to carry one. A call
-  * without them is not refused, which would break a deployment whose edge has not yet read the new registrations and every direct
-  * caller of central: it is recorded as made by a `service`, with no id. The service of the request also finds the actor in the
-  * [[AuditContext]], which is how `AuthClient` tells auth on whose behalf it calls.
+  * Edge says so: it adds the query parameters `actorId` (the `sub` of the verified token), `actorTenantId`, `actorClientId` and
+  * `actorSessionId` to every call (see `BootstrapService.centralInjects`), removing any a client sent. Query parameters because
+  * they work on every method, and because a `userId` field of a body is the target user on the user routes. A call without them is
+  * not refused, which would break a deployment whose edge has not yet read the new registrations and every direct caller of
+  * central: it is recorded as made by a `service`, with no id, and counted in `audit_actor_missing_total`. A value that is not of the
+  * type it names (an `actorId` that is no user id) is treated as absent and counted too. The service of the request also finds the
+  * actor in the [[AuditContext]], which is how `AuthClient` tells auth on whose behalf it calls.
   */
 object AuditHook:
 
   /** The `sub` of the caller's token. */
-  val ActorHeader = "X-Versola-Actor"
+  val ActorIdParam = "actorId"
 
   /** The tenant of the caller's token. */
-  val ActorTenantHeader = "X-Versola-Actor-Tenant"
+  val ActorTenantParam = "actorTenantId"
 
   /** The client the caller's token was issued to: equal to the actor for a client credentials token, whose subject is the client. */
-  val ActorClientHeader = "X-Versola-Actor-Client"
+  val ActorClientParam = "actorClientId"
+
+  /** The session the caller's token belongs to, when it carries one. */
+  val ActorSessionParam = "actorSessionId"
 
   /** Longest value of a header, a query parameter or a body field the log keeps. */
   private val MaxLength = 256
@@ -80,19 +86,35 @@ object AuditHook:
       case _ => handler
 
   /** Who made the call, from what edge put in it. */
-  private case class Actor(actorType: ActorType, id: Option[String], tenantId: Option[String])
+  private case class Actor(
+      actorType: ActorType,
+      id: Option[String],
+      tenantId: Option[TenantId],
+      clientId: Option[ClientId],
+      sessionId: Option[String],
+  )
 
   private def clipped(value: String): String = value.take(MaxLength)
 
-  private def actorOf(request: Request): Actor =
-    def header(name: String): Option[String] = request.headers.get(name).map(_.trim).filter(_.nonEmpty).map(clipped)
-    val id = header(ActorHeader)
-    val client = header(ActorClientHeader)
-    val actorType =
-      if id.isEmpty then CentralAudit.Actors.Service
-      else if id == client then CentralAudit.Actors.Client
-      else CentralAudit.Actors.Admin
-    Actor(actorType = actorType, id = id, tenantId = header(ActorTenantHeader))
+  /** The caller, from the parameters edge injected; a call that has none, or an `actorId` that is no user id and no client, is a
+    * service's and is counted. */
+  private def actorOf(request: Request): UIO[Actor] =
+    def param(name: String): Option[String] = queryValue(request, name).map(_.trim).filter(_.nonEmpty).map(clipped)
+    val sub = param(ActorIdParam)
+    val tenant = param(ActorTenantParam).map(TenantId(_))
+    val client = param(ActorClientParam).map(ClientId(_))
+    val session = param(ActorSessionParam)
+    // A client credentials token's subject is the client itself.
+    val isClient = sub.exists(id => client.contains(ClientId(id)))
+    val admin = sub.filterNot(_ => isClient).flatMap(UserId.parse(_).toOption)
+    val actor =
+      if isClient then Actor(CentralAudit.Actors.Client, sub, tenant, client, session)
+      else
+        admin.fold(Actor(CentralAudit.Actors.Service, None, tenant, client, session))(id =>
+          Actor(CentralAudit.Actors.Admin, Some(id.toString), tenant, client, session),
+        )
+    val missing = if sub.isEmpty then Some("absent") else Option.when(actor.id.isEmpty)("invalid")
+    CentralAudit.actorMissing(missing).as(actor)
 
   private def recording[Env1 <: AuditEvents & CentralConfig](
       handler: Handler[Env1, Response, Request, Response],
@@ -108,18 +130,28 @@ object AuditHook:
         for
           prepared <- withBody(original, readsBody)
           (request, body) = prepared
-          actor = actorOf(request)
+          actor <- actorOf(request)
           initial = AuditContext.State(
-            tenantId = actor.tenantId,
+            tenantId = actor.tenantId.map(_.toString),
             actor = Some((actor.actorType, actor.id)),
             userAgent = request.headers.get("User-Agent").map(clipped),
           )
+          // What the request's events say of where it came from (the client and the session of the token).
+          _ <- ZIO.foreachDiscard(actor.clientId)(client => Observability.setClientId(client.toString))
+          _ <- ZIO.foreachDiscard(actor.sessionId)(Observability.setSessionId)
+          // The handler may be interrupted (the client went away, a timeout) after its change committed: what follows it is not
+          // interrupted, the record is handed over by a fiber that the interruption of this one does not reach, and the interruption
+          // goes on afterwards.
           response <- AuditContext.reset(initial):
-            handler(request).exit.flatMap: exit =>
-              val status = exit match
-                case Exit.Success(response) => response.status
-                case Exit.Failure(cause) => cause.failureOption.fold(Status.InternalServerError)(_.status)
-              AuditContext.current.flatMap(state => record(request, pattern, status, state, actor, body, change, read)) *> ZIO.done(exit)
+            ZIO.uninterruptibleMask: restore =>
+              restore(handler(request)).exit.flatMap: exit =>
+                val status = exit match
+                  case Exit.Success(response) => response.status
+                  case Exit.Failure(cause) => cause.failureOption.fold(Status.InternalServerError)(_.status)
+                val interrupted = exit.causeOption.exists(_.isInterruptedOnly)
+                val recording = AuditContext.current.flatMap(state => record(request, pattern, status, interrupted, state, actor, body, change, read))
+                // interruptible inside: a full queue under `block` is waited for up to its own timeout, which is an interruption
+                recording.interruptible.forkDaemon.flatMap(fiber => restore(fiber.join)) *> ZIO.done(exit)
         yield response
 
   /** The request with its body read once and put back, where the entry names the target in the body: the handler reads it again. */
@@ -135,6 +167,7 @@ object AuditHook:
       request: Request,
       pattern: String,
       status: Status,
+      interrupted: Boolean,
       state: AuditContext.State,
       actor: Actor,
       body: Option[Json.Obj],
@@ -177,11 +210,9 @@ object AuditHook:
       (change, read) match
         case (Some(entry), _) =>
           for
-            outcome <- outcomeOf(status)
+            outcome <- outcomeOf(status, interrupted)
             (result, reason) = outcome
-            // Where auth makes the change it records the success (with the administrator as the actor); the attempt that failed is central's.
             _ <- events.recordBestEffort(draft(CentralAudit.admin(entry.resource, entry.operation), result, reason))
-              .unless(succeeded && entry.effectInAuth)
             _ <-
               ZIO.when(succeeded && entry.revealsSecret)(events.recordBestEffort(draft(CentralAudit.AdminSecretRevealed, AuditOutcome.success, None)))
           yield ()
@@ -193,8 +224,9 @@ object AuditHook:
         case _ => ZIO.unit
 
   /** The outcome of a status, and the reason of one that is not a success: the error code the request set, else its status. */
-  private def outcomeOf(status: Status): UIO[(AuditOutcome, Option[String])] =
-    if status.isSuccess || status.isRedirection then ZIO.succeed((AuditOutcome.success, None))
+  private def outcomeOf(status: Status, interrupted: Boolean): UIO[(AuditOutcome, Option[String])] =
+    if interrupted then ZIO.succeed((AuditOutcome.failure, Some("interrupted")))
+    else if status.isSuccess || status.isRedirection then ZIO.succeed((AuditOutcome.success, None))
     else
       logContext.get.map(_.get(Observability.error).map(_.code)).map: code =>
         val reason = Some(code.getOrElse(s"http_${status.code}"))

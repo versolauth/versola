@@ -14,6 +14,11 @@ trait CentralAuditRepository extends AuditEventRepository:
     * is how a page is continued without losing rows of the same instant. */
   def userEvents(userId: UUID, from: Instant, until: Instant, before: Option[CentralAuditRepository.Key], limit: Int): Task[List[AuditEvent]]
 
+  /** What administrators did to `userId` in `[from, until)`, newest first: their changes (`admin.*`), not the looks at the user and
+    * the queries of the report, which every `GET /users` and every report adds and which would crowd the changes out of a bounded
+    * answer. */
+  def adminActions(userId: UUID, from: Instant, until: Instant, limit: Int): Task[List[AuditEvent]]
+
 object CentralAuditRepository:
   /** A position in the order of the log: where the previous page ended. */
   case class Key(at: Instant, id: UUID)

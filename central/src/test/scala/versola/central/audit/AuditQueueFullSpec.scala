@@ -56,9 +56,11 @@ object AuditQueueFullSpec extends ZIOSpecDefault:
 
   private def changeRequest(id: String) =
     Request.post(URL(Path.decode("/configuration/clients/web")), Body.fromString(s"""{"id":"$id"}"""))
-      .addHeader(Header.Custom(AuditHook.ActorHeader, admin))
-      .addHeader(Header.Custom(AuditHook.ActorTenantHeader, "default"))
-      .addHeader(Header.Custom(AuditHook.ActorClientHeader, "central-admin"))
+      .updateURL(
+        _.addQueryParam(AuditHook.ActorIdParam, admin)
+          .addQueryParam(AuditHook.ActorTenantParam, "default")
+          .addQueryParam(AuditHook.ActorClientParam, "central-admin"),
+      )
 
   /** Ten changes through the hook, each of which hands back a secret (two events); how many the handler ran for and the statuses. */
   private def changes(events: AuditEvents) =

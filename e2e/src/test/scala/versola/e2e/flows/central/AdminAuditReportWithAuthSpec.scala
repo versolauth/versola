@@ -25,7 +25,7 @@ object AdminAuditReportWithAuthSpec extends E2ESpec:
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
         admin = UUID.randomUUID().toString
-        central = auth.central.withHeader("X-Versola-Actor", admin)
+        central = auth.central.withQuery("actorId", admin)
         email <- CentralApi.email("audit-auth")
         userId <- auth.registerUser(email = Some(email))
         _ <- auth.flushUserOutbox()

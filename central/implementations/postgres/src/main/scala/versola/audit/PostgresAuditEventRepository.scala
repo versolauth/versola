@@ -2,7 +2,7 @@ package versola.audit
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.central.audit.CentralAuditRepository
+import versola.central.audit.{CentralAudit, CentralAuditRepository}
 import versola.util.audit.*
 import versola.util.partitions.{PartitionReport, TableOwnership}
 import versola.util.postgres.{AuditInsert, BasicCodecs, DailyPartitions}
@@ -79,6 +79,23 @@ class PostgresAuditEventRepository(xa: TransactorZIO) extends CentralAuditReposi
             LIMIT $limit
           """.query[Row].run()
       rows.toList
+    .flatMap(rows => ZIO.foreach(rows)(_.toEvent))
+
+  override def adminActions(userId: UUID, from: Instant, until: Instant, limit: Int): Task[List[AuditEvent]] =
+    val lower = from.atOffset(ZoneOffset.UTC)
+    val upper = until.atOffset(ZoneOffset.UTC)
+    val viewed = CentralAudit.AdminUserViewed.value
+    val queried = CentralAudit.AdminAuditQueried.value
+    xa.connectMeasured("find-admin-actions-on-user"):
+      sql"""
+        SELECT id, at, tenant_id, source, node_id, kind, outcome, reason, severity, actor_type, actor_id, user_id, client_id,
+               session_id, host(ip), user_agent, trace_id, target_type, target_id, details::text
+        FROM audit_event
+        WHERE user_id = $userId AND at >= $lower AND at < $upper
+          AND kind LIKE 'admin.%' AND kind NOT IN ($viewed, $queried)
+        ORDER BY at DESC, id DESC
+        LIMIT $limit
+      """.query[Row].run().toList
     .flatMap(rows => ZIO.foreach(rows)(_.toEvent))
 
 object PostgresAuditEventRepository:

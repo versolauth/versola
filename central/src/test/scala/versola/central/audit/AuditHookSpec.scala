@@ -8,6 +8,7 @@ import zio.http.*
 import zio.json.EncoderOps
 import zio.json.ast.Json
 import zio.logging.logContext
+import zio.metrics.{Metric, MetricLabel}
 import zio.test.*
 
 import java.util.UUID
@@ -17,22 +18,28 @@ object AuditHookSpec extends ZIOSpecDefault:
   private val targetUser = "00000000-0000-0000-0000-000000000001"
 
   /** What the hook gave the log, and the context of the request at that moment (the tenant and the user agent come from there). */
-  private case class Recorded(draft: AuditDraft, context: AuditContext.State):
+  private case class Recorded(draft: AuditDraft, context: AuditContext.State, clientId: Option[String], sessionId: Option[String]):
     def kind: String = draft.kind.value
     def details: Map[String, Json] = draft.details.toJson.fields.toMap
 
   private class Capture(seen: Ref[List[Recorded]]) extends AuditEvents:
     override def record(draft: AuditDraft): IO[AuditUnavailable.type, Unit] = recordBestEffort(draft)
-    override def recordBestEffort(draft: AuditDraft): UIO[Unit] = AuditContext.current.flatMap(state => seen.update(_ :+ Recorded(draft, state)))
+    override def recordBestEffort(draft: AuditDraft): UIO[Unit] =
+      for
+        state <- AuditContext.current
+        auth <- logContext.get.map(_.get(Observability.auth))
+        _ <- seen.update(_ :+ Recorded(draft, state, auth.flatMap(_.clientId), auth.flatMap(_.sessionId)))
+      yield ()
 
   private def settings(adminUserViewed: Boolean = true) =
     TestCentralConfig.config.copy(audit = CentralConfig.AuditConfig(events = CentralConfig.AuditConfig.Events(adminUserViewed = adminUserViewed)))
 
   private def asAdmin(request: Request, tenant: String = "default", client: String = "central-admin"): Request =
-    request
-      .addHeader(Header.Custom(AuditHook.ActorHeader, admin))
-      .addHeader(Header.Custom(AuditHook.ActorTenantHeader, tenant))
-      .addHeader(Header.Custom(AuditHook.ActorClientHeader, client))
+    request.updateURL(
+      _.addQueryParam(AuditHook.ActorIdParam, admin)
+        .addQueryParam(AuditHook.ActorTenantParam, tenant)
+        .addQueryParam(AuditHook.ActorClientParam, client),
+    )
 
   private def serve(
       routes: Routes[Any, Response],
@@ -215,7 +222,7 @@ object AuditHookSpec extends ZIOSpecDefault:
         notAUuid.head.draft.target.contains(("user", "someone")),
       )
     },
-    test("a change auth makes is recorded by auth when it succeeds: central records only the attempt that did not") {
+    test("a change auth makes is recorded by central with its outcome as well, success included") {
       val sessions = Method.DELETE / "users" / "sessions"
       val password = Method.POST / "users" / "password" / "set"
       val reset = Method.POST / "users" / "password" / "reset"
@@ -228,40 +235,85 @@ object AuditHookSpec extends ZIOSpecDefault:
         (_, passwordSet) <- serve(Routes(password -> ok()), asAdmin(post("/users/password/set", s"""{"userId":"$targetUser","password":"p"}""")))
         (_, revealed) <- serve(Routes(reset -> ok()), asAdmin(post("/users/password/reset", s"""{"userId":"$targetUser","expiresInSeconds":60}""")))
       yield assertTrue(
-        succeeded.isEmpty,
-        passwordSet.isEmpty,
-        refused.map(_.kind) == List("admin.user-session.delete"),
-        refused.head.draft.outcome == AuditOutcome.denied,
-        unavailable.map(_.kind) == List("admin.user-session.delete"),
-        unavailable.head.draft.outcome == AuditOutcome.failure,
-        // a reset that hands the temporary password back is still a secret revealed, and that is central's row
-        revealed.map(_.kind) == List("admin.secret.revealed"),
+        succeeded.map(r => (r.kind, r.draft.outcome)) == List(("admin.user-session.delete", AuditOutcome.success)),
+        passwordSet.map(r => (r.kind, r.draft.outcome)) == List(("admin.user-password.action:set", AuditOutcome.success)),
+        refused.map(r => (r.kind, r.draft.outcome)) == List(("admin.user-session.delete", AuditOutcome.denied)),
+        unavailable.map(r => (r.kind, r.draft.outcome)) == List(("admin.user-session.delete", AuditOutcome.failure)),
+        // a reset that hands the temporary password back is also a secret revealed
+        revealed.map(_.kind) == List("admin.user-password.action:reset", "admin.secret.revealed"),
       )
     },
-    test("a call without the actor headers is recorded as a service's with no id, and one whose actor is its own client as the client's") {
+    test("a call without the actor parameters is recorded as a service's with no id and counted; one whose actor is its own client as the client's") {
       val bare = post("/configuration/clients/web", """{"id":"c"}""")
+      def count(reason: String) =
+        Metric.counter("audit_actor_missing_total").tagged(Set(MetricLabel("reason", reason))).value.map(_.count)
       for
+        absentBefore <- count("absent")
+        invalidBefore <- count("invalid")
         (_, bareRecorded) <- serve(Routes(createClient -> ok()), bare)
+        absentAfter <- count("absent")
+        (_, notAUser) <- serve(Routes(createClient -> ok()), bare.updateURL(_.addQueryParam(AuditHook.ActorIdParam, "someone")))
+        invalidAfter <- count("invalid")
         (_, clientRecorded) <- serve(Routes(createClient -> ok()), asAdmin(bare, client = admin))
+        clientAfter <- count("invalid")
         (_, userAgent) <- serve(Routes(createClient -> ok()), asAdmin(bare).addHeader(Header.Custom("User-Agent", "Console/1")))
       yield assertTrue(
         bareRecorded.head.draft.actor.contains((CentralAudit.Actors.Service, None)),
         bareRecorded.head.context.tenantId.isEmpty,
+        absentAfter == absentBefore + 1,
+        // an actor id that is no user id and no client is treated as absent, and counted as invalid
+        notAUser.head.draft.actor.contains((CentralAudit.Actors.Service, None)),
+        invalidAfter == invalidBefore + 1,
         clientRecorded.head.draft.actor.contains((CentralAudit.Actors.Client, Some(admin))),
+        clientAfter == invalidAfter,
         userAgent.head.context.userAgent.contains("Console/1"),
       )
     },
-    test("a header an attacker makes enormous does not make an enormous row") {
+    test("the client and the session of the token are the client and the session of the event's context") {
+      val session = "sess-1"
+      for
+        (_, recorded) <- serve(
+          Routes(createClient -> ok()),
+          asAdmin(post("/configuration/clients/web", """{"id":"c"}""")).updateURL(_.addQueryParam(AuditHook.ActorSessionParam, session)),
+        )
+      yield assertTrue(
+        recorded.head.draft.actor.contains((CentralAudit.Actors.Admin, Some(admin))),
+        recorded.head.clientId.contains("central-admin"),
+        recorded.head.sessionId.contains(session),
+      )
+    },
+    test("a request that is interrupted after its change committed is still recorded, as a failure that was interrupted") {
+      for
+        seen <- Ref.make(List.empty[Recorded])
+        started <- Promise.make[Nothing, Unit]
+        client <- ZIO.service[Client]
+        // the change has happened; the handler then waits, as a response that is still being written would
+        routes = Routes(createClient -> handler((_: Request) => started.succeed(()) *> ZIO.never))
+        _ <- TestClient.addRoutes((routes @@ AuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig](
+          Capture(seen),
+          settings(),
+        )))
+        fiber <- client.batched(asAdmin(post("/configuration/clients/web", """{"id":"c"}"""))).fork
+        _ <- started.await
+        _ <- fiber.interrupt
+        recorded <- seen.get.repeatUntil(_.nonEmpty).timeoutFail(RuntimeException("not recorded"))(5.seconds).orDie.withClock(Clock.ClockLive)
+      yield assertTrue(
+        recorded.map(_.kind) == List("admin.client.create"),
+        recorded.head.draft.outcome == AuditOutcome.failure,
+        recorded.head.draft.reason.contains("interrupted"),
+      )
+    },
+    test("a parameter an attacker makes enormous does not make an enormous row") {
       val long = "x" * 10000
       for
         (_, recorded) <- serve(
           Routes(createClient -> ok()),
           post("/configuration/clients/web", s"""{"id":"$long"}""")
-            .addHeader(Header.Custom(AuditHook.ActorHeader, long))
-            .addHeader(Header.Custom(AuditHook.ActorTenantHeader, long)),
+            .updateURL(_.addQueryParam(AuditHook.ActorIdParam, long).addQueryParam(AuditHook.ActorTenantParam, long)),
         )
       yield assertTrue(
-        recorded.head.draft.actor.flatMap(_._2).exists(_.length <= 256),
+        // an actor id that is no user id is no actor
+        recorded.head.draft.actor.contains((CentralAudit.Actors.Service, None)),
         recorded.head.context.tenantId.exists(_.length <= 256),
         recorded.head.draft.target.exists(_._2.length <= 256),
       )

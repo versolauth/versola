@@ -1,7 +1,8 @@
 package versola.central.audit
 
 import versola.util.audit.{ActorType, AuditCatalog, AuditDraft, AuditEvents, AuditKind, AuditOutcome, AuditSource}
-import zio.UIO
+import zio.metrics.{Metric, MetricLabel}
+import zio.{UIO, ZIO}
 
 /** What central says about its own audit events (#469): the source it records as, the actors that act through it, the kinds it
   * emits and how serious each is. The core (`versola.util.audit`) takes this as the service's [[AuditCatalog]] and rates and
@@ -43,6 +44,13 @@ object CentralAudit:
     events.recordBestEffort(
       AuditDraft(kind = kind, outcome = AuditOutcome.success, actor = Some((actor, actorId)), target = Some(target)),
     )
+
+  private val actorMissing = Metric.counter("audit_actor_missing_total")
+
+  /** A call of an administrator's API that edge did not say the caller of (`absent`), or whose caller it named is no user or client
+    * (`invalid`): recorded as a service's. Nothing is counted for a call that has an actor. */
+  def actorMissing(reason: Option[String]): UIO[Unit] =
+    ZIO.foreachDiscard(reason)(reason => actorMissing.tagged(Set(MetricLabel("reason", reason))).increment)
 
   /** The resources an administrator's action can be on (design §4.2): what the routes of [[AuditRoutes]] map to. */
   val resources: Set[String] = Set(

@@ -7,6 +7,7 @@ import versola.util.PageLimit
 import versola.util.audit.*
 import zio.*
 import zio.json.ast.Json
+import zio.metrics.{Metric, MetricLabel}
 import zio.test.*
 
 import java.time.Instant
@@ -68,6 +69,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.authClient.getUserAuditEvents.succeedsWith(authPage(List(login, token), Some("more")))
         _ <- env.authClient.getUserAuditSummary.succeedsWith(authSummary)
         _ <- env.repository.userEvents.succeedsWith(List(claims, reset))
+        _ <- env.repository.adminActions.succeedsWith(List(claims, reset))
         report <- env.service.userReport(userId, None, None, None, Some(PageLimit(2)))
       yield
         val (from, until) = env.repository.userEvents.calls.head match
@@ -95,6 +97,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.authClient.getUserAuditEvents.succeedsWith(authPage(List(token), None))
         _ <- env.authClient.getUserAuditSummary.succeedsWith(authSummary)
         _ <- env.repository.userEvents.succeedsWith(List(reset))
+        _ <- env.repository.adminActions.succeedsWith(List(reset))
         report <- env.service.userReport(userId, Some(at("08:00")), Some(at("11:00")), None, None)
       yield assertTrue(
         report.nextCursor.isEmpty,
@@ -117,6 +120,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.authClient.getUserAuditEvents.succeedsWith(authPage(Nil, None))
         _ <- env.authClient.getUserAuditSummary.succeedsWith(authSummary)
         _ <- env.repository.userEvents.succeedsWith(Nil)
+        _ <- env.repository.adminActions.succeedsWith(Nil)
         _ <- env.service.userReport(userId, None, None, None, None)
       yield assertTrue(
         env.authClient.getUserAuditEvents.calls.head._2 == UserAuditEventsQuery(None, None, None, PageLimit.Default),
@@ -131,6 +135,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.authClient.getUserAuditEvents.succeedsWith(authPage(Nil, None))
         _ <- env.authClient.getUserAuditSummary.succeedsWith(authSummary)
         _ <- env.repository.userEvents.succeedsWith(Nil)
+        _ <- env.repository.adminActions.succeedsWith(Nil)
         report <- env.service.userReport(userId, Some(Instant.parse("2020-01-01T00:00:00Z")), Some(now.plusSeconds(86400)), None, None)
       yield assertTrue(
         report.window.from == now.minus(7, ChronoUnit.DAYS),
@@ -146,6 +151,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- clock
         _ <- env.authClient.getUserAuditEvents.succeedsWith(authPage(List(event(5, AuditSource("auth"), at("08:00"), "session.ended")), None))
         _ <- env.repository.userEvents.succeedsWith(Nil)
+        _ <- env.repository.adminActions.succeedsWith(Nil)
         report <- env.service.userReport(userId, None, None, Some(cursor), Some(PageLimit(10)))
       yield assertTrue(
         env.authClient.getUserAuditEvents.calls.head._2.cursor.contains("more"),
@@ -163,6 +169,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.authClient.getUserAuditEvents.failsWith(AuthAuditError.Unavailable("auth answered 503"))
         _ <- env.authClient.getUserAuditSummary.failsWith(AuthAuditError.Unavailable("auth answered 503"))
         _ <- env.repository.userEvents.succeedsWith(rows)
+        _ <- env.repository.adminActions.succeedsWith(rows)
         first <- env.service.userReport(userId, None, None, None, Some(PageLimit(2)))
         next = first.nextCursor.flatMap(c => AuditCursor.decode(c).toOption)
         second <- env.service.userReport(userId, None, None, next, Some(PageLimit(2)))
@@ -188,8 +195,84 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.authClient.getUserAuditEvents.failsWith(RuntimeException("Auth response decode failed"))
         _ <- env.authClient.getUserAuditSummary.succeedsWith(authSummary)
         _ <- env.repository.userEvents.succeedsWith(List(reset))
+        _ <- env.repository.adminActions.succeedsWith(List(reset))
         report <- env.service.userReport(userId, None, None, None, None)
       yield assertTrue(report.partial == List("auth"), report.events == List(reset))
+    },
+    test("central's rows above the bound of a page are cut and the report says so; at the bound it does not") {
+      def rows(n: Int) = (1 to n).toList.map(i => event(100 + i, CentralAudit.Source, at("09:30").minusSeconds(i), "admin.user.update"))
+      def report(central: List[AuditEvent]) =
+        val env = Env()
+        for
+          _ <- clock
+          _ <- env.authClient.getUserAuditEvents.succeedsWith(authPage(List(login), None))
+          _ <- env.authClient.getUserAuditSummary.succeedsWith(authSummary)
+          _ <- env.repository.userEvents.succeedsWith(central)
+          _ <- env.repository.adminActions.succeedsWith(Nil)
+          report <- env.service.userReport(userId, None, None, None, None)
+        yield (report, env.repository.userEvents.calls.head._5)
+      for
+        over <- report(rows(AuditReportService.MaxCentralRowsPerPage + 1))
+        at <- report(rows(AuditReportService.MaxCentralRowsPerPage))
+      yield assertTrue(
+        over._1.truncated,
+        over._1.events.size == 1 + AuditReportService.MaxCentralRowsPerPage,
+        // one more than the bound is asked for, to know
+        over._2 == AuditReportService.MaxCentralRowsPerPage + 1,
+        !at._1.truncated,
+        at._1.events.size == 1 + AuditReportService.MaxCentralRowsPerPage,
+      )
+    },
+    test("the administrators' changes in the summary are the repository's, cut at their bound, and the report says when they were more") {
+      def actions(n: Int) = (1 to n).toList.map(i => event(300 + i, CentralAudit.Source, at("09:30").minusSeconds(i), "admin.user.update"))
+      def report(changes: List[AuditEvent]) =
+        val env = Env()
+        for
+          _ <- clock
+          _ <- env.authClient.getUserAuditEvents.succeedsWith(authPage(Nil, None))
+          _ <- env.authClient.getUserAuditSummary.succeedsWith(authSummary)
+          _ <- env.repository.userEvents.succeedsWith(Nil)
+          _ <- env.repository.adminActions.succeedsWith(changes)
+          report <- env.service.userReport(userId, None, None, None, None)
+        yield (report, env.repository.adminActions.calls.head._4)
+      for
+        over <- report(actions(AuditReportService.MaxAdminActions + 1))
+        at <- report(actions(AuditReportService.MaxAdminActions))
+        listed = over._1.summary.flatMap(_.get("adminActions")).collect { case Json.Arr(items) => items.size }
+      yield assertTrue(
+        over._1.truncated,
+        listed.contains(AuditReportService.MaxAdminActions),
+        over._2 == AuditReportService.MaxAdminActions + 1,
+        !at._1.truncated,
+      )
+    },
+    test("a report served without auth is counted by why: an auth without the endpoint is not an outage") {
+      def partials(reason: String) =
+        Metric.counter("audit_report_partial_total").tagged(Set(MetricLabel("reason", reason))).value.map(_.count)
+      def without(error: AuthAuditError) =
+        val env = Env()
+        for
+          _ <- clock
+          _ <- env.authClient.getUserAuditEvents.failsWith(error)
+          _ <- env.authClient.getUserAuditSummary.failsWith(error)
+          _ <- env.repository.userEvents.succeedsWith(Nil)
+          _ <- env.repository.adminActions.succeedsWith(Nil)
+          report <- env.service.userReport(userId, None, None, None, None)
+        yield report
+      for
+        missingBefore <- partials("endpoint_missing")
+        downBefore <- partials("unavailable")
+        missing <- without(AuthAuditError.EndpointMissing)
+        missingAfter <- partials("endpoint_missing")
+        down <- without(AuthAuditError.Unavailable("auth answered 500"))
+        downAfter <- partials("unavailable")
+      yield assertTrue(
+        missing.partial == List("auth"),
+        down.partial == List("auth"),
+        // once per report, not once per call to auth
+        missingAfter == missingBefore + 1,
+        downAfter == downBefore + 1,
+      )
     },
     test("only four reports run at a time: a fifth waits for a place and is refused as busy when none frees in time") {
       val env = Env()
@@ -200,6 +283,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.authClient.getUserAuditEvents.returnsZIO(_ => gate.await.as(authPage(Nil, None)))
         _ <- env.authClient.getUserAuditSummary.succeedsWith(authSummary)
         _ <- env.repository.userEvents.succeedsWith(Nil)
+        _ <- env.repository.adminActions.succeedsWith(Nil)
         running <- ZIO.foreach(1 to AuditReportService.MaxConcurrentReports)(_ => env.service.userReport(userId, None, None, None, None).fork)
         _ <- ZIO.yieldNow.repeatN(20)
         fifth <- env.service.userReport(userId, None, None, None, None).either.fork
@@ -223,6 +307,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.authClient.getUserAuditEvents.failsWith(AuthAuditError.Invalid("from is before the retention"))
         _ <- env.authClient.getUserAuditSummary.succeedsWith(authSummary)
         _ <- env.repository.userEvents.succeedsWith(Nil)
+        _ <- env.repository.adminActions.succeedsWith(Nil)
         refused <- env.service.userReport(userId, None, None, None, None).either
       yield assertTrue(refused == Left(AuditReportError.Invalid("from is before the retention")))
     },

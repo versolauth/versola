@@ -1072,21 +1072,25 @@ object BootstrapService:
       "GET" -> "/antifraud/lists/audit",
     )
 
-  /** Who is calling, for the audit log (#469): the `sub`, the tenant and the client of the token edge has verified, as headers
-    * (`AuditHook`). Headers and not a body field or a query parameter: a `userId` in a body is the *target* user on the user
+  /** Who is calling, for the audit log (#469): the `sub`, the tenant, the client and the session of the token edge has verified, as
+    * query parameters (`AuditHook`). A query parameter and not a body field: a `userId` in a body is the *target* user on the user
     * routes (edge overwrites a field of the same name, so the administrator would reset their own password), and a call without a
-    * body or a JSON one (a `DELETE`, a rotation) has nothing to carry a field. Edge removes a header of the same name that the
-    * caller sent. Every administrator's route has them, reads included: looking at a user and asking for the audit report are
-    * events. */
+    * body or a JSON one (a `DELETE`, a rotation) has nothing to carry a field; a query parameter works on every method. Edge removes
+    * a parameter of the same name that the caller sent. The session is empty, and so not sent, for a token that has none. Every
+    * administrator's route has them, reads included: looking at a user and asking for the audit report are events. */
   private[versola] val actorInjects: Vector[InjectRule] = Vector(
-    InjectRule(InjectTarget.header, AuditHook.ActorHeader, "token.sub"),
-    InjectRule(InjectTarget.header, AuditHook.ActorTenantHeader, "token.tenant_id"),
-    InjectRule(InjectTarget.header, AuditHook.ActorClientHeader, "token.client_id"),
+    InjectRule(InjectTarget.query, AuditHook.ActorIdParam, "token.sub"),
+    InjectRule(InjectTarget.query, AuditHook.ActorTenantParam, "token.tenant_id"),
+    InjectRule(InjectTarget.query, AuditHook.ActorClientParam, "token.client_id"),
+    InjectRule(InjectTarget.query, AuditHook.ActorSessionParam, "has(token.sid) ? token.sid : ''"),
   )
+
+  /** The header rules the first form of the actor injection registered; an endpoint that still has them gets them removed. */
+  private val retiredActorHeaders: Set[String] = Set("X-Versola-Actor", "X-Versola-Actor-Tenant", "X-Versola-Actor-Client")
 
   /** What central's endpoints are told of the caller, from the token edge has verified (not from the caller: edge overwrites
     * what the caller sent under the same name):
-    *  - the actor headers ([[actorInjects]]) on every endpoint but the `/service` ones, which are the operator's tooling;
+    *  - the actor parameters ([[actorInjects]]) on every endpoint but the `/service` ones, which are the operator's tooling;
     *  - the antifraud endpoints besides, which auth needs to know the caller of, as it always has:
     *    - `userId` on every call that is not a `GET`: auth records it as who made the change. A read is told nobody, since
     *      nothing there records who read.
@@ -1104,10 +1108,10 @@ object BootstrapService:
 
   /** The endpoints a deployment registered earlier with other inject rules than the ones the code needs now, with the rules
     * brought up to date and nothing else touched. Central's controllers read what edge injects (the antifraud ones `userId` and
-    * `callerTenantId`, which they answer `400` without for ever, the audit hook the actor headers), so an endpoint registered before
+    * `callerTenantId`, which they answer `400` without for ever, the audit hook the actor parameters), so an endpoint registered before
     * a rule was added needs it added at bootstrap. The antifraud endpoints' rules are replaced by the current ones, as they always
     * were; any other endpoint keeps the rules an operator added and has the code's own put in place of the ones of the same
-    * target and name. Everything but the inject rules is an operator's to change and is left alone. */
+    * target and name; the retired actor header rules are removed. Everything but the inject rules is an operator's to change and is left alone. */
   private[versola] def injectDrift(
       existing: Vector[ResourceEndpointRecord],
       wanted: List[ResourceEndpointRecord],
@@ -1118,7 +1122,9 @@ object BootstrapService:
         val inject =
           if current.path.startsWith("/antifraud/") then current.inject
           else
-            endpoint.inject.filterNot(own => current.inject.exists(code => code.target == own.target && code.name == own.name)) ++ current.inject
+            endpoint.inject
+              .filterNot(own => own.target == InjectTarget.header && retiredActorHeaders.contains(own.name))
+              .filterNot(own => current.inject.exists(code => code.target == own.target && code.name == own.name)) ++ current.inject
         Option.when(inject.toSet != endpoint.inject.toSet)(endpoint.copy(inject = inject))
 
   private[versola] def centralEndpoints(envName: EnvName): List[(String, String)] =

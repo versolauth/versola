@@ -8,6 +8,7 @@ import versola.util.audit.AuditEvent
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
+import zio.metrics.{Metric, MetricLabel}
 
 import java.time.Instant
 import java.time.temporal.ChronoUnit
@@ -39,6 +40,8 @@ object AuditReportService:
 
   /** Postgres keeps microseconds: an exclusive upper bound that includes `to` itself. */
   private val Micro = 1
+
+  private val partialReports = Metric.counter("audit_report_partial_total")
 
   /** Reports that run at the same time: each reads the table and asks auth, so a few at once are served and the rest wait. */
   val MaxConcurrentReports = 4
@@ -104,27 +107,31 @@ object AuditReportService:
     ): IO[AuditReportError | Throwable, UserAuditReport] =
       val eventsCall = answered(authClient.getUserAuditEvents(userId, UserAuditEventsQuery(authFrom, authTo, authCursor, pageSize)))
       val summaryCall: IO[AuditReportError, Option[Json.Obj]] =
-        if first then answered(authClient.getUserAuditSummary(userId, authFrom, authTo)) else ZIO.none
+        if first then answered(authClient.getUserAuditSummary(userId, authFrom, authTo)).map(_.toOption) else ZIO.none
       (eventsCall <&> summaryCall).flatMap: (events, authSummary) =>
         events match
-          case None =>
+          case Left(reason) =>
             // Auth did not answer: the report is central's rows alone, from where this page started.
-            centralOnly(userId, lower, upper, until, None, pageSize, retentionFrom, authSummary, first)
-          case Some(page) =>
+            partialReports.tagged(Set(MetricLabel("reason", reason))).increment *>
+              centralOnly(userId, lower, upper, until, None, pageSize, retentionFrom, authSummary, first)
+          case Right(page) =>
             // Where this page of auth's ends is where central's rows stop: all of them down to it are on this page, and the next
             // page takes them from there. On the last page that is the start of the window.
             val low = page.nextCursor.flatMap(_ => page.events.lastOption.map(_.at)).getOrElse(lower)
             for
-              mine <- repository.userEvents(userId, low, until, None, MaxCentralRowsPerPage)
+              // one more than the bound, to know whether the bound cut anything
+              found <- repository.userEvents(userId, low, until, None, MaxCentralRowsPerPage + 1)
+              mine = found.take(MaxCentralRowsPerPage)
               actions <- if first then adminActions(userId, lower, upper).asSome else ZIO.none
             yield UserAuditReport(
               userId = userId,
               window = ReportWindow(from = lower, to = upper, retentionFrom = laterOf(retentionFrom, page.retentionFrom)),
-              summary = actions.map(withActions(authSummary, _)),
+              summary = actions.map(done => withActions(authSummary, done._1)),
               events = ordered(page.events ++ mine),
               nextCursor =
                 page.nextCursor.map(next => AuditCursor.encode(AuditCursor(until = low, auth = Some(next), key = None, centralOnly = false))),
               partial = Nil,
+              truncated = found.size > MaxCentralRowsPerPage || actions.exists(_._2),
             )
 
     /** Central's rows alone, in pages of their own: auth did not answer, or an earlier page of this report was served without it. */
@@ -146,41 +153,54 @@ object AuditReportService:
       yield UserAuditReport(
         userId = userId,
         window = ReportWindow(from = lower, to = upper, retentionFrom = retentionFrom),
-        summary = actions.map(withActions(authSummary, _)),
+        summary = actions.map(done => withActions(authSummary, done._1)),
         events = page,
         nextCursor = Option.when(rows.size > pageSize)(page.last).map(last =>
           AuditCursor.encode(AuditCursor(until = until, auth = None, key = Some(AuditCursor.Key(last.at, last.id)), centralOnly = true)),
         ),
         partial = List("auth"),
+        truncated = actions.exists(_._2),
       )
 
-    /** What auth answered, or nothing when it did not (the report goes on without it); its refusal of the request is the caller's. */
-    private def answered[A](call: IO[AuthAuditError | Throwable, A]): IO[AuditReportError, Option[A]] =
-      call.map(Some(_)).catchAll:
+    /** What auth answered, or why it did not (the report goes on without it, and says so); its refusal of the request is the caller's.
+      * The reason is a closed set: `unavailable`, `endpoint_missing`, `unreadable`. */
+    private def answered[A](call: IO[AuthAuditError | Throwable, A]): IO[AuditReportError, Either[String, A]] =
+      call.map(Right(_)).catchAll:
         case AuthAuditError.Invalid(message) => ZIO.fail(AuditReportError.Invalid(message))
-        case AuthAuditError.Unavailable(reason) => ZIO.logWarning(s"The audit report is served without auth's part: $reason").as(None)
+        case AuthAuditError.Unavailable(reason) =>
+          ZIO.logWarning(s"The audit report is served without auth's part: $reason").as(Left("unavailable"))
+        case AuthAuditError.EndpointMissing =>
+          ZIO.logWarning("The audit report is served without auth's part: auth has no such endpoint").as(Left("endpoint_missing"))
         // Auth answered with something central cannot read: no better than not answering, and worth a stack trace.
         case cause: Throwable =>
-          ZIO.logWarningCause("The audit report is served without auth's part: its answer could not be read", Cause.fail(cause)).as(None)
+          ZIO.logWarningCause(
+            "The audit report is served without auth's part: its answer could not be read",
+            Cause.fail(cause),
+          ).as(Left("unreadable"))
 
-    private def adminActions(userId: UserId, from: Instant, to: Instant): Task[List[AdminAction]] =
-      repository.userEvents(
+    /** The administrators' changes to the user, and whether there were more than the bound. */
+    private def adminActions(userId: UserId, from: Instant, to: Instant): Task[(List[AdminAction], Boolean)] =
+      repository.adminActions(
         userId,
         from,
         to.plus(Micro, ChronoUnit.MICROS),
-        None,
-        MaxAdminActions,
-      ).map(_.filter(_.kind.value.startsWith("admin.")).map: event =>
-        AdminAction(
-          at = event.at,
-          actorId = event.actorId,
-          kind = event.kind.value,
-          targetType = event.targetType,
-          targetId = event.targetId,
-          changed = event.details.fields.collectFirst { case ("changed", Json.Arr(names)) =>
-            names.collect { case Json.Str(name) => name }.toList
-          }.getOrElse(Nil),
-        ))
+        MaxAdminActions + 1,
+      ).map(found =>
+        (
+          found.take(MaxAdminActions).map: event =>
+            AdminAction(
+              at = event.at,
+              actorId = event.actorId,
+              kind = event.kind.value,
+              targetType = event.targetType,
+              targetId = event.targetId,
+              changed = event.details.fields.collectFirst { case ("changed", Json.Arr(names)) =>
+                names.collect { case Json.Str(name) => name }.toList
+              }.getOrElse(Nil),
+            ),
+          found.size > MaxAdminActions,
+        ),
+      )
 
     /** Auth's summary, as it answered it, with the administrators' actions beside it. */
     private def withActions(authSummary: Option[Json.Obj], actions: List[AdminAction]): Json.Obj =
