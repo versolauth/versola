@@ -91,6 +91,13 @@ object AuditEventsSpec extends UnitSpecBase:
       SecureRandom.live,
     )
 
+  /** The lines the log wrote about events it lost. */
+  private def lossLines: UIO[List[String]] =
+    ZTestLogger.logOutput.map(_.toList.map(_.message()).filter(_.contains("audit events were lost")))
+
+  private def drainLines: UIO[List[String]] =
+    ZTestLogger.logOutput.map(_.toList.map(_.message()).filter(_.contains("the audit queue was drained")))
+
   private def counter(name: String, source: AuditSource): UIO[Double] =
     Metric.counter(name).tagged(Set(MetricLabel("source", source.value))).value.map(_.count)
 
@@ -389,6 +396,124 @@ object AuditEventsSpec extends UnitSpecBase:
           )
       },
     ),
+    suite("what the log loses is never silent")(
+      test("events dropped at a full queue are reported once per window, by kind, and never by content") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = true)
+            events <- build(f, drop, source = edge)
+            _ <- events.record(draft(Issued, AuditOutcome.success))
+            _ <- f.started.take
+            // Two are queued behind the one the writer holds, three are dropped; then two of a kind the service did not list.
+            _ <- ZIO.foreachDiscard(1 to 5)(_ => events.record(draft(Issued, AuditOutcome.success).copy(reason = Some("secret-detail"))))
+            _ <- ZIO.foreachDiscard(1 to 2)(_ => events.record(draft(AuditKind("thing.unlisted"))))
+            before <- lossLines
+            _ <- TestClock.adjust(1.minute)
+            lines <- lossLines
+            _ <- TestClock.adjust(2.minutes)
+            later <- lossLines
+          yield assertTrue(
+            before.isEmpty,
+            lines.size == 1,
+            lines.head.contains("5 dropped, the queue was full: thing.issued (3), other (2)"),
+            lines.head.contains("(svc-c)"),
+            !lines.head.contains("secret-detail"),
+            // A window with nothing lost says nothing.
+            later == lines,
+          )
+      }.provideLayer(ZTestLogger.default),
+      test("events a best-effort record gave up waiting for are reported the same way") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = true)
+            events <- build(f, block, source = edge)
+            _ <- events.record(draft())
+            _ <- f.started.take
+            _ <- events.record(draft()) *> events.record(draft())
+            waiting <- events.recordBestEffort(draft(Refused, AuditOutcome.failure)).fork
+            _ <- settle
+            _ <- TestClock.adjust(2.seconds)
+            _ <- waiting.join
+            _ <- TestClock.adjust(1.minute)
+            lines <- lossLines
+          yield assertTrue(lines.size == 1, lines.head.contains("1 dropped, the queue stayed full for the block timeout: thing.refused (1)"))
+      }.provideLayer(ZTestLogger.default),
+      test("rows the database refused are reported once per window by kind with their SQLSTATE, and never by content") {
+        val poison = (event: AuditEvent) =>
+          Option.when(event.reason.contains("poison-detail"))(SQLException("invalid input syntax for type inet: \"poison-detail\"", "22P02"))
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false, refuse = poison)
+            events <- build(f, block, source = edge, sizing = sizing.copy(queueCapacity = 10, batchSize = 10))
+            _ <- events.record(draft())
+            _ <- events.record(draft().copy(reason = Some("poison-detail")))
+            // The batch is refused, then written row by row: the good row is stored, the refused one is not.
+            _ <- until(f, 1)
+            _ <- TestClock.adjust(1.minute)
+            lines <- lossLines
+          yield assertTrue(
+            lines.size == 1,
+            lines.head.contains("1 refused by the database for what they contain, not stored: thing.issued (1); SQLSTATE 22P02"),
+            !lines.head.contains("poison-detail"),
+            !lines.head.contains("invalid input syntax"),
+          )
+      }.provideLayer(ZTestLogger.default),
+      test("a shutdown says the queue was drained, and an empty queue says it too") {
+        for
+          f <- fixture(gated = false)
+          _ <- ZIO.scoped(build(f, block, source = edge).unit)
+          lines <- drainLines
+        yield assertTrue(lines.size == 1, lines.head.contains("0 events taken, 0 not written"))
+      }.provideLayer(ZTestLogger.default),
+      test("what is queued at shutdown is taken and written, and said so") {
+        for
+          f <- fixture(gated = true)
+          _ <- ZIO.scoped:
+            for
+              events <- build(f, block, source = edge)
+              _ <- events.record(draft())
+              _ <- f.started.take
+              _ <- events.record(draft()) *> events.record(draft())
+            yield ()
+          lines <- drainLines
+          written <- f.written.get
+        yield assertTrue(lines.size == 1, lines.head.contains("2 events taken, 0 not written"), written.map(_.size) == List(2))
+      }.provideLayer(ZTestLogger.default),
+      test("what cannot be written at shutdown is counted and reported by kind when the service stops, with the batch in the writer's hand") {
+        for
+          f <- fixture(gated = true, failures = 100)
+          failedBefore <- counter("audit_events_failed_total", edge)
+          _ <- ZIO.scoped:
+            for
+              events <- build(f, block, source = edge)
+              _ <- events.record(draft())
+              _ <- f.started.take
+              _ <- events.record(draft(Refused, AuditOutcome.failure)) *> events.record(draft(Refused, AuditOutcome.failure))
+            yield ()
+          failedAfter <- counter("audit_events_failed_total", edge)
+          drained <- drainLines
+          lost <- lossLines
+        yield assertTrue(
+          failedAfter - failedBefore == 3.0,
+          drained.size == 1,
+          drained.head.contains("2 events taken, 2 not written"),
+          lost.size == 1,
+          lost.head.contains("3 not written before the service stopped: thing.refused (2), thing.issued (1)"),
+        )
+      }.provideLayer(ZTestLogger.default),
+      test("the queue's size is read while the writer is held by a database that is down, not only when it takes something") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = true)
+            events <- build(f, block, source = edge)
+            _ <- events.record(draft())
+            _ <- f.started.take
+            _ <- events.record(draft()) *> events.record(draft())
+            _ <- settle *> TestClock.adjust(2.seconds) *> settle
+            size <- gauge("audit_queue_size", edge)
+          yield assertTrue(size == 2.0)
+      },
+    ),
     suite("overflow = drop")(
       test("an event that finds the queue full is dropped and counted, and the request is not held up or failed") {
         ZIO.scoped:
@@ -426,7 +551,8 @@ object AuditEventsSpec extends UnitSpecBase:
           for
             f <- fixture(gated = false)
             _ <- TestClock.setTime(Instant.parse("2026-11-03T10:00:00Z"))
-            _ <- build(f, block)
+            // The writer's and the report's clocks are slowed down: the test moves the clock by an hour, a tick of theirs at a time.
+            _ <- build(f, block, sizing = sizing.copy(flushInterval = 30.minutes, lossLogWindow = 30.minutes))
             _ <- settle
             atStart = f.repository.maintainPartitions.calls
             pruned = f.repository.pruneDefault.calls
