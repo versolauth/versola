@@ -97,7 +97,8 @@ if command -v jq >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then
   manifest "$(entry 1.0.0-rc1 '' '')" "$(entry 1.0.0 '' '')"; expect_bad "a pre-release is not above its release" "" "$m"
   manifest "$(entry 1.2.3 '"1.2.*"' '"1.0.*"')"; expect_ok "rollingFrom may match the release's own line" "" "$m"
   manifest "$(entry 1.2.3 '"1.2.*"' '"1.2.1"')"; expect_bad "a glob and an exact version that overlap" "" "$m"
-  manifest "$(entry 1.2.3 '"1.2.*"' '"1.*"')"; expect_bad "two globs that overlap" "" "$m"
+  manifest "$(entry 2.0.0 '"1.2.*"' '"1.*"')"; expect_bad "two globs that overlap" "" "$m"
+  grep -q "name the same version" "$work/check.out" && pass "the overlap is the reason" || fail "the overlap is the reason"
   manifest "$(entry 1.2.3 '"1.2.1"' '"1.2.1"')"; expect_bad "the same exact version in both lists" "" "$m"
   manifest "$(entry 1.2.3 '' '"1.2.*"')"; expect_bad "freshDatabaseFrom matching the release itself" "" "$m"
   manifest "$(entry 1.2.3 '"^1.2.0"' '')"; expect_bad "a semver range" "" "$m"
@@ -110,6 +111,7 @@ if command -v jq >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then
   expect_bad "an entry without freshDatabaseFrom" "" "$m"
   echo '{' > "$m"; expect_bad "invalid JSON" "" "$m"
   expect_bad "a missing file" "" "$work/missing.json"
+  manifest "$(entry 1.2.3 '' '')"; if (cd "$work" && bash "$repo/.github/scripts/check-release-manifest.sh" 1.2.3 m.json > "$work/check.out" 2>&1); then pass "a relative manifest path is the caller's"; else cat "$work/check.out" >&2; fail "a relative manifest path is the caller's"; fi
 else
   echo "skip the check-release-manifest.sh cases: bash and jq are needed"
 fi

@@ -8,6 +8,8 @@ denies or asks for them). The operator does; Claude asks for the output.
 
 A published tag cannot be reused, so everything under "Before the release" must hold before Publish.
 If one item fails, the release does not go out.
+If the tag build fails at "Check the release manifest" nothing was pushed (every image job waits for it): delete the
+release and the tag, fix `release.json`, publish again. If a later job failed, the tag is spent: cut the next version.
 
 ## Before the release
 

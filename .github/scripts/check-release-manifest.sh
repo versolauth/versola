@@ -27,6 +27,8 @@
 #
 # Usage: check-release-manifest.sh [<tag>] [<manifest>]      needs bash and jq
 set -euo pipefail
+# A manifest given as a relative path is relative to where the caller stands, not to the repo root the script moves to next.
+if [[ -n "${2:-}" && "$2" != /* ]]; then set -- "${1:-}" "$PWD/$2"; fi
 cd "$(dirname "$0")/../.."
 
 # jq.exe (Git Bash on Windows) ends its lines with CRLF; strip it so the comparisons below work everywhere.
