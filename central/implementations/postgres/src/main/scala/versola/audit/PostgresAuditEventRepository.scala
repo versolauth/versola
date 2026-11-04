@@ -5,7 +5,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.audit.CentralAuditRepository
 import versola.util.audit.*
 import versola.util.partitions.{PartitionReport, TableOwnership}
-import versola.util.postgres.{BasicCodecs, DailyPartitions}
+import versola.util.postgres.{AuditInsert, BasicCodecs, DailyPartitions}
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps}
 import zio.{Task, ZEnvironment, ZIO, ZLayer, durationInt}
@@ -36,19 +36,7 @@ class PostgresAuditEventRepository(xa: TransactorZIO) extends CentralAuditReposi
     else
       xa.transactMeasured("insert-audit-events"):
         timed()
-        batchUpdate(events): event =>
-          // `ip` and `details` are bound as text and cast: the columns are INET and JSONB.
-          sql"""
-            INSERT INTO audit_event (id, at, tenant_id, source, node_id, kind, outcome, reason, severity, actor_type, actor_id,
-                                     user_id, client_id, session_id, ip, user_agent, trace_id, target_type, target_id, details)
-            VALUES (
-              ${event.id}, ${event.at}, ${event.tenantId}, ${event.source.value}, ${event.nodeId},
-              ${event.kind.value}, ${event.outcome.toString}, ${event.reason}, ${event.severity.toString},
-              ${event.actorType.value}, ${event.actorId}, ${event.userId}, ${event.clientId}, ${event.sessionId},
-              CAST(${event.ip} AS INET), ${event.userAgent}, ${event.traceId}, ${event.targetType}, ${event.targetId},
-              CAST(${event.details.toJson} AS JSONB)
-            )
-          """.update
+        AuditInsert.insertBatch(events)
       .unit
 
   override def maintainPartitions(from: LocalDate, days: Int, keepFrom: LocalDate): Task[PartitionReport] =

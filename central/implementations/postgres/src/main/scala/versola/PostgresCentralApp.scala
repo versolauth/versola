@@ -296,11 +296,18 @@ object PostgresCentralApp extends VersolaApp("central"):
     val host = scala.util.Try(java.net.InetAddress.getLocalHost.getHostName).getOrElse("central")
     s"$host-${java.util.UUID.randomUUID().toString.take(8)}"
 
-  /** The audit log (#469): its settings from the `audit` block of the config, and the writer, which makes the partitions of
-    * `audit_event` and writes the events the services record. It comes before everything that records: bootstrap does. */
+  /** The audit log's writer (#469): it makes the partitions of `audit_event` and writes the events the services record, and writes
+    * what is queued once more when its scope closes. It is built on the transactor and the repository, before everything that records:
+    * bootstrap does. */
+  private[versola] def auditWriter(
+      sizing: AuditEvents.Sizing = AuditEvents.Sizing.standard,
+  ): ZLayer[AuditEventRepository & AuditEvents.Settings & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
+    AuditEvents.liveWith(sizing)(CentralAudit.Source, nodeId, CentralAudit.catalog)
+
+  /** The audit log: its settings from the `audit` block of the config, and the writer. */
   private val auditEvents
       : ZLayer[CentralConfig & AuditEventRepository & Tracing & SecureRandom & Scope, Nothing, AuditEvents.Settings & AuditEvents] =
-    ZLayer.fromFunction((config: CentralConfig) => config.audit.settings) >++> AuditEvents.live(CentralAudit.Source, nodeId, CentralAudit.catalog)
+    ZLayer.fromFunction((config: CentralConfig) => config.audit.settings) >++> auditWriter()
 
   override val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     parseConfig[CentralConfig] >++>
