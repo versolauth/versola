@@ -410,7 +410,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         (response, service, _) <- run(
           Request.get(URL.decode("/login/central-admin?first_login_token=tok123").toOption.get),
-          (s, _) => s.authorize.succeedsWith(authorizeUrl),
+          (s, _) => s.authorize.succeedsWith(loginStart(authorizeUrl)),
         )
       yield assertTrue(
         response.status == Status.SeeOther,

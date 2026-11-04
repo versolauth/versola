@@ -102,10 +102,14 @@ object FirstLoginLinkSpec extends ZIOSpec[EdgeApi & OAuthClient]:
         unknown <- stepAfterLogin("first_login_token" -> "not-a-token-auth-ever-issued")
       yield assertTrue(unknown == plain, unknown != ConversationStep.SetPassword, unknown != ConversationStep.AccessDenied)
     },
-    test("the issued token opens the set-password step once; the same link is then an ordinary login") {
+    // What follows the passed password step depends on the stack's `central-admin` flow: the set-password step on
+    // a flow of the password alone, the next factor (here an OTP) on a flow that asks for more. Either way the
+    // token has done its job when the login does not start at the credential or the password step.
+    test("the issued token skips the password step once; the same link is then an ordinary login") {
       for
         login <- System.env("E2E_LOGIN").map(_.getOrElse("admin"))
         token <- newToken
+        plain <- stepAfterLogin()
         result <- ZIO.scoped:
           for
             _ <- issued(login, token)
@@ -113,9 +117,11 @@ object FirstLoginLinkSpec extends ZIOSpec[EdgeApi & OAuthClient]:
             second <- stepAfterLogin("first_login_token" -> token)
           yield (first, second)
       yield assertTrue(
-        result._1 == ConversationStep.SetPassword,
-        result._2 != ConversationStep.SetPassword,
-        result._2 != ConversationStep.AccessDenied,
+        result._1 != plain,
+        result._1 != ConversationStep.Credential,
+        result._1 != ConversationStep.Password,
+        result._1 != ConversationStep.AccessDenied,
+        result._2 == plain,
       )
     },
   ) @@ TestAspect.withLiveClock @@ TestAspect.sequential
