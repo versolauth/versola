@@ -4,12 +4,10 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.audit.AuditReadRepository.*
 import versola.util.audit.*
-import versola.util.http.IpAddress
 import versola.util.partitions.{PartitionReport, TableOwnership}
 import versola.util.postgres.{BasicCodecs, DailyPartitions}
 import zio.json.*
 import zio.json.ast.Json
-import zio.metrics.Metric
 import zio.{Duration, Task, ZIO, ZLayer, durationInt}
 
 import java.time.{Instant, LocalDate}
@@ -30,40 +28,20 @@ class PostgresAuditEventRepository(
     AuditReadRepository,
     BasicCodecs:
 
-  import PostgresAuditEventRepository.*
-
   private given DbCodec[Instant] = DbCodec.InstantCodec
 
   private def timed()(using DbCon): Unit =
     sql"SET LOCAL statement_timeout = ${SqlLiteral(s"'${statementTimeout.toMillis}ms'")}".update.run()
 
-  /** The batch in one round trip. A batch the database refuses for what is in it (a data exception, SQLSTATE class 22) is written row by
-    * row instead, and a row that is refused on its own is counted and logged without its content, never retried: the writer keeps what
-    * it could not write and tries again, so a single row that can never be stored would otherwise stop the log for everyone, and what an
-    * event carries is partly what a caller of the service sent. */
+  /** The batch in one round trip. What the table cannot hold of an event is cleaned before this (the core's sanitizing), and a batch the
+    * database refuses for its content is retried and then written row by row by the core's writer. */
   override def insertBatch(events: List[AuditEvent]): Task[Unit] =
     if events.isEmpty then ZIO.unit
     else
-      val clean = events.map(sanitized)
-      insertTogether(clean).catchSome:
-        case error if isDataException(error) => ZIO.foreachDiscard(clean)(insertAlone)
-
-  private def insertTogether(events: List[AuditEvent]): Task[Unit] =
-    xa.transactMeasured("insert-audit-events"):
-      timed()
-      batchUpdate(events)(insertStatement)
-    .unit
-
-  private def insertAlone(event: AuditEvent): Task[Unit] =
-    xa.transactMeasured("insert-audit-event"):
-      timed()
-      insertStatement(event).run()
-    .unit.catchSome:
-      case error if isDataException(error) =>
-        PostgresAuditEventRepository.rejected.increment *>
-          ZIO.logError(
-            s"an audit event of kind ${event.kind.value} (id ${event.id}) was refused by the database and is not stored: ${sqlState(error).getOrElse("data exception")}",
-          )
+      xa.transactMeasured("insert-audit-events"):
+        timed()
+        batchUpdate(events)(insertStatement)
+      .unit
 
   // `ip` and `details` are text bound to the column's type: INET and JSONB have no driver type of their own here.
   private def insertStatement(event: AuditEvent) =
@@ -207,54 +185,6 @@ class PostgresAuditEventRepository(
       Summary(byKind, byClient, ips, userAgents, sessions, factors, high)
 
 object PostgresAuditEventRepository:
-  /** Events the database refused one by one, after a batch it refused for what is in it: lost, and the only way an event is lost that
-    * the writer does not itself count. Alert on it increasing. */
-  val rejected = Metric.counter("audit_events_rejected_total")
-
-  /** The longest user agent an event keeps. */
-  val MaxUserAgent = 256
-
-  /** What the table can hold of an event whatever the caller sent: a text column and a JSON string refuse U+0000, and `ip` is an address
-    * or nothing. The rest of what the caller sent is kept as it is. */
-  def sanitized(event: AuditEvent): AuditEvent =
-    def text(value: String): String = value.replace('\u0000', '\uFFFD')
-    def json(value: Json): Json = value match
-      case Json.Str(s) => Json.Str(text(s))
-      case Json.Arr(items) => Json.Arr(items.map(json))
-      case Json.Obj(fields) => Json.Obj(fields.map((key, v) => text(key) -> json(v)))
-      case other => other
-    event.copy(
-      tenantId = event.tenantId.map(text),
-      nodeId = text(event.nodeId),
-      reason = event.reason.map(text),
-      actorId = event.actorId.map(text),
-      clientId = event.clientId.map(text),
-      sessionId = event.sessionId.map(text),
-      ip = event.ip.filter(literal => IpAddress.normalize(literal).isDefined),
-      // The short form `browser version / os` is far under this; a route that did not shorten it (the additional listener) is cut.
-      userAgent = event.userAgent.map(value => text(value).take(MaxUserAgent)),
-      traceId = event.traceId.map(text),
-      targetType = event.targetType.map(text),
-      targetId = event.targetId.map(text),
-      details = Json.Obj(event.details.fields.map((key, v) => text(key) -> json(v))),
-    )
-
-  /** The SQLSTATEs anywhere in the chain of causes and chained exceptions. */
-  private[audit] def sqlStates(error: Throwable): List[String] =
-    def chain(e: Throwable): List[Throwable] =
-      if e == null then Nil
-      else
-        val next = e match
-          case sql: java.sql.SQLException => Option(sql.getNextException).toList.flatMap(chain)
-          case _ => Nil
-        e :: chain(e.getCause) ::: next
-    chain(error).collect { case sql: java.sql.SQLException if sql.getSQLState != null => sql.getSQLState }
-
-  /** SQLSTATE class 22 in that chain: a value the column cannot hold, not a database that cannot be reached. */
-  private[audit] def isDataException(error: Throwable): Boolean = sqlStates(error).exists(_.startsWith("22"))
-
-  private[audit] def sqlState(error: Throwable): Option[String] = sqlStates(error).find(_.startsWith("22"))
-
   /** The partitions of `audit_event`: the default partition's rows stay, and a delete is marked with the setting the table's trigger
     * looks for. */
   val partitions: DailyPartitions =

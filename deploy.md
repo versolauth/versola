@@ -982,10 +982,10 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `audit_events_total{source,kind,outcome}`, `audit_events_dropped_total`, `audit_events_blocked_total` (requests
   that waited for room), `audit_events_failed_total` (best-effort inserts that failed), `audit_queue_size`,
   `audit_partitions_ahead`, `audit_events_in_default`, `audit_partition_owner_mismatch`, `audit_events_unavailable_total`
-  (requests refused with 503 `audit_unavailable` after waiting for the queue) and, of `auth`, `audit_events_rejected_total` (events the
-  database refused one by one, which are not stored: a text with U+0000 and an address that is none are cleaned before the insert, so
-  this stays at zero). A batch the database cannot take for what is in it is written row by row; a batch it cannot take because it
-  is unreachable is kept and tried again, and under `overflow = block` the queue fills and requests are refused meanwhile. The alert rules are
+  (requests refused with 503 `audit_unavailable` after waiting for the queue) and `audit_events_rejected_total`
+  (events the database refused one by one, which are not stored: a text with U+0000 and an address that is none are cleaned before the
+  insert, so this stays at zero). A batch the database refuses for what is in it is retried and then written row by row; a batch it
+  cannot take because it is unreachable is kept and tried again, and under `overflow = block` the queue fills and requests are refused meanwhile. The alert rules are
   `dashboards/alerts/versola-audit.rules.yaml` (`AuditEventsDropped`, `AuditEventsRejected`, `AuditEventsBlocked`,
   `AuditPartitionsRunningOut`, `AuditEventsInDefault`, `AuditPartitionOwnerMismatch`), loaded like the antifraud
   ones. **The rows are personal data** (an address, a user agent, a user id): the hot window and the replica's
