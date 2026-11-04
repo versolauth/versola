@@ -37,7 +37,7 @@
 # is ever rebuilt.
 
 # ── jlink stage: build a minimal custom JRE ──────────────────────────────
-FROM eclipse-temurin:25.0.5_8-jdk-alpine@sha256:425f0b733cb23843bd78dbe5552513976d0cf12b9722752c48a5161cf5cd2f32 AS jlink
+FROM eclipse-temurin:27_35-jdk-alpine@sha256:63c4f0092cb994c7a8c0446aace33a2de3763128fcc68c211d7ad3577c75b59f AS jlink
 
 WORKDIR /work
 COPY scripts/target/universal/stage stage
