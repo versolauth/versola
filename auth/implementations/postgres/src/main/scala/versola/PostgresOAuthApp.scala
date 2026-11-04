@@ -411,7 +411,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       securityService >++>
       // The audit writer and its partition maintenance: before everything that records into it.
       auditSettings >++>
-      AuditEvents.live(AuthAudit.source, auditNodeId, AuthAudit.catalog) >++>
+      AuditEvents.live(AuthAudit.source, auditNodeId, AuthAudit.catalog, PostgresAuditEventRepository.Table) >++>
       // The country of an address in the per-user report is read from the same database as antifraud's, from `antifraud.geo.file`.
       antifraudGeoSettings >++>
       GeoResolver.live >++>
