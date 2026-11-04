@@ -676,6 +676,48 @@ object AuditEventsSpec extends UnitSpecBase:
         yield assertTrue(stored.isEmpty, failedAfter - failedBefore == 2.0)
       },
     ),
+    suite("a request waiting for room when the stop begins")(
+      test("is refused at once, without waiting for the writer to give up its statement or for the block timeout") {
+        for
+          // The writer is held in a statement the transactor will not interrupt, so the stop cannot free room for a second or more.
+          store <- Store.make(holdFirst = true, uninterruptible = true)
+          unavailableBefore <- counter("audit_events_unavailable_total", central)
+          scope <- Scope.make
+          events <- scope.extend(buildOn(store, block, source = central, sizing = sizing.copy(queueCapacity = 2)))
+          _ <- events.record(draft())
+          _ <- store.entered.take
+          _ <- events.record(draft()) *> events.record(draft())
+          waiting <- events.record(draft()).exit.fork
+          _ <- settle
+          closing <- scope.close(Exit.unit).fork
+          // The clock is not moved: nothing but the stop itself can release the request.
+          result <- eventually(waiting.poll)(_.isDefined)
+          unavailableAfter <- counter("audit_events_unavailable_total", central)
+          _ <- settle *> TestClock.adjust(AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout).plus(2.seconds)) *> settle
+          _ <- closing.join
+          _ <- store.gate.succeed(())
+        yield assertTrue(result == Some(Exit.succeed(Exit.fail(AuditUnavailable))), unavailableAfter - unavailableBefore == 1.0)
+      },
+      test("a best-effort record waiting for room is released at once too, and the event is reported as offered after the stop began") {
+        for
+          store <- Store.make(holdFirst = true, uninterruptible = true)
+          droppedBefore <- counter("audit_events_dropped_total", edge)
+          scope <- Scope.make
+          events <- scope.extend(buildOn(store, block, source = edge, sizing = sizing.copy(queueCapacity = 2)))
+          _ <- events.record(draft())
+          _ <- store.entered.take
+          _ <- events.record(draft()) *> events.record(draft())
+          waiting <- events.recordBestEffort(draft()).fork
+          _ <- settle
+          closing <- scope.close(Exit.unit).fork
+          result <- eventually(waiting.poll)(_.isDefined)
+          droppedAfter <- counter("audit_events_dropped_total", edge)
+          _ <- settle *> TestClock.adjust(AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout).plus(2.seconds)) *> settle
+          _ <- closing.join
+          _ <- store.gate.succeed(())
+        yield assertTrue(result.exists(_.isSuccess), droppedAfter - droppedBefore == 1.0)
+      },
+    ),
     suite("the stop and the app's shutdown")(
       test("the drain timeout and five seconds of margin fit inside the app's graceful shutdown timeout") {
         assertTrue(AuditEvents.DrainTimeout.plus(5.seconds).compareTo(VersolaApp.GracefulShutdownTimeout) <= 0)
