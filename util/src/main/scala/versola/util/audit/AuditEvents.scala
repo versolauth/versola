@@ -406,7 +406,9 @@ object AuditEvents:
       for
         queued <- queue.takeAll
         _ <- taken.update(_ + queued.size)
-        _ <- pending.update(_ ++ queued)
+        // What was queued goes first: the rows the writer held may be waiting on the statement that was abandoned, which holds them
+        // uncommitted in the database, and must not stand in front of rows that nothing holds.
+        _ <- pending.update(queued.toList ++ _)
         rows <- pending.get
         _ <- ZIO.foreachDiscard(rows.grouped(math.min(sizing.batchSize, DrainChunk)).toList)(writeUntilDone(_, pending))
         idle <- intake.get.map(_.inflight == 0)

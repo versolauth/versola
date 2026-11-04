@@ -756,7 +756,7 @@ object AuditEventsSpec extends UnitSpecBase:
           _ <- events.record(draft())
           _ <- store.entered.take
           _ <- ZIO.foreachDiscard(1 to 299)(_ => events.record(draft()))
-          closing <- scope.close(Exit.unit).fork
+          closing <- closedAsTheAppDoes(scope).fork
           _ <- settle *> TestClock.adjust(AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout).plus(2.seconds)) *> settle
           done <- closing.poll
           stored <- store.stored.get
