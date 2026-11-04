@@ -1395,12 +1395,17 @@ records query parameters only if listed in `logQuery`. Auth does not keep the ra
 holds its hash. The one exception is a client that requires **PAR** or a signed request object (JAR):
 there the token travels inside the pushed or signed request, and `pushed_authorization_requests`
 holds it until the request is consumed or expires. Without `first-login-url` no token is issued. The
-migration `V0031` adds the `first_login_tokens` table (and its entry in `cleanup.tables`).
+migration `V0031` adds the `first_login_tokens` table; the `cleanup.tables` entry for it is written by
+`gen-env` into a newly generated `auth.conf`, an existing one needs it added by hand (without it an
+expired row just stays until the next bootstrap, a password change or a purge replaces it).
 
 Open the link yourself, in the browser you will sign in with. Do not paste it into chat or mail: a
 link preview that follows it spends the token, and you are left with an ordinary sign-in page. The
 token is spent before the login is created, so an error at that moment (a database or `central`
 outage) burns it as well. A browser that already has a session ignores the token and does not spend it.
+If a link may have leaked, resetting is not instant protection: a login already opened from it stays
+open at the "set a permanent password" step until the conversation expires (15 minutes by default) and
+can still set a password in that time, so after a leak wait that long before relying on the new link.
 
 A spent or lost link does **not** take the temporary password with it: it is still valid for its 24
 hours, and the password path below is the immediate way in. To get a new link without waiting, start

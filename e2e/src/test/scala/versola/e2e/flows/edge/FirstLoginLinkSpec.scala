@@ -2,7 +2,7 @@ package versola.e2e.flows.edge
 
 import versola.e2e.support.{*, given}
 import zio.*
-import zio.http.{Client, Header, Status}
+import zio.http.{Client, Header}
 import zio.test.*
 
 import java.nio.charset.StandardCharsets
@@ -16,8 +16,9 @@ import java.util.Base64
   * consulted, and the conversation that starts is the "set a permanent password" step.
   *
   * The token is written the way auth stores it, as its SHA-256, so the spec holds a token it knows without reading
-  * auth's log. The row is removed afterwards. Nothing here sets a permanent password: the admin of the staged stack
-  * keeps the temporary one the other specs log in with.
+  * auth's log. The row is removed afterwards. Nothing here sets a permanent password; the spec relies on the staged
+  * stack's admin not having one (a permanent password makes auth refuse the token). It writes to the auth database
+  * named by `E2E_DB_*`, which must be the throwaway stack's.
   */
 object FirstLoginLinkSpec extends ZIOSpec[EdgeApi & OAuthClient]:
   override val bootstrap: ZLayer[Any, Any, EdgeApi & OAuthClient] =
@@ -34,7 +35,10 @@ object FirstLoginLinkSpec extends ZIOSpec[EdgeApi & OAuthClient]:
       authorizeUrl <- ZIO.fromOption(started.header(Header.Location).map(_.url.encode))
         .orElseFail(RuntimeException(s"/login/$presetId did not redirect (status=${started.status})"))
       authorized <- auth.probe(zio.http.Method.GET, authorizeUrl)
-      conversation <- ZIO.fromOption(OAuthClient.extractConversationCookie(authorized))
+      conversation <- ZIO.fromOption(
+        authorized.headers.getAll(Header.SetCookie)
+          .collectFirst { case h if h.value.name == "SSO_CONVERSATION" => h.value.content },
+      )
         .orElseFail(RuntimeException(s"the OP started no conversation (status=${authorized.status})"))
       challenge <- auth.getChallenge(conversation)
       step <- ZIO.fromOption(challenge.step)
@@ -62,23 +66,23 @@ object FirstLoginLinkSpec extends ZIOSpec[EdgeApi & OAuthClient]:
     * over, whether or not the link was opened. */
   private def issued(login: String, token: String): ZIO[Scope, Throwable, Unit] =
     val hash = MessageDigest.getInstance("SHA-256").digest(token.getBytes(StandardCharsets.UTF_8))
-    ZIO.acquireRelease(
-      database: connection =>
-        val now = Instant.now()
-        val statement = connection.prepareStatement(
-          """INSERT INTO first_login_tokens (user_id, token_hash, created_at, expires_at)
-            |SELECT id, ?, ?, ? FROM users WHERE login = ?
-            |ON CONFLICT (user_id) DO UPDATE
-            |  SET token_hash = EXCLUDED.token_hash, created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at""".stripMargin,
-        ).nn
-        try
-          statement.setBytes(1, hash)
-          statement.setTimestamp(2, Timestamp.from(now))
-          statement.setTimestamp(3, Timestamp.from(now.plusSeconds(3600)))
-          statement.setString(4, login)
-          statement.executeUpdate()
-        finally statement.close(),
-    )(_ => remove(hash).ignore).flatMap(updated =>
+    val store = database { connection =>
+      val now = Instant.now()
+      val statement = connection.prepareStatement(
+        """INSERT INTO first_login_tokens (user_id, token_hash, created_at, expires_at)
+          |SELECT id, ?, ?, ? FROM users WHERE login = ?
+          |ON CONFLICT (user_id) DO UPDATE
+          |  SET token_hash = EXCLUDED.token_hash, created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at""".stripMargin,
+      ).nn
+      try
+        statement.setBytes(1, hash)
+        statement.setTimestamp(2, Timestamp.from(now))
+        statement.setTimestamp(3, Timestamp.from(now.plusSeconds(3600)))
+        statement.setString(4, login)
+        statement.executeUpdate()
+      finally statement.close()
+    }
+    ZIO.acquireRelease(store)(_ => remove(hash).ignore).flatMap(updated =>
       ZIO.fail(RuntimeException(s"expected to store a token for the user '$login', stored $updated"))
         .unless(updated == 1).unit,
     )
