@@ -8,8 +8,11 @@ import zio.json.ast.Json
   * so the event is made storable where it is made, and the writer only has the database's own refusals left to handle.
   *
   * A text column and a JSON string refuse U+0000, `ip` is an address or nothing, and a user agent is as long as a client cares to
-  * write it. The rest of what the caller sent is kept as it is. */
-private[audit] object AuditSanitizer:
+  * write it. The rest of what the caller sent is kept as it is.
+  *
+  * Applied once, where a draft becomes an event ([[AuditEvents.build]]), and again by `AuditInsert` before the row is written, since
+  * what reaches a repository may not have come through `build`; it changes nothing that is already clean. */
+object AuditSanitizer:
 
   /** The longest user agent an event keeps, in UTF-16 units: browsers write a few hundred characters, and a longer one is a client
     * that wants its text in the log. */
