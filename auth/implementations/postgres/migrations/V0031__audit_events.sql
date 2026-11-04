@@ -48,9 +48,6 @@ CREATE INDEX audit_event_at_idx ON audit_event USING brin (at);
 -- Partial: the rows with no user (a client-credentials grant, a failed client authentication) are not what it serves.
 CREATE INDEX audit_event_user_idx ON audit_event (user_id, at) WHERE user_id IS NOT NULL;
 
--- What an address did, for the investigation that starts from an address rather than from an account.
-CREATE INDEX audit_event_ip_idx ON audit_event (ip, at) WHERE ip IS NOT NULL;
-
 -- An event of a day that has no partition is written here instead of being refused. Unlike `af_event_default`, the rows are never moved into the day's partition: a move is a delete
 -- and an insert, and the replication the operator keeps is insert-only, so the day whose rows sit here is not
 -- attached and the gauge `audit_events_in_default` says so. The rows older than the retention are deleted from here
@@ -59,10 +56,12 @@ CREATE INDEX audit_event_ip_idx ON audit_event (ip, at) WHERE ip IS NOT NULL;
 -- It takes the indexes of audit_event, as every partition does.
 CREATE TABLE audit_event_default PARTITION OF audit_event DEFAULT;
 
--- Append-only. An UPDATE or DELETE of a row is refused unless the transaction is the service's maintenance, which
--- marks itself with `SET LOCAL versola.audit_maintenance = 'on'` (a custom GUC: unknown settings under a prefix are
--- allowed, and `current_setting(..., true)` reads NULL when it was never set). Retention itself drops partitions,
--- which is DDL and fires no row trigger, so it needs no mark.
+-- What the trigger below does: an UPDATE, DELETE or TRUNCATE of `audit_event` is refused unless the transaction has set
+-- `versola.audit_maintenance` to 'on' (`SET LOCAL versola.audit_maintenance = 'on'`; a custom setting: unknown settings
+-- under a prefix are allowed, and `current_setting(..., true)` reads NULL when it was never set), as the service's own
+-- prune of the default partition does. Any session can set it, and the role that owns the table can drop the trigger or a
+-- partition: the trigger refuses the statements an application bug would issue and says what the maintenance is. Retention
+-- itself drops partitions, which is DDL and fires no row trigger, so it needs no mark.
 --
 -- AFTER rather than BEFORE: a BEFORE ROW trigger on a partitioned table needs PostgreSQL 13, and the minimum this
 -- schema supports is 12 (deploy.md, the antifraud event log). An AFTER ROW trigger on a partitioned table is cloned
@@ -80,3 +79,8 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER audit_event_immutable
     AFTER UPDATE OR DELETE ON audit_event
     FOR EACH ROW EXECUTE FUNCTION audit_event_immutable();
+
+-- The same refusal for TRUNCATE, which fires no row trigger. A statement trigger, so it is the same function.
+CREATE TRIGGER audit_event_no_truncate
+    BEFORE TRUNCATE ON audit_event
+    FOR EACH STATEMENT EXECUTE FUNCTION audit_event_immutable();

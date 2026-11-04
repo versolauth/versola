@@ -76,6 +76,20 @@ object PostgresAuditEventRepositorySpec extends PostgresSpec, AuditEventReposito
           left == 0L,
         )
       },
+      test("refuses a TRUNCATE of the table unless the transaction is marked as maintenance, and leaves the rows") {
+        for
+          xa <- ZIO.service[TransactorZIO]
+          _ <- repository.maintainPartitions(from = today, days = 1, keepFrom = today.minusDays(30))
+          _ <- repository.insertBatch(List(event(utc(today.atTime(10, 0)), user = Some(user1))))
+          refused <- xa.connect(sql"TRUNCATE audit_event".update.run()).flip.map(_.getMessage)
+          kept <- env.fixtures.countEvents
+          marked <- xa.transact:
+            sql"SET LOCAL versola.audit_maintenance = 'on'".update.run()
+            sql"TRUNCATE audit_event".update.run()
+          .exit
+          left <- env.fixtures.countEvents
+        yield assertTrue(refused.contains("audit_event is append-only"), kept == 1L, marked.isSuccess, left == 0L)
+      },
       test("the refusal says the log is append-only, and a transaction marked as maintenance may delete") {
         for
           xa <- ZIO.service[TransactorZIO]
