@@ -16,6 +16,7 @@ import versola.util.net.{
   RangeDatabase,
   RangeDatabaseLoader,
 }
+import versola.util.partitions.TableOwnership
 import versola.util.{Email, Phone, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.json.*
@@ -51,6 +52,9 @@ object AntifraudEventsSpec extends UnitSpecBase:
     rules = Nil,
   )
 
+  /** The service's role owns the table. */
+  private val owned = TableOwnership(owner = "auth", role = "auth", mayAlter = true)
+
   private case class Env(repository: Stub[AntifraudEventRepository], configService: Stub[OAuthConfigurationService])
 
   private def env: Env = Env(stub[AntifraudEventRepository], stub[OAuthConfigurationService])
@@ -65,9 +69,12 @@ object AntifraudEventsSpec extends UnitSpecBase:
       sizing: AntifraudEvents.Sizing = smallSizing,
       asn: AsnResolver = AsnResolver.off,
       geo: GeoResolver = GeoResolver.off,
+      ownership: Task[TableOwnership] = ZIO.succeed(owned),
+      moved: Long = 0L,
   ): ZIO[Scope, Nothing, AntifraudEvents] =
     (for
-      _ <- e.repository.maintainPartitions.succeedsWith(())
+      _ <- e.repository.ownership.returnsZIO(_ => ownership)
+      _ <- e.repository.maintainPartitions.succeedsWith(moved)
       _ <- e.repository.rollupStats.succeedsWith(true)
       _ <- e.repository.partitionDaysAhead.succeedsWith(0)
       _ <- e.repository.pruneStats.succeedsWith(())
@@ -280,7 +287,8 @@ object AntifraudEventsSpec extends UnitSpecBase:
         val e = env
         for
           scope <- Scope.make
-          _ <- e.repository.maintainPartitions.succeedsWith(())
+          _ <- e.repository.ownership.succeedsWith(owned)
+          _ <- e.repository.maintainPartitions.succeedsWith(0L)
           _ <- e.repository.insertBatch.succeedsWith(())
           _ <- e.repository.rollupStats.succeedsWith(true)
           _ <- e.repository.partitionDaysAhead.succeedsWith(0)
@@ -324,7 +332,6 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- TestClock.setTime(Instant.parse("2026-10-21T10:00:00Z"))
-            _ <- e.repository.maintainPartitions.succeedsWith(())
             _ <- build(e, small)
             first = e.repository.maintainPartitions.calls
             _ <- TestClock.adjust(6.hours)
@@ -339,8 +346,9 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             attempts <- Ref.make(0)
+            _ <- e.repository.ownership.succeedsWith(owned)
             _ <- e.repository.maintainPartitions.returnsZIO: _ =>
-              attempts.updateAndGet(_ + 1).flatMap(n => ZIO.fail(RuntimeException("lock timeout")).when(n == 1).unit)
+              attempts.updateAndGet(_ + 1).flatMap(n => ZIO.fail(RuntimeException("lock timeout")).when(n == 1).as(0L))
             _ <- e.repository.insertBatch.succeedsWith(())
             _ <- e.repository.rollupStats.succeedsWith(true)
             _ <- e.repository.partitionDaysAhead.succeedsWith(0)
@@ -373,8 +381,9 @@ object AntifraudEventsSpec extends UnitSpecBase:
           for
             _ <- TestClock.setTime(Instant.parse("2026-10-21T10:00:00Z"))
             attempts <- Ref.make(0)
+            _ <- e.repository.ownership.succeedsWith(owned)
             _ <- e.repository.maintainPartitions.returnsZIO: _ =>
-              attempts.updateAndGet(_ + 1).flatMap(n => ZIO.fail(RuntimeException("lock timeout")).when(n == 2).unit)
+              attempts.updateAndGet(_ + 1).flatMap(n => ZIO.fail(RuntimeException("lock timeout")).when(n == 2).as(0L))
             ahead <- Ref.make(7)
             _ <- e.repository.partitionDaysAhead.returnsZIO(_ => ahead.get)
             _ <- e.repository.insertBatch.succeedsWith(())
@@ -410,6 +419,71 @@ object AntifraudEventsSpec extends UnitSpecBase:
             seen.nonEmpty,
           )
       },
+      test("rows moved out of the default partition are counted: a day ran without a partition") {
+        val e = env
+        val counter = Metric.counter("antifraud_events_moved_from_default_total")
+        ZIO.scoped:
+          for
+            before <- counter.value
+            _ <- build(e, small, moved = 12)
+            after <- counter.value
+          yield assertTrue(after.count - before.count == 12.0)
+      },
+      test("a run that moved nothing counts nothing") {
+        val e = env
+        val counter = Metric.counter("antifraud_events_moved_from_default_total")
+        ZIO.scoped:
+          for
+            before <- counter.value
+            _ <- build(e, small)
+            after <- counter.value
+          yield assertTrue(after == before)
+      },
+      test("a service that does not own the table says what to run, sets the gauge, and attempts no partition DDL") {
+        val e = env
+        val gauge = Metric.gauge("antifraud_partition_owner_mismatch")
+        ZIO.scoped:
+          for
+            _ <- build(e, small, ownership = ZIO.succeed(TableOwnership(owner = "migrator", role = "versola-auth", mayAlter = false)))
+            errors <- ZTestLogger.logOutput.map(_.filter(_.logLevel == LogLevel.Error).map(_.message()))
+            mismatch <- gauge.value
+          yield assertTrue(
+            e.repository.maintainPartitions.calls.isEmpty,
+            mismatch == MetricState.Gauge(1.0),
+            errors.size == 1,
+            errors.head.contains("owned by migrator"),
+            errors.head.contains("connects as versola-auth"),
+            // a name that is not a plain identifier is quoted, so the statement can be pasted as it is
+            errors.head.contains("ALTER TABLE af_event OWNER TO \"versola-auth\""),
+          )
+      },
+      test("a role that owns the table clears the gauge, and the ownership is checked again at the next run") {
+        val e = env
+        val gauge = Metric.gauge("antifraud_partition_owner_mismatch")
+        ZIO.scoped:
+          for
+            _ <- TestClock.setTime(Instant.parse("2026-10-21T10:00:00Z"))
+            owner <- Ref.make(TableOwnership(owner = "migrator", role = "auth", mayAlter = false))
+            _ <- build(e, small, ownership = owner.get)
+            during <- gauge.value
+            skipped = e.repository.maintainPartitions.calls.size
+            _ <- owner.set(owned)
+            _ <- TestClock.adjust(6.hours)
+            after <- gauge.value
+          yield assertTrue(
+            during == MetricState.Gauge(1.0),
+            skipped == 0,
+            after == MetricState.Gauge(0.0),
+            e.repository.maintainPartitions.calls.size == 1,
+          )
+      },
+      test("a check of the owner that fails does not stop the maintenance") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- build(e, small, ownership = ZIO.fail(RuntimeException("connection refused")))
+          yield assertTrue(e.repository.maintainPartitions.calls.size == 1)
+      },
       test("the service keeps seven days of partitions ahead") {
         assertTrue(AntifraudEvents.Sizing.standard.partitionsAhead == 7)
       },
@@ -417,6 +491,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         val e = env
         ZIO.scoped:
           for
+            _ <- e.repository.ownership.succeedsWith(owned)
             _ <- e.repository.maintainPartitions.failsWith(RuntimeException("no permission"))
             _ <- e.repository.insertBatch.succeedsWith(())
             _ <- e.repository.rollupStats.succeedsWith(true)
@@ -483,6 +558,29 @@ object AntifraudEventsSpec extends UnitSpecBase:
           limitOpen <- run(List(germany), SmsLimit(sentPerHour = 5, minVolume = 0, minConversion = 0.1))
         yield assertTrue(open, !closed, !limitOpen)
       },
+      test("a range whose codes are all passed by passkey stays open, and one whose codes nobody passes is closed") {
+        val closedGermany = PhoneRegion(region = "DE", dialCode = "+49", length = 11, regex = ".*", registration = false)
+        val breaker = SmsLimit(sentPerHour = 0, minVolume = 5, minConversion = 0.5)
+        def run(passed: AntifraudOutcome | Null) =
+          val e = env
+          ZIO.scoped:
+            for
+              _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+              _ <- e.configService.getPhoneRegions.succeedsWith(List(closedGermany))
+              _ <- e.repository.insertBatch.succeedsWith(())
+              _ <- TestClock.setTime(t0)
+              events <- build(e, small, tuning = AntifraudTestSettings.tuning.copy(smsLimits = SmsLimits(default = breaker, byPrefix = Map.empty)))
+              _ <- ZIO.foreachDiscard(1 to 5): _ =>
+                events.allowSms(clientId, phone, t0, charge = true) *>
+                  ZIO.foreachDiscard(Option(passed))(outcome => events.otpChecked(authId, clientId, None, Right(phone), outcome.nn))
+              allowed <- events.allowSms(clientId, phone, t0, charge = false).map(_ != SmsBudget.Decision.Refused)
+            yield allowed
+        for
+          byPasskey <- run(AntifraudOutcome.passkey_alternative)
+          byCode <- run(AntifraudOutcome.verified)
+          nobody <- run(null)
+        yield assertTrue(byPasskey, byCode, !nobody)
+      },
       test("with no budget configured nothing is looked up") {
         val e = env
         ZIO.scoped:
@@ -512,7 +610,8 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- TestClock.setTime(Instant.parse("2026-10-21T10:00:30Z"))
-            _ <- e.repository.maintainPartitions.succeedsWith(())
+            _ <- e.repository.ownership.succeedsWith(owned)
+            _ <- e.repository.maintainPartitions.succeedsWith(0L)
             _ <- e.repository.partitionDaysAhead.succeedsWith(0)
             _ <- e.repository.rollupStats.succeedsWith(false)
             _ <- e.repository.pruneStats.succeedsWith(())
@@ -561,6 +660,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
             before <- Metric.counter("antifraud_decisions_total").tagged(Set(
@@ -648,6 +748,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(None)
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
             _ <- events.decideOtpRequest(clientId, Some(long), Right(phone), repeated = false)
           yield assertTrue(seen.get.flatMap(_.userAgent) == Some(long))
@@ -740,6 +841,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
             _ <- Observability.setIp("203.0.113.7")
@@ -769,6 +871,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small)
             decision <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
@@ -826,6 +929,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(
               e,
@@ -871,6 +975,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(client))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(
               e,
@@ -920,6 +1025,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
             listed <- events.decideOtpRequest(clientId, None, Left(Email("User@Example.COM")), repeated = false)
@@ -947,6 +1053,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(
               e,
@@ -966,6 +1073,54 @@ object AntifraudEventsSpec extends UnitSpecBase:
             second.action == DecisionAction.Allow,
             third.action == DecisionAction.Block,
             third.firedRules == List("velocity_ip_1m"),
+          )
+      },
+      test("a challenged request made again with its answer is judged on the counts it is in, not as one request more, while a new one after it is") {
+        val e = env
+        // Challenge from 30; a request is the 3rd of the minute and so over its limit of 2 (30), and the 4th of the ten
+        // minutes would be over that limit of 3 too (60, Block).
+        val tuned = AntifraudTestSettings.tuning.copy(
+          challengeAt = 30,
+          blockAt = 50,
+          thresholds = AntifraudTestSettings.thresholds.copy(ip = AntifraudTestSettings.limit.copy(perMinute = 2, perTenMinutes = 3, weight = 30)),
+        )
+        val vsettings = AntifraudTestSettings.velocity.copy(enabled = true)
+        val velocity = VelocityCounters(vsettings, AntifraudTestSettings.velocityLimits, tuned.thresholds)
+        val engine = AntifraudTestSettings.engine(
+          AntifraudTestSettings.decision.copy(enabled = true, timeout = 1.second, failureAction = DecisionAction.Allow),
+          List(AntifraudTestSettings.velocityRules(vsettings, tuned)),
+          tuned,
+        )
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(
+              e,
+              small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true), velocity = vsettings),
+              antifraud = engine,
+              velocity = velocity,
+              tuning = tuned,
+            )
+            _ <- Observability.setIp("203.0.113.7")
+            first <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            second <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            challenged <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            answered <- events.decideOtpRequest(clientId, None, Right(phone), repeated = true)
+            answeredAgain <- events.decideOtpRequest(clientId, None, Right(phone), repeated = true)
+            next <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+          yield assertTrue(
+            first.action == DecisionAction.Allow,
+            second.action == DecisionAction.Allow,
+            challenged.action == DecisionAction.Challenge,
+            challenged.firedRules == List("velocity_ip_1m"),
+            // its own record does not tip it over the other limit
+            answered == challenged,
+            answeredAgain == challenged,
+            // a new request after it is the 4th, and judged as such
+            next.action == DecisionAction.Block,
+            next.firedRules == List("velocity_ip_1m", "velocity_ip_10m"),
           )
       },
     ),
@@ -1012,6 +1167,25 @@ object AntifraudEventsSpec extends UnitSpecBase:
             written(0).subjectHash != written(2).subjectHash,
             written(1).action == AntifraudAction.otp_verify,
             written(0).tenantId.isEmpty,
+          )
+      },
+      test("a code page left for a passkey is written as a verification event with its own outcome, of the number it was asked for") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(None)
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small, sizing = smallSizing.copy(queueCapacity = 10))
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.faked)
+            _ <- events.otpChecked(authId, clientId, None, Right(phone), AntifraudOutcome.passkey_alternative)
+            _ <- TestClock.adjust(0.seconds)
+            _ <- TestClock.adjust(1.second)
+            written = e.repository.insertBatch.calls.flatten
+          yield assertTrue(
+            written.map(_.outcome) == List(AntifraudOutcome.faked, AntifraudOutcome.passkey_alternative),
+            written(1).action == AntifraudAction.otp_verify,
+            written(1).conversationId == authId,
+            written(1).subjectHash == written(0).subjectHash,
           )
       },
       test("a secret of its own keys the hash; without one the sessions secret does, so a config that predates it still works") {
@@ -1066,6 +1240,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine, asn = resolver)
             _ <- Observability.setIp("5.45.64.1")
@@ -1098,6 +1273,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
             _ <- Observability.setIp("5.45.64.1")
@@ -1112,6 +1288,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine, asn = resolver)
             decision <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
@@ -1131,6 +1308,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <-
               build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine, tuning = tuned, asn = resolver)
@@ -1159,6 +1337,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(
               e,
@@ -1237,6 +1416,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), asn = resolver)
             _ <- Observability.setIp("5.45.64.1")
@@ -1272,6 +1452,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), asn = resolver)
             before <- lookups("hit")
@@ -1307,6 +1488,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(
               e,
@@ -1336,6 +1518,92 @@ object AntifraudEventsSpec extends UnitSpecBase:
             unknown.isEmpty,
           )
       },
+      test("the context carries the number's country and the tenant's regions in the signals, from a KZ number and a restricted tenant") {
+        val kz = PhoneRegion(region = "KZ", dialCode = "+7", length = 10, regex = ".*", registration = true)
+        val uz = PhoneRegion(region = "uz", dialCode = "+998", length = 9, regex = ".*", registration = false)
+        val e = env
+        val seen = new AtomicReference[Option[AntifraudContext]](None)
+        val engine = new Antifraud:
+          def evaluate(ctx: AntifraudContext): UIO[Decision] = ZIO.succeed(seen.set(Some(ctx))).as(Decision.allow)
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(List(kz, uz, kz.copy(dialCode = "+77")))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
+            _ <- events.decideOtpRequest(clientId, None, Right(Phone("+77011234567")), repeated = false)
+            sms = seen.get
+            _ <- events.decideOtpRequest(clientId, None, Left(Email("a@example.com")), repeated = false)
+            mail = seen.get
+          yield assertTrue(
+            sms.flatMap(_.signals.get(GeoRules.PhoneCountrySignal)).contains("KZ"),
+            // Upper case, once each, in the order the tenant listed them.
+            sms.flatMap(_.signals.get(GeoRules.TenantRegionsSignal)).contains("KZ,UZ"),
+            // An email address has no number, and so no country of its own; the tenant's regions are still the tenant's.
+            mail.exists(c => !c.signals.contains(GeoRules.PhoneCountrySignal)),
+            mail.flatMap(_.signals.get(GeoRules.TenantRegionsSignal)).contains("KZ,UZ"),
+          )
+      },
+      test("without phoneRegions there is no tenant_regions signal, and a number whose region cannot be told has no phone_country") {
+        val e = env
+        val seen = new AtomicReference[Option[AntifraudContext]](None)
+        val engine = new Antifraud:
+          def evaluate(ctx: AntifraudContext): UIO[Decision] = ZIO.succeed(seen.set(Some(ctx))).as(Decision.allow)
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
+            _ <- events.decideOtpRequest(clientId, None, Right(Phone("+77011234567")), repeated = false)
+            unrestricted = seen.get
+            // Not a number of any region: the libphonenumber table has none for it.
+            _ <- events.decideOtpRequest(clientId, None, Right(Phone("+10000000000")), repeated = false)
+            unknown = seen.get
+          yield assertTrue(
+            unrestricted.exists(c => !c.signals.contains(GeoRules.TenantRegionsSignal)),
+            unrestricted.flatMap(_.signals.get(GeoRules.PhoneCountrySignal)).contains("KZ"),
+            unknown.exists(c => !c.signals.contains(GeoRules.PhoneCountrySignal)),
+          )
+      },
+      test("country_mismatch fires for a KZ number asked for from a carrier in UZ, not from a hosting network, nor from an unknown address") {
+        val e = env
+        val tuned = AntifraudTestSettings.tuning.copy(challengeAt = 20)
+        val engine = AntifraudTestSettings.engine(
+          AntifraudTestSettings.decision.copy(enabled = true, timeout = 1.second, failureAction = DecisionAction.Block),
+          List(GeoRules.ruleSet),
+          tuned,
+        )
+        val kz = PhoneRegion(region = "KZ", dialCode = "+7", length = 10, regex = ".*", registration = true)
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(List(kz))
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(
+              e,
+              small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)),
+              antifraud = engine,
+              tuning = tuned,
+              asn = countryAsn,
+              geo = countries,
+            )
+            kzNumber = Right(Phone("+77011234567"))
+            // The carrier's range is UZ in the country database: both rules fire, 20 each.
+            _ <- Observability.setIp("203.0.113.7")
+            carrier <- events.decideOtpRequest(clientId, None, kzNumber, repeated = false)
+            // The hosting range is FR there, and a VPN exit says nothing about the person.
+            _ <- Observability.setIp("5.45.64.1")
+            hosting <- events.decideOtpRequest(clientId, None, kzNumber, repeated = false)
+            // The country database has no range for this one.
+            _ <- Observability.setIp("192.0.2.5")
+            noCountry <- events.decideOtpRequest(clientId, None, kzNumber, repeated = false)
+          yield assertTrue(
+            carrier == Decision(DecisionAction.Challenge, 40, List("country_mismatch", "country_outside_regions")),
+            hosting == Decision.allow,
+            noCountry == Decision.allow,
+          )
+      },
       test("with the ASN database alone, whatever it knows of the AS and its country, there is no country signal") {
         val e = env
         val seen = new AtomicReference[Option[AntifraudContext]](None)
@@ -1344,6 +1612,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine, asn = countryAsn)
             _ <- Observability.setIp("5.45.64.1")
@@ -1367,6 +1636,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             none <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), antifraud = engine)
             _ <- Observability.setIp("203.0.113.7")
@@ -1389,6 +1659,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(
               e,
@@ -1447,6 +1718,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(
               e,
@@ -1483,6 +1755,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
             _ <- e.repository.insertBatch.succeedsWith(())
             events <- build(e, small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true)), geo = countries)
             before <- lookups("hit")

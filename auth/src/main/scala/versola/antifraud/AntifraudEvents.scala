@@ -51,7 +51,8 @@ trait AntifraudEvents:
   /** Decides what to do with an OTP request for `credential` (see [[Antifraud]]); the request's IP is the one the
     * request's log context carries. Never fails; always [[Decision.allow]] while the decision engine is off.
     * A `repeated` request is one that was challenged and is made again with its answer: it is judged, but not counted
-    * a second time. What is counted here is the request's source (address, device, ASN, range); the destination is
+    * a second time, and judged on the counts it is already in, not as one request more than it is. What is counted here is
+    * the request's source (address, device, ASN, range); the destination is
     * counted by [[otpRequested]] when a code is really sent, so that asking for codes to somebody else's number, and
     * being challenged or faked for it, never raises the count that is held against that number's owner. */
   def decideOtpRequest(
@@ -311,6 +312,8 @@ object AntifraudEvents:
           network <- ip.fold(ZIO.none)(asn.resolve)
           // From the country database alone: the country an AS is registered in is not where its subscribers are.
           country <- ip.fold(ZIO.none)(geo.resolve)
+          // A cache read, like the client's: what `country_outside_regions` compares the country with.
+          regions <- configService.getPhoneRegions(clientId)
           context = AntifraudContext(
             tenantId = client.map(_.tenantId),
             clientId = clientId,
@@ -326,12 +329,16 @@ object AntifraudEvents:
             signals =
               credential.left.toOption.map(email => AntifraudLists.EmailDomainSignal -> emailDomain(email)).toMap ++
                 network.map(found => AsnRules.ClassSignal -> found.asnClass.toString) ++
-                country.map(GeoRules.CountrySignal -> _),
+                country.map(GeoRules.CountrySignal -> _) ++
+                // From the country calling code of the number, which says nothing of an email address and, for a number
+                // whose region cannot be told, nothing either.
+                credential.toOption.flatMap(Phone.regionCode).map(GeoRules.PhoneCountrySignal -> _) ++
+                GeoRules.regionsSignal(regions.map(_.region)).map(GeoRules.TenantRegionsSignal -> _),
           )
           // Decided on the counts with this request in them, and counted only if it is let through. The number itself
           // is not counted here but when a code is sent to it (`otpRequested`): a request that is refused, challenged
           // or faked sends nothing, and counting it would let anyone raise the count held against the number's owner.
-          counted <- velocity.snapshot(context)
+          counted <- velocity.snapshot(context, recorded = repeated)
           decision <- antifraud.evaluate(counted)
           _ <- ZIO.unless(decision.action == DecisionAction.Block || repeated)(velocity.record(context.copy(subjectHash = None)))
           _ <- AntifraudMetrics.decided(decision) *> AntifraudMetrics.rulesFired(decision.firedRules)
@@ -387,7 +394,9 @@ object AntifraudEvents:
     private def feedBudget(event: AntifraudEvent): UIO[Unit] =
       ZIO.foreachDiscard(event.destPrefix.filter(_ => event.channel == AntifraudChannel.sms)): prefix =>
         event.outcome match
-          case AntifraudOutcome.verified => ZIO.succeed(budget.verified(event.tenantId, prefix, event.at))
+          // A passkey that passed in place of a sent code converts it as a verified code does: a range whose codes are passed by passkey is not one
+          // whose codes nobody enters.
+          case AntifraudOutcome.verified | AntifraudOutcome.passkey_alternative => ZIO.succeed(budget.verified(event.tenantId, prefix, event.at))
           case _ => ZIO.unit
 
     private def enqueue(event: AntifraudEvent): UIO[Unit] =
@@ -629,19 +638,47 @@ object AntifraudEvents:
         val today = LocalDate.ofInstant(now, ZoneOffset.UTC)
         val keepFrom = LocalDate.ofInstant(now.minusSeconds(settings.retention.toSeconds), ZoneOffset.UTC)
         // The gauge is read after every run, a failed one included: it is what says how long the writer can still go on.
-        repository.maintainPartitions(today, sizing.partitionsAhead + 1, keepFrom).foldCauseZIO(
-          cause =>
-            AntifraudMetrics.partitionMaintenanceFailed *>
-              ZIO.logWarningCause("could not maintain the antifraud event partitions", cause) *>
-              daysAhead(today) *>
-              ZIO.fail(()),
-          _ => daysAhead(today),
-        )
+        ownsTable.flatMap:
+          case false => daysAhead(today)
+          case true =>
+            repository.maintainPartitions(today, sizing.partitionsAhead + 1, keepFrom).foldCauseZIO(
+              cause =>
+                AntifraudMetrics.partitionMaintenanceFailed *>
+                  ZIO.logWarningCause("could not maintain the antifraud event partitions", cause) *>
+                  daysAhead(today) *>
+                  ZIO.fail(()),
+              moved => AntifraudMetrics.movedFromDefault(moved) *> daysAhead(today),
+            )
+
+    /** Whether the service may alter `af_event`: without it every create and drop fails, so none is tried and the operator is told
+      * once per run what to run, instead of a warning each minute that says only "must be owner". A check that itself fails (the
+      * database is down) says nothing, and the run goes on and reports its own failure. */
+    private val ownsTable: UIO[Boolean] =
+      repository.ownership.foldZIO(
+        cause => ZIO.logDebugCause("could not read the owner of af_event", Cause.fail(cause)).as(true),
+        ownership =>
+          if ownership.mayAlter then AntifraudMetrics.partitionOwnerMismatch(false).as(true)
+          else
+            AntifraudMetrics.partitionOwnerMismatch(true) *>
+              ZIO.logError(
+                s"the antifraud event partitions are not maintained: the table af_event is owned by ${ownership.owner} and the service " +
+                  s"connects as ${ownership.role}, which is neither that role nor a member of it. Run as ${ownership.owner} or a superuser: " +
+                  s"ALTER TABLE af_event OWNER TO ${quoted(ownership.role)}. Until then no partition is created or dropped, and " +
+                  "the events of a day without a partition are written to af_event_default (an owner change does not reach the partitions " +
+                  "that exist: change the owner of af_event_default as well). Checked again at the next run, in 6 hours, or at a restart",
+              ).as(false),
+      )
 
     private def daysAhead(today: LocalDate): UIO[Unit] =
       repository.partitionDaysAhead(today).flatMap(AntifraudMetrics.partitionDaysAhead).catchAllCause(cause =>
         ZIO.logDebugCause("could not count the antifraud partitions ahead", cause),
       )
+
+    private val plainIdentifier = "[a-z_][a-z0-9_]*".r
+
+    /** A role name as an identifier in a statement the operator copies: bare when it is plain, double-quoted otherwise. */
+    private def quoted(name: String): String =
+      if plainIdentifier.matches(name) then name else "\"" + name.replace("\"", "\"\"") + "\""
 
     /** Once before the writer starts, so its first batch finds a partition, then every six hours. A run that failed
       * (a lock that could not be had in time, a database that was down) is tried again after a minute, not six
@@ -754,6 +791,18 @@ object AntifraudMetrics:
   def velocityKeys(count: Int): UIO[Unit] = velocityKeysGauge.set(count.toDouble)
 
   val partitionMaintenanceFailed: UIO[Unit] = partitionMaintenanceFailedTotal.increment
+
+  private val partitionOwnerMismatchGauge = Metric.gauge("antifraud_partition_owner_mismatch")
+
+  /** 1 while the service's role is not the owner of `af_event` (nor a member of its role): no partition can be created or
+    * dropped, as of the last run. Alert on it being 1; the log line says what to run. */
+  def partitionOwnerMismatch(mismatch: Boolean): UIO[Unit] = partitionOwnerMismatchGauge.set(if mismatch then 1.0 else 0.0)
+
+  private val eventsMovedFromDefaultTotal = Metric.counter("antifraud_events_moved_from_default_total")
+
+  /** Events that were written to the default partition, since their day had no partition, and moved into it once it had. More than
+    * 0 means a day ran without a partition: the maintenance was late, or could not run. */
+  def movedFromDefault(count: Long): UIO[Unit] = ZIO.when(count > 0)(eventsMovedFromDefaultTotal.incrementBy(count)).unit
 
   private val partitionDaysAheadGauge = Metric.gauge("antifraud_partition_days_ahead")
 

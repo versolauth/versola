@@ -3,13 +3,18 @@ package versola.antifraud
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
-import versola.util.postgres.BasicCodecs
+import versola.util.partitions.TableOwnership
+import versola.util.postgres.{BasicCodecs, DailyPartitions}
 import zio.{Duration, Task, ZIO, ZLayer, durationInt}
 
-import java.time.format.DateTimeFormatter
 import java.time.{Instant, LocalDate, ZoneOffset}
 
-/** @param lockTimeout      how long partition maintenance waits for the lock on `af_event`
+/** @param lockTimeout       how long partition maintenance waits for a lock that does not stall the writer: the other instances'
+  *                          maintenance, autovacuum and other DDL, and (to attach a day) the default partition, which a read of
+  *                          `af_event` holds
+  * @param detachLockTimeout how long the detach of an old day waits for its locks. Detaching takes ACCESS EXCLUSIVE on `af_event`,
+  *                          which the writer's inserts queue behind, so this is the longest the writer can be held up by
+  *                          one attempt: short, and a failed attempt is retried by the next run
   * @param statementTimeout the longest one statement of the writer, the rollup or the prune may take: a statement
   *                         that hangs (a partition being locked, a slow disk) would otherwise hold the single writer
   *                         fiber while the queue fills and drops
@@ -17,6 +22,7 @@ import java.time.{Instant, LocalDate, ZoneOffset}
 class PostgresAntifraudEventRepository(
     xa: TransactorZIO,
     lockTimeout: Duration = 5.seconds,
+    detachLockTimeout: Duration = 500.millis,
     statementTimeout: Duration = 30.seconds,
     pruneBatch: Int = 5000,
 ) extends AntifraudEventRepository,
@@ -26,6 +32,17 @@ class PostgresAntifraudEventRepository(
   import SqlArrayCodec.StringSqlArrayCodec
 
   private given DbCodec[Instant] = DbCodec.InstantCodec
+
+  /** The partitions of `af_event`, with the day's rows the default partition holds moved into the day's partition as it is made. */
+  private val partitions = DailyPartitions(
+    table = "af_event",
+    defaultRows = DailyPartitions.DefaultRows.MoveOnAttach,
+    lockTimeout = lockTimeout,
+    detachLockTimeout = detachLockTimeout,
+    statementTimeout = statementTimeout,
+    batch = pruneBatch,
+    label = Some("antifraud"),
+  )
 
   private def timed()(using DbCon): Unit =
     sql"SET LOCAL statement_timeout = ${SqlLiteral(s"'${statementTimeout.toMillis}ms'")}".update.run()
@@ -63,9 +80,11 @@ class PostgresAntifraudEventRepository(
           WHERE at >= $dayStart AND at < $limit
             AND id IN (SELECT id FROM af_event WHERE at >= $dayStart AND at < $limit LIMIT $pruneBatch)
         """.update.run()
-    def loop(remaining: Int): Task[Unit] =
-      batch.flatMap(deleted => if deleted >= pruneBatch && remaining > 1 then loop(remaining - 1) else ZIO.unit)
-    loop(MaxPruneBatches)
+    def loop(step: Task[Int], remaining: Int): Task[Unit] =
+      step.flatMap(deleted => if deleted >= pruneBatch && remaining > 1 then loop(step, remaining - 1) else ZIO.unit)
+    // The default partition holds the rows of days that had no partition when they were written, of any age: the day the limit
+    // falls in is not the only one that can have rows past it, and the partition is never dropped.
+    loop(batch, MaxPruneBatches) *> partitions.pruneDefault(xa, before).unit
 
   override def rollupStats(from: Instant, to: Instant, prefixLength: Int, interval: Duration): Task[Boolean] =
     xa.transactMeasured("rollup-antifraud-stats"):
@@ -86,13 +105,13 @@ class PostgresAntifraudEventRepository(
           INSERT INTO af_dest_stats (tenant_id, dest_prefix, minute, requests, sent, suppressed, throttled,
                                      provider_errors, verified, wrong_codes, fake_verifies)
           SELECT COALESCE(tenant_id, ''), left(dest_prefix, $prefixLength), date_trunc('minute', at),
-                 -- A challenge is a step of a request, not a request: the code that follows it is the one counted.
-                 COUNT(*) FILTER (WHERE action = 'otp_request' AND outcome NOT IN ('challenged', 'challenge_passed', 'challenge_failed')),
+                 COUNT(*) FILTER (WHERE $CountedRequest),
                  COUNT(*) FILTER (WHERE outcome = 'sent'),
                  COUNT(*) FILTER (WHERE outcome = 'suppressed'),
                  COUNT(*) FILTER (WHERE outcome IN ('throttled', 'locked')),
                  COUNT(*) FILTER (WHERE outcome = 'provider_error'),
-                 COUNT(*) FILTER (WHERE outcome = 'verified'),
+                 -- A passkey passed in place of a sent code is that code's conversion.
+                 COUNT(*) FILTER (WHERE outcome IN ('verified', 'passkey_alternative')),
                  COUNT(*) FILTER (WHERE outcome = 'wrong_code'),
                  COUNT(*) FILTER (WHERE outcome = 'fake_verify')
           FROM af_event
@@ -122,80 +141,33 @@ class PostgresAntifraudEventRepository(
       sql"DELETE FROM af_dest_stats WHERE minute < ${before.atOffset(ZoneOffset.UTC)}".update.run()
     .unit
 
-  /** The creates are one transaction and the drops another: a drop that cannot take its lock (a long read on the partition
-    * of an old day, a dependent object) must not roll back the partitions of the days ahead, or the writer would run out
-    * of them after the few days it is ahead. The drops are tried even when the creates failed; the first failure is the
-    * one reported. */
-  override def maintainPartitions(from: LocalDate, days: Int, keepFrom: LocalDate): Task[Unit] =
-    for
-      created <- createAhead(from, days).exit
-      dropped <- dropOld(keepFrom).exit
-      _ <- ZIO.done(created) *> ZIO.done(dropped)
-    yield ()
+  override def maintainPartitions(from: LocalDate, days: Int, keepFrom: LocalDate): Task[Long] =
+    partitions.maintain(xa, from = from, days = days, keepFrom = keepFrom).map(_.movedFromDefault)
 
-  private def createAhead(from: LocalDate, days: Int): Task[Unit] =
-    xa.transactMeasured("create-antifraud-partitions"):
-      lockedForMaintenance()
-      (0 until days).map(from.plusDays(_)).foreach: day =>
-        val partition = SqlLiteral(partitionName(day))
-        val start = SqlLiteral(s"'${day} 00:00:00+00'")
-        val end = SqlLiteral(s"'${day.plusDays(1)} 00:00:00+00'")
-        sql"CREATE TABLE IF NOT EXISTS $partition PARTITION OF af_event FOR VALUES FROM ($start) TO ($end)".update.run()
-    .unit
+  override def ownership: Task[TableOwnership] = partitions.ownership(xa)
 
-  private def dropOld(keepFrom: LocalDate): Task[Unit] =
-    xa.transactMeasured("drop-antifraud-partitions"):
-      lockedForMaintenance()
-      partitionDays().filter(_.isBefore(keepFrom)).foreach: day =>
-        val partition = SqlLiteral(partitionName(day))
-        sql"DROP TABLE IF EXISTS $partition".update.run()
-    .unit
-
-  /** Several instances run this at start-up; creating the same partition twice at once can fail in the catalog, so they
-    * take turns. Creating or dropping a partition takes an exclusive lock on `af_event`, which the writer's inserts queue
-    * behind (they wait, up to `lock_timeout`, not past it): behind a long read it would hold up the writer, so after
-    * `lock_timeout` the maintenance gives up and the next run tries again soon. */
-  private def lockedForMaintenance()(using DbCon): Unit =
-    val timeout = SqlLiteral(s"'${lockTimeout.toMillis}ms'")
-    sql"SET LOCAL lock_timeout = $timeout".update.run()
-    sql"SELECT 1 FROM (SELECT pg_advisory_xact_lock($AdvisoryLock)) locked".query[Int].run()
-    ()
-
-  private def partitionDays()(using DbCon): List[LocalDate] =
-    sql"""
-      SELECT c.relname
-      FROM pg_inherits i
-      JOIN pg_class c ON c.oid = i.inhrelid
-      JOIN pg_class p ON p.oid = i.inhparent
-      JOIN pg_namespace n ON n.oid = p.relnamespace
-      WHERE p.relname = 'af_event' AND n.nspname = current_schema()
-    """.query[String].run().toList.flatMap(partitionDay)
-
-  override def partitionDaysAhead(today: LocalDate): Task[Int] =
-    xa.transactMeasured("count-antifraud-partitions-ahead"):
-      timed()
-      partitionDays().count(_.isAfter(today))
+  override def partitionDaysAhead(today: LocalDate): Task[Int] = partitions.partitionDaysAhead(xa, today)
 
 object PostgresAntifraudEventRepository:
   val live: ZLayer[TransactorZIO, Nothing, AntifraudEventRepository] =
     ZLayer.fromFunction(PostgresAntifraudEventRepository(_))
 
-  /** Held for the length of a maintenance transaction; any constant would do. */
-  private val AdvisoryLock = 7430001L
-
   private val RollupLock = 7430002L
+
+  /** What makes a request of `af_dest_stats.requests`. A challenge is a step of a request, not a request: the code that follows it is the
+    * one counted. The preview of a prefix longer than the statistics keep counts the event log with this same condition, so that its
+    * total is what the rollup's would be. */
+  private[antifraud] val CountedRequest = SqlLiteral(
+    "action = 'otp_request' AND outcome NOT IN ('challenged', 'challenge_passed', 'challenge_failed')",
+  )
 
   /** Batches of one prune run: with the 5-minute pace that is far more than the rows a day can hold, and it bounds the run. */
   private val MaxPruneBatches = 200
 
-  private val suffix = DateTimeFormatter.BASIC_ISO_DATE
+  /** The naming of the partitions, for what reads it without a repository. */
+  private val naming = DailyPartitions(table = "af_event", defaultRows = DailyPartitions.DefaultRows.MoveOnAttach)
 
-  private[antifraud] def partitionName(day: LocalDate): String = s"af_event_${suffix.format(day)}"
+  private[antifraud] def partitionName(day: LocalDate): String = naming.partitionName(day)
 
-  private val partitionPattern = raw"af_event_(\d{8})".r
-
-  /** The day a partition holds, `None` for a table that is not one of this service's partitions. */
-  private[antifraud] def partitionDay(name: String): Option[LocalDate] =
-    name match
-      case partitionPattern(digits) => scala.util.Try(LocalDate.parse(digits, suffix)).toOption
-      case _ => None
+  /** The day a partition holds, `None` for a table that is not one of this service's partitions (the default partition, `V0030`, included). */
+  private[antifraud] def partitionDay(name: String): Option[LocalDate] = naming.partitionDay(name)

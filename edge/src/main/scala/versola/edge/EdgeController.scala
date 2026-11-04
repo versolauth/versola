@@ -65,8 +65,17 @@ object EdgeController extends Controller:
             case Left(ex: Throwable) =>
               ZIO.fail(ex)
 
-            case Right(url) =>
-              ZIO.succeed(Response.seeOther(url))
+            case Right(start) =>
+              ZIO.succeed(
+                Response.seeOther(start.url).addCookie(
+                  EdgeLoginCookie(
+                    state = start.state,
+                    secret = start.browserBinding,
+                    path = start.loginCookiePath,
+                    ttl = start.loginTtl,
+                  ),
+                ),
+              )
       yield response
     }
 
@@ -95,10 +104,11 @@ object EdgeController extends Controller:
         error <- request.queryZIO[Option[String]]("error")
         errorDescription <- request.queryZIO[Option[String]]("error_description")
         errorUri <- request.queryZIO[Option[String]]("error_uri")
+        browserBinding = request.cookie(EdgeLoginCookie.name(state)).map(_.content)
 
         response <- (code, error) match
           case (Some(code), None) =>
-            edgeService.complete(code, state)
+            edgeService.complete(code = code, state = state, browserBinding = browserBinding)
               .either.flatMap:
                 case Left(_: AuthConversationNotFound) =>
                   ZIO.succeed(Response.badRequest)
@@ -121,9 +131,16 @@ object EdgeController extends Controller:
                         now = now,
                       ),
                     )
+                    .addCookie(EdgeLoginCookie.clear(state, completion.loginCookiePath))
 
           case (None, Some(error)) =>
-            edgeService.completeError(state, error, errorDescription, errorUri)
+            edgeService.completeError(
+              state = state,
+              error = error,
+              errorDescription = errorDescription,
+              errorUri = errorUri,
+              browserBinding = browserBinding,
+            )
               .either.flatMap:
                 case Left(_: AuthConversationNotFound) =>
                   ZIO.succeed(Response.badRequest)
@@ -131,8 +148,10 @@ object EdgeController extends Controller:
                 case Left(ex: Throwable) =>
                   ZIO.fail(ex)
 
-                case Right(redirectUrl) =>
-                  ZIO.succeed(Response.seeOther(redirectUrl))
+                case Right(redirect) =>
+                  ZIO.succeed(
+                    Response.seeOther(redirect.url).addCookie(EdgeLoginCookie.clear(state, redirect.loginCookiePath)),
+                  )
 
           case _ =>
             ZIO.succeed(Response.badRequest)

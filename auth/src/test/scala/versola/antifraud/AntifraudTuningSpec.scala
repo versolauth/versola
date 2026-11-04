@@ -1,7 +1,7 @@
 package versola.antifraud
 
 import versola.oauth.client.model.{ClientId, TenantId}
-import versola.util.UnitSpecBase
+import versola.util.{Patch, UnitSpecBase}
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -13,6 +13,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 object AntifraudTuningSpec extends UnitSpecBase:
 
   private val at = Instant.parse("2026-10-26T10:00:00Z")
+
+  private def blockAt(value: Int) = TuningPatch.empty.copy(blockAt = Some(Patch.Modified(value)))
+
+  private def challengeAt(value: Int) = TuningPatch.empty.copy(challengeAt = Some(Patch.Modified(value)))
+
+  /** A patch as it arrives, from the wire. */
+  private def patchOf(text: String): Task[TuningPatch] = ZIO.fromEither(text.fromJson[TuningPatch]).mapError(RuntimeException(_))
 
   /** Enforcing, with everything else off: what the specs of the engine start from. */
   private val base = AntifraudTestSettings.tuning
@@ -156,18 +163,14 @@ object AntifraudTuningSpec extends UnitSpecBase:
         shadowRules = Set("velocity_ip_1h", "velocity_ip_24h"),
         blockAt = 50,
       )
-      def json(text: String): Json = text.fromJson[Json].getOrElse(Json.Null)
       for
         (store, _, _) <- storeLayer
         first <- store.stored
         _ <- store.put(withLimits, "alice", Some(first.version))
-        patched <- store.patch(
-          json(
-            """{"blockAt":80,"smsLimits":{"default":{"sentPerHour":20},"byPrefix":{"49":null,"44":{"sentPerHour":21,"minVolume":0,"minConversion":0.3}}},"ruleWeights":{"velocity_ip_1m":null,"velocity_asn_1h":7},"shadowRules":["velocity_asn_24h"],"pow":{"maxDifficulty":20}}""",
-          ),
-          "bob",
-          None,
+        patch <- patchOf(
+          """{"blockAt":80,"smsLimits":{"default":{"sentPerHour":20},"byPrefix":{"49":null,"44":{"sentPerHour":21,"minVolume":0,"minConversion":0.3}}},"ruleWeights":{"velocity_ip_1m":null,"velocity_asn_1h":7},"shadowRules":["velocity_asn_24h"],"pow":{"maxDifficulty":20}}""",
         )
+        patched <- store.patch(patch, "bob", None)
         stored <- store.stored
       yield assertTrue(
         patched.version == 3L,
@@ -187,31 +190,33 @@ object AntifraudTuningSpec extends UnitSpecBase:
       for
         (repo, _) <- repository(seeded = false)
         store = AntifraudTuningStore.Impl(repo)
-        patched <- store.patch(Json.Obj("blockAt" -> Json.Num(60)), "alice", Some(0))
+        patched <- store.patch(blockAt(60), "alice", Some(0))
       yield assertTrue(patched == StoredTuning(Tuning.off.copy(blockAt = 60), 1))
     },
-    test("a patch whose result is not valid, out of range or does not decode writes nothing") {
+    test("a patch whose result is not valid or out of range is refused as InvalidTuning and writes nothing") {
       for
         (store, _, _) <- storeLayer
-        negative <- store.patch(Json.Obj("blockAt" -> Json.Num(-5)), "alice", None).either
-        notANumber <- store.patch(Json.Obj("blockAt" -> Json.Str("high")), "alice", None).either
-        tooLowLimit <- store.patch(Json.Obj("smsLimits" -> Json.Obj("default" -> Json.Obj("sentPerHour" -> Json.Num(5)))), "alice", None).either
-        tooHard <- store.patch(Json.Obj("pow" -> Json.Obj("maxDifficulty" -> Json.Num(30))), "alice", None).either
-        order <- store.patch(Json.Obj("challengeAt" -> Json.Num(90), "blockAt" -> Json.Num(50)), "alice", None).either
-        unknownRule <- store.patch(Json.Obj("shadowRules" -> Json.Arr(Json.Str("nope"))), "alice", None).either
-        notAnObject <- store.patch(Json.Arr(Json.Num(1)), "alice", None).either
+        negative <- store.patch(blockAt(-5), "alice", None).either
+        tooLowLimit <- patchOf("""{"smsLimits":{"default":{"sentPerHour":5}}}""").flatMap(store.patch(_, "alice", None).either)
+        tooHard <- patchOf("""{"pow":{"maxDifficulty":30}}""").flatMap(store.patch(_, "alice", None).either)
+        order <- patchOf("""{"challengeAt":90,"blockAt":50}""").flatMap(store.patch(_, "alice", None).either)
+        unknownRule <- patchOf("""{"shadowRules":["nope"]}""").flatMap(store.patch(_, "alice", None).either)
+        unknownWeight <- patchOf("""{"ruleWeights":{"nope":5}}""").flatMap(store.patch(_, "alice", None).either)
+        badPrefix <- patchOf("""{"smsLimits":{"byPrefix":{"+49":{"sentPerHour":0,"minVolume":0,"minConversion":0.1}}}}""").flatMap(
+          store.patch(_, "alice", None).either,
+        )
         after <- store.stored
       yield assertTrue(
-        List(negative, notANumber, tooLowLimit, tooHard, order, unknownRule, notAnObject).forall(_.left.exists(_.isInstanceOf[InvalidTuning])),
+        List(negative, tooLowLimit, tooHard, order, unknownRule, unknownWeight, badPrefix).forall(_.left.exists(_.isInstanceOf[InvalidTuning])),
         after == StoredTuning(base, 1),
       )
     },
-    test("a null removes a key, which then reads as its default, and that is written: every key of the settings has one") {
+    test("a null resets a setting to its default in Tuning.off, and that is written: every setting has one") {
       for
         (store, _, _) <- storeLayer
         _ <- store.put(base.copy(blockAt = 70, thresholds = base.thresholds.copy(trustedDiscount = 10)), "alice", Some(1))
-        reset <- store.patch(Json.Obj("blockAt" -> Json.Null, "thresholds" -> Json.Obj("trustedDiscount" -> Json.Null)), "bob", None)
-        everything <- store.patch(Json.Obj("thresholds" -> Json.Null, "smsLimits" -> Json.Null, "pow" -> Json.Null), "bob", None)
+        reset <- patchOf("""{"blockAt":null,"thresholds":{"trustedDiscount":null}}""").flatMap(store.patch(_, "bob", None))
+        everything <- patchOf("""{"thresholds":null,"smsLimits":null,"pow":null}""").flatMap(store.patch(_, "bob", None))
       yield assertTrue(
         reset == StoredTuning(base, 3),
         everything.tuning == base,
@@ -222,9 +227,9 @@ object AntifraudTuningSpec extends UnitSpecBase:
       for
         (store, _, _) <- storeLayer
         _ <- store.put(base.copy(blockAt = 70), "alice", Some(1))
-        stale <- store.patch(Json.Obj("challengeAt" -> Json.Num(30)), "bob", Some(1)).either
+        stale <- store.patch(challengeAt(30), "bob", Some(1)).either
         after <- store.stored
-        ok <- store.patch(Json.Obj("challengeAt" -> Json.Num(30)), "bob", Some(2))
+        ok <- store.patch(challengeAt(30), "bob", Some(2))
       yield assertTrue(
         stale.left.exists { case m: VersionMismatch => m.current == 2L; case _ => false },
         after == StoredTuning(base.copy(blockAt = 70), 2),
@@ -245,7 +250,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
           override def find = repo.find
           override def version = repo.version
         racingStore = AntifraudTuningStore.Impl(racing)
-        patched <- racingStore.patch(Json.Obj("blockAt" -> Json.Num(70)), "bob", None)
+        patched <- racingStore.patch(blockAt(70), "bob", None)
         withVersion <- {
           val again = AntifraudTuningStore.Impl(new AntifraudSettingsRepository:
             private val raced = AtomicBoolean(false)
@@ -255,7 +260,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
             override def seed(tuning: Tuning, actor: String, at: Instant) = repo.seed(tuning, actor, at)
             override def find = repo.find
             override def version = repo.version)
-          again.stored.flatMap(row => again.patch(Json.Obj("blockAt" -> Json.Num(40)), "dave", Some(row.version)).either)
+          again.stored.flatMap(row => again.patch(blockAt(40), "dave", Some(row.version)).either)
         }
       yield assertTrue(
         // made again on what carol wrote: both changes are there
@@ -296,9 +301,16 @@ object AntifraudTuningSpec extends UnitSpecBase:
         recovered.lastError.isEmpty,
       )
     },
-    test("a row stored while there was a Delay step or a fake-send wait still reads: those keys are ignored") {
+    test("a row stored while there was a Delay step or a fake-send wait still reads: those retired keys are ignored, any other is refused") {
       val stored = base.toJson.dropRight(1) + ""","delayAt":3,"delayMillis":2000,"fakeSendDelayMillis":500}"""
-      assertTrue(stored.fromJson[Tuning] == Right(base))
+      val unknown = base.toJson.dropRight(1) + ""","blokAt":3}"""
+      assertTrue(
+        stored.fromJson(using Tuning.storedDecoder) == Right(base),
+        // a request is read by the codec itself: the retired keys are unknown there
+        stored.fromJson[Tuning].isLeft,
+        unknown.fromJson(using Tuning.storedDecoder).isLeft,
+        unknown.fromJson[Tuning].isLeft,
+      )
     },
     test("refuses what cannot be meant") {
       def refused(t: Tuning) = AntifraudTuningStore.invalid(t).isDefined

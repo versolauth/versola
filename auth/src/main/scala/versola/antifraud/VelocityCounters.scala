@@ -179,14 +179,20 @@ final class VelocityCounters(
       yield keys.foreach((keyType, key) => record(keyType, key, at))
 
   /** Puts the counts of the step's keys in the context for [[VelocityRules]], this request counted in them as if it
-    * were recorded (so a limit of N is exceeded by the N+1st), without recording it. No-op while the counters are off. */
-  def snapshot(ctx: AntifraudContext): UIO[AntifraudContext] = signals(ctx, 1)
+    * were recorded (so a limit of N is exceeded by the N+1st), without recording it. No-op while the counters are off.
+    *
+    * With `recorded` the request is one that was decided before and made again (see [[record]]), so the keys it was
+    * recorded under already hold it and it is not added a second time: it is judged as one request, not as two. The
+    * phone is the exception, since it is counted only when a code is really sent (`AntifraudEvents.otpRequested`), which
+    * the request has not yet done, so its count keeps the one for the code that is about to go. */
+  def snapshot(ctx: AntifraudContext, recorded: Boolean = false): UIO[AntifraudContext] =
+    signals(ctx, keyType => if recorded && keyType != VelocityKey.phone then 0 else 1)
 
   /** [[record]] and then [[snapshot]]'s counts, for a caller that counts every step it sees. */
   def recordAndSnapshot(ctx: AntifraudContext): UIO[AntifraudContext] =
-    record(ctx) *> signals(ctx, 0)
+    record(ctx) *> signals(ctx, _ => 0)
 
-  private def signals(ctx: AntifraudContext, extra: Int): UIO[AntifraudContext] =
+  private def signals(ctx: AntifraudContext, extra: VelocityKey => Int): UIO[AntifraudContext] =
     if !settings.enabled then ZIO.succeed(ctx)
     else
       for

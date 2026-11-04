@@ -1,7 +1,7 @@
 package versola.antifraud
 
 import zio.*
-import zio.json.JsonCodec
+import zio.json.{JsonCodec, jsonNoExtraFields}
 
 import java.time.Instant
 
@@ -36,6 +36,7 @@ object VelocityRules:
 
   /** The most requests a key may have in each window; 0 means no limit. A count above the limit fires the rule.
     * @param weight what a fired rule of this key adds to the score */
+  @jsonNoExtraFields
   case class Limit(
       perMinute: Int = 0,
       perTenMinutes: Int = 0,
@@ -52,6 +53,7 @@ object VelocityRules:
   /** @param trustedDiscount taken off the score of a request of a known user that has fired a velocity rule (a rule
     *                        of its own, `velocity_known_user`); 0 for none
     */
+  @jsonNoExtraFields
   case class Thresholds(
       phone: Limit = Limit(weight = 50),
       ip: Limit = Limit(weight = 20),
@@ -100,20 +102,20 @@ object VelocityRules:
       ctx.destPrefix.map(prefix => VelocityKey.prefix -> s"${ctx.tenantId.map(identity[String]).getOrElse("")}/$prefix"),
     ).flatten
 
-  /** Reads the counts of the windows that have a limit, plus `extra` for the request that is not recorded yet, into
-    * the context's `signals`. */
+  /** Reads the counts of the windows that have a limit, plus `extra` of a key for the request that is not recorded
+    * under it yet, into the context's `signals`. */
   def withSignals(
       counters: VelocityCounters,
       thresholds: Thresholds,
       ctx: AntifraudContext,
       keys: List[(VelocityKey, String)],
       at: Instant,
-      extra: Int,
+      extra: VelocityKey => Int,
   ): AntifraudContext =
     val counts = keys.flatMap: (keyType, key) =>
       VelocityWindow.values.toList.collect:
         case window if thresholds.of(keyType).of(window) > 0 =>
-          signal(keyType, window) -> (counters.count(keyType, key, window, at) + extra).toString
+          signal(keyType, window) -> (counters.count(keyType, key, window, at) + extra(keyType)).toString
     ctx.copy(signals = ctx.signals ++ counts)
 
   /** The rules of the configured limits. Carry no state: the counts are in the context. */

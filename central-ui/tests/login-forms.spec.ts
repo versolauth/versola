@@ -2,7 +2,7 @@ import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { CSRF, expectSubmissions, renderForm, type FormConfig } from './form-harness';
+import { CSRF, expectSubmissions, renderForm, translations, type FormConfig } from './form-harness';
 
 /**
  * The login forms in central-ui/forms, rendered from source with their real strings (see
@@ -49,7 +49,7 @@ test.describe('otp', () => {
     const navigations: string[] = [];
     page.on('framenavigated', (frame) => frame === page.mainFrame() && navigations.push(frame.url()));
 
-    await page.getByRole('button', { name: t.resend_button }).click();
+    await page.getByRole('button', { name: t.resend_link }).click();
 
     await expect(page.getByText(t.resend_in.replace('{seconds}', '45'))).toBeVisible();
     expect(navigations).toEqual([]);
@@ -60,7 +60,7 @@ test.describe('otp', () => {
     await page.route('**/challenge/otp/resend*', (route) =>
       route.fulfill({ contentType: 'application/json', body: JSON.stringify({ next: '/challenge', otp: false }) }));
 
-    await page.getByRole('button', { name: t.resend_button }).click();
+    await page.getByRole('button', { name: t.resend_link }).click();
 
     await expect(page.getByText('next page')).toBeVisible();
   });
@@ -117,7 +117,7 @@ test.describe('otp', () => {
   test('offers a resend once the wait is over, and posts it with the CSRF value', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'otp', { step });
 
-    await page.getByRole('button', { name: t.resend_button }).click();
+    await page.getByRole('button', { name: t.resend_link }).click();
 
     await expectSubmissions(submitted, 1);
     expect(submitted[0].path).toBe('/challenge/otp/resend');
@@ -128,7 +128,7 @@ test.describe('otp', () => {
     const { t } = await renderForm(page, 'otp', { step: { ...step, resendAfter: 30 } });
 
     await expect(page.getByText(/Resend available in (29|30)s/)).toBeVisible();
-    await expect(page.getByRole('button', { name: t.resend_button })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: t.resend_link })).toHaveCount(0);
   });
 
   test('locks the input while the server says so', async ({ page }) => {
@@ -153,6 +153,128 @@ test.describe('otp', () => {
     const { t } = await renderForm(page, 'otp', { step, error: 'otp_wrong' });
 
     await expect(page.getByText(t.otp_wrong)).toBeVisible();
+  });
+
+  // What a browser gives for a passkey: the options the server answers, and an authenticator that answers them.
+  const options = JSON.stringify({ publicKey: { challenge: 'AAAA', rpId: 'localhost', allowCredentials: [], userVerification: 'required' } });
+  const givesPasskey = async (page: Page) => {
+    await page.addInitScript(() => {
+      (navigator.credentials as { get: unknown }).get = async () => ({
+        type: 'public-key',
+        id: 'abc',
+        rawId: new ArrayBuffer(4),
+        response: { clientDataJSON: new ArrayBuffer(1), authenticatorData: new ArrayBuffer(1), signature: new ArrayBuffer(1), userHandle: null },
+        getClientExtensionResults: () => ({}),
+      });
+    });
+  };
+  // After the form is rendered: the harness answers every `/challenge` request with a page, and the last route set is the first asked.
+  const optionsAre = async (page: Page, answer: { status: number; body?: string }) => {
+    const asked: string[] = [];
+    await page.route('**/challenge/passkey/options*', (route) => {
+      asked.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`);
+      return route.fulfill({ status: answer.status, contentType: 'application/json', body: answer.body ?? '' });
+    });
+    return asked;
+  };
+
+  test('offers a passkey from the code page itself: asks for the options, and posts the authenticator\'s answer with the CSRF value', async ({ page }) => {
+    await givesPasskey(page);
+    const { submitted, t } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] } });
+    const asked = await optionsAre(page, { status: 200, body: options });
+
+    // Next to the code, not instead of it: the field and the resend stay.
+    await expect(page.locator('input[name="code"]')).toBeVisible();
+    await expect(page.getByRole('button', { name: t.resend_link })).toBeVisible();
+    await page.getByRole('button', { name: t.passkey_button }).click();
+
+    await expectSubmissions(submitted, 1);
+    // The options were asked for with a GET, and the answer went to the passkey route: no route of its own for the code page.
+    expect(asked).toEqual(['GET /challenge/passkey/options']);
+    expect(`${submitted[0].method} ${submitted[0].path}`).toBe('POST /challenge/passkey');
+    expect(submitted[0].query.get('ui_locale')).toBe('en');
+    expect(submitted[0].fields.get('csrf')).toBe(CSRF);
+    expect(JSON.parse(submitted[0].fields.get('response')!).id).toBe('abc');
+  });
+
+  test('offers no passkey when the step lists no alternative, or one this form does not know', async ({ page }) => {
+    const { t } = await renderForm(page, 'otp', { step });
+    await expect(page.getByRole('button', { name: t.passkey_button })).toHaveCount(0);
+    await expect(page.locator('[data-alternative]')).toHaveCount(0);
+
+    const { t: again } = await renderForm(page, 'otp', { step: { ...step, alternatives: [] } });
+    await expect(page.getByRole('button', { name: again.passkey_button })).toHaveCount(0);
+
+    const { t: unknown } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['telegram'] } });
+    await expect(page.getByRole('button', { name: unknown.passkey_button })).toHaveCount(0);
+  });
+
+  test('does not offer a passkey in a browser that cannot make one, whatever the server says', async ({ page }) => {
+    await page.addInitScript(() => { delete (window as unknown as { PublicKeyCredential?: unknown }).PublicKeyCredential; });
+    const { t } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] } });
+
+    await expect(page.locator('input[name="code"]')).toBeVisible();
+    await expect(page.getByRole('button', { name: t.passkey_button })).toHaveCount(0);
+  });
+
+  test('a prompt the person closes closes quietly: nothing is posted, no dialog, and the button works again', async ({ page }) => {
+    await page.addInitScript(() => {
+      (navigator.credentials as { get: unknown }).get = async () => { throw new DOMException('dismissed', 'NotAllowedError'); };
+    });
+    const { submitted, t } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] } });
+    const asked = await optionsAre(page, { status: 200, body: options });
+
+    await page.getByRole('button', { name: t.passkey_button }).click();
+    await expect.poll(() => asked.length).toBe(1);
+
+    await expect(page.getByRole('alertdialog')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: t.passkey_button })).toBeEnabled();
+    expect(submitted).toHaveLength(0);
+  });
+
+  test('a ceremony that cannot be started is told in the passkey dialog, which can be closed, and the code is still there', async ({ page }) => {
+    await givesPasskey(page);
+    const { t } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] } });
+    await optionsAre(page, { status: 400 });
+
+    await page.getByRole('button', { name: t.passkey_button }).click();
+
+    const dialog = page.getByRole('alertdialog');
+    await expect(dialog).toContainText(t.passkey_failed);
+    await dialog.getByRole('button', { name: t.close }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator('input[name="code"]')).toBeVisible();
+  });
+
+  test('a passkey the server refused comes back as the same dialog, and not as a line of text besides', async ({ page }) => {
+    const { t } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] }, error: 'passkey_failed' });
+
+    await expect(page.getByRole('alertdialog')).toContainText(t.passkey_failed);
+    await expect(page.locator('.error-text')).toHaveCount(0);
+  });
+
+  test('says it in Russian too, and sends the chosen language with the answer', async ({ page }) => {
+    await givesPasskey(page);
+    const { submitted, all } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] }, locale: 'ru', t: (await translations('otp')).ru });
+    await optionsAre(page, { status: 200, body: options });
+
+    await page.getByRole('button', { name: all.ru.passkey_button }).click();
+
+    await expectSubmissions(submitted, 1);
+    expect(submitted[0].query.get('ui_locale')).toBe('ru');
+  });
+
+  test('the passkey button stays inside the card at 320px, in the longer language', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 640 });
+    const { all } = await renderForm(page, 'otp', { step: { ...step, alternatives: ['passkey'] }, locale: 'ru', t: (await translations('otp')).ru });
+
+    const button = page.getByRole('button', { name: all.ru.passkey_button });
+    const box = (await button.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(320);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+    // The label is not cut off by the button's fixed height.
+    expect(await button.evaluate((b) => b.scrollHeight - b.clientHeight)).toBeLessThanOrEqual(1);
   });
 });
 
@@ -947,8 +1069,9 @@ test.describe('terminal screens', () => {
  * One axe scan per form, in a typical configuration. axe covers part of WCAG; the screenshots and
  * the behaviour tests above cover the rest.
  */
-const accessibilityCases: Array<[string, FormConfig]> = [
+const accessibilityCases: Array<[string, FormConfig, string?]> = [
   ['otp', { step: { type: 'otp', length: 6, resendAfter: 0, destination: 'u***@example.com' } }],
+  ['otp', { step: { type: 'otp', length: 6, resendAfter: 0, destination: 'u***@example.com', alternatives: ['passkey'] } }, 'otp with a passkey alternative'],
   ['password', { step: { type: 'password' } }],
   ['set-password', { step: { type: 'set-password' } }],
   ['credential', { step: { type: 'credential', primaryCredentials: ['login'], passkey: true } }],
@@ -961,8 +1084,8 @@ const accessibilityCases: Array<[string, FormConfig]> = [
   ['signed-out', { step: { type: 'signed-out', logoutUris: [], redirectUri: 'https://app.example' } }],
 ];
 
-for (const [id, config] of accessibilityCases) {
-  test(`${id} has no axe violations`, async ({ page }) => {
+for (const [id, config, label] of accessibilityCases) {
+  test(`${label ?? id} has no axe violations`, async ({ page }) => {
     await renderForm(page, id, config);
 
     const results = await new AxeBuilder({ page })
@@ -1003,8 +1126,8 @@ test('credential phone field reflows at 320px with the selector open', async ({ 
   expect(await overflow()).toBeLessThanOrEqual(0);
 });
 
-for (const [id, config] of accessibilityCases) {
-  test(`${id} has no axe violations in the dark colour scheme`, async ({ page }) => {
+for (const [id, config, label] of accessibilityCases) {
+  test(`${label ?? id} has no axe violations in the dark colour scheme`, async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'dark' });
     await renderForm(page, id, config);
 
@@ -1015,7 +1138,7 @@ for (const [id, config] of accessibilityCases) {
     expect(results.violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
   });
 
-  test(`${id} reflows at 320px without horizontal scrolling`, async ({ page }) => {
+  test(`${label ?? id} reflows at 320px without horizontal scrolling`, async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 640 });
     await renderForm(page, id, config);
 

@@ -132,6 +132,7 @@ object ConversationServiceSpec extends UnitSpecBase:
       consentService,
       versola.antifraud.AntifraudEvents.noop,
       versola.antifraud.ChallengeVerifier.off,
+      stub[CodeAlternativeService],
     )
 
   private val roleId = versola.role.model.RoleId("user")
@@ -246,6 +247,7 @@ object ConversationServiceSpec extends UnitSpecBase:
             ZLayer.succeed(env.consentService),
             ZLayer.succeed[versola.antifraud.AntifraudEvents](versola.antifraud.AntifraudEvents.noop),
             ZLayer.succeed[versola.antifraud.ChallengeVerifier](versola.antifraud.ChallengeVerifier.off),
+            ZLayer.succeed(stub[CodeAlternativeService]),
             ConversationService.live,
           )
           _ <- env.conversationRepository.find.succeedsWith(Some(conversationRecord))

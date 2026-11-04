@@ -403,7 +403,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     * stops. A finite value bounds that: the hook logs a warning and returns, and the JVM finishes
     * exiting.
     */
-  override def gracefulShutdownTimeout: Duration = 15.seconds
+  override def gracefulShutdownTimeout: Duration = VersolaApp.GracefulShutdownTimeout
 
   /** Deadline for the failed-startup path, which `gracefulShutdownTimeout` does not cover. */
   protected def startupFailureShutdownTimeout: Duration = 20.seconds
@@ -464,6 +464,8 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     )
 
 object VersolaApp:
+  /** What [[VersolaApp.gracefulShutdownTimeout]] is, for what has to fit inside it. */
+  val GracefulShutdownTimeout: Duration = 15.seconds
 
   private def envName: ZLayer[ConfigProvider, Config.Error, EnvName] =
     ZLayer.fromZIO:

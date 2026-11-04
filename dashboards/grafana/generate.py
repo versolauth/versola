@@ -1030,7 +1030,7 @@ def build_antifraud() -> Board:
     # -- sms budget -------------------------------------------------------------------------
     b.row("auth — SMS budget")
     b.ts("Refused / s by reason and mode", [(f"sum by (reason, mode) ({r('antifraud_sms_budget_refused_total')})", "{{reason}} ({{mode}})")], unit="ops", stack=True, minimum=0,
-         desc="Codes the SMS budget closed a range to: `cap` (sentPerHour reached), `conversion` (too few codes verified). `shadow` means the code went out all the same and the number is what enforcing would refuse; `enforce` is a refusal that happened. Empty while the budget is off (the default).")
+         desc="Codes the SMS budget closed a range to: `cap` (sentPerHour reached), `conversion` (too few codes verified: entered, or passed by passkey). `shadow` means the code went out all the same and the number is what enforcing would refuse; `enforce` is a refusal that happened. Empty while the budget is off (the default).")
     b.ts("Ranges not tracked / evicted per s", [
         (r("antifraud_sms_budget_full_total"), "not tracked (table full)"),
         (r("antifraud_sms_budget_evicted_total"), "evicted"),
@@ -1103,7 +1103,7 @@ def build_antifraud() -> Board:
     b.row("auth — Storage")
     dbsel = f'{s}, operation=~".*antifraud.*"'
     b.ts("Event partitions ahead", [(f"min by (pod) (antifraud_partition_days_ahead{{{s}}})", "{{pod}}")], unit="d", minimum=0, line=steps((None, RED), (2, GREEN)),
-         desc="Days of the event log that already have a partition. Healthy is the number the service keeps ahead (a few days). Below the dashed line at 2 maintenance is failing; at 0 the writer has nowhere to write and events are dropped.")
+         desc="Days of the event log that already have a partition. Healthy is the number the service keeps ahead (a few days). Below the dashed line at 2 maintenance is failing; at 0 the events of the day are written to the default partition until its partition is made.")
     b.ts("Maintenance and rollup failures", [
         (f"sum(increase(antifraud_partition_maintenance_failed_total{{{s}}}[$__rate_interval]))", "partition maintenance"),
         (f"sum(increase(antifraud_stats_rollup_failed_total{{{s}}}[$__rate_interval]))", "statistics rollup"),

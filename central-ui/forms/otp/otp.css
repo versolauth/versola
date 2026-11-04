@@ -52,10 +52,34 @@
   cursor: text;
   caret-color: transparent;
 }
-.resend-timer {
+.resend-timer,
+.resend-line {
   font-size: 0.9rem;
   color: var(--text-muted);
   text-align: center;
-  margin: 6px 0 0;
+  margin: 10px 0 0;
+  line-height: 1.6;
   font-variant-numeric: tabular-nums;
+}
+.link-button {
+  background: none;
+  border: 0;
+  padding: 6px 2px;
+  margin: -6px -2px;
+  font: inherit;
+  font-weight: 650;
+  color: var(--link);
+  text-decoration: underline;
+  text-decoration-color: var(--focus);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.link-button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.otp-alternative {
+  margin: 0 0 12px;
 }

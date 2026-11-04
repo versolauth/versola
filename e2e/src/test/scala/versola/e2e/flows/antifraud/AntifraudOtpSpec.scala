@@ -1,6 +1,6 @@
 package versola.e2e.flows.antifraud
 
-import versola.e2e.support.AntifraudFixture.{AsnDatabase, GeoDatabase, ListEntry}
+import versola.e2e.support.AntifraudFixture.{AsnDatabase, CountryRules, GeoDatabase, ListEntry}
 import versola.e2e.support.AntifraudInstance.Decision
 import versola.e2e.support.{*, given}
 import zio.*
@@ -84,14 +84,22 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
   /** Seeds `entries` and waits until `instance` enforces them, which a deny entry of a network nobody else uses (added
     * in the same transaction, so in the same snapshot) says: a request from it is refused by that entry. Every poll
     * comes from another address of the network, so that the address limit does not refuse the polls before the entry
-    * is there to. */
+    * is there to. A case that asks the other instance before it reloads too uses [[seededOn]] with both. */
   private def seeded(instance: AntifraudInstance, s: Flows.Setup)(entries: ListEntry*): Task[Unit] =
+    seededOn(List(instance), s)(entries*)
+
+  /** [[seeded]] for every one of `instances`: each reloads the lists on its own clock, so the entry is enforced by one
+    * before the other has it, and a request the other answers in between meets none of them. */
+  private def seededOn(instances: List[AntifraudInstance], s: Flows.Setup)(entries: ListEntry*): Task[Unit] =
     val bits = UUID.randomUUID().getLeastSignificantBits
     val network = s"10.${(bits >>> 8) & 0xff}.${bits & 0xff}"
     AntifraudFixture.seed(ListEntry("deny", "cidr", s"$network.0/24") :: entries.toList) *>
-      awaited("the lists to be reloaded", timeout = 30.seconds, every = 500.millis)(
-        attempt(instance, s, s"$network.${1 + scala.util.Random.nextInt(250)}").map(a => Option.when(a.decision.rules.contains("deny_list:cidr"))(())),
-      )
+      ZIO.foreachDiscard(instances): instance =>
+        awaited(s"${instance.name} to reload the lists", timeout = 30.seconds, every = 500.millis)(
+          attempt(instance, s, s"$network.${1 + scala.util.Random.nextInt(250)}").map(a =>
+            Option.when(a.decision.rules.contains("deny_list:cidr"))(()),
+          ),
+        )
 
   /** The same as [[seeded]], with the entries made through central's admin API (`POST /antifraud/global/lists`, as an operator
     * does), so that what auth enforces is what the API accepted and stored: through central, auth's validation and Postgres,
@@ -292,6 +300,13 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
   /** An address of the hosting network of the fixture's ASN database, one of 250 so that no count of an address is shared. */
   private def hostingIp(): String = s"${AsnDatabase.HostingNetwork}.${1 + scala.util.Random.nextInt(250)}"
 
+  /** An address in the fixture's country database in no AS, in the country of the suite's numbers. */
+  private def homeIp(): String = s"${GeoDatabase.HomeNetwork}.${1 + scala.util.Random.nextInt(250)}"
+
+  /** The carrier's range is in another country than the suite's numbers, so the rules on the country list themselves there (as
+    * shadow rules, which is how the fixture starts them) and nothing else fired. */
+  private def onlyCountryShadows(decision: Decision): Boolean = decision.rules.forall(CountryRules.map(rule => s"shadow:$rule").contains)
+
   private def carrierIp(): String = s"${AsnDatabase.CarrierNetwork}.${1 + scala.util.Random.nextInt(250)}"
 
   /** Takes the seeded entries of `valueType` (`asn`, `country`) out and waits until both instances have reloaded the lists, so that the case that follows
@@ -318,7 +333,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         hosting.decision.asnClass.contains("hosting"),
         carrier.answeredWithCodeStep,
         carrier.decision.decision == "Allow",
-        carrier.decision.rules.isEmpty,
+        onlyCountryShadows(carrier.decision),
         carrier.decision.outcome.contains("sent"),
         carrier.decision.asn.contains(AsnDatabase.CarrierAsn),
         carrier.decision.asnClass.contains("other"),
@@ -345,7 +360,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
           onB.decision.rules.contains("deny_list:asn"),
           carrier.answeredWithCodeStep,
           carrier.decision.decision == "Allow",
-          carrier.decision.rules.isEmpty,
+          onlyCountryShadows(carrier.decision),
           carrier.decision.outcome.contains("sent"),
         )).ensuring(removed(f, gone, "asn"))
       yield result
@@ -414,7 +429,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
           onB.decision.rules.contains("deny_list:country"),
           carrier.answeredWithCodeStep,
           carrier.decision.decision == "Allow",
-          carrier.decision.rules.isEmpty,
+          onlyCountryShadows(carrier.decision),
           carrier.decision.outcome.contains("sent"),
         )).ensuring(removed(f, gone, "country"))
       yield result
@@ -437,8 +452,9 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         central <- ZIO.service[CentralApi]
         operator = central.asAdmin(operatorId)
         s <- f.nextSetup
-        // a watch entry on a network of its own: 20 by default, which is a challenge at the fixture's challengeAt (15)
-        _ <- seeded(f.a, s)(ListEntry("watch", "cidr", s"$network.0/24"))
+        // a watch entry on a network of its own: 20 by default, which is a challenge at the fixture's challengeAt (15).
+        // Both instances answer before the change, so both must have the entry first.
+        _ <- seededOn(List(f.a, f.b), s)(ListEntry("watch", "cidr", s"$network.0/24"))
         read <- operator.get("/antifraud/settings")
         etag <- ZIO.fromOption(read.response.headers.get("ETag")).orElseFail(RuntimeException("no ETag on the read"))
         json <- read.obj
@@ -489,6 +505,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         removed <- operator.patch("/antifraud/settings", Json.Obj("ruleWeights" -> Json.Obj("watch_list:cidr" -> Json.Null)))
         removedJson <- removed.obj
         invalid <- operator.patch("/antifraud/settings", Json.Obj("blockAt" -> Json.Num(-1)))
+        unknownKey <- operator.patch("/antifraud/settings", Json.Obj("blokAt" -> Json.Num(10)))
         after <- operator.get("/antifraud/settings").flatMap(_.obj)
         others = (json: Json.Obj) => json.fields.filterNot(f => f._1 == "ruleWeights" || f._1 == "version").toMap
         v = before.int("version").getOrElse(0)
@@ -502,6 +519,8 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         removedJson.obj("ruleWeights") == before.obj("ruleWeights"),
         // a patch the settings would not survive is refused and writes nothing
         invalid.status == Status.BadRequest,
+        // a member the settings do not have is refused, not dropped and answered with a new version
+        unknownKey.status == Status.BadRequest,
         after.int("version").contains(v + 2),
         others(after) == others(before),
       )
@@ -750,5 +769,104 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
     },
   )
 
-  def spec = suite("Antifraud decision of an OTP request")(velocitySuite, listsSuite, settingsSuite, asnSuite, challengeSuite) @@
+  /** Sets which rules only record, through central with the admin API (a merge patch, so nothing else of the settings changes),
+    * and waits until instance A lists exactly those on a request of the carrier's range, a number of its own being asked for
+    * the code. The settings are one row for the whole fixture: a case that changes them puts them back with this too. */
+  private def shadowing(f: AntifraudFixture, rules: List[String]): ZIO[CentralApi, Throwable, Unit] =
+    for
+      central <- ZIO.service[CentralApi]
+      probe <- f.nextSetup
+      patched <- central.asAdmin("00000000-0000-0000-0000-0000000e2e07")
+        .patch("/antifraud/settings", Json.Obj("shadowRules" -> Json.Arr(rules.map(Json.Str(_))*)))
+      _ <- ZIO.fail(RuntimeException(s"the settings were refused: ${patched.status} ${patched.body}")).unless(patched.status == Status.Ok)
+      // Awaited: auth reads the settings again every second.
+      _ <- awaited(s"instance A to shadow exactly $rules", every = 500.millis)(
+        attempt(f.a, probe, carrierIp()).map: a =>
+          Option.when(a.decision.rules.filter(_.startsWith("shadow:")).map(_.stripPrefix("shadow:")).toSet == rules.toSet)(()),
+      )
+    yield ()
+
+  /** The two rules on the country: the address's country against the number's (`country_mismatch`) and against the tenant's
+    * `phoneRegions` (`country_outside_regions`). The suite's numbers are German and its tenant's region is `DE`; the carrier's
+    * range is `UZ`, the hosting range `NL`, a documentation range `DE`, and any other address has no country. */
+  private def geoSuite = suite("the country of the address against the number and the tenant")(
+    test(
+      "as shadow rules they are listed for a request from another country and do nothing else, and are quiet at home, from an unknown country and from a hosting network",
+    ) {
+      for
+        f <- ZIO.service[AntifraudFixture]
+        s <- f.nextSetup
+        abroad <- attempt(f.a, s, carrierIp())
+        home <- attempt(f.a, s, homeIp())
+        unknown <- attempt(f.a, s, randomIp())
+        hosting <- attempt(f.a, s, hostingIp())
+      yield assertTrue(
+        abroad.answeredWithCodeStep,
+        abroad.decision.decision == "Allow",
+        abroad.decision.score == 0,
+        abroad.decision.rules == CountryRules.map(rule => s"shadow:$rule"),
+        abroad.decision.outcome.contains("sent"),
+        abroad.decision.country.contains(GeoDatabase.CarrierCountry),
+        home.decision.decision == "Allow",
+        home.decision.rules.isEmpty,
+        home.decision.country.contains(GeoDatabase.HomeCountry),
+        home.decision.outcome.contains("sent"),
+        unknown.decision.rules.isEmpty,
+        unknown.decision.country.isEmpty,
+        // A VPN exit says nothing about the person: only the rule on the network speaks, whose country is not the number's.
+        hosting.decision.rules == List("asn_hosting"),
+        hosting.decision.country.contains(GeoDatabase.HostingCountry),
+      )
+    },
+    test("enforced, a request from another country is challenged by both rules, 20 each; home, an unknown country and a hosting network are not") {
+      for
+        f <- ZIO.service[AntifraudFixture]
+        s <- f.nextSetup
+        result <- (for
+          _ <- shadowing(f, Nil)
+          abroad <- attempt(f.a, s, carrierIp())
+          home <- attempt(f.a, s, homeIp())
+          unknown <- attempt(f.a, s, randomIp())
+          hosting <- attempt(f.a, s, hostingIp())
+        yield assertTrue(
+          // 20 each, over the fixture's challengeAt (15), under its blockAt (50).
+          abroad.decision.decision == "Challenge",
+          abroad.decision.score == 40,
+          abroad.decision.rules == CountryRules,
+          abroad.decision.outcome.contains("challenged"),
+          home.answeredWithCodeStep,
+          home.decision.decision == "Allow",
+          home.decision.rules.isEmpty,
+          home.decision.outcome.contains("sent"),
+          unknown.decision.decision == "Allow",
+          unknown.decision.rules.isEmpty,
+          // Only asn_hosting: NL is not the number's country nor DE, and the rules do not look.
+          hosting.decision.decision == "Challenge",
+          hosting.decision.rules == List("asn_hosting"),
+          hosting.decision.score == 20,
+        )).ensuring(shadowing(f, CountryRules).orDie)
+      yield result
+    },
+    test("each rule counts alone when the other only records: the number's country, and the tenant's regions") {
+      for
+        f <- ZIO.service[AntifraudFixture]
+        s <- f.nextSetup
+        result <- (for
+          _ <- shadowing(f, List("country_outside_regions"))
+          mismatch <- attempt(f.a, s, carrierIp())
+          _ <- shadowing(f, List("country_mismatch"))
+          outside <- attempt(f.a, s, carrierIp())
+        yield assertTrue(
+          mismatch.decision.decision == "Challenge",
+          mismatch.decision.score == 20,
+          mismatch.decision.rules == List("country_mismatch", "shadow:country_outside_regions"),
+          outside.decision.decision == "Challenge",
+          outside.decision.score == 20,
+          outside.decision.rules == List("country_outside_regions", "shadow:country_mismatch"),
+        )).ensuring(shadowing(f, CountryRules).orDie)
+      yield result
+    },
+  )
+
+  def spec = suite("Antifraud decision of an OTP request")(velocitySuite, listsSuite, settingsSuite, asnSuite, geoSuite, challengeSuite) @@
     TestAspect.sequential @@ TestAspect.withLiveClock @@ TestAspect.timeout(15.minutes)
