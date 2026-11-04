@@ -4,12 +4,17 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.util.postgres.BasicCodecs
-import zio.{Duration, Task, ZIO, ZLayer, durationInt}
+import zio.{Duration, Exit, Task, ZIO, ZLayer, durationInt}
 
 import java.time.format.DateTimeFormatter
 import java.time.{Instant, LocalDate, ZoneOffset}
 
-/** @param lockTimeout      how long partition maintenance waits for the lock on `af_event`
+/** @param lockTimeout       how long partition maintenance waits for a lock that does not stall the writer: the other instances'
+  *                          maintenance, autovacuum and other DDL, and (to attach a day) the default partition, which a read of
+  *                          `af_event` holds
+  * @param detachLockTimeout how long the detach of an old day waits for its locks. Detaching takes ACCESS EXCLUSIVE on `af_event`,
+  *                          which the writer's inserts queue behind, so this is the longest the writer can be held up by
+  *                          one attempt: short, and a failed attempt is retried by the next run
   * @param statementTimeout the longest one statement of the writer, the rollup or the prune may take: a statement
   *                         that hangs (a partition being locked, a slow disk) would otherwise hold the single writer
   *                         fiber while the queue fills and drops
@@ -17,6 +22,7 @@ import java.time.{Instant, LocalDate, ZoneOffset}
 class PostgresAntifraudEventRepository(
     xa: TransactorZIO,
     lockTimeout: Duration = 5.seconds,
+    detachLockTimeout: Duration = 500.millis,
     statementTimeout: Duration = 30.seconds,
     pruneBatch: Int = 5000,
 ) extends AntifraudEventRepository,
@@ -63,9 +69,18 @@ class PostgresAntifraudEventRepository(
           WHERE at >= $dayStart AND at < $limit
             AND id IN (SELECT id FROM af_event WHERE at >= $dayStart AND at < $limit LIMIT $pruneBatch)
         """.update.run()
-    def loop(remaining: Int): Task[Unit] =
-      batch.flatMap(deleted => if deleted >= pruneBatch && remaining > 1 then loop(remaining - 1) else ZIO.unit)
-    loop(MaxPruneBatches)
+    // The default partition holds the rows of days that had no partition when they were written, of any age: the day the limit
+    // falls in is not the only one that can have rows past it, and the partition is never dropped.
+    val defaultBatch =
+      xa.transactMeasured("prune-antifraud-default-events"):
+        timed()
+        sql"""
+          DELETE FROM $DefaultPartition
+          WHERE id IN (SELECT id FROM $DefaultPartition WHERE at < $limit LIMIT $pruneBatch)
+        """.update.run()
+    def loop(step: Task[Int], remaining: Int): Task[Unit] =
+      step.flatMap(deleted => if deleted >= pruneBatch && remaining > 1 then loop(step, remaining - 1) else ZIO.unit)
+    loop(batch, MaxPruneBatches) *> loop(defaultBatch, MaxPruneBatches)
 
   override def rollupStats(from: Instant, to: Instant, prefixLength: Int, interval: Duration): Task[Boolean] =
     xa.transactMeasured("rollup-antifraud-stats"):
@@ -123,42 +138,151 @@ class PostgresAntifraudEventRepository(
       sql"DELETE FROM af_dest_stats WHERE minute < ${before.atOffset(ZoneOffset.UTC)}".update.run()
     .unit
 
-  /** The creates are one transaction and the drops another: a drop that cannot take its lock (a long read on the partition
-    * of an old day, a dependent object) must not roll back the partitions of the days ahead, or the writer would run out
+  /** The creates are one phase and the drops another: a drop that cannot take its lock (a long read on the partition
+    * of an old day, a dependent object) must not stop the partitions of the days ahead, or the writer would run out
     * of them after the few days it is ahead. The drops are tried even when the creates failed; the first failure is the
-    * one reported. */
-  override def maintainPartitions(from: LocalDate, days: Int, keepFrom: LocalDate): Task[Unit] =
+    * one reported. The result is the number of rows moved out of the default partition. */
+  override def maintainPartitions(from: LocalDate, days: Int, keepFrom: LocalDate): Task[Long] =
     for
       created <- createAhead(from, days).exit
       dropped <- dropOld(keepFrom).exit
-      _ <- ZIO.done(created) *> ZIO.done(dropped)
+      moved <- ZIO.done(created) <* ZIO.done(dropped)
+    yield moved
+
+  override def ownership: Task[TableOwnership] =
+    xa.connectMeasured("check-antifraud-table-owner"):
+      sql"""
+        SELECT pg_get_userbyid(c.relowner)::text, current_user::text, pg_has_role(current_user, c.relowner, 'USAGE')
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relname = 'af_event' AND n.nspname = current_schema()
+      """.query[(String, String, Boolean)].run().headOption
+    .someOrFail(IllegalStateException("the table af_event does not exist: has the migration run?"))
+      .map((owner, role, mayAlter) => TableOwnership(owner = owner, role = role, mayAlter = mayAlter))
+
+  /** A day's table is made on its own, attached, and only then is it a partition. Attaching takes SHARE UPDATE EXCLUSIVE on
+    * `af_event` (PostgreSQL 12 and later; creating the table `PARTITION OF` or `DETACH`ing takes ACCESS EXCLUSIVE), which conflicts
+    * with neither the reads nor the writer's inserts, so the writer is never held up by it. What it does take is ACCESS EXCLUSIVE on
+    * the default partition (to check that no row there belongs to the new day), so it waits behind a read of `af_event` (the default
+    * is part of every one) up to `lock_timeout`, and the reads that start meanwhile wait behind it; the writer does not, unless it is
+    * writing to the default. A day's rows that the default holds are moved into its table first, since `ATTACH` fails when there are some. */
+  private def createAhead(from: LocalDate, days: Int): Task[Long] =
+    for
+      present <- xa.connectMeasured("list-antifraud-partitions")(partitionDays().toSet)
+      moved <- ZIO.foreach((0 until days).map(from.plusDays(_)).filterNot(present).toList)(attachDay)
+    yield moved.sum
+
+  private def attachDay(day: LocalDate): Task[Long] =
+    for
+      _ <- moveBulk(day)
+      moved <- xa.transactMeasured("attach-antifraud-partition"):
+        lockedForMaintenance(lockTimeout)
+        if partitionDays().contains(day) then 0L // another instance was first, and reports what it moved
+        else
+          createStandalone(day)
+          val table = SqlLiteral(partitionName(day))
+          // Counted before the lock, so that the scan does not hold it: what a bulk move left there, and what an earlier run that
+          // moved the rows and then could not attach did.
+          val earlier = sql"SELECT COUNT(*) FROM $table".query[Long].run().head
+          // Taken now, not left to ATTACH, so that no write to the default can land between the move and the attach and make the
+          // attach fail on the row (the writes that wait for it are the events of the day that has no partition yet).
+          sql"LOCK TABLE $DefaultPartition IN ACCESS EXCLUSIVE MODE".update.run()
+          val residual = moveFromDefault(day, limit = None)
+          val start = SqlLiteral(s"'${day} 00:00:00+00'")
+          val end = SqlLiteral(s"'${day.plusDays(1)} 00:00:00+00'")
+          sql"ALTER TABLE af_event ATTACH PARTITION $table FOR VALUES FROM ($start) TO ($end)".update.run()
+          // It did its work: the attach found the bound implied and did not scan the table. A partition does not need it (and a table that was
+          // there before, made by hand or by an older run, may not have it).
+          sql"ALTER TABLE $table DROP CONSTRAINT IF EXISTS ${SqlLiteral(boundsName(day))}".update.run()
+          earlier + residual
+      _ <- ZIO.when(moved > 0)(
+        ZIO.logWarning(
+          s"$moved antifraud events of $day were written to af_event_default, since the day had no partition, and are moved into its partition now",
+        ),
+      )
+    yield moved
+
+  /** The table of a day, not yet a partition. The bounds are a CHECK constraint, so that `ATTACH PARTITION` finds them implied
+    * and does not scan the table. `LIKE ... INCLUDING ALL` gives it the parent's indexes, which attach as they are. */
+  private def createStandalone(day: LocalDate)(using DbCon): Unit =
+    val table = SqlLiteral(partitionName(day))
+    val start = SqlLiteral(s"'${day} 00:00:00+00'")
+    val end = SqlLiteral(s"'${day.plusDays(1)} 00:00:00+00'")
+    val bounds = SqlLiteral(boundsName(day))
+    sql"CREATE TABLE IF NOT EXISTS $table (LIKE af_event INCLUDING ALL, CONSTRAINT $bounds CHECK (at >= $start AND at < $end))".update.run()
+    ()
+
+  /** Moves a day's rows out of the default partition into the day's table, at most `limit` of them; returns how many. */
+  private def moveFromDefault(day: LocalDate, limit: Option[Int])(using DbCon): Long =
+    val table = SqlLiteral(partitionName(day))
+    val start = day.atStartOfDay().atOffset(ZoneOffset.UTC)
+    val end = day.plusDays(1).atStartOfDay().atOffset(ZoneOffset.UTC)
+    val capped = limit match
+      case Some(n) => sql"AND id IN (SELECT id FROM $DefaultPartition WHERE at >= $start AND at < $end LIMIT $n)"
+      case None => sql""
+    sql"""
+      WITH moved AS (
+        DELETE FROM $DefaultPartition WHERE at >= $start AND at < $end $capped RETURNING *
+      )
+      INSERT INTO $table SELECT * FROM moved
+    """.update.run().toLong
+
+  /** After an outage of days the default may hold a day's rows by the million. Moving them in the attach's transaction would hold
+    * the default's lock for as long, and the writes to it (the events of the day that has no partition) would wait that long, past
+    * their statement timeout. So when there are more than a batch, the most of them go in batches of their own, each under its
+    * own timeout, and the attach moves what is left. */
+  private def moveBulk(day: LocalDate): Task[Unit] =
+    val start = day.atStartOfDay().atOffset(ZoneOffset.UTC)
+    val end = day.plusDays(1).atStartOfDay().atOffset(ZoneOffset.UTC)
+    val many = xa.transactMeasured("count-antifraud-default-events"):
+      timed()
+      sql"SELECT COUNT(*) FROM (SELECT 1 FROM $DefaultPartition WHERE at >= $start AND at < $end LIMIT $pruneBatch) few"
+        .query[Long].run().head >= pruneBatch
+    val batch = xa.transactMeasured("move-antifraud-default-events"):
+      lockedForMaintenance(lockTimeout)
+      timed()
+      createStandalone(day)
+      moveFromDefault(day, Some(pruneBatch))
+    def loop(remaining: Int): Task[Unit] =
+      batch.flatMap(moved => if moved >= pruneBatch && remaining > 1 then loop(remaining - 1) else ZIO.unit)
+    many.flatMap(ZIO.when(_)(loop(MaxPruneBatches))).unit
+
+  /** An old day goes in two steps, each its own transaction, so that neither waits for a lock while holding the other's.
+    * `DETACH PARTITION` takes ACCESS EXCLUSIVE on `af_event` (and on the default partition), instantly if nothing reads, so it is
+    * tried under the short `detachLockTimeout`: the writer's inserts queue behind it for at most that. It is not `CONCURRENTLY`
+    * (SHARE UPDATE EXCLUSIVE only, PostgreSQL 14 and later): that is refused while the table has a default partition. Dropping the
+    * detached table then takes ACCESS EXCLUSIVE on that table alone, so a long read of that old day holds up its drop and nothing
+    * else, under `lockTimeout`. A day whose drop failed, or whose run was cut off between the two, is a table that is no
+    * partition: the next run drops it. A day that fails does not stop the others; the first failure is the one reported. */
+  private def dropOld(keepFrom: LocalDate): Task[Unit] =
+    for
+      (attached, loose) <- xa.connectMeasured("list-old-antifraud-partitions"):
+        (partitionDays().filter(_.isBefore(keepFrom)).sorted, looseTableDays().filter(_.isBefore(keepFrom)).sorted)
+      exits <- ZIO.foreach(attached.map(day => detach(day) *> dropTable(day)) ++ loose.map(dropTable))(_.exit)
+      _ <- exits.collectFirst { case failure @ Exit.Failure(_) => failure }.fold(ZIO.unit)(ZIO.done(_))
     yield ()
 
-  private def createAhead(from: LocalDate, days: Int): Task[Unit] =
-    xa.transactMeasured("create-antifraud-partitions"):
-      lockedForMaintenance()
-      (0 until days).map(from.plusDays(_)).foreach: day =>
-        val partition = SqlLiteral(partitionName(day))
-        val start = SqlLiteral(s"'${day} 00:00:00+00'")
-        val end = SqlLiteral(s"'${day.plusDays(1)} 00:00:00+00'")
-        sql"CREATE TABLE IF NOT EXISTS $partition PARTITION OF af_event FOR VALUES FROM ($start) TO ($end)".update.run()
-    .unit
+  private def detach(day: LocalDate): Task[Unit] =
+    xa.transactMeasured("detach-antifraud-partition"):
+      lockedForMaintenance(lockTimeout)
+      // Only now the lock that stalls the writer is asked for, and not for long.
+      sql"SET LOCAL lock_timeout = ${SqlLiteral(s"'${detachLockTimeout.toMillis}ms'")}".update.run()
+      // Another instance may have done it.
+      if partitionDays().contains(day) then
+        sql"ALTER TABLE af_event DETACH PARTITION ${SqlLiteral(partitionName(day))}".update.run()
+      ()
 
-  private def dropOld(keepFrom: LocalDate): Task[Unit] =
-    xa.transactMeasured("drop-antifraud-partitions"):
-      lockedForMaintenance()
-      partitionDays().filter(_.isBefore(keepFrom)).foreach: day =>
-        val partition = SqlLiteral(partitionName(day))
-        sql"DROP TABLE IF EXISTS $partition".update.run()
-    .unit
+  private def dropTable(day: LocalDate): Task[Unit] =
+    xa.transactMeasured("drop-antifraud-partition"):
+      lockedForMaintenance(lockTimeout)
+      sql"DROP TABLE IF EXISTS ${SqlLiteral(partitionName(day))}".update.run()
+      ()
 
-  /** Several instances run this at start-up; creating the same partition twice at once can fail in the catalog, so they
-    * take turns. Creating or dropping a partition takes an exclusive lock on `af_event`, which the writer's inserts queue
-    * behind (they wait, up to `lock_timeout`, not past it): behind a long read it would hold up the writer, so after
-    * `lock_timeout` the maintenance gives up and the next run tries again soon. */
-  private def lockedForMaintenance()(using DbCon): Unit =
-    val timeout = SqlLiteral(s"'${lockTimeout.toMillis}ms'")
-    sql"SET LOCAL lock_timeout = $timeout".update.run()
+  /** Several instances run this at start-up; two of them making the same table at once can fail in the catalog, so they take
+    * turns. Whatever lock the statements after it wait for, they wait at most `timeout` (`lock_timeout`, which also bounds the
+    * wait for this lock): a maintenance that cannot get one gives up and the next run tries again soon. */
+  private def lockedForMaintenance(timeout: Duration)(using DbCon): Unit =
+    sql"SET LOCAL lock_timeout = ${SqlLiteral(s"'${timeout.toMillis}ms'")}".update.run()
     sql"SELECT 1 FROM (SELECT pg_advisory_xact_lock($AdvisoryLock)) locked".query[Int].run()
     ()
 
@@ -170,6 +294,15 @@ class PostgresAntifraudEventRepository(
       JOIN pg_class p ON p.oid = i.inhparent
       JOIN pg_namespace n ON n.oid = p.relnamespace
       WHERE p.relname = 'af_event' AND n.nspname = current_schema()
+    """.query[String].run().toList.flatMap(partitionDay)
+
+  /** Days of the tables named like a partition that are not one: what a run cut off between detaching and dropping leaves. */
+  private def looseTableDays()(using DbCon): List[LocalDate] =
+    sql"""
+      SELECT c.relname
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = current_schema() AND c.relkind = 'r' AND NOT c.relispartition AND c.relname ~ '^af_event_[0-9]{8}'
     """.query[String].run().toList.flatMap(partitionDay)
 
   override def partitionDaysAhead(today: LocalDate): Task[Int] =
@@ -186,12 +319,18 @@ object PostgresAntifraudEventRepository:
 
   private val RollupLock = 7430002L
 
-  /** Batches of one prune run: with the 5-minute pace that is far more than the rows a day can hold, and it bounds the run. */
+  /** Batches of one prune run, or of moving a day's rows out of the default partition: with the 5-minute pace that is far more than the rows a day can hold, and it bounds the run. */
   private val MaxPruneBatches = 200
 
   private val suffix = DateTimeFormatter.BASIC_ISO_DATE
 
   private[antifraud] def partitionName(day: LocalDate): String = s"af_event_${suffix.format(day)}"
+
+  /** The CHECK that carries a day's bounds while its table is not yet a partition. */
+  private def boundsName(day: LocalDate): String = s"${partitionName(day)}_day"
+
+  /** Where the rows of a day that has no partition go (migration `V0030`). Never dropped; [[partitionDay]] does not read it as a day. */
+  private val DefaultPartition = SqlLiteral("af_event_default")
 
   private val partitionPattern = raw"af_event_(\d{8})".r
 

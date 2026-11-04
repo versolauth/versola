@@ -2,7 +2,7 @@ package versola.e2e.flows.edge
 
 import versola.e2e.support.{*, given}
 import zio.*
-import zio.http.{Header, Method, Status, URL}
+import zio.http.{Cookie, Header, Method, Status, URL}
 import zio.test.*
 
 /** The edge's own web login: the `/login/{presetId}` → OP → `/complete` round trip that turns
@@ -131,7 +131,7 @@ object EdgeWebLoginSpec extends EdgeSpec(
         ).orElseFail(RuntimeException("no EDGE_SESSION cookie on the completed login"))
       yield assertTrue(cookie.isHttpOnly).label("script must not be able to read the session") &&
         assertTrue(cookie.isSecure) &&
-        assertTrue(cookie.sameSite.contains(zio.http.Cookie.SameSite.Strict))
+        assertTrue(cookie.sameSite.contains(Cookie.SameSite.Strict))
           .label("SameSite=Strict is what keeps the cookie off cross-site requests")
     },
     test("two logins of the same user produce two distinct sessions") {
@@ -173,8 +173,8 @@ object EdgeWebLoginSpec extends EdgeSpec(
         authApi <- auth
         f <- fixture
         callback <- edgeApi.authorize(authApi, f.presetId, f.login, f.password)
-        first <- edgeApi.complete("code" -> callback.code, "state" -> callback.state)
-        second <- edgeApi.complete("code" -> callback.code, "state" -> callback.state)
+        first <- edgeApi.complete(callback)
+        second <- edgeApi.complete(callback)
       yield assertTrue(first.status == Status.SeeOther) &&
         assertTrue(second.status == Status.BadRequest)
           .label("the login record is consumed, so a replayed callback has nothing to match")
@@ -185,7 +185,7 @@ object EdgeWebLoginSpec extends EdgeSpec(
         f <- fixture
         started <- edgeApi.login(f.presetId)
         state <- stateOf(started)
-        result <- edgeApi.complete("error" -> "access_denied", "state" -> state)
+        result <- edgeApi.completeWith(EdgeApi.loginCookie(started), "error" -> "access_denied", "state" -> state)
         location = result.header(Header.Location).map(_.url.encode).getOrElse("")
       yield assertTrue(result.status == Status.SeeOther) &&
         assertTrue(location.startsWith(f.postLoginRedirectUri)) &&
@@ -198,7 +198,8 @@ object EdgeWebLoginSpec extends EdgeSpec(
         f <- fixture
         started <- edgeApi.login(f.presetId)
         state <- stateOf(started)
-        result <- edgeApi.complete(
+        result <- edgeApi.completeWith(
+          EdgeApi.loginCookie(started),
           "error" -> "invalid_scope",
           "error_description" -> "scope not allowed",
           "state" -> state,
@@ -213,8 +214,8 @@ object EdgeWebLoginSpec extends EdgeSpec(
         f <- fixture
         started <- edgeApi.login(f.presetId)
         state <- stateOf(started)
-        first <- edgeApi.complete("error" -> "access_denied", "state" -> state)
-        second <- edgeApi.complete("error" -> "access_denied", "state" -> state)
+        first <- edgeApi.completeWith(EdgeApi.loginCookie(started), "error" -> "access_denied", "state" -> state)
+        second <- edgeApi.completeWith(EdgeApi.loginCookie(started), "error" -> "access_denied", "state" -> state)
       yield assertTrue(first.status == Status.SeeOther) &&
         assertTrue(second.status == Status.BadRequest)
     },
@@ -224,7 +225,7 @@ object EdgeWebLoginSpec extends EdgeSpec(
         f <- fixture
         started <- edgeApi.login(f.presetId)
         state <- stateOf(started)
-        result <- edgeApi.complete("error" -> "access_denied", "state" -> state)
+        result <- edgeApi.completeWith(EdgeApi.loginCookie(started), "error" -> "access_denied", "state" -> state)
       yield assertTrue(EdgeApi.sessionCookie(result).isEmpty)
     },
     test("a login that asked to return to a page ends there, not on the preset's post-login page") {
@@ -233,7 +234,7 @@ object EdgeWebLoginSpec extends EdgeSpec(
         authApi <- auth
         f <- fixture
         callback <- edgeApi.authorize(authApi, f.presetId, f.login, f.password, Some("/resources/auth/settings?tab=passkeys"))
-        completed <- edgeApi.complete("code" -> callback.code, "state" -> callback.state)
+        completed <- edgeApi.complete(callback)
         location = completed.header(Header.Location).map(_.url.encode).getOrElse("")
       yield assertTrue(completed.status == Status.SeeOther) &&
         assertTrue(location == s"${originOf(f.postLoginRedirectUri)}/resources/auth/settings?tab=passkeys")
@@ -246,9 +247,9 @@ object EdgeWebLoginSpec extends EdgeSpec(
         authApi <- auth
         f <- fixture
         other <- edgeApi.authorize(authApi, f.presetId, f.login, f.password, Some("https://attacker.test/steal"))
-        otherDone <- edgeApi.complete("code" -> other.code, "state" -> other.state)
+        otherDone <- edgeApi.complete(other)
         relative <- edgeApi.authorize(authApi, f.presetId, f.login, f.password, Some("//attacker.test/steal"))
-        relativeDone <- edgeApi.complete("code" -> relative.code, "state" -> relative.state)
+        relativeDone <- edgeApi.complete(relative)
         locations = List(otherDone, relativeDone).map(_.header(Header.Location).map(_.url.encode).getOrElse(""))
       yield assertTrue(locations.forall(_.startsWith(f.postLoginRedirectUri)))
         .label(s"the preset's own page, never another host: $locations")
@@ -259,7 +260,7 @@ object EdgeWebLoginSpec extends EdgeSpec(
         f <- fixture
         started <- edgeApi.login(f.presetId, "return_to" -> "/resources/auth/settings")
         state <- stateOf(started)
-        result <- edgeApi.complete("error" -> "unmet_authentication_requirements", "state" -> state)
+        result <- edgeApi.completeWith(EdgeApi.loginCookie(started), "error" -> "unmet_authentication_requirements", "state" -> state)
         location = result.header(Header.Location).map(_.url.encode).getOrElse("")
       yield assertTrue(
         location == s"${originOf(f.postLoginRedirectUri)}/resources/auth/settings?error=unmet_authentication_requirements",
@@ -273,9 +274,74 @@ object EdgeWebLoginSpec extends EdgeSpec(
         callback <- edgeApi.authorize(authApi, f.presetId, f.login, f.password)
         other <- edgeApi.login(f.presetId)
         otherState <- stateOf(other)
-        result <- edgeApi.complete("code" -> callback.code, "state" -> otherState)
+        result <- edgeApi.completeWith(EdgeApi.loginCookie(other), "code" -> callback.code, "state" -> otherState)
       yield assertTrue(result.status != Status.SeeOther)
         .label("the PKCE verifier stored under the other state cannot redeem this code")
+    },
+    test("/login binds the login to the browser with an HttpOnly, Secure, SameSite=Lax EDGE_LOGIN_<state> cookie") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        started <- edgeApi.login(f.presetId)
+        state <- stateOf(started)
+        cookie <- ZIO.fromOption(
+          started.headers.getAll(Header.SetCookie).collectFirst { case h if h.value.name == s"EDGE_LOGIN_$state" => h.value },
+        ).orElseFail(RuntimeException("no EDGE_LOGIN_<state> cookie on the redirect to the OP"))
+      yield assertTrue(cookie.content.nonEmpty, cookie.isHttpOnly, cookie.isSecure) &&
+        assertTrue(cookie.sameSite.contains(Cookie.SameSite.Lax))
+          .label("Lax, not Strict: /complete is a cross-site top-level GET from the OP, which Strict would not accompany")
+    },
+    test("a callback replayed from another browser is refused and starts no session") {
+      for
+        edgeApi <- edge
+        authApi <- auth
+        f <- fixture
+        callback <- edgeApi.authorize(authApi, f.presetId, f.login, f.password)
+        // the attacker's link, opened in a browser that never visited /login
+        victim <- edgeApi.complete(callback.copy(loginCookie = None))
+        wrong <- edgeApi.completeWith(
+          callback.loginCookie.map((name, _) => name -> "not-the-secret"),
+          "code" -> callback.code,
+          "state" -> callback.state,
+        )
+        // the browser that began the login can still finish it: the refused attempts did not burn it
+        own <- edgeApi.complete(callback)
+      yield assertTrue(victim.status == Status.BadRequest, wrong.status == Status.BadRequest) &&
+        assertTrue(EdgeApi.sessionCookie(victim).isEmpty, EdgeApi.sessionCookie(wrong).isEmpty) &&
+        assertTrue(own.status == Status.SeeOther, EdgeApi.sessionCookie(own).nonEmpty)
+          .label("login CSRF: the state alone must not be enough to finish someone else's login")
+    },
+    test("an OP error is bound to the browser too, and a refused attempt keeps the login") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        started <- edgeApi.login(f.presetId)
+        state <- stateOf(started)
+        foreign <- edgeApi.complete("error" -> "access_denied", "state" -> state)
+        own <- edgeApi.completeWith(EdgeApi.loginCookie(started), "error" -> "access_denied", "state" -> state)
+      yield assertTrue(foreign.status == Status.BadRequest, own.status == Status.SeeOther)
+    },
+    test("two logins begun in one browser do not replace each other's cookie") {
+      for
+        edgeApi <- edge
+        authApi <- auth
+        f <- fixture
+        first <- edgeApi.authorize(authApi, f.presetId, f.login, f.password)
+        second <- edgeApi.authorize(authApi, f.presetId, f.login, f.password)
+        firstDone <- edgeApi.complete(first)
+        secondDone <- edgeApi.complete(second)
+      yield assertTrue(first.state != second.state, firstDone.status == Status.SeeOther, secondDone.status == Status.SeeOther)
+    },
+    test("a successful /complete clears the login cookie") {
+      for
+        edgeApi <- edge
+        authApi <- auth
+        f <- fixture
+        callback <- edgeApi.authorize(authApi, f.presetId, f.login, f.password)
+        completed <- edgeApi.complete(callback)
+        cleared = completed.headers.getAll(Header.SetCookie).map(_.value)
+          .find(c => callback.loginCookie.exists(_._1 == c.name))
+      yield assertTrue(cleared.exists(_.maxAge.contains(Duration.Zero)))
     },
   ) @@ TestAspect.sequential @@ TestAspect.timeout(120.seconds)
 

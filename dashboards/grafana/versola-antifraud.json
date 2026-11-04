@@ -2281,7 +2281,7 @@
     {
       "type": "timeseries",
       "title": "Event partitions ahead",
-      "description": "Days of the event log that already have a partition. Healthy is the number the service keeps ahead (a few days). Below the dashed line at 2 maintenance is failing; at 0 the writer has nowhere to write and events are dropped.",
+      "description": "Days of the event log that already have a partition. Healthy is the number the service keeps ahead (a few days). Below the dashed line at 2 maintenance is failing; at 0 the events of the day are written to the default partition until its partition is made.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"

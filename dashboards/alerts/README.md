@@ -34,6 +34,8 @@ The rules select by metric name and sum by `namespace`; they do not assume a `jo
 | --- | --- | --- | --- |
 | `AntifraudPartitionMaintenanceFailed` | partition maintenance of the event log failed | 15m | warning |
 | `AntifraudPartitionsRunningOut` | `antifraud_partition_days_ahead` below 2 | 5m | critical |
+| `AntifraudPartitionOwnerMismatch` | `antifraud_partition_owner_mismatch` is 1: the service's role does not own `af_event` | 10m | warning |
+| `AntifraudEventsMovedFromDefault` | a day ran without its partition and its events were moved out of the default partition | none | warning |
 | `AntifraudTuningRefreshFailed` | the tuning could not be read | 5m | warning |
 | `AntifraudListRefreshFailed` | the lists could not be read | 5m | warning |
 | `AntifraudListsStale` | the lists were last read more than 10 minutes ago | 5m | warning |

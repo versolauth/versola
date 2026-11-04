@@ -93,6 +93,35 @@ jobs:
         if: github.event_name != 'release'
         uses: VirtusLab/scala-cli-setup@3f5bf11a33bb88343238780c18257c8fa43789e1 # v1
 
+      # sbt's incremental compile state (classes, test classes and zinc's analysis), restored from the
+      # last push to main so a PR recompiles what it changed instead of everything: `unit-tests` and
+      # `build` each compiled the whole tree from scratch (~2.5 min apiece before any test ran).
+      # Only a push to main writes it (see "Save compile cache" in `unit-tests`), so a PR can read it
+      # but never put anything into it. Not used on release/workflow_dispatch: what those publish is
+      # built from a clean tree. The key carries the ISO week, so a stale-state bug in zinc costs at
+      # most a week and then a clean build replaces it; bump `compile-v1` when something zinc cannot
+      # see changes (the JDK that compiles, scalac flags passed from outside the build files).
+      - name: Compile cache week
+        id: week
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore compile cache
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            target/streams
+            project/target
+            project/project/target
+            */target/scala-*
+            */target/streams
+            */implementations/*/target/scala-*
+            */implementations/*/target/streams
+          key: compile-v1-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('build.sbt', 'project/*.sbt', 'project/*.scala', 'project/build.properties') }}-${{ github.sha }}
+          restore-keys: |
+            compile-v1-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('build.sbt', 'project/*.sbt', 'project/*.scala', 'project/build.properties') }}-
+
       # The built forms are needed before the first sbt step, not only before staging: the base
       # stylesheet every theme is composed on (forms/common.css) is copied by `build:forms` into
       # util's resources, and util, auth and central read it when they run (their tests too).
@@ -131,7 +160,7 @@ jobs:
       # it's still not part of the default `compile`/`test` loop for
       # everyone else, just guaranteed to be checked on every run.
       - name: Compile
-        run: sbt compile "tools/compile" "loadgen/compile" "mockapi/compile"
+        run: sbt compile "tools/compile" "loadgen/compile" "mockapi/compile" "migrateTool/compile"
 
       # `PostgresTlsConnectionSpec` needs a Postgres that serves TLS; the `postgres` service above
       # does not (and a service container cannot take the server flags or certificates it
@@ -171,6 +200,27 @@ jobs:
         if: github.event_name != 'release'
         run: sbt "tools/test"
 
+      # The state worth keeping is the plain one: `sbt coverage test` below instruments and rewrites the
+      # classes, so this saves before it, after compiling every test source (the root `sbt test` would
+      # do that only after). `build` needs impl classes and e2e test classes from here as well.
+      - name: Compile all test sources for the cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: sbt Test/compile "tools/Test/compile"
+
+      - name: Save compile cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            target/streams
+            project/target
+            project/project/target
+            */target/scala-*
+            */target/streams
+            */implementations/*/target/scala-*
+            */implementations/*/target/streams
+          key: compile-v1-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('build.sbt', 'project/*.sbt', 'project/*.scala', 'project/build.properties') }}-${{ github.sha }}
+
       - name: Run tests
         if: github.event_name != 'push'
         env:
@@ -192,6 +242,28 @@ jobs:
           GIST_ID: bd1fd5151f5190b2f8325a56610909ef
           GIST_FILENAME: versola-coverage.json
         run: scala-cli run --server=false .github/scripts/coverage-badge.scala
+
+  # Every push to main saves a compile cache of its own (see "Save compile cache" in `unit-tests`), a few
+  # hundred MB each, and the repository's 10 GB Actions cache quota is shared with the sbt and npm
+  # dependency caches, which are evicted oldest-first when it fills. Only the newest two are of any use
+  # (a restore takes the latest), so the rest are deleted. Its own job so `actions: write` is held by
+  # nothing but these few lines.
+  compile-cache-prune:
+    needs: unit-tests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Delete all but the two newest compile caches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh cache list --repo "$GITHUB_REPOSITORY" --key compile-v1- --sort created_at --order desc \
+            --limit 100 --json id --jq '.[2:][].id' |
+            while read -r id; do gh cache delete "$id" --repo "$GITHUB_REPOSITORY"; done
 
   # Stages the services and runs e2e against them (and, on release/workflow_dispatch, produces the stage
   # artifacts the docker-* jobs ship). The unit specs live in `unit-tests`, beside this job; every docker-*
@@ -287,6 +359,35 @@ jobs:
       - name: Set up Scala CLI
         if: github.event_name != 'release'
         uses: VirtusLab/scala-cli-setup@3f5bf11a33bb88343238780c18257c8fa43789e1 # v1
+
+      # sbt's incremental compile state (classes, test classes and zinc's analysis), restored from the
+      # last push to main so a PR recompiles what it changed instead of everything: `unit-tests` and
+      # `build` each compiled the whole tree from scratch (~2.5 min apiece before any test ran).
+      # Only a push to main writes it (see "Save compile cache" in `unit-tests`), so a PR can read it
+      # but never put anything into it. Not used on release/workflow_dispatch: what those publish is
+      # built from a clean tree. The key carries the ISO week, so a stale-state bug in zinc costs at
+      # most a week and then a clean build replaces it; bump `compile-v1` when something zinc cannot
+      # see changes (the JDK that compiles, scalac flags passed from outside the build files).
+      - name: Compile cache week
+        id: week
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore compile cache
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            target/streams
+            project/target
+            project/project/target
+            */target/scala-*
+            */target/streams
+            */implementations/*/target/scala-*
+            */implementations/*/target/streams
+          key: compile-v1-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('build.sbt', 'project/*.sbt', 'project/*.scala', 'project/build.properties') }}-${{ github.sha }}
+          restore-keys: |
+            compile-v1-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('build.sbt', 'project/*.sbt', 'project/*.scala', 'project/build.properties') }}-
 
       - name: Enforce measured DB access in production code
         shell: bash
@@ -1280,18 +1381,34 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
-  # Guards against the k8s/*/values.yaml `image.tag: ""` default -- which
-  # _helpers.tpl resolves to .Chart.AppVersion -- naming a tag that was never
-  # published. That is how k8s/loadgen shipped pointing at 0.4.0 images whose
-  # docker-* jobs did not exist until c17190d8, three releases later.
+  # The chart checks that need nothing but Helm (and the runner's python3 with PyYAML), in one job: each
+  # was a job of its own that ran for 5-10 s behind ~25 s of runner start and checkout. They share one
+  # checkout and one Helm install, and every step runs even if an earlier one failed, so a PR still
+  # sees all the failures at once and the step name says which check broke.
   #
-  # No `needs:` -- it compiles nothing, so it stays off the critical path and
-  # reports in well under a minute. Skipped on `release`/`workflow_dispatch`
-  # because the docker-* jobs above are pushing these exact tags on those
-  # events and this check would race them.
-  helm-images:
+  # * images: guards against the k8s/*/values.yaml `image.tag: ""` default -- which _helpers.tpl
+  #   resolves to .Chart.AppVersion -- naming a tag that was never published (how k8s/loadgen shipped
+  #   pointing at 0.4.0 images whose docker-* jobs did not exist until c17190d8). Skipped on
+  #   `release`/`workflow_dispatch` with the rest: the docker-* jobs push these exact tags then and
+  #   this check would race them.
+  # * placement: nodeSelector / tolerations / affinity in both charts reach every pod, a component's own
+  #   value replaces them rather than merging, and the loadgen coordinator's standby spread survives a
+  #   user's nodeAffinity. A pod that ignores its placement still schedules -- on the wrong node.
+  # * availability (versolauth/versola#211): HPA, PDB, topology spread and priority classes each fail
+  #   silently when wrong, so the script asserts on `helm template` output and on the render refusals.
+  # * migrations (versolauth/versola#209): a wrong migration Job render fails late and quietly -- a hook
+  #   that is not replaced on retry, a Job template that cannot be updated in place, one shared
+  #   container handing every schema the others' database password.
+  # * ingress: the plain-Ingress path must refuse to render with no className rather than fall back to
+  #   a cluster default that may not exist, while the Gateway API path keeps rendering without one.
+  #   Every other chart check renders the defaults, where `ingress.enabled` is false.
+  #
+  # No `needs:` -- it compiles nothing, so it stays off the critical path. The scripts exit 2, not 0,
+  # if PyYAML is absent.
+  helm-checks:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event_name == 'pull_request'
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -1303,13 +1420,29 @@ jobs:
       - name: Check chart images exist in ghcr
         run: .github/scripts/check-chart-images.sh
 
-  # Separate from helm-images on purpose. That job installs only Helm and
+      - name: Check chart pod placement
+        if: ${{ !cancelled() }}
+        run: .github/scripts/check-chart-placement.sh
+
+      - name: Check chart availability rendering
+        if: ${{ !cancelled() }}
+        run: .github/scripts/check-chart-availability.sh
+
+      - name: Check chart migration Job rendering
+        if: ${{ !cancelled() }}
+        run: .github/scripts/check-chart-migrations.sh
+
+      - name: Check chart ingress class contract
+        if: ${{ !cancelled() }}
+        run: .github/scripts/check-chart-ingress.sh
+
+  # Separate from helm-checks on purpose. That job installs only Helm and
   # reports in seconds; this one runs gen-env.scala through scala-cli, which
   # has to compile it first, so folding the two together would slow the fast
-  # check down to the slow one's pace for no gain -- they share no setup
+  # checks down to the slow one's pace for no gain -- they share no setup
   # beyond the checkout.
   #
-  # Same event guard as helm-images, for a different reason: nothing here
+  # Same event guard as helm-checks, for a different reason: nothing here
   # races the docker-* jobs, but a drift between the chart and the generator
   # is something to catch on the PR that introduces it, which is where this
   # runs.
@@ -1343,101 +1476,14 @@ jobs:
       - name: Check the service images start the JVM with exec
         run: .github/scripts/check-entrypoint-exec.sh
 
-  # Pod placement (nodeSelector / tolerations / affinity) in both charts: that
-  # global values reach every pod, that a component's own value replaces them
-  # rather than merging, and that the loadgen coordinator's standby spread
-  # survives a user's nodeAffinity. A pod that ignores its placement still
-  # schedules -- on the wrong node -- so nothing else would catch a regression.
-  #
-  # Its own job rather than a step in helm-images, which checks something
-  # unrelated, so a failure names what broke. Needs only Helm and the runner's
-  # system python3 with PyYAML; the script exits 2, not 0, if PyYAML is absent.
-  helm-placement:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: v3.16.3
-
-      - name: Check chart pod placement
-        run: .github/scripts/check-chart-placement.sh
-
-  # Availability rendering (versolauth/versola#211): HPA, PDB, topology spread and priority
-  # classes each fail silently when wrong -- a PDB selecting no pods, an HPA fighting a Deployment that
-  # still states `replicas`, a spread selector matching every service's pods together -- so the
-  # script asserts on `helm template` output and on the render refusals.
-  #
-  # Its own job, like helm-placement. Needs only Helm and the runner's system python3 with PyYAML;
-  # the script exits 2, not 0, if PyYAML is absent.
-  helm-availability:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: v3.16.3
-
-      - name: Check chart availability rendering
-        run: .github/scripts/check-chart-availability.sh
-
-  # The migration Job (versolauth/versola#209): a wrong render here fails late and quietly -- a hook
-  # that is not replaced on retry, a Job template that cannot be updated in place, one shared
-  # container that hands every schema the others' database password. The script asserts on `helm
-  # template` output and on the render refusals.
-  #
-  # Its own job, like helm-placement. Needs only Helm and the runner's system python3 with PyYAML;
-  # the script exits 2, not 0, if PyYAML is absent.
-  helm-migrations:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: v3.16.3
-
-      - name: Check chart migration Job rendering
-        run: .github/scripts/check-chart-migrations.sh
-
-  # The plain-Ingress path's className contract: the chart must refuse to
-  # render an Ingress with no class rather than fall back to a cluster default
-  # that may not exist, while the Gateway API path keeps rendering without one.
-  # Every other chart check renders the defaults, where `ingress.enabled` is
-  # false, so dropping the guard would leave CI green.
-  #
-  # Its own job, like helm-placement, so a failure names what broke. Needs only
-  # Helm -- the script asserts on `helm template` output and its exit status.
-  helm-ingress:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: v3.16.3
-
-      - name: Check chart ingress class contract
-        run: .github/scripts/check-chart-ingress.sh
-
-  # Install-level checks (versolauth/versola#391): every helm-* job above asserts on `helm template`
+  # Install-level checks (versolauth/versola#391): every other helm-* job asserts on `helm template`
   # output, and the failures the charts actually hit rendered cleanly and broke only once installed.
   # This installs into an ephemeral kind cluster: k8s/loadgen with only mockapi (needs no database and
   # no Secrets), the scheduler honouring nodeSelector and tolerations, and k8s/versola's Ingress as the
   # API server accepts it.
   #
   # Its own job: it is the only one that needs a cluster and pulls an image from ghcr, so it is the
-  # slowest of the helm-* jobs. Same event guard, and for the same reason as helm-images: it pulls the
+  # slowest of the helm-* jobs. Same event guard, and for the same reason as helm-checks' images step: it pulls the
   # chart's default mockapi tag, which the docker-* jobs are pushing on release/workflow_dispatch.
   helm-install:
     runs-on: ubuntu-latest

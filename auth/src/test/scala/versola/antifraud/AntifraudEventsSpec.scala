@@ -51,6 +51,9 @@ object AntifraudEventsSpec extends UnitSpecBase:
     rules = Nil,
   )
 
+  /** The service's role owns the table. */
+  private val owned = TableOwnership(owner = "auth", role = "auth", mayAlter = true)
+
   private case class Env(repository: Stub[AntifraudEventRepository], configService: Stub[OAuthConfigurationService])
 
   private def env: Env = Env(stub[AntifraudEventRepository], stub[OAuthConfigurationService])
@@ -65,9 +68,12 @@ object AntifraudEventsSpec extends UnitSpecBase:
       sizing: AntifraudEvents.Sizing = smallSizing,
       asn: AsnResolver = AsnResolver.off,
       geo: GeoResolver = GeoResolver.off,
+      ownership: Task[TableOwnership] = ZIO.succeed(owned),
+      moved: Long = 0L,
   ): ZIO[Scope, Nothing, AntifraudEvents] =
     (for
-      _ <- e.repository.maintainPartitions.succeedsWith(())
+      _ <- e.repository.ownership.returnsZIO(_ => ownership)
+      _ <- e.repository.maintainPartitions.succeedsWith(moved)
       _ <- e.repository.rollupStats.succeedsWith(true)
       _ <- e.repository.partitionDaysAhead.succeedsWith(0)
       _ <- e.repository.pruneStats.succeedsWith(())
@@ -280,7 +286,8 @@ object AntifraudEventsSpec extends UnitSpecBase:
         val e = env
         for
           scope <- Scope.make
-          _ <- e.repository.maintainPartitions.succeedsWith(())
+          _ <- e.repository.ownership.succeedsWith(owned)
+          _ <- e.repository.maintainPartitions.succeedsWith(0L)
           _ <- e.repository.insertBatch.succeedsWith(())
           _ <- e.repository.rollupStats.succeedsWith(true)
           _ <- e.repository.partitionDaysAhead.succeedsWith(0)
@@ -324,7 +331,6 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- TestClock.setTime(Instant.parse("2026-10-21T10:00:00Z"))
-            _ <- e.repository.maintainPartitions.succeedsWith(())
             _ <- build(e, small)
             first = e.repository.maintainPartitions.calls
             _ <- TestClock.adjust(6.hours)
@@ -339,8 +345,9 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             attempts <- Ref.make(0)
+            _ <- e.repository.ownership.succeedsWith(owned)
             _ <- e.repository.maintainPartitions.returnsZIO: _ =>
-              attempts.updateAndGet(_ + 1).flatMap(n => ZIO.fail(RuntimeException("lock timeout")).when(n == 1).unit)
+              attempts.updateAndGet(_ + 1).flatMap(n => ZIO.fail(RuntimeException("lock timeout")).when(n == 1).as(0L))
             _ <- e.repository.insertBatch.succeedsWith(())
             _ <- e.repository.rollupStats.succeedsWith(true)
             _ <- e.repository.partitionDaysAhead.succeedsWith(0)
@@ -373,8 +380,9 @@ object AntifraudEventsSpec extends UnitSpecBase:
           for
             _ <- TestClock.setTime(Instant.parse("2026-10-21T10:00:00Z"))
             attempts <- Ref.make(0)
+            _ <- e.repository.ownership.succeedsWith(owned)
             _ <- e.repository.maintainPartitions.returnsZIO: _ =>
-              attempts.updateAndGet(_ + 1).flatMap(n => ZIO.fail(RuntimeException("lock timeout")).when(n == 2).unit)
+              attempts.updateAndGet(_ + 1).flatMap(n => ZIO.fail(RuntimeException("lock timeout")).when(n == 2).as(0L))
             ahead <- Ref.make(7)
             _ <- e.repository.partitionDaysAhead.returnsZIO(_ => ahead.get)
             _ <- e.repository.insertBatch.succeedsWith(())
@@ -410,6 +418,71 @@ object AntifraudEventsSpec extends UnitSpecBase:
             seen.nonEmpty,
           )
       },
+      test("rows moved out of the default partition are counted: a day ran without a partition") {
+        val e = env
+        val counter = Metric.counter("antifraud_events_moved_from_default_total")
+        ZIO.scoped:
+          for
+            before <- counter.value
+            _ <- build(e, small, moved = 12)
+            after <- counter.value
+          yield assertTrue(after.count - before.count == 12.0)
+      },
+      test("a run that moved nothing counts nothing") {
+        val e = env
+        val counter = Metric.counter("antifraud_events_moved_from_default_total")
+        ZIO.scoped:
+          for
+            before <- counter.value
+            _ <- build(e, small)
+            after <- counter.value
+          yield assertTrue(after == before)
+      },
+      test("a service that does not own the table says what to run, sets the gauge, and attempts no partition DDL") {
+        val e = env
+        val gauge = Metric.gauge("antifraud_partition_owner_mismatch")
+        ZIO.scoped:
+          for
+            _ <- build(e, small, ownership = ZIO.succeed(TableOwnership(owner = "migrator", role = "versola-auth", mayAlter = false)))
+            errors <- ZTestLogger.logOutput.map(_.filter(_.logLevel == LogLevel.Error).map(_.message()))
+            mismatch <- gauge.value
+          yield assertTrue(
+            e.repository.maintainPartitions.calls.isEmpty,
+            mismatch == MetricState.Gauge(1.0),
+            errors.size == 1,
+            errors.head.contains("owned by migrator"),
+            errors.head.contains("connects as versola-auth"),
+            // a name that is not a plain identifier is quoted, so the statement can be pasted as it is
+            errors.head.contains("ALTER TABLE af_event OWNER TO \"versola-auth\""),
+          )
+      },
+      test("a role that owns the table clears the gauge, and the ownership is checked again at the next run") {
+        val e = env
+        val gauge = Metric.gauge("antifraud_partition_owner_mismatch")
+        ZIO.scoped:
+          for
+            _ <- TestClock.setTime(Instant.parse("2026-10-21T10:00:00Z"))
+            owner <- Ref.make(TableOwnership(owner = "migrator", role = "auth", mayAlter = false))
+            _ <- build(e, small, ownership = owner.get)
+            during <- gauge.value
+            skipped = e.repository.maintainPartitions.calls.size
+            _ <- owner.set(owned)
+            _ <- TestClock.adjust(6.hours)
+            after <- gauge.value
+          yield assertTrue(
+            during == MetricState.Gauge(1.0),
+            skipped == 0,
+            after == MetricState.Gauge(0.0),
+            e.repository.maintainPartitions.calls.size == 1,
+          )
+      },
+      test("a check of the owner that fails does not stop the maintenance") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- build(e, small, ownership = ZIO.fail(RuntimeException("connection refused")))
+          yield assertTrue(e.repository.maintainPartitions.calls.size == 1)
+      },
       test("the service keeps seven days of partitions ahead") {
         assertTrue(AntifraudEvents.Sizing.standard.partitionsAhead == 7)
       },
@@ -417,6 +490,7 @@ object AntifraudEventsSpec extends UnitSpecBase:
         val e = env
         ZIO.scoped:
           for
+            _ <- e.repository.ownership.succeedsWith(owned)
             _ <- e.repository.maintainPartitions.failsWith(RuntimeException("no permission"))
             _ <- e.repository.insertBatch.succeedsWith(())
             _ <- e.repository.rollupStats.succeedsWith(true)
@@ -535,7 +609,8 @@ object AntifraudEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             _ <- TestClock.setTime(Instant.parse("2026-10-21T10:00:30Z"))
-            _ <- e.repository.maintainPartitions.succeedsWith(())
+            _ <- e.repository.ownership.succeedsWith(owned)
+            _ <- e.repository.maintainPartitions.succeedsWith(0L)
             _ <- e.repository.partitionDaysAhead.succeedsWith(0)
             _ <- e.repository.rollupStats.succeedsWith(false)
             _ <- e.repository.pruneStats.succeedsWith(())
