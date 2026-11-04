@@ -1224,7 +1224,7 @@ object BootstrapService:
     private def certificateService: ClientCertificateService = clientServices.certificates
 
     /** The first run of a deployment, in the audit log (`system.bootstrap`): what bootstrap created that nobody asked for through
-      * the API. Best effort, like every event central writes: a deployment that cannot record it still starts. */
+      * the API. Recorded when bootstrap created something, so a restart that changes nothing adds nothing. */
     private def recordCreated(step: String, id: String): UIO[Unit] =
       clientServices.audit.recordBestEffort(
         AuditDraft(

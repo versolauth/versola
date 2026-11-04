@@ -30,7 +30,7 @@ object AuditRoutesSpec extends ZIOSpecDefault:
     },
     test("a change is of a resource of the closed set and of an operation the method says, or of an action named by the route's last segment") {
       val wrong = entries.collect:
-        case ((method, path), Entry.Change(resource, operation, _, _, _))
+        case ((method, path), Entry.Change(resource, operation, _, _, _, _))
             if !CentralAudit.resources.contains(resource) ||
               !CentralAudit.isAdminOperation(operation) ||
               !CentralAudit.catalog.isKnown(CentralAudit.admin(resource, operation)) ||
@@ -59,7 +59,7 @@ object AuditRoutesSpec extends ZIOSpecDefault:
       )
     },
     test("the routes that hand a secret back are the ones that record an admin.secret.revealed besides") {
-      val revealing = entries.collect { case ((method, path), Entry.Change(_, _, _, _, true)) => method.name -> path }.toSet
+      val revealing = entries.collect { case ((method, path), Entry.Change(_, _, _, _, true, _)) => method.name -> path }.toSet
       assertTrue(
         revealing == Set(
           "POST" -> "/configuration/clients/web",

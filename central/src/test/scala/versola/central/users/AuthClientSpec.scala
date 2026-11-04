@@ -491,20 +491,47 @@ object AuthClientSpec extends ZIOSpecDefault:
         broken.left.exists(_.isInstanceOf[RuntimeException]),
       )
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
-    test("a call made for an administrator names them to auth, a call made by central itself names nobody") {
+    test("a call made for an administrator names them to auth in its query or its body, a call made by central itself names nobody") {
       val admin = "00000000-0000-0000-0000-0000000000f1"
       for
         seen <- Ref.make(List.empty[Request])
         _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(r :: _).as(Response.status(Status.NoContent))).toRoutes)
         client <- ZIO.service[AuthClient]
-        _ <- AuditContext.setActor(CentralAudit.Actors.Admin, Some(admin)) *> client.invalidateSession(userId)
+        _ <- AuditContext.setActor(CentralAudit.Actors.Admin, Some(admin)) *> client.invalidateSession(userId) *> client.setPassword(
+          userId,
+          "a password",
+        )
         // a provisioning client is not a user of auth: its calls are central's own
         _ <- AuditContext.reset(AuditContext.State(actor = Some((CentralAudit.Actors.Client, Some("utils")))))(client.invalidateSession(userId))
-        _ <- AuditContext.reset(AuditContext.State.empty)(client.invalidateSession(userId))
+        _ <- AuditContext.reset(AuditContext.State.empty)(client.invalidateSession(userId) *> client.setPassword(userId, "a password"))
         requests <- seen.get.map(_.reverse)
+        bodies <- ZIO.foreach(requests)(_.body.asString)
       yield assertTrue(
-        requests.map(_.headers.get(AuthClient.ActorHeader)) == List(Some(admin), None, None),
-        AuthClient.ActorHeader == "X-Versola-Actor",
+        requests.map(_.url.queryParams.map.get("actorId").flatMap(_.headOption)) == List(Some(admin), None, None, None, None),
+        bodies(1).contains(s""""actorId":"$admin""""),
+        !bodies(4).contains("actorId"),
+        AuthClient.ActorParam == "actorId",
+        requests.forall(_.headers.get("X-Versola-Actor").isEmpty),
+      )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("a call made for an administrator to the antifraud endpoints carries no actor: the administrator is their userId") {
+      val admin = "00000000-0000-0000-0000-0000000000f1"
+      for
+        seen <- Ref.make(List.empty[Request])
+        _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(r :: _).as(Response.status(Status.NoContent))).toRoutes)
+        client <- ZIO.service[AuthClient]
+        _ <- AuditContext.setActor(CentralAudit.Actors.Admin, Some(admin)) *>
+          client.deleteAntifraudListEntry(
+            DeleteListEntryRequest(id = UUID.randomUUID(), userId = userId, callerTenantId = None),
+            AntifraudCaller.Operator,
+          )
+        requests <- seen.get
+        bodies <- ZIO.foreach(requests)(_.body.asString)
+      yield assertTrue(
+        requests.size == 1,
+        requests.forall(_.url.queryParams.map.get("actorId").isEmpty),
+        bodies.forall(!_.contains("actorId")),
+        requests.forall(_.headers.get("X-Versola-Actor").isEmpty),
       )
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("the per-user audit endpoints are asked for the window, the cursor and the page size, and answer what auth answered") {

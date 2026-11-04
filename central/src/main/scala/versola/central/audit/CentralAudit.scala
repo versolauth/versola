@@ -1,6 +1,7 @@
 package versola.central.audit
 
-import versola.util.audit.{ActorType, AuditCatalog, AuditKind, AuditSource}
+import versola.util.audit.{ActorType, AuditCatalog, AuditDraft, AuditEvents, AuditKind, AuditOutcome, AuditSource}
+import zio.UIO
 
 /** What central says about its own audit events (#469): the source it records as, the actors that act through it, the kinds it
   * emits and how serious each is. The core (`versola.util.audit`) takes this as the service's [[AuditCatalog]] and rates and
@@ -21,11 +22,27 @@ object CentralAudit:
     val Client: ActorType = ActorType("client")
     val Service: ActorType = ActorType("service")
 
+    /** An edge that asked central for a certificate on the mutual-TLS listener or for one of its clients. */
+    val Edge: ActorType = ActorType("edge")
+
   // explicit events: the ones that are not `admin.<resource>.<operation>`
   val AdminUserViewed: AuditKind = AuditKind("admin.user.viewed")
   val AdminSecretRevealed: AuditKind = AuditKind("admin.secret.revealed")
   val AdminAuditQueried: AuditKind = AuditKind("admin.audit.queried")
   val SystemBootstrap: AuditKind = AuditKind("system.bootstrap")
+
+  // certificates central issues or tracks, recorded where the record of the issuance or the enrolment is written; auth records
+  // the refused EST attempts
+  val CertEnrolled: AuditKind = AuditKind("cert.enrolled")
+  val CertRenewed: AuditKind = AuditKind("cert.renewed")
+  val CertRevoked: AuditKind = AuditKind("cert.revoked")
+
+  /** An event of a certificate flow: no administrator's request starts it, its actor is the holder of the certificate (a client, an
+    * edge) or the system, and its target is the client or the edge the certificate is of. */
+  def certificate(events: AuditEvents, kind: AuditKind, actor: ActorType, actorId: Option[String], target: (String, String)): UIO[Unit] =
+    events.recordBestEffort(
+      AuditDraft(kind = kind, outcome = AuditOutcome.success, actor = Some((actor, actorId)), target = Some(target)),
+    )
 
   /** The resources an administrator's action can be on (design §4.2): what the routes of [[AuditRoutes]] map to. */
   val resources: Set[String] = Set(
@@ -91,12 +108,12 @@ object CentralAudit:
     * the system. */
   private val highResources = Set("jwks", "client-secret", "resource-secret", "role", "permission", "edge-key", "user-password", "user-roles")
 
-  private val explicit = Set(AdminUserViewed, AdminSecretRevealed, AdminAuditQueried, SystemBootstrap)
+  private val explicit = Set(AdminUserViewed, AdminSecretRevealed, AdminAuditQueried, SystemBootstrap, CertEnrolled, CertRenewed, CertRevoked)
 
   val catalog: AuditCatalog = new AuditCatalog:
     override def isKnown(kind: AuditKind): Boolean = explicit.contains(kind) || adminResource(kind).isDefined
 
-    override def isHigh(kind: AuditKind): Boolean = adminResource(kind).exists(highResources.contains)
+    override def isHigh(kind: AuditKind): Boolean = kind == CertRevoked || adminResource(kind).exists(highResources.contains)
 
     /** A secret that was handed back, a look at a person: worth a second look even when it succeeded. */
     override def isNotice(kind: AuditKind): Boolean = kind == AdminSecretRevealed || kind == AdminUserViewed

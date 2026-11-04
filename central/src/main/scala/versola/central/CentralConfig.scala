@@ -289,9 +289,8 @@ object CentralConfig:
         cookiePath: Option[String] = None,
     )
 
-  /** How long the audit log is kept and what a full writer queue does. Central writes its events best effort (the action has
-    * happened), so `overflow = block` makes an event wait for room up to `blockTimeout` and then lose it, counted; `drop` loses it
-    * at once.
+  /** How long the audit log is kept and what a full writer queue does: `overflow = block` makes an event wait for room up to
+    * `blockTimeout`, `drop` does not wait.
     *
     * @param retention    a day's partition is dropped once the whole day is older than this; 14 days is the sensible most (the
     *                     per-user report asks auth, whose log is kept as long, for the same window)

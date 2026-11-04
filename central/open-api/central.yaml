@@ -66,14 +66,19 @@ info:
     report and every response that hands a secret back. A row says who did what to what, when, and how it
     ended: `admin.<resource>.<operation>` (`admin.client.create`, `admin.client-secret.action:rotate-secret`),
     a success, a failure with the request's error code, or a denial. The log holds the names of the fields an
-    update carried, never their values. The write is best effort: the response is returned even when the log
-    could not take the row.
+    update carried, never their values. The event is handed to the audit queue after the handler has answered.
+    A change that is made in auth (sessions, refresh tokens, passkeys, passwords, claims, limits and the antifraud
+    lists, settings and counters) is recorded by auth when it succeeds, with the administrator as the actor; central
+    records the attempts of those that fail or are denied, and the secret a password reset hands back.
+    Certificates central issues are recorded as `cert.enrolled`, `cert.renewed` and `cert.revoked`, by the client,
+    the edge or the system.
 
     The administrator is the one edge has authenticated. Edge adds three headers to every call and replaces
     any a client sent: `X-Versola-Actor` (the `sub` of the access token), `X-Versola-Actor-Tenant` (its tenant) and
     `X-Versola-Actor-Client` (the client it was issued to). A call that carries none, from a caller that
     reaches central without edge, is recorded as made by a service. Central passes the administrator on to auth
-    as `X-Versola-Actor` on the calls it makes for the request, so that auth records who asked.
+    as `actorId` (a query parameter, or a field of the body) on the calls it makes for the request, so that auth records
+    who asked.
 
     What the log holds about one user is read through `GET /audit/reports/user` (`audit:read`).
   license:

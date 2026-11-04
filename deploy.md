@@ -696,7 +696,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   ```hocon
   audit {
     retention     = "7 days"      # 14 days is the sensible most: the per-user report asks auth, which keeps its log as long, for the same window
-    overflow      = "block"       # block | drop: what a full writer queue does to an event (central writes best effort: it waits block-timeout, then loses the event, counted)
+    overflow      = "block"       # block | drop: what a full writer queue does to an event (block waits up to block-timeout for room, drop does not wait)
     block-timeout = "2 seconds"
     events { admin-user-viewed = true }   # whether a look at a user (GET /users) is an event: the one read that is many
   }

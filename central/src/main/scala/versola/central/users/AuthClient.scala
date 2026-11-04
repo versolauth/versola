@@ -140,10 +140,11 @@ object AuthClient:
   val live: ZLayer[Scope & Client & CentralConfig, Throwable, AuthClient] =
     AuthTokenService.live >>> ZLayer.fromFunction(Impl(_, _, _))
 
-  /** The header that names the administrator on whose behalf central calls auth: auth records it as the actor of what the call
-    * changes (an absent one is central itself). Set from the audit context of the request, which the audit hook fills from the
-    * `X-Versola-Actor` edge added to the request, so no controller has to pass it on. */
-  val ActorHeader = "X-Versola-Actor"
+  /** The name of the query parameter, and of the optional field of a body, that names the administrator on whose behalf central
+    * calls auth: auth records it as the actor of what the call changes (an absent one is central itself). It is taken from the
+    * audit context of the request, which the audit hook fills from what edge added to the request, so no controller has to pass it
+    * on. The antifraud calls do not carry it: the administrator travels in their `userId`. */
+  val ActorParam = "actorId"
 
   private[users] case object TokenExpiredError extends Exception("central→auth token expired; retrying with fresh token")
 
@@ -164,7 +165,7 @@ object AuthClient:
 
   private case class UserClaimsResponse(claims: Json.Obj) derives JsonCodec
 
-  private case class PatchUserClaimsPayload(id: UserId, claims: Json.Obj) derives JsonCodec
+  private case class PatchUserClaimsPayload(id: UserId, claims: Json.Obj, actorId: Option[String] = None) derives JsonCodec
 
   private case class UserRolesResponse(roles: List[RoleId]) derives JsonCodec
 
@@ -225,23 +226,27 @@ object AuthClient:
       tenantId: TenantId,
       email: Option[Email],
       phone: Option[Phone],
+      actorId: Option[String] = None,
   ) derives JsonCodec
 
   private case class RenamePasskeyPayload(
       userId: UserId,
       credentialId: String,
       name: Option[String],
+      actorId: Option[String] = None,
   ) derives JsonCodec
 
   private case class ResetPasswordPayload(
       userId: UserId,
       expiresInSeconds: Long,
       channel: Option[DeliveryChannel],
+      actorId: Option[String] = None,
   ) derives JsonCodec
 
   private case class SetPasswordPayload(
       userId: UserId,
       password: String,
+      actorId: Option[String] = None,
   ) derives JsonCodec
 
   class Impl(
@@ -265,7 +270,8 @@ object AuthClient:
     private val antifraudRulesUrl: URL = config.auth.url / "antifraud" / "rules"
     private val antifraudStatusUrl: URL = config.auth.url / "antifraud" / "status"
     private val configSyncUrl: URL = config.auth.url / "service" / "configuration" / "sync"
-    private val auditUsersUrl: URL = config.auth.url / "audit" / "users"
+    private val auditUrl: URL = config.auth.url / "audit"
+    private val auditUsersUrl: URL = auditUrl / "users"
 
     override def upsertUser(
         id: UserId,
@@ -302,13 +308,14 @@ object AuthClient:
       ).map(_.map(_.claims))
 
     override def patchUserClaims(id: UserId, patch: Json.Obj): Task[Unit] =
-      send(
-        Request(
-          method = Method.PATCH,
-          url = claimsUrl,
-          body = Body.from(PatchUserClaimsPayload(id, patch)),
-        ),
-      )
+      admin.flatMap: actorId =>
+        send(
+          Request(
+            method = Method.PATCH,
+            url = claimsUrl,
+            body = Body.from(PatchUserClaimsPayload(id, patch, actorId)),
+          ),
+        )
 
     override def getUserRoles(id: UserId, tenantId: TenantId): Task[List[RoleId]] =
       sendReceive[UserRolesResponse](
@@ -379,13 +386,14 @@ object AuthClient:
         email: Option[Email],
         phone: Option[Phone],
     ): Task[Unit] =
-      send(
-        Request(
-          method = Method.POST,
-          url = limitsResetUrl,
-          body = Body.from(ResetUserLimitsPayload(userId, tenantId, email, phone)),
-        ),
-      )
+      admin.flatMap: actorId =>
+        send(
+          Request(
+            method = Method.POST,
+            url = limitsResetUrl,
+            body = Body.from(ResetUserLimitsPayload(userId, tenantId, email, phone, actorId)),
+          ),
+        )
 
     override def listPasskeys(userId: UserId): Task[List[PasskeyInfo]] =
       sendReceive[ListPasskeysResponse](
@@ -393,13 +401,14 @@ object AuthClient:
       ).map(_.passkeys)
 
     override def renamePasskey(userId: UserId, credentialId: String, name: Option[String]): Task[Unit] =
-      send(
-        Request(
-          method = Method.PATCH,
-          url = passkeysUrl,
-          body = Body.from(RenamePasskeyPayload(userId, credentialId, name)),
-        ),
-      )
+      admin.flatMap: actorId =>
+        send(
+          Request(
+            method = Method.PATCH,
+            url = passkeysUrl,
+            body = Body.from(RenamePasskeyPayload(userId, credentialId, name, actorId)),
+          ),
+        )
 
     override def deletePasskey(userId: UserId, credentialId: String): Task[Unit] =
       send(
@@ -416,22 +425,24 @@ object AuthClient:
         expiresInSeconds: Long,
         channel: Option[DeliveryChannel],
     ): Task[Option[String]] =
-      sendReceiveOptional[ResetPasswordResponse](
-        Request(
-          method = Method.POST,
-          url = passwordResetUrl,
-          body = Body.from(ResetPasswordPayload(userId, expiresInSeconds, channel)),
-        ),
-      ).map(_.map(_.password))
+      admin.flatMap: actorId =>
+        sendReceiveOptional[ResetPasswordResponse](
+          Request(
+            method = Method.POST,
+            url = passwordResetUrl,
+            body = Body.from(ResetPasswordPayload(userId, expiresInSeconds, channel, actorId)),
+          ),
+        ).map(_.map(_.password))
 
     override def setPassword(userId: UserId, password: String): Task[Unit] =
-      send(
-        Request(
-          method = Method.POST,
-          url = passwordSetUrl,
-          body = Body.from(SetPasswordPayload(userId, password)),
-        ),
-      )
+      admin.flatMap: actorId =>
+        send(
+          Request(
+            method = Method.POST,
+            url = passwordSetUrl,
+            body = Body.from(SetPasswordPayload(userId, password, actorId)),
+          ),
+        )
 
     /** The call's own scope fields: what auth enforces, from the route central served. */
     private def scopeParams(caller: AntifraudCaller): List[(String, String)] = caller match
@@ -578,6 +589,16 @@ object AuthClient:
         case _: java.io.IOException => ZIO.succeed(Left(AuthAuditError.Unavailable("auth could not be reached")))
       .flatMap(ZIO.fromEither(_))
 
+    /** The administrator the request being served came from: a call central makes on its own (the outbox) or for a provisioning
+      * client names nobody, and auth records central. */
+    private val admin: ZIO[Any, Nothing, Option[String]] =
+      AuditContext.current.map(_.actor.collect { case (actorType, Some(id)) if actorType == CentralAudit.Actors.Admin => id })
+
+    /** A `GET` or a `DELETE` to the user or the audit endpoints of auth. Their calls with a body have the field in it. */
+    private def carriesActorInQuery(request: Request): Boolean =
+      (request.method == Method.GET || request.method == Method.DELETE) &&
+        (request.url.path.startsWith(usersUrl.path) || request.url.path.startsWith(auditUrl.path))
+
     private def execute[A](request: Request)(handle: Response => Task[A]): Task[A] =
       def attemptWithToken(request: Request)(token: String): Task[A] =
         withConnectionRetry:
@@ -586,13 +607,10 @@ object AuthClient:
               if response.status == Status.Unauthorized then ZIO.fail(AuthClient.TokenExpiredError)
               else handle(response)
       for
-        actor <- AuditContext.current.map(_.actor)
-        // On behalf of the administrator the request came from, when it is one: a call central makes on its own (the outbox) or
-        // for a provisioning client names nobody, and auth records central.
+        actor <- admin
+        // On behalf of the administrator the request came from, when it is one: a call that has no body carries it in its query.
         onBehalf =
-          actor.collect {
-            case (actorType, Some(id)) if actorType == CentralAudit.Actors.Admin => request.addHeader(Header.Custom(AuthClient.ActorHeader, id))
-          }.getOrElse(request)
+          actor.filter(_ => carriesActorInQuery(request)).fold(request)(id => request.updateURL(_.addQueryParam(AuthClient.ActorParam, id)))
         token <- tokenService.getToken
         result <- attemptWithToken(onBehalf)(token).catchSome:
           case AuthClient.TokenExpiredError =>

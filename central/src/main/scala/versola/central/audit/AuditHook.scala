@@ -19,9 +19,9 @@ import java.util.UUID
   * The hook wraps a route's handler. After the handler ran it writes one event: the change's `admin.<resource>.<operation>` with
   * its outcome (2xx `success`, 401 and 403 `denied`, any other status a `failure` whose reason is the request's error code), and
   * for a response that hands a secret back, an `admin.secret.revealed` besides. A read is recorded only where it is an event of
-  * its own (a look at a user, a query of the audit log), and then only when it succeeded. The write is best effort: the action
-  * has happened, so a log that cannot take the event costs a counter and a log line and never the response (writing in the
-  * action's own transaction is the stricter form, and is left for later).
+  * its own (a look at a user, a query of the audit log), and then only when it succeeded. The event is handed to the audit
+  * queue after the handler has answered, in the request's own fiber, and a log that does not take it costs a counter and a log
+  * line, not the response.
   *
   * ==Who is the administrator==
   * Edge says so: it adds `X-Versola-Actor` (the `sub` of the verified token), `X-Versola-Actor-Tenant` and `X-Versola-Actor-Client`
@@ -179,7 +179,9 @@ object AuditHook:
           for
             outcome <- outcomeOf(status)
             (result, reason) = outcome
+            // Where auth makes the change it records the success (with the administrator as the actor); the attempt that failed is central's.
             _ <- events.recordBestEffort(draft(CentralAudit.admin(entry.resource, entry.operation), result, reason))
+              .unless(succeeded && entry.effectInAuth)
             _ <-
               ZIO.when(succeeded && entry.revealsSecret)(events.recordBestEffort(draft(CentralAudit.AdminSecretRevealed, AuditOutcome.success, None)))
           yield ()

@@ -1,10 +1,12 @@
 package versola.central.configuration.clients.certificates
 
 import versola.central.CentralConfig
+import versola.central.audit.CentralAudit
 import versola.central.configuration.clients.*
 import versola.central.configuration.edges.{EdgeCertificate, EdgeId}
 import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
 import versola.util.CertificateSubject
+import versola.util.audit.{ActorType, AuditContext, AuditEvents}
 import versola.util.http.Observability
 import versola.util.{Patch, PrivateClientCertificate}
 import zio.*
@@ -63,9 +65,9 @@ object ClientCertificateService:
 
   val live: URLayer[
     ClientCertificateIssuer & OAuthClientService & ClientCertificateIssuanceRepository &
-      EdgeCertificateEnrollmentRepository & CentralConfig,
+      EdgeCertificateEnrollmentRepository & CentralConfig & AuditEvents,
     ClientCertificateService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _, _))
+  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   class Impl(
       issuer: ClientCertificateIssuer,
@@ -73,6 +75,7 @@ object ClientCertificateService:
       issuances: ClientCertificateIssuanceRepository,
       enrollments: EdgeCertificateEnrollmentRepository,
       config: CentralConfig,
+      events: AuditEvents,
   ) extends ClientCertificateService:
 
     /** `client-certificates`, or -- for a deployment that only has the earlier
@@ -210,6 +213,13 @@ object ClientCertificateService:
           case _ => None)(ZIO.fail(_))
         now <- Clock.instant
         _ <- enrollments.recordIssued(clientId, leaf.getSerialNumber.toString(16), now, edgeId)
+          .zipRight(CentralAudit.certificate(
+            events,
+            CentralAudit.CertRenewed,
+            CentralAudit.Actors.Edge,
+            Some(edgeId.toString),
+            ("client", clientId.toString),
+          ))
           .catchAll(error => Observability.setError("edge_certificate_not_recorded", Some(s"client '$clientId': $error")))
         _ <- ZIO.logInfo(
           s"signed certificate ${leaf.getSerialNumber.toString(16)} for client '$clientId' at edge '$edgeId', valid until ${leaf.getNotAfter.toInstant}",
@@ -267,6 +277,9 @@ object ClientCertificateService:
             _ <- clients.updateClient(update(clientId, issued.certificate))
             now <- Clock.instant
             _ <- issuances.replace(ClientCertificateIssuance(clientId, issued.serial, issued.notAfter, now))
+            // By the administrator whose request renewed it, or by the system when the renewal came due.
+            actor <- AuditContext.current.map(_.actor.getOrElse((ActorType.system, None)))
+            _ <- CentralAudit.certificate(events, CentralAudit.CertRenewed, actor._1, actor._2, ("client", clientId.toString))
             _ <- ZIO.logInfo(s"issued certificate ${issued.serial} to client '$clientId', valid until ${issued.notAfter}")
           yield ()
       yield ()

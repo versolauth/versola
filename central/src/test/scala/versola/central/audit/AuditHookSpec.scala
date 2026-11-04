@@ -198,24 +198,44 @@ object AuditHookSpec extends ZIOSpecDefault:
       )
     },
     test("a user action takes the user from the query or the body, and a target that is not a UUID is no user of ours") {
-      val sessions = Method.DELETE / "users" / "sessions"
-      val password = Method.POST / "users" / "password" / "set"
+      val deleteUser = Method.DELETE / "users"
+      val roles = Method.PATCH / "users" / "roles"
+      def delete(id: String) = asAdmin(Request.delete(URL(Path.decode("/users")).addQueryParam("id", id)))
       for
-        (_, byQuery) <- serve(Routes(sessions -> ok()), asAdmin(Request.delete(URL(Path.decode("/users/sessions")).addQueryParam("id", targetUser))))
-        (_, byUserId) <-
-          serve(Routes(sessions -> ok()), asAdmin(Request.delete(URL(Path.decode("/users/sessions")).addQueryParam("userId", targetUser))))
-        (_, byBody) <- serve(Routes(password -> ok()), asAdmin(post("/users/password/set", s"""{"userId":"$targetUser","password":"p"}""")))
-        (_, notAUuid) <- serve(Routes(sessions -> ok()), asAdmin(Request.delete(URL(Path.decode("/users/sessions")).addQueryParam("id", "someone"))))
+        (_, byQuery) <- serve(Routes(deleteUser -> ok()), delete(targetUser))
+        (_, byBody) <-
+          serve(Routes(roles -> ok()), asAdmin(Request.patch("/users/roles", Body.fromString(s"""{"userId":"$targetUser","add":["r"]}"""))))
+        (_, notAUuid) <- serve(Routes(deleteUser -> ok()), delete("someone"))
       yield assertTrue(
-        byQuery.head.kind == "admin.user-session.delete",
+        byQuery.head.kind == "admin.user.delete",
         byQuery.head.draft.userId.contains(UUID.fromString(targetUser)),
-        byUserId.head.draft.userId.contains(UUID.fromString(targetUser)),
-        byBody.head.kind == "admin.user-password.action:set",
+        byBody.head.kind == "admin.user-roles.update",
         byBody.head.draft.userId.contains(UUID.fromString(targetUser)),
-        // the password is a secret: it is nowhere in what was recorded
-        !byBody.head.details.values.exists(_.toJson.contains("\"p\"")),
         notAUuid.head.draft.userId.isEmpty,
         notAUuid.head.draft.target.contains(("user", "someone")),
+      )
+    },
+    test("a change auth makes is recorded by auth when it succeeds: central records only the attempt that did not") {
+      val sessions = Method.DELETE / "users" / "sessions"
+      val password = Method.POST / "users" / "password" / "set"
+      val reset = Method.POST / "users" / "password" / "reset"
+      val request = asAdmin(Request.delete(URL(Path.decode("/users/sessions")).addQueryParam("id", targetUser)))
+      def failing(status: Status) = handler((_: Request) => ZIO.succeed(Response.status(status)))
+      for
+        (_, succeeded) <- serve(Routes(sessions -> ok()), request)
+        (_, refused) <- serve(Routes(sessions -> failing(Status.Forbidden)), request)
+        (_, unavailable) <- serve(Routes(sessions -> failing(Status.BadGateway)), request)
+        (_, passwordSet) <- serve(Routes(password -> ok()), asAdmin(post("/users/password/set", s"""{"userId":"$targetUser","password":"p"}""")))
+        (_, revealed) <- serve(Routes(reset -> ok()), asAdmin(post("/users/password/reset", s"""{"userId":"$targetUser","expiresInSeconds":60}""")))
+      yield assertTrue(
+        succeeded.isEmpty,
+        passwordSet.isEmpty,
+        refused.map(_.kind) == List("admin.user-session.delete"),
+        refused.head.draft.outcome == AuditOutcome.denied,
+        unavailable.map(_.kind) == List("admin.user-session.delete"),
+        unavailable.head.draft.outcome == AuditOutcome.failure,
+        // a reset that hands the temporary password back is still a secret revealed, and that is central's row
+        revealed.map(_.kind) == List("admin.secret.revealed"),
       )
     },
     test("a call without the actor headers is recorded as a service's with no id, and one whose actor is its own client as the client's") {
