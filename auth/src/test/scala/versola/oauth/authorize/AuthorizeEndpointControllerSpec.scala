@@ -1,7 +1,8 @@
 package versola.oauth.authorize
 
-import versola.audit.CapturingAuditEvents
-import versola.util.audit.AuditEvents
+import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
+import versola.oauth.authorize.model.Prompt
+import versola.util.audit.{ActorType, AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseMode, ResponseTypeEntry}
@@ -63,6 +64,9 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
       expectedStatus: Status,
       setup: Services => UIO[Unit] = _ => ZIO.unit,
       verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
+      verifyAudit: List[AuditDraft] => TestResult = _ => assertCompletes,
+      settings: AuditEvents.Settings = CapturingAuditEvents.settings,
+      audit: CapturingAuditEvents = CapturingAuditEvents.shared(),
   ) =
     test(description) {
       for
@@ -82,8 +86,8 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
                   ZEnvironment(configService) ++
                   ZEnvironment[AuthorizationResponseService](responseService) ++
                   ZEnvironment(config) ++
-                  ZEnvironment[AuditEvents](AuditEvents.noop) ++
-                  ZEnvironment(CapturingAuditEvents.settings) ++
+                  ZEnvironment[AuditEvents](audit) ++
+                  ZEnvironment(settings) ++
                   tracing,
               ),
           ),
@@ -91,7 +95,8 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
         _ <- setup(services)
         response <- client.batched(request)
         verifyResult <- verify(response)
-      yield assertTrue(response.status == expectedStatus) && verifyResult
+        drafts <- audit.recorded
+      yield assertTrue(response.status == expectedStatus) && verifyResult && verifyAudit(drafts)
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   val spec = suite("AuthorizeEndpointController")(
@@ -197,6 +202,104 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
             resp.header(Header.Location).exists(_.url.encode.startsWith("https://example.com/callback")),
             resp.header(Header.Location).exists(_.url.encode.contains("code=")),
           )),
+      ),
+    ),
+    suite("audit log (authorize.request)")(
+      controllerTestCase(
+        description = "a request that starts a conversation records authorize.request success with what it asked for; the client is the actor",
+        request = Request.get(URL.root / "authorize"),
+        expectedStatus = Status.SeeOther,
+        setup = services =>
+          for
+            _ <- services.parser.parse.succeedsWith(baseRequest.copy(scope = Set(ScopeToken("profile"), ScopeToken("openid")), prompt = Set(Prompt.login)))
+            _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+            _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
+          yield (),
+        verifyAudit = drafts =>
+          assertTrue(
+            drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuditKinds.AuthorizeRequest, AuditOutcome.success, None)),
+            drafts.head.actor == Some((ActorType.client, Some(clientId: String))),
+            drafts.head.details == AuthAuditDetails.AuthorizeRequest(
+              responseType = List("Code"),
+              scope = List("openid", "profile"),
+              resource = Nil,
+              prompt = List("login"),
+              acrValues = Nil,
+              par = false,
+            ),
+          ),
+      ),
+      controllerTestCase(
+        description = "a request redeeming a pushed request_uri is recorded as pushed",
+        request = Request.get((URL.root / "authorize").addQueryParam("request_uri", "urn:ietf:params:oauth:request_uri:abc")),
+        expectedStatus = Status.SeeOther,
+        setup = services =>
+          for
+            _ <- services.parser.parse.succeedsWith(baseRequest)
+            _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+            _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
+          yield (),
+        verifyAudit = drafts => assertTrue(drafts.map(_.details).collect { case d: AuthAuditDetails.AuthorizeRequest => d.par } == List(true)),
+      ),
+      controllerTestCase(
+        description = "a success is left out when the deployment turned audit.events.authorize-success off",
+        request = Request.get(URL.root / "authorize"),
+        expectedStatus = Status.SeeOther,
+        settings = CapturingAuditEvents.settings.copy(events = CapturingAuditEvents.settings.events.copy(authorizeSuccess = false)),
+        setup = services =>
+          for
+            _ <- services.parser.parse.succeedsWith(baseRequest)
+            _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+            _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
+          yield (),
+        verifyAudit = drafts => assertTrue(drafts.isEmpty),
+      ),
+      controllerTestCase(
+        description = "a request that does not parse records authorize.request failure invalid_request, even with successes left out",
+        request = Request.get(URL.root / "authorize"),
+        expectedStatus = Status.BadRequest,
+        settings = CapturingAuditEvents.settings.copy(events = CapturingAuditEvents.settings.events.copy(authorizeSuccess = false)),
+        setup = _.parser.parse.failsWith(Error.BadRequest),
+        verifyAudit = drafts =>
+          assertTrue(drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuditKinds.AuthorizeRequest, AuditOutcome.failure, Some("invalid_request")))),
+      ),
+      controllerTestCase(
+        description = "a request object that fails verification records invalid_request_object",
+        request = Request.get(URL.root / "authorize"),
+        expectedStatus = Status.BadRequest,
+        setup = _.parser.parse.failsWith(Error.InvalidRequestObject("jti replayed")),
+        verifyAudit = drafts =>
+          assertTrue(
+            drafts.map(_.reason) == List(Some(Error.InvalidRequestObject.error)),
+            // what the log tells is the code, not the reason the object was refused
+            !drafts.head.details.toJson.toString.contains("jti replayed"),
+          ),
+      ),
+      controllerTestCase(
+        description = "an error returned to the client by redirect is still a failure, with the client it was returned to",
+        request = Request.get(URL.root / "authorize"),
+        expectedStatus = Status.SeeOther,
+        setup = services =>
+          services.parser.parse.failsWith(Error.StateInvalid(clientId, redirectUri, ResponseMode.Query)) *>
+            services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900)),
+        verifyAudit = drafts =>
+          assertTrue(
+            drafts.map(d => (d.outcome, d.reason)) == List((AuditOutcome.failure, Some("invalid_request"))),
+            drafts.head.actor == Some((ActorType.client, Some(clientId: String))),
+          ),
+      ),
+      controllerTestCase(
+        description = "a request is refused with 503 when the log cannot take the event, and no conversation is started",
+        request = Request.get(URL.root / "authorize"),
+        expectedStatus = Status.ServiceUnavailable,
+        audit = CapturingAuditEvents.shared(unavailable = true),
+        setup = services =>
+          for
+            _ <- services.parser.parse.succeedsWith(baseRequest)
+            _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+            _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
+          yield (),
+        verify = resp => ZIO.succeed(assertTrue(resp.header(Header.SetCookie).isEmpty)),
       ),
     ),
   )

@@ -93,6 +93,7 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
       client: Option[OAuthClientRecord],
       repository: ClientAssertionRepository,
       profile: SecurityProfile = SecurityProfile.fapi2,
+      reported: ClientAuthFailures = failures,
   ) =
     val configuration = stub[OAuthConfigurationService]
     configuration.getSecurityProfile.returnsWith(ZIO.succeed(profile))
@@ -106,8 +107,19 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
       configuration,
       ClientAssertionService.Impl(repository, configuration),
       TestEnvConfig.coreConfig,
-      failures,
+      reported,
     )
+
+  /** Keeps what the authenticator tells the audit log, which is all a case about it needs. */
+  private final class RecordingFailures(seen: Ref[List[(String, String, String)]]) extends ClientAuthFailures:
+    override def failed(clientId: String, reason: String, method: String): UIO[Unit] = seen.update(_ :+ ((clientId, reason, method)))
+    val all: UIO[List[(String, String, String)]] = seen.get
+
+  private object UnreachableRepository extends ClientAssertionRepository:
+    override def recordIfAbsent(clientId: String, jti: String, expiresAt: Instant): Task[Boolean] =
+      ZIO.fail(RuntimeException("no connection"))
+
+  private def reporting = Ref.make(List.empty[(String, String, String)]).map(RecordingFailures(_))
 
   private def recording = Ref.make(Set.empty[(String, String)]).map(RecordingRepository(_))
 
@@ -428,7 +440,7 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
           requestWith(certificate = None, header = Some(TestEnvConfig.escapedClientCertificatePem)),
           ClientIdWithSecret(clientId, None),
           CertificateRelevance.Authentication,
-        )
+  )
       yield assertTrue(result.map(_.subjectDn) == Some(TestEnvConfig.clientCertificateSubjectDn))
         .label("§6.5 is how every tenant works today and is not disturbed by the listener")
     },
@@ -452,4 +464,94 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
         ).either
       yield assertTrue(mine.isRight, theirs.isRight)
     },
+    suite("audit log (client.auth_failed)")(
+      test("a wrong secret, or one for no client, is reported as invalid_credentials with the method the client registered") {
+        for
+          repository <- recording
+          reported <- reporting
+          result <- authentication(None, repository, reported = reported).authenticate(
+            ClientIdWithSecret(clientId, Some(Secret(Array.fill(32)(9.toByte)))),
+            certificate = None,
+            endpoint = AuthenticatedEndpoint.Token,
+          ).either
+          seen <- reported.all
+        yield assertTrue(result == Left(()), seen == List((clientId: String, "invalid_credentials", "client_secret")))
+      },
+      test("the secret of a client that registered keys is reported as method_mismatch") {
+        for
+          repository <- recording
+          reported <- reporting
+          _ <- authentication(Some(assertionClient), repository, reported = reported).authenticate(
+            ClientIdWithSecret(clientId, assertionClient.secret),
+            certificate = None,
+            endpoint = AuthenticatedEndpoint.Token,
+          ).either
+          seen <- reported.all
+        yield assertTrue(seen.map(_._2) == List("method_mismatch"))
+      },
+      test("an assertion that does not verify is reported as invalid_assertion, with no assertion in what is passed on") {
+        for
+          now <- Clock.instant
+          repository <- recording
+          reported <- reporting
+          result <- authentication(Some(assertionClient), repository, reported = reported).authenticate(
+            ClientIdWithAssertion(clientId, assertion(now, audience = s"$issuer/token")),
+            certificate = None,
+            endpoint = AuthenticatedEndpoint.Token,
+          ).either
+          seen <- reported.all
+        yield assertTrue(result == Left(()), seen == List((clientId: String, "invalid_assertion", "private_key_jwt")))
+      },
+      test("a replayed jti is the same failure") {
+        for
+          now <- Clock.instant
+          repository <- recording
+          reported <- reporting
+          authenticator = authentication(Some(assertionClient), repository, reported = reported)
+          _ <- authenticator.authenticate(ClientIdWithAssertion(clientId, assertion(now)), None, AuthenticatedEndpoint.Token).either
+          _ <- authenticator.authenticate(ClientIdWithAssertion(clientId, assertion(now)), None, AuthenticatedEndpoint.Token).either
+          seen <- reported.all
+        yield assertTrue(seen.map(_._2) == List("invalid_assertion"))
+      },
+      test("a certificate that is missing or is not the registered one is reported as certificate_mismatch") {
+        for
+          repository <- recording
+          reported <- reporting
+          authenticator = authentication(Some(selfSignedClient), repository, reported = reported)
+          _ <- authenticator.authenticate(ClientIdWithSecret(clientId, None), None, AuthenticatedEndpoint.Token).either
+          _ <- authenticator.authenticate(ClientIdWithSecret(clientId, None), Some(TestEnvConfig.otherClientCertificate), AuthenticatedEndpoint.Token).either
+          seen <- reported.all
+        yield assertTrue(seen.map(_._2) == List("certificate_mismatch", "certificate_mismatch"))
+      },
+      test("a public client of a fapi2 tenant is reported as profile_refused") {
+        for
+          repository <- recording
+          reported <- reporting
+          _ <- authentication(Some(publicClient), repository, SecurityProfile.fapi2, reported).authenticate(
+            ClientIdWithSecret(publicClient.id, None),
+            None,
+            AuthenticatedEndpoint.Token,
+          ).either
+          seen <- reported.all
+        yield assertTrue(seen.map(_._2).contains("profile_refused"))
+      },
+      test("a client that authenticates, and an unreachable replay guard (this server's failure), report nothing") {
+        for
+          now <- Clock.instant
+          repository <- recording
+          reported <- reporting
+          ok <- authentication(Some(assertionClient), repository, reported = reported).authenticate(
+            ClientIdWithAssertion(clientId, assertion(now)),
+            None,
+            AuthenticatedEndpoint.Token,
+          ).either
+          down <- authentication(Some(assertionClient), UnreachableRepository, reported = reported).authenticate(
+            ClientIdWithAssertion(clientId, assertion(now, jti = "other")),
+            None,
+            AuthenticatedEndpoint.Token,
+          ).either
+          seen <- reported.all
+        yield assertTrue(ok.isRight, down.isLeft, seen.isEmpty)
+      },
+    ),
   ) @@ TestAspect.silentLogging

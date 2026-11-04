@@ -1,0 +1,261 @@
+package versola.audit
+
+import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.audit.AuditReadRepository.{ClientCount, Factor, IpCount, KindCount, Position, SessionCount, Summary, UserAgentCount}
+import versola.audit.AuditReportService.{EventsPage, SummaryReport}
+import versola.auth.TestEnvConfig
+import versola.util.audit.*
+import versola.util.http.{NoopTracing, Observability}
+import versola.util.{CoreConfig, JWT}
+import zio.*
+import zio.http.*
+import zio.json.*
+import zio.json.ast.Json
+import zio.test.*
+
+import java.time.Instant
+import java.util.UUID
+import javax.crypto.SecretKey
+
+/** The per-user report auth serves central (`GET /audit/users/{userId}/events` and `/summary`): the window it accepts, the pages and
+  * the cursor between them, the shape of the answers that central codes against, and who may ask. */
+object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
+
+  private val user = UUID.fromString("0192b3c0-0000-7000-8000-000000000001")
+  private val start = Instant.parse("2026-11-03T12:00:00Z")
+  private val retention = 7.days
+
+  private def event(at: Instant, id: UUID = UUID.randomUUID()): AuditEvent =
+    AuditEvent(
+      id = id,
+      at = at,
+      tenantId = None,
+      source = AuditSource.auth,
+      nodeId = "node-1",
+      kind = AuditKinds.LoginCompleted,
+      outcome = AuditOutcome.success,
+      reason = None,
+      severity = AuditSeverity.info,
+      actorType = ActorType.user,
+      actorId = Some(user.toString),
+      userId = Some(user),
+      clientId = Some("app"),
+      sessionId = None,
+      ip = Some("203.0.113.7"),
+      userAgent = None,
+      traceId = None,
+      targetType = None,
+      targetId = None,
+      details = Json.Obj(),
+    )
+
+  private val settings = AuditEvents.Settings(
+    retention = retention,
+    overflow = AuditEvents.Overflow.block,
+    blockTimeout = 2.seconds,
+    events = AuditEvents.EventTiers(true, true, true, false),
+  )
+
+  private def service(repository: Stub[AuditReadRepository]) = AuditReportService.Impl(repository, settings)
+
+  private val atStart = TestAspect.before(TestClock.setTime(start))
+
+  def spec = suite("AuditReport")(
+    suite("AuditReportService")(
+      test("reads the retained window up to now when no window is given, and answers where the retained window begins") {
+        val repository = stub[AuditReadRepository]
+        for
+          _ <- repository.userEvents.succeedsWith(Nil)
+          page <- service(repository).events(user, None, None, None, None)
+        yield assertTrue(
+          repository.userEvents.calls == List((user, start.minusSeconds(retention.toSeconds), start, None, AuditReportService.DefaultLimit + 1)),
+          page.retentionFrom == start.minusSeconds(retention.toSeconds),
+          page.events.isEmpty,
+          page.nextCursor.isEmpty,
+        )
+      },
+      test("a window that begins before the retained one is refused rather than clipped: the answer would look complete and not be") {
+        val repository = stub[AuditReadRepository]
+        for
+          early <- service(repository).events(user, Some(start.minusSeconds(retention.toSeconds + 1)), None, None, None).either
+          summary <- service(repository).summary(user, Some(start.minusSeconds(retention.toSeconds + 1)), None).either
+        yield assertTrue(
+          early == Left(AuditReportError.WindowOutsideRetention),
+          summary == Left(AuditReportError.WindowOutsideRetention),
+          repository.userEvents.calls.isEmpty,
+          repository.userSummary.calls.isEmpty,
+        )
+      },
+      test("a window that ends in the future is refused, within a minute of the clock's skew it is not") {
+        val repository = stub[AuditReadRepository]
+        for
+          _ <- repository.userEvents.succeedsWith(Nil)
+          skewed <- service(repository).events(user, None, Some(start.plusSeconds(30)), None, None).either
+          future <- service(repository).events(user, None, Some(start.plusSeconds(120)), None, None).either
+        yield assertTrue(skewed.isRight, future == Left(AuditReportError.WindowOutsideRetention))
+      },
+      test("a window that ends before it begins is refused") {
+        val repository = stub[AuditReadRepository]
+        for result <- service(repository).events(user, Some(start.minusSeconds(10)), Some(start.minusSeconds(20)), None, None).either
+        yield assertTrue(result == Left(AuditReportError.WindowReversed))
+      },
+      test("the limit is between 1 and 500") {
+        val repository = stub[AuditReadRepository]
+        for
+          _ <- repository.userEvents.succeedsWith(Nil)
+          zero <- service(repository).events(user, None, None, None, Some(0)).either
+          big <- service(repository).events(user, None, None, None, Some(501)).either
+          top <- service(repository).events(user, None, None, None, Some(500)).either
+          one <- service(repository).events(user, None, None, None, Some(1)).either
+        yield assertTrue(zero == Left(AuditReportError.BadLimit), big == Left(AuditReportError.BadLimit), top.isRight, one.isRight)
+      },
+      test("a page asks for one event more than it shows, and there is a next cursor exactly when it came back") {
+        val repository = stub[AuditReadRepository]
+        val newest = event(start.minusSeconds(10))
+        val middle = event(start.minusSeconds(20))
+        val oldest = event(start.minusSeconds(30))
+        for
+          _ <- repository.userEvents.succeedsWith(List(newest, middle, oldest))
+          first <- service(repository).events(user, None, None, None, Some(2))
+          _ <- repository.userEvents.succeedsWith(List(oldest))
+          last <- service(repository).events(user, None, None, first.nextCursor, Some(2))
+        yield assertTrue(
+          repository.userEvents.calls.map(_._5) == List(3, 3),
+          first.events == List(newest, middle),
+          first.nextCursor.flatMap(AuditReportService.decodeCursor) == Some(Position(middle.at, middle.id)),
+          // the next page resumes after the last event shown
+          repository.userEvents.calls(1)._4 == Some(Position(middle.at, middle.id)),
+          last.events == List(oldest),
+          last.nextCursor.isEmpty,
+        )
+      },
+      test("the cursor is base64url of the time and the id, and a cursor that is not one is refused") {
+        val position = Position(Instant.parse("2026-11-03T11:59:50.123456Z"), UUID.fromString("0192b3c0-0000-7000-8000-0000000000ff"))
+        val cursor = AuditReportService.encodeCursor(position)
+        val repository = stub[AuditReadRepository]
+        for
+          garbage <- service(repository).events(user, None, None, Some("not a cursor!"), None).either
+          wrongShape <- service(repository).events(user, None, None, Some(versola.util.Base64.urlEncode("a|b|c".getBytes)), None).either
+        yield assertTrue(
+          AuditReportService.decodeCursor(cursor) == Some(position),
+          cursor.matches("[A-Za-z0-9_=-]+"),
+          garbage == Left(AuditReportError.BadCursor),
+          wrongShape == Left(AuditReportError.BadCursor),
+          repository.userEvents.calls.isEmpty,
+        )
+      },
+      test("the summary reads the window and answers it with the retained window's start") {
+        val repository = stub[AuditReadRepository]
+        val summary = Summary(
+          byKind = List(KindCount("login.completed", "success", 3)),
+          byClient = List(ClientCount("app", 3, 2)),
+          ips = List(IpCount("203.0.113.7", start, start, 3)),
+          userAgents = List(UserAgentCount("Chrome 130 / macOS", start, start, 3)),
+          sessions = SessionCount(3, 1),
+          factors = List(Factor("account.password_changed", start)),
+          high = Nil,
+        )
+        for
+          _ <- repository.userSummary.succeedsWith(summary)
+          report <- service(repository).summary(user, None, None)
+        yield assertTrue(
+          repository.userSummary.calls == List((user, start.minusSeconds(retention.toSeconds), start)),
+          report.window == AuditReportService.Window(start.minusSeconds(retention.toSeconds), start, start.minusSeconds(retention.toSeconds)),
+          report.byKind == summary.byKind,
+          report.sessions == SessionCount(3, 1),
+        )
+      },
+    ) @@ atStart,
+    suite("AuditController")(
+      test("answers the events as central codes against them: events, nextCursor and retentionFrom") {
+        val repository = stub[AuditReadRepository]
+        val shown = event(start.minusSeconds(10))
+        for
+          _ <- repository.userEvents.succeedsWith(List(shown))
+          response <- call(repository, s"/audit/users/$user/events")
+          body <- response.body.asString
+          json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
+        yield assertTrue(
+          response.status == Status.Ok,
+          json.keys.toSet == Set("events", "nextCursor", "retentionFrom").intersect(json.keys.toSet) + "events",
+          json.get("events").flatMap(_.asArray).map(_.size) == Some(1),
+          json.get("retentionFrom").flatMap(_.asString) == Some(start.minusSeconds(retention.toSeconds).toString),
+          body.contains("\"kind\":\"login.completed\""),
+          body.contains("\"userId\":\"" + user + "\""),
+        )
+      },
+      test("passes the window, the cursor and the limit on, and answers 400 with the reason for one that is wrong") {
+        val repository = stub[AuditReadRepository]
+        for
+          _ <- repository.userEvents.succeedsWith(Nil)
+          ok <- call(repository, s"/audit/users/$user/events?from=${start.minusSeconds(60)}&to=$start&limit=5")
+          badInstant <- call(repository, s"/audit/users/$user/events?from=yesterday")
+          badLimit <- call(repository, s"/audit/users/$user/events?limit=abc")
+          outside <- call(repository, s"/audit/users/$user/events?from=${start.minusSeconds(retention.toSeconds + 1000)}")
+          badUser <- call(repository, "/audit/users/not-a-uuid/events")
+        yield assertTrue(
+          ok.status == Status.Ok,
+          repository.userEvents.calls.map(c => (c._2, c._3, c._5)) == List((start.minusSeconds(60), start, 6)),
+          badInstant.status == Status.BadRequest,
+          badLimit.status == Status.BadRequest,
+          outside.status == Status.BadRequest,
+          badUser.status == Status.BadRequest,
+        )
+      },
+      test("answers the summary with its blocks") {
+        val repository = stub[AuditReadRepository]
+        for
+          _ <- repository.userSummary.succeedsWith(Summary(Nil, Nil, Nil, Nil, SessionCount(0, 0), Nil, Nil))
+          response <- call(repository, s"/audit/users/$user/summary")
+          body <- response.body.asString
+          json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
+        yield assertTrue(
+          response.status == Status.Ok,
+          json.keys.toSet == Set("window", "byKind", "byClient", "ips", "userAgents", "sessions", "factors", "high"),
+          json.get("window").flatMap(_.asObject).map(_.keys.toSet) == Some(Set("from", "to", "retentionFrom")),
+        )
+      },
+      test("is for the service token alone: no token, a token signed with another key, and a failing read all refuse") {
+        val repository = stub[AuditReadRepository]
+        for
+          _ <- repository.userEvents.succeedsWith(Nil)
+          none <- call(repository, s"/audit/users/$user/events", signedWith = None)
+          wrong <- call(repository, s"/audit/users/$user/events", signedWith = Some(wrongKey))
+          summaryNone <- call(repository, s"/audit/users/$user/summary", signedWith = None)
+        yield assertTrue(
+          none.status == Status.Unauthorized,
+          wrong.status == Status.Unauthorized,
+          summaryNone.status == Status.Unauthorized,
+          repository.userEvents.calls.isEmpty,
+          repository.userSummary.calls.isEmpty,
+        )
+      },
+    ).provideSome[Scope](TestClient.layer) @@ TestAspect.silentLogging @@ atStart,
+  )
+
+  private val key: SecretKey = TestEnvConfig.coreConfig.central.secretKey
+  private val wrongKey: SecretKey = javax.crypto.spec.SecretKeySpec(Array.fill(32)(99.toByte), "AES")
+
+  private def tokenFor(secret: SecretKey): Task[String] =
+    JWT.serialize(JWT.Claims("central", "central", List("auth"), Json.Obj()), 10.minutes, JWT.Signature.Symmetric(secret))
+
+  private def call(
+      repository: Stub[AuditReadRepository],
+      path: String,
+      signedWith: Option[SecretKey] = Some(key),
+  ): ZIO[Client & TestClient & Scope, Throwable, Response] =
+    for
+      client <- ZIO.service[Client]
+      noop <- NoopTracing.layer.build
+      _ <- TestClient.addRoutes(
+        Observability.handleErrors(
+          AuditController.routes.provideEnvironment(
+            ZEnvironment[AuditReportService](service(repository)) ++ ZEnvironment[CoreConfig](TestEnvConfig.coreConfig) ++ noop,
+          ),
+        ),
+      )
+      url = URL.decode(path).toOption.get
+      request = Request(method = Method.GET, url = url)
+      token <- ZIO.foreach(signedWith)(tokenFor)
+      response <- client.batched(token.fold(request)(t => request.addHeader(Header.Authorization.Bearer(t))))
+    yield response

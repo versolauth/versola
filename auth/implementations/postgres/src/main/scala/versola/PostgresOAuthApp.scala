@@ -345,7 +345,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
 
   /** The `audit` block of the config: every key is required, so a config written before it existed makes auth refuse to start
     * naming the missing key. */
-  private val auditSettings: ZLayer[ConfigProvider, Config.Error, AuditEvents.Settings] =
+  private[versola] val auditSettings: ZLayer[ConfigProvider, Config.Error, AuditEvents.Settings] =
     ZLayer.fromZIO:
       ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("audit", deriveConfig[AuditConfig])))
         .flatMap(config => ZIO.fromEither(AuditConfig.settings(config)))

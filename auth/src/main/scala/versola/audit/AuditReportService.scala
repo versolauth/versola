@@ -57,13 +57,14 @@ object AuditReportService:
     Base64.urlEncode(s"${position.at}|${position.id}".getBytes(StandardCharsets.UTF_8))
 
   def decodeCursor(cursor: String): Option[Position] =
-    for
-      bytes <- Try(Base64.urlDecode(cursor)).toOption
-      text = String(bytes, StandardCharsets.UTF_8)
-      Array(at, id) <- Some(text.split('|'))
-      parsedAt <- Try(Instant.parse(at)).toOption
-      parsedId <- Try(UUID.fromString(id)).toOption
-    yield Position(parsedAt, parsedId)
+    Try(Base64.urlDecode(cursor)).toOption.flatMap: bytes =>
+      String(bytes, StandardCharsets.UTF_8).split('|') match
+        case Array(at, id) =>
+          for
+            parsedAt <- Try(Instant.parse(at)).toOption
+            parsedId <- Try(UUID.fromString(id)).toOption
+          yield Position(parsedAt, parsedId)
+        case _ => None
 
   val live: ZLayer[AuditReadRepository & AuditEvents.Settings, Nothing, AuditReportService] =
     ZLayer.fromFunction(Impl(_, _))

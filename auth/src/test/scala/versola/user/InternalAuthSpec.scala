@@ -1,6 +1,7 @@
 package versola.user
 
 import versola.auth.TestEnvConfig
+import versola.util.audit.{ActorType, AuditContext}
 import versola.util.{CoreConfig, JWT}
 import zio.*
 import zio.json.*
@@ -67,6 +68,40 @@ object InternalAuthSpec extends ZIOSpecDefault:
             .addHeader(zio.http.Header.Authorization.Bearer(token))
           result <- authorizeInternal(request).exit
         yield assertTrue(result.isSuccess)
+      }.provide(configLayer),
+      test("notes the administrator named by X-Versola-Actor as the actor of the request, once the token has verified") {
+        val admin = "0192b3c0-0000-7000-8000-0000000000aa"
+        for
+          token <- makeToken(List("central"))
+          request = zio.http.Request.get(zio.http.URL.empty)
+            .addHeader(zio.http.Header.Authorization.Bearer(token))
+            .addHeader(ActorHeader, admin)
+          context <- AuditContext.reset(AuditContext.State.empty)(authorizeInternal(request) *> AuditContext.current)
+        yield assertTrue(context.actor == Some((ActorType.admin, Some(admin))))
+      }.provide(configLayer),
+      test("a call without the header, or with one that is no user id, is the central service's") {
+        for
+          token <- makeToken(List("central"))
+          authenticated = zio.http.Request.get(zio.http.URL.empty).addHeader(zio.http.Header.Authorization.Bearer(token))
+          without <- AuditContext.reset(AuditContext.State.empty)(authorizeInternal(authenticated) *> AuditContext.current)
+          garbage <- AuditContext.reset(AuditContext.State.empty)(
+            authorizeInternal(authenticated.addHeader(ActorHeader, "root; drop table")) *> AuditContext.current,
+          )
+        yield assertTrue(
+          without.actor == Some((ActorType.service, Some("central"))),
+          garbage.actor == Some((ActorType.service, Some("central"))),
+        )
+      }.provide(configLayer),
+      test("a header on a call whose token does not verify names no actor") {
+        val wrongKey = SecretKeySpec(Array.fill(32)(99.toByte), "AES")
+        for
+          token <- JWT.serialize(JWT.Claims("auth", "auth", List("central"), Json.Obj()), 10.minutes, JWT.Signature.Symmetric(wrongKey))
+          request = zio.http.Request.get(zio.http.URL.empty)
+            .addHeader(zio.http.Header.Authorization.Bearer(token))
+            .addHeader(ActorHeader, "0192b3c0-0000-7000-8000-0000000000aa")
+          result <- AuditContext.reset(AuditContext.State.empty)(authorizeInternal(request).exit.zip(AuditContext.current))
+          (exit, context) = result
+        yield assertTrue(exit.isFailure, context.actor.isEmpty)
       }.provide(configLayer),
       test("fails when Authorization header is missing") {
         val request = zio.http.Request.get(zio.http.URL.empty)
