@@ -5,7 +5,7 @@ import com.nimbusds.jose.crypto.RSASSAVerifier
 import com.nimbusds.jose.jwk.{KeyUse, RSAKey}
 import com.nimbusds.jwt.SignedJWT
 import org.scalamock.stubs.Stub
-import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures}
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures, ImmediateClientAuthFailures}
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ApplicationType
@@ -209,7 +209,9 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         TokenEndpointController.routes
           .provideEnvironment(ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(
             userInfoService,
-          ) ++ ZEnvironment(jwksService) ++ ZEnvironment(config) ++ ZEnvironment(dpopService) ++ ZEnvironment[AuditEvents](audit) ++ tracing),
+          ) ++ ZEnvironment(jwksService) ++ ZEnvironment(config) ++ ZEnvironment(dpopService) ++ ZEnvironment[AuditEvents](
+            audit,
+          ) ++ ZEnvironment[ClientAuthFailures](ImmediateClientAuthFailures(audit)) ++ tracing),
       )
     yield (routes, services)
 
@@ -1038,7 +1040,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
                   ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(userInfoService) ++
                     ZEnvironment(driftedJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(
                       stub[DpopService],
-                    ) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing,
+                    ) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ ZEnvironment[ClientAuthFailures](ClientAuthFailures.noop) ++ tracing,
                 ),
             ),
           )
@@ -1095,7 +1097,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
                   ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(userInfoService) ++
                     ZEnvironment(noSigningKeyJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(
                       stub[DpopService],
-                    ) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing,
+                    ) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ ZEnvironment[ClientAuthFailures](ClientAuthFailures.noop) ++ tracing,
                 ),
             ),
           )
@@ -1508,7 +1510,9 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             drafts.head.details == AuthAuditDetails.TokenRefused(
               grant = Some("authorization_code"),
               clientAuth = None,
-              detail = TokenEndpointError.InvalidGrant.CodeNotFound.logDescription,
+              // counted, and the sub-code stays in the request log
+              detail = None,
+              count = Some(1),
             ),
           )
       }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
@@ -1530,13 +1534,14 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             drafts <- audit.recorded
           yield assertTrue(response.status == Status.BadRequest, drafts.isEmpty)
       }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
-      test("a refusal the log cannot take is answered 503 with a retry hint, not the 400 it would have been") {
+      test("a refusal is answered as it would be whatever the state of the audit queue: 400, and the full queue is not told") {
         val audit = CapturingAuditEvents.shared(unavailable = true)
         withTokenEndpoint(audit = audit): (client, services) =>
           for
             _ <- services.oauthTokenService.exchangeAuthorizationCode.failsWith(TokenEndpointError.InvalidGrant.CodeNotFound)
             response <- client.batched(codeExchangeRequest)
-          yield assertTrue(response.status == Status.ServiceUnavailable, response.headers.get("Retry-After").contains("1"))
+            drafts <- audit.recorded
+          yield assertTrue(response.status == Status.BadRequest, drafts.isEmpty)
       }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     ),
   )

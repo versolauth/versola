@@ -82,7 +82,17 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         repo <- ZIO.service[UserRepository]
         body <- request.body.asJsonFromCodec[UpsertUserPayload]
+        // The identifiers are what takes an account over: what changed is what the account held before the write and holds after it,
+        // which also covers a write that central's version ordering ignored. Names only, never the values.
+        before <- repo.find(body.id)
         _ <- repo.upsert(body.id, body.version, body.email, body.phone, body.login)
+        after <- repo.find(body.id)
+        changed = List(
+          "email" -> (before.flatMap(_.email) != after.flatMap(_.email)),
+          "phone" -> (before.flatMap(_.phone) != after.flatMap(_.phone)),
+          "login" -> (before.flatMap(_.login) != after.flatMap(_.login)),
+        ).collect { case (name, true) => name }
+        _ <- ZIO.when(changed.nonEmpty)(audited(AuthAuditKinds.AccountUpdated, body.id, AuthAuditDetails.AccountUpdated(changed), asService))
       yield Response.status(Status.NoContent)
     }
 
@@ -98,7 +108,7 @@ object UserController extends Controller:
         logoutService <- ZIO.service[LogoutService]
         id <- request.url.queryZIO[UserId]("id")
         _ <- Observability.setUserId(id.toString)
-        _ <- logoutService.invalidateAllSessions(id)
+        _ <- logoutService.invalidateAllSessions(id, "user_deleted")
         _ <- repo.delete(id)
         _ <- audited(AuthAuditKinds.AccountDeleted, id, AuthAuditDetails.Account(via = "admin"), asService)
       yield Response.status(Status.NoContent)
@@ -246,7 +256,7 @@ object UserController extends Controller:
         actorId <- request.queryZIO[Option[UserId]]("actorId")
         _ <- actedBy(actorId)
         response <- sessionId match
-          case None => logoutService.invalidateAllSessions(userId).as(Response.status(Status.NoContent))
+          case None => logoutService.invalidateAllSessions(userId, "admin_revoked").as(Response.status(Status.NoContent))
           case Some(publicId) =>
             logoutService.invalidateSession(publicId, userId).flatMap:
               case true => ZIO.succeed(Response.status(Status.NoContent))

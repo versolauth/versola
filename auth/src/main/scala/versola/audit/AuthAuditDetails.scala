@@ -34,6 +34,12 @@ object AuthAuditDetails:
   ) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
+  /** The details of an event that is counted rather than written for each occurrence (see `ClientAuthFailures`): `counted` is the
+    * same details with how many occurrences the row stands for. Everything else in them is a closed word, so the key of the count stays
+    * bounded. */
+  trait Coalesced extends AuditDetails:
+    def counted(count: Int): AuditDetails
+
   case class AuthorizeRequest(
       responseType: List[String],
       scope: List[String],
@@ -41,11 +47,14 @@ object AuthAuditDetails:
       prompt: List[String],
       acrValues: List[String],
       par: Boolean,
-  ) extends AuditDetails derives JsonEncoder:
+      count: Option[Int] = None,
+  ) extends Coalesced derives JsonEncoder:
     def toJson = AuditDetails.render(this)
+    override def counted(count: Int): AuditDetails = copy(count = Some(count))
 
-  case class ParRequest(scope: List[String], requestObject: Boolean) extends AuditDetails derives JsonEncoder:
+  case class ParRequest(scope: List[String], requestObject: Boolean, count: Option[Int] = None) extends Coalesced derives JsonEncoder:
     def toJson = AuditDetails.render(this)
+    override def counted(count: Int): AuditDetails = copy(count = Some(count))
 
   /** `consent.granted`, `consent.denied` and `consent.revoked`. */
   case class Consent(
@@ -70,9 +79,10 @@ object AuthAuditDetails:
     def toJson = AuditDetails.render(this)
 
   /** `token.refused`: `reason` of the event is the OAuth error, `detail` the sub-code `setError` carries. */
-  case class TokenRefused(grant: Option[String], clientAuth: Option[String], detail: Option[String]) extends AuditDetails
-    derives JsonEncoder:
+  case class TokenRefused(grant: Option[String], clientAuth: Option[String], detail: Option[String], count: Option[Int] = None)
+    extends Coalesced derives JsonEncoder:
     def toJson = AuditDetails.render(this)
+    override def counted(count: Int): AuditDetails = copy(count = Some(count))
 
   /** `token.reuse_detected`: a refresh token that had been rotated away (or an authorization code that had been used) was
     * presented again, and the family it belongs to was revoked. */
@@ -85,8 +95,9 @@ object AuthAuditDetails:
     def toJson = AuditDetails.render(this)
 
   /** `client.auth_failed`, coalesced per (client, address, reason) and minute: `count` failures in the minute. */
-  case class ClientAuthFailed(method: String, count: Int, assertionJti: Option[String] = None) extends AuditDetails derives JsonEncoder:
+  case class ClientAuthFailed(method: String, count: Int, assertionJti: Option[String] = None) extends Coalesced derives JsonEncoder:
     def toJson = AuditDetails.render(this)
+    override def counted(count: Int): AuditDetails = copy(count = count)
 
   /** `session.ended`: `cause` is `rp_logout`, `user_revoked`, `admin_revoked`, `user_agent_forgotten` or `user_deleted`;
     * `clients` how many relying parties took part in the session. */
@@ -120,6 +131,10 @@ object AuthAuditDetails:
 
   /** `antifraud.counters_reset`: `generation` is the one the reset took. */
   case class AntifraudCountersReset(scope: String, valueType: Option[String], generation: Long) extends AuditDetails derives JsonEncoder:
+    def toJson = AuditDetails.render(this)
+
+  /** `account.updated`: the NAMES of the identifiers that changed (`email`, `phone`, `login`), never their values. */
+  case class AccountUpdated(changed: List[String]) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
   /** `account.roles_updated`: what the request asked for in one tenant. */

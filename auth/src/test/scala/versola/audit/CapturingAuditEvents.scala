@@ -14,7 +14,8 @@ final class CapturingAuditEvents private (
   override def record(draft: AuditDraft): IO[AuditUnavailable.type, Unit] =
     if unavailable then ZIO.fail(AuditUnavailable) else keep(draft)
 
-  override def recordBestEffort(draft: AuditDraft): UIO[Unit] = keep(draft)
+  // What a full queue under `block` does to a best-effort record: it waits, then gives up and the event is not queued.
+  override def recordBestEffort(draft: AuditDraft): UIO[Unit] = if unavailable then ZIO.unit else keep(draft)
 
   /** The draft, and who the request's context said acts at that moment (the actor of a draft that names none). */
   private def keep(draft: AuditDraft): UIO[Unit] =

@@ -58,6 +58,10 @@ object AuditController extends Controller:
     * the global handler. */
   private def refuse(error: Throwable | AuditReportError | BadParameter): ZIO[Any, Throwable, Response] =
     error match
+      case AuditReportError.Busy =>
+        Observability.setError(AuditReportError.Busy.code).as(
+          Response.text(AuditReportError.Busy.message).status(Status.ServiceUnavailable).addHeader(Header.Custom("Retry-After", "1")),
+        )
       case error: AuditReportError => Observability.setError(error.code).as(Response.text(error.message).status(Status.BadRequest))
       case BadParameter(name) =>
         Observability.setError("audit_bad_parameter", Some(name)).as(Response.text(s"$name is not valid").status(Status.BadRequest))

@@ -1,7 +1,7 @@
 package versola.audit
 
 import versola.util.UnitSpecBase
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome, AuditUnavailable}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditKind, AuditOutcome, AuditUnavailable}
 import versola.util.http.Observability
 import zio.*
 import zio.test.*
@@ -34,7 +34,76 @@ object ClientAuthFailuresSpec extends UnitSpecBase:
     // each call is a request of its own: the context it sets is not seen by the next
     zio.logging.logContext.locallyWith(identity)(Observability.setIp(ip) *> failures.failed(clientId, reason, "client_secret"))
 
+  private def refusedFrom(
+      failures: ClientAuthFailures,
+      ip: String,
+      kind: AuditKind,
+      clientId: Option[String],
+      reason: String,
+      details: AuthAuditDetails.Coalesced,
+  ): UIO[Unit] =
+    zio.logging.logContext.locallyWith(identity)(
+      Observability.setIp(ip) *> failures.refused(kind, AuditOutcome.failure, clientId, reason, details),
+    )
+
   def spec = suite("ClientAuthFailures")(
+    test("a flood of refusals is one event a key whatever the kind: 20 100 requests are three rows, written when the minute is up") {
+      val token = AuthAuditDetails.TokenRefused(grant = Some("authorization_code"), clientAuth = Some("none"), detail = None)
+      val authorize = AuthAuditDetails.AuthorizeRequest(Nil, Nil, Nil, Nil, Nil, par = false)
+      val par = AuthAuditDetails.ParRequest(scope = Nil, requestObject = false)
+      for
+        events <- probe
+        failures <- failuresOf(events)
+        _ <- ZIO.foreachDiscard(1 to 10000)(_ =>
+          refusedFrom(failures, "203.0.113.7", AuthAuditKinds.TokenRefused, Some("app"), "invalid_grant", token),
+        )
+        _ <- ZIO.foreachDiscard(1 to 10000)(_ =>
+          refusedFrom(failures, "203.0.113.7", AuthAuditKinds.AuthorizeRequest, Some("app"), "invalid_request", authorize),
+        )
+        _ <- ZIO.foreachDiscard(1 to 100)(_ =>
+          refusedFrom(failures, "203.0.113.7", AuthAuditKinds.ParRequest, Some("app"), "invalid_request", par),
+        )
+        before <- events.all
+        _ <- TestClock.adjust(1.minute)
+        after <- events.all
+        byKind = after.map(s => s.draft.kind -> s.draft.details).toMap
+      yield assertTrue(
+        // nothing reaches the queue while the minute runs
+        before.isEmpty,
+        after.size == 3,
+        byKind(AuthAuditKinds.TokenRefused) == token.counted(10000),
+        byKind(AuthAuditKinds.AuthorizeRequest) == authorize.counted(10000),
+        byKind(AuthAuditKinds.ParRequest) == par.counted(100),
+        after.forall(_.draft.outcome == AuditOutcome.failure),
+        after.forall(_.ip.contains("203.0.113.7")),
+      )
+    },
+    test("the same refusal for another reason, address or grant is another row") {
+      val code = AuthAuditDetails.TokenRefused(grant = Some("authorization_code"), clientAuth = None, detail = None)
+      val refresh = code.copy(grant = Some("refresh_token"))
+      for
+        events <- probe
+        failures <- failuresOf(events)
+        _ <- refusedFrom(failures, "203.0.113.7", AuthAuditKinds.TokenRefused, Some("app"), "invalid_grant", code)
+        _ <- refusedFrom(failures, "203.0.113.7", AuthAuditKinds.TokenRefused, Some("app"), "invalid_request", code)
+        _ <- refusedFrom(failures, "203.0.113.8", AuthAuditKinds.TokenRefused, Some("app"), "invalid_grant", code)
+        _ <- refusedFrom(failures, "203.0.113.7", AuthAuditKinds.TokenRefused, Some("app"), "invalid_grant", refresh)
+        _ <- TestClock.adjust(1.minute)
+        seen <- events.all
+      yield assertTrue(seen.size == 4, seen.forall(s => s.draft.details == code.counted(1) || s.draft.details == refresh.counted(1)))
+    },
+    test("refusals of the other kinds are counted under the same bound on keys") {
+      val token = AuthAuditDetails.TokenRefused(grant = None, clientAuth = None, detail = None)
+      for
+        events <- probe
+        failures <- failuresOf(events, maxKeys = 2)
+        _ <- ZIO.foreachDiscard(1 to 5)(i =>
+          refusedFrom(failures, s"203.0.113.$i", AuthAuditKinds.TokenRefused, Some("app"), "invalid_grant", token),
+        )
+        _ <- TestClock.adjust(1.minute)
+        seen <- events.all
+      yield assertTrue(seen.size == 3)
+    },
     test("failures of one client from one address for one reason are one event with the count, written when the minute is up") {
       for
         events <- probe

@@ -24,7 +24,7 @@ import versola.oauth.userinfo.UserInfoService
 import versola.user.model.*
 import versola.user.{UserRepository, UserService}
 import versola.util.*
-import versola.util.audit.{AuditOutcome, AuditUnavailableException}
+import versola.util.audit.AuditOutcome
 import zio.*
 import zio.json.ast.Json
 import zio.prelude.NonEmptyList
@@ -1154,7 +1154,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           b <- unsatisfied.audit.recorded
         yield assertTrue(a.isEmpty, b.isEmpty)
       },
-      test("the session is not reported as created when the log cannot take the event") {
+      test("a full audit queue does not undo the sign-in: the session is created and the code is issued") {
         val env = Env()
         val refusing = new ConversationService.Impl(
           env.otpService,
@@ -1184,7 +1184,7 @@ object ConversationServiceSpec extends UnitSpecBase:
         for
           _ <- issueCodeStubs(env)
           result <- refusing.finish(authId, consentedRecord.copy(userId = Some(userId))).either
-        yield assertTrue(result == Left(AuditUnavailableException))
+        yield assertTrue(result.exists(_.isInstanceOf[ConversationResult.Complete]), env.sessionRepository.create.calls.size == 1)
       },
     ),
   )

@@ -18,6 +18,7 @@ enum AuditReportError(val code: String, val message: String):
   case WindowReversed extends AuditReportError("audit_window_reversed", "to is before from")
   case BadLimit extends AuditReportError("audit_bad_limit", "limit must be between 1 and 500")
   case BadCursor extends AuditReportError("audit_bad_cursor", "the cursor is not one this endpoint issued")
+  case Busy extends AuditReportError("audit_report_busy", "too many reports are being read; retry shortly")
 
 /** The per-user report of auth's audit log, which central serves to an administrator: a page of the events about one user, and a
   * summary of them, over a window of the hot retention. Each read is one grouped query per block over the user's index range. */
@@ -35,6 +36,11 @@ trait AuditReportService:
 object AuditReportService:
   val DefaultLimit = 100
   val MaxLimit = 500
+
+  /** How many reports are read from the database at once, and how long one waits for its turn before it is refused (503 `audit_report_busy`).
+    * The reads share the database with the writer. */
+  val ReadConcurrency = 4
+  val ReadWait: Duration = 2.seconds
 
   /** How far ahead of auth's clock `to` may be: central's clock is not auth's, and `to = now` there is a little later here. */
   val ClockSkew: Duration = 1.minute
@@ -69,9 +75,21 @@ object AuditReportService:
         case _ => None
 
   val live: ZLayer[AuditReadRepository & AuditEvents.Settings, Nothing, AuditReportService] =
-    ZLayer.fromFunction(Impl(_, _))
+    ZLayer.fromZIO:
+      for
+        repository <- ZIO.service[AuditReadRepository]
+        settings <- ZIO.service[AuditEvents.Settings]
+        reads <- Semaphore.make(ReadConcurrency)
+      yield Impl(repository, settings, reads)
 
-  class Impl(repository: AuditReadRepository, settings: AuditEvents.Settings) extends AuditReportService:
+  class Impl(repository: AuditReadRepository, settings: AuditEvents.Settings, reads: Semaphore) extends AuditReportService:
+
+    /** Runs a read when one of the `ReadConcurrency` places is free, waiting up to `ReadWait` for it. */
+    private def gated[A](read: IO[Throwable | AuditReportError, A]): IO[Throwable | AuditReportError, A] =
+      ZIO.scoped:
+        reads.withPermitScoped.timeout(ReadWait).flatMap:
+          case Some(_) => read
+          case None => ZIO.fail(AuditReportError.Busy)
 
     /** The window asked for: `from` defaults to the start of the retained window and `to` to now. Outside the retained window the
       * rows are partly or wholly gone, so the answer would look complete and not be: refused rather than clipped. */
@@ -98,7 +116,7 @@ object AuditReportService:
         _ <- ZIO.fail(AuditReportError.BadLimit).unless(size >= 1 && size <= MaxLimit)
         after <- ZIO.foreach(cursor)(value => ZIO.fromOption(decodeCursor(value)).orElseFail(AuditReportError.BadCursor))
         // One more than a page: whether there is a next page is whether it came back.
-        found <- repository.userEvents(userId, window.from, window.to, after, size + 1)
+        found <- gated(repository.userEvents(userId, window.from, window.to, after, size + 1))
         page = found.take(size)
       yield EventsPage(
         events = page,
@@ -109,7 +127,7 @@ object AuditReportService:
     override def summary(userId: UUID, from: Option[Instant], to: Option[Instant]): IO[Throwable | AuditReportError, SummaryReport] =
       for
         window <- window(from, to)
-        found <- repository.userSummary(userId, window.from, window.to)
+        found <- gated(repository.userSummary(userId, window.from, window.to))
       yield SummaryReport(
         window = window,
         byKind = found.byKind,

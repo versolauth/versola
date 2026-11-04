@@ -1941,15 +1941,15 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |}
        |
        |# Audit log (deploy.md, "Audit log"): the hot window of `audit_event` (a day older than `retention` is dropped; the
-       |# long-term copy is the operator's logical replication), what a request does when the writer's queue is full
-       |# (`block`: waits up to `block-timeout`, then the request fails with 503 `audit_unavailable`; `drop`: the event is not queued
-       |# and is counted in audit_events_dropped_total), and the high-volume kinds that may be switched off. All keys are required.
+       |# long-term copy is the operator's logical replication), what recording an event does when the writer's queue is full
+       |# (`drop`: the event is not queued and is counted in audit_events_dropped_total; `block`: it waits up to `block-timeout` for
+       |# room and then is not queued and is counted), and the high-volume kinds that may be switched off. All keys are required.
        |audit {
        |  retention     = "7 days"
-       |  overflow      = "block"          # block | drop
+       |  overflow      = "drop"           # drop | block
        |  block-timeout = "2 seconds"
        |  events {
-       |    token-refresh     = true       # token.issued for the refresh_token grant
+       |    token-refresh     = false      # token.issued for the refresh_token grant
        |    authorize-success = true       # authorize.request that succeeded (failures are always recorded)
        |    par-success       = true       # par.request that succeeded (failures are always recorded)
        |  }

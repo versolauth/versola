@@ -55,9 +55,19 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
     blockTimeout = 2.seconds,
   )
 
-  private def service(repository: Stub[AuditReadRepository]) = AuditReportService.Impl(repository, settings)
+  private def service(repository: Stub[AuditReadRepository]) =
+    AuditReportService.Impl(repository, settings, Unsafe.unsafe((u: Unsafe) ?=> Semaphore.unsafe.make(AuditReportService.ReadConcurrency)(using u)))
 
   private val atStart = TestAspect.before(TestClock.setTime(start))
+
+  /** A service whose every place for a read is taken. */
+  private def serviceWithNoRoom(repository: Stub[AuditReadRepository]): UIO[AuditReportService] =
+    for
+      reads <- Semaphore.make(1)
+      taken <- Promise.make[Nothing, Unit]
+      _ <- reads.withPermit(taken.succeed(()) *> ZIO.never).forkDaemon
+      _ <- taken.await
+    yield AuditReportService.Impl(repository, settings, reads)
 
   def spec = suite("AuditReport")(
     suite("AuditReportService")(
@@ -107,6 +117,36 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
           top <- service(repository).events(user, None, None, None, Some(500)).either
           one <- service(repository).events(user, None, None, None, Some(1)).either
         yield assertTrue(zero == Left(AuditReportError.BadLimit), big == Left(AuditReportError.BadLimit), top.isRight, one.isRight)
+      },
+      test("at most ReadConcurrency reports are read at once: the next waits ReadWait for a place, then is refused as busy and never reads") {
+        val repository = stub[AuditReadRepository]
+        for
+          _ <- repository.userEvents.succeedsWith(Nil)
+          _ <- repository.userSummary.succeedsWith(Summary(Nil, Nil, Nil, Nil, SessionCount(0, 0), Nil, Nil))
+          full <- serviceWithNoRoom(repository)
+          events <- full.events(user, None, None, None, None).either.fork
+          summary <- full.summary(user, None, None).either.fork
+          _ <- TestClock.adjust(AuditReportService.ReadWait.minus(1.milli))
+          waiting <- events.poll
+          _ <- TestClock.adjust(1.milli)
+          eventsResult <- events.join
+          summaryResult <- summary.join
+        yield assertTrue(
+          waiting.isEmpty,
+          eventsResult == Left(AuditReportError.Busy),
+          summaryResult == Left(AuditReportError.Busy),
+          repository.userEvents.calls.isEmpty,
+          repository.userSummary.calls.isEmpty,
+        )
+      },
+      test("reports read up to the limit at once, and a place freed is taken by the next") {
+        val repository = stub[AuditReadRepository]
+        for
+          _ <- repository.userEvents.succeedsWith(Nil)
+          reads <- Semaphore.make(AuditReportService.ReadConcurrency)
+          service = AuditReportService.Impl(repository, settings, reads)
+          results <- ZIO.foreachPar(1 to 20)(_ => service.events(user, None, None, None, None).either)
+        yield assertTrue(results.forall(_.isRight), repository.userEvents.calls.size == 20)
       },
       test("a page asks for one event more than it shows, and there is a next cursor exactly when it came back") {
         val repository = stub[AuditReadRepository]
@@ -216,6 +256,19 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
           json.get("window").flatMap(_.asObject).map(_.keys.toSet) == Some(Set("from", "to", "retentionFrom")),
         )
       },
+      test("answers 503 with Retry-After, and the code audit_report_busy, when no place for a read comes free in time") {
+        val repository = stub[AuditReadRepository]
+        for
+          full <- serviceWithNoRoom(repository)
+          response <- callWith(full, s"/audit/users/$user/events").fork
+          _ <- TestClock.adjust(AuditReportService.ReadWait)
+          answered <- response.join
+        yield assertTrue(
+          answered.status == Status.ServiceUnavailable,
+          answered.headers.get("Retry-After").contains("1"),
+          repository.userEvents.calls.isEmpty,
+        )
+      },
       test("is for the service token alone: no token, a token signed with another key, and a failing read all refuse") {
         val repository = stub[AuditReadRepository]
         for
@@ -244,6 +297,12 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
       repository: Stub[AuditReadRepository],
       path: String,
       signedWith: Option[SecretKey] = Some(key),
+  ): ZIO[Client & TestClient & Scope, Throwable, Response] = callWith(service(repository), path, signedWith)
+
+  private def callWith(
+      reports: AuditReportService,
+      path: String,
+      signedWith: Option[SecretKey] = Some(key),
   ): ZIO[Client & TestClient & Scope, Throwable, Response] =
     for
       client <- ZIO.service[Client]
@@ -251,7 +310,7 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
           AuditController.routes.provideEnvironment(
-            ZEnvironment[AuditReportService](service(repository)) ++ ZEnvironment[CoreConfig](TestEnvConfig.coreConfig) ++ noop,
+            ZEnvironment[AuditReportService](reports) ++ ZEnvironment[CoreConfig](TestEnvConfig.coreConfig) ++ noop,
           ),
         ),
       )

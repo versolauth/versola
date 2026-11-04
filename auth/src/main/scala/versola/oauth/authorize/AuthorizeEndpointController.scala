@@ -1,7 +1,7 @@
 package versola.oauth.authorize
 
 import versola.audit.AuditSupport.*
-import versola.audit.{AuditSupport, AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds}
+import versola.audit.{AuditSupport, AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, ClientAuthFailures}
 import versola.oauth.AuthMetrics
 import versola.oauth.authorize.model.{AuthorizeErrorResponse, AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
@@ -17,7 +17,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 
 object AuthorizeEndpointController extends Controller:
   type Env = Tracing & AuthorizeRequestParser & AuthorizeEndpointService & AuthorizationResponseService &
-    OAuthConfigurationService & CoreConfig & AuditEvents & AuthAudit.Tiers
+    OAuthConfigurationService & CoreConfig & AuditEvents & AuthAudit.Tiers & ClientAuthFailures
 
   def routes: Routes[Env, Throwable] = Routes(
     getAuthorizeRoute,
@@ -74,19 +74,18 @@ object AuthorizeEndpointController extends Controller:
   /** RFC 9126 §4: a pushed request is redeemed at `/authorize` by its `request_uri`. */
   private def pushed(request: Request): Boolean = request.url.queryParams.hasQueryParam("request_uri")
 
-  /** `authorize.request`, failed: the request never became a conversation. Always recorded, since a refusal is what an investigation looks
-    * for; what the request asked for is not known when it did not parse, so the details name only whether it was pushed. */
-  private def auditFailure(reason: String, clientId: Option[String]): ZIO[AuditEvents, AuditUnavailableException.type, Unit] =
+  /** `authorize.request`, failed: the request never became a conversation. Anyone can send one, so it is counted per client, address and
+    * reason and written once a minute with `count` (see `ClientAuthFailures`). What the request asked for is not known when it did not
+    * parse, so the details name only whether it was pushed. */
+  private def auditFailure(reason: String, clientId: Option[String]): ZIO[ClientAuthFailures, Nothing, Unit] =
     ZIO.foreachDiscard(clientId)(Observability.setClientId) *>
-      ZIO.serviceWithZIO[AuditEvents](
-        _.log(
-          AuditDraft(
-            kind = AuthAuditKinds.AuthorizeRequest,
-            outcome = AuditOutcome.failure,
-            reason = Some(reason),
-            actor = Some((AuthActors.client, clientId)),
-            details = AuthAuditDetails.AuthorizeRequest(responseType = Nil, scope = Nil, resource = Nil, prompt = Nil, acrValues = Nil, par = false),
-          ),
+      ZIO.serviceWithZIO[ClientAuthFailures](
+        _.refused(
+          kind = AuthAuditKinds.AuthorizeRequest,
+          outcome = AuditOutcome.failure,
+          clientId = clientId,
+          reason = reason,
+          details = AuthAuditDetails.AuthorizeRequest(responseType = Nil, scope = Nil, resource = Nil, prompt = Nil, acrValues = Nil, par = false),
         ),
       )
 

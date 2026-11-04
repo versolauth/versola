@@ -45,8 +45,8 @@ object PostgresOAuthAppAuditConfigSpec extends ZIOSpecDefault:
     test("the block gen-env writes parses into the settings the writer runs with") {
       for both <- loadBoth(generated)
       yield assertTrue(
-        both._1 == AuditEvents.Settings(retention = 7.days, overflow = AuditEvents.Overflow.block, blockTimeout = 2.seconds),
-        both._2 == AuthAudit.Tiers(tokenRefresh = true, authorizeSuccess = true, parSuccess = true),
+        both._1 == AuditEvents.Settings(retention = 7.days, overflow = AuditEvents.Overflow.drop, blockTimeout = 2.seconds),
+        both._2 == AuthAudit.Tiers(tokenRefresh = false, authorizeSuccess = true, parSuccess = true),
       )
     },
     test("a config written before the block existed makes auth refuse to start, naming the key") {
@@ -70,12 +70,12 @@ object PostgresOAuthAppAuditConfigSpec extends ZIOSpecDefault:
         par.left.exists(_.toString.contains("par-success")),
       )
     },
-    test("overflow is block or drop, and drop is read") {
+    test("overflow is block or drop, and block is read") {
       for
-        drop <- load(withValue("overflow", "\"drop\""))
+        block <- load(withValue("overflow", "\"block\""))
         bad <- load(withValue("overflow", "\"wait\"")).either
       yield assertTrue(
-        drop.overflow == AuditEvents.Overflow.drop,
+        block.overflow == AuditEvents.Overflow.block,
         bad.left.exists(_.toString.contains("audit.overflow")),
       )
     },

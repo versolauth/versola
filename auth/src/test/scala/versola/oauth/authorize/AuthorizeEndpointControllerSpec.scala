@@ -1,7 +1,7 @@
 package versola.oauth.authorize
 
 import org.scalamock.stubs.Stub
-import versola.audit.{AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.audit.{AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures, ImmediateClientAuthFailures}
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.Prompt
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseMode, ResponseTypeEntry}
@@ -88,6 +88,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
                   ZEnvironment(config) ++
                   ZEnvironment[AuditEvents](audit) ++
                   ZEnvironment(tiers) ++
+                  ZEnvironment[ClientAuthFailures](ImmediateClientAuthFailures(audit)) ++
                   tracing,
               ),
           ),
@@ -296,9 +297,9 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
           ),
       ),
       controllerTestCase(
-        description = "a request is refused with 503 when the log cannot take the event, and no conversation is started",
+        description = "a request that starts a conversation does so whatever the state of the audit queue: the conversation cookie is set",
         request = Request.get(URL.root / "authorize"),
-        expectedStatus = Status.ServiceUnavailable,
+        expectedStatus = Status.SeeOther,
         audit = CapturingAuditEvents.shared(unavailable = true),
         setup = services =>
           for
@@ -306,7 +307,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
             _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
             _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
           yield (),
-        verify = resp => ZIO.succeed(assertTrue(resp.header(Header.SetCookie).isEmpty)),
+        verify = resp => ZIO.succeed(assertTrue(resp.header(Header.SetCookie).nonEmpty)),
       ),
     ),
   )

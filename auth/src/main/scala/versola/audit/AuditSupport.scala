@@ -1,7 +1,7 @@
 package versola.audit
 
 import versola.oauth.session.model.UserAgentDetails
-import versola.util.audit.{AuditContext, AuditDraft, AuditEvents, AuditUnavailableException}
+import versola.util.audit.{AuditContext, AuditDraft, AuditEvents}
 import versola.util.http.Observability
 import versola.util.http.Observability.AuthDetails
 import zio.*
@@ -12,10 +12,10 @@ import zio.logging.logContext
 object AuditSupport:
 
   extension (events: AuditEvents)
-    /** `record`, with the refusal as the failure the global handler answers with 503 `audit_unavailable`: the endpoint maps nothing by
-      * hand. Under `overflow = drop` it cannot fail. */
-    def log(draft: AuditDraft): IO[AuditUnavailableException.type, Unit] =
-      events.record(draft).mapError(_ => AuditUnavailableException)
+    /** Queues the event of what a request did, once it did it: it does not fail the request. Under `overflow = block` a full queue makes it
+      * wait up to `block-timeout` and then drop the event, counted; under `drop` it drops at once. */
+    def log(draft: AuditDraft): UIO[Unit] =
+      events.recordBestEffort(draft)
 
   /** The short parsed form of the request's `User-Agent` (`browser version / os`, or `other` for one that names nothing) as the user
     * agent the events of this request store: the raw header is attacker-chosen and up to 8 KB, and the log keeps the short form. */

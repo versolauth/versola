@@ -18,7 +18,7 @@ import versola.oauth.session.model.{
   UserDevice,
 }
 import versola.user.model.UserId
-import versola.util.audit.{AuditOutcome, AuditUnavailableException}
+import versola.util.audit.AuditOutcome
 import versola.util.{MAC, UnitSpecBase}
 import zio.*
 import zio.http.*
@@ -355,7 +355,7 @@ object LogoutServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.sessionService.invalidateAllByUser.succeedsWith(Nil)
-          _ <- env.service.invalidateAllSessions(userId)
+          _ <- env.service.invalidateAllSessions(userId, "admin_revoked")
         yield assertTrue(env.configuration.find.calls.isEmpty)
       },
       test("resolves participants for every session the user had, not just one") {
@@ -366,7 +366,7 @@ object LogoutServiceSpec extends UnitSpecBase:
         for
           _ <- env.sessionService.invalidateAllByUser.succeedsWith(List(recordA, recordB))
           _ <- env.configuration.find.returnsZIO(id => ZIO.succeed(participants.get(id)))
-          _ <- env.service.invalidateAllSessions(userId)
+          _ <- env.service.invalidateAllSessions(userId, "admin_revoked")
         yield assertTrue(env.configuration.find.calls.toSet == Set(clientA.id, clientB.id))
       },
       test("pushes one event per client naming the user, not one per session") {
@@ -382,7 +382,7 @@ object LogoutServiceSpec extends UnitSpecBase:
           _ <- env.sessionService.invalidateAllByUser.succeedsWith(sessions)
           _ <- env.configuration.find.succeedsWith(Some(withBackChannel))
           _ <- env.outbox.submit.succeedsWith(())
-          _ <- env.service.invalidateAllSessions(userId)
+          _ <- env.service.invalidateAllSessions(userId, "admin_revoked")
           calls = env.outbox.submit.calls
         yield assertTrue(
           // Three sessions, one client, one delivery: a logout token carrying a subject and
@@ -406,7 +406,7 @@ object LogoutServiceSpec extends UnitSpecBase:
           _ <- env.configuration.find.returnsZIO(id => ZIO.succeed(participants.get(id)))
           _ <- env.outbox.submit.succeedsWith(())
           occurredAt <- Clock.instant
-          _ <- env.service.invalidateAllSessions(userId)
+          _ <- env.service.invalidateAllSessions(userId, "admin_revoked")
           eventTimes = env.outbox.submit.calls.map(_.customClaims.get(JsonCursor.field("toe")))
         yield assertTrue(
           // One administrative action is one boundary. Signed per delivery instead, two
@@ -485,7 +485,7 @@ object LogoutServiceSpec extends UnitSpecBase:
         for
           _ <- env.sessionService.invalidateAllByUser.succeedsWith(List(recordA, recordB))
           _ <- env.configuration.find.succeedsWith(None)
-          _ <- env.service.invalidateAllSessions(userId)
+          _ <- env.service.invalidateAllSessions(userId, "admin_revoked")
           drafts <- env.audit.recorded
         yield assertTrue(
           drafts.map(_.details) == List(
@@ -494,9 +494,10 @@ object LogoutServiceSpec extends UnitSpecBase:
           ),
         )
       },
-      test("ending a session fails the request when the log cannot take the event, after the session is gone") {
+      test("a full audit queue does not undo a logout: the session is ended, the relying parties are told and the answer is the normal one") {
         val env = Env()
-        val refusing = LogoutService.Impl(
+        val withBackChannel = clientA.copy(backChannelLogoutUri = Some(URL.decode("https://rp-a.example/backchannel").toOption.get))
+        val full = LogoutService.Impl(
           env.sessionService,
           env.configuration,
           TestEnvConfig.coreConfig,
@@ -505,8 +506,55 @@ object LogoutServiceSpec extends UnitSpecBase:
         )
         for
           _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
-          result <- refusing.logout(Right(rawSessionId), None, None).either
-        yield assertTrue(result == Left(AuditUnavailableException))
+          _ <- env.configuration.find.succeedsWith(Some(withBackChannel))
+          _ <- env.outbox.submit.succeedsWith(())
+          result <- full.logout(Right(rawSessionId), None, None)
+        yield assertTrue(
+          result.clientId.isDefined,
+          env.outbox.submit.calls.map(_.audience.toList) == List(List(withBackChannel.id)),
+        )
+      },
+      test("a full audit queue does not undo ending every session of a user: the relying parties are told") {
+        val env = Env()
+        val withBackChannel = clientA.copy(backChannelLogoutUri = Some(URL.decode("https://rp-a.example/backchannel").toOption.get))
+        val full = LogoutService.Impl(
+          env.sessionService,
+          env.configuration,
+          TestEnvConfig.coreConfig,
+          env.outbox,
+          CapturingAuditEvents.shared(unavailable = true),
+        )
+        val recordA = record1.copy(clients = List(ClientEntry(clientA.id, Instant.EPOCH)))
+        for
+          _ <- env.sessionService.invalidateAllByUser.succeedsWith(List(recordA))
+          _ <- env.configuration.find.succeedsWith(Some(withBackChannel))
+          _ <- env.outbox.submit.succeedsWith(())
+          _ <- full.invalidateAllSessions(userId, "user_deleted")
+        yield assertTrue(env.outbox.submit.calls.map(_.audience.toList) == List(List(withBackChannel.id)))
+      },
+      test("a full audit queue does not undo forgetting a user agent: it is forgotten and the answer is true") {
+        val env = Env()
+        val full = LogoutService.Impl(
+          env.sessionService,
+          env.configuration,
+          TestEnvConfig.coreConfig,
+          env.outbox,
+          CapturingAuditEvents.shared(unavailable = true),
+        )
+        for
+          _ <- env.sessionService.listDevicesByUser.succeedsWith(List(UserDevice(Some(agent), None, Nil)))
+          _ <- env.sessionService.forgetUserAgent.succeedsWith(true)
+          forgotten <- full.forgetUserAgent(userId, testUserAgentId)
+        yield assertTrue(forgotten, env.sessionService.forgetUserAgent.calls.map((u, a) => (u, a)) == List((userId, testUserAgentId)))
+      },
+      test("the sessions of a deleted account are ended with the cause user_deleted") {
+        val env = Env()
+        for
+          _ <- env.sessionService.invalidateAllByUser.succeedsWith(List(record1))
+          _ <- env.configuration.find.succeedsWith(None)
+          _ <- env.service.invalidateAllSessions(userId, "user_deleted")
+          drafts <- env.audit.recorded
+        yield assertTrue(drafts.map(_.details) == List(AuthAuditDetails.SessionEnded(cause = "user_deleted", clients = 1)))
       },
     ),
   )

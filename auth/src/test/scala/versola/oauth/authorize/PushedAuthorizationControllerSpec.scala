@@ -1,7 +1,7 @@
 package versola.oauth.authorize
 
 import org.scalamock.stubs.Stub
-import versola.audit.{AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures}
+import versola.audit.{AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures, ImmediateClientAuthFailures}
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{PushedAuthorizationError, PushedAuthorizationResponse}
 import versola.oauth.client.OAuthConfigurationService
@@ -82,7 +82,7 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
             PushedAuthorizationController.routes
               .provideEnvironment(
                 ZEnvironment(service) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(config) ++ ZEnvironment[AuditEvents](audit) ++
-                  ZEnvironment(tiers) ++ tracing,
+                  ZEnvironment(tiers) ++ ZEnvironment[ClientAuthFailures](ImmediateClientAuthFailures(audit)) ++ tracing,
               ),
           ),
         )
@@ -321,9 +321,9 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
         verifyAudit = drafts => assertTrue(drafts.isEmpty),
       ),
       controllerTestCase(
-        description = "a push is refused with 503 when the log cannot take the event",
+        description = "a push is accepted whatever the state of the audit queue",
         request = parRequest(validForm()),
-        expectedStatus = Status.ServiceUnavailable,
+        expectedStatus = Status.Created,
         audit = CapturingAuditEvents.shared(unavailable = true),
         setup = _.push.succeedsWith(pushedResponse),
       ),

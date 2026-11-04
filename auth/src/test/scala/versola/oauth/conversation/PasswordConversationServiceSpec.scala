@@ -18,7 +18,7 @@ import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.model.{Login, UserId, UserRecord}
 import versola.user.{UserRepository, UserService}
-import versola.util.audit.{AuditOutcome, AuditUnavailableException}
+import versola.util.audit.AuditOutcome
 import versola.util.{AuthPropertyGenerator, Email, Phone, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
 import zio.json.ast
@@ -817,7 +817,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           reused.isEmpty,
         )
       },
-      test("the step is not completed when the log cannot take the event") {
+      test("the step is completed whatever the state of the audit queue") {
         val env = Env()
         val refusing = CapturingAuditEvents.shared(unavailable = true)
         for
@@ -825,7 +825,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Success)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.serviceWith(refusing).checkPassword(passwordRecord, passwordStep, password, authId).either
-        yield assertTrue(result == Left(AuditUnavailableException), env.conversationRepository.overwrite.calls.isEmpty)
+        yield assertTrue(result.isRight, env.conversationRepository.overwrite.calls.size == 1)
       },
     ),
   )

@@ -29,6 +29,10 @@ object AuthAuditKinds:
 
   /** The effects of what an administrator decided in central (central writes the decision): the account removed, its roles changed. */
   val AccountDeleted: AuditKind = AuditKind("account.deleted")
+
+  /** The identifiers of an account (email, phone, login) as central synchronised them: the effect of what central decided, like
+    * `account.deleted`. */
+  val AccountUpdated: AuditKind = AuditKind("account.updated")
   val AccountRolesUpdated: AuditKind = AuditKind("account.roles_updated")
 
   /** An administrator's change to the antifraud lists, settings or counters, as central told auth. */
@@ -64,6 +68,7 @@ object AuthAuditKinds:
     AccountClaimsUpdated,
     AccountLimitsReset,
     AccountDeleted,
+    AccountUpdated,
     AccountRolesUpdated,
     AntifraudListChanged,
     AntifraudSettingsChanged,
@@ -100,6 +105,7 @@ object AuthAudit:
       AuthAuditKinds.AccountPasskeyRemoved,
       AuthAuditKinds.AccountClaimsUpdated,
       AuthAuditKinds.AccountDeleted,
+      AuthAuditKinds.AccountUpdated,
       AuthAuditKinds.AccountRolesUpdated,
       AuthAuditKinds.AntifraudListChanged,
       AuthAuditKinds.AntifraudSettingsChanged,

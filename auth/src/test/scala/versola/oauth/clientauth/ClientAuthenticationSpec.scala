@@ -113,6 +113,13 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
   /** Keeps what the authenticator tells the audit log, which is all a case about it needs. */
   private final class RecordingFailures(seen: Ref[List[(String, String, String)]]) extends ClientAuthFailures:
     override def failed(clientId: String, reason: String, method: String): UIO[Unit] = seen.update(_ :+ ((clientId, reason, method)))
+    override def refused(
+        kind: versola.util.audit.AuditKind,
+        outcome: versola.util.audit.AuditOutcome,
+        clientId: Option[String],
+        reason: String,
+        details: versola.audit.AuthAuditDetails.Coalesced,
+    ): UIO[Unit] = ZIO.unit
     val all: UIO[List[(String, String, String)]] = seen.get
 
   private object UnreachableRepository extends ClientAssertionRepository:

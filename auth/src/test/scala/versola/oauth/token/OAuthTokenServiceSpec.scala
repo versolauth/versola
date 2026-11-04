@@ -2546,7 +2546,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           drafts <- env.audit.recorded
         yield assertTrue(result == Left(TokenEndpointError.InvalidClient), drafts.isEmpty)
       },
-      test("the tokens are not issued as a success when the log cannot take the event: the request fails with audit_unavailable") {
+      test("a full audit queue does not undo issuing: the tokens are issued and the event is not queued") {
         val env = new Env(CapturingAuditEvents.shared(unavailable = true))
         for
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -2557,7 +2557,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             None,
             None,
           ).either
-        yield assertTrue(result == Left(AuditUnavailableException))
+        yield assertTrue(result.isRight)
       },
     ),
   )
