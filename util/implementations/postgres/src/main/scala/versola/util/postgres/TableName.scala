@@ -11,4 +11,7 @@ object TableName:
   /** `name`, or an `IllegalArgumentException` that says what a table name may be. The refused name is not quoted back. */
   def validated(name: String): String =
     if name.length <= MaxLength && Plain.matches(name) then name
-    else throw IllegalArgumentException(s"a table name is a plain identifier of lower-case letters, digits and underscores, at most $MaxLength characters")
+    else
+      throw IllegalArgumentException(
+        s"a table name is a plain identifier of lower-case letters, digits and underscores, at most $MaxLength characters",
+      )
