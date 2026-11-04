@@ -2,7 +2,10 @@ package versola.antifraud
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.util.postgres.BasicCodecs
+import versola.audit.AuditSupport.*
+import versola.util.audit.AuditEvent
+import versola.util.postgres.{AuditInsert, BasicCodecs}
+import zio.json.ast.Json
 import zio.{Duration, Task, ZLayer, durationInt}
 
 import java.time.Instant
@@ -17,18 +20,20 @@ class PostgresAntifraudCounterResetRepository(xa: TransactorZIO, statementTimeou
   private def timed()(using DbCon): Unit =
     sql"SET LOCAL statement_timeout = ${SqlLiteral(s"'${statementTimeout.toMillis}ms'")}".update.run()
 
-  override def record(reset: CounterReset.Resolved, requestedBy: String, at: Instant): Task[Long] =
+  override def record(reset: CounterReset.Resolved, requestedBy: String, at: Instant, audit: AuditEvent): Task[Long] =
     xa.transactMeasured("record-antifraud-counter-reset"):
       timed()
       // Generations have no gap and are in commit order only if they are made one at a time: a sequence would give them
       // out before the commit, and an instance that read generation 7 could miss a 6 that commits after it.
       sql"SELECT 1 FROM (SELECT pg_advisory_xact_lock($ResetLock)) locked".query[Int].run()
-      sql"""
+      val generation = sql"""
         INSERT INTO af_counter_reset (generation, scope, value_type, value_hash, dest_prefix, requested_by, at)
         VALUES ((SELECT COALESCE(MAX(generation), 0) + 1 FROM af_counter_reset), ${reset.scope.toString},
                 ${reset.valueType.map(_.toString)}, ${reset.valueHash}, ${reset.destPrefix}, $requestedBy, $at)
         RETURNING generation
       """.query[Long].run().head
+      AuditInsert.insert(audit.withDetail("generation", Json.Num(generation)))
+      generation
 
   override def latest: Task[Long] =
     xa.transactMeasured("antifraud-counter-reset-latest"):

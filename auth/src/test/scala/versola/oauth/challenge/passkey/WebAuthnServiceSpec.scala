@@ -1,11 +1,13 @@
 package versola.oauth.challenge.passkey
 
 import com.fasterxml.jackson.dataformat.cbor.CBORFactory
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PasskeySettings}
 import versola.user.model.UserId
 import versola.util.UnitSpecBase
+import versola.util.audit.AuditEvents
 import zio.*
 import zio.json.*
 import zio.test.*
@@ -185,6 +187,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         _ <- repository.listByUser.succeedsWith(Vector.empty)
@@ -200,6 +203,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         ceremony <- service.startAssertion(settings)
@@ -220,6 +224,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         _ <- repository.listByUser.succeedsWith(Vector(record))
@@ -258,6 +263,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         _ <- repository.listByUser.succeedsWith(Vector.empty)
@@ -285,6 +291,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         response =
@@ -299,6 +306,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         id <- service.credentialIdFromResponse("not-json")
@@ -311,6 +319,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         _ <- configService.getPasskeySettings.succeedsWith(Some(settings))
@@ -328,6 +337,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         _ <- configService.getPasskeySettings.succeedsWith(None)
@@ -349,6 +359,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         _ <- repository.findByCredentialId.succeedsWith(Vector(record))
@@ -367,6 +378,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         _ <- repository.listByUser.succeedsWith(Vector.empty)
@@ -390,6 +402,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         _ <- repository.listByUser.succeedsWith(Vector(record))
@@ -412,6 +425,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
           service <- ZIO.service[WebAuthnService].provide(
             ZLayer.succeed(repository),
             ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
             WebAuthnService.live,
           )
           _ <- repository.listByUser.succeedsWith(Vector.empty)
@@ -442,6 +456,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         _ <- repository.findByCredentialId.succeedsWith(Vector.empty)
@@ -453,11 +468,13 @@ object WebAuthnServiceSpec extends UnitSpecBase:
       val configService = stub[OAuthConfigurationService]
       val credentialId = "test-credential-1".getBytes("UTF-8")
       val keyPair = VirtualAuthenticator.keyPair()
+      val audit = CapturingAuditEvents.shared()
 
       for
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](audit),
           WebAuthnService.live,
         )
         _ <- repository.listByUser.succeedsWith(Vector.empty)
@@ -476,6 +493,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         _ <- repository.findByCredentialId.succeedsWith(Vector.empty)
         _ <- repository.insert.succeedsWith(())
         record <- service.finishRegistration(clientId, userId, ceremony.request, response, Some(PasskeyName("My Key")))
+        drafts <- audit.recorded
       yield assertTrue(
         record.id.sameElements(credentialId),
         record.userId == userId,
@@ -487,6 +505,14 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         record.clientDataJson.isDefined,
         record.aaguid.exists(_.length == 16),
         record.name.contains(PasskeyName("My Key")),
+        // `account.passkey_enrolled` goes down with the credential, to be inserted in its transaction, and is counted once that returned
+        repository.insert.calls.map(_._2.kind) == List(AuthAuditKinds.AccountPasskeyEnrolled),
+        drafts.map(_.kind) == List(AuthAuditKinds.AccountPasskeyEnrolled),
+        drafts.head.userId == Some(userId.asInstanceOf[UUID]),
+        drafts.head.details == AuthAuditDetails.Passkey(
+          credentialPrefix = Some(record.id.toString.take(9)),
+          deviceType = Some("SingleDevice"),
+        ),
       )
     },
     test("finishAssertion verifies a real ceremony, resolves the user and bumps usage") {
@@ -502,6 +528,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         ceremony <- service.startAssertion(settings)
@@ -542,6 +569,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         ceremony <- service.startAssertion(settings)
@@ -575,6 +603,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         _ <- repository.listByUser.succeedsWith(Vector.empty)
@@ -612,6 +641,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         result <- service.startRegistration(settings, userId, "+77001234567", null).exit
@@ -626,6 +656,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         result <- service.startAssertion(settings.copy(rpId = null)).exit
@@ -647,6 +678,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         ceremony <- service.startAssertion(settings)
@@ -684,6 +716,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         ceremony <- service.startAssertion(settings)
@@ -722,6 +755,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
         service <- ZIO.service[WebAuthnService].provide(
           ZLayer.succeed(repository),
           ZLayer.succeed(configService),
+          ZLayer.succeed[AuditEvents](AuditEvents.noop),
           WebAuthnService.live,
         )
         ceremony <- service.startAssertion(settings)

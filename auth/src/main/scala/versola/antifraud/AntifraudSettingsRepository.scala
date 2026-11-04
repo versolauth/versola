@@ -1,5 +1,6 @@
 package versola.antifraud
 
+import versola.util.audit.AuditEvent
 import zio.Task
 
 import java.time.Instant
@@ -14,9 +15,11 @@ trait AntifraudSettingsRepository:
     *
     * @param expectedVersion `Some(v)`: only when the row is at version `v` (0 meaning there is no row); `None`: whatever
     *                        is there
+    * @param audit `antifraud.settings_changed`, inserted in the same transaction when the row was written (the repository says
+    *              which version it became)
     * @return the new version of the row, or `None` when it was not at `expectedVersion` (nothing was written)
     */
-  def put(tuning: Tuning, actor: String, at: Instant, expectedVersion: Option[Long]): Task[Option[Long]]
+  def put(tuning: Tuning, actor: String, at: Instant, expectedVersion: Option[Long], audit: AuditEvent): Task[Option[Long]]
 
   /** Writes the row if there is none (a row an operator saved is left as it is) and bumps the version when it did. True when
     * it wrote. Safe to run on several instances at once. */

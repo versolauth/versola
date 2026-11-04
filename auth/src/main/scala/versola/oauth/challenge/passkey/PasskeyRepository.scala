@@ -2,12 +2,14 @@ package versola.oauth.challenge.passkey
 
 import versola.auth.model.{CredentialId, PasskeyName, PasskeyRecord}
 import versola.user.model.UserId
+import versola.util.audit.AuditEvent
 import zio.Task
 
 import java.time.Instant
 
 trait PasskeyRepository:
-  def insert(record: PasskeyRecord): Task[Unit]
+  /** `audit` (`account.passkey_enrolled`) is inserted in the same transaction. */
+  def insert(record: PasskeyRecord, audit: AuditEvent): Task[Unit]
 
   /** Shard-native assertion lookup: the userHandle (== userId) is always returned by the
     * authenticator, so this carries the shard key and needs no global index.
@@ -27,6 +29,7 @@ trait PasskeyRepository:
 
   def rename(id: CredentialId, userId: UserId, name: Option[PasskeyName]): Task[Unit]
 
-  def deleteByUser(id: CredentialId, userId: UserId): Task[Unit]
+  /** `audit` (`account.passkey_removed`) is inserted in the same transaction, only when a passkey of the user was removed. */
+  def deleteByUser(id: CredentialId, userId: UserId, audit: AuditEvent): Task[Unit]
 
   def delete(id: CredentialId): Task[Unit]

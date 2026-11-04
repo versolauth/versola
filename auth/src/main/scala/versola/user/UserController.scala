@@ -3,6 +3,7 @@ package versola.user
 import versola.audit.AuditSupport.*
 import versola.audit.AuthAuditDetails
 import versola.audit.AuthAuditKinds
+import versola.audit.AuthActors
 import versola.auth.model.CredentialId
 import versola.auth.model.Password
 import versola.oauth.challenge.passkey.PasskeyRepository
@@ -16,7 +17,7 @@ import versola.oauth.session.model.{PublicSessionId, SessionId, SessionUnderUser
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.CoreConfig
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
+import versola.util.audit.{AuditDraft, AuditEvent, AuditEvents, AuditOutcome, AuditUnavailableException}
 import versola.util.http.{Controller, Observability}
 import versola.util.{Email, Phone}
 import zio.*
@@ -31,23 +32,35 @@ object UserController extends Controller:
       AuditEvents
 
   /** What an administrator did to an account, as central told auth: the actor is the administrator (or the `central` service) that
-    * `authorizeInternal` noted, the subject the user. */
-  private def audited(
+    * `authorizeInternal` noted, the subject the user. `actor` overrides that, for what auth does as the effect of a decision central
+    * recorded (the account removed, its roles changed). */
+  private def draft(
       kind: versola.util.audit.AuditKind,
       userId: UserId,
       details: versola.util.audit.AuditDetails,
-  ): ZIO[AuditEvents, Throwable, Unit] =
-    ZIO.serviceWithZIO[AuditEvents](
-      _.log(
-        AuditDraft(
-          kind = kind,
-          outcome = AuditOutcome.success,
-          userId = Some(userId),
-          target = Some(("user", userId.toString)),
-          details = details,
-        ),
-      ),
+      actor: Option[(versola.util.audit.ActorType, Option[String])] = None,
+  ): AuditDraft =
+    AuditDraft(
+      kind = kind,
+      outcome = AuditOutcome.success,
+      actor = actor,
+      userId = Some(userId),
+      target = Some(("user", userId.toString)),
+      details = details,
     )
+
+  /** The change and its event in one transaction: the event is built here, before, and handed to the repository, which inserts it
+    * only if the change happened; it is counted once the call returned. */
+  private def audited[A](
+      kind: versola.util.audit.AuditKind,
+      userId: UserId,
+      details: versola.util.audit.AuditDetails,
+      actor: Option[(versola.util.audit.ActorType, Option[String])] = None,
+  )(change: AuditEvent => Task[A]): ZIO[AuditEvents, Throwable, A] =
+    ZIO.serviceWithZIO[AuditEvents](_.atomically(draft(kind, userId, details, actor))(change))
+
+  /** Done by auth for what central decided: the decision is central's own row, this is the effect. */
+  private val asService = Some((AuthActors.service, None))
 
   def routes: Routes[Env, Throwable] = Routes(
     upsertUserEndpoint,
@@ -93,7 +106,7 @@ object UserController extends Controller:
         id <- request.url.queryZIO[UserId]("id")
         _ <- Observability.setUserId(id.toString)
         _ <- logoutService.invalidateAllSessions(id)
-        _ <- repo.delete(id)
+        _ <- audited(AuthAuditKinds.AccountDeleted, id, AuthAuditDetails.Account(via = "admin"), asService)(repo.delete(id, _))
       yield Response.status(Status.NoContent)
     }
 
@@ -103,8 +116,11 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         repo <- ZIO.service[UserRepository]
         body <- request.body.asJsonFromCodec[PatchUserClaimsPayload]
-        _ <- repo.patchClaims(body.id, body.claims)
-        _ <- audited(AuthAuditKinds.AccountClaimsUpdated, body.id, AuthAuditDetails.ClaimsUpdated(body.claims.fields.map(_._1).toList.sorted))
+        _ <- audited(
+          AuthAuditKinds.AccountClaimsUpdated,
+          body.id,
+          AuthAuditDetails.ClaimsUpdated(body.claims.fields.map(_._1).toList.sorted),
+        )(repo.patchClaims(body.id, body.claims, _))
       yield Response.status(Status.NoContent)
     }
 
@@ -114,7 +130,16 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         repo <- ZIO.service[UserRepository]
         body <- request.body.asJsonFromCodec[UpdateUserRolesPayload]
-        _ <- repo.updateRoles(body.userId, body.tenantId, body.add, body.remove)
+        _ <- audited(
+          AuthAuditKinds.AccountRolesUpdated,
+          body.userId,
+          AuthAuditDetails.RolesUpdated(
+            tenantId = body.tenantId.toString,
+            added = body.add.toList.map(_.toString).sorted,
+            removed = body.remove.toList.map(_.toString).sorted,
+          ),
+          asService,
+        )(repo.updateRoles(body.userId, body.tenantId, body.add, body.remove, _))
       yield Response.status(Status.NoContent)
     }
 
@@ -243,12 +268,12 @@ object UserController extends Controller:
         clientId <- request.queryZIO[ClientId]("clientId")
         _ <- Observability.setUserId(userId.toString)
         _ <- Observability.setClientId(clientId)
-        revoked <- sessionService.revokeRefreshTokensByUserAndClient(userId, clientId)
+        // The count is what the revocation found live, so the repository fills it in: `None` here.
         _ <- audited(
           AuthAuditKinds.TokenRevoked,
           userId,
-          AuthAuditDetails.TokenRevoked(tokenType = "refresh_token", jti = None, refreshPrefix = None, cause = "admin_revoked", count = Some(revoked)),
-        )
+          AuthAuditDetails.TokenRevoked(tokenType = "refresh_token", jti = None, refreshPrefix = None, cause = "admin_revoked"),
+        )(sessionService.revokeRefreshTokensByUserAndClient(userId, clientId, _))
       yield Response.status(Status.NoContent)
     }
 
@@ -283,8 +308,13 @@ object UserController extends Controller:
         body <- request.body.asJsonFromCodec[ResetUserLimitsPayload]
         tenantId = body.tenantId
         subjects = (List(body.userId.toString) ++ body.email.map(_.toString) ++ body.phone.map(_.toString)).distinct
+        // A reset of counters held by other rows, with no transaction of this event's to join: written before the action, so that
+        // a reset the log could not witness is not done (503 `audit_unavailable`).
+        _ <- ZIO.serviceWithZIO[AuditEvents](
+          _.recordNow(draft(AuthAuditKinds.AccountLimitsReset, body.userId, AuthAuditDetails.Account(via = "admin")))
+            .mapError(_ => AuditUnavailableException),
+        )
         _ <- ZIO.foreachDiscard(subjects)(throttleRepo.deleteAllForSubject(tenantId, _))
-        _ <- audited(AuthAuditKinds.AccountLimitsReset, body.userId, AuthAuditDetails.Account(via = "admin"))
       yield Response.status(Status.NoContent)
     }
 
@@ -317,8 +347,11 @@ object UserController extends Controller:
         repo <- ZIO.service[PasskeyRepository]
         userId <- request.queryZIO[UserId]("id")
         credentialId <- request.queryZIO[CredentialId]("credentialId")
-        _ <- repo.deleteByUser(credentialId, userId)
-        _ <- audited(AuthAuditKinds.AccountPasskeyRemoved, userId, AuthAuditDetails.Passkey(credentialPrefix = Some(credentialId.toString.take(9))))
+        _ <- audited(
+          AuthAuditKinds.AccountPasskeyRemoved,
+          userId,
+          AuthAuditDetails.Passkey(credentialPrefix = Some(credentialId.toString.take(9))),
+        )(repo.deleteByUser(credentialId, userId, _))
       yield Response.status(Status.NoContent)
     }
 
@@ -328,12 +361,11 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         body <- request.body.asJsonFromCodec[ResetPasswordPayload]
         passwordService <- ZIO.service[PasswordService]
-        password <- passwordService.resetPassword(body.userId, body.expiresInSeconds, body.channel)
-        _ <- audited(
+        password <- audited(
           AuthAuditKinds.AccountPasswordReset,
           body.userId,
           AuthAuditDetails.Account(via = "admin", detail = body.channel.map(_.toString)),
-        )
+        )(passwordService.resetPassword(body.userId, body.expiresInSeconds, body.channel, _))
       yield password match
         case Some(plaintext) => Response.json(ResetPasswordResponse(plaintext).toJson)
         case None => Response.status(Status.NoContent)
@@ -345,10 +377,11 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         body <- request.body.asJsonFromCodec[SetPasswordPayload]
         passwordService <- ZIO.service[PasswordService]
-        _ <- passwordService.setPassword(body.userId, Password(body.password))
-          .mapError:
-            case PasswordReuseError(n) => RuntimeException(s"Password reuse: must differ from last $n passwords")
-            case t: Throwable => t
-        _ <- audited(AuthAuditKinds.AccountPasswordSet, body.userId, AuthAuditDetails.Account(via = "admin"))
+        _ <- audited(AuthAuditKinds.AccountPasswordSet, body.userId, AuthAuditDetails.Account(via = "admin"))(event =>
+          passwordService.setPassword(body.userId, Password(body.password), event)
+            .mapError:
+              case PasswordReuseError(n) => RuntimeException(s"Password reuse: must differ from last $n passwords")
+              case t: Throwable => t,
+        )
       yield Response.status(Status.NoContent)
     }

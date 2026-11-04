@@ -1154,37 +1154,22 @@ object ConversationServiceSpec extends UnitSpecBase:
           b <- unsatisfied.audit.recorded
         yield assertTrue(a.isEmpty, b.isEmpty)
       },
-      test("the session is not reported as created when the log cannot take the event") {
+      test("the session is not reported as created when its repository cannot insert the event with it") {
         val env = Env()
-        val refusing = new ConversationService.Impl(
-          env.otpService,
-          env.passwordService,
-          env.conversationRepository,
-          env.userRepository,
-          env.authorizationCodeRepository,
-          env.sessionRepository,
-          env.authPropertyGenerator,
-          env.securityService,
-          env.userInfoService,
-          TestEnvConfig.coreConfig,
-          env.submissionLimiter,
-          env.webAuthnService,
-          env.passkeyRepository,
-          env.configService,
-          env.acrResolver,
-          env.userAgentRepository,
-          env.secureRandom,
-          env.userService,
-          env.consentService,
-          versola.antifraud.AntifraudEvents.noop,
-          versola.antifraud.ChallengeVerifier.off,
-          stub[CodeAlternativeService],
-          CapturingAuditEvents.shared(unavailable = true),
-        )
+        val refusal = RuntimeException("audit insert refused")
         for
           _ <- issueCodeStubs(env)
-          result <- refusing.finish(authId, consentedRecord.copy(userId = Some(userId))).either
-        yield assertTrue(result == Left(AuditUnavailableException))
+          _ <- env.sessionRepository.create.failsWith(refusal)
+          result <- env.service.finish(authId, consentedRecord.copy(userId = Some(userId))).either
+          drafts <- env.audit.recorded
+        yield assertTrue(result == Left(refusal), drafts.isEmpty)
+      },
+      test("login.completed is handed to the repository that creates the session, which inserts it in the same transaction") {
+        val env = Env()
+        for
+          _ <- issueCodeStubs(env)
+          _ <- env.service.finish(authId, consentedRecord.copy(userId = Some(userId)))
+        yield assertTrue(env.sessionRepository.create.calls.map(_._6.kind) == List(AuthAuditKinds.LoginCompleted))
       },
     ),
   )

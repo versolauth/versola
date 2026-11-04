@@ -1,7 +1,9 @@
 package versola.antifraud
 
 import org.scalamock.stubs.ZIOStubs
+import versola.audit.AuthAuditKinds
 import versola.auth.TestEnvConfig
+import versola.util.audit.AuditEvents
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.{JWT, Patch}
 import zio.*
@@ -38,7 +40,7 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       tracing <- NoopTracing.layer.build
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
-          AntifraudSettingsController.routes.provideEnvironment(ZEnvironment(tuning) ++ ZEnvironment(config) ++ tracing),
+          AntifraudSettingsController.routes.provideEnvironment(ZEnvironment(tuning) ++ ZEnvironment(config) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing),
         ),
       )
       signed <- token(key).map(t => request.addHeader(Header.Authorization.Bearer(t)).addHeader(Header.ContentType(MediaType.application.json)))
@@ -65,7 +67,7 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         tracing <- NoopTracing.layer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
-            AntifraudSettingsController.routes.provideEnvironment(ZEnvironment(tuning) ++ ZEnvironment(config) ++ tracing),
+            AntifraudSettingsController.routes.provideEnvironment(ZEnvironment(tuning) ++ ZEnvironment(config) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing),
           ),
         )
         anonymous <- client.batched(Request.get(base))
@@ -105,7 +107,8 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         tuningOf(text) == Right(settings),
         text.fromJson[Json.Obj].exists(_.get("version").contains(Json.Num(4))),
         response.headers.get("ETag").contains("\"4\""),
-        tuning.put.calls == List((settings, userId, Some(3L))),
+        tuning.put.calls.map((s, u, v, _) => (s, u, v)) == List((settings, userId, Some(3L))),
+        tuning.put.calls.map(_._4.kind) == List(AuthAuditKinds.AntifraudSettingsChanged),
       )
     },
     test("PUT takes the version from the body when there is no If-Match; both must agree, and a header that is not a version is 400") {
@@ -135,7 +138,7 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         response.status == Status.Ok,
         text.fromJson[Json.Obj].exists(_.get("version").contains(Json.Num(9))),
         response.headers.get("ETag").contains("\"9\""),
-        tuning.put.calls == List((settings, userId, None)),
+        tuning.put.calls.map((s, u, v, _) => (s, u, v)) == List((settings, userId, None)),
       )
     },
     test("PUT on a version the settings have left is 412 with the version they are at as the ETag") {
@@ -165,7 +168,8 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         tuningOf(text) == Right(settings.copy(blockAt = 70)),
         text.fromJson[Json.Obj].exists(_.get("version").contains(Json.Num(4))),
         response.headers.get("ETag").contains("\"4\""),
-        tuning.patch.calls == List((patch, userId, Some(3L))),
+        tuning.patch.calls.map((p, u, v, _) => (p, u, v)) == List((patch, userId, Some(3L))),
+        tuning.patch.calls.map(_._4.kind) == List(AuthAuditKinds.AntifraudSettingsChanged),
       )
     },
     test("PATCH needs no version; one in the body is taken, and one that differs from If-Match is 400") {
@@ -221,7 +225,7 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         nestedTypo.status == Status.BadRequest,
         entryTypo.status == Status.BadRequest,
         nulls.status == Status.Ok,
-        tuning.patch.calls == List(
+        tuning.patch.calls.map((p, u, v, _) => (p, u, v)) == List(
           (
             TuningPatch.empty.copy(blockAt = Some(Patch.Deleted), ruleWeights = Some(Patch.Modified(Map("watch_list:cidr" -> Patch.Deleted)))),
             userId,
@@ -250,7 +254,8 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         named.status == Status.NoContent,
         stale.status == Status.PreconditionFailed,
         stale.headers.get("ETag").contains("\"9\""),
-        tuning.reset.calls == List((userId, None), (userId, Some(5L)), (userId, Some(5L))),
+        tuning.reset.calls.map((u, v, _) => (u, v)) == List((userId, None), (userId, Some(5L)), (userId, Some(5L))),
+        tuning.reset.calls.map(_._3.kind).distinct == List(AuthAuditKinds.AntifraudSettingsChanged),
       )
     },
   ).provideSome[Scope](TestClient.layer) @@ TestAspect.silentLogging

@@ -1,6 +1,7 @@
 package versola.antifraud
 
 import versola.oauth.client.model.TenantId
+import versola.util.audit.AuditEvent
 import zio.*
 import zio.metrics.{Metric, MetricLabel}
 
@@ -73,13 +74,13 @@ trait AntifraudLists:
   /** Adds an entry, or refreshes the one for the same list, value and tenant. Fails with [[InvalidListEntry]]
     * for a value that is not valid for its type. The snapshot of this instance is refreshed at once; the others
     * pick it up within the refresh interval. */
-  def create(entry: NewListEntry, actor: String): Task[AntifraudListEntry]
+  def create(entry: NewListEntry, actor: String, audit: AuditEvent): Task[AntifraudListEntry]
 
   /** What the entry would have matched of the last 24 hours of events of its tenant, or of all for a global entry (see
     * [[ListPreview]]). */
   def preview(entry: NewListEntry): Task[ListPreview]
 
-  def delete(id: UUID, actor: String): Task[Boolean]
+  def delete(id: UUID, actor: String, audit: AuditEvent): Task[Boolean]
 
   def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]]
 
@@ -310,7 +311,7 @@ object AntifraudLists:
         result <- repository.preview(entry.valueType, value, entry.tenantId, now.minusSeconds(24 * 3600))
       yield result
 
-    override def create(entry: NewListEntry, actor: String): Task[AntifraudListEntry] =
+    override def create(entry: NewListEntry, actor: String, audit: AuditEvent): Task[AntifraudListEntry] =
       for
         now <- Clock.instant
         value <- validate(entry, now)
@@ -339,12 +340,13 @@ object AntifraudLists:
           ),
           actor,
           now,
+          audit,
         )
         _ <- refresh
       yield stored
 
-    override def delete(id: UUID, actor: String): Task[Boolean] =
-      Clock.instant.flatMap(repository.delete(id, actor, _)) <* refresh
+    override def delete(id: UUID, actor: String, audit: AuditEvent): Task[Boolean] =
+      Clock.instant.flatMap(repository.delete(id, actor, _, audit)) <* refresh
 
     override def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]] =
       page(limit, offset) *> repository.list(filter, limit, offset)

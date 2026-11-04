@@ -1,6 +1,7 @@
 package versola.antifraud
 
 import versola.util.Phone
+import versola.util.audit.AuditEvent
 import zio.*
 import zio.json.JsonCodec
 import zio.metrics.{Metric, MetricLabel}
@@ -61,7 +62,7 @@ final class InvalidCounterReset(message: String) extends RuntimeException(messag
 trait AntifraudCounters:
   /** Makes the request, forgets what it says on this instance and returns the generation the others will apply.
     * Fails with [[InvalidCounterReset]]. */
-  def reset(scope: CounterScope, valueType: Option[CounterValueType], value: Option[String], actor: String): Task[Long]
+  def reset(scope: CounterScope, valueType: Option[CounterValueType], value: Option[String], actor: String, audit: AuditEvent): Task[Long]
 
 object AntifraudCounters:
 
@@ -108,11 +109,11 @@ object AntifraudCounters:
     // Resets whose second pass (forget what was loaded of the others, delete own rows again) is due, and when.
     private val settling = AtomicReference(List.empty[(Instant, CounterReset)])
 
-    override def reset(scope: CounterScope, valueType: Option[CounterValueType], value: Option[String], actor: String): Task[Long] =
+    override def reset(scope: CounterScope, valueType: Option[CounterValueType], value: Option[String], actor: String, audit: AuditEvent): Task[Long] =
       for
         resolved <- resolve(scope, valueType, value)
         now <- Clock.instant
-        generation <- repository.record(resolved, actor, now)
+        generation <- repository.record(resolved, actor, now, audit)
         reset = CounterReset(generation, scope, resolved.valueType, resolved.valueHash, resolved.destPrefix, actor, now)
         _ <- ZIO.succeed(appliedHere.add(generation))
         // This instance forgets at once, and deletes every instance's rows: those of an instance that is gone are nobody's

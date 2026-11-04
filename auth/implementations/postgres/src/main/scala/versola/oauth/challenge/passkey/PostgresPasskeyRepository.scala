@@ -5,7 +5,8 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.SqlArrayCodec
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord}
 import versola.user.model.UserId
-import versola.util.postgres.BasicCodecs
+import versola.util.audit.AuditEvent
+import versola.util.postgres.{AuditInsert, BasicCodecs}
 import zio.{Task, ZLayer}
 
 import java.time.Instant
@@ -28,8 +29,8 @@ class PostgresPasskeyRepository(xa: TransactorZIO) extends PasskeyRepository, Ba
 
   given DbCodec[PasskeyRecord] = DbCodec.derived[PasskeyRecord]
 
-  override def insert(record: PasskeyRecord): Task[Unit] =
-    xa.connectMeasured("insert-passkey"):
+  override def insert(record: PasskeyRecord, audit: AuditEvent): Task[Unit] =
+    xa.transactMeasured("insert-passkey"):
       sql"""
         INSERT INTO passkeys (
           id, user_id, public_key, signature_counter, device_type,
@@ -42,6 +43,7 @@ class PostgresPasskeyRepository(xa: TransactorZIO) extends PasskeyRepository, Ba
           ${record.aaguid}, ${record.name}, ${record.lastUsedAt}, ${record.createdAt}, ${record.updatedAt}
         )
       """.update.run()
+      AuditInsert.insert(audit)
     .unit
 
   override def findByCredentialIdAndUser(id: CredentialId, userId: UserId): Task[Option[PasskeyRecord]] =
@@ -89,9 +91,10 @@ class PostgresPasskeyRepository(xa: TransactorZIO) extends PasskeyRepository, Ba
       """.update.run()
     .unit
 
-  override def deleteByUser(id: CredentialId, userId: UserId): Task[Unit] =
-    xa.connectMeasured("delete-passkey-by-user"):
-      sql"DELETE FROM passkeys WHERE id = $id AND user_id = $userId".update.run()
+  override def deleteByUser(id: CredentialId, userId: UserId, audit: AuditEvent): Task[Unit] =
+    xa.transactMeasured("delete-passkey-by-user"):
+      val deleted = sql"DELETE FROM passkeys WHERE id = $id AND user_id = $userId".update.run()
+      if deleted > 0 then AuditInsert.insert(audit)
     .unit
 
   override def delete(id: CredentialId): Task[Unit] =

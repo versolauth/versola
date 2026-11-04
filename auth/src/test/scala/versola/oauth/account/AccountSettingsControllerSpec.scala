@@ -309,7 +309,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           sessionService.invalidateForUser.succeedsWith(true),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
-            stubs._2.invalidateForUser.calls == List((otherDeviceSession.publicId, userId)),
+            stubs._2.invalidateForUser.calls.map((s, u, _) => (s, u)) == List((otherDeviceSession.publicId, userId)),
             stubs._2.listByUser.calls.isEmpty,
           )),
         // session.ended by the user themself: the subject is the caller, and the cause says it was their own doing
@@ -334,7 +334,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           sessionService.invalidateForUser.succeedsWith(false),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
-            stubs._2.invalidateForUser.calls == List((foreignSessionId, userId)),
+            stubs._2.invalidateForUser.calls.map((s, u, _) => (s, u)) == List((foreignSessionId, userId)),
             stubs._2.listByUser.calls.isEmpty,
           )),
         // nothing was ended, so nothing is said to have been
@@ -403,7 +403,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         setup = (_, _, passkeyRepository, _, _, _, _, _) => passkeyRepository.deleteByUser.succeedsWith(()),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
-            stubs._3.deleteByUser.calls.map((id, user) => (Base64.urlEncode(id), user)) ==
+            stubs._3.deleteByUser.calls.map((id, user, _) => (Base64.urlEncode(id), user)) ==
               List((Base64.urlEncode(passkeyId), userId)),
           )),
         verifyAudit = drafts =>

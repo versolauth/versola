@@ -1,7 +1,7 @@
 package versola.audit
 
 import versola.util.UnitSpecBase
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome, AuditUnavailable}
+import versola.util.audit.{AuditDraft, AuditEvent, AuditEvents, AuditOutcome, AuditUnavailable}
 import versola.util.http.Observability
 import zio.*
 import zio.test.*
@@ -23,6 +23,9 @@ object ClientAuthFailuresSpec extends UnitSpecBase:
       yield ()
     override def record(draft: AuditDraft): IO[AuditUnavailable.type, Unit] = note(draft)
     override def recordBestEffort(draft: AuditDraft): UIO[Unit] = note(draft)
+    override def build(draft: AuditDraft): UIO[AuditEvent] = AuditEvents.noop.build(draft)
+    override def recordNow(draft: AuditDraft): IO[AuditUnavailable.type, Unit] = note(draft)
+    override def committed(event: AuditEvent): UIO[Unit] = ZIO.unit
     val all: UIO[List[Seen]] = seen.get
 
   private def probe = Ref.make(List.empty[Seen]).map(Probe(_))

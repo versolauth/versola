@@ -71,19 +71,19 @@ object AccountSettingsController extends Controller:
       for
         _ <- authorizeResource(request)
         body <- request.bodyAs[RevokeSessionRequest]
-        response <- ZIO.serviceWithZIO[SessionService](_.invalidateForUser(body.targetSessionId, body.userId)).flatMap:
-          case true =>
-            // The session's own record is gone with it, so the number of relying parties is not known here: 0 says "not known".
-            ZIO.serviceWithZIO[AuditEvents](
-              _.log(
-                AuditDraft(
-                  kind = AuthAuditKinds.SessionEnded,
-                  outcome = AuditOutcome.success,
-                  userId = Some(body.userId),
-                  details = AuthAuditDetails.SessionEnded(cause = "user_revoked", clients = 0),
-                ),
-              ),
-            ).as(Response.status(Status.NoContent))
+        sessions <- ZIO.service[SessionService]
+        events <- ZIO.service[AuditEvents]
+        // The event is inserted by the transaction that ends the session, which fills in the session and its relying parties.
+        ended <- events.atomicallyWhen(
+          AuditDraft(
+            kind = AuthAuditKinds.SessionEnded,
+            outcome = AuditOutcome.success,
+            userId = Some(body.userId),
+            details = AuthAuditDetails.SessionEnded(cause = "user_revoked", clients = 0),
+          ),
+        )(sessions.invalidateForUser(body.targetSessionId, body.userId, _))(identity)
+        response <- ended match
+          case true => ZIO.succeed(Response.status(Status.NoContent))
           case false => Observability.setError("session_not_found").as(Response.status(Status.NoContent))
       yield response
     }
@@ -119,17 +119,17 @@ object AccountSettingsController extends Controller:
       for
         _ <- authorizeResource(request)
         body <- request.bodyAs[DeletePasskeyRequest]
-        _ <- ZIO.serviceWithZIO[PasskeyRepository](_.deleteByUser(body.credentialId, body.userId))
-        _ <- ZIO.serviceWithZIO[AuditEvents](
-          _.log(
-            AuditDraft(
-              kind = AuthAuditKinds.AccountPasskeyRemoved,
-              outcome = AuditOutcome.success,
-              userId = Some(body.userId),
-              details = AuthAuditDetails.Passkey(credentialPrefix = Some(body.credentialId.toString.take(9))),
-            ),
+        passkeys <- ZIO.service[PasskeyRepository]
+        events <- ZIO.service[AuditEvents]
+        // Removed and witnessed in one transaction, and only when a passkey of the user was removed.
+        _ <- events.atomically(
+          AuditDraft(
+            kind = AuthAuditKinds.AccountPasskeyRemoved,
+            outcome = AuditOutcome.success,
+            userId = Some(body.userId),
+            details = AuthAuditDetails.Passkey(credentialPrefix = Some(body.credentialId.toString.take(9))),
           ),
-        )
+        )(passkeys.deleteByUser(body.credentialId, body.userId, _))
       yield Response.status(Status.NoContent)
     }
 

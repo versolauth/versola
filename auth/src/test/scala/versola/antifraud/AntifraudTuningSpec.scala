@@ -2,6 +2,8 @@ package versola.antifraud
 
 import versola.oauth.client.model.{ClientId, TenantId}
 import versola.util.{Patch, UnitSpecBase}
+import versola.audit.AuditProbe
+import versola.util.audit.AuditEvent
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -27,7 +29,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
   /** The repository in memory, with a version that moves with every change and a version of the row, as the real one has;
     * `row` is the seeded one. */
   private class InMemory(row: Ref[Option[StoredTuning]], counter: Ref[Long], failing: Ref[Boolean]) extends AntifraudSettingsRepository:
-    override def put(tuning: Tuning, actor: String, at: Instant, expectedVersion: Option[Long]) =
+    override def put(tuning: Tuning, actor: String, at: Instant, expectedVersion: Option[Long], audit: AuditEvent) =
       row.modify: current =>
         val version = current.fold(0L)(_.version)
         if expectedVersion.exists(_ != version) then (None, current)
@@ -242,10 +244,10 @@ object AntifraudTuningSpec extends UnitSpecBase:
         (store, _, repo) <- storeLayer
         racing = new AntifraudSettingsRepository:
           private val raced = AtomicBoolean(false)
-          override def put(tuning: Tuning, actor: String, at: Instant, expectedVersion: Option[Long]) =
+          override def put(tuning: Tuning, actor: String, at: Instant, expectedVersion: Option[Long], audit: AuditEvent) =
             if raced.compareAndSet(false, true) then
-              repo.put(base.copy(challengeAt = 33), "carol", at, None) *> repo.put(tuning, actor, at, expectedVersion)
-            else repo.put(tuning, actor, at, expectedVersion)
+              repo.put(base.copy(challengeAt = 33), "carol", at, None, audit) *> repo.put(tuning, actor, at, expectedVersion, audit)
+            else repo.put(tuning, actor, at, expectedVersion, audit)
           override def seed(tuning: Tuning, actor: String, at: Instant) = repo.seed(tuning, actor, at)
           override def find = repo.find
           override def version = repo.version
@@ -254,9 +256,9 @@ object AntifraudTuningSpec extends UnitSpecBase:
         withVersion <- {
           val again = AntifraudTuningStore.Impl(new AntifraudSettingsRepository:
             private val raced = AtomicBoolean(false)
-            override def put(tuning: Tuning, actor: String, at: Instant, expectedVersion: Option[Long]) =
-              if raced.compareAndSet(false, true) then repo.put(base, "carol", at, None) *> repo.put(tuning, actor, at, expectedVersion)
-              else repo.put(tuning, actor, at, expectedVersion)
+            override def put(tuning: Tuning, actor: String, at: Instant, expectedVersion: Option[Long], audit: AuditEvent) =
+              if raced.compareAndSet(false, true) then repo.put(base, "carol", at, None, audit) *> repo.put(tuning, actor, at, expectedVersion, audit)
+              else repo.put(tuning, actor, at, expectedVersion, audit)
             override def seed(tuning: Tuning, actor: String, at: Instant) = repo.seed(tuning, actor, at)
             override def find = repo.find
             override def version = repo.version)
@@ -373,7 +375,7 @@ object AntifraudTuningSpec extends UnitSpecBase:
       for
         (store, _, repo) <- storeLayer
         // Stored by hand: the limits of 1 and 2 codes are what the store refuses, and what keeps the counts short here.
-        _ <- repo.put(base.copy(smsLimits = limits), "alice", at, None) *> store.refresh
+        _ <- repo.put(base.copy(smsLimits = limits), "alice", at, None, AuditProbe.sample()) *> store.refresh
         budget = new SmsBudget(AntifraudTestSettings.smsBudget.copy(prefixLength = 6), AntifraudTestSettings.smsSizing, () => store.current.smsLimits)
         first = budget.decide(tenant, "491512", at, charge = true)
         second = budget.decide(tenant, "491512", at, charge = true)

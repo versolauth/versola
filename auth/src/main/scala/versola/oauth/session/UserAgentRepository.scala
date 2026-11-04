@@ -3,6 +3,7 @@ package versola.oauth.session
 import versola.oauth.model.UserAgentData
 import versola.oauth.session.model.{UserAgentDetails, UserAgentId, UserAgentRecord}
 import versola.user.model.UserId
+import versola.util.audit.AuditEvent
 import zio.{Duration, Task}
 
 trait UserAgentRepository:
@@ -41,5 +42,7 @@ trait UserAgentRepository:
    *  that ran under it and the refresh tokens bound to those sessions. Refresh tokens name only
    *  their session, so a token whose session row has already been swept cannot be reached from
    *  here. Returns `false` when the id is not this user's.
+   *
+   *  `audit` is the template of the `session.ended` of each session this call ended, inserted in the same transaction.
    */
-  def forget(id: UserAgentId, userId: UserId): Task[Boolean]
+  def forget(id: UserAgentId, userId: UserId, audit: AuditEvent): Task[Boolean]

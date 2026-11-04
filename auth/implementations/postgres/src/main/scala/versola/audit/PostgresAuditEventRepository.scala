@@ -5,7 +5,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.audit.AuditReadRepository.*
 import versola.util.audit.*
 import versola.util.partitions.{PartitionReport, TableOwnership}
-import versola.util.postgres.{BasicCodecs, DailyPartitions}
+import versola.util.postgres.{AuditInsert, BasicCodecs, DailyPartitions}
 import zio.json.*
 import zio.json.ast.Json
 import zio.{Duration, Task, ZIO, ZLayer, durationInt}
@@ -33,28 +33,15 @@ class PostgresAuditEventRepository(
   private def timed()(using DbCon): Unit =
     sql"SET LOCAL statement_timeout = ${SqlLiteral(s"'${statementTimeout.toMillis}ms'")}".update.run()
 
-  /** The batch in one round trip. What the table cannot hold of an event is cleaned before this (the core's sanitizing), and a batch the
-    * database refuses for its content is retried and then written row by row by the core's writer. */
+  /** The batch in one round trip, by the statement every service shares ([[AuditInsert]]). What the table cannot hold of an event is
+    * cleaned there, and a batch the database refuses for its content is retried and then written row by row by the core's writer. */
   override def insertBatch(events: List[AuditEvent]): Task[Unit] =
     if events.isEmpty then ZIO.unit
     else
       xa.transactMeasured("insert-audit-events"):
         timed()
-        batchUpdate(events)(insertStatement)
+        AuditInsert.insertBatch(events)
       .unit
-
-  // `ip` and `details` are text bound to the column's type: INET and JSONB have no driver type of their own here.
-  private def insertStatement(event: AuditEvent) =
-    sql"""
-      INSERT INTO audit_event (id, at, tenant_id, source, node_id, kind, outcome, reason, severity, actor_type, actor_id,
-                               user_id, client_id, session_id, ip, user_agent, trace_id, target_type, target_id, details)
-      VALUES (
-        ${event.id}, ${event.at}, ${event.tenantId}, ${event.source.value}, ${event.nodeId}, ${event.kind.value},
-        ${event.outcome.toString}, ${event.reason}, ${event.severity.toString}, ${event.actorType.value}, ${event.actorId},
-        ${event.userId}, ${event.clientId}, ${event.sessionId}, CAST(${event.ip} AS inet), ${event.userAgent}, ${event.traceId},
-        ${event.targetType}, ${event.targetId}, CAST(${event.details.toJson} AS jsonb)
-      )
-    """.update
 
   override def maintainPartitions(from: LocalDate, days: Int, keepFrom: LocalDate): Task[PartitionReport] =
     partitions.maintain(xa, from, days, keepFrom)

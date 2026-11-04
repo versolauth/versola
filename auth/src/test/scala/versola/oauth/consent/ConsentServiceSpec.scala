@@ -311,7 +311,7 @@ object ConsentServiceSpec extends UnitSpecBase:
           _ <- env.service.grant(userId, clientWith(), Set(openid, profile))
           drafts <- env.audit.recorded
         yield assertTrue(
-          env.consentRepository.upsert.calls == List(
+          env.consentRepository.upsert.calls.map(_._1) == List(
             ConsentRecord(userId, clientId, Set(openid, profile), grantedAt = now, expiresAt = None),
           ),
           // consent.granted: what was granted, sorted, and no expiry when it is remembered until revoked
@@ -328,7 +328,7 @@ object ConsentServiceSpec extends UnitSpecBase:
           _ <- env.service.grant(userId, clientWith(rememberDuration = Some(30.days)), Set(openid))
           drafts <- env.audit.recorded
         yield assertTrue(
-          env.consentRepository.upsert.calls == List(
+          env.consentRepository.upsert.calls.map(_._1) == List(
             ConsentRecord(userId, clientId, Set(openid), grantedAt = now, expiresAt = Some(now.plusSeconds(30 * 86400))),
           ),
           drafts.map(_.details) == List(AuthAuditDetails.Consent(scope = List("openid"), expiresAt = Some(now.plusSeconds(30 * 86400).toString))),
@@ -343,7 +343,7 @@ object ConsentServiceSpec extends UnitSpecBase:
           _ <- env.service.revoke(userId, baseClient)
           drafts <- env.audit.recorded
         yield assertTrue(
-          env.consentRepository.delete.calls == List((userId, clientId)),
+          env.consentRepository.delete.calls.map((u, c, _) => (u, c)) == List((userId, clientId)),
           drafts.map(_.kind) == List(AuthAuditKinds.ConsentRevoked),
           drafts.head.userId == Some(userId.asInstanceOf[UUID]),
         )

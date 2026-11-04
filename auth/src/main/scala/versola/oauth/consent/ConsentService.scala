@@ -112,29 +112,32 @@ object ConsentService:
     override def grant(userId: UserId, client: OAuthClientRecord, scope: Set[ScopeToken]): Task[Unit] =
       Clock.instant.flatMap: now =>
         val expiresAt = client.consentFlow.flatMap(_.rememberDuration).map(d => now.plusSeconds(d.toSeconds))
-        consentRepository.upsert(
-          ConsentRecord(
-            userId = userId,
-            clientId = client.id,
-            scope = scope,
-            grantedAt = now,
-            expiresAt = expiresAt,
-          ),
-        ) *> audit.log(
+        audit.atomically(
           AuditDraft(
             kind = AuthAuditKinds.ConsentGranted,
             outcome = AuditOutcome.success,
             userId = Some(userId),
             details = AuthAuditDetails.Consent(scope = scope.toList.map(_.toString).sorted, expiresAt = expiresAt.map(_.toString)),
           ),
+        )(
+          consentRepository.upsert(
+            ConsentRecord(
+              userId = userId,
+              clientId = client.id,
+              scope = scope,
+              grantedAt = now,
+              expiresAt = expiresAt,
+            ),
+            _,
+          ),
         )
 
     override def revoke(userId: UserId, client: OAuthClientRecord): Task[Unit] =
-      consentRepository.delete(userId, client.id) *> audit.log(
+      audit.atomically(
         AuditDraft(
           kind = AuthAuditKinds.ConsentRevoked,
           outcome = AuditOutcome.success,
           userId = Some(userId),
           details = AuthAuditDetails.Consent(scope = Nil),
         ),
-      )
+      )(consentRepository.delete(userId, client.id, _))

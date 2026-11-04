@@ -377,6 +377,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result.amr == amr1,
           result.authTime.contains(authTime1),
           createCalls.head._3.audience == List(ResourceUri("https://api.example.com"), ResourceUri("resource://edge")),
+          // token.issued goes down with the refresh row, to be inserted in its transaction
+          createCalls.head._5.map(_.kind) == Some(AuthAuditKinds.TokenIssued),
           env.clientService.getResourcesForClient.calls.isEmpty,
           env.clientService.findResource.calls.isEmpty,
           env.clientService.findResourceById.calls.isEmpty,
@@ -585,7 +587,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // code committed to, bounded by the client's access token TTL.
           env.accessTokenRevocationService.revokeFamily.calls ==
             List((testClient, familyId1, userId1.toString, now.plus(testClient.accessTokenTtl))),
-          env.tokenRepo.deleteByFamily.calls == List(familyId1),
+          env.tokenRepo.deleteByFamily.calls.map(_._1) == List(familyId1),
           env.tokenRepo.createRefreshToken.calls.isEmpty,
         )
       },
@@ -875,7 +877,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result <- env.service.refreshAccessToken(request, credentials, None, None, None).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
-          env.tokenRepo.revokeFamily.calls ==
+          env.tokenRepo.revokeFamily.calls.map((token, client, _) => (token, client)) ==
             List((refreshTokenMac1, clientId1)),
           // Every access token the family issued goes, not just the tip's, and they are named
           // collectively: one push carrying the family, bounded by the client's current TTL,
@@ -1159,7 +1161,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // Losing the race means the same token was presented twice at once: the winner's
           // successor is live, and the leak is as proven as a sequential replay.
           result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
-          env.tokenRepo.revokeFamily.calls ==
+          env.tokenRepo.revokeFamily.calls.map((token, client, _) => (token, client)) ==
             List((refreshTokenMac1, clientId1)),
           env.accessTokenRevocationService.revokeFamily.calls ==
             List((testClient, familyId1, userId1.toString, now.plus(testClient.accessTokenTtl))),
@@ -2465,7 +2467,9 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           drafts.map(_.kind) == List(AuthAuditKinds.TokenReuseDetected),
           drafts.head.outcome == AuditOutcome.denied,
           drafts.head.userId == Some(authorizationCodeRecord.userId),
-          drafts.head.details == AuthAuditDetails.TokenReuseDetected("authorization_code", None, familyId1.toString),
+          // The family and how many tokens were live are the revocation's to say: the repository fills them in.
+          drafts.head.details == AuthAuditDetails.TokenReuseDetected("authorization_code", None),
+          env.tokenRepo.deleteByFamily.calls.map((family, event) => (family, event.kind)) == List((familyId1, AuthAuditKinds.TokenReuseDetected)),
         )
       },
       test("a replayed refresh token records token.reuse_detected with the prefix of the token that was replayed") {
@@ -2487,12 +2491,10 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
           drafts.map(_.kind) == List(AuthAuditKinds.TokenReuseDetected),
-          drafts.head.userId == Some(userId1),
-          drafts.head.details == AuthAuditDetails.TokenReuseDetected(
-            "refresh_token",
-            Some(Base64.urlEncode(refreshToken1).take(9)),
-            familyId1.toString,
-          ),
+          // Whose family it was is found by the transaction that revokes it, which says so in the event.
+          drafts.head.userId == None,
+          drafts.head.details == AuthAuditDetails.TokenReuseDetected("refresh_token", Some(Base64.urlEncode(refreshToken1).take(9))),
+          env.tokenRepo.revokeFamily.calls.map((_, _, event) => event.kind) == List(AuthAuditKinds.TokenReuseDetected),
         )
       },
       test("a refresh token that was never issued is not reuse: nothing is recorded") {

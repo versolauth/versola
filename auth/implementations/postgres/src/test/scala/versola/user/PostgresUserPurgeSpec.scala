@@ -109,7 +109,7 @@ object PostgresUserPurgeSpec extends PostgresSpec:
           _ <- seed(xa, one)
           _ <- seed(xa, two)
           before <- rowsOf(xa, one)
-          _ <- PostgresUserRepository(xa).delete(one.userId)
+          _ <- PostgresUserRepository(xa).delete(one.userId, versola.audit.AuditProbe.sample(versola.audit.AuthAuditKinds.AccountDeleted))
           after <- rowsOf(xa, one)
           other <- rowsOf(xa, two)
         yield assertTrue(before == seededRows).label("the seed has to cover every table or the purge is not being tested") &&

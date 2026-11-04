@@ -1,9 +1,11 @@
 package versola.antifraud
 
 import org.scalamock.stubs.ZIOStubs
+import versola.audit.AuthAuditKinds
 import versola.auth.TestEnvConfig
 import versola.oauth.client.model.TenantId
 import versola.util.JWT
+import versola.util.audit.AuditEvents
 import versola.util.http.{NoopTracing, Observability}
 import zio.*
 import zio.http.*
@@ -63,7 +65,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
           AntifraudListController.routes.provideEnvironment(
-            ZEnvironment(lists) ++ ZEnvironment(config) ++ ZEnvironment(RecordingAntifraudEvents()) ++ tracing,
+            ZEnvironment(lists) ++ ZEnvironment(config) ++ ZEnvironment(RecordingAntifraudEvents()) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing,
           ),
         ),
       )
@@ -98,7 +100,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             AntifraudListController.routes.provideEnvironment(
-              ZEnvironment(lists) ++ ZEnvironment(config) ++ ZEnvironment(RecordingAntifraudEvents()) ++ tracing,
+              ZEnvironment(lists) ++ ZEnvironment(config) ++ ZEnvironment(RecordingAntifraudEvents()) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing,
             ),
           ),
         )
@@ -112,7 +114,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- lists.create.succeedsWith(stored)
         response <- call(lists, Request.post(base, entryBody(prefixEntry)))
         body <- response.body.asString
-        (sent, actor) = lists.create.calls.head
+        (sent, actor, _) = lists.create.calls.head
       yield assertTrue(
         response.status == Status.Created,
         body.fromJson[AntifraudListEntry] == Right(stored),
@@ -258,7 +260,8 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         missing.status == Status.NotFound,
         malformed.status == Status.BadRequest,
         lists.delete.calls.size == 2,
-        lists.delete.calls.head == (entryId, userId),
+        (lists.delete.calls.head._1, lists.delete.calls.head._2) == (entryId, userId),
+        lists.delete.calls.head._3.kind == AuthAuditKinds.AntifraudListChanged,
       )
     },
     test("a call that does not say its scope is 400 and reaches nothing: a missing scope is never the operator's") {

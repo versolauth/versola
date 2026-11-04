@@ -16,10 +16,14 @@ import versola.oauth.session.model.{
 }
 import versola.user.model.UserId
 import versola.util.MAC
+import versola.util.audit.AuditEvent
 import zio.*
 
 import java.time.Instant
 
+/** The methods that take an `audit` are state changes whose audit event is inserted in the change's own transaction (the event
+  * is the service's, built before the change; the repository fills what only the change knows, such as how many tokens it
+  * revoked, and inserts it only when the change happened). A failure to insert it fails the change, which does not happen. */
 trait SessionRepository:
   /** Creates a new session in a single transaction.
    *  When `priorSession` is provided the INSERT and prior-session handling are atomic.
@@ -33,6 +37,7 @@ trait SessionRepository:
       ttl: Duration,
       idleTtl: Option[Duration],
       priorSession: Option[PriorSession],
+      audit: AuditEvent,
   ): Task[Unit]
 
   def findSession(id: MAC.Of[SessionId]): Task[Option[SessionRecord]]
@@ -74,6 +79,7 @@ trait SessionRepository:
    *  [[findRefreshTokensByUserId]]), and force-logout has to revoke those too. */
   def invalidateByUserId(
       userId: UserId,
+      audit: AuditEvent,
   ): Task[List[SessionRecord]]
 
   /** Expires in place every live refresh token `clientId` holds for the user -- the client's
@@ -83,13 +89,14 @@ trait SessionRepository:
   def revokeRefreshTokensByUserAndClient(
       userId: UserId,
       clientId: ClientId,
+      audit: AuditEvent,
   ): Task[Int]
 
-  def invalidate(id: MAC.Of[SessionId]): Task[Option[SessionRecord]]
+  def invalidate(id: MAC.Of[SessionId], audit: AuditEvent): Task[Option[SessionRecord]]
 
-  def invalidateByPublicId(publicId: PublicSessionId): Task[Option[(MAC.Of[SessionId], SessionRecord)]]
+  def invalidateByPublicId(publicId: PublicSessionId, audit: AuditEvent): Task[Option[(MAC.Of[SessionId], SessionRecord)]]
 
-  def invalidateByPublicIdForUser(publicId: PublicSessionId, userId: UserId): Task[Boolean]
+  def invalidateByPublicIdForUser(publicId: PublicSessionId, userId: UserId, audit: AuditEvent): Task[Boolean]
 
   /** Issues `refreshToken`. With `previous` set this is a rotation: the presented token is
     * retired in place and the new one joins its family, both under the family's advisory
@@ -111,6 +118,7 @@ trait SessionRepository:
       previous: Option[MAC.Of[RefreshToken]],
       record: RefreshTokenRecord,
       idempotencyKey: Option[MAC],
+      audit: Option[AuditEvent],
   ): IO[Throwable | RefreshAlreadyExchanged, Unit]
 
   /** Resolves a repeat of an exchange that already happened, for a client that never received
@@ -154,6 +162,7 @@ trait SessionRepository:
   def revokeFamily(
       token: MAC.Of[RefreshToken],
       clientId: ClientId,
+      audit: AuditEvent,
   ): Task[Option[RevokedFamily]]
 
   /** Refreshes a sender-constrained (DPoP-bound) token in place: narrows `scope` to what this
@@ -179,11 +188,11 @@ trait SessionRepository:
       scope: Option[Set[ScopeToken]],
   ): Task[Boolean]
 
-  def delete(token: MAC.Of[RefreshToken]): Task[Unit]
+  def delete(token: MAC.Of[RefreshToken], audit: AuditEvent): Task[Unit]
 
   /** Revokes the chain the first exchange of a replayed authorization code started, named by
     * the family the code committed to. Nothing beyond the code row is needed to find it, which
     * is the point: the replaying caller presents no token of that chain, and the tokens it
     * issued are not recorded anywhere for the code to point at.
     */
-  def deleteByFamily(familyId: RefreshTokenFamilyId): Task[Unit]
+  def deleteByFamily(familyId: RefreshTokenFamilyId, audit: AuditEvent): Task[Unit]

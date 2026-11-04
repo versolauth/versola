@@ -62,7 +62,8 @@ object AccountSettingsServiceSpec extends UnitSpecBase:
         verify = (passwordService, _) =>
           assertTrue(
             passwordService.verifyPassword.calls == List((userId, Password("OldPass1"))),
-            passwordService.setPassword.calls == List((userId, Password("NewPass1"))),
+            passwordService.setPassword.calls.map((u, p, _) => (u, p)) == List((userId, Password("NewPass1"))),
+            passwordService.setPassword.calls.map(_._3.kind) == List(AuthAuditKinds.AccountPasswordChanged),
           ),
         // account.password_changed: the user is the subject (and, with no actor given, the actor), and neither password is in it
         verifyAudit = drafts =>

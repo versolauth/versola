@@ -76,7 +76,12 @@ object AuthAuditDetails:
 
   /** `token.reuse_detected`: a refresh token that had been rotated away (or an authorization code that had been used) was
     * presented again, and the family it belongs to was revoked. */
-  case class TokenReuseDetected(tokenType: String, refreshPrefix: Option[String], familyId: String) extends AuditDetails
+  case class TokenReuseDetected(
+      tokenType: String,
+      refreshPrefix: Option[String],
+      familyId: Option[String] = None,
+      revokedCount: Option[Int] = None,
+  ) extends AuditDetails
     derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
@@ -99,6 +104,32 @@ object AuthAuditDetails:
 
   /** `account.passkey_enrolled` and `account.passkey_removed`: the credential by an id prefix, never the credential. */
   case class Passkey(credentialPrefix: Option[String], deviceType: Option[String] = None) extends AuditDetails derives JsonEncoder:
+    def toJson = AuditDetails.render(this)
+
+  /** `antifraud.list_changed`: `action` (`create`, `update`, `delete`) and `entryId` are filled in by the transaction that made the change.
+    * The value of the entry is not here: it can be a phone's hash or an address, and `af_list_audit` keeps it for the antifraud console. */
+  case class AntifraudListChanged(
+      listType: String,
+      valueType: String,
+      tenantId: Option[String],
+      shadow: Option[Boolean] = None,
+      expiresAt: Option[String] = None,
+      action: Option[String] = None,
+      entryId: Option[String] = None,
+  ) extends AuditDetails derives JsonEncoder:
+    def toJson = AuditDetails.render(this)
+
+  /** `antifraud.settings_changed`: `version` is the one the row became. */
+  case class AntifraudSettingsChanged(action: String, version: Option[Long] = None) extends AuditDetails derives JsonEncoder:
+    def toJson = AuditDetails.render(this)
+
+  /** `antifraud.counters_reset`: `generation` is the one the reset took. */
+  case class AntifraudCountersReset(scope: String, valueType: Option[String], generation: Option[Long] = None) extends AuditDetails
+      derives JsonEncoder:
+    def toJson = AuditDetails.render(this)
+
+  /** `account.roles_updated`: what the request asked for in one tenant; the roles are those of the account, not secrets. */
+  case class RolesUpdated(tenantId: String, added: List[String], removed: List[String]) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
   /** `account.claims_updated`: the names of the claims, never their values. */

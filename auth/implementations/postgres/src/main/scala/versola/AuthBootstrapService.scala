@@ -1,5 +1,7 @@
 package versola
 
+import versola.audit.AuditSupport.*
+import versola.audit.{AuthAuditDetails, AuthAuditKinds}
 import versola.util.SequentialLayers.*
 import versola.oauth.challenge.password.PasswordRepository
 import versola.oauth.client.model.TenantId
@@ -7,6 +9,7 @@ import versola.role.model.RoleId
 import versola.antifraud.{AntifraudSettingsRepository, Tuning}
 import versola.user.UserRepository
 import versola.user.model.{Login, UserId}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.{CoreConfig, EnvName, Phone, Salt, Secret, SecureRandom, SecurityService}
 import zio.{Clock, Task, ZIO, ZLayer}
 
@@ -27,11 +30,12 @@ object AuthBootstrapService:
     Option.when(envName.isTest)(NonProdAdminPhone)
 
   val live: ZLayer[
-    UserRepository & PasswordRepository & AntifraudSettingsRepository & SecurityService & SecureRandom & CoreConfig & EnvName,
+    UserRepository & PasswordRepository & AntifraudSettingsRepository & SecurityService & SecureRandom & CoreConfig & EnvName &
+      AuditEvents,
     Throwable,
     AuthBootstrapService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _)) >++>
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _)) >++>
       ZLayer(ZIO.serviceWithZIO[AuthBootstrapService](_.bootstrap))
 
   private class Impl(
@@ -42,6 +46,7 @@ object AuthBootstrapService:
       secureRandom: SecureRandom,
       config: CoreConfig,
       envName: EnvName,
+      audit: AuditEvents,
   ) extends AuthBootstrapService:
 
     def bootstrap: Task[Unit] =
@@ -70,11 +75,24 @@ object AuthBootstrapService:
                 _ <- userRepo.upsert(adminUserId, version, email = None, phone = adminPhone(envName), login = Some(Login(cfg.login)))
                 _ <- ZIO.logInfo(s"Created admin user '${cfg.login}' with id $adminUserId")
               yield adminUserId
-          _ <- userRepo.updateRoles(
-            userId = userId,
-            tenantId = TenantId.default,
-            add = Set(RoleId("oauth-admin")),
-            remove = Set.empty,
+          // The service's own change at start-up, recorded like any other: the actor is the system, and a start that finds the role
+          // already granted writes no row.
+          _ <- audit.atomically(
+            AuditDraft(
+              kind = AuthAuditKinds.AccountRolesUpdated,
+              outcome = AuditOutcome.success,
+              userId = Some(userId),
+              target = Some(("user", userId.toString)),
+              details = AuthAuditDetails.RolesUpdated(tenantId = TenantId.default.toString, added = List("oauth-admin"), removed = Nil),
+            ),
+          )(event =>
+            userRepo.updateRoles(
+              userId = userId,
+              tenantId = TenantId.default,
+              add = Set(RoleId("oauth-admin")),
+              remove = Set.empty,
+              audit = event,
+            ),
           )
           now <- Clock.instant
           passwords <- passwordRepo.list(userId)
@@ -88,7 +106,15 @@ object AuthBootstrapService:
               salt <- secureRandom.nextBytes(16).map(Salt(_))
               hash <- securityService.hashPassword(Secret.fromString(cfg.password), salt, config.security.passwordsSecret)
               expiresAt = now.plusSeconds(BootstrapPasswordTtlSeconds)
-              _ <- passwordRepo.createTemporary(userId, Secret(hash), salt, expiresAt)
+              _ <- audit.atomically(
+                AuditDraft(
+                  kind = AuthAuditKinds.AccountPasswordSet,
+                  outcome = AuditOutcome.success,
+                  userId = Some(userId),
+                  target = Some(("user", userId.toString)),
+                  details = AuthAuditDetails.Account(via = "bootstrap"),
+                ),
+              )(passwordRepo.createTemporary(userId, Secret(hash), salt, expiresAt, _))
               _ <- ZIO.logInfo(s"Set temporary bootstrap password for admin user '${cfg.login}'")
             yield ()
         yield ()
