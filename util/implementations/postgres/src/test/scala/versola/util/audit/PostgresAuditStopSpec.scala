@@ -17,9 +17,10 @@ import java.time.{Instant, LocalDate}
   * the real clock. The driver's call holds a real thread and is not cut by interrupting it, and the transaction stays open in the
   * database while the stop goes on; none of that is in a stub.
   *
-  * What a scenario assumes it checks first: the writer's statement is open in the database, for at least two seconds, before anything
-  * is queued behind it, so that the rows queued behind it cannot have been stored by the writer; the rows the stop held are counted
-  * from the stop's own line; and the bounds are derived from the cost of a row measured on the machine the spec runs on. */
+  * What a scenario assumes it checks first: the writer is in the middle of a batch (at least two of its chunks are committed, and the
+  * rest of the batch takes longer to write than the stop takes) before anything is queued behind it, so that the rows queued behind it
+  * cannot have been stored by the writer; the rows the stop held are counted from the stop's own line; and the bounds are derived from
+  * the cost of a row measured on the machine the spec runs on. */
 object PostgresAuditStopSpec extends PostgresSpec:
 
   private val table = AuditTestTable("audit_stop_spec")
@@ -61,19 +62,11 @@ object PostgresAuditStopSpec extends PostgresSpec:
   private def countReason(xa: TransactorZIO, reason: String): Task[Long] =
     table.inTransaction(xa)(sql"SELECT COUNT(*) FROM audit_event WHERE reason = $reason".query[Long].run().head)
 
-  /** How long the oldest open statement of the writer's sessions has been running, in seconds; 0 when there is none. */
-  private def openFor(xa: TransactorZIO): Task[Double] =
-    table.inTransaction(xa):
-      sql"""
-        SELECT COALESCE(max(EXTRACT(EPOCH FROM (now() - xact_start))), 0)::float8 FROM pg_stat_activity
-        WHERE application_name = $marker AND state = 'active'
-      """.query[Double].run().head
-
-  /** Waits, in real time and with a bound, until the writer's statement has been open for `seconds`. */
-  private def awaitOpen(xa: TransactorZIO, seconds: Double): Task[Double] =
-    (ZIO.sleep(100.millis) *> openFor(xa))
-      .repeatUntil(_ >= seconds)
-      .timeoutFail(RuntimeException(s"the writer's statement was not open for $seconds s within 30 s"))(30.seconds)
+  /** Waits, in real time and with a bound, until `rows` of the writer's batch are committed, which is to say it is in the middle of it. */
+  private def awaitCommitted(xa: TransactorZIO, rows: Long): Task[Long] =
+    (ZIO.sleep(50.millis) *> countReason(xa, "held"))
+      .repeatUntil(_ >= rows)
+      .timeoutFail(RuntimeException(s"the writer had not committed $rows rows within 30 s"))(30.seconds)
 
   private def calibrationEvent(): AuditEvent =
     AuditEvent(
@@ -115,7 +108,7 @@ object PostgresAuditStopSpec extends PostgresSpec:
   private case class Outcome(
       returned: Boolean,
       elapsedMillis: Long,
-      openSeconds: Double,
+      committedBefore: Long,
       held: Long,
       notWritten: Long,
       queuedStored: Long,
@@ -143,8 +136,9 @@ object PostgresAuditStopSpec extends PostgresSpec:
       // One event, then a burst: the writer takes the first at once and the rest as one batch when it is done with it.
       _ <- events.record(draftWith("held")).ignore
       _ <- ZIO.foreachDiscard(1 to burst)(_ => events.record(draftWith("held")).ignore)
-      open <- awaitOpen(xa, seconds = 2.0)
-      // The writer is stuck in its statement now: what is queued from here on can only be stored by the stop.
+      committed <- awaitCommitted(xa, rows = 200)
+      // The writer is in the middle of its batch now, and has more of it than the stop takes to begin: what is queued from here on can
+      // only be stored by the stop.
       _ <- ZIO.foreachDiscard(1 to queued)(_ => events.record(draftWith("queued")).ignore)
       heldBefore <- countReason(xa, "held")
       started <- Clock.nanoTime
@@ -159,7 +153,7 @@ object PostgresAuditStopSpec extends PostgresSpec:
     yield Outcome(
       returned = result.isDefined,
       elapsedMillis = elapsed,
-      openSeconds = open,
+      committedBefore = committed,
       held = counts._1 - queued,
       notWritten = counts._2,
       queuedStored = queuedStored,
@@ -175,21 +169,21 @@ object PostgresAuditStopSpec extends PostgresSpec:
 
   private def check(outcome: Outcome, queued: Int) =
     assertTrue(
-      // The scenario is the one it claims to be: the writer was in a long statement when the stop began.
-      outcome.openSeconds >= 2.0,
+      // The scenario is the one it claims to be: the writer was in the middle of its batch when the stop began.
+      outcome.committedBefore >= 200L,
       outcome.held >= 100L,
       // The stop returned inside the sum of its bounds, with its line.
       outcome.returned,
       outcome.elapsedMillis < 9500L,
       // The rows queued behind the writer's statement are stored by the stop, as many as the window carries.
       outcome.queuedStored >= required(outcome, queued),
-      // And the held rows come after them: the stop has stored none of them before every queued row, so the held count either did not
-      // move, or moved by exactly the held batch, which is the abandoned statement committing on its own, never by a part of it.
-      outcome.queuedStored == queued.toLong || (outcome.heldAfter - outcome.heldBefore) == 0L || (outcome.heldAfter - outcome.heldBefore) == outcome.held,
+      // And the held rows come after them: the stop has stored none of them before every queued row, so the held count did not move,
+      // or moved by what the abandoned chunk commits on its own, a chunk and no more.
+      outcome.queuedStored == queued.toLong || (outcome.heldAfter - outcome.heldBefore) <= sizing.writeChunk.toLong,
     )
 
   val spec = suite("the stop of the service against Postgres")(
-    test("at ten milliseconds a row, with a long statement in progress, the stop returns by its bounds and stores what was queued behind it") {
+    test("at ten milliseconds a row, with a batch in progress, the stop returns by its bounds and stores what was queued behind it") {
       for
         xa <- ZIO.service[TransactorZIO]
         outcome <- scenario(xa, millis = 10, burst = 1000, queued = 300)

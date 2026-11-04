@@ -66,8 +66,10 @@ object AuditEventsSpec extends UnitSpecBase:
       val entered: Queue[Unit],
       val gate: Promise[Nothing, Unit],
       val down: Ref[Boolean],
+      val sizes: Ref[List[Int]],
       calls: Ref[Int],
       holdFirst: Boolean,
+      holdOn: Int,
       storeBeforeHold: Boolean,
       uninterruptible: Boolean,
       holdAll: Boolean,
@@ -78,15 +80,16 @@ object AuditEventsSpec extends UnitSpecBase:
     override def insertBatch(events: List[AuditEvent]): Task[Unit] =
       for
         n <- calls.updateAndGet(_ + 1)
+        _ <- sizes.update(_ :+ events.size)
         _ <- entered.offer(())
         // A defect, not a failure: the kind of error the transactor raises when it cannot give a connection back.
         _ <- ZIO.die(RuntimeException("secret-value-of-a-defect")).when(diesAfterFirst && n > 1)
         // A statement that takes as long as it has rows, as an insert that is slow does.
-        _ <- ZIO.sleep(perRow.multipliedBy(events.size.toLong)).when(perRow != Duration.Zero && !(holdFirst && n == 1))
+        _ <- ZIO.sleep(perRow.multipliedBy(events.size.toLong)).when(perRow != Duration.Zero && !(holdFirst && n == holdOn))
         isDown <- down.get
         _ <- ZIO.fail(RuntimeException("connection refused")).when(isDown)
         // The transactor runs a statement uninterruptibly, so a stub that does the same is what a stop meets in a service.
-        hold = (if uninterruptible then ZIO.uninterruptible(gate.await) else gate.await).when(holdAll || (holdFirst && n == 1))
+        hold = (if uninterruptible then ZIO.uninterruptible(gate.await) else gate.await).when(holdAll || (holdFirst && n == holdOn))
         store = stored
           .modify(known => (events.count(e => known.contains(e.id)), known ++ events.filterNot(e => known.contains(e.id)).map(e => e.id -> e)))
           .flatMap(again => rewritten.update(_ + again))
@@ -118,6 +121,7 @@ object AuditEventsSpec extends UnitSpecBase:
   private object Store:
     def make(
         holdFirst: Boolean = false,
+        holdOn: Int = 1,
         storeBeforeHold: Boolean = false,
         down: Boolean = false,
         uninterruptible: Boolean = false,
@@ -131,8 +135,24 @@ object AuditEventsSpec extends UnitSpecBase:
         entered <- Queue.unbounded[Unit]
         gate <- Promise.make[Nothing, Unit]
         isDown <- Ref.make(down)
+        sizes <- Ref.make(List.empty[Int])
         calls <- Ref.make(0)
-      yield Store(stored, rewritten, entered, gate, isDown, calls, holdFirst, storeBeforeHold, uninterruptible, holdAll, perRow, diesAfterFirst)
+      yield Store(
+        stored,
+        rewritten,
+        entered,
+        gate,
+        isDown,
+        sizes,
+        calls,
+        holdFirst,
+        holdOn,
+        storeBeforeHold,
+        uninterruptible,
+        holdAll,
+        perRow,
+        diesAfterFirst,
+      )
 
   private def fixture(gated: Boolean, failures: Int = 0, refuse: AuditEvent => Option[Throwable] = _ => None): UIO[Fixture] =
     for
@@ -614,6 +634,126 @@ object AuditEventsSpec extends UnitSpecBase:
           yield assertTrue(size == 2.0)
       },
     ),
+    suite("a batch written in chunks")(
+      test("is written as chunks of at most writeChunk, in the order the events were taken, one transaction each") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = true)
+            events <- build(f, block, sizing = sizing.copy(queueCapacity = 1000, batchSize = 1000))
+            _ <- events.record(draft())
+            _ <- f.started.take
+            _ <- ZIO.foreachDiscard(1 to 250)(_ => events.record(draft()))
+            _ <- f.gate.succeed(())
+            written <- until(f, 4)
+          yield assertTrue(written.map(_.size) == List(1, 100, 100, 50), written.flatten.map(_.id).distinct.size == 251)
+      },
+      test("a stop in the middle of a batch finds only the chunks not yet written: the drain writes those, and none twice") {
+        for
+          // The second statement of the 250-row batch is the third call of the repository, and it does not return.
+          store <- Store.make(holdFirst = true, holdOn = 3)
+          scope <- Scope.make
+          events <- scope.extend(buildOn(store, block, source = edge, sizing = sizing.copy(queueCapacity = 1000, batchSize = 1000)))
+          _ <- events.record(draft())
+          _ <- store.entered.take
+          _ <- ZIO.foreachDiscard(1 to 250)(_ => events.record(draft()))
+          _ <- settle *> TestClock.adjust(1.second) *> settle
+          _ <- store.entered.take *> store.entered.take
+          storedBefore <- store.stored.get.map(_.size)
+          _ <- closedAsTheAppDoes(scope)
+          stored <- store.stored.get
+          again <- store.rewritten.get
+          drained <- drainLines
+        yield assertTrue(
+          // The one row and the first chunk were committed before the stop.
+          storedBefore == 101,
+          stored.size == 251,
+          again == 0,
+          drained.size == 1,
+          drained.head.contains("150 events taken, 0 not written"),
+        )
+      }.provideLayer(ZTestLogger.default),
+      test("a stop while a chunk has stored its rows and not yet returned writes that chunk again, and no other") {
+        for
+          store <- Store.make(holdFirst = true, holdOn = 3, storeBeforeHold = true)
+          scope <- Scope.make
+          events <- scope.extend(buildOn(store, block, source = edge, sizing = sizing.copy(queueCapacity = 1000, batchSize = 1000)))
+          _ <- events.record(draft())
+          _ <- store.entered.take
+          _ <- ZIO.foreachDiscard(1 to 250)(_ => events.record(draft()))
+          _ <- settle *> TestClock.adjust(1.second) *> settle
+          _ <- store.entered.take *> store.entered.take
+          _ <- closedAsTheAppDoes(scope)
+          stored <- store.stored.get
+          again <- store.rewritten.get
+        yield assertTrue(stored.size == 251, again == 100)
+      },
+      test("a row the database refuses costs the chunk it is in: the chunks before and after are written whole, and the order stays") {
+        val refused = (event: AuditEvent) =>
+          Option.when(event.reason.contains("poison"))(SQLException("value too long for type", "22001"))
+        for
+          f <- fixture(gated = true, refuse = refused)
+          rejectedBefore <- counter("audit_events_rejected_total", edge)
+          scope <- Scope.make
+          events <- scope.extend(buildOn(f.repository, block, source = edge, sizing = sizing.copy(queueCapacity = 1000, batchSize = 1000)))
+          _ <- events.record(draft())
+          _ <- f.started.take
+          // 250 queued: the poison row is the 150th, in the second chunk.
+          _ <- ZIO.foreachDiscard(1 to 149)(_ => events.record(draft()))
+          _ <- events.record(draft().copy(reason = Some("poison")))
+          _ <- ZIO.foreachDiscard(1 to 100)(_ => events.record(draft()))
+          _ <- f.gate.succeed(())
+          written <- eventually(settle *> TestClock.adjust(1.second) *> f.written.get)(_.flatten.size >= 250)
+          rejectedAfter <- counter("audit_events_rejected_total", edge)
+          _ <- closedAsTheAppDoes(scope)
+        yield
+          val batches = written.map(_.size)
+          assertTrue(
+            written.flatten.size == 250,
+            !written.flatten.exists(_.reason.contains("poison")),
+            rejectedAfter - rejectedBefore == 1.0,
+            // The first chunk and the last were written as they were cut, and nothing larger than a chunk was ever written.
+            batches.contains(100),
+            batches.contains(50),
+            batches.max == 100,
+            written.flatten.map(_.id).distinct.size == 250,
+          )
+      },
+      test(
+        "a chunk that makes no progress ends the run: the chunks behind it are not offered to a database that is failing, and are written once it is back",
+      ) {
+        for
+          store <- Store.make(holdFirst = true)
+          scope <- Scope.make
+          events <- scope.extend(buildOn(store, block, source = edge, sizing = sizing.copy(queueCapacity = 1000, batchSize = 1000)))
+          _ <- events.record(draft())
+          _ <- store.entered.take
+          _ <- ZIO.foreachDiscard(1 to 250)(_ => events.record(draft()))
+          // The first statement has passed the database's check, so it is stored; the ones after it are refused.
+          _ <- store.down.set(true)
+          _ <- store.gate.succeed(())
+          _ <- settle *> TestClock.adjust(1.second) *> settle
+          // Three attempts at the first chunk, a second apart, and the first half of it once they fail; the other chunks are not tried.
+          _ <- settle *> TestClock.adjust(1.second) *> settle *> TestClock.adjust(1.second) *> settle
+          sizes <- store.sizes.get
+          _ <- store.down.set(false)
+          stored <- eventually(settle *> TestClock.adjust(1.second) *> store.stored.get)(_.size == 251)
+          again <- store.rewritten.get
+          _ <- closedAsTheAppDoes(scope)
+        yield assertTrue(sizes.tail == List(100, 100, 100, 50), stored.size == 251, again == 0)
+      },
+      test("a chunk is never larger than the batch size, when that is smaller") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = true)
+            events <- build(f, block, sizing = sizing.copy(queueCapacity = 1000, batchSize = 30, writeChunk = 100))
+            _ <- events.record(draft())
+            _ <- f.started.take
+            _ <- ZIO.foreachDiscard(1 to 60)(_ => events.record(draft()))
+            _ <- f.gate.succeed(())
+            written <- until(f, 3)
+          yield assertTrue(written.map(_.size) == List(1, 30, 30))
+      },
+    ),
     suite("a stop of the service")(
       test("while the repository is blocked inside insertBatch: every event the queue accepted is stored, none twice") {
         for
@@ -788,8 +928,8 @@ object AuditEventsSpec extends UnitSpecBase:
             written <- f.written.get
           yield written.map(_.size)
         for
-          byChunk <- statements(sizing.copy(queueCapacity = 1000, batchSize = 1000, drainChunk = 40))
-          byBatch <- statements(sizing.copy(queueCapacity = 1000, batchSize = 30, drainChunk = 100))
+          byChunk <- statements(sizing.copy(queueCapacity = 1000, batchSize = 1000, writeChunk = 40))
+          byBatch <- statements(sizing.copy(queueCapacity = 1000, batchSize = 30, writeChunk = 100))
         yield assertTrue(
           byChunk.sum == 101,
           byChunk.max == 40,
