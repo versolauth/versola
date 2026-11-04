@@ -1,5 +1,6 @@
 package versola.user
 
+import versola.audit.CapturingAuditEvents
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.{Email, Phone, UnitSpecBase}
@@ -20,7 +21,8 @@ object UserServiceSpec extends UnitSpecBase:
   class Env:
     val userRepository = stub[UserRepository]
     val registrationSyncClient = stub[UserRegistrationSyncClient]
-    val service = UserService.Impl(userRepository, registrationSyncClient)
+    val audit = CapturingAuditEvents.shared()
+    val service = UserService.Impl(userRepository, registrationSyncClient, audit)
 
   def spec = suite("UserService")(
     test("creates a user and assigns registration roles") {

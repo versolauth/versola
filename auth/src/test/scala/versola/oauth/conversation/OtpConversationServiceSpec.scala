@@ -1,5 +1,6 @@
 package versola.oauth.conversation
 
+import versola.audit.CapturingAuditEvents
 import versola.antifraud.{
   AntifraudAction,
   AntifraudOutcome,
@@ -91,6 +92,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     val userService = stub[UserService]
     val consentService = stub[versola.oauth.consent.ConsentService]
     val antifraud = RecordingAntifraudEvents(smsAllowed, afterRequested, decision, fakeDelay, smsWouldRefuse)
+    val audit = CapturingAuditEvents.shared()
     val service = ConversationService.Impl(
       otpService,
       passwordService,
@@ -113,6 +115,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
       consentService,
       antifraud,
       challengeVerifier,
+      audit,
     )
 
   val initialConversation = ConversationRecord(

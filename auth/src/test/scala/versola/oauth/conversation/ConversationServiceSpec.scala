@@ -1,5 +1,6 @@
 package versola.oauth.conversation
 
+import versola.audit.CapturingAuditEvents
 import versola.auth.TestEnvConfig
 import versola.auth.model.{CredentialDeviceType, CredentialId, OtpCode, PasskeyRecord, Password}
 import versola.oauth.authorize.AcrResolutionService
@@ -110,6 +111,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     val userService = stub[UserService]
     val consentService = stub[versola.oauth.consent.ConsentService]
 
+    val audit = CapturingAuditEvents.shared()
     val service = ConversationService.Impl(
       otpService,
       passwordService,
@@ -132,6 +134,7 @@ object ConversationServiceSpec extends UnitSpecBase:
       consentService,
       versola.antifraud.AntifraudEvents.noop,
       versola.antifraud.ChallengeVerifier.off,
+      audit,
     )
 
   private val roleId = versola.role.model.RoleId("user")
@@ -239,6 +242,7 @@ object ConversationServiceSpec extends UnitSpecBase:
             ZLayer.succeed(env.webAuthnService),
             ZLayer.succeed(env.passkeyRepository),
             ZLayer.succeed(env.configService),
+            ZLayer.succeed[versola.util.audit.AuditEvents](env.audit),
             ZLayer.succeed(env.acrResolver),
             ZLayer.succeed(env.userAgentRepository),
             ZLayer.succeed(env.secureRandom),

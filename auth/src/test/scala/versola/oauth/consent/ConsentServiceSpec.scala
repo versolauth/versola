@@ -1,5 +1,6 @@
 package versola.oauth.consent
 
+import versola.audit.CapturingAuditEvents
 import versola.oauth.authorize.model.Prompt
 import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.{AuthMethod, ClientId, ConsentFlow, OAuthClientRecord, ScopeToken, TenantId}
@@ -69,7 +70,8 @@ object ConsentServiceSpec extends UnitSpecBase:
 
   final class Env:
     val consentRepository = stub[ConsentRepository]
-    val service: ConsentService = ConsentService.Impl(consentRepository)
+    val audit = CapturingAuditEvents.shared()
+    val service: ConsentService = ConsentService.Impl(consentRepository, audit)
 
   /** `decide` reads the wall clock to expire stored grants, so tests pin it. */
   private val atNow = TestAspect.before(TestClock.setTime(now))

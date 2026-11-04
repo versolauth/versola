@@ -1,5 +1,6 @@
 package versola.oauth.token
 
+import versola.audit.{CapturingAuditEvents, ClientAuthFailures}
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
@@ -290,12 +291,13 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     // authenticates through `verifySecret` alone, as the service itself does for a client
     // that registered no `mtlsAuth`.
     clientService.find.returnsWith(ZIO.none)
-    val clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig)
+    val clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig, ClientAuthFailures.noop)
     val tokenRepo = stub[SessionRepository]
     val accessTokenRevocationService = stub[AccessTokenRevocationService]
     val securityService = stub[SecurityService]
     val propertyGenerator = stub[AuthPropertyGenerator]
     val userRepo = stub[UserRepository]
+    val audit = CapturingAuditEvents.shared()
     val service = OAuthTokenService.Impl(
       authCodeRepo,
       clientService,
@@ -307,6 +309,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
       userRepo,
       schemaValidator,
       TestEnvConfig.coreConfig,
+      audit,
+      CapturingAuditEvents.settings,
     )
 
   def spec = suite("OAuthTokenService")(

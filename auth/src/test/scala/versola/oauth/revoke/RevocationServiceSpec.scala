@@ -1,5 +1,7 @@
 package versola.oauth.revoke
 
+import versola.audit.{CapturingAuditEvents, ClientAuthFailures}
+import versola.util.audit.AuditEvents
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
@@ -130,7 +132,8 @@ object RevocationServiceSpec extends UnitSpecBase:
     // Authentication looks the client up first to see whether it registered an mTLS
     // subject; an unregistered one falls through to the secret it presented.
     oauthClientService.find.returnsWith(ZIO.none)
-    val clientAuthentication = ClientAuthentication.Impl(oauthClientService, stub[ClientAssertionService], TestEnvConfig.coreConfig)
+    val clientAuthentication = ClientAuthentication.Impl(oauthClientService, stub[ClientAssertionService], TestEnvConfig.coreConfig, ClientAuthFailures.noop)
+    val audit = CapturingAuditEvents.shared()
     val tokenRepository = stub[SessionRepository]
     val accessTokenRevocationService = stub[AccessTokenRevocationService]
     val securityService = stub[SecurityService]
@@ -140,7 +143,8 @@ object RevocationServiceSpec extends UnitSpecBase:
       ZLayer.succeed(tokenRepository) ++
       ZLayer.succeed(accessTokenRevocationService) ++
       ZLayer.succeed(securityService) ++
-      ZLayer.succeed(config) >>> RevocationService.live
+      ZLayer.succeed(config) ++
+      ZLayer.succeed[AuditEvents](audit) >>> RevocationService.live
 
   val spec = suite("RevocationService")(
     suite("revokeRefreshToken")(

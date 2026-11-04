@@ -1,5 +1,7 @@
 package versola.oauth.authorize
 
+import versola.audit.CapturingAuditEvents
+import versola.util.audit.AuditEvents
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseMode, ResponseTypeEntry}
@@ -80,6 +82,8 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
                   ZEnvironment(configService) ++
                   ZEnvironment[AuthorizationResponseService](responseService) ++
                   ZEnvironment(config) ++
+                  ZEnvironment[AuditEvents](AuditEvents.noop) ++
+                  ZEnvironment(CapturingAuditEvents.settings) ++
                   tracing,
               ),
           ),

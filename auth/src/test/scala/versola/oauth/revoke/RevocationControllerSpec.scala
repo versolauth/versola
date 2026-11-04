@@ -1,5 +1,6 @@
 package versola.oauth.revoke
 
+import versola.audit.ClientAuthFailures
 import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
@@ -109,7 +110,7 @@ object RevocationControllerSpec extends UnitSpecBase:
         // The controller looks the client up only to decide whether reading a client
         // certificate could matter to it; an unknown client never needs one.
         _ = clientService.find.returnsWith(ZIO.none)
-        clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig)
+        clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig, ClientAuthFailures.noop)
         jwksService = TestEnvConfig.jwksService
         config = TestEnvConfig.coreConfig
         tracing <- NoopTracing.layer.build

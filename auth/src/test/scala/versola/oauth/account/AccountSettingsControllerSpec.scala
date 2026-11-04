@@ -1,5 +1,6 @@
 package versola.oauth.account
 
+import versola.util.audit.AuditEvents
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.auth.model.{CredentialId, PasskeyName, PasskeyRecord}
@@ -187,6 +188,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
                   ZEnvironment(passwordService) ++
                   ZEnvironment(accountSettingsService) ++
                   ZEnvironment(TestEnvConfig.coreConfig) ++
+                  ZEnvironment[AuditEvents](AuditEvents.noop) ++
                   tracing,
               ),
           ),

@@ -1,5 +1,6 @@
 package versola.oauth.conversation
 
+import versola.audit.CapturingAuditEvents
 import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord}
 import versola.oauth.authorize.AcrResolutionService
@@ -74,6 +75,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     val userService = stub[UserService]
     val consentService = stub[versola.oauth.consent.ConsentService]
 
+    val audit = CapturingAuditEvents.shared()
     val service = ConversationService.Impl(
       otpService,
       passwordService,
@@ -96,6 +98,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       consentService,
       versola.antifraud.AntifraudEvents.noop,
       versola.antifraud.ChallengeVerifier.off,
+      audit,
     )
 
   val credentialStep = ConversationStep.Credential(

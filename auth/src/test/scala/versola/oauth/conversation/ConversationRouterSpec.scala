@@ -1,5 +1,6 @@
 package versola.oauth.conversation
 
+import versola.util.audit.AuditEvents
 import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.client.OAuthConfigurationService
@@ -208,6 +209,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       configService,
       secureRandom,
       userRepository,
+      AuditEvents.noop,
     )
 
   private val passkeyOnlyAcr = Acr("passkey-level")

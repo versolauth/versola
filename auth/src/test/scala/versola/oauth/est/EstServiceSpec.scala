@@ -1,5 +1,6 @@
 package versola.oauth.est
 
+import versola.audit.CapturingAuditEvents
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.util.{CoreConfig, TestCertificates}
@@ -29,8 +30,10 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private def limiter(limit: Int) =
     AttemptLimiter(limit, 1.minute, Unsafe.unsafe(Ref.unsafe.make(Map.empty[String, (Instant, Int)])(using _)))
 
+  private val audit = CapturingAuditEvents.shared()
+
   private def service(central: EstCentralClient, enabled: Boolean = true, attempts: Int = 1000) =
-    EstService.Impl(Option.when(enabled)(ca.get), central, limiter(attempts))
+    EstService.Impl(Option.when(enabled)(ca.get), central, limiter(attempts), audit)
 
   private def csrWith(algorithm: String, init: java.security.KeyPairGenerator => Unit): String =
     val generator = java.security.KeyPairGenerator.getInstance(algorithm)
@@ -177,7 +180,7 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
       test("an enabled EST with no CA to hand out does not start: the CA is named, never inferred from the trust anchors") {
         val config = TestEnvConfig.coreConfig.copy(est = Some(CoreConfig.EstConfig(enabled = true)))
         for failure <-
-            ZIO.scoped(EstService.live.build).provide(ZLayer.succeed(config), ZLayer.succeed(stub[EstCentralClient]: EstCentralClient)).flip
+            ZIO.scoped(EstService.live.build).provide(ZLayer.succeed(config), ZLayer.succeed(stub[EstCentralClient]: EstCentralClient), ZLayer.succeed[versola.util.audit.AuditEvents](audit)).flip
         yield assertTrue(failure.getMessage.contains("est.ca-certificates"))
       },
       test("a disabled EST needs nothing") {
@@ -185,7 +188,7 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
         (for
           service <- ZIO.scoped(EstService.live.build.map(_.get))
           failure <- service.caCertificates.flip
-        yield assertTrue(failure == EstError.Disabled)).provide(ZLayer.succeed(config), ZLayer.succeed(stub[EstCentralClient]: EstCentralClient))
+        yield assertTrue(failure == EstError.Disabled)).provide(ZLayer.succeed(config), ZLayer.succeed(stub[EstCentralClient]: EstCentralClient), ZLayer.succeed[versola.util.audit.AuditEvents](audit))
       },
     ),
     suite("caCertificates")(

@@ -1,5 +1,6 @@
 package versola.oauth.introspect
 
+import versola.audit.ClientAuthFailures
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.oauth.client.model.ApplicationType
@@ -137,7 +138,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     // Authentication looks the client up first to see whether it registered an mTLS
     // subject; an unregistered one falls through to the secret it presented.
     oauthClientService.find.returnsWith(ZIO.none)
-    val clientAuthentication = ClientAuthentication.Impl(oauthClientService, stub[ClientAssertionService], TestEnvConfig.coreConfig)
+    val clientAuthentication = ClientAuthentication.Impl(oauthClientService, stub[ClientAssertionService], TestEnvConfig.coreConfig, ClientAuthFailures.noop)
     val tokenRepository = stub[SessionRepository]
     val securityService = stub[SecurityService]
     val config = TestEnvConfig.coreConfig

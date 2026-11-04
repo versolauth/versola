@@ -1,5 +1,7 @@
 package versola.oauth.authorize
 
+import versola.audit.{CapturingAuditEvents, ClientAuthFailures}
+import versola.util.audit.AuditEvents
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{PushedAuthorizationError, PushedAuthorizationResponse}
@@ -70,12 +72,15 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
         // The controller looks the client up only to decide whether reading a client
         // certificate could matter to it; an unknown client never needs one.
         _ = clientService.find.returnsWith(ZIO.none)
-        clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], config)
+        clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], config, ClientAuthFailures.noop)
         tracing <- NoopTracing.layer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             PushedAuthorizationController.routes
-              .provideEnvironment(ZEnvironment(service) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(config) ++ tracing),
+              .provideEnvironment(
+                ZEnvironment(service) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(config) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++
+                  ZEnvironment(CapturingAuditEvents.settings) ++ tracing,
+              ),
           ),
         )
         _ <- setup(service)

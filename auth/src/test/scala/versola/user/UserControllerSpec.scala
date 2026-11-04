@@ -1,5 +1,7 @@
 package versola.user
 
+import versola.audit.CapturingAuditEvents
+import versola.util.audit.AuditEvents
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord, Password}
@@ -65,6 +67,8 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     updatedAt = Instant.parse("2024-01-01T00:00:00Z"),
   )
 
+  private val audit = CapturingAuditEvents.shared()
+
   private def routes(
       tracing: ZEnvironment[zio.telemetry.opentelemetry.tracing.Tracing],
       users: UserRepository = userRepo,
@@ -78,7 +82,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         .provideEnvironment(
           ZEnvironment(users) ++ ZEnvironment(config) ++
             ZEnvironment(logout) ++ ZEnvironment(sessionsService) ++ ZEnvironment(throttle) ++ ZEnvironment(passkey) ++
-            ZEnvironment(noopPasswordSvc) ++ tracing,
+            ZEnvironment(noopPasswordSvc) ++ ZEnvironment[AuditEvents](audit) ++ tracing,
         ),
     )
 
@@ -744,7 +748,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ZEnvironment(logoutService) ++
                   ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
                   ZEnvironment(sessionService) ++
-                  ZEnvironment(passwordSvc) ++ tracing,
+                  ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ tracing,
               ),
           ),
         )
@@ -779,7 +783,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ZEnvironment(logoutService) ++
                   ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
                   ZEnvironment(sessionService) ++
-                  ZEnvironment(passwordSvc) ++ tracing,
+                  ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ tracing,
               ),
           ),
         )
@@ -813,7 +817,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ZEnvironment(logoutService) ++
                   ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
                   ZEnvironment(sessionService) ++
-                  ZEnvironment(passwordSvc) ++ tracing,
+                  ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ tracing,
               ),
           ),
         )

@@ -1,5 +1,6 @@
 package versola.oauth.logout
 
+import versola.audit.CapturingAuditEvents
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ApplicationType
@@ -102,11 +103,13 @@ object LogoutServiceSpec extends UnitSpecBase:
     val sessionService = stub[SessionService]
     val configuration = stub[OAuthConfigurationService]
     val outbox = stub[BackChannelOutbox]
+    val audit = CapturingAuditEvents.shared()
     val service: LogoutService = LogoutService.Impl(
       sessionService,
       configuration,
       TestEnvConfig.coreConfig,
       outbox,
+      audit,
     )
 
   private val agent = UserAgentRecord(

@@ -1,5 +1,7 @@
 package versola.oauth.token
 
+import versola.audit.ClientAuthFailures
+import versola.util.audit.AuditEvents
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.crypto.RSASSAVerifier
 import com.nimbusds.jose.jwk.{KeyUse, RSAKey}
@@ -185,7 +187,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       // The controller looks the client up only to decide whether reading a client
       // certificate could matter to it; an unknown client never needs one.
       _ = clientService.find.returnsWith(ZIO.none)
-      clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], config)
+      clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], config, ClientAuthFailures.noop)
       userInfoService = stub[UserInfoService]
       jwksService = TestEnvConfig.jwksService
       dpopService = stub[DpopService]
@@ -205,7 +207,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         TokenEndpointController.routes
           .provideEnvironment(ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(
             userInfoService,
-          ) ++ ZEnvironment(jwksService) ++ ZEnvironment(config) ++ ZEnvironment(dpopService) ++ tracing),
+          ) ++ ZEnvironment(jwksService) ++ ZEnvironment(config) ++ ZEnvironment(dpopService) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing),
       )
     yield (routes, services)
 
@@ -1021,7 +1023,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           tokenService = stub[OAuthTokenService]
           clientService = stub[OAuthConfigurationService]
           _ = clientService.find.returnsWith(ZIO.none)
-          clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig)
+          clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig, ClientAuthFailures.noop)
           userInfoService = stub[UserInfoService]
           tracing <- NoopTracing.layer.build
           _ <- tokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens)
@@ -1030,7 +1032,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
               TokenEndpointController.routes
                 .provideEnvironment(
                   ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(userInfoService) ++
-                    ZEnvironment(driftedJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(stub[DpopService]) ++ tracing,
+                    ZEnvironment(driftedJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(stub[DpopService]) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing,
                 ),
             ),
           )
@@ -1075,7 +1077,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           tokenService = stub[OAuthTokenService]
           clientService = stub[OAuthConfigurationService]
           _ = clientService.find.returnsWith(ZIO.none)
-          clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig)
+          clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig, ClientAuthFailures.noop)
           userInfoService = stub[UserInfoService]
           tracing <- NoopTracing.layer.build
           _ <- tokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens)
@@ -1084,7 +1086,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
               TokenEndpointController.routes
                 .provideEnvironment(
                   ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(userInfoService) ++
-                    ZEnvironment(noSigningKeyJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(stub[DpopService]) ++ tracing,
+                    ZEnvironment(noSigningKeyJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(stub[DpopService]) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing,
                 ),
             ),
           )

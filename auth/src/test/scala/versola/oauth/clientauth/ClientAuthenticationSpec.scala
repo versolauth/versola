@@ -1,5 +1,6 @@
 package versola.oauth.clientauth
 
+import versola.audit.ClientAuthFailures
 import com.nimbusds.jose.crypto.ECDSASigner
 import com.nimbusds.jose.jwk.{Curve, ECKey}
 import com.nimbusds.jose.{JWSAlgorithm, JWSHeader}
@@ -81,6 +82,8 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
     jwt.sign(ECDSASigner(privateKey))
     jwt.serialize()
 
+  private val failures: ClientAuthFailures = ClientAuthFailures.noop
+
   /** Remembers what it is given, which is all the authenticator's decision depends on. */
   private class RecordingRepository(seen: Ref[Set[(String, String)]]) extends ClientAssertionRepository:
     override def recordIfAbsent(clientId: String, jti: String, expiresAt: Instant): Task[Boolean] =
@@ -103,6 +106,7 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
       configuration,
       ClientAssertionService.Impl(repository, configuration),
       TestEnvConfig.coreConfig,
+      failures,
     )
 
   private def recording = Ref.make(Set.empty[(String, String)]).map(RecordingRepository(_))
@@ -123,6 +127,7 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
       configuration,
       ClientAssertionService.Impl(RecordingRepository(null), configuration),
       TestEnvConfig.coreConfig,
+      failures,
     )
 
   private def requestWith(
@@ -161,6 +166,7 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
         configuration,
         ClientAssertionService.Impl(RecordingRepository(null), configuration),
         TestEnvConfig.coreConfig,
+        failures,
       ),
       configuration,
     )
@@ -406,6 +412,7 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
         configuration,
         ClientAssertionService.Impl(RecordingRepository(null), configuration),
         TestEnvConfig.coreConfig,
+        failures,
       )
       for
         result <- reader.certificate(

@@ -1,5 +1,6 @@
 package versola.oauth.account
 
+import versola.util.audit.AuditEvents
 import org.scalamock.stubs.Stub
 import versola.auth.model.Password
 import versola.oauth.challenge.password.PasswordService
@@ -42,7 +43,7 @@ object AccountSettingsServiceSpec extends UnitSpecBase:
         _ <- submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
         _ <- configuration.getPasswordRegex.succeedsWith(regex)
         _ <- setup(stubs)
-        service = AccountSettingsService.Impl(passwordService, submissionLimiter, configuration)
+        service = AccountSettingsService.Impl(passwordService, submissionLimiter, configuration, AuditEvents.noop)
         result <- service.changePassword(userId, clientId, "OldPass1", newPassword).either
       yield assertTrue(result.left.toOption == expectedError) && verify(stubs)
     }
@@ -128,7 +129,7 @@ object AccountSettingsServiceSpec extends UnitSpecBase:
           _ <- configuration.getPasswordRegex.succeedsWith(passwordRegex)
           _ <- passwordService.verifyPassword.succeedsWith(CheckPassword.Success)
           _ <- passwordService.setPassword.failsWith(failure)
-          result <- AccountSettingsService.Impl(passwordService, submissionLimiter, configuration)
+          result <- AccountSettingsService.Impl(passwordService, submissionLimiter, configuration, AuditEvents.noop)
             .changePassword(userId, clientId, "OldPass1", "NewPass1").either
         yield assertTrue(result == Left(failure))
       },
