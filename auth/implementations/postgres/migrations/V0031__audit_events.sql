@@ -41,10 +41,7 @@ CREATE TABLE auth_audit_event (
     PRIMARY KEY (id, at)
 ) PARTITION BY RANGE (at);
 
--- The window of a report, and what the prune of the default partition walks; BRIN because the rows arrive in time order.
-CREATE INDEX auth_audit_event_at_idx ON auth_audit_event USING brin (at);
-
--- The per-user report (`GET /audit/users/{userId}/events` and `/summary`): every read of the service goes through it.
+-- The per-user report (`GET /audit/events` and `/audit/summary`): every read of the service goes through it, by user and window.
 -- Partial: the rows with no user (a client-credentials grant, a failed client authentication) are not what it serves.
 CREATE INDEX auth_audit_event_user_idx ON auth_audit_event (user_id, at) WHERE user_id IS NOT NULL;
 
