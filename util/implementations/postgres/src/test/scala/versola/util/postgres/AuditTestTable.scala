@@ -30,6 +30,32 @@ final class AuditTestTable(schema: String):
   def count(xa: TransactorZIO, table: String): Task[Long] =
     inTransaction(xa)(sql"SELECT COUNT(*) FROM ${SqlLiteral(table)}".query[Long].run().head)
 
+  /** Every INSERT statement into the copy sleeps `millis` first (a statement trigger, as a slow disk or a slow trigger would): the
+    * driver sends a batch as one statement per row inside one transaction, so a batch of `n` rows takes `n * millis`. */
+  def slowInserts(xa: TransactorZIO, millis: Int): Task[Unit] =
+    xa.connect:
+      val name = SqlLiteral(schema)
+      sql"""
+        CREATE OR REPLACE FUNCTION $name.slow_insert() RETURNS trigger AS $$$$
+        BEGIN PERFORM pg_sleep(${SqlLiteral(s"$millis / 1000.0")}); RETURN NULL; END $$$$ LANGUAGE plpgsql
+      """.update.run()
+      sql"""
+        CREATE TRIGGER slow_insert AFTER INSERT ON $name.audit_event
+        FOR EACH STATEMENT EXECUTE FUNCTION $name.slow_insert()
+      """.update.run()
+      ()
+    .unit
+
+  /** Ends the sessions that were marked with `application_name`, so that a statement a spec abandoned does not hold the copy's locks
+    * for the next spec. */
+  def endSessions(xa: TransactorZIO, applicationName: String): Task[Unit] =
+    xa.connect:
+      sql"""
+        SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+        WHERE application_name = $applicationName AND pid <> pg_backend_pid()
+      """.query[Boolean].run()
+      ()
+
   val reset: URIO[TransactorZIO, Unit] =
     ZIO.serviceWithZIO[TransactorZIO]: xa =>
       xa.connect:

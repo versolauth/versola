@@ -71,12 +71,18 @@ object AuditEventsSpec extends UnitSpecBase:
       storeBeforeHold: Boolean,
       uninterruptible: Boolean,
       holdAll: Boolean,
+      perRow: Duration,
+      diesAfterFirst: Boolean,
   ) extends AuditEventRepository:
 
     override def insertBatch(events: List[AuditEvent]): Task[Unit] =
       for
         n <- calls.updateAndGet(_ + 1)
         _ <- entered.offer(())
+        // A defect, not a failure: the kind of error the transactor raises when it cannot give a connection back.
+        _ <- ZIO.die(RuntimeException("secret-value-of-a-defect")).when(diesAfterFirst && n > 1)
+        // A statement that takes as long as it has rows, as an insert that is slow does.
+        _ <- ZIO.sleep(perRow.multipliedBy(events.size.toLong)).when(perRow != Duration.Zero && !(holdFirst && n == 1))
         isDown <- down.get
         _ <- ZIO.fail(RuntimeException("connection refused")).when(isDown)
         // The transactor runs a statement uninterruptibly, so a stub that does the same is what a stop meets in a service.
@@ -95,6 +101,20 @@ object AuditEventsSpec extends UnitSpecBase:
 
     override def ownership: Task[TableOwnership] = ZIO.succeed(owned)
 
+  /** A repository whose statement holds a real thread of the blocking pool and is not cut by interrupting it, as a socket read of the
+    * database driver is: it ends when `open` is set. */
+  private class SpinningRepository(open: java.util.concurrent.atomic.AtomicBoolean, entered: Queue[Unit]) extends AuditEventRepository:
+    override def insertBatch(events: List[AuditEvent]): Task[Unit] =
+      entered.offer(()) *> ZIO.attemptBlocking(while !open.get() do Thread.sleep(5))
+
+    override def maintainPartitions(from: LocalDate, days: Int, keepFrom: LocalDate): Task[PartitionReport] = ZIO.succeed(noReport)
+
+    override def partitionDaysAhead(today: LocalDate): Task[Int] = ZIO.succeed(3)
+
+    override def pruneDefault(before: Instant): Task[Long] = ZIO.succeed(0L)
+
+    override def ownership: Task[TableOwnership] = ZIO.succeed(owned)
+
   private object Store:
     def make(
         holdFirst: Boolean = false,
@@ -102,6 +122,8 @@ object AuditEventsSpec extends UnitSpecBase:
         down: Boolean = false,
         uninterruptible: Boolean = false,
         holdAll: Boolean = false,
+        perRow: Duration = Duration.Zero,
+        diesAfterFirst: Boolean = false,
     ): UIO[Store] =
       for
         stored <- Ref.make(Map.empty[UUID, AuditEvent])
@@ -110,7 +132,7 @@ object AuditEventsSpec extends UnitSpecBase:
         gate <- Promise.make[Nothing, Unit]
         isDown <- Ref.make(down)
         calls <- Ref.make(0)
-      yield Store(stored, rewritten, entered, gate, isDown, calls, holdFirst, storeBeforeHold, uninterruptible, holdAll)
+      yield Store(stored, rewritten, entered, gate, isDown, calls, holdFirst, storeBeforeHold, uninterruptible, holdAll, perRow, diesAfterFirst)
 
   private def fixture(gated: Boolean, failures: Int = 0, refuse: AuditEvent => Option[Throwable] = _ => None): UIO[Fixture] =
     for
@@ -152,9 +174,13 @@ object AuditEventsSpec extends UnitSpecBase:
       SecureRandom.live,
     )
 
+  /** A scope closed as the app closes its own: `ZIO.scoped` runs its release uninterruptibly, so a finalizer cannot rely on a timeout to
+    * interrupt what it waits for. A spec that closes the scope from an ordinary fiber would not see that. */
+  private def closedAsTheAppDoes(scope: Scope.Closeable): UIO[Unit] = ZIO.uninterruptible(scope.close(Exit.unit))
+
   /** Closes a scope whose repository may keep failing: the stop retries until the drain timeout, which only the clock can end. */
   private def stopped(scope: Scope.Closeable): UIO[Unit] =
-    scope.close(Exit.unit).fork.flatMap(closing => settle *> TestClock.adjust(AuditEvents.DrainTimeout.plus(2.seconds)) *> settle *> closing.join)
+    closedAsTheAppDoes(scope).fork.flatMap(closing => settle *> TestClock.adjust(AuditEvents.DrainTimeout.plus(2.seconds)) *> settle *> closing.join)
 
   /** The lines the log wrote about events it dropped or refused. */
   private def reportLines: UIO[List[String]] =
@@ -446,7 +472,7 @@ object AuditEventsSpec extends UnitSpecBase:
           written <- f.written.get
           rejectedAfter <- counter("audit_events_rejected_total", edge)
           // The stop retries until the drain timeout; the clock has to move for it to end.
-          closing <- scope.close(Exit.unit).fork
+          closing <- closedAsTheAppDoes(scope).fork
           _ <- settle *> TestClock.adjust(AuditEvents.DrainTimeout.plus(1.second)) *> settle
           _ <- closing.join
         yield assertTrue(written.isEmpty, rejectedAfter == rejectedBefore)
@@ -561,7 +587,7 @@ object AuditEventsSpec extends UnitSpecBase:
           _ <- events.record(draft())
           _ <- f.started.take
           _ <- events.record(draft(Refused, AuditOutcome.failure)) *> events.record(draft(Refused, AuditOutcome.failure))
-          closing <- scope.close(Exit.unit).fork
+          closing <- closedAsTheAppDoes(scope).fork
           _ <- settle *> TestClock.adjust(AuditEvents.DrainTimeout.plus(1.second)) *> settle
           _ <- closing.join
           failedAfter <- counter("audit_events_failed_total", edge)
@@ -597,7 +623,7 @@ object AuditEventsSpec extends UnitSpecBase:
           _ <- events.record(draft())
           _ <- store.entered.take
           _ <- events.record(draft()) *> events.record(draft())
-          _ <- scope.close(Exit.unit)
+          _ <- closedAsTheAppDoes(scope)
           stored <- store.stored.get
           again <- store.rewritten.get
         yield assertTrue(stored.size == 3, again == 0)
@@ -611,7 +637,7 @@ object AuditEventsSpec extends UnitSpecBase:
           _ <- store.entered.take
           _ <- settle
           _ <- events.record(draft()) *> events.record(draft())
-          _ <- scope.close(Exit.unit)
+          _ <- closedAsTheAppDoes(scope)
           stored <- store.stored.get
         yield assertTrue(stored.size == 3)
       },
@@ -635,7 +661,7 @@ object AuditEventsSpec extends UnitSpecBase:
             yield ()).fork
           producers <- ZIO.foreach(1 to 4)(producer)
           _ <- accepted.get.repeatUntil(_.size >= 50)
-          _ <- scope.close(Exit.unit)
+          _ <- closedAsTheAppDoes(scope)
           _ <- settle
           _ <- stop.set(true)
           _ <- ZIO.foreachDiscard(producers)(_.join)
@@ -651,7 +677,7 @@ object AuditEventsSpec extends UnitSpecBase:
           _ <- events.record(draft()) *> events.record(draft())
           _ <- store.entered.take
           _ <- settle
-          closing <- scope.close(Exit.unit).fork
+          closing <- closedAsTheAppDoes(scope).fork
           _ <- store.down.set(false)
           _ <- settle *> TestClock.adjust(2.seconds) *> settle
           _ <- closing.join
@@ -668,7 +694,7 @@ object AuditEventsSpec extends UnitSpecBase:
           _ <- events.record(draft()) *> events.record(draft())
           _ <- store.entered.take
           _ <- settle
-          closing <- scope.close(Exit.unit).fork
+          closing <- closedAsTheAppDoes(scope).fork
           _ <- settle *> TestClock.adjust(AuditEvents.DrainTimeout.plus(1.second)) *> settle
           _ <- closing.join
           stored <- store.stored.get
@@ -689,7 +715,7 @@ object AuditEventsSpec extends UnitSpecBase:
           _ <- events.record(draft()) *> events.record(draft())
           waiting <- events.record(draft()).exit.fork
           _ <- settle
-          closing <- scope.close(Exit.unit).fork
+          closing <- closedAsTheAppDoes(scope).fork
           // The clock is not moved: nothing but the stop itself can release the request.
           result <- eventually(waiting.poll)(_.isDefined)
           unavailableAfter <- counter("audit_events_unavailable_total", central)
@@ -709,7 +735,7 @@ object AuditEventsSpec extends UnitSpecBase:
           _ <- events.record(draft()) *> events.record(draft())
           waiting <- events.recordBestEffort(draft()).fork
           _ <- settle
-          closing <- scope.close(Exit.unit).fork
+          closing <- closedAsTheAppDoes(scope).fork
           result <- eventually(waiting.poll)(_.isDefined)
           droppedAfter <- counter("audit_events_dropped_total", edge)
           _ <- settle *> TestClock.adjust(AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout).plus(2.seconds)) *> settle
@@ -718,9 +744,105 @@ object AuditEventsSpec extends UnitSpecBase:
         yield assertTrue(result.exists(_.isSuccess), droppedAfter - droppedBefore == 1.0)
       },
     ),
+    suite("the drain of the stop")(
+      test("a defect in the drain's write ends the stop at once, is named by class, and the rows are counted as not written") {
+        for
+          store <- Store.make(holdFirst = true, diesAfterFirst = true)
+          failedBefore <- counter("audit_events_failed_total", edge)
+          scope <- Scope.make
+          events <- scope.extend(buildOn(store, block, source = edge, sizing = sizing.copy(queueCapacity = 10)))
+          _ <- events.record(draft())
+          _ <- store.entered.take
+          _ <- events.record(draft())
+          closing <- closedAsTheAppDoes(scope).fork
+          // The clock is not moved: nothing but the failure can end the drain before its limit. Yields are not time, so the fiber is
+          // given many of them.
+          done <- ZIO.foldLeft(1 to 20000)(Option.empty[Exit[Nothing, Unit]]): (found, _) =>
+            if found.isDefined then ZIO.succeed(found) else ZIO.yieldNow *> closing.poll
+          failedAfter <- counter("audit_events_failed_total", edge)
+          entries <- ZTestLogger.logOutput
+          everything = entries.map(entry => entry.message() + " " + entry.cause.prettyPrint).mkString("\n")
+          _ <- settle *> TestClock.adjust(AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout).plus(2.seconds)) *> settle
+          _ <- closing.join
+        yield assertTrue(
+          done.isDefined,
+          failedAfter - failedBefore == 2.0,
+          everything.contains("java.lang.RuntimeException"),
+          !everything.contains("secret-value-of-a-defect"),
+          everything.contains("the write failed"),
+          !everything.contains("did not finish"),
+        )
+      }.provideLayer(ZTestLogger.default),
+      test("the stop writes statements of at most the chunk size, and of at most the batch size when that is smaller") {
+        def statements(small: AuditEvents.Sizing): IO[AuditUnavailable.type, List[Int]] =
+          for
+            f <- fixture(gated = true)
+            scope <- Scope.make
+            events <- scope.extend(build(f, block, source = edge, sizing = small))
+            _ <- events.record(draft())
+            _ <- f.started.take
+            _ <- ZIO.foreachDiscard(1 to 100)(_ => events.record(draft()))
+            closing <- closedAsTheAppDoes(scope).fork
+            _ <- settle *> TestClock.adjust(AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout)) *> settle
+            _ <- closing.join
+            written <- f.written.get
+          yield written.map(_.size)
+        for
+          byChunk <- statements(sizing.copy(queueCapacity = 1000, batchSize = 1000, drainChunk = 40))
+          byBatch <- statements(sizing.copy(queueCapacity = 1000, batchSize = 30, drainChunk = 100))
+        yield assertTrue(
+          byChunk.sum == 101,
+          byChunk.max == 40,
+          byBatch.sum == 101,
+          byBatch.max == 30,
+        )
+      },
+      test("a row that cannot be settled, at the front of the first chunk, does not hold up the chunks behind it") {
+        val readOnly = (event: AuditEvent) =>
+          Option.when(event.reason.contains("suspect"))(SQLException("cannot execute INSERT in a read-only transaction", "25006"))
+        for
+          f <- fixture(gated = true, refuse = readOnly)
+          failedBefore <- counter("audit_events_failed_total", edge)
+          scope <- Scope.make
+          events <- scope.extend(build(f, block, source = edge, sizing = sizing.copy(queueCapacity = 1000, batchSize = 1000)))
+          _ <- events.record(draft())
+          _ <- f.started.take
+          _ <- events.record(draft().copy(reason = Some("suspect")))
+          _ <- ZIO.foreachDiscard(1 to 250)(_ => events.record(draft()))
+          closing <- closedAsTheAppDoes(scope).fork
+          _ <- settle *> TestClock.adjust(AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout).plus(2.seconds)) *> settle
+          _ <- closing.join
+          written <- f.written.get.map(_.flatten)
+          failedAfter <- counter("audit_events_failed_total", edge)
+        yield assertTrue(
+          // The 250 queued and the one the writer held, whatever happens to the one that cannot be written.
+          written.count(!_.reason.contains("suspect")) == 251,
+          failedAfter - failedBefore == 1.0,
+        )
+      },
+    ),
     suite("the stop and the app's shutdown")(
-      test("the drain timeout and five seconds of margin fit inside the app's graceful shutdown timeout") {
-        assertTrue(AuditEvents.DrainTimeout.plus(5.seconds).compareTo(VersolaApp.GracefulShutdownTimeout) <= 0)
+      test("the whole stop, the wait for the writer and the drain, and five seconds of margin fit inside the app's graceful shutdown timeout") {
+        assertTrue(
+          AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout).plus(5.seconds).compareTo(VersolaApp.GracefulShutdownTimeout) <= 0,
+        )
+      },
+      test("a stop whose statements are slow stores what the drain timeout allows, chunk by chunk, and counts the rest as not written") {
+        for
+          // A statement takes 20 ms a row: a chunk of 100 rows takes two seconds, so two chunks fit in the five seconds of the drain.
+          store <- Store.make(holdFirst = true, perRow = 20.millis)
+          failedBefore <- counter("audit_events_failed_total", edge)
+          scope <- Scope.make
+          events <- scope.extend(buildOn(store, block, source = edge, sizing = sizing.copy(queueCapacity = 1000, batchSize = 1000)))
+          _ <- events.record(draft())
+          _ <- store.entered.take
+          _ <- ZIO.foreachDiscard(1 to 299)(_ => events.record(draft()))
+          closing <- closedAsTheAppDoes(scope).fork
+          _ <- settle *> TestClock.adjust(AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout).plus(2.seconds)) *> settle
+          done <- closing.poll
+          stored <- store.stored.get
+          failedAfter <- counter("audit_events_failed_total", edge)
+        yield assertTrue(done.isDefined, stored.size == 200, failedAfter - failedBefore == 100.0)
       },
       test("the service refuses what is offered after it began to stop: a failure under block, a counted drop otherwise") {
         for
@@ -757,7 +879,7 @@ object AuditEventsSpec extends UnitSpecBase:
           _ <- events.record(draft())
           _ <- store.entered.take
           _ <- events.record(draft())
-          closing <- scope.close(Exit.unit).fork
+          closing <- closedAsTheAppDoes(scope).fork
           _ <- settle *> TestClock.adjust(AuditEvents.DrainTimeout.plus(2.seconds)) *> settle
           done <- closing.poll
           stored <- store.stored.get
@@ -772,7 +894,7 @@ object AuditEventsSpec extends UnitSpecBase:
           events <- scope.extend(buildOn(store, block, source = edge))
           _ <- events.record(draft()) *> events.record(draft())
           _ <- store.entered.take
-          closing <- scope.close(Exit.unit).fork
+          closing <- closedAsTheAppDoes(scope).fork
           _ <- settle
           // Not a tick short of the bound: nothing has returned yet.
           _ <- TestClock.adjust(AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout).minus(1.millis))
@@ -782,6 +904,24 @@ object AuditEventsSpec extends UnitSpecBase:
           _ <- store.gate.succeed(())
         yield assertTrue(early.isEmpty, done.isDefined)
       },
+      // Real time: the test clock cannot be advanced while a fiber sits in a call that holds a real thread.
+      test("a stop against statements that hold a real thread and are never interrupted returns by the sum of its two bounds, and counts the rows") {
+        val open = java.util.concurrent.atomic.AtomicBoolean(false)
+        val source = AuditSource("svc-spin")
+        for
+          entered <- Queue.unbounded[Unit]
+          scope <- Scope.make
+          events <- scope.extend(buildOn(SpinningRepository(open, entered), block, source = source, sizing = sizing.copy(queueCapacity = 10)))
+          _ <- events.record(draft()) *> events.record(draft())
+          _ <- entered.take
+          started <- Clock.nanoTime
+          closing <- closedAsTheAppDoes(scope).fork
+          result <- closing.join.timeout(AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout).plus(3.seconds))
+          elapsed <- Clock.nanoTime.map(now => (now - started) / 1000000)
+          failed <- counter("audit_events_failed_total", source)
+          _ <- ZIO.succeed(open.set(true))
+        yield assertTrue(result.isDefined, elapsed >= 5000L, failed == 2.0)
+      } @@ TestAspect.withLiveClock,
       test("a stop whose own write is not interrupted either returns inside the drain timeout, says so, and counts the rows as not written") {
         for
           store <- Store.make(holdAll = true, uninterruptible = true)
@@ -790,7 +930,7 @@ object AuditEventsSpec extends UnitSpecBase:
           events <- scope.extend(buildOn(store, block, source = edge))
           _ <- events.record(draft()) *> events.record(draft())
           _ <- store.entered.take
-          closing <- scope.close(Exit.unit).fork
+          closing <- closedAsTheAppDoes(scope).fork
           _ <- settle *> TestClock.adjust(AuditEvents.DrainTimeout.plus(2.seconds)) *> settle
           done <- closing.poll
           failedAfter <- counter("audit_events_failed_total", edge)
