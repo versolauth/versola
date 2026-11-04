@@ -1030,7 +1030,7 @@ def build_antifraud() -> Board:
     # -- sms budget -------------------------------------------------------------------------
     b.row("auth — SMS budget")
     b.ts("Refused / s by reason and mode", [(f"sum by (reason, mode) ({r('antifraud_sms_budget_refused_total')})", "{{reason}} ({{mode}})")], unit="ops", stack=True, minimum=0,
-         desc="Codes the SMS budget closed a range to: `cap` (sentPerHour reached), `conversion` (too few codes verified). `shadow` means the code went out all the same and the number is what enforcing would refuse; `enforce` is a refusal that happened. Empty while the budget is off (the default).")
+         desc="Codes the SMS budget closed a range to: `cap` (sentPerHour reached), `conversion` (too few codes verified: entered, or passed by passkey). `shadow` means the code went out all the same and the number is what enforcing would refuse; `enforce` is a refusal that happened. Empty while the budget is off (the default).")
     b.ts("Ranges not tracked / evicted per s", [
         (r("antifraud_sms_budget_full_total"), "not tracked (table full)"),
         (r("antifraud_sms_budget_evicted_total"), "evicted"),
