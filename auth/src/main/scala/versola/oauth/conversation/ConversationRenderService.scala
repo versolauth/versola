@@ -7,7 +7,7 @@ import versola.oauth.authorize.{AuthorizationResponseService, AuthorizeRedirect}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, FormRecord, Locales, OAuthClientRecord, PhoneRegion, PrimaryCredential, ScopeToken, TenantLogo}
 import versola.oauth.consent.ConsentService
-import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
+import versola.oauth.conversation.model.{CodeAlternative, ConversationRecord, ConversationStep}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.State
 import versola.oauth.model.{ConversationCookie, SessionCookie, UserAgentCookie}
@@ -91,7 +91,7 @@ object ConversationRenderService:
       "if(getComputedStyle(d).getPropertyValue('--scheme-locked').trim()==='1')return;" +
       "var v=localStorage.getItem('versola.colorScheme');" +
       "if(v==='light'||v==='dark')d.style.colorScheme=v}catch(e){}})()</script>"
-  val live = ZLayer.fromFunction(Impl(_, _, _, _))
+  val live = ZLayer.fromFunction(Impl(_, _, _, _, _))
 
   @jsonDiscriminator("type")
   sealed trait StepView derives JsonCodec
@@ -113,8 +113,16 @@ object ConversationRenderService:
     @jsonHint("set-password")
     case class SetPassword(passwordRegex: String) extends StepView
     @jsonHint("otp")
-    case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int], destination: Option[String], pending: Boolean, resendInterval: Int)
-      extends StepView
+    case class Otp(
+        length: Int,
+        resendAfter: Int,
+        lockedSeconds: Option[Int],
+        destination: Option[String],
+        pending: Boolean,
+        resendInterval: Int,
+        /** The other ways to pass this step that the page may offer now, worked out afresh for each render. */
+        alternatives: List[CodeAlternative] = Nil,
+    ) extends StepView
 
     @jsonHint("passkey-enroll")
     case class PasskeyEnroll(publicKeyOptions: String) extends StepView
@@ -252,6 +260,7 @@ object ConversationRenderService:
       configuration: OAuthConfigurationService,
       jwksService: JwksService,
       responseService: AuthorizationResponseService,
+      codeAlternatives: CodeAlternativeService,
   ) extends ConversationRenderService:
     override def renderStep(record: ConversationRecord, ifNoneMatch: Option[String], errorKey: Option[String] = None): Task[Response] =
       for
@@ -259,6 +268,11 @@ object ConversationRenderService:
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
         css <- themeCss(themeId, client.flatMap(_.themeOverrides))
         logo <- tenantLogo(client)
+        // Worked out at each render and never kept on the step: what the user has enrolled moves, and a passkey added since
+        // the page was last drawn is on the next one.
+        alternatives <- record.step match
+          case otp: ConversationStep.Otp => codeAlternatives.available(record)
+          case _ => ZIO.succeed(Nil)
         maybeInfo <-
           formFor(
             record.step,
@@ -274,6 +288,7 @@ object ConversationRenderService:
               case _ => None,
             errorOverride = errorKey,
             responseMode = record.responseMode,
+            alternatives = alternatives,
           )
         response <- maybeInfo match
           case None =>
@@ -582,6 +597,7 @@ object ConversationRenderService:
         consentUser: Option[StepView.ConsentUser] = None,
         errorOverride: Option[String] = None,
         responseMode: ResponseMode = ResponseMode.Query,
+        alternatives: List[CodeAlternative] = Nil,
     ): Task[Option[FormRenderInfo]] =
       val formId = step match
         case _: ConversationStep.Credential => "credential"
@@ -592,7 +608,7 @@ object ConversationRenderService:
         case _: ConversationStep.Consent => "consent"
         case ConversationStep.AccessDenied => "access-denied"
       for
-        view <- stepView(step, credential, clientId, locale, redirectUri, state, availableClaims, consentUser, responseMode)
+        view <- stepView(step, credential, clientId, locale, redirectUri, state, availableClaims, consentUser, responseMode, alternatives)
         client <- configuration.find(clientId)
         formOpt <- configuration.getForm(formId)
         locales <- configuration.getLocales
@@ -624,6 +640,7 @@ object ConversationRenderService:
       }
 
     private def stepErrorKey(step: ConversationStep): Option[String] = step match
+      case s: ConversationStep.Otp if s.passkeyFailed => Some("passkey_failed")
       case s: ConversationStep.Otp if s.timesSubmitted > 0 && !s.rateLimitExceeded => Some("otp_wrong")
       case s: ConversationStep.Password if s.rateLimitExceeded => Some("rate_limit_exceeded")
       case s: ConversationStep.Password if s.temporaryExpired && s.timesSubmitted > 0 => Some("temporary_expired")
@@ -717,6 +734,7 @@ object ConversationRenderService:
         availableClaims: Set[String],
         consentUser: Option[StepView.ConsentUser],
         responseMode: ResponseMode,
+        alternatives: List[CodeAlternative],
     ): Task[StepView] =
       step match
         case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, registration, _, _, _, passkeyOnly) =>
@@ -761,6 +779,7 @@ object ConversationRenderService:
             pending = s.pending,
             // The wait between two codes, which the page starts again when it shows a code that was just sent in place.
             resendInterval = otp.resendAfter,
+            alternatives = alternatives,
           )
 
         case s: ConversationStep.PasskeyEnroll =>

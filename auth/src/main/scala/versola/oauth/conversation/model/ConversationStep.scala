@@ -34,6 +34,13 @@ object ConversationStep:
         * `antifraud.challenge.pause`). The pause is what a request that answers no proof of work pays instead. A step
         * stored without it (before it existed) is honoured at once. */
       pendingUntil: Option[Instant] = None,
+      /** The serialized assertion ceremony of a passkey chosen from this code page in place of the code, set when the page's
+        * options were asked for (as [[Credential.passkeyRequest]] is). It is discoverable with an empty allow list for every
+        * conversation, so the page tells nothing of who the number belongs to. */
+      passkeyRequest: Option[String] = None,
+      /** A passkey submitted from this page did not verify: the page shows the same code step with that said, and nothing
+        * else about it changes. */
+      passkeyFailed: Boolean = false,
   ) extends ConversationStep(StepId.Otp):
     def isFake: Boolean = real.isEmpty
 

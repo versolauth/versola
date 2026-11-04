@@ -33,7 +33,7 @@ import versola.oauth.client.model.{
 }
 import versola.oauth.consent.{ConsentDecision, ConsentService}
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
-import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
+import versola.oauth.conversation.model.{AuthId, CodeAlternative, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord, UserAgentData}
@@ -171,6 +171,33 @@ trait ConversationService:
       ipAddress: Option[String],
   ): Task[ConversationResult.Render]
 
+  /** Begins the assertion of a passkey submitted from the code page itself in place of the code, and stores the request on the
+    * code step. The ceremony is the same for every conversation, discoverable with an empty allow list (passkeys are resident, so
+    * the authenticator offers what it holds): one restricted to the user's passkeys would list them for a number that has an
+    * account and nothing for one that has none, and the options would tell which numbers are accounts. `None` when the passkey
+    * is not one of the alternatives the page may offer now.
+    */
+  def startPasskeyOnCode(
+      authId: AuthId,
+      conversation: ConversationRecord,
+      otp: ConversationStep.Otp,
+      settings: PasskeySettings,
+  ): Task[Option[String]]
+
+  /** Verifies the assertion of a passkey submitted from the code page. A passed passkey is `StepPassed`, recorded as passed
+    * (the code is not entered, and the step stays the code step until the caller moves it on); a failed or unknown one
+    * re-renders the same code page, with that said and nothing else changed. A passkey is accepted only for the user the
+    * conversation identifies: another user's, one asserted for a number that is nobody's and one asserted in a registration
+    * end at the access page.
+    */
+  def checkPasskeyOnCode(
+      authId: AuthId,
+      conversation: ConversationRecord,
+      otp: ConversationStep.Otp,
+      response: String,
+      ipAddress: Option[String],
+  ): Task[ConversationResult]
+
   /** After all primary auth factors pass: if the tenant has passkey settings and the user has no
     * passkey yet, starts a registration ceremony and renders the PasskeyEnroll step.
     * Otherwise, finishes immediately.
@@ -226,7 +253,7 @@ object ConversationService:
   private val SmsBudgetRule = "sms_budget"
 
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       otpService: OtpService,
@@ -250,6 +277,7 @@ object ConversationService:
       consentService: ConsentService,
       antifraudEvents: AntifraudEvents,
       challengeVerifier: ChallengeVerifier,
+      codeAlternatives: CodeAlternativeService,
   ) extends ConversationService:
     export conversationRepository.find
 
@@ -321,6 +349,8 @@ object ConversationService:
     private def sentOutcome(step: ConversationStep.Otp, decision: Decision): AntifraudOutcome =
       if !step.isFake then AntifraudOutcome.sent
       else if decision.action == DecisionAction.Fake then AntifraudOutcome.faked
+      // A refused request that was answered as a send (see `withheld`): the event says what the decision was.
+      else if decision.action == DecisionAction.Block then AntifraudOutcome.blocked
       else AntifraudOutcome.suppressed
 
     private def sendInitialOtp(
@@ -329,6 +359,10 @@ object ConversationService:
         credential: Either[Email, Phone],
         factorIndex: Int,
         decision: Decision,
+        // A `Block` whose answer is the code page, nothing sent, because the person has a way past the code (see
+        // [[CodeAlternativeService]]): a fake send for a refused request, so that the page cannot be told from the page of
+        // a request that was let through.
+        withheld: Boolean = false,
     ): Task[ConversationResult.Render] =
       for
         effectiveUserId = conversation.userId
@@ -338,7 +372,7 @@ object ConversationService:
           userId = effectiveUserId,
           clientId = conversation.clientId,
           isRegistering = conversation.isRegistering,
-          forceFake = decision.action == DecisionAction.Fake,
+          forceFake = decision.action == DecisionAction.Fake || withheld,
         )
         // Asked for every phone number, a code that stands in for an unknown user included, and answered the same:
         // were a closed range to refuse only the numbers that get a real code, the refusal would tell which
@@ -509,7 +543,13 @@ object ConversationService:
         decision <- antifraudEvents.decideOtpRequest(conversation.clientId, conversation.userAgent, credential, repeated = paid)
         result <-
           if decision.action == DecisionAction.Block then
-            otpRequested(authId, conversation, credential, AntifraudOutcome.blocked, Some(decision)) *> accessDenied(authId, conversation)
+            // Where the code page offers a passkey, a refused send is answered as a send: the code page, nothing sent, as
+            // for a `Fake`, so that the page is the same for every number and the way past the code is on it. Where the
+            // page offers nothing, there is nothing more than the access page.
+            codeAlternatives.available(conversation).flatMap:
+              case Nil =>
+                otpRequested(authId, conversation, credential, AntifraudOutcome.blocked, Some(decision)) *> accessDenied(authId, conversation)
+              case _ => sendInitialOtp(authId, conversation, credential, factorIndex, decision, withheld = true)
           else if decision.action != DecisionAction.Challenge then
             sendInitialOtp(authId, conversation, credential, factorIndex, decision)
           else if solved then
@@ -704,7 +744,11 @@ object ConversationService:
             accessDenied(authId, conversation)
         case LimitStatus.RateLimited(retryAfter) =>
           otpChecked(authId, conversation, AntifraudOutcome.locked) *>
-            renderStep(authId, conversation, otp.copy(rateLimitExceeded = true, lockedSeconds = retryAfter.toInt))
+            renderStep(
+              authId,
+              conversation,
+              otp.copy(rateLimitExceeded = true, lockedSeconds = retryAfter.toInt, passkeyRequest = None, passkeyFailed = false),
+            )
         case LimitStatus.Allowed =>
           otpService.checkOtp(otp, submittedCode).flatMap:
             case SubmitOtpResult.Failure =>
@@ -714,6 +758,8 @@ object ConversationService:
                     timesSubmitted = otp.timesSubmitted + 1,
                     rateLimitExceeded = retryAfter.isDefined,
                     lockedSeconds = retryAfter.fold(0)(_.toInt),
+                    passkeyRequest = None,
+                    passkeyFailed = false,
                   )
 
             case SubmitOtpResult.Success =>
@@ -1153,8 +1199,10 @@ object ConversationService:
             passkeyRequest = Some(ceremony.request),
             passkeyFailed = false,
           )
-          conversationRepository.overwrite(authId, conversation.copy(step = updatedStep))
-            .as(ceremony.publicKeyOptions),
+          conversationRepository.overwrite(authId, conversation.copy(step = updatedStep)).flatMap:
+            case true => ZIO.succeed(ceremony.publicKeyOptions)
+            // The ceremony was not stored, so a response to it could not be checked: its options are not handed out.
+            case false => ZIO.fail(WebAuthnError.CeremonyFailed("conversation write lost")),
       )
 
     /** A failed assertion offers another try on the ordinary credential card; a passkey-only step has nothing
@@ -1197,90 +1245,186 @@ object ConversationService:
               // No ceremony is pending — a duplicate or replayed assertion submission.
               Observability.setError("step_mismatch").as(ConversationResult.BadRequest)
             case Some(request) =>
-              // The credential id is client-chosen and can be rotated to dodge throttling, so we
-              // also throttle a server-controlled IP subject when available. The credential subject
-              // still guards a specific registered credential against targeted brute force.
-              // IP throttling is skipped entirely when neither X-Real-IP nor X-Forwarded-For is
-              // present — we do not invent a shared fallback bucket.
-              val ipSubjectOpt = ipAddress.map("ip:" + _)
-              val recordIp = ipSubjectOpt.fold(ZIO.unit)(ip =>
-                submissionLimiter.recordLimit(conversation.clientId, ip, ChallengeType.PasskeyAssertion).unit,
-              )
-              val resetIp = ipSubjectOpt.fold(ZIO.unit)(ip =>
-                submissionLimiter.reset(conversation.clientId, ip, ChallengeType.PasskeyAssertion),
-              )
-              webAuthnService.credentialIdFromResponse(response).flatMap:
-                case None =>
-                  // Malformed payload (no usable credential id). Throttle the IP if available and
-                  // clear the stale request; if there is no IP we just re-render without recording.
-                  val malformedSubjects = ipSubjectOpt.toList
-                  if malformedSubjects.isEmpty then
-                    passkeyAssertionFailed(authId, conversation, cred)
-                  else
-                    submissionLimiter.statusForSubjects(conversation.clientId, malformedSubjects, ChallengeType.PasskeyAssertion).flatMap:
-                      case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
-                        accessDenied(authId, conversation)
-                      case LimitStatus.Allowed =>
-                        recordIp *>
-                          passkeyAssertionFailed(authId, conversation, cred)
-                case Some(credSubject) =>
-                  val banSubjects = ipSubjectOpt.toList :+ credSubject
-                  submissionLimiter.statusForSubjects(conversation.clientId, banSubjects, ChallengeType.PasskeyAssertion).flatMap:
-                    case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
-                      accessDenied(authId, conversation)
-                    case LimitStatus.Allowed =>
-                      configService.getPasskeySettings(conversation.clientId).flatMap:
-                        case None =>
-                          // Passkey settings vanished mid-ceremony (e.g. disabled for the tenant
-                          // after the assertion started) -- a server-side invariant violation.
-                          Observability.setError("illegal_state", Some("passkey settings missing")) *>
-                            accessDenied(authId, conversation)
-                        case Some(settings) =>
-                          webAuthnService.finishAssertion(settings, request, response).foldZIO(
-                            { _ =>
-                              (recordIp.zipPar(submissionLimiter.recordLimit(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion))) *>
-                                passkeyAssertionFailed(authId, conversation, cred)
-                            },
-                            outcome =>
-                              Observability.setUserId(outcome.userId.toString) *>
-                                (resetIp.zipPar(submissionLimiter.reset(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion))) *>
-                                userRepository.find(outcome.userId).zipPar(
-                                  passkeyRepository.findByCredentialIdAndUser(outcome.credentialId, outcome.userId),
-                                ).flatMap:
-                                  case (None, _) =>
-                                    // The passkey ceremony resolved to a user record that no longer
-                                    // exists -- an invariant violation, not a client error.
-                                    Observability.setError("illegal_state", Some("orphaned user")) *>
-                                      accessDenied(authId, conversation)
-                                  case (Some(user), passkeyOpt) =>
-                                    // If the conversation already has a verified userId (from session/hint),
-                                    // reject a passkey that belongs to a different user.
-                                    if conversation.userId.exists(_ != outcome.userId) then
-                                      Observability.setError("identity_mismatch") *>
-                                        accessDenied(authId, conversation)
-                                    else
-                                      Clock.instant.flatMap: now =>
-                                        val keyType = passkeyOpt.fold(AuthMethodRef.swk)(pk =>
-                                          if pk.deviceType == CredentialDeviceType.SingleDevice then AuthMethodRef.hwk
-                                          else AuthMethodRef.swk,
-                                        )
-                                        val passkeyMethods = Set(keyType, AuthMethodRef.user, AuthMethodRef.mfa)
-                                        val updated = conversation.copy(
-                                          userId = Some(outcome.userId),
-                                          userEmail = user.email,
-                                          userPhone = user.phone,
-                                          userLogin = user.login,
-                                          userClaims = Some(user.claims),
-                                          amr = conversation.amr + (PassedAuthFactor.passkey -> PassedFactorRecord(now, passkeyMethods)),
-                                        )
-                                        conversationRepository.overwrite(authId, updated).flatMap:
-                                          case true => offerPasskeyEnroll(authId, updated.copy(version = updated.version + 1))
-                                          case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict),
-                          )
+              verifyAssertion(
+                authId = authId,
+                conversation = conversation,
+                request = request,
+                response = response,
+                ipAddress = ipAddress,
+                failed = passkeyAssertionFailed(authId, conversation, cred),
+                strictUser = false,
+                passedStep = cred,
+              ).flatMap:
+                case ConversationResult.StepPassed(passed) => offerPasskeyEnroll(authId, passed)
+                case render: ConversationResult.Render => ZIO.succeed(render)
         case _ =>
           // Passkey assertion submitted while the conversation isn't on a passkey-enabled
           // credential step, e.g. a stale form or a tampered request.
           Observability.setError("step_mismatch").as(ConversationResult.BadRequest)
+
+    override def startPasskeyOnCode(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        otp: ConversationStep.Otp,
+        settings: PasskeySettings,
+    ): Task[Option[String]] =
+      codeAlternatives.available(conversation).flatMap: offered =>
+        if !offered.contains(CodeAlternative.Passkey) then ZIO.none
+        else
+          webAuthnService.startAssertion(settings).flatMap: ceremony =>
+            conversationRepository.overwrite(
+              authId,
+              conversation.copy(step = otp.copy(passkeyRequest = Some(ceremony.request), passkeyFailed = false)),
+            ).flatMap:
+              case true => ZIO.succeed(Some(ceremony.publicKeyOptions))
+              // The ceremony was not stored, so a response to it could not be checked: its options are not handed out.
+              case false => Observability.setError("write_conflict").as(None)
+
+    override def checkPasskeyOnCode(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        otp: ConversationStep.Otp,
+        response: String,
+        ipAddress: Option[String],
+    ): Task[ConversationResult] =
+      codeAlternatives.available(conversation).flatMap: offered =>
+        (otp.passkeyRequest, offered.contains(CodeAlternative.Passkey)) match
+          case (Some(request), true) =>
+            verifyAssertion(
+              authId = authId,
+              conversation = conversation,
+              request = request,
+              response = response,
+              ipAddress = ipAddress,
+              // Nothing else changes: what was sent and when, the pause, the limits all stay as they are.
+              failed = renderStep(authId, conversation, otp.copy(passkeyRequest = None, passkeyFailed = true)),
+              strictUser = true,
+              passedStep = otp.copy(passkeyRequest = None, passkeyFailed = false),
+            ).tap:
+              case ConversationResult.StepPassed(_) =>
+                // A code that will never be entered: told apart from one that was sent and nobody entered.
+                otpChecked(authId, conversation, AntifraudOutcome.passkey_alternative)
+              case _ => ZIO.unit
+          case _ =>
+            // No ceremony is pending, or the passkey is not one of the alternatives of this page now: a replayed or made-up submission.
+            Observability.setError("step_mismatch").as(ConversationResult.BadRequest)
+
+    /** The assertion of a passkey, checked as one is on every step: throttled by the address and the credential, verified
+      * against the request the page was given, and accepted for the user the conversation identifies. On success the passkey is
+      * recorded as passed (`StepPassed`), and `passedStep` is what the step is left as; `failed` is what a failed assertion
+      * renders, and `strictUser` makes a conversation with no user, or a registration, refuse it. */
+    private def verifyAssertion(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        request: String,
+        response: String,
+        ipAddress: Option[String],
+        failed: Task[ConversationResult.Render],
+        strictUser: Boolean,
+        passedStep: ConversationStep,
+    ): Task[ConversationResult] =
+      // The credential id is client-chosen and can be rotated to dodge throttling, so we
+      // also throttle a server-controlled IP subject when available. The credential subject
+      // still guards a specific registered credential against targeted brute force.
+      // IP throttling is skipped entirely when neither X-Real-IP nor X-Forwarded-For is
+      // present — we do not invent a shared fallback bucket.
+      val ipSubjectOpt = ipAddress.map("ip:" + _)
+      val recordIp = ipSubjectOpt.fold(ZIO.unit)(ip =>
+        submissionLimiter.recordLimit(conversation.clientId, ip, ChallengeType.PasskeyAssertion).unit,
+      )
+      val resetIp = ipSubjectOpt.fold(ZIO.unit)(ip =>
+        submissionLimiter.reset(conversation.clientId, ip, ChallengeType.PasskeyAssertion),
+      )
+      webAuthnService.credentialIdFromResponse(response).flatMap:
+        case None =>
+          // Malformed payload (no usable credential id). Throttle the IP if available and
+          // clear the stale request; if there is no IP we just re-render without recording.
+          val malformedSubjects = ipSubjectOpt.toList
+          if malformedSubjects.isEmpty then
+            failed
+          else
+            submissionLimiter.statusForSubjects(conversation.clientId, malformedSubjects, ChallengeType.PasskeyAssertion).flatMap:
+              case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
+                accessDenied(authId, conversation)
+              case LimitStatus.Allowed =>
+                recordIp *>
+                  failed
+        case Some(credSubject) =>
+          val banSubjects = ipSubjectOpt.toList :+ credSubject
+          val resetBoth = resetIp.zipPar(submissionLimiter.reset(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion))
+          submissionLimiter.statusForSubjects(conversation.clientId, banSubjects, ChallengeType.PasskeyAssertion).flatMap:
+            case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
+              accessDenied(authId, conversation)
+            case LimitStatus.Allowed =>
+              configService.getPasskeySettings(conversation.clientId).flatMap:
+                case None =>
+                  // Passkey settings vanished mid-ceremony (e.g. disabled for the tenant
+                  // after the assertion started) -- a server-side invariant violation.
+                  Observability.setError("illegal_state", Some("passkey settings missing")) *>
+                    accessDenied(authId, conversation)
+                case Some(settings) =>
+                  webAuthnService.finishAssertion(settings, request, response).foldZIO(
+                    { _ =>
+                      (recordIp.zipPar(submissionLimiter.recordLimit(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion))) *>
+                        failed
+                    },
+                    outcome =>
+                      Observability.setUserId(outcome.userId.toString) *>
+                        // From the code page the counters are cleared only for a passkey that is accepted below: a valid passkey of
+                        // someone else must not wipe the failures of an address or a credential that has been guessing.
+                        ZIO.unless(strictUser)(resetBoth).unit *>
+                        userRepository.find(outcome.userId).zipPar(
+                          passkeyRepository.findByCredentialIdAndUser(outcome.credentialId, outcome.userId),
+                        ).flatMap:
+                          case (None, _) =>
+                            // The passkey ceremony resolved to a user record that no longer
+                            // exists -- an invariant violation, not a client error.
+                            Observability.setError("illegal_state", Some("orphaned user")) *>
+                              accessDenied(authId, conversation)
+                          case (Some(user), passkeyOpt) =>
+                            // If the conversation already has a verified userId (from session/hint),
+                            // reject a passkey that belongs to a different user.
+                            // Used from the code page, only the user the conversation identifies is accepted: for a number that is
+                            // nobody's, and for a registration, which has no account yet, whoever asserts is refused as one who holds
+                            // another user's passkey is.
+                            val identityMismatch =
+                              if strictUser then conversation.isRegistering || !conversation.userId.contains(outcome.userId)
+                              else conversation.userId.exists(_ != outcome.userId)
+                            if identityMismatch && strictUser then
+                              // The ceremony is discoverable, so a person with two accounts or a shared device can pick the wrong passkey:
+                              // the same code page again, as for any assertion that does not verify (the same for every number), and the
+                              // attempt counted as a failed one. The log says what it was.
+                              Observability.setError("identity_mismatch") *>
+                                (recordIp.zipPar(submissionLimiter.recordLimit(
+                                  conversation.clientId,
+                                  credSubject,
+                                  ChallengeType.PasskeyAssertion,
+                                ))) *>
+                                failed
+                            else if identityMismatch then
+                              Observability.setError("identity_mismatch") *>
+                                accessDenied(authId, conversation)
+                            else
+                              (if strictUser then resetBoth else ZIO.unit) *>
+                                Clock.instant.flatMap: now =>
+                                  val keyType = passkeyOpt.fold(AuthMethodRef.swk)(pk =>
+                                    if pk.deviceType == CredentialDeviceType.SingleDevice then AuthMethodRef.hwk
+                                    else AuthMethodRef.swk,
+                                  )
+                                  val passkeyMethods = Set(keyType, AuthMethodRef.user, AuthMethodRef.mfa)
+                                  val updated = conversation.copy(
+                                    step = passedStep,
+                                    userId = Some(outcome.userId),
+                                    userEmail = user.email,
+                                    userPhone = user.phone,
+                                    userLogin = user.login,
+                                    userClaims = Some(user.claims),
+                                    amr = conversation.amr + (PassedAuthFactor.passkey -> PassedFactorRecord(now, passkeyMethods)),
+                                  )
+                                  conversationRepository.overwrite(authId, updated).flatMap:
+                                    case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                                    case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict),
+                  )
 
     override def offerPasskeyEnroll(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
       conversation.userId match

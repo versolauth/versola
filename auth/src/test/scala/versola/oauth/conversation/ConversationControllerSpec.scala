@@ -129,6 +129,7 @@ object ConversationControllerSpec extends UnitSpecBase:
             ZLayer.succeed(TestEnvConfig.coreConfig),
             ZLayer.succeed(configuration),
             ZLayer.succeed(TestEnvConfig.jwksService),
+            ZLayer.succeed(stub[CodeAlternativeService]),
             AuthorizationResponseService.live,
           )
 
@@ -179,6 +180,7 @@ object ConversationControllerSpec extends UnitSpecBase:
             ZLayer.succeed(TestEnvConfig.coreConfig),
             ZLayer.succeed(configuration),
             ZLayer.succeed(TestEnvConfig.jwksService),
+            ZLayer.succeed(stub[CodeAlternativeService]),
             AuthorizationResponseService.live,
           )
         tracing <- NoopTracing.layer.build
@@ -226,6 +228,7 @@ object ConversationControllerSpec extends UnitSpecBase:
             ZLayer.succeed(TestEnvConfig.coreConfig),
             ZLayer.succeed(configuration),
             ZLayer.succeed(TestEnvConfig.jwksService),
+            ZLayer.succeed(stub[CodeAlternativeService]),
             AuthorizationResponseService.live,
           )
 
