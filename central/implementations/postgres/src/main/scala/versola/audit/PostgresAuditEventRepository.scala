@@ -42,9 +42,9 @@ class PostgresAuditEventRepository(xa: TransactorZIO) extends CentralAuditReposi
             INSERT INTO audit_event (id, at, tenant_id, source, node_id, kind, outcome, reason, severity, actor_type, actor_id,
                                      user_id, client_id, session_id, ip, user_agent, trace_id, target_type, target_id, details)
             VALUES (
-              ${event.id}, ${event.at}, ${event.tenantId}, ${event.source.toString}, ${event.nodeId},
+              ${event.id}, ${event.at}, ${event.tenantId}, ${event.source.value}, ${event.nodeId},
               ${event.kind.value}, ${event.outcome.toString}, ${event.reason}, ${event.severity.toString},
-              ${event.actorType.toString}, ${event.actorId}, ${event.userId}, ${event.clientId}, ${event.sessionId},
+              ${event.actorType.value}, ${event.actorId}, ${event.userId}, ${event.clientId}, ${event.sessionId},
               CAST(${event.ip} AS INET), ${event.userAgent}, ${event.traceId}, ${event.targetType}, ${event.targetId},
               CAST(${event.details.toJson} AS JSONB)
             )
@@ -136,13 +136,13 @@ object PostgresAuditEventRepository:
           id = id,
           at = at,
           tenantId = tenantId,
-          source = named(AuditSource.values, "source", source),
+          source = AuditSource(source),
           nodeId = nodeId,
           kind = AuditKind(kind),
           outcome = named(AuditOutcome.values, "outcome", outcome),
           reason = reason,
           severity = named(AuditSeverity.values, "severity", severity),
-          actorType = named(ActorType.values, "actor type", actorType),
+          actorType = ActorType(actorType),
           actorId = actorId,
           userId = userId,
           clientId = clientId,

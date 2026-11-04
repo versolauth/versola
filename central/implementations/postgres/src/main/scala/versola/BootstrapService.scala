@@ -1,7 +1,7 @@
 package versola
 
 import versola.central.CentralConfig
-import versola.central.audit.AuditHook
+import versola.central.audit.{AuditHook, CentralAudit}
 import versola.central.configuration.challenges.{
   ChallengeSettingsRecord,
   ChallengeSettingsRepository,
@@ -64,7 +64,7 @@ import versola.central.configuration.{
 }
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
 import versola.util.SequentialLayers.*
-import versola.util.audit.{ActorType, AuditDetails, AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
+import versola.util.audit.{ActorType, AuditDetails, AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.theme.{ThemePresets, ThemeTokens}
 import versola.util.{EnvName, JsonWebKeySet, Patch, Phone, PrivateClientCertificate, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.json.DecoderOps
@@ -1228,7 +1228,7 @@ object BootstrapService:
     private def recordCreated(step: String, id: String): UIO[Unit] =
       clientServices.audit.recordBestEffort(
         AuditDraft(
-          kind = AuditKinds.SystemBootstrap,
+          kind = CentralAudit.SystemBootstrap,
           outcome = AuditOutcome.success,
           actor = Some((ActorType.system, None)),
           target = Some((step, id)),

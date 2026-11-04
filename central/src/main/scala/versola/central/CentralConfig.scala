@@ -303,20 +303,9 @@ object CentralConfig:
       blockTimeout: Duration = Duration.fromSeconds(2),
       events: AuditConfig.Events = AuditConfig.Events(),
   ):
-    /** What the writer of `versola.util.audit` takes. The tiers that are auth's (token refresh, authorize and PAR successes) are
-      * not central's events and stay on. */
+    /** What the writer of `versola.util.audit` takes; the keys that are central's own (`events`) it does not. */
     def settings: AuditEvents.Settings =
-      AuditEvents.Settings(
-        retention = retention,
-        overflow = overflow,
-        blockTimeout = blockTimeout,
-        events = AuditEvents.EventTiers(
-          tokenRefresh = true,
-          authorizeSuccess = true,
-          parSuccess = true,
-          adminUserViewed = events.adminUserViewed,
-        ),
-      )
+      AuditEvents.Settings(retention = retention, overflow = overflow, blockTimeout = blockTimeout)
 
   object AuditConfig:
     /** @param adminUserViewed whether a look at a user (`GET /users`) is an event: it is the one read that is many */

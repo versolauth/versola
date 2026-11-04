@@ -40,12 +40,8 @@ object PostgresCentralAuditConfigSpec extends ZIOSpecDefault:
     test("the keys of the block are read, and become the writer's settings") {
       for config <- load("""audit { retention = "14 days", overflow = "drop", block-timeout = "500 millis", events { admin-user-viewed = false } }""")
       yield assertTrue(
-        config.audit.settings == AuditEvents.Settings(
-          retention = 14.days,
-          overflow = AuditEvents.Overflow.drop,
-          blockTimeout = 500.millis,
-          events = AuditEvents.EventTiers(tokenRefresh = true, authorizeSuccess = true, parSuccess = true, adminUserViewed = false),
-        ),
+        config.audit.settings == AuditEvents.Settings(retention = 14.days, overflow = AuditEvents.Overflow.drop, blockTimeout = 500.millis),
+        !config.audit.events.adminUserViewed,
       )
     },
     test("a block that sets one key leaves the others at their defaults") {

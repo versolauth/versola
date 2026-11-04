@@ -1,13 +1,13 @@
 package versola.central.users
 
 import versola.central.antifraud.*
-import versola.central.audit.{AuthAuditError, UserAuditEventsQuery}
+import versola.central.audit.{AuthAuditError, CentralAudit, UserAuditEventsQuery}
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.JWT
-import versola.util.audit.{ActorType, AuditContext}
+import versola.util.audit.AuditContext
 import versola.util.{PageLimit, PageOffset, Patch}
 import zio.*
 import zio.http.*
@@ -497,9 +497,9 @@ object AuthClientSpec extends ZIOSpecDefault:
         seen <- Ref.make(List.empty[Request])
         _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(r :: _).as(Response.status(Status.NoContent))).toRoutes)
         client <- ZIO.service[AuthClient]
-        _ <- AuditContext.setActor(ActorType.admin, Some(admin)) *> client.invalidateSession(userId)
+        _ <- AuditContext.setActor(CentralAudit.Actors.Admin, Some(admin)) *> client.invalidateSession(userId)
         // a provisioning client is not a user of auth: its calls are central's own
-        _ <- AuditContext.reset(AuditContext.State(actor = Some((ActorType.client, Some("utils")))))(client.invalidateSession(userId))
+        _ <- AuditContext.reset(AuditContext.State(actor = Some((CentralAudit.Actors.Client, Some("utils")))))(client.invalidateSession(userId))
         _ <- AuditContext.reset(AuditContext.State.empty)(client.invalidateSession(userId))
         requests <- seen.get.map(_.reverse)
       yield assertTrue(

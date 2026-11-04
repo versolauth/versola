@@ -28,7 +28,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
     outcome = AuditOutcome.success,
     reason = None,
     severity = AuditSeverity.info,
-    actorType = if source == AuditSource.auth then ActorType.user else ActorType.admin,
+    actorType = if source == AuditSource("auth") then ActorType.user else CentralAudit.Actors.Admin,
     actorId = Some("actor"),
     userId = Some(userId),
     clientId = None,
@@ -38,13 +38,13 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
     traceId = None,
     targetType = Some("user"),
     targetId = Some(userId.toString),
-    details = if source == AuditSource.central then Json.Obj("changed" -> Json.Arr(Json.Str("claims"))) else Json.Obj(),
+    details = if source == CentralAudit.Source then Json.Obj("changed" -> Json.Arr(Json.Str("claims"))) else Json.Obj(),
   )
 
-  private val login = event(1, AuditSource.auth, at("10:00"), "login.completed")
-  private val token = event(2, AuditSource.auth, at("09:00"), "token.issued")
-  private val reset = event(3, AuditSource.central, at("09:30"), "admin.user-password.action:reset")
-  private val claims = event(4, AuditSource.central, at("09:45"), "admin.user-claims.update")
+  private val login = event(1, AuditSource("auth"), at("10:00"), "login.completed")
+  private val token = event(2, AuditSource("auth"), at("09:00"), "token.issued")
+  private val reset = event(3, CentralAudit.Source, at("09:30"), "admin.user-password.action:reset")
+  private val claims = event(4, CentralAudit.Source, at("09:45"), "admin.user-claims.update")
 
   private def authPage(events: List[AuditEvent], next: Option[String]) =
     UserAuditEventsResponse(events = events, nextCursor = next, retentionFrom = authRetentionFrom)
@@ -142,7 +142,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val cursor = AuditReportService.encode(AuditReportService.Cursor(until = token.at, auth = Some("more"), key = None, centralOnly = false))
       for
         _ <- clock
-        _ <- env.authClient.getUserAuditEvents.succeedsWith(authPage(List(event(5, AuditSource.auth, at("08:00"), "session.ended")), None))
+        _ <- env.authClient.getUserAuditEvents.succeedsWith(authPage(List(event(5, AuditSource("auth"), at("08:00"), "session.ended")), None))
         _ <- env.repository.userEvents.succeedsWith(Nil)
         report <- env.service.userReport(userId, None, None, Some(cursor), Some(10))
       yield assertTrue(
@@ -155,7 +155,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("without auth the report is central's rows alone, flagged, in pages of their own that go on by the key of the last row") {
       val env = Env()
-      val rows = List(claims, reset, event(6, AuditSource.central, at("09:00"), "admin.user.viewed"))
+      val rows = List(claims, reset, event(6, CentralAudit.Source, at("09:00"), "admin.user.viewed"))
       for
         _ <- clock
         _ <- env.authClient.getUserAuditEvents.failsWith(AuthAuditError.Unavailable("auth answered 503"))

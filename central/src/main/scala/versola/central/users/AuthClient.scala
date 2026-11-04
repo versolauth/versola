@@ -2,11 +2,11 @@ package versola.central.users
 
 import versola.central.CentralConfig
 import versola.central.antifraud.*
-import versola.central.audit.{AuthAuditError, UserAuditEventsQuery, UserAuditEventsResponse}
+import versola.central.audit.{AuthAuditError, CentralAudit, UserAuditEventsQuery, UserAuditEventsResponse}
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.util.audit.{ActorType, AuditContext}
+import versola.util.audit.AuditContext
 import versola.util.http.EntityVersion
 import versola.util.{Email, PageLimit, Patch, Phone}
 import zio.http.{Body, Client, Header, MediaType, Method, QueryParams, Request, Response, Status, URL}
@@ -590,7 +590,9 @@ object AuthClient:
         // On behalf of the administrator the request came from, when it is one: a call central makes on its own (the outbox) or
         // for a provisioning client names nobody, and auth records central.
         onBehalf =
-          actor.collect { case (ActorType.admin, Some(id)) => request.addHeader(Header.Custom(AuthClient.ActorHeader, id)) }.getOrElse(request)
+          actor.collect {
+            case (actorType, Some(id)) if actorType == CentralAudit.Actors.Admin => request.addHeader(Header.Custom(AuthClient.ActorHeader, id))
+          }.getOrElse(request)
         token <- tokenService.getToken
         result <- attemptWithToken(onBehalf)(token).catchSome:
           case AuthClient.TokenExpiredError =>

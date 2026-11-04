@@ -1,8 +1,7 @@
 package versola
 
-import versola.central.audit.AuditRoutes
 import versola.central.audit.AuditRoutes.Entry
-import versola.util.audit.AuditKinds
+import versola.central.audit.{AuditRoutes, CentralAudit}
 import zio.http.Method
 import zio.test.*
 
@@ -32,9 +31,9 @@ object AuditRoutesSpec extends ZIOSpecDefault:
     test("a change is of a resource of the closed set and of an operation the method says, or of an action named by the route's last segment") {
       val wrong = entries.collect:
         case ((method, path), Entry.Change(resource, operation, _, _, _))
-            if !AuditKinds.adminResources.contains(resource) ||
-              !AuditKinds.isAdminOperation(operation) ||
-              !AuditKinds.isKnown(AuditKinds.admin(resource, operation).value) ||
+            if !CentralAudit.resources.contains(resource) ||
+              !CentralAudit.isAdminOperation(operation) ||
+              !CentralAudit.catalog.isKnown(CentralAudit.admin(resource, operation)) ||
               operation != expectedOperation(method, path) =>
           (method, path, resource, operation)
       assertTrue(wrong.isEmpty)

@@ -13,7 +13,7 @@ import versola.central.antifraud.{
   AntifraudStatusController,
   AntifraudStatusService,
 }
-import versola.central.audit.{AuditHook, AuditReportController, AuditReportService, CentralAuditRepository}
+import versola.central.audit.{AuditHook, AuditReportController, AuditReportService, CentralAudit, CentralAuditRepository}
 import versola.central.configuration.challenges.{
   ChallengeSettingsRepository,
   ChallengeSettingsService,
@@ -99,7 +99,7 @@ import versola.configuration.themes.PostgresThemeRepository
 import versola.users.PostgresUserRepository
 import versola.util.*
 import versola.util.SequentialLayers.*
-import versola.util.audit.{AuditEventRepository, AuditEvents, AuditSource}
+import versola.util.audit.{AuditEventRepository, AuditEvents}
 import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp
 import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource, PostgresWalMetrics}
@@ -300,7 +300,7 @@ object PostgresCentralApp extends VersolaApp("central"):
     * `audit_event` and writes the events the services record. It comes before everything that records: bootstrap does. */
   private val auditEvents
       : ZLayer[CentralConfig & AuditEventRepository & Tracing & SecureRandom & Scope, Nothing, AuditEvents.Settings & AuditEvents] =
-    ZLayer.fromFunction((config: CentralConfig) => config.audit.settings) >++> AuditEvents.live(AuditSource.central, nodeId)
+    ZLayer.fromFunction((config: CentralConfig) => config.audit.settings) >++> AuditEvents.live(CentralAudit.Source, nodeId, CentralAudit.catalog)
 
   override val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     parseConfig[CentralConfig] >++>

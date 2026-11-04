@@ -2,7 +2,7 @@ package versola.audit
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.central.audit.CentralAuditRepositorySpec
+import versola.central.audit.{CentralAudit, CentralAuditRepositorySpec}
 import versola.util.audit.*
 import versola.util.postgres.PostgresSpec
 import zio.*
@@ -32,13 +32,13 @@ object PostgresAuditEventRepositorySpec extends PostgresSpec, CentralAuditReposi
     id = UUID.fromString(id),
     at = oldAt,
     tenantId = None,
-    source = AuditSource.central,
+    source = CentralAudit.Source,
     nodeId = "node-1",
-    kind = AuditKinds.admin("tenant", "create"),
+    kind = CentralAudit.admin("tenant", "create"),
     outcome = AuditOutcome.success,
     reason = None,
     severity = AuditSeverity.info,
-    actorType = ActorType.admin,
+    actorType = CentralAudit.Actors.Admin,
     actorId = None,
     userId = Some(UUID.fromString("00000000-0000-0000-0000-000000000001")),
     clientId = None,

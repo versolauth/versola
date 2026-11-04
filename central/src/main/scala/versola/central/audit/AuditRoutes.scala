@@ -1,6 +1,6 @@
 package versola.central.audit
 
-import versola.util.audit.{AuditKind, AuditKinds}
+import versola.util.audit.AuditKind
 import zio.http.Method
 
 /** What each route central serves means to the audit log (#469), in one place: the hook ([[AuditHook]]) looks a request's
@@ -38,8 +38,8 @@ object AuditRoutes:
       * it asks central to do under its own events. */
     case Internal
 
-  val AdminUserViewed: AuditKind = AuditKinds.AdminUserViewed
-  val AdminAuditQueried: AuditKind = AuditKinds.AdminAuditQueried
+  val AdminUserViewed: AuditKind = CentralAudit.AdminUserViewed
+  val AdminAuditQueried: AuditKind = CentralAudit.AdminAuditQueried
 
   private def change(resource: String, operation: String, target: Target, targetType: Option[String] = None, revealsSecret: Boolean = false) =
     Entry.Change(

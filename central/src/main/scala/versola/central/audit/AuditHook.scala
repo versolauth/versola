@@ -1,5 +1,6 @@
 package versola.central.audit
 
+import versola.central.CentralConfig
 import versola.central.audit.AuditRoutes.{Entry, Target}
 import versola.util.audit.*
 import versola.util.http.Observability
@@ -64,11 +65,11 @@ object AuditHook:
     "credentialId",
   )
 
-  val middleware: Middleware[AuditEvents & AuditEvents.Settings] = new Middleware[AuditEvents & AuditEvents.Settings]:
-    def apply[Env1 <: AuditEvents & AuditEvents.Settings, Err](routes: Routes[Env1, Err]): Routes[Env1, Err] =
+  val middleware: Middleware[AuditEvents & CentralConfig] = new Middleware[AuditEvents & CentralConfig]:
+    def apply[Env1 <: AuditEvents & CentralConfig, Err](routes: Routes[Env1, Err]): Routes[Env1, Err] =
       Routes.fromIterable(routes.routes.map(route => route.transform[Env1](audited(route.routePattern.method, route.routePattern.pathCodec.render))))
 
-  private def audited[Env1 <: AuditEvents & AuditEvents.Settings](method: Method, pattern: String)(
+  private def audited[Env1 <: AuditEvents & CentralConfig](method: Method, pattern: String)(
       handler: Handler[Env1, Response, Request, Response],
   ): Handler[Env1, Response, Request, Response] =
     AuditRoutes.of(method, pattern) match
@@ -88,12 +89,12 @@ object AuditHook:
     val id = header(ActorHeader)
     val client = header(ActorClientHeader)
     val actorType =
-      if id.isEmpty then ActorType.service
-      else if id == client then ActorType.client
-      else ActorType.admin
+      if id.isEmpty then CentralAudit.Actors.Service
+      else if id == client then CentralAudit.Actors.Client
+      else CentralAudit.Actors.Admin
     Actor(actorType = actorType, id = id, tenantId = header(ActorTenantHeader))
 
-  private def recording[Env1 <: AuditEvents & AuditEvents.Settings](
+  private def recording[Env1 <: AuditEvents & CentralConfig](
       handler: Handler[Env1, Response, Request, Response],
       pattern: String,
       change: Option[Entry.Change],
@@ -101,7 +102,7 @@ object AuditHook:
   ): Handler[Env1, Response, Request, Response] =
     val target = change.map(_.target).orElse(read.map(_.target)).getOrElse(Target.Nowhere)
     // The body is read where it names the target, and where it says what an update changes (the names of its fields).
-    val readsBody = target.isInstanceOf[Target.Body] || change.exists(_.operation == AuditKinds.AdminUpdate)
+    val readsBody = target.isInstanceOf[Target.Body] || change.exists(_.operation == CentralAudit.AdminUpdate)
     Handler.scoped[Env1]:
       Handler.fromFunctionZIO[Request]: original =>
         for
@@ -139,7 +140,7 @@ object AuditHook:
       body: Option[Json.Obj],
       change: Option[Entry.Change],
       read: Option[Entry.Read],
-  ): URIO[AuditEvents & AuditEvents.Settings, Unit] =
+  ): URIO[AuditEvents & CentralConfig, Unit] =
     val succeeded = status.isSuccess || status.isRedirection
     val entryTarget = change.map(_.target).orElse(read.map(_.target)).getOrElse(Target.Nowhere)
     val targetType = change.map(_.targetType).orElse(read.map(_.targetType))
@@ -150,7 +151,7 @@ object AuditHook:
     // the ones that name what is updated.
     val changedNames =
       if state.changed.nonEmpty then state.changed.toList.sorted
-      else if change.exists(_.operation == AuditKinds.AdminUpdate) then
+      else if change.exists(_.operation == CentralAudit.AdminUpdate) then
         body.fold(List.empty[String])(_.fields.map(_._1).filterNot(namesTarget).toList.sorted)
       else Nil
     val details = AdminDetails(
@@ -178,13 +179,13 @@ object AuditHook:
           for
             outcome <- outcomeOf(status)
             (result, reason) = outcome
-            _ <- events.recordBestEffort(draft(AuditKinds.admin(entry.resource, entry.operation), result, reason))
+            _ <- events.recordBestEffort(draft(CentralAudit.admin(entry.resource, entry.operation), result, reason))
             _ <-
-              ZIO.when(succeeded && entry.revealsSecret)(events.recordBestEffort(draft(AuditKinds.AdminSecretRevealed, AuditOutcome.success, None)))
+              ZIO.when(succeeded && entry.revealsSecret)(events.recordBestEffort(draft(CentralAudit.AdminSecretRevealed, AuditOutcome.success, None)))
           yield ()
         case (_, Some(entry)) =>
           // A look at a user can be left out of the log by the deployment (`events.admin-user-viewed`): it is the one read that is many.
-          ZIO.serviceWith[AuditEvents.Settings](settings => entry.kind != AuditRoutes.AdminUserViewed || settings.events.adminUserViewed).flatMap:
+          ZIO.serviceWith[CentralConfig](config => entry.kind != AuditRoutes.AdminUserViewed || config.audit.events.adminUserViewed).flatMap:
             wanted =>
               ZIO.when(succeeded && wanted)(events.recordBestEffort(draft(entry.kind, AuditOutcome.success, None))).unit
         case _ => ZIO.unit

@@ -1,5 +1,6 @@
 package versola.central.audit
 
+import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.audit.*
 import versola.util.http.Observability
 import zio.*
@@ -24,12 +25,8 @@ object AuditHookSpec extends ZIOSpecDefault:
     override def record(draft: AuditDraft): IO[AuditUnavailable.type, Unit] = recordBestEffort(draft)
     override def recordBestEffort(draft: AuditDraft): UIO[Unit] = AuditContext.current.flatMap(state => seen.update(_ :+ Recorded(draft, state)))
 
-  private def settings(adminUserViewed: Boolean = true) = AuditEvents.Settings(
-    retention = 7.days,
-    overflow = AuditEvents.Overflow.block,
-    blockTimeout = 2.seconds,
-    events = AuditEvents.EventTiers(tokenRefresh = true, authorizeSuccess = true, parSuccess = true, adminUserViewed = adminUserViewed),
-  )
+  private def settings(adminUserViewed: Boolean = true) =
+    TestCentralConfig.config.copy(audit = CentralConfig.AuditConfig(events = CentralConfig.AuditConfig.Events(adminUserViewed = adminUserViewed)))
 
   private def asAdmin(request: Request, tenant: String = "default", client: String = "central-admin"): Request =
     request
@@ -40,14 +37,14 @@ object AuditHookSpec extends ZIOSpecDefault:
   private def serve(
       routes: Routes[Any, Response],
       request: Request,
-      tiers: AuditEvents.Settings = settings(),
+      tiers: CentralConfig = settings(),
   ): ZIO[Client & TestClient, Nothing, (Response, List[Recorded])] =
     // `Observability.middleware` gives each request a log context of its own; this is that, so that an error code one request set
     // is not the next one's
     logContext.locallyWith(identity)(for
       seen <- Ref.make(List.empty[Recorded])
       client <- ZIO.service[Client]
-      _ <- TestClient.addRoutes((routes @@ AuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, AuditEvents.Settings](
+      _ <- TestClient.addRoutes((routes @@ AuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig](
         Capture(seen),
         tiers,
       )))
@@ -80,7 +77,7 @@ object AuditHookSpec extends ZIOSpecDefault:
           recorded.map(_.kind) == List("admin.client.create", "admin.secret.revealed"),
           event.draft.outcome == AuditOutcome.success,
           event.draft.reason.isEmpty,
-          event.draft.actor.contains((ActorType.admin, Some(admin))),
+          event.draft.actor.contains((CentralAudit.Actors.Admin, Some(admin))),
           event.draft.target.contains(("client", "web-app")),
           event.draft.userId.isEmpty,
           event.context.tenantId.contains("default"),
@@ -89,7 +86,7 @@ object AuditHookSpec extends ZIOSpecDefault:
           event.details("tenantId") == Json.Str("acme"),
           // the second event is the same call's: who looked at the secret it handed back
           recorded(1).draft.target.contains(("client", "web-app")),
-          recorded(1).draft.actor.contains((ActorType.admin, Some(admin))),
+          recorded(1).draft.actor.contains((CentralAudit.Actors.Admin, Some(admin))),
         )
     },
     test("the handler reads the body the hook read to find the target") {
@@ -185,7 +182,7 @@ object AuditHookSpec extends ZIOSpecDefault:
     },
     test("a look at a user is recorded with the user as target and as the row's user, only when it succeeded and the deployment records it") {
       val found = Request.get(URL(Path.decode("/users")).addQueryParam("id", targetUser))
-      def get(status: Status, tiers: AuditEvents.Settings) =
+      def get(status: Status, tiers: CentralConfig) =
         serve(Routes(findUsers -> handler((_: Request) => ZIO.succeed(Response.status(status)))), asAdmin(found), tiers).map(_._2)
       for
         viewed <- get(Status.Ok, settings())
@@ -228,9 +225,9 @@ object AuditHookSpec extends ZIOSpecDefault:
         (_, clientRecorded) <- serve(Routes(createClient -> ok()), asAdmin(bare, client = admin))
         (_, userAgent) <- serve(Routes(createClient -> ok()), asAdmin(bare).addHeader(Header.Custom("User-Agent", "Console/1")))
       yield assertTrue(
-        bareRecorded.head.draft.actor.contains((ActorType.service, None)),
+        bareRecorded.head.draft.actor.contains((CentralAudit.Actors.Service, None)),
         bareRecorded.head.context.tenantId.isEmpty,
-        clientRecorded.head.draft.actor.contains((ActorType.client, Some(admin))),
+        clientRecorded.head.draft.actor.contains((CentralAudit.Actors.Client, Some(admin))),
         userAgent.head.context.userAgent.contains("Console/1"),
       )
     },
