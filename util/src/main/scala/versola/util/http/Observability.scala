@@ -13,6 +13,8 @@ import zio.telemetry.opentelemetry.context.{IncomingContextCarrier, OutgoingCont
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.telemetry.opentelemetry.tracing.propagation.TraceContextPropagator
 
+import versola.util.audit.AuditContext
+
 import java.time.Instant
 import scala.collection.mutable
 import scala.concurrent.duration.Duration as ScalaDuration
@@ -331,6 +333,8 @@ object Observability:
             logContext.locallyWith(identity)(
               routeLabel.locally(None)(
                 routePath.locally(None)(
+                  // the audit context starts as the request's own: what the request noted about itself is all it holds
+                  AuditContext.reset(AuditContext.State(userAgent = request.rawHeader(Header.UserAgent.name)))(
                   for
                     startTime <- Clock.instant
                     now <- Clock.nanoTime
@@ -382,7 +386,7 @@ object Observability:
                             ZIO.logInfo("receive-http") @@ log @@ loggerName
                       yield ()
                     _ <- Observability.cause.set(None)
-                  yield response,
+                  yield response),
                 ),
               ),
             ) @@ tracing.aspects.extractSpan(

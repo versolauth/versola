@@ -6,6 +6,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PhoneRegion, TenantId}
 import versola.oauth.conversation.model.AuthId
 import versola.util.http.Observability
+import versola.util.partitions.TableOwnership
 import versola.util.net.{
   AsnClassifier,
   AsnDatabase,
