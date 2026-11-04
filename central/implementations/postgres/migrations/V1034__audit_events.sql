@@ -36,10 +36,8 @@ CREATE TABLE central_audit_event (
     PRIMARY KEY (id, at)
 ) PARTITION BY RANGE (at);
 
--- The window scans of the report and of the maintenance: BRIN, since rows arrive in time order.
-CREATE INDEX central_audit_event_at_idx ON central_audit_event USING brin (at);
-
--- The per-user report: everything that was done to a user, newest first.
+-- The only reads are by user (the per-user report and its summary of administrators' changes), within a window: this index
+-- serves them, and the day bounds prune the partitions.
 CREATE INDEX central_audit_event_user_idx ON central_audit_event (user_id, at) WHERE user_id IS NOT NULL;
 
 -- A row of a day that has no partition is written here instead of being refused, so a maintenance that cannot run
