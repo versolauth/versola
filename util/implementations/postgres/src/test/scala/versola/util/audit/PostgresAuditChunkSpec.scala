@@ -132,7 +132,9 @@ object PostgresAuditChunkSpec extends PostgresSpec:
       calibrated <- stored(xa)
       started <- Clock.nanoTime
       sampler <-
-        (ZIO.sleep(50.millis) *> transactions(xa).flatMap(open => seen.update(known => open.foldLeft(known)((all, t) => all.updated(t._1, math.max(all.getOrElse(t._1, 0.0), t._2))))))
+        (ZIO.sleep(50.millis) *> transactions(xa).flatMap(open =>
+          seen.update(known => open.foldLeft(known)((all, t) => all.updated(t._1, math.max(all.getOrElse(t._1, 0.0), t._2)))),
+        ))
           .forever.fork
       _ <- events.record(draft).ignore
       _ <- ZIO.foreachDiscard(1 to burst)(_ => events.record(draft).ignore)
@@ -187,14 +189,18 @@ object PostgresAuditChunkSpec extends PostgresSpec:
         run.elapsedSeconds < batchSeconds * 1.25 + 1.0 + 1.5,
       )
     },
-    test("without a slow trigger the writer's rate with chunks of 100 is not pathologically below its rate with one transaction a batch (the rates are printed)") {
+    test(
+      "without a slow trigger the writer's rate with chunks of 100 is not pathologically below its rate with one transaction a batch (the rates are printed)",
+    ) {
       for
         xa <- ZIO.service[TransactorZIO]
         whole <- throughput(xa, chunk = 1000, rows = 20000)
         chunked <- throughput(xa, chunk = 100, rows = 20000)
-        _ <- Console.printLine(f"writer, 20000 rows in the queue: one transaction a batch of 1000: $whole%.0f rows/s; chunks of 100: $chunked%.0f rows/s").orDie
+        _ <- Console.printLine(
+          f"writer, 20000 rows in the queue: one transaction a batch of 1000: $whole%.0f rows/s; chunks of 100: $chunked%.0f rows/s",
+        ).orDie
       yield // A guard against a chunk a row, not a benchmark: a machine under load moves the ratio, and the rates above are what is read.
-      assertTrue(chunked >= whole * 0.3)
+        assertTrue(chunked >= whole * 0.3)
     },
   ).provideSomeLayer[TransactorZIO](ZTestLogger.default) @@ TestAspect.sequential @@ TestAspect.before(
     table.reset,
