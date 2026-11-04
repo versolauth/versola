@@ -444,7 +444,11 @@ object ConversationService:
         // sending the same token again.
         verdict <- proof match
           case ProofInput.Answered(token, solution) if submitStatus == LimitStatus.Allowed =>
-            challengeSubject(authId, conversation, credential).flatMap(challengeVerifier.verify(_, token, solution)).flatMap(settle(authId, conversation, _)).map(Some(_))
+            challengeSubject(
+              authId,
+              conversation,
+              credential,
+            ).flatMap(challengeVerifier.verify(_, token, solution)).flatMap(settle(authId, conversation, _)).map(Some(_))
           case _ => ZIO.none
         // The ask of a request left pending (after its pause, or a script's, which is given a proof to solve) is that request
         // made again: it took its step and was counted when it was left, and one code is one step and one count.
@@ -513,7 +517,15 @@ object ConversationService:
               sendInitialOtp(authId, conversation, credential, factorIndex, decision)
           // A challenge paid by waiting: the code goes out, as the ask of a request that did the work would have sent it.
           else if waited then
-            challengeStep(authId, conversation, credential, AntifraudOutcome.challenge_passed, decision, level = None, kind = ChallengeVerifier.PauseKind) *>
+            challengeStep(
+              authId,
+              conversation,
+              credential,
+              AntifraudOutcome.challenge_passed,
+              decision,
+              level = None,
+              kind = ChallengeVerifier.PauseKind,
+            ) *>
               sendInitialOtp(authId, conversation, credential, factorIndex, decision)
           else challenge(authId, conversation, credential, factorIndex, decision, proof, verdict)
       yield result
@@ -550,7 +562,15 @@ object ConversationService:
         result <-
           if written then
             // Asked for again by the page, it is the same request: recorded once.
-            ZIO.unless(pending(conversation))(challengeStep(authId, conversation, credential, AntifraudOutcome.challenged, decision, level = None, kind = ChallengeVerifier.PauseKind))
+            ZIO.unless(pending(conversation))(challengeStep(
+              authId,
+              conversation,
+              credential,
+              AntifraudOutcome.challenged,
+              decision,
+              level = None,
+              kind = ChallengeVerifier.PauseKind,
+            ))
               .as(ConversationResult.RenderStep(step): ConversationResult.Render)
           else Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
       yield result

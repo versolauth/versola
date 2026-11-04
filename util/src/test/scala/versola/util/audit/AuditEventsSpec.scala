@@ -12,6 +12,7 @@ import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
+import java.sql.SQLException
 import java.time.{Instant, LocalDate}
 import java.util.UUID
 
@@ -57,7 +58,7 @@ object AuditEventsSpec extends UnitSpecBase:
       val written: Ref[List[List[AuditEvent]]],
   )
 
-  private def fixture(gated: Boolean, failures: Int = 0): UIO[Fixture] =
+  private def fixture(gated: Boolean, failures: Int = 0, refuse: AuditEvent => Option[Throwable] = _ => None): UIO[Fixture] =
     for
       repository <- ZIO.succeed(stub[AuditEventRepository])
       started <- Queue.unbounded[Unit]
@@ -68,7 +69,9 @@ object AuditEventsSpec extends UnitSpecBase:
         calls.updateAndGet(_ + 1).flatMap: n =>
           started.offer(()) *>
             gate.await.when(gated && n == 1) *>
-            (if n <= failures then ZIO.fail(RuntimeException("connection refused")) else written.update(_ :+ events))
+            (events.flatMap(refuse).headOption match
+              case Some(error) => ZIO.fail(error)
+              case None => if n <= failures then ZIO.fail(RuntimeException("connection refused")) else written.update(_ :+ events))
       _ <- repository.ownership.succeedsWith(owned)
       _ <- repository.maintainPartitions.succeedsWith(noReport)
       _ <- repository.partitionDaysAhead.succeedsWith(3)
@@ -309,6 +312,81 @@ object AuditEventsSpec extends UnitSpecBase:
             _ <- settle
             written <- f.written.get
           yield assertTrue(afterFirst.isEmpty, written.size == 1, written.head.size == 1)
+      },
+    ),
+    suite("a row the table cannot store")(
+      test("is dropped and counted after the batch it was in is refused, and the rest of the batch is stored") {
+        val poison = (event: AuditEvent) => Option.when(event.reason.contains("poison"))(SQLException("invalid input syntax for type inet", "22P02"))
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false, refuse = poison)
+            events <- build(f, block, source = edge, sizing = sizing.copy(queueCapacity = 10, batchSize = 10))
+            rejectedBefore <- counter("audit_events_rejected_total", edge)
+            _ <- events.record(draft())
+            _ <- events.record(draft().copy(reason = Some("poison")))
+            _ <- events.record(draft(Refused, AuditOutcome.failure))
+            // The batch is refused three times, a second apart, and then written row by row.
+            written <- until(f, 2).map(_.flatten)
+            rejectedAfter <- counter("audit_events_rejected_total", edge)
+          yield assertTrue(
+            written.map(_.kind) == List(Issued, Refused),
+            !written.exists(_.reason.contains("poison")),
+            rejectedAfter - rejectedBefore == 1.0,
+          )
+      },
+      test("a constraint violation is dropped too, and the writer goes on with what is queued after it") {
+        val poison = (event: AuditEvent) => Option.when(event.reason.contains("poison"))(SQLException("null value", "23502"))
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false, refuse = poison)
+            events <- build(f, block, source = edge, sizing = sizing.copy(queueCapacity = 10, batchSize = 10))
+            _ <- events.record(draft().copy(reason = Some("poison")))
+            // The refused batch is tried three times a second apart, then the row alone, and dropped.
+            _ <- settle *> TestClock.adjust(10.seconds)
+            _ <- events.record(draft(Refused, AuditOutcome.failure))
+            written <- until(f, 1).map(_.flatten)
+          yield assertTrue(written.map(_.kind) == List(Refused))
+      },
+      test("is not dropped when the failure is the database's: a lone row that fails with no SQLSTATE is tried again until it is stored") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false, failures = 5)
+            events <- build(f, block, source = edge, sizing = sizing.copy(queueCapacity = 10))
+            rejectedBefore <- counter("audit_events_rejected_total", edge)
+            _ <- events.record(draft())
+            written <- until(f, 1)
+            rejectedAfter <- counter("audit_events_rejected_total", edge)
+          yield assertTrue(written.map(_.size) == List(1), rejectedAfter == rejectedBefore)
+      },
+      test("is not dropped when every row of the batch fails for the database's reason, a connection class SQLSTATE included") {
+        val down = (_: AuditEvent) => Some(SQLException("the connection is closed", "08006"))
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false, refuse = down)
+            events <- build(f, block, source = edge, sizing = sizing.copy(queueCapacity = 10, batchSize = 10))
+            rejectedBefore <- counter("audit_events_rejected_total", edge)
+            _ <- events.record(draft()) *> events.record(draft())
+            _ <- settle *> TestClock.adjust(1.minute).repeatN(3)
+            written <- f.written.get
+            rejectedAfter <- counter("audit_events_rejected_total", edge)
+          yield assertTrue(written.isEmpty, rejectedAfter == rejectedBefore)
+      },
+      test("a draft never produces one: U+0000 is stripped, an address that is none is dropped, a user agent is cut") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false)
+            events <- build(f, block)
+            _ <- Observability.setIp("not an address") *> Observability.setClientId("cli\u0000ent")
+            _ <- AuditContext.setUserAgent("a" * 600) *> AuditContext.setTenant("ten\u0000ant")
+            _ <- events.record(draft().copy(reason = Some("re\u0000ason")))
+            written <- until(f, 1).map(_.flatten)
+          yield assertTrue(
+            written.map(_.ip) == List(None),
+            written.map(_.clientId) == List(Some("client")),
+            written.map(_.tenantId) == List(Some("tenant")),
+            written.map(_.reason) == List(Some("reason")),
+            written.map(_.userAgent.map(_.length)) == List(Some(AuditSanitizer.MaxUserAgent)),
+          )
       },
     ),
     suite("overflow = drop")(

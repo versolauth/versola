@@ -3,6 +3,7 @@ package versola.util.http
 import io.opentelemetry.api.trace.{SpanKind, StatusCode}
 import versola.util.audit.AuditContext
 import versola.util.audit.AuditContext.withAuditContext
+import versola.util.audit.AuditUnavailableException
 import zio.*
 import zio.http.*
 import zio.http.codec.HttpCodecError
@@ -257,6 +258,10 @@ object Observability:
       case ex: OutboundOverloaded =>
         ZIO.succeed(Response.status(Status.ServiceUnavailable).addHeader(Header.Custom("Retry-After", "1")))
       case ex: OutboundTimedOut => ZIO.succeed(Response.status(Status.GatewayTimeout))
+      // The audit log is the gate: an event it could not take in time is a request that does not happen (`audit.overflow = block`).
+      case AuditUnavailableException =>
+        setError("audit_unavailable") *>
+          ZIO.succeed(Response.status(Status.ServiceUnavailable).addHeader(Header.Custom("Retry-After", "1")))
       case ex: Throwable => Observability.cause.set(Some(Cause.fail(ex))).as(Response.internalServerError)
     }
 
