@@ -24,7 +24,7 @@ object PostgresAuditEventRepositorySpec extends PostgresSpec, CentralAuditReposi
       // the table refuses TRUNCATE as it refuses DELETE, unless the transaction says it is the service's maintenance
       xa.transact:
         sql"SET LOCAL versola.audit_maintenance = 'on'".update.run()
-        sql"TRUNCATE TABLE audit_event".update.run()
+        sql"TRUNCATE TABLE central_audit_event".update.run()
     }.unit
 
   /** A day no run of this spec or of the service has a partition for, so that its rows are in the default partition. */
@@ -54,7 +54,7 @@ object PostgresAuditEventRepositorySpec extends PostgresSpec, CentralAuditReposi
     details = Json.Obj(),
   )
 
-  private def dropOldDayPartition(xa: TransactorZIO) = xa.connect(sql"DROP TABLE IF EXISTS audit_event_20010203".update.run()).unit
+  private def dropOldDayPartition(xa: TransactorZIO) = xa.connect(sql"DROP TABLE IF EXISTS central_audit_event_20010203".update.run()).unit
 
   override def implementationCases(env: CentralAuditRepositorySpec.Env) =
     List(
@@ -63,12 +63,12 @@ object PostgresAuditEventRepositorySpec extends PostgresSpec, CentralAuditReposi
           xa <- ZIO.service[TransactorZIO]
           _ <- dropOldDayPartition(xa)
           _ <- env.repository.insertBatch(List(written("00000000-0000-7000-8000-000000000001")))
-          updated <- xa.transact(sql"UPDATE audit_event SET reason = 'edited'".update.run()).either
-          deleted <- xa.transact(sql"DELETE FROM audit_event".update.run()).either
-          truncated <- xa.transact(sql"TRUNCATE TABLE audit_event".update.run()).either
-          kept <- xa.connect(sql"SELECT COUNT(*) FROM audit_event".query[Long].run().head)
+          updated <- xa.transact(sql"UPDATE central_audit_event SET reason = 'edited'".update.run()).either
+          deleted <- xa.transact(sql"DELETE FROM central_audit_event".update.run()).either
+          truncated <- xa.transact(sql"TRUNCATE TABLE central_audit_event".update.run()).either
+          kept <- xa.connect(sql"SELECT COUNT(*) FROM central_audit_event".query[Long].run().head)
           pruned <- env.repository.pruneDefault(oldAt.plusSeconds(1))
-          left <- xa.connect(sql"SELECT COUNT(*) FROM audit_event".query[Long].run().head)
+          left <- xa.connect(sql"SELECT COUNT(*) FROM central_audit_event".query[Long].run().head)
         yield assertTrue(
           updated.isLeft,
           deleted.isLeft,
@@ -86,7 +86,7 @@ object PostgresAuditEventRepositorySpec extends PostgresSpec, CentralAuditReposi
           _ <- dropOldDayPartition(xa)
           _ <- env.repository.insertBatch(List(written("00000000-0000-7000-8000-000000000002")))
           held <- env.repository.maintainPartitions(oldDay, 1, LocalDate.of(2000, 1, 1))
-          stillThere <- xa.connect(sql"SELECT COUNT(*) FROM audit_event_default".query[Long].run().head)
+          stillThere <- xa.connect(sql"SELECT COUNT(*) FROM central_audit_event_default".query[Long].run().head)
           pruned <- env.repository.pruneDefault(oldAt.plusSeconds(1))
           attached <- env.repository.maintainPartitions(oldDay, 1, LocalDate.of(2000, 1, 1))
           ahead <- env.repository.partitionDaysAhead(oldDay.minusDays(1))

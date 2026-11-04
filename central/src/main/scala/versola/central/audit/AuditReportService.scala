@@ -117,7 +117,7 @@ object AuditReportService:
           case Right(page) =>
             // Where this page of auth's ends is where central's rows stop: all of them down to it are on this page, and the next
             // page takes them from there. On the last page that is the start of the window.
-            val low = page.nextCursor.flatMap(_ => page.events.lastOption.map(_.at)).getOrElse(lower)
+            val low = page.nextCursor.flatMap(_ => page.events.lastOption.map(_.event.at)).getOrElse(lower)
             for
               // one more than the bound, to know whether the bound cut anything
               found <- repository.userEvents(userId, low, until, None, MaxCentralRowsPerPage + 1)
@@ -127,7 +127,7 @@ object AuditReportService:
               userId = userId,
               window = ReportWindow(from = lower, to = upper, retentionFrom = laterOf(retentionFrom, page.retentionFrom)),
               summary = actions.map(done => withActions(authSummary, done._1)),
-              events = ordered(page.events ++ mine),
+              events = ordered(page.events ++ mine.map(ReportedEvent(_, None))),
               nextCursor =
                 page.nextCursor.map(next => AuditCursor.encode(AuditCursor(until = low, auth = Some(next), key = None, centralOnly = false))),
               partial = Nil,
@@ -154,7 +154,7 @@ object AuditReportService:
         userId = userId,
         window = ReportWindow(from = lower, to = upper, retentionFrom = retentionFrom),
         summary = actions.map(done => withActions(authSummary, done._1)),
-        events = page,
+        events = page.map(ReportedEvent(_, None)),
         nextCursor = Option.when(rows.size > pageSize)(page.last).map(last =>
           AuditCursor.encode(AuditCursor(until = until, auth = None, key = Some(AuditCursor.Key(last.at, last.id)), centralOnly = true)),
         ),
@@ -213,5 +213,5 @@ object AuditReportService:
     private def laterOf(a: Instant, b: Instant): Instant = if a.isAfter(b) then a else b
 
     /** Newest first; rows of one instant by id, descending, as both stores order them. */
-    private def ordered(events: List[AuditEvent]): List[AuditEvent] =
-      events.sortBy(e => (e.at, e.id.toString))(using Ordering[(Instant, String)].reverse)
+    private def ordered(events: List[ReportedEvent]): List[ReportedEvent] =
+      events.sortBy(e => (e.event.at, e.event.id.toString))(using Ordering[(Instant, String)].reverse)

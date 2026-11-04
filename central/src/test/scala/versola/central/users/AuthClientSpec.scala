@@ -561,9 +561,29 @@ object AuthClientSpec extends ZIOSpecDefault:
         requests.head.url.queryParams.map.get("to").isEmpty,
         events.nextCursor.contains("abc"),
         events.retentionFrom == Instant.parse("2026-10-27T00:00:00Z"),
-        events.events.map(_.kind.value) == List("token.issued"),
-        events.events.head.ip.contains("10.0.0.1"),
+        events.events.map(_.event.kind.value) == List("token.issued"),
+        events.events.head.event.ip.contains("10.0.0.1"),
+        // an auth of the older form sends no country, and the event decodes all the same
+        events.events.head.country.isEmpty,
         summary.fields.exists(_._1 == "sessions"),
+      )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("the country auth gives an event, flat beside its address, is read, and an event without one decodes") {
+      val withCountry =
+        """{"id":"00000000-0000-7000-8000-000000000002","at":"2026-11-03T10:00:00Z","source":"auth","nodeId":"n1","kind":"login.completed","outcome":"success","severity":"info","actorType":"user","ip":"203.0.113.7","country":"KZ","details":{}}"""
+      val without =
+        """{"id":"00000000-0000-7000-8000-000000000003","at":"2026-11-03T09:00:00Z","source":"auth","nodeId":"n1","kind":"token.issued","outcome":"success","severity":"info","actorType":"client","details":{}}"""
+      for
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](_ =>
+            ZIO.succeed(Response.json(s"""{"events":[$withCountry,$without],"nextCursor":null,"retentionFrom":"2026-10-27T00:00:00Z"}""")),
+          ).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        page <- client.getUserAuditEvents(userId, UserAuditEventsQuery(None, None, None, 10))
+      yield assertTrue(
+        page.events.map(_.country) == List(Some("KZ"), None),
+        page.events.map(_.event.kind.value) == List("login.completed", "token.issued"),
       )
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("auth's 400 on the audit endpoints is a refusal of the window, and 5xx, 404 and an unreachable auth are auth not answering") {

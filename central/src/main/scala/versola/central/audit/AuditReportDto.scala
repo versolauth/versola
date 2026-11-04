@@ -19,7 +19,7 @@ case class UserAuditReport(
     userId: UserId,
     window: ReportWindow,
     summary: Option[Json.Obj],
-    events: List[AuditEvent],
+    events: List[ReportedEvent],
     nextCursor: Option[String],
     partial: List[String],
     truncated: Boolean = false,

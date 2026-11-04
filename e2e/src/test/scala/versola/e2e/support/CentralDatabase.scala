@@ -40,7 +40,7 @@ object CentralDatabase:
         .unless(updated == 1)
     yield ()
 
-  /** A row of central's audit log (`audit_event`), as stored. */
+  /** A row of central's audit log (`central_audit_event`), as stored. */
   case class AuditRow(
       kind: String,
       outcome: String,
@@ -69,7 +69,7 @@ object CentralDatabase:
           val statement = connection
             .prepareStatement(
               "SELECT kind, outcome, reason, severity, actor_type, actor_id, tenant_id, user_id::text, target_type, target_id, details::text " +
-                "FROM audit_event WHERE target_id = ? ORDER BY at, id",
+                "FROM central_audit_event WHERE target_id = ? ORDER BY at, id",
             ).nn
           try
             statement.setString(1, targetId)

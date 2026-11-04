@@ -61,7 +61,7 @@ info:
     ## Audit
 
     Every change an administrator makes through this API is written to central's audit log
-    (`audit_event`, kept for the `audit.retention` of the configuration, 7 days by default), as is a
+    (`central_audit_event`, kept for the `audit.retention` of the configuration, 7 days by default), as is a
     look at a user (`GET /users`, unless `audit.events.admin-user-viewed` is off), a query of the audit
     report and every response that hands a secret back. A row says who did what to what, when, and how it
     ended: `admin.<resource>.<operation>` (`admin.client.create`, `admin.client-secret.action:rotate-secret`),
@@ -7411,7 +7411,8 @@ components:
           type: object
           description: |
             First page only. Auth's summary of the window as it answered it (`byKind`, `byClient`, `ips`, `userAgents`,
-            `sessions`, `factors`, `high`; see auth's `GET /audit/summary?userId=`), with `adminActions` added: what
+            `sessions`, `factors`, `high`, `countries`; the entries of `ips` and the events of `high` may carry a `country`; see auth's
+            `GET /audit/summary?userId=`), with `adminActions` added: what
             administrators did to the user, newest first (at most 100). Without auth's part it holds `adminActions` alone.
           additionalProperties: true
           properties:
@@ -7480,6 +7481,11 @@ components:
         clientId: { type: string }
         sessionId: { type: string }
         ip: { type: string }
+        country:
+          type: string
+          description: |
+            Upper-case ISO 3166-1 alpha-2 code of the address, when auth has a country database and the address is in it. Only on the
+            events of auth; central's own rows have none, and an auth that does not send it leaves it out.
         userAgent: { type: string }
         traceId: { type: string }
         targetType: { type: string }

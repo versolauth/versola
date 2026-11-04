@@ -20,7 +20,7 @@ import java.util.UUID
 
 /** What the writer holds when the process is told to stop is written before the pool closes: the layers are composed as
   * `PostgresCentralApp` composes them (the transactor, the repository on it, the writer on the repository), the scope is closed the way
-  * the app's is when it stops, and the rows of `audit_event` are counted. Each case marks its events with a target of its own, so it
+  * the app's is when it stops, and the rows of `central_audit_event` are counted. Each case marks its events with a target of its own, so it
   * counts nothing but its own rows and the other specs of the table are left alone. */
 object PostgresAuditShutdownSpec extends PostgresSpec:
 
@@ -56,8 +56,8 @@ object PostgresAuditShutdownSpec extends PostgresSpec:
   private def stored(marker: String) =
     ZIO.serviceWithZIO[TransactorZIO]: xa =>
       xa.connect:
-        val rows = sql"SELECT count(*) FROM audit_event WHERE target_id = $marker".query[Long].run().head
-        val distinct = sql"SELECT count(DISTINCT id) FROM audit_event WHERE target_id = $marker".query[Long].run().head
+        val rows = sql"SELECT count(*) FROM central_audit_event WHERE target_id = $marker".query[Long].run().head
+        val distinct = sql"SELECT count(DISTINCT id) FROM central_audit_event WHERE target_id = $marker".query[Long].run().head
         (rows, distinct)
 
   /** The writer of the app on `repository`, in a scope of its own that is closed when `use` is done: what the app's scope does on SIGTERM

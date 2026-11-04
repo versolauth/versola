@@ -16,6 +16,9 @@ object CentralAudit:
 
   val Source: AuditSource = AuditSource("central")
 
+  /** The table of central's audit log: its own name, since every service migrates into the same database in a local or CI stack. */
+  val Table = "central_audit_event"
+
   /** Who acted: the administrator edge identified, a client that called the API as itself (a provisioning client), or a caller no
     * actor header named (a service). `user` and `system` are the core's. */
   object Actors:

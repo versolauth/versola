@@ -13,7 +13,7 @@ import zio.{Task, ZEnvironment, ZIO, ZLayer, durationInt}
 import java.time.{Instant, LocalDate, ZoneOffset}
 import java.util.UUID
 
-/** `audit_event` of central (V1034). The partitions are [[DailyPartitions]]'; a day whose rows sit in the default partition is
+/** `central_audit_event` of central (V1034). The partitions are [[DailyPartitions]]'; a day whose rows sit in the default partition is
   * reported and not attached, since the audit log's rows are never moved (an insert-only replication would see them twice), and
   * the default partition is pruned under `versola.audit_maintenance`, which the table's trigger asks for. */
 class PostgresAuditEventRepository(xa: TransactorZIO) extends CentralAuditRepository, BasicCodecs:
@@ -22,7 +22,7 @@ class PostgresAuditEventRepository(xa: TransactorZIO) extends CentralAuditReposi
   private given DbCodec[Instant] = DbCodec.InstantCodec
 
   private val partitions = DailyPartitions(
-    table = "audit_event",
+    table = CentralAudit.Table,
     defaultRows = DailyPartitions.DefaultRows.LeaveAndReport,
     deleteGuard = Some("versola.audit_maintenance"),
     label = Some("audit-events"),
@@ -36,7 +36,7 @@ class PostgresAuditEventRepository(xa: TransactorZIO) extends CentralAuditReposi
     else
       xa.transactMeasured("insert-audit-events"):
         timed()
-        AuditInsert.insertBatch(events)
+        AuditInsert.insertBatch(events, CentralAudit.Table)
       .unit
 
   override def maintainPartitions(from: LocalDate, days: Int, keepFrom: LocalDate): Task[PartitionReport] =
@@ -63,7 +63,7 @@ class PostgresAuditEventRepository(xa: TransactorZIO) extends CentralAuditReposi
           sql"""
             SELECT id, at, tenant_id, source, node_id, kind, outcome, reason, severity, actor_type, actor_id, user_id, client_id,
                    session_id, host(ip), user_agent, trace_id, target_type, target_id, details::text
-            FROM audit_event
+            FROM central_audit_event
             WHERE user_id = $userId AND at >= $lower AND at < $upper
             ORDER BY at DESC, id DESC
             LIMIT $limit
@@ -73,7 +73,7 @@ class PostgresAuditEventRepository(xa: TransactorZIO) extends CentralAuditReposi
           sql"""
             SELECT id, at, tenant_id, source, node_id, kind, outcome, reason, severity, actor_type, actor_id, user_id, client_id,
                    session_id, host(ip), user_agent, trace_id, target_type, target_id, details::text
-            FROM audit_event
+            FROM central_audit_event
             WHERE user_id = $userId AND at >= $lower AND at < $upper AND (at, id) < ($keyAt, ${key.id})
             ORDER BY at DESC, id DESC
             LIMIT $limit
@@ -90,7 +90,7 @@ class PostgresAuditEventRepository(xa: TransactorZIO) extends CentralAuditReposi
       sql"""
         SELECT id, at, tenant_id, source, node_id, kind, outcome, reason, severity, actor_type, actor_id, user_id, client_id,
                session_id, host(ip), user_agent, trace_id, target_type, target_id, details::text
-        FROM audit_event
+        FROM central_audit_event
         WHERE user_id = $userId AND at >= $lower AND at < $upper
           AND kind LIKE 'admin.%' AND kind NOT IN ($viewed, $queried)
         ORDER BY at DESC, id DESC
@@ -136,7 +136,7 @@ object PostgresAuditEventRepository:
     def toEvent: Task[AuditEvent] =
       ZIO.attempt:
         def named[A](values: Array[A], what: String, name: String): A =
-          values.find(_.toString == name).getOrElse(throw IllegalStateException(s"unknown $what '$name' in audit_event $id"))
+          values.find(_.toString == name).getOrElse(throw IllegalStateException(s"unknown $what '$name' in central_audit_event $id"))
         AuditEvent(
           id = id,
           at = at,

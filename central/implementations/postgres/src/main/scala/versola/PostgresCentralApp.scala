@@ -299,13 +299,13 @@ object PostgresCentralApp extends VersolaApp("central"):
     val host = Try(InetAddress.getLocalHost.getHostName).getOrElse("central")
     s"$host-${UUID.randomUUID().toString.take(8)}"
 
-  /** The audit log's writer (#469): it makes the partitions of `audit_event` and writes the events the services record, and writes
+  /** The audit log's writer (#469): it makes the partitions of `central_audit_event` and writes the events the services record, and writes
     * what is queued once more when its scope closes. It is built on the transactor and the repository, before everything that records:
     * bootstrap does. */
   private[versola] def auditWriter(
       sizing: AuditEvents.Sizing = AuditEvents.Sizing.standard,
   ): ZLayer[AuditEventRepository & AuditEvents.Settings & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
-    AuditEvents.liveWith(sizing)(CentralAudit.Source, nodeId, CentralAudit.catalog)
+    AuditEvents.liveWith(sizing)(CentralAudit.Source, nodeId, CentralAudit.catalog, CentralAudit.Table)
 
   /** The audit log: its settings from the `audit` block of the config, and the writer. */
   private val auditEvents

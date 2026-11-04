@@ -6,6 +6,7 @@ import versola.central.users.{AuthClient, UserId}
 import versola.util.PageLimit
 import versola.util.audit.*
 import zio.*
+import zio.json.EncoderOps
 import zio.json.ast.Json
 import zio.metrics.{Metric, MetricLabel}
 import zio.test.*
@@ -49,7 +50,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val claims = event(4, CentralAudit.Source, at("09:45"), "admin.user-claims.update")
 
   private def authPage(events: List[AuditEvent], next: Option[String]) =
-    UserAuditEventsResponse(events = events, nextCursor = next, retentionFrom = authRetentionFrom)
+    UserAuditEventsResponse(events = events.map(ReportedEvent(_, None)), nextCursor = next, retentionFrom = authRetentionFrom)
 
   private val authSummary = Json.Obj("byKind" -> Json.Arr(), "sessions" -> Json.Obj("created" -> Json.Num(2), "ended" -> Json.Num(1)))
 
@@ -75,7 +76,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val (from, until) = env.repository.userEvents.calls.head match
           case (_, from, until, _, _) => (from, until)
         assertTrue(
-          report.events.map(_.id) == List(login, claims, reset, token).map(_.id),
+          report.events.map(_.event.id) == List(login, claims, reset, token).map(_.id),
           report.partial.isEmpty,
           // central's rows are asked for from where auth's page ends, to the end of the window, and the next page takes up there
           env.repository.userEvents.calls.map(c => (c._2, c._3)).contains((token.at, now.plus(1, ChronoUnit.MICROS))),
@@ -175,7 +176,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         second <- env.service.userReport(userId, None, None, next, Some(PageLimit(2)))
       yield assertTrue(
         first.partial == List("auth"),
-        first.events == List(claims, reset),
+        first.events.map(_.event) == List(claims, reset),
         // the actions of the administrators are the summary, which is all there is of it
         first.summary.exists(_.fields.map(_._1) == Chunk("adminActions")),
         next.exists(c => c.centralOnly && c.key.contains(AuditCursor.Key(reset.at, reset.id)) && c.auth.isEmpty),
@@ -197,7 +198,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.userEvents.succeedsWith(List(reset))
         _ <- env.repository.adminActions.succeedsWith(List(reset))
         report <- env.service.userReport(userId, None, None, None, None)
-      yield assertTrue(report.partial == List("auth"), report.events == List(reset))
+      yield assertTrue(report.partial == List("auth"), report.events.map(_.event) == List(reset))
     },
     test("central's rows above the bound of a page are cut and the report says so; at the bound it does not") {
       def rows(n: Int) = (1 to n).toList.map(i => event(100 + i, CentralAudit.Source, at("09:30").minusSeconds(i), "admin.user.update"))
@@ -272,6 +273,39 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         // once per report, not once per call to auth
         missingAfter == missingBefore + 1,
         downAfter == downBefore + 1,
+      )
+    },
+    test("the country auth gave an address is passed on in the event and in the summary, and central's own rows have none") {
+      val env = Env()
+      val summary = Json.Obj(
+        "ips" -> Json.Arr(Json.Obj("ip" -> Json.Str("203.0.113.7"), "count" -> Json.Num(2), "country" -> Json.Str("KZ"))),
+        "countries" -> Json.Arr(Json.Obj("country" -> Json.Str("KZ"), "count" -> Json.Num(2))),
+      )
+      for
+        _ <- clock
+        _ <- env.authClient.getUserAuditEvents.succeedsWith(
+          UserAuditEventsResponse(
+            events = List(ReportedEvent(login, Some("KZ")), ReportedEvent(token, None)),
+            nextCursor = None,
+            retentionFrom = authRetentionFrom,
+          ),
+        )
+        _ <- env.authClient.getUserAuditSummary.succeedsWith(summary)
+        _ <- env.repository.userEvents.succeedsWith(List(reset))
+        _ <- env.repository.adminActions.succeedsWith(List(reset))
+        report <- env.service.userReport(userId, None, None, None, None)
+        json <- ZIO.fromEither(report.toJsonAST).mapError(RuntimeException(_))
+        events = json.asObject.flatMap(_.get("events")).collect { case Json.Arr(items) =>
+          items.toList.collect { case obj: Json.Obj => obj }
+        }.getOrElse(Nil)
+        countryOf = (id: UUID) => events.find(_.get("id").contains(Json.Str(id.toString))).flatMap(_.get("country"))
+      yield assertTrue(
+        countryOf(login.id).contains(Json.Str("KZ")),
+        // an event without one has no member, and so has a row of central's
+        countryOf(token.id).isEmpty,
+        countryOf(reset.id).isEmpty,
+        report.summary.flatMap(_.get("countries")).isDefined,
+        report.summary.flatMap(_.get("ips")).exists(_.toJson.contains("\"country\":\"KZ\"")),
       )
     },
     test("only four reports run at a time: a fifth waits for a place and is refused as busy when none frees in time") {

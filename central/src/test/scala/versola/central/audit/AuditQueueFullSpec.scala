@@ -49,7 +49,7 @@ object AuditQueueFullSpec extends ZIOSpecDefault:
     val settings = AuditEvents.Settings(retention = 7.days, overflow = overflow, blockTimeout = 100.millis)
     val composed =
       ZLayer.succeed[AuditEventRepository](Stuck(gate)) ++ ZLayer.succeed(settings) ++ tracing ++ SecureRandom.live ++ ZLayer.service[Scope]
-    (composed >>> AuditEvents.liveWith(sizing)(CentralAudit.Source, "test", CentralAudit.catalog)).build.map(_.get[AuditEvents])
+    (composed >>> AuditEvents.liveWith(sizing)(CentralAudit.Source, "test", CentralAudit.catalog, CentralAudit.Table)).build.map(_.get[AuditEvents])
 
   private val admin = "00000000-0000-0000-0000-0000000000f1"
   private val createClient = Method.POST / "configuration" / "clients" / "web"

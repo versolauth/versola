@@ -678,17 +678,17 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   learns the new key before anything signs with it; keep the old key published until tokens issued
   under it have expired.
 
-- **Central's audit log.** `audit_event` (V1034) holds what administrators did through central's API (`admin.<resource>.<operation>`,
+- **Central's audit log.** `central_audit_event` (V1034) holds what administrators did through central's API (`admin.<resource>.<operation>`,
   a look at a user, a query of the audit report, every response that hands a secret back) and what bootstrap created
   (`system.bootstrap`). It is partitioned by day like the antifraud event log, and the service keeps the partitions: it creates
   14 days ahead and drops a day once the whole day is older than `audit.retention`. Dropping a partition is the retention; nothing is
-  vacuumed. A row whose day had no partition lands in `audit_event_default`; those rows are **never moved** into the day's partition
+  vacuumed. A row whose day had no partition lands in `central_audit_event_default`; those rows are **never moved** into the day's partition
   (an insert-only logical replication of the table would see them twice), a day that has rows in the default is not attached and
   central reports it (`audit_events_in_default`), and the rows leave the default when they age out of the retention. A trigger
   refuses `UPDATE`, `DELETE` and `TRUNCATE` unless the transaction sets `versola.audit_maintenance` to `on`, which only
   central's own prune of the default partition does. Creating and dropping partitions needs the role central connects as to own the
   table (or be a member of the owner); otherwise central logs that the partitions are not maintained and `audit_partition_owner_mismatch`
-  is set. Long-term keeping is the operator's logical replication of `audit_event` (a publication with `publish_via_partition_root = true`
+  is set. Long-term keeping is the operator's logical replication of `central_audit_event` (a publication with `publish_via_partition_root = true`
   and `publish = 'insert'`, an unpartitioned table on the subscriber; the publisher needs PostgreSQL 13 or later).
   The `audit` block of central's `env.conf` is optional, every key has a default, and a deployment that sets none records admin actions
   for 7 days:
