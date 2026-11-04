@@ -11,9 +11,8 @@ import java.time.Instant
   * its own transaction, which is also where the statement timeout is set.
   *
   * An event is written once however often it is offered: the row is keyed by `(id, at)` and a second insert of the same event does
-  * nothing. The writer retries a batch whose outcome it does not know (a connection that dropped after the commit), and without
-  * this the retry would fail the key, or, worse, write the batch twice. The first insert wins; two different events are told apart
-  * by their ids, which are UUIDv7.
+  * nothing. The writer offers a batch again when it does not know whether the first attempt committed, and the conflict rule makes
+  * the second attempt write the same rows. The first insert wins; two different events are told apart by their ids, which are UUIDv7.
   *
   * What an event holds is already storable: the writer's events come from `AuditEvents.record`, which sanitises them. */
 object AuditInsert extends BasicCodecs:
