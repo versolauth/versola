@@ -102,6 +102,37 @@ object VelocityRulesSpec extends UnitSpecBase:
         decision.action == DecisionAction.Block,
       )
     },
+    test(
+      "a snapshot of a request that is already recorded does not add it a second time, except for the phone, which is counted when a code is sent",
+    ) {
+      val s = settings(AntifraudTestSettings.thresholds.copy(
+        ip = AntifraudTestSettings.limit.copy(perHour = 3, weight = 60),
+        phone = AntifraudTestSettings.limit.copy(perHour = 3, weight = 60),
+      ))
+      val counters = VelocityCounters(s.settings, AntifraudTestSettings.velocityLimits, s.tuning.thresholds)
+      // The source keys only, as `decideOtpRequest` records them; the phone is not recorded with the decision.
+      val source = ctx.copy(subjectHash = None)
+      for
+        _ <- ZIO.foreachDiscard(1 to 2)(_ => counters.record(source))
+        atMargin <- counters.snapshot(ctx)
+        _ <- counters.record(source)
+        asNew <- counters.snapshot(ctx)
+        asRepeated <- counters.snapshot(ctx, recorded = true)
+        newDecision <- antifraud(s).evaluate(asNew)
+        repeatedDecision <- antifraud(s).evaluate(asRepeated)
+      yield assertTrue(
+        // two recorded: a new request is the 3rd, at the limit
+        atMargin.signals("velocity.ip.1h") == "3",
+        // three recorded, this one among them: a new request would be the 4th, the repeated one is the 3rd
+        asNew.signals("velocity.ip.1h") == "4",
+        asRepeated.signals("velocity.ip.1h") == "3",
+        // the phone is not recorded yet in either, and the code about to be sent is the one added
+        asNew.signals("velocity.phone.1h") == "1",
+        asRepeated.signals("velocity.phone.1h") == "1",
+        newDecision.firedRules == List("velocity_ip_1h"),
+        repeatedDecision == Decision.allow,
+      )
+    },
     test("a known user is let off part of the weight, and only when a velocity rule fired") {
       val s =
         settings(AntifraudTestSettings.thresholds.copy(phone = AntifraudTestSettings.limit.copy(perHour = 2, weight = 50), trustedDiscount = 40))

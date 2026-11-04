@@ -102,15 +102,17 @@ object AuditEvents:
           case Overflow.drop => Queue.dropping[AuditEvent](sizing.queueCapacity)
         _ <- AuditMetrics.register(source)
         intake <- Ref.make(Intake(closed = false, inflight = 0))
+        closing <- Promise.make[Nothing, Unit]
         inHand <- Ref.make(List.empty[AuditEvent])
         suspects <- Ref.make(Map.empty[UUID, Int])
         report <- EventReport.make(source, catalog, sizing.reportWindow)
         _ <- Maintenance(repository, settings, sizing, source).run
         // Before the writer, so that its last report is made after the writer's last drain.
         _ <- report.run
-        _ <- Writer(queue, repository, sizing, source, report, intake, inHand, suspects).run
+        _ <- Writer(queue, repository, sizing, source, report, intake, closing, inHand, suspects).run
       yield Impl(
         intake = intake,
+        closing = closing,
         report = report,
         queue = queue,
         settings = settings,
@@ -128,6 +130,7 @@ object AuditEvents:
 
   private class Impl(
       intake: Ref[Intake],
+      closing: Promise[Nothing, Unit],
       report: EventReport,
       queue: Queue[AuditEvent],
       settings: Settings,
@@ -164,10 +167,12 @@ object AuditEvents:
           // The size is read before the offer so that a request that had to wait is counted, whether or not it got room in time.
           queue.size.flatMap: size =>
             ZIO.when(size >= sizing.queueCapacity)(AuditMetrics.blocked(source)) *>
-              queue.offer(event).timeout(settings.blockTimeout).flatMap:
-                case Some(_) => AuditMetrics.recorded(source, event, catalog)
-                case None if bestEffort => AuditMetrics.dropped(source) *> report.noteAll(EventReport.WaitedForRoom, List(event))
-                case None => AuditMetrics.unavailable(source) *> ZIO.fail(AuditUnavailable)
+              queue.offer(event).timeout(settings.blockTimeout).map(Right(_)).raceFirst(closing.await.as(Left(()))).flatMap:
+                case Right(Some(_)) => AuditMetrics.recorded(source, event, catalog)
+                case Right(None) if bestEffort => AuditMetrics.dropped(source) *> report.noteAll(EventReport.WaitedForRoom, List(event))
+                case Right(None) => AuditMetrics.unavailable(source) *> ZIO.fail(AuditUnavailable)
+                case Left(_) if bestEffort => AuditMetrics.dropped(source) *> report.noteAll(EventReport.AfterStop, List(event))
+                case Left(_) => AuditMetrics.unavailable(source) *> ZIO.fail(AuditUnavailable)
 
     /** The event of a draft: ids and time, then the request's context, from [[AuditContext]] first and the `auth` log context
       * second, for what the draft does not say. */
@@ -243,6 +248,7 @@ object AuditEvents:
       source: AuditSource,
       report: EventReport,
       intake: Ref[Intake],
+      closing: Promise[Nothing, Unit],
       inHand: Ref[List[AuditEvent]],
       suspects: Ref[Map[UUID, Int]],
   ):
@@ -378,6 +384,8 @@ object AuditEvents:
     private def stop(writer: Fiber[Nothing, Nothing]): UIO[Unit] =
       for
         _ <- intake.update(_.copy(closed = true))
+        // The requests waiting for room are released: whatever room the drain makes is for what was queued before the stop began.
+        _ <- closing.succeed(())
         _ <- writer.interrupt.disconnect.timeout(WriterStopWait)
         held <- inHand.getAndSet(Nil)
         pending <- Ref.make(held)
