@@ -211,6 +211,9 @@ object PostgresAuditEventRepository:
     * the writer does not itself count. Alert on it increasing. */
   val rejected = Metric.counter("audit_events_rejected_total")
 
+  /** The longest user agent an event keeps. */
+  val MaxUserAgent = 256
+
   /** What the table can hold of an event whatever the caller sent: a text column and a JSON string refuse U+0000, and `ip` is an address
     * or nothing. The rest of what the caller sent is kept as it is. */
   def sanitized(event: AuditEvent): AuditEvent =
@@ -228,7 +231,8 @@ object PostgresAuditEventRepository:
       clientId = event.clientId.map(text),
       sessionId = event.sessionId.map(text),
       ip = event.ip.filter(literal => IpAddress.normalize(literal).isDefined),
-      userAgent = event.userAgent.map(text),
+      // The short form `browser version / os` is far under this; a route that did not shorten it (the additional listener) is cut.
+      userAgent = event.userAgent.map(value => text(value).take(MaxUserAgent)),
       traceId = event.traceId.map(text),
       targetType = event.targetType.map(text),
       targetId = event.targetId.map(text),

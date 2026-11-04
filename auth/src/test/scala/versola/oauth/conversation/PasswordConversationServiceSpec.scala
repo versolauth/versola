@@ -97,6 +97,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       consentService,
       versola.antifraud.AntifraudEvents.noop,
       versola.antifraud.ChallengeVerifier.off,
+      stub[CodeAlternativeService],
       events,
     )
     val service = serviceWith(audit)

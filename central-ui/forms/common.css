@@ -367,6 +367,41 @@ a {
   -webkit-mask: var(--passkey-icon) no-repeat center / contain;
   mask: var(--passkey-icon) no-repeat center / contain;
 }
+/* The dialog a failed or refused passkey is told in, on the forms that start a ceremony (credential, otp). */
+.passkey-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: var(--scrim);
+}
+.passkey-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: min(420px, calc(100vw - 40px));
+  padding: 32px 28px;
+  text-align: center;
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: var(--rs);
+  box-shadow: 0 12px 40px rgba(16, 24, 40, 0.18);
+}
+.passkey-dialog-title {
+  margin: 0;
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+.passkey-dialog-message {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
 #message {
   font-size: 1rem;
   margin-top: 20px;

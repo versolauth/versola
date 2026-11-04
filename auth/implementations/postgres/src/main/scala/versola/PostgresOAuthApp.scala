@@ -59,6 +59,7 @@ import versola.oauth.consent.{ConsentRepository, ConsentService, PostgresConsent
 import versola.oauth.conversation.limit.{ChallengeThrottleRepository, PostgresChallengeThrottleRepository, SubmissionLimiter}
 import versola.oauth.conversation.otp.{EmailOtpProvider, OtpGenerationService, OtpService, SmsOtpProvider}
 import versola.oauth.conversation.{
+  CodeAlternativeService,
   ConversationController,
   ConversationRenderService,
   ConversationRepository,
@@ -481,6 +482,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AntifraudDetectors.live >++>
       antifraudChallengeSettings >++>
       PowChallengeVerifier.live >++>
+      CodeAlternativeService.live >++>
       ConversationService.live >++>
       ConversationRouter.live >++>
       AuthorizationResponseService.live >++>

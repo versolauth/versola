@@ -4,7 +4,8 @@ import { renderForm } from './form-harness';
 // The tokens of the theming API change what the real login forms paint: the defaults are the look the forms always had, a
 // single value moves both colour schemes, and a { light, dark } pair (written light-dark(a,b)) moves each its own way.
 const credential = { step: { type: 'credential', primaryCredentials: ['email'] } };
-const otp = { step: { type: 'otp', length: 6, resendAfter: 0, destination: 'u***@example.com' } };
+// The otp form's secondary button is the passkey the page offers in place of the code.
+const otp = { step: { type: 'otp', length: 6, resendAfter: 0, destination: 'u***@example.com', alternatives: ['passkey'] } };
 
 const style = (page: Page, selector: string, property: string) =>
   page.locator(selector).first().evaluate((element, name) => getComputedStyle(element).getPropertyValue(name), property);

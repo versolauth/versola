@@ -42,6 +42,8 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
 
   given JsonCodec[OtpCode] = JsonCodec.string.transform(OtpCode(_), identity[String])
   given JsonCodec[ConversationStep.Otp.Real] = DeriveJsonCodec.gen[ConversationStep.Otp.Real]
+  // The code step is also carried inside the passkey step chosen in its place, which needs its own codec to be nested.
+  given JsonCodec[ConversationStep.Otp] = DeriveJsonCodec.gen[ConversationStep.Otp]
   given JsonCodec[ConversationStep] = DeriveJsonCodec.gen[ConversationStep]
 
   given DbCodec[Email] = DbCodec.StringCodec.biMap(Email(_), identity[String])

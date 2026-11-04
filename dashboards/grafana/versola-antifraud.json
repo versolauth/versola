@@ -1150,7 +1150,7 @@
     {
       "type": "timeseries",
       "title": "Refused / s by reason and mode",
-      "description": "Codes the SMS budget closed a range to: `cap` (sentPerHour reached), `conversion` (too few codes verified). `shadow` means the code went out all the same and the number is what enforcing would refuse; `enforce` is a refusal that happened. Empty while the budget is off (the default).",
+      "description": "Codes the SMS budget closed a range to: `cap` (sentPerHour reached), `conversion` (too few codes verified: entered, or passed by passkey). `shadow` means the code went out all the same and the number is what enforcing would refuse; `enforce` is a refusal that happened. Empty while the budget is off (the default).",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
