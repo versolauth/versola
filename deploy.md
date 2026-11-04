@@ -1666,9 +1666,8 @@ notification and refuses to start, naming this setting, if it cannot.
   picked up by auth at its next configuration refresh (5 minutes on `vps`) without a restart. Until
   one is saved, a `vps` deployment has no channel: password resets and additional admin accounts can't
   deliver a temporary password. Each channel is decided on its own, so a block that is not saved in
-  central keeps using the matching block of `auth.conf`, if there is one. Upgrade central before auth: an auth that
-  is newer than its central gets `404` from the endpoint, which is a failed sync, so it keeps what it has or, on
-  its first start, does not start.
+  central keeps using the matching block of `auth.conf`, if there is one. Upgrade central before auth: see the
+  last item of the list below.
 
   **Behaviour changes to know before upgrading** (the timeouts apply to every deployment, also one that sends
   through `auth.conf` only):
@@ -1680,6 +1679,11 @@ notification and refuses to start, naming this setting, if it cannot.
     or an address that is not valid) fails the sync. A running `auth` keeps what it has and logs a warning; an `auth` that
     starts while such a block is saved fails to start, also on a deployment that sends through `auth.conf` only. Correct or
     remove the record in the console (or `DELETE /configuration/delivery-settings`) and start it again.
+  - An `auth` that is newer than its `central` gets `404` (or another error answer) from
+    `/configuration/delivery-settings/sync`; that is a failed sync like any other. A running `auth` keeps what it has and
+    logs `central answered 404 ...`; an `auth` that starts against such a `central` retries for about a minute and then
+    exits, and with it no login works, until `central` serves the endpoint. Upgrade `central` first, or restart both so
+    that `central` comes up first.
 - **`central` has one replica.** `auth` and `edge` can run several (`versola replica add`), and
   `versola rollout` moves all three without an outage when the release is compatible (see
   [Without stopping](#without-stopping-versola-rollout)); an incompatible release still means the short

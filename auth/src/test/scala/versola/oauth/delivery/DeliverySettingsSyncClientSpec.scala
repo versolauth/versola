@@ -106,17 +106,28 @@ object DeliverySettingsSyncClientSpec extends ZIOSpecDefault:
         fetched <- fetch
       yield assertTrue(fetched == DeliverySettingsSyncClient.Fetched.empty)
     },
-    test("fails, rather than treating it as empty, when central has no such endpoint") {
+    test("fails, naming the status, when central has no such endpoint") {
       for
         _ <- serve(Status.NotFound, """{"message":"not found"}""")
         result <- fetch.either
-      yield assertTrue(result.isLeft)
+      yield assertTrue(result.left.exists(_.getMessage.contains("404")))
+    },
+    test("fails, rather than treating it as empty, on an error answer whose body is valid JSON with `stored`") {
+      for
+        _ <- serve(Status.NotFound, """{"stored":false}""")
+        notFound <- fetch.either
+        _ <- serve(Status.InternalServerError, """{"stored":false}""")
+        serverError <- fetch.either
+      yield assertTrue(
+        notFound.left.exists(_.getMessage.contains("404")),
+        serverError.left.exists(_.getMessage.contains("500")),
+      )
     },
     test("fails, rather than treating it as empty, when central refuses the sync token") {
       for
-        _ <- serve(Status.Unauthorized, """{}""")
+        _ <- serve(Status.Unauthorized, """{"stored":false}""")
         result <- fetch.either
-      yield assertTrue(result.isLeft)
+      yield assertTrue(result.left.exists(_.getMessage.contains("401")))
     },
     test("fails the fetch when a password was not encrypted under the shared secret, so the cache keeps what it has") {
       for

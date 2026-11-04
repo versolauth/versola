@@ -17,6 +17,9 @@ import java.nio.charset.StandardCharsets
   * A block central does not hold is absent, and auth then reads the matching block of its own `auth.conf`
   * (see [[DeliveryChannels]]). A block central holds but auth cannot read (a password that does not decrypt, an address
   * that is not one) fails the fetch: the cache then keeps what it has, or auth does not start if it has nothing yet.
+  * So does any answer of central that is not a success, a `404` from a central older than auth included: only a body
+  * that central sent as a success is read, so an error page that happens to be valid JSON is never taken for "nothing
+  * saved".
   */
 trait DeliverySettingsSyncClient extends CacheSource[DeliverySettingsSyncClient.Fetched]:
   def getAll: Task[DeliverySettingsSyncClient.Fetched]
@@ -43,7 +46,9 @@ object DeliverySettingsSyncClient:
 
     override def getAll: Task[Fetched] =
       ZIO.scoped:
-        centralSyncTokenService.syncRequest(Request.get(SyncURL)).flatMap(_.bodyAs[SyncWire]).flatMap(toFetched)
+        centralSyncTokenService.syncRequest(Request.get(SyncURL)).flatMap: response =>
+          if response.status.isSuccess then response.bodyAs[SyncWire].flatMap(toFetched)
+          else ZIO.fail(RuntimeException(s"central answered ${response.status.code} for configuration/delivery-settings/sync"))
 
     private def toFetched(wire: SyncWire): Task[Fetched] =
       for
