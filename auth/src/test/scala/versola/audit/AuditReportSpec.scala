@@ -176,7 +176,9 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
           json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
         yield assertTrue(
           response.status == Status.Ok,
-          json.keys.toSet == Set("events", "nextCursor", "retentionFrom").intersect(json.keys.toSet) + "events",
+          // `nextCursor` is there, as null, on the last page: what central codes against
+          json.keys.toSet == Set("events", "nextCursor", "retentionFrom"),
+          json.get("nextCursor").contains(Json.Null),
           json.get("events").flatMap(_.asArray).map(_.size) == Some(1),
           json.get("retentionFrom").flatMap(_.asString) == Some(start.minusSeconds(retention.toSeconds).toString),
           body.contains("\"kind\":\"login.completed\""),

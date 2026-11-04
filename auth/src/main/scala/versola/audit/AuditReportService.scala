@@ -4,7 +4,7 @@ import versola.audit.AuditReadRepository.{Position, Summary}
 import versola.util.Base64
 import versola.util.audit.{AuditEvent, AuditEvents}
 import zio.*
-import zio.json.JsonCodec
+import zio.json.{JsonCodec, jsonExplicitNull}
 
 import java.nio.charset.StandardCharsets
 import java.time.Instant
@@ -39,7 +39,8 @@ object AuditReportService:
   /** How far ahead of auth's clock `to` may be: central's clock is not auth's, and `to = now` there is a little later here. */
   val ClockSkew: Duration = 1.minute
 
-  case class EventsPage(events: List[AuditEvent], nextCursor: Option[String], retentionFrom: Instant) derives JsonCodec
+  /** `nextCursor` is `null`, not left out, on the last page: central codes against that. */
+  case class EventsPage(events: List[AuditEvent], @jsonExplicitNull nextCursor: Option[String], retentionFrom: Instant) derives JsonCodec
   case class Window(from: Instant, to: Instant, retentionFrom: Instant) derives JsonCodec
 
   case class SummaryReport(

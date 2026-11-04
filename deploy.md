@@ -946,7 +946,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   audit {
     retention     = "7 days"      # the hot window; 14 days is the sensible maximum, the long-term copy is the replication below
     overflow      = "block"       # block: a request waits up to block-timeout for room in the writer's queue, then fails with
-                                  #   503 audit_unavailable (the login or token is refused rather than go unrecorded);
+                                  #   503 audit_unavailable (the event is not recorded; what the request did before it
+                                  #   recorded, a token stored or a password changed, is not undone);
                                   # drop: the event is lost and counted in audit_events_dropped_total, the request goes on
     block-timeout = "2 seconds"
     events { token-refresh = true, authorize-success = true, par-success = true }   # the high-volume kinds; failures are always recorded
