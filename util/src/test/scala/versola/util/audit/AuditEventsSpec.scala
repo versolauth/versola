@@ -764,6 +764,24 @@ object AuditEventsSpec extends UnitSpecBase:
           _ <- store.gate.succeed(())
         yield assertTrue(done.isDefined, stored.size == 2)
       },
+      test("a stop with the writer held in a long statement and the drain's write held too returns by the sum of its two bounds, to the tick") {
+        for
+          // A statement of ten seconds, held uninterruptibly, is what a slow insert of a full batch is.
+          store <- Store.make(holdAll = true, uninterruptible = true)
+          scope <- Scope.make
+          events <- scope.extend(buildOn(store, block, source = edge))
+          _ <- events.record(draft()) *> events.record(draft())
+          _ <- store.entered.take
+          closing <- scope.close(Exit.unit).fork
+          _ <- settle
+          // Not a tick short of the bound: nothing has returned yet.
+          _ <- TestClock.adjust(AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout).minus(1.millis))
+          early <- eventually(closing.poll)(_ => true)
+          _ <- TestClock.adjust(1.millis)
+          done <- eventually(closing.poll)(_.isDefined)
+          _ <- store.gate.succeed(())
+        yield assertTrue(early.isEmpty, done.isDefined)
+      },
       test("a stop whose own write is not interrupted either returns inside the drain timeout, says so, and counts the rows as not written") {
         for
           store <- Store.make(holdAll = true, uninterruptible = true)
