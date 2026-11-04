@@ -79,7 +79,9 @@ object PostgresAuditShutdownSpec extends PostgresSpec:
       for
         xa <- ZIO.service[TransactorZIO]
         repository = PostgresAuditEventRepository(xa)
-        _ <- stopped(repository)(events => ZIO.foreachDiscard(1 to total)(_ => events.record(draft(marker)).mapError(_ => RuntimeException("unavailable"))))
+        _ <- stopped(repository)(events =>
+          ZIO.foreachDiscard(1 to total)(_ => events.record(draft(marker)).mapError(_ => RuntimeException("unavailable"))),
+        )
         counted <- stored(marker)
       yield assertTrue(counted == (total.toLong, total.toLong))
     }.provideSome[TransactorZIO](SecureRandom.live),
