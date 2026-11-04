@@ -16,6 +16,7 @@ import versola.util.net.{
   RangeDatabase,
   RangeDatabaseLoader,
 }
+import versola.util.partitions.TableOwnership
 import versola.util.{Email, Phone, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.json.*
