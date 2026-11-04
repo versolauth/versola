@@ -20,9 +20,11 @@ trait AntifraudListRepository:
 
   /** How many of the events since `since` the value would have matched, and how many there were, of the events of
     * `tenantId` (an entry of a tenant applies to that tenant's traffic alone) or, for `None` (a global entry), of all.
-    * A phone or a user agent is counted in the event log under its timeout; a `prefix` is read from the rolled-up
-    * statistics (`af_dest_stats`), which hold the first `statsPrefixLength` digits of a range per minute, so a longer
-    * prefix is counted as the range it falls in (never fewer than it would match). */
+    * A phone, a user agent, an ASN or a country is counted in the event log under its timeout. A `prefix` of up to
+    * `statsPrefixLength` digits is read from the rolled-up statistics (`af_dest_stats`), which hold that many digits of a
+    * range per minute, and the total is their requests. A longer `prefix` is counted in the event log, which keeps more
+    * digits of each number, for that prefix alone, over the same kind of events that make the statistics' requests, so
+    * its share is its own and not that of the range it falls in. */
   def preview(valueType: AntifraudValueType, value: String, tenantId: Option[TenantId], since: Instant): Task[ListPreview]
 
   def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]]
