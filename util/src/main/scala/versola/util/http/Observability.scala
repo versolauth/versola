@@ -1,6 +1,8 @@
 package versola.util.http
 
 import io.opentelemetry.api.trace.{SpanKind, StatusCode}
+import versola.util.audit.AuditContext
+import versola.util.audit.AuditContext.withAuditContext
 import zio.*
 import zio.http.*
 import zio.http.codec.HttpCodecError
@@ -12,8 +14,6 @@ import zio.metrics.{Metric, MetricLabel}
 import zio.telemetry.opentelemetry.context.{IncomingContextCarrier, OutgoingContextCarrier}
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.telemetry.opentelemetry.tracing.propagation.TraceContextPropagator
-
-import versola.util.audit.AuditContext
 
 import java.time.Instant
 import scala.collection.mutable
@@ -330,11 +330,9 @@ object Observability:
           ZIO.serviceWithZIO[Tracing]: tracing =>
             // the log context is restored once the request completes, so auth details set
             // mid-flow annotate every log line of this request and no other
-            logContext.locallyWith(identity)(
+            (logContext.locallyWith(identity)(
               routeLabel.locally(None)(
                 routePath.locally(None)(
-                  // the audit context starts as the request's own: what the request noted about itself is all it holds
-                  AuditContext.reset(AuditContext.State(userAgent = request.rawHeader(Header.UserAgent.name)))(
                   for
                     startTime <- Clock.instant
                     now <- Clock.nanoTime
@@ -386,7 +384,7 @@ object Observability:
                             ZIO.logInfo("receive-http") @@ log @@ loggerName
                       yield ()
                     _ <- Observability.cause.set(None)
-                  yield response),
+                  yield response,
                 ),
               ),
             ) @@ tracing.aspects.extractSpan(
@@ -396,7 +394,7 @@ object Observability:
               ),
               s"${request.method.name} $pattern",
               SpanKind.SERVER,
-            )
+            )).withAuditContext(AuditContext.State(userAgent = request.rawHeader(Header.UserAgent.name)))
 
   /** Outbound connection pool of the shared client, chosen by environment (all optional, an invalid
     * value falls back to its default):

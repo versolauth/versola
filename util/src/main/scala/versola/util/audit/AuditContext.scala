@@ -29,6 +29,10 @@ object AuditContext:
   /** Runs `zio` with a context of its own, starting from `initial`: what the request's middleware does. */
   def reset[R, E, A](initial: State)(zio: ZIO[R, E, A]): ZIO[R, E, A] = ref.locally(initial)(zio)
 
+  extension [R, E, A](zio: ZIO[R, E, A])
+    /** [[reset]] as a suffix, so that it wraps an expression without re-indenting it. */
+    def withAuditContext(initial: State): ZIO[R, E, A] = reset(initial)(zio)
+
   def setTenant(tenantId: String): UIO[Unit] = ref.update(_.copy(tenantId = Some(tenantId)))
 
   def setTarget(targetType: String, targetId: String): UIO[Unit] = ref.update(_.copy(target = Some((targetType, targetId))))
