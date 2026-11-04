@@ -80,10 +80,13 @@ object ClientAuthFailuresSpec extends UnitSpecBase:
         _ <- failedFrom(failures, "203.0.113.7", "app", "invalid_credentials")
         _ <- TestClock.adjust(1.minute)
         seen <- events.all
-      yield assertTrue(quiet.isEmpty, seen.map(_.draft.details) == List(
-        AuthAuditDetails.ClientAuthFailed("client_secret", 1),
-        AuthAuditDetails.ClientAuthFailed("client_secret", 2),
-      ))
+      yield assertTrue(
+        quiet.isEmpty,
+        seen.map(_.draft.details) == List(
+          AuthAuditDetails.ClientAuthFailed("client_secret", 1),
+          AuthAuditDetails.ClientAuthFailed("client_secret", 2),
+        ),
+      )
     },
     test("memory is bounded: past the limit the failures of new keys are counted together, one event more") {
       for
@@ -122,6 +125,9 @@ object ClientAuthFailuresSpec extends UnitSpecBase:
         _ <- failures.failed("app", "invalid_credentials", "client_secret")
         _ <- TestClock.adjust(1.minute)
         seen <- events.all
-      yield assertTrue(seen.map(_.ip) == List(None), seen.map(_.draft.details).collect { case d: AuthAuditDetails.ClientAuthFailed => d.count } == List(1))
+      yield assertTrue(
+        seen.map(_.ip) == List(None),
+        seen.map(_.draft.details).collect { case d: AuthAuditDetails.ClientAuthFailed => d.count } == List(1),
+      )
     },
   )

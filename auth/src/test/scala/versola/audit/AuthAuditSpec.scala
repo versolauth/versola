@@ -58,7 +58,14 @@ object AuthAuditSpec extends UnitSpecBase:
     },
     test("the ordinary events are info") {
       assertTrue(
-        List(AuthAuditKinds.LoginStep, AuthAuditKinds.LoginCompleted, AuthAuditKinds.TokenIssued, AuthAuditKinds.SessionEnded, AuthAuditKinds.ConsentGranted, AuthAuditKinds.AccountRegistered)
+        List(
+          AuthAuditKinds.LoginStep,
+          AuthAuditKinds.LoginCompleted,
+          AuthAuditKinds.TokenIssued,
+          AuthAuditKinds.SessionEnded,
+          AuthAuditKinds.ConsentGranted,
+          AuthAuditKinds.AccountRegistered,
+        )
           .forall(kind => AuthAudit.catalog.severity(kind, AuditOutcome.success) == AuditSeverity.info),
       )
     },
@@ -68,7 +75,9 @@ object AuthAuditSpec extends UnitSpecBase:
         .filter(_.toString.endsWith(".scala")).filterNot(_.toString.endsWith("AuthAudit.scala"))
         .map(Files.readString).mkString("\n")
       val named = "AuthAuditKinds\\.(\\w+)".r.findAllMatchIn(sources).map(_.group(1)).toSet
-      val declared = constants.map(_.value).zip(AuthAuditKinds.getClass.getDeclaredMethods.toList.filter(m => m.getParameterCount == 0 && m.getReturnType == classOf[String]).map(_.getName))
+      val declared = constants.map(_.value).zip(AuthAuditKinds.getClass.getDeclaredMethods.toList.filter(m =>
+        m.getParameterCount == 0 && m.getReturnType == classOf[String],
+      ).map(_.getName))
       val unknown = named -- declared.map(_._2).toSet
       val emitted = declared.filter((_, name) => named.contains(name)).map(_._1).toSet
       assertTrue(unknown.isEmpty, (AuthAuditKinds.all.map(_.value) -- emitted) == Set("cert.revoked"))

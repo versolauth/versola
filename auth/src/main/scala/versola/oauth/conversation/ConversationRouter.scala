@@ -1,9 +1,8 @@
 package versola.oauth.conversation
 
-import versola.audit.{AuthAuditKinds}
 import versola.audit.AuditSupport.*
 import versola.audit.AuthAuditDetails
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
+import versola.audit.AuthAuditKinds
 import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{
@@ -19,6 +18,7 @@ import versola.oauth.client.model.{
 }
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import versola.user.UserRepository
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Observability
 import versola.util.{Email, Phone, SecureRandom}
 import zio.{Task, UIO, ZIO, ZLayer}

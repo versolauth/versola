@@ -1,15 +1,15 @@
 package versola.oauth.revoke
 
-import versola.audit.{AuthActors, AuthAuditKinds}
 import versola.audit.AuditSupport.*
 import versola.audit.AuthAuditDetails
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
+import versola.audit.{AuthActors, AuthAuditKinds}
 import versola.oauth.client.model.{ClientCredentials, OAuthClientRecord}
 import versola.oauth.clientauth.{AuthenticatedEndpoint, ClientAuthentication}
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.mtls.ClientCertificate
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.{Base64, CoreConfig, Secret, SecurityService}
 import zio.{Clock, IO, NonEmptyChunk, Task, ZIO, ZLayer}
 

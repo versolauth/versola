@@ -1,6 +1,5 @@
 package versola.oauth.conversation
 
-import versola.audit.{AuthAuditKinds}
 import versola.antifraud.{
   AntifraudEvents,
   AntifraudOutcome,
@@ -12,10 +11,10 @@ import versola.antifraud.{
   PowChallengeVerifier,
   SmsBudget,
 }
-import versola.auth.model.{CredentialDeviceType, OtpCode, PasskeyName, Password}
 import versola.audit.AuditSupport.*
 import versola.audit.AuthAuditDetails
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
+import versola.audit.AuthAuditKinds
+import versola.auth.model.{CredentialDeviceType, OtpCode, PasskeyName, Password}
 import versola.oauth.AuthMetrics
 import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.authorize.model.{Prompt, ResponseTypeEntry}
@@ -47,6 +46,7 @@ import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.model.{Login, UserId, UserRecord}
 import versola.user.{UserRepository, UserService}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Observability
 import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, Email, MAC, Phone, Secret, SecureRandom, SecurityService}
 import zio.*
@@ -298,7 +298,8 @@ object ConversationService:
         check: CheckPassword,
     ): Task[Unit] =
       check match
-        case CheckPassword.Success | CheckPassword.Temporary => auditStep(authId, conversation, "password", AuditOutcome.success, userId = Some(userId))
+        case CheckPassword.Success | CheckPassword.Temporary =>
+          auditStep(authId, conversation, "password", AuditOutcome.success, userId = Some(userId))
         case CheckPassword.TemporaryExpired =>
           auditStep(authId, conversation, "password", AuditOutcome.failure, Some("temporary_expired"), Some(userId))
         case _: CheckPassword.OldPassword => auditStep(authId, conversation, "password", AuditOutcome.failure, Some("old_password"), Some(userId))
@@ -499,7 +500,11 @@ object ConversationService:
         // sending the same token again.
         verdict <- proof match
           case ProofInput.Answered(token, solution) if submitStatus == LimitStatus.Allowed =>
-            challengeSubject(authId, conversation, credential).flatMap(challengeVerifier.verify(_, token, solution)).flatMap(settle(authId, conversation, _)).map(Some(_))
+            challengeSubject(
+              authId,
+              conversation,
+              credential,
+            ).flatMap(challengeVerifier.verify(_, token, solution)).flatMap(settle(authId, conversation, _)).map(Some(_))
           case _ => ZIO.none
         // The ask of a request left pending (after its pause, or a script's, which is given a proof to solve) is that request
         // made again: it took its step and was counted when it was left, and one code is one step and one count.
@@ -560,7 +565,14 @@ object ConversationService:
         decision <- antifraudEvents.decideOtpRequest(conversation.clientId, conversation.userAgent, credential, repeated = paid)
         result <-
           if decision.action == DecisionAction.Block then
-            auditStep(authId, conversation, "otp_request", AuditOutcome.denied, Some("antifraud_block"), afDecision = Some(decision.action.toString)) *>
+            auditStep(
+              authId,
+              conversation,
+              "otp_request",
+              AuditOutcome.denied,
+              Some("antifraud_block"),
+              afDecision = Some(decision.action.toString),
+            ) *>
               otpRequested(authId, conversation, credential, AntifraudOutcome.blocked, Some(decision)) *> accessDenied(authId, conversation)
           else if decision.action != DecisionAction.Challenge then
             sendInitialOtp(authId, conversation, credential, factorIndex, decision)
@@ -569,7 +581,15 @@ object ConversationService:
               sendInitialOtp(authId, conversation, credential, factorIndex, decision)
           // A challenge paid by waiting: the code goes out, as the ask of a request that did the work would have sent it.
           else if waited then
-            challengeStep(authId, conversation, credential, AntifraudOutcome.challenge_passed, decision, level = None, kind = ChallengeVerifier.PauseKind) *>
+            challengeStep(
+              authId,
+              conversation,
+              credential,
+              AntifraudOutcome.challenge_passed,
+              decision,
+              level = None,
+              kind = ChallengeVerifier.PauseKind,
+            ) *>
               sendInitialOtp(authId, conversation, credential, factorIndex, decision)
           else challenge(authId, conversation, credential, factorIndex, decision, proof, verdict)
       yield result
@@ -606,7 +626,15 @@ object ConversationService:
         result <-
           if written then
             // Asked for again by the page, it is the same request: recorded once.
-            ZIO.unless(pending(conversation))(challengeStep(authId, conversation, credential, AntifraudOutcome.challenged, decision, level = None, kind = ChallengeVerifier.PauseKind))
+            ZIO.unless(pending(conversation))(challengeStep(
+              authId,
+              conversation,
+              credential,
+              AntifraudOutcome.challenged,
+              decision,
+              level = None,
+              kind = ChallengeVerifier.PauseKind,
+            ))
               .as(ConversationResult.RenderStep(step): ConversationResult.Render)
           else Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
       yield result
@@ -1301,7 +1329,11 @@ object ConversationService:
                           webAuthnService.finishAssertion(settings, request, response).foldZIO(
                             { _ =>
                               auditStep(authId, conversation, "passkey", AuditOutcome.failure, Some("invalid_assertion")) *>
-                                (recordIp.zipPar(submissionLimiter.recordLimit(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion))) *>
+                                (recordIp.zipPar(submissionLimiter.recordLimit(
+                                  conversation.clientId,
+                                  credSubject,
+                                  ChallengeType.PasskeyAssertion,
+                                ))) *>
                                 passkeyAssertionFailed(authId, conversation, cred)
                             },
                             outcome =>
@@ -1337,9 +1369,9 @@ object ConversationService:
                                           amr = conversation.amr + (PassedAuthFactor.passkey -> PassedFactorRecord(now, passkeyMethods)),
                                         )
                                         auditStep(authId, conversation, "passkey", AuditOutcome.success, userId = Some(outcome.userId)) *>
-                                        conversationRepository.overwrite(authId, updated).flatMap:
-                                          case true => offerPasskeyEnroll(authId, updated.copy(version = updated.version + 1))
-                                          case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict),
+                                          conversationRepository.overwrite(authId, updated).flatMap:
+                                            case true => offerPasskeyEnroll(authId, updated.copy(version = updated.version + 1))
+                                            case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict),
                           )
         case _ =>
           // Passkey assertion submitted while the conversation isn't on a passkey-enabled
@@ -1403,7 +1435,8 @@ object ConversationService:
                   kind = AuthAuditKinds.AccountPasskeyEnrolled,
                   outcome = AuditOutcome.success,
                   userId = Some(userId),
-                  details = AuthAuditDetails.Passkey(credentialPrefix = Some(record.id.toString.take(9)), deviceType = Some(record.deviceType.toString)),
+                  details =
+                    AuthAuditDetails.Passkey(credentialPrefix = Some(record.id.toString.take(9)), deviceType = Some(record.deviceType.toString)),
                 ),
               ) *> ZIO.succeed(ConversationResult.StepPassed(conversation)),
           )
@@ -1509,14 +1542,14 @@ object ConversationService:
                       details = AuthAuditDetails.Account(via = "login_flow"),
                     ),
                   ) *>
-                  Clock.instant.flatMap: now =>
-                    val updated = conversation.copy(
-                      amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
-                      needsPasswordChange = false,
-                    )
-                    conversationRepository.overwrite(authId, updated).flatMap:
-                      case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
-                      case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict),
+                    Clock.instant.flatMap: now =>
+                      val updated = conversation.copy(
+                        amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
+                        needsPasswordChange = false,
+                      )
+                      conversationRepository.overwrite(authId, updated).flatMap:
+                        case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                        case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict),
               )
 
     private def generateIdTokenData(

@@ -1,8 +1,7 @@
 package versola.oauth.account
 
-import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
-import versola.util.audit.{AuditDraft, AuditOutcome}
 import org.scalamock.stubs.Stub
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.model.Password
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
@@ -11,6 +10,7 @@ import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.user.model.UserId
 import versola.util.UnitSpecBase
+import versola.util.audit.{AuditDraft, AuditOutcome}
 import zio.*
 import zio.test.*
 

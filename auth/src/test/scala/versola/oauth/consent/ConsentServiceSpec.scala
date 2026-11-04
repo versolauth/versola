@@ -1,13 +1,13 @@
 package versola.oauth.consent
 
 import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
-import versola.util.audit.{AuditOutcome}
 import versola.oauth.authorize.model.Prompt
 import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.{AuthMethod, ClientId, ConsentFlow, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.consent.model.ConsentRecord
 import versola.user.model.UserId
 import versola.util.UnitSpecBase
+import versola.util.audit.AuditOutcome
 import zio.*
 import zio.json.*
 import zio.test.*

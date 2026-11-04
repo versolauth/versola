@@ -1,13 +1,11 @@
 package versola.oauth.token
 
-import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures}
-import versola.util.audit.{AuditOutcome}
-import versola.util.audit.AuditEvents
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.crypto.RSASSAVerifier
 import com.nimbusds.jose.jwk.{KeyUse, RSAKey}
 import com.nimbusds.jwt.SignedJWT
 import org.scalamock.stubs.Stub
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures}
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ApplicationType
@@ -35,6 +33,8 @@ import versola.oauth.userinfo.UserInfoService
 import versola.oauth.userinfo.model.UserInfoResponse
 import versola.user.model.{UserId, UserRecord}
 import versola.util.Dpop
+import versola.util.audit.AuditEvents
+import versola.util.audit.AuditOutcome
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
 import versola.util.{Base64, CoreConfig, JWT, Secret, TestCertificates, UnitSpecBase}
 import zio.*
@@ -1026,7 +1026,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           tokenService = stub[OAuthTokenService]
           clientService = stub[OAuthConfigurationService]
           _ = clientService.find.returnsWith(ZIO.none)
-          clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig, ClientAuthFailures.noop)
+          clientAuthentication =
+            ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig, ClientAuthFailures.noop)
           userInfoService = stub[UserInfoService]
           tracing <- NoopTracing.layer.build
           _ <- tokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens)
@@ -1035,7 +1036,9 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
               TokenEndpointController.routes
                 .provideEnvironment(
                   ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(userInfoService) ++
-                    ZEnvironment(driftedJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(stub[DpopService]) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing,
+                    ZEnvironment(driftedJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(
+                      stub[DpopService],
+                    ) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing,
                 ),
             ),
           )
@@ -1080,7 +1083,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           tokenService = stub[OAuthTokenService]
           clientService = stub[OAuthConfigurationService]
           _ = clientService.find.returnsWith(ZIO.none)
-          clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig, ClientAuthFailures.noop)
+          clientAuthentication =
+            ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig, ClientAuthFailures.noop)
           userInfoService = stub[UserInfoService]
           tracing <- NoopTracing.layer.build
           _ <- tokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens)
@@ -1089,7 +1093,9 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
               TokenEndpointController.routes
                 .provideEnvironment(
                   ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(userInfoService) ++
-                    ZEnvironment(noSigningKeyJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(stub[DpopService]) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing,
+                    ZEnvironment(noSigningKeyJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(
+                      stub[DpopService],
+                    ) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing,
                 ),
             ),
           )

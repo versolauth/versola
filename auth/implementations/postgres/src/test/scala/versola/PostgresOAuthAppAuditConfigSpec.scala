@@ -27,7 +27,10 @@ object PostgresOAuthAppAuditConfigSpec extends ZIOSpecDefault:
     ZIO.attempt(ConfigFactory.parseString(config).resolve()).orDie
       .flatMap(parsed => ConfigProvider.fromTypesafeConfigZIO(parsed).orDie)
       .flatMap(provider =>
-        (ZIO.service[AuditEvents.Settings] <*> ZIO.service[AuthAudit.Tiers]).provide(PostgresOAuthApp.auditSettings, ZLayer.succeed(provider.kebabCase)),
+        (ZIO.service[AuditEvents.Settings] <*> ZIO.service[AuthAudit.Tiers]).provide(
+          PostgresOAuthApp.auditSettings,
+          ZLayer.succeed(provider.kebabCase),
+        ),
       )
 
   private def load(config: String): IO[Config.Error, AuditEvents.Settings] = loadBoth(config).map(_._1)

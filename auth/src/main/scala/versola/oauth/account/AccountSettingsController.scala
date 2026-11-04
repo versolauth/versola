@@ -1,10 +1,9 @@
 package versola.oauth.account
 
-import versola.audit.{AuthAuditKinds}
-import versola.audit.AuthAuditDetails
-import versola.auth.model.{CredentialId, PasskeyName}
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.audit.AuditSupport.*
+import versola.audit.AuthAuditDetails
+import versola.audit.AuthAuditKinds
+import versola.auth.model.{CredentialId, PasskeyName}
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
@@ -15,6 +14,7 @@ import versola.oauth.session.SessionService
 import versola.oauth.session.model.PublicSessionId
 import versola.user.UserRepository
 import versola.user.model.UserId
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{BadRequest, Controller, Observability, Unauthorized}
 import versola.util.{Base64, CoreConfig, Secret}
 import zio.*

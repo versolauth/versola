@@ -1,14 +1,14 @@
 package versola.oauth.authorize
 
-import versola.audit.{AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures}
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import org.scalamock.stubs.Stub
+import versola.audit.{AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures}
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{PushedAuthorizationError, PushedAuthorizationResponse}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
 import versola.oauth.model.{RequestUri, RequestUriReference}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.{Base64, UnitSpecBase}
 import zio.*
@@ -307,7 +307,11 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
         tiers = CapturingAuditEvents.tiers.copy(parSuccess = false),
         setup = _.push.failsWith(PushedAuthorizationError.RequestUriNotAllowed),
         verifyAudit = drafts =>
-          assertTrue(drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuthAuditKinds.ParRequest, AuditOutcome.failure, Some(PushedAuthorizationError.RequestUriNotAllowed.error)))),
+          assertTrue(drafts.map(d => (d.kind, d.outcome, d.reason)) == List((
+            AuthAuditKinds.ParRequest,
+            AuditOutcome.failure,
+            Some(PushedAuthorizationError.RequestUriNotAllowed.error),
+          ))),
       ),
       controllerTestCase(
         description = "invalid_client is not recorded here: it is client.auth_failed, coalesced",

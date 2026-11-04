@@ -1,8 +1,8 @@
 package versola.oauth.est
 
-import versola.audit.{AuthActors, AuthAuditKinds}
 import versola.audit.AuditSupport.*
 import versola.audit.AuthAuditDetails
+import versola.audit.{AuthActors, AuthAuditKinds}
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.{CertificateSubject, CoreConfig}
 import zio.*
@@ -111,7 +111,12 @@ object EstService:
       ZIO.fromTry(EstCodec.certificates(issued.certificate)).map(certificates => Issued(EstCodec.certsOnly(certificates), issued.chainEndsAt))
 
     /** `cert.enrolled` / `cert.renewed`: the client is the actor; `serial` and `notAfter` are of the certificate central issued. */
-    private def auditIssued(operation: String, kind: versola.util.audit.AuditKind, clientId: Option[String], issued: EstCentralClient.Issued): IO[Throwable, Unit] =
+    private def auditIssued(
+        operation: String,
+        kind: versola.util.audit.AuditKind,
+        clientId: Option[String],
+        issued: EstCentralClient.Issued,
+    ): IO[Throwable, Unit] =
       val leaf = EstCodec.certificates(issued.certificate).toOption.flatMap(_.headOption)
       audit.log(
         AuditDraft(

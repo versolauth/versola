@@ -2,10 +2,10 @@ package versola.oauth.authorize
 
 import versola.audit.AuditSupport.*
 import versola.audit.{AuditSupport, AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds}
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.oauth.authorize.model.{PushedAuthorizationError, PushedAuthorizationErrorResponse}
 import versola.oauth.clientauth.{CertificateRelevance, ClientAuthentication}
 import versola.util.CoreConfig
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{Controller, Observability, extractCredentials}
 import zio.*
 import zio.http.*
@@ -60,7 +60,7 @@ object PushedAuthorizationController extends Controller:
             Observability.setError(error.error, error.logDescription) *>
               // Not `invalid_client`: that is `client.auth_failed`, coalesced, so a flood of guesses is one row a minute.
               audit(AuditOutcome.failure, Some(error.error), Map.empty).unless(error == PushedAuthorizationError.InvalidClient)
-              .as(errorResponse(error))
+                .as(errorResponse(error))
           case error: Throwable => ZIO.fail(error)
         }
     }

@@ -1,7 +1,6 @@
 package versola.oauth.conversation
 
 import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
-import versola.util.audit.{AuditOutcome, AuditUnavailableException}
 import versola.auth.TestEnvConfig
 import versola.auth.model.Password
 import versola.oauth.authorize.AcrResolutionService
@@ -19,6 +18,7 @@ import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.model.{Login, UserId, UserRecord}
 import versola.user.{UserRepository, UserService}
+import versola.util.audit.{AuditOutcome, AuditUnavailableException}
 import versola.util.{AuthPropertyGenerator, Email, Phone, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
 import zio.json.ast
@@ -742,7 +742,11 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
           drafts <- env.audit.recorded
-        yield assertTrue(drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuthAuditKinds.LoginStep, AuditOutcome.failure, Some("invalid_password"))))
+        yield assertTrue(drafts.map(d => (d.kind, d.outcome, d.reason)) == List((
+          AuthAuditKinds.LoginStep,
+          AuditOutcome.failure,
+          Some("invalid_password"),
+        )))
       },
       test("a retired or expired temporary password is a failure with its own reason") {
         val env = Env()

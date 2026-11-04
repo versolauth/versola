@@ -1,16 +1,16 @@
 package versola.oauth.authorize
 
-import versola.audit.{AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
-import versola.oauth.authorize.model.Prompt
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import org.scalamock.stubs.Stub
+import versola.audit.{AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
+import versola.oauth.authorize.model.Prompt
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseMode, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.conversation.model.AuthId
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod}
 import versola.util.UnitSpecBase
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{NoopTracing, Observability}
 import zio.*
 import zio.http.*
@@ -211,7 +211,10 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
         expectedStatus = Status.SeeOther,
         setup = services =>
           for
-            _ <- services.parser.parse.succeedsWith(baseRequest.copy(scope = Set(ScopeToken("profile"), ScopeToken("openid")), prompt = Set(Prompt.login)))
+            _ <- services.parser.parse.succeedsWith(baseRequest.copy(
+              scope = Set(ScopeToken("profile"), ScopeToken("openid")),
+              prompt = Set(Prompt.login),
+            ))
             _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
             _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
           yield (),
@@ -261,7 +264,11 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
         tiers = CapturingAuditEvents.tiers.copy(authorizeSuccess = false),
         setup = _.parser.parse.failsWith(Error.BadRequest),
         verifyAudit = drafts =>
-          assertTrue(drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuthAuditKinds.AuthorizeRequest, AuditOutcome.failure, Some("invalid_request")))),
+          assertTrue(drafts.map(d => (d.kind, d.outcome, d.reason)) == List((
+            AuthAuditKinds.AuthorizeRequest,
+            AuditOutcome.failure,
+            Some("invalid_request"),
+          ))),
       ),
       controllerTestCase(
         description = "a request object that fails verification records invalid_request_object",

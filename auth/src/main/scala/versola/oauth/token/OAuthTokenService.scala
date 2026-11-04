@@ -2,7 +2,6 @@ package versola.oauth.token
 
 import versola.audit.AuditSupport.*
 import versola.audit.{AuditSupport, AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds}
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.oauth.client.model.{
   AuthorizationDetail,
   ClientCredentials,
@@ -23,6 +22,7 @@ import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenFamilyI
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
 import versola.user.UserRepository
 import versola.user.model.UserId
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Observability
 import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
 import zio.prelude.These
@@ -662,27 +662,27 @@ object OAuthTokenService:
         accessToken <- authPropertyGenerator.nextAccessToken
         _ <- Observability.setToken(accessToken.encoded)
         issued = IssuedTokens(
-        accessToken = accessToken,
-        clientId = client.id,
-        audience = audience,
-        authorizationDetails = details,
-        accessTokenTtl = client.accessTokenTtl,
-        userId = None,
-        refreshToken = None,
-        scope = request.scope.getOrElse(client.scope),
-        requestedClaims = None,
-        uiLocales = None,
-        nonce = None,
-        user = None,
-        tenantId = client.tenantId,
-        roles = Nil,
-        sessionId = None,
-        // The one grant with no chain behind it, so there is no family for the token to name.
-        refreshTokenFamilyId = None,
-        amr = Set.empty,
-        authTime = None,
-        acr = None,
-        cnf = confirmation(client, dpopJkt, certificate),
+          accessToken = accessToken,
+          clientId = client.id,
+          audience = audience,
+          authorizationDetails = details,
+          accessTokenTtl = client.accessTokenTtl,
+          userId = None,
+          refreshToken = None,
+          scope = request.scope.getOrElse(client.scope),
+          requestedClaims = None,
+          uiLocales = None,
+          nonce = None,
+          user = None,
+          tenantId = client.tenantId,
+          roles = Nil,
+          sessionId = None,
+          // The one grant with no chain behind it, so there is no family for the token to name.
+          refreshTokenFamilyId = None,
+          amr = Set.empty,
+          authTime = None,
+          acr = None,
+          cnf = confirmation(client, dpopJkt, certificate),
         )
         _ <- auditIssued("client_credentials", client, issued)
       yield issued

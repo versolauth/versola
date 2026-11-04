@@ -1,8 +1,7 @@
 package versola.oauth.account
 
-import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
-import versola.util.audit.{AuditDraft, AuditEvents}
 import org.scalamock.stubs.Stub
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
 import versola.auth.model.{CredentialId, PasskeyName, PasskeyRecord}
 import versola.oauth.challenge.passkey.{PasskeyCeremony, PasskeyRepository, WebAuthnError, WebAuthnService}
@@ -14,6 +13,7 @@ import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionUnderUserAgent}
 import versola.user.UserRepository
 import versola.user.model.UserId
+import versola.util.audit.{AuditDraft, AuditEvents}
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.{Base64, Secret, UnitSpecBase}
 import zio.*

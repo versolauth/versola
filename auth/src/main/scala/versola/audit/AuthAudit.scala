@@ -28,14 +28,35 @@ object AuthAuditKinds:
   val AccountLimitsReset: AuditKind = AuditKind("account.limits_reset")
   val CertEnrolled: AuditKind = AuditKind("cert.enrolled")
   val CertRenewed: AuditKind = AuditKind("cert.renewed")
+
   /** Not emitted by auth: a certificate is revoked in central. Listed so that the vocabulary is the design's. */
   val CertRevoked: AuditKind = AuditKind("cert.revoked")
 
   val all: Set[AuditKind] = Set(
-    LoginStep, LoginCompleted, AuthorizeRequest, ParRequest, ConsentGranted, ConsentDenied, ConsentRevoked, TokenIssued, TokenRefused,
-    TokenReuseDetected, TokenRevoked, ClientAuthFailed, SessionEnded, AccountRegistered, AccountPasswordChanged, AccountPasswordSet,
-    AccountPasswordReset, AccountPasskeyEnrolled, AccountPasskeyRemoved, AccountClaimsUpdated, AccountLimitsReset, CertEnrolled,
-    CertRenewed, CertRevoked,
+    LoginStep,
+    LoginCompleted,
+    AuthorizeRequest,
+    ParRequest,
+    ConsentGranted,
+    ConsentDenied,
+    ConsentRevoked,
+    TokenIssued,
+    TokenRefused,
+    TokenReuseDetected,
+    TokenRevoked,
+    ClientAuthFailed,
+    SessionEnded,
+    AccountRegistered,
+    AccountPasswordChanged,
+    AccountPasswordSet,
+    AccountPasswordReset,
+    AccountPasskeyEnrolled,
+    AccountPasskeyRemoved,
+    AccountClaimsUpdated,
+    AccountLimitsReset,
+    CertEnrolled,
+    CertRenewed,
+    CertRevoked,
   )
 
 /** The actors of auth's events besides `user` and `system`, which the core names itself. */

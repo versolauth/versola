@@ -1,7 +1,6 @@
 package versola.oauth.conversation
 
 import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
-import versola.util.audit.{AuditOutcome}
 import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord}
 import versola.oauth.authorize.AcrResolutionService
@@ -28,6 +27,7 @@ import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.model.{UserId, UserRecord}
 import versola.user.{UserRepository, UserService}
+import versola.util.audit.AuditOutcome
 import versola.util.{AuthPropertyGenerator, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
 import zio.test.*
@@ -943,7 +943,13 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
           _ <- env.webAuthnService.finishRegistration.failsWith(versola.oauth.challenge.passkey.WebAuthnError.CeremonyFailed("fail"))
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          _ <- env.service.finishPasskeyEnroll(authId, recordWithUser, ConversationStep.PasskeyEnroll("reg-req", "{}"), "resp", PasskeyName("my-passkey"))
+          _ <- env.service.finishPasskeyEnroll(
+            authId,
+            recordWithUser,
+            ConversationStep.PasskeyEnroll("reg-req", "{}"),
+            "resp",
+            PasskeyName("my-passkey"),
+          )
           drafts <- env.audit.recorded
         yield assertTrue(drafts.isEmpty)
       },

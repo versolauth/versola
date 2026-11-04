@@ -5,7 +5,6 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.audit.AuditSupport.*
 import versola.audit.{AuditSupport, AuthActors, AuthAuditDetails, AuthAuditKinds}
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome, AuditUnavailableException}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ClientCredentials, ClientId, ClientIdWithSecret, ResourceUri, ScopeToken}
 import versola.oauth.clientauth.{AuthenticatedEndpoint, CertificateRelevance, ClientAuthentication}
@@ -26,6 +25,7 @@ import versola.oauth.token.model.{
 import versola.oauth.userinfo.UserInfoService
 import versola.user.model.UserId
 import versola.util.CoreConfig.JwtConfig
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome, AuditUnavailableException}
 import versola.util.http.{Controller, Observability, extractCredentials}
 import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder, JWT, Secret}
 import zio.*

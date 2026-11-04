@@ -71,17 +71,17 @@ object AuthAuditDetails:
 
   /** `token.refused`: `reason` of the event is the OAuth error, `detail` the sub-code `setError` carries. */
   case class TokenRefused(grant: Option[String], clientAuth: Option[String], detail: Option[String]) extends AuditDetails
-      derives JsonEncoder:
+    derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
   /** `token.reuse_detected`: a refresh token that had been rotated away (or an authorization code that had been used) was
     * presented again, and the family it belongs to was revoked. */
   case class TokenReuseDetected(tokenType: String, refreshPrefix: Option[String], familyId: String) extends AuditDetails
-      derives JsonEncoder:
+    derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
   case class TokenRevoked(tokenType: String, jti: Option[String], refreshPrefix: Option[String], cause: String, count: Option[Int] = None)
-      extends AuditDetails derives JsonEncoder:
+    extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
   /** `client.auth_failed`, coalesced per (client, address, reason) and minute: `count` failures in the minute. */

@@ -1,11 +1,11 @@
 package versola.oauth.clientauth
 
-import versola.audit.ClientAuthFailures
 import com.nimbusds.jose.crypto.ECDSASigner
 import com.nimbusds.jose.jwk.{Curve, ECKey}
 import com.nimbusds.jose.{JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.ZIOStubs
+import versola.audit.ClientAuthFailures
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{
@@ -440,7 +440,7 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
           requestWith(certificate = None, header = Some(TestEnvConfig.escapedClientCertificatePem)),
           ClientIdWithSecret(clientId, None),
           CertificateRelevance.Authentication,
-  )
+        )
       yield assertTrue(result.map(_.subjectDn) == Some(TestEnvConfig.clientCertificateSubjectDn))
         .label("§6.5 is how every tenant works today and is not disturbed by the listener")
     },
@@ -519,7 +519,11 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
           reported <- reporting
           authenticator = authentication(Some(selfSignedClient), repository, reported = reported)
           _ <- authenticator.authenticate(ClientIdWithSecret(clientId, None), None, AuthenticatedEndpoint.Token).either
-          _ <- authenticator.authenticate(ClientIdWithSecret(clientId, None), Some(TestEnvConfig.otherClientCertificate), AuthenticatedEndpoint.Token).either
+          _ <- authenticator.authenticate(
+            ClientIdWithSecret(clientId, None),
+            Some(TestEnvConfig.otherClientCertificate),
+            AuthenticatedEndpoint.Token,
+          ).either
           seen <- reported.all
         yield assertTrue(seen.map(_._2) == List("certificate_mismatch", "certificate_mismatch"))
       },

@@ -1,7 +1,6 @@
 package versola.oauth.logout
 
 import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
-import versola.util.audit.{AuditOutcome, AuditUnavailableException}
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ApplicationType
@@ -19,6 +18,7 @@ import versola.oauth.session.model.{
   UserDevice,
 }
 import versola.user.model.UserId
+import versola.util.audit.{AuditOutcome, AuditUnavailableException}
 import versola.util.{MAC, UnitSpecBase}
 import zio.*
 import zio.http.*
@@ -496,7 +496,13 @@ object LogoutServiceSpec extends UnitSpecBase:
       },
       test("ending a session fails the request when the log cannot take the event, after the session is gone") {
         val env = Env()
-        val refusing = LogoutService.Impl(env.sessionService, env.configuration, TestEnvConfig.coreConfig, env.outbox, CapturingAuditEvents.shared(unavailable = true))
+        val refusing = LogoutService.Impl(
+          env.sessionService,
+          env.configuration,
+          TestEnvConfig.coreConfig,
+          env.outbox,
+          CapturingAuditEvents.shared(unavailable = true),
+        )
         for
           _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
           result <- refusing.logout(Right(rawSessionId), None, None).either

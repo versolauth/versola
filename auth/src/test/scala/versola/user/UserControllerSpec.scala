@@ -1,8 +1,7 @@
 package versola.user
 
-import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import org.scalamock.stubs.ZIOStubs
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord, Password}
 import versola.oauth.challenge.passkey.PasskeyRepository
@@ -14,6 +13,7 @@ import versola.oauth.session.SessionService
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionUnderUserAgent, UserAgentId, UserAgentRecord, UserDevice}
 import versola.role.model.RoleId
 import versola.user.model.*
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.{Base64, JWT, Patch}
 import zio.*
@@ -868,7 +868,12 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         for
           _ <- repo.patchClaims.succeedsWith(())
           (resp, drafts) <- audited(
-            json(Method.PATCH, List("users", "claims"), """{"id":"00000000-0000-0000-0000-000000000001","claims":{"name":"John","email":"john@doe.com"}}""", _),
+            json(
+              Method.PATCH,
+              List("users", "claims"),
+              """{"id":"00000000-0000-0000-0000-000000000001","claims":{"name":"John","email":"john@doe.com"}}""",
+              _,
+            ),
             users = repo,
           )
         yield assertTrue(

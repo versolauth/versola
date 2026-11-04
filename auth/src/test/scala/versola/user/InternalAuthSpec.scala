@@ -1,8 +1,8 @@
 package versola.user
 
-import versola.audit.{AuthActors}
+import versola.audit.AuthActors
 import versola.auth.TestEnvConfig
-import versola.util.audit.{AuditContext}
+import versola.util.audit.AuditContext
 import versola.util.{CoreConfig, JWT}
 import zio.*
 import zio.json.*

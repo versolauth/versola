@@ -1,7 +1,7 @@
 package versola.user
 
-import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.audit.AuthAuditKinds
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.{Email, Phone, UnitSpecBase}

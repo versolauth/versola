@@ -1,12 +1,12 @@
 package versola.user
 
-import versola.audit.{AuthAuditKinds}
 import versola.audit.AuditSupport.*
 import versola.audit.AuthAuditDetails
+import versola.audit.AuthAuditKinds
 import versola.oauth.client.model.TenantId
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.role.model.RoleId
 import versola.user.model.UserRecord
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.{Email, Phone}
 import zio.*
 

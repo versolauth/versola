@@ -1,7 +1,6 @@
 package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.audit.{AuditController, AuditReadRepository, AuditReportService, AuthAudit, ClientAuthFailures, PostgresAuditEventRepository}
 import versola.antifraud.{
   Antifraud,
   AntifraudCounterResetRepository,
@@ -31,6 +30,7 @@ import versola.antifraud.{
   VelocityRepository,
   VelocityRules,
 }
+import versola.audit.{AuditController, AuditReadRepository, AuditReportService, AuthAudit, ClientAuthFailures, PostgresAuditEventRepository}
 import versola.cleanup.PostgresCleanupManager
 import versola.oauth.account.{AccountSettingsController, AccountSettingsService}
 import versola.oauth.authorize.{
@@ -82,8 +82,8 @@ import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresPushedAuthori
 import versola.user.{PostgresUserRepository, UserController, UserRegistrationSyncClient, UserRepository, UserService}
 import versola.util.*
 import versola.util.SequentialLayers.*
-import versola.util.http.VersolaApp
 import versola.util.audit.{AuditEventRepository, AuditEvents}
+import versola.util.http.VersolaApp
 import versola.util.net.{AsnResolver, AsnSettings, GeoResolver, GeoSettings}
 import versola.util.postgres.{PostgresConfig, PostgresConfigSnapshotRepository, PostgresHikariDataSource, PostgresWalMetrics}
 import zio.*

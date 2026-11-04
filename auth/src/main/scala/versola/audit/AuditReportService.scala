@@ -1,8 +1,8 @@
 package versola.audit
 
 import versola.audit.AuditReadRepository.{Position, Summary}
-import versola.util.audit.{AuditEvent, AuditEvents}
 import versola.util.Base64
+import versola.util.audit.{AuditEvent, AuditEvents}
 import zio.*
 import zio.json.JsonCodec
 
@@ -13,7 +13,8 @@ import scala.util.Try
 
 /** A request for the per-user report that cannot be served as asked. `code` is the `setError` code. */
 enum AuditReportError(val code: String, val message: String):
-  case WindowOutsideRetention extends AuditReportError("audit_window_outside_retention", "from is before the start of the retained window, or to is in the future")
+  case WindowOutsideRetention
+    extends AuditReportError("audit_window_outside_retention", "from is before the start of the retained window, or to is in the future")
   case WindowReversed extends AuditReportError("audit_window_reversed", "to is before from")
   case BadLimit extends AuditReportError("audit_bad_limit", "limit must be between 1 and 500")
   case BadCursor extends AuditReportError("audit_bad_cursor", "the cursor is not one this endpoint issued")

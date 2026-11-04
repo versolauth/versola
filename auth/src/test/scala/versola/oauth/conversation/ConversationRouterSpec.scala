@@ -1,7 +1,6 @@
 package versola.oauth.conversation
 
 import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
-import versola.util.audit.{AuditOutcome}
 import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.client.OAuthConfigurationService
@@ -31,6 +30,7 @@ import versola.oauth.session.model.{SessionId, UserAgentDetails, UserAgentId}
 import versola.role.model.RoleId
 import versola.user.UserRepository
 import versola.user.model.{Login, UserId, UserRecord}
+import versola.util.audit.AuditOutcome
 import versola.util.{Email, Phone, SecureRandom, UnitSpecBase}
 import zio.http.URL
 import zio.json.ast.Json
@@ -377,7 +377,9 @@ object ConversationRouterSpec extends UnitSpecBase:
           (result, _) <- env.router.submit(authId, OtpResendSubmission(answered, "test-csrf"), None, None)
         yield assertTrue(env.otpConversationService.prepareInitialOtp.calls.map(_._5) == List(answered))
       },
-      test("a resend from the pending step, plain or from script, reaches the one service method that applies the pause, with the pending conversation") {
+      test(
+        "a resend from the pending step, plain or from script, reaches the one service method that applies the pause, with the pending conversation",
+      ) {
         val env = Env()
         val pendingStep = ConversationStep.Otp(
           real = None,

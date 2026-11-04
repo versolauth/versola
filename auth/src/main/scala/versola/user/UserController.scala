@@ -1,9 +1,8 @@
 package versola.user
 
-import versola.audit.{AuthAuditKinds}
 import versola.audit.AuditSupport.*
 import versola.audit.AuthAuditDetails
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
+import versola.audit.AuthAuditKinds
 import versola.auth.model.CredentialId
 import versola.auth.model.Password
 import versola.oauth.challenge.passkey.PasskeyRepository
@@ -17,6 +16,7 @@ import versola.oauth.session.model.{PublicSessionId, SessionId, SessionUnderUser
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.CoreConfig
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{Controller, Observability}
 import versola.util.{Email, Phone}
 import zio.*
@@ -32,7 +32,11 @@ object UserController extends Controller:
 
   /** What an administrator did to an account, as central told auth: the actor is the administrator (or the `central` service) that
     * `authorizeInternal` noted, the subject the user. */
-  private def audited(kind: versola.util.audit.AuditKind, userId: UserId, details: versola.util.audit.AuditDetails): ZIO[AuditEvents, Throwable, Unit] =
+  private def audited(
+      kind: versola.util.audit.AuditKind,
+      userId: UserId,
+      details: versola.util.audit.AuditDetails,
+  ): ZIO[AuditEvents, Throwable, Unit] =
     ZIO.serviceWithZIO[AuditEvents](
       _.log(
         AuditDraft(

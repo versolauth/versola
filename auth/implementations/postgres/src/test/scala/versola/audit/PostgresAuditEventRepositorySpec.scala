@@ -59,7 +59,8 @@ object PostgresAuditEventRepositorySpec extends PostgresSpec, AuditEventReposito
           actorId = Some("a\u0000b"),
           clientId = Some("client\u0000"),
           ip = Some("v6/0000000000000000"),
-          details = zio.json.ast.Json.Obj("detail" -> zio.json.ast.Json.Str("x\u0000y"), "nested" -> zio.json.ast.Json.Arr(zio.json.ast.Json.Str("\u0000"))),
+          details =
+            zio.json.ast.Json.Obj("detail" -> zio.json.ast.Json.Str("x\u0000y"), "nested" -> zio.json.ast.Json.Arr(zio.json.ast.Json.Str("\u0000"))),
         )
         val other = event(utc(today.atTime(11, 0)), user = Some(user1))
         for
@@ -97,7 +98,10 @@ object PostgresAuditEventRepositorySpec extends PostgresSpec, AuditEventReposito
         val unreachable = new java.sql.SQLException("connection refused", "08001")
         assertTrue(
           !PostgresAuditEventRepository.isDataException(RuntimeException("x", unreachable)),
-          PostgresAuditEventRepository.isDataException(RuntimeException("x", java.sql.SQLException("outer", "XX000").tap(_.setNextException(java.sql.SQLException("bad text", "22P02")))))
+          PostgresAuditEventRepository.isDataException(RuntimeException(
+            "x",
+            java.sql.SQLException("outer", "XX000").tap(_.setNextException(java.sql.SQLException("bad text", "22P02"))),
+          )),
         )
       },
       test("refuses an UPDATE and a DELETE of a row, on a partition made by the service as on the table, unless marked as maintenance") {

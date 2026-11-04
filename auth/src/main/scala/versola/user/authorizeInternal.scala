@@ -1,7 +1,7 @@
 package versola.user
 
-import versola.audit.{AuthActors}
-import versola.util.audit.{AuditContext}
+import versola.audit.AuthActors
+import versola.util.audit.AuditContext
 import versola.util.http.Unauthorized
 import versola.util.{CoreConfig, JWT}
 import zio.ZIO

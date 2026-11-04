@@ -44,7 +44,9 @@ object AuditLogRefusalFlowSpec extends E2ESpec:
 
   /** The counter once it is above `before`, polled for up to `left` times a quarter second. */
   private def counterAbove(auth: OAuthClient, before: Double, left: Int): Task[Double] =
-    refusedCounter(auth).flatMap(now => if now > before || left == 0 then ZIO.succeed(now) else ZIO.sleep(250.millis) *> counterAbove(auth, before, left - 1))
+    refusedCounter(auth).flatMap(now =>
+      if now > before || left == 0 then ZIO.succeed(now) else ZIO.sleep(250.millis) *> counterAbove(auth, before, left - 1),
+    )
 
   def spec = suite("Audit log of refusals")(
     test("a wrong password at sign-in is recorded as login.step failure invalid_password, and carries neither password") {
@@ -69,7 +71,8 @@ object AuditLogRefusalFlowSpec extends E2ESpec:
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
         started = Instant.now.minusMillis(200)
-        authorize <- auth.authorize(scope = "openid offline_access", clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+        authorize <-
+          auth.authorize(scope = "openid offline_access", clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
         cookie = authorize.conversationCookie.get
         credential <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
         _ <- auth.submitEmail(cookie, s.email.get, credential.csrf)
@@ -95,7 +98,13 @@ object AuditLogRefusalFlowSpec extends E2ESpec:
         cookie = authorize.conversationCookie.get
         challenge <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
         code <- auth.submitLoginPassword(cookie, s.login.get, s.password, challenge.csrf).assertRedirect(auth, cookie)
-        refused <- auth.token(code, "a-verifier-that-is-not-the-one-the-challenge-was-made-from-123456", Some(s.clientId), Some(s.clientSecret), Some(s.redirectUri))
+        refused <- auth.token(
+          code,
+          "a-verifier-that-is-not-the-one-the-challenge-was-made-from-123456",
+          Some(s.clientId),
+          Some(s.clientSecret),
+          Some(s.redirectUri),
+        )
         // the counter moves when the writer takes the event, which is when the request is answered
         after <- counterAbove(auth, before, 40)
       yield assertTrue(refused.isInstanceOf[TokenResult.Failure], after > before)

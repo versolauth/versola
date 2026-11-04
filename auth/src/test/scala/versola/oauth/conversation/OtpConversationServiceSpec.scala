@@ -1,7 +1,5 @@
 package versola.oauth.conversation
 
-import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
-import versola.util.audit.{AuditOutcome}
 import versola.antifraud.{
   AntifraudAction,
   AntifraudOutcome,
@@ -13,6 +11,7 @@ import versola.antifraud.{
   DecisionAction,
   RecordingAntifraudEvents,
 }
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
 import versola.auth.model.OtpCode
 import versola.oauth.authorize.AcrResolutionService
@@ -33,6 +32,7 @@ import versola.oauth.userinfo.UserInfoService
 import versola.oauth.userinfo.model.UserInfoResponse
 import versola.user.model.{UserId, UserRecord}
 import versola.user.{UserRepository, UserService}
+import versola.util.audit.AuditOutcome
 import versola.util.{AuthPropertyGenerator, CoreConfig, Email, EnvName, Phone, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
 import zio.json.ast
@@ -254,7 +254,9 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           env.conversationRepository.overwrite.calls.size == 1,
         )
       },
-      test("an ask after the pause sends the code once, with one limiter step and one velocity record in all, the limiter and the counters never asked again") {
+      test(
+        "an ask after the pause sends the code once, with one limiter step and one velocity record in all, the limiter and the counters never asked again",
+      ) {
         val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
         for
           _ <- request(env, ProofInput.NoScript)
@@ -291,7 +293,9 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- request(env, ProofInput.NoScript, initialConversation.copy(step = pendingStep))
         yield assertTrue(env.antifraud.kinds == List(("pause", AntifraudOutcome.challenged), ("pause", AntifraudOutcome.challenge_passed)))
       },
-      test("a script's ask from the pending step, while a proof of work can be asked for, is given the challenge at once: no pause, nothing sent, nothing charged again") {
+      test(
+        "a script's ask from the pending step, while a proof of work can be asked for, is given the challenge at once: no pause, nothing sent, nothing charged again",
+      ) {
         val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
         for
           _ <- request(env, ProofInput.NoScript)
@@ -499,7 +503,10 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
         for
           _ <- request(env, answered, initialConversation.copy(challengeSolved = 2))
-        yield assertTrue(env.conversationRepository.consumeChallenge.calls.map(_._2) == List(2), env.conversationRepository.recordChallengeFailure.calls.isEmpty)
+        yield assertTrue(
+          env.conversationRepository.consumeChallenge.calls.map(_._2) == List(2),
+          env.conversationRepository.recordChallengeFailure.calls.isEmpty,
+        )
       },
       test("a solved token used a second time is not a solution: it is counted as a wrong one, charged, and sends nothing") {
         val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
@@ -1540,13 +1547,20 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- blocked.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
           _ <- blocked.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
           _ <- blocked.conversationRepository.overwrite.succeedsWith(true)
-          _ <- blocked.service.prepareInitialOtp(authId, initialConversation, Right(Phone("+491512345678")), factorIndex = 0, proof = ProofInput.NoScript)
+          _ <- blocked.service.prepareInitialOtp(
+            authId,
+            initialConversation,
+            Right(Phone("+491512345678")),
+            factorIndex = 0,
+            proof = ProofInput.NoScript,
+          )
           _ <- fake.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
           _ <- fake.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
           _ <- fake.otpService.prepareOtp.succeedsWith(realOtp.copy(real = None))
           _ <- fake.conversationRepository.overwrite.succeedsWith(true)
           _ <- fake.otpService.sendOtp.succeedsWith(())
-          _ <- fake.service.prepareInitialOtp(authId, initialConversation, Right(Phone("+491512345678")), factorIndex = 0, proof = ProofInput.NoScript)
+          _ <-
+            fake.service.prepareInitialOtp(authId, initialConversation, Right(Phone("+491512345678")), factorIndex = 0, proof = ProofInput.NoScript)
           a <- blocked.audit.recorded
           b <- fake.audit.recorded
           blockedDetails = a.map(_.details).collect { case d: AuthAuditDetails.LoginStep => d }
@@ -1567,7 +1581,8 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
           _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          _ <- env.service.prepareInitialOtp(authId, initialConversation, Right(Phone("+4915123456789")), factorIndex = 0, proof = ProofInput.NoScript)
+          _ <-
+            env.service.prepareInitialOtp(authId, initialConversation, Right(Phone("+4915123456789")), factorIndex = 0, proof = ProofInput.NoScript)
           drafts <- env.audit.recorded
         yield assertTrue(drafts.map(d => (d.outcome, d.reason)) == List((AuditOutcome.denied, Some("throttled"))))
       },

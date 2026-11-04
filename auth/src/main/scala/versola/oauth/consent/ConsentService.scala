@@ -1,13 +1,13 @@
 package versola.oauth.consent
 
-import versola.audit.{AuthAuditKinds}
 import versola.audit.AuditSupport.*
 import versola.audit.AuthAuditDetails
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
+import versola.audit.AuthAuditKinds
 import versola.oauth.authorize.model.Prompt
 import versola.oauth.client.model.{ConsentFlow, OAuthClientRecord, ScopeToken}
 import versola.oauth.consent.model.ConsentRecord
 import versola.user.model.UserId
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import zio.{Clock, Task, ZIO, ZLayer}
 
 /** Whether the user still has to be asked before a code may be issued. */

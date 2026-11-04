@@ -1,9 +1,7 @@
 package versola.oauth.token
 
-import versola.util.Base64
-import versola.audit.{AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures}
-import versola.util.audit.{AuditEvents, AuditOutcome, AuditUnavailableException}
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.audit.{AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures}
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.Claim
@@ -46,6 +44,8 @@ import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
 import versola.role.model.RoleId
 import versola.user.UserRepository
 import versola.user.model.UserId
+import versola.util.Base64
+import versola.util.audit.{AuditEvents, AuditOutcome, AuditUnavailableException}
 import versola.util.{AuthPropertyGenerator, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
 import zio.*
 import zio.http.URL
@@ -293,7 +293,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     // authenticates through `verifySecret` alone, as the service itself does for a client
     // that registered no `mtlsAuth`.
     clientService.find.returnsWith(ZIO.none)
-    val clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig, ClientAuthFailures.noop)
+    val clientAuthentication =
+      ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig, ClientAuthFailures.noop)
     val tokenRepo = stub[SessionRepository]
     val accessTokenRevocationService = stub[AccessTokenRevocationService]
     val securityService = stub[SecurityService]
@@ -2290,7 +2291,6 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         yield assertTrue(result.cnf.flatMap(_.x5tS256).contains(certificateThumbprint1))
       },
     ),
-
     suite("audit log")(
       /** The prefix of a refresh token the log keeps (`Observability.setRefreshToken`), enough to tell one from another and no more. */
       test("a code exchange records token.issued: the client acts, the user is the subject, and no token is in the details") {
@@ -2488,7 +2488,11 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
           drafts.map(_.kind) == List(AuthAuditKinds.TokenReuseDetected),
           drafts.head.userId == Some(userId1),
-          drafts.head.details == AuthAuditDetails.TokenReuseDetected("refresh_token", Some(Base64.urlEncode(refreshToken1).take(9)), familyId1.toString),
+          drafts.head.details == AuthAuditDetails.TokenReuseDetected(
+            "refresh_token",
+            Some(Base64.urlEncode(refreshToken1).take(9)),
+            familyId1.toString,
+          ),
         )
       },
       test("a refresh token that was never issued is not reuse: nothing is recorded") {

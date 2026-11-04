@@ -45,7 +45,15 @@ object AuditLogFlowSpec extends E2ESpec:
     yield Session(tokens, idToken, refresh)
 
   /** What a row says of itself, as the endpoint serves it. */
-  private case class Row(kind: String, outcome: String, reason: Option[String], at: Instant, details: Json.Obj, clientId: Option[String], ip: Option[String])
+  private case class Row(
+      kind: String,
+      outcome: String,
+      reason: Option[String],
+      at: Instant,
+      details: Json.Obj,
+      clientId: Option[String],
+      ip: Option[String],
+  )
 
   private def rowOf(json: Json): Option[Row] =
     for
@@ -117,7 +125,10 @@ object AuditLogFlowSpec extends E2ESpec:
         story.map(_.at) == story.map(_.at).sorted,
         // newest first: what the endpoint serves is the reverse of the story
         rows.map(_.at) == rows.map(_.at).sorted.reverse,
-        story.filter(_.kind == "token.issued").flatMap(r => r.details.get("grant").flatMap(_.asString)) == List("authorization_code", "refresh_token"),
+        story.filter(_.kind == "token.issued").flatMap(r => r.details.get("grant").flatMap(_.asString)) == List(
+          "authorization_code",
+          "refresh_token",
+        ),
         story.filter(_.kind == "token.issued").flatMap(_.clientId).toSet == Set(s.clientId),
         story.find(_.kind == "token.revoked").flatMap(r => r.details.get("cause").flatMap(_.asString)).contains("rfc7009"),
         story.find(_.kind == "session.ended").flatMap(r => r.details.get("cause").flatMap(_.asString)).contains("rp_logout"),
@@ -150,7 +161,9 @@ object AuditLogFlowSpec extends E2ESpec:
         count("session.ended") == 1L,
         sessions.flatMap(_.get("created")).flatMap(_.asNumber).map(_.value.longValue).contains(1L),
         sessions.flatMap(_.get("ended")).flatMap(_.asNumber).map(_.value.longValue).contains(1L),
-        json.get("byClient").flatMap(_.asArray).map(_.toList.flatMap(_.asObject).flatMap(_.get("clientId")).flatMap(_.asString)).exists(_.contains(s.clientId)),
+        json.get(
+          "byClient",
+        ).flatMap(_.asArray).map(_.toList.flatMap(_.asObject).flatMap(_.get("clientId")).flatMap(_.asString)).exists(_.contains(s.clientId)),
         // the address the requests came from, from the socket (the dev config reads no header)
         json.get("ips").flatMap(_.asArray).exists(_.nonEmpty),
       )

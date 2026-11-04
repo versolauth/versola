@@ -1,7 +1,6 @@
 package versola.oauth.conversation
 
 import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
-import versola.util.audit.{AuditOutcome, AuditUnavailableException}
 import versola.auth.TestEnvConfig
 import versola.auth.model.{CredentialDeviceType, CredentialId, OtpCode, PasskeyRecord, Password}
 import versola.oauth.authorize.AcrResolutionService
@@ -25,6 +24,7 @@ import versola.oauth.userinfo.UserInfoService
 import versola.user.model.*
 import versola.user.{UserRepository, UserService}
 import versola.util.*
+import versola.util.audit.{AuditOutcome, AuditUnavailableException}
 import zio.*
 import zio.json.ast.Json
 import zio.prelude.NonEmptyList
