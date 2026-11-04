@@ -88,7 +88,9 @@ object AuditSanitizerSpec extends UnitSpecBase:
     suite("ip")(
       test("an IPv4 or IPv6 literal is kept as it was written") {
         assertTrue(
-          List("203.0.113.7", "2001:db8::1", "::1", "::ffff:192.0.2.1").forall(literal => AuditSanitizer(event.copy(ip = Some(literal))).ip == Some(literal)),
+          List("203.0.113.7", "2001:db8::1", "::1", "::ffff:192.0.2.1").forall(literal =>
+            AuditSanitizer(event.copy(ip = Some(literal))).ip == Some(literal),
+          ),
         )
       },
       test("text that is not an address is dropped, a host name and a list of addresses included") {
