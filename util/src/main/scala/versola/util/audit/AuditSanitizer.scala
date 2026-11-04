@@ -4,7 +4,7 @@ import versola.util.http.IpAddress
 import zio.json.ast.Json
 
 /** What the table can hold of an event whatever the caller sent. An event is made of the service's own values and of what a request
-  * carried (a user agent, an address, a client or a user's name), and one row the table refuses used to stop the log for everyone:
+  * carried (a user agent, an address, a client or a user's name), and one row the table refuses fails the batch it is in:
   * so the event is made storable where it is made, and the writer only has the database's own refusals left to handle.
   *
   * A text column and a JSON string refuse U+0000, `ip` is an address or nothing, and a user agent is as long as a client cares to

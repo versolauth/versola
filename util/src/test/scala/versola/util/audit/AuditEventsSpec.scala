@@ -2,7 +2,7 @@ package versola.util.audit
 
 import io.opentelemetry.api
 import org.scalamock.stubs.Stub
-import versola.util.http.Observability
+import versola.util.http.{Observability, VersolaApp}
 import versola.util.partitions.{PartitionReport, TableOwnership}
 import versola.util.{SecureRandom, UnitSpecBase}
 import zio.*
@@ -58,6 +58,51 @@ object AuditEventsSpec extends UnitSpecBase:
       val written: Ref[List[List[AuditEvent]]],
   )
 
+  /** A repository that keeps what it is given, by id and once, as the table does with `ON CONFLICT (id, at) DO NOTHING`. The first
+    * call can be held on `gate`, before it stores or after, and the repository can be made to fail. */
+  private class Store(
+      val stored: Ref[Map[UUID, AuditEvent]],
+      val rewritten: Ref[Int],
+      val entered: Queue[Unit],
+      val gate: Promise[Nothing, Unit],
+      val down: Ref[Boolean],
+      calls: Ref[Int],
+      holdFirst: Boolean,
+      storeBeforeHold: Boolean,
+  ) extends AuditEventRepository:
+
+    override def insertBatch(events: List[AuditEvent]): Task[Unit] =
+      for
+        n <- calls.updateAndGet(_ + 1)
+        _ <- entered.offer(())
+        isDown <- down.get
+        _ <- ZIO.fail(RuntimeException("connection refused")).when(isDown)
+        hold = gate.await.when(holdFirst && n == 1)
+        store = stored
+          .modify(known => (events.count(e => known.contains(e.id)), known ++ events.filterNot(e => known.contains(e.id)).map(e => e.id -> e)))
+          .flatMap(again => rewritten.update(_ + again))
+        _ <- if storeBeforeHold then store *> hold else hold *> store
+      yield ()
+
+    override def maintainPartitions(from: LocalDate, days: Int, keepFrom: LocalDate): Task[PartitionReport] = ZIO.succeed(noReport)
+
+    override def partitionDaysAhead(today: LocalDate): Task[Int] = ZIO.succeed(3)
+
+    override def pruneDefault(before: Instant): Task[Long] = ZIO.succeed(0L)
+
+    override def ownership: Task[TableOwnership] = ZIO.succeed(owned)
+
+  private object Store:
+    def make(holdFirst: Boolean = false, storeBeforeHold: Boolean = false, down: Boolean = false): UIO[Store] =
+      for
+        stored <- Ref.make(Map.empty[UUID, AuditEvent])
+        rewritten <- Ref.make(0)
+        entered <- Queue.unbounded[Unit]
+        gate <- Promise.make[Nothing, Unit]
+        isDown <- Ref.make(down)
+        calls <- Ref.make(0)
+      yield Store(stored, rewritten, entered, gate, isDown, calls, holdFirst, storeBeforeHold)
+
   private def fixture(gated: Boolean, failures: Int = 0, refuse: AuditEvent => Option[Throwable] = _ => None): UIO[Fixture] =
     for
       repository <- ZIO.succeed(stub[AuditEventRepository])
@@ -83,13 +128,27 @@ object AuditEventsSpec extends UnitSpecBase:
       settings: AuditEvents.Settings,
       source: AuditSource = svcA,
       sizing: AuditEvents.Sizing = sizing,
+  ): ZIO[Scope, Nothing, AuditEvents] = buildOn(f.repository, settings, source, sizing)
+
+  private def buildOn(
+      repository: AuditEventRepository,
+      settings: AuditEvents.Settings,
+      source: AuditSource = svcA,
+      sizing: AuditEvents.Sizing = sizing,
   ): ZIO[Scope, Nothing, AuditEvents] =
     AuditEvents.liveWith(sizing)(source, nodeId, catalog).build.map(_.get[AuditEvents]).provideSome[Scope](
-      ZLayer.succeed[AuditEventRepository](f.repository),
+      ZLayer.succeed[AuditEventRepository](repository),
       ZLayer.succeed(settings),
       tracingLayer,
       SecureRandom.live,
     )
+
+  /** The lines the log wrote about events it dropped or refused. */
+  private def reportLines: UIO[List[String]] =
+    ZTestLogger.logOutput.map(_.toList.map(_.message()).filter(_.contains("audit events were dropped or refused")))
+
+  private def drainLines: UIO[List[String]] =
+    ZTestLogger.logOutput.map(_.toList.map(_.message()).filter(_.contains("the audit queue was drained")))
 
   private def counter(name: String, source: AuditSource): UIO[Double] =
     Metric.counter(name).tagged(Set(MetricLabel("source", source.value))).value.map(_.count)
@@ -360,16 +419,20 @@ object AuditEventsSpec extends UnitSpecBase:
       },
       test("is not dropped when every row of the batch fails for the database's reason, a connection class SQLSTATE included") {
         val down = (_: AuditEvent) => Some(SQLException("the connection is closed", "08006"))
-        ZIO.scoped:
-          for
-            f <- fixture(gated = false, refuse = down)
-            events <- build(f, block, source = edge, sizing = sizing.copy(queueCapacity = 10, batchSize = 10))
-            rejectedBefore <- counter("audit_events_rejected_total", edge)
-            _ <- events.record(draft()) *> events.record(draft())
-            _ <- settle *> TestClock.adjust(1.minute).repeatN(3)
-            written <- f.written.get
-            rejectedAfter <- counter("audit_events_rejected_total", edge)
-          yield assertTrue(written.isEmpty, rejectedAfter == rejectedBefore)
+        for
+          f <- fixture(gated = false, refuse = down)
+          scope <- Scope.make
+          events <- scope.extend(build(f, block, source = edge, sizing = sizing.copy(queueCapacity = 10, batchSize = 10)))
+          rejectedBefore <- counter("audit_events_rejected_total", edge)
+          _ <- events.record(draft()) *> events.record(draft())
+          _ <- settle *> TestClock.adjust(1.minute).repeatN(3)
+          written <- f.written.get
+          rejectedAfter <- counter("audit_events_rejected_total", edge)
+          // The stop retries until the drain timeout; the clock has to move for it to end.
+          closing <- scope.close(Exit.unit).fork
+          _ <- settle *> TestClock.adjust(AuditEvents.DrainTimeout.plus(1.second)) *> settle
+          _ <- closing.join
+        yield assertTrue(written.isEmpty, rejectedAfter == rejectedBefore)
       },
       test("a draft never produces one: U+0000 is stripped, an address that is none is dropped, a user agent is cut") {
         ZIO.scoped:
@@ -389,6 +452,243 @@ object AuditEventsSpec extends UnitSpecBase:
           )
       },
     ),
+    suite("events the log dropped or refused")(
+      test("events dropped at a full queue are reported once per window, by kind, and never by content") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = true)
+            events <- build(f, drop, source = edge)
+            _ <- events.record(draft(Issued, AuditOutcome.success))
+            _ <- f.started.take
+            // Two are queued behind the one the writer holds, three are dropped; then two of a kind the service did not list.
+            _ <- ZIO.foreachDiscard(1 to 5)(_ => events.record(draft(Issued, AuditOutcome.success).copy(reason = Some("secret-detail"))))
+            _ <- ZIO.foreachDiscard(1 to 2)(_ => events.record(draft(AuditKind("thing.unlisted"))))
+            before <- reportLines
+            _ <- TestClock.adjust(1.minute)
+            lines <- reportLines
+            _ <- TestClock.adjust(2.minutes)
+            later <- reportLines
+          yield assertTrue(
+            before.isEmpty,
+            lines.size == 1,
+            lines.head.contains("5 dropped, the queue was full: thing.issued (3), other (2)"),
+            lines.head.contains("(svc-c)"),
+            !lines.head.contains("secret-detail"),
+            // A window with nothing to report says nothing.
+            later == lines,
+          )
+      }.provideLayer(ZTestLogger.default),
+      test("events a best-effort record gave up waiting for are reported the same way") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = true)
+            events <- build(f, block, source = edge)
+            _ <- events.record(draft())
+            _ <- f.started.take
+            _ <- events.record(draft()) *> events.record(draft())
+            waiting <- events.recordBestEffort(draft(Refused, AuditOutcome.failure)).fork
+            _ <- settle
+            _ <- TestClock.adjust(2.seconds)
+            _ <- waiting.join
+            _ <- TestClock.adjust(1.minute)
+            lines <- reportLines
+          yield assertTrue(lines.size == 1, lines.head.contains("1 dropped, the queue stayed full for the block timeout: thing.refused (1)"))
+      }.provideLayer(ZTestLogger.default),
+      test("rows the database refused are reported once per window by kind with their SQLSTATE, and never by content") {
+        val poison = (event: AuditEvent) =>
+          Option.when(event.reason.contains("poison-detail"))(SQLException("invalid input syntax for type inet: \"poison-detail\"", "22P02"))
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false, refuse = poison)
+            events <- build(f, block, source = edge, sizing = sizing.copy(queueCapacity = 10, batchSize = 10))
+            _ <- events.record(draft())
+            _ <- events.record(draft().copy(reason = Some("poison-detail")))
+            // The batch is refused, then written row by row: the good row is stored, the refused one is not.
+            _ <- until(f, 1)
+            _ <- TestClock.adjust(1.minute)
+            lines <- reportLines
+          yield assertTrue(
+            lines.size == 1,
+            lines.head.contains("1 refused by the database for what they contain, not stored: thing.issued (1); SQLSTATE 22P02"),
+            !lines.head.contains("poison-detail"),
+            !lines.head.contains("invalid input syntax"),
+          )
+      }.provideLayer(ZTestLogger.default),
+      test("a shutdown says the queue was drained, and an empty queue says it too") {
+        for
+          f <- fixture(gated = false)
+          _ <- ZIO.scoped(build(f, block, source = edge).unit)
+          lines <- drainLines
+        yield assertTrue(lines.size == 1, lines.head.contains("0 events taken, 0 not written"))
+      }.provideLayer(ZTestLogger.default),
+      test("the batch in hand and what is queued at shutdown are written, and the drain line says how many") {
+        for
+          f <- fixture(gated = true)
+          _ <- ZIO.scoped:
+            for
+              events <- build(f, block, source = edge)
+              _ <- events.record(draft())
+              _ <- f.started.take
+              _ <- events.record(draft()) *> events.record(draft())
+            yield ()
+          lines <- drainLines
+          written <- f.written.get
+        yield assertTrue(lines.size == 1, lines.head.contains("3 events taken, 0 not written"), written.flatten.size == 3)
+      }.provideLayer(ZTestLogger.default),
+      test("what cannot be written before the drain timeout is counted and reported by kind when the service stops, the batch in hand included") {
+        for
+          f <- fixture(gated = true, failures = 100)
+          failedBefore <- counter("audit_events_failed_total", edge)
+          scope <- Scope.make
+          events <- scope.extend(build(f, block, source = edge))
+          _ <- events.record(draft())
+          _ <- f.started.take
+          _ <- events.record(draft(Refused, AuditOutcome.failure)) *> events.record(draft(Refused, AuditOutcome.failure))
+          closing <- scope.close(Exit.unit).fork
+          _ <- settle *> TestClock.adjust(AuditEvents.DrainTimeout.plus(1.second)) *> settle
+          _ <- closing.join
+          failedAfter <- counter("audit_events_failed_total", edge)
+          drained <- drainLines
+          reported <- reportLines
+        yield assertTrue(
+          failedAfter - failedBefore == 3.0,
+          drained.size == 1,
+          drained.head.contains("3 events taken, 3 not written"),
+          reported.size == 1,
+          reported.head.contains("3 not written before the service stopped: thing.refused (2), thing.issued (1)"),
+        )
+      }.provideLayer(ZTestLogger.default),
+      test("the queue's size is read while the writer is held by a database that is down, not only when it takes something") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = true)
+            events <- build(f, block, source = edge)
+            _ <- events.record(draft())
+            _ <- f.started.take
+            _ <- events.record(draft()) *> events.record(draft())
+            _ <- settle *> TestClock.adjust(2.seconds) *> settle
+            size <- gauge("audit_queue_size", edge)
+          yield assertTrue(size == 2.0)
+      },
+    ),
+    suite("a stop of the service")(
+      test("while the repository is blocked inside insertBatch: every event the queue accepted is stored, none twice") {
+        for
+          store <- Store.make(holdFirst = true)
+          scope <- Scope.make
+          events <- scope.extend(buildOn(store, block, source = edge))
+          _ <- events.record(draft())
+          _ <- store.entered.take
+          _ <- events.record(draft()) *> events.record(draft())
+          _ <- scope.close(Exit.unit)
+          stored <- store.stored.get
+          again <- store.rewritten.get
+        yield assertTrue(stored.size == 3, again == 0)
+      },
+      test("while the statement in the repository has stored its rows and not yet returned: every event is stored once") {
+        for
+          store <- Store.make(holdFirst = true, storeBeforeHold = true)
+          scope <- Scope.make
+          events <- scope.extend(buildOn(store, block, source = edge))
+          _ <- events.record(draft())
+          _ <- store.entered.take
+          _ <- settle
+          _ <- events.record(draft()) *> events.record(draft())
+          _ <- scope.close(Exit.unit)
+          stored <- store.stored.get
+        yield assertTrue(stored.size == 3)
+      },
+      test("with producers running while it closes: every event a record returned for is stored, and one refused is not silently gone") {
+        for
+          store <- Store.make()
+          scope <- Scope.make
+          events <- scope.extend(buildOn(store, block, source = edge, sizing = sizing.copy(queueCapacity = 100000, batchSize = 100000)))
+          accepted <- Ref.make(Set.empty[String])
+          stop <- Ref.make(false)
+          producer = (id: Int) =>
+            (for
+              n <- Ref.make(0)
+              _ <- (for
+                k <- n.updateAndGet(_ + 1)
+                reason = s"p$id-$k"
+                outcome <- events.record(draft().copy(reason = Some(reason))).exit
+                _ <- accepted.update(_ + reason).when(outcome.isSuccess)
+                _ <- ZIO.yieldNow
+              yield ()).repeatUntilZIO(_ => stop.get)
+            yield ()).fork
+          producers <- ZIO.foreach(1 to 4)(producer)
+          _ <- accepted.get.repeatUntil(_.size >= 50)
+          _ <- scope.close(Exit.unit)
+          _ <- settle
+          _ <- stop.set(true)
+          _ <- ZIO.foreachDiscard(producers)(_.join)
+          taken <- accepted.get
+          stored <- store.stored.get.map(_.values.flatMap(_.reason).toSet)
+        yield assertTrue(taken.nonEmpty, taken.subsetOf(stored))
+      },
+      test("during a backoff, when the repository recovers inside the drain timeout: the held rows are stored once") {
+        for
+          store <- Store.make(down = true)
+          scope <- Scope.make
+          events <- scope.extend(buildOn(store, block, source = edge, sizing = sizing.copy(queueCapacity = 10, batchSize = 10)))
+          _ <- events.record(draft()) *> events.record(draft())
+          _ <- store.entered.take
+          _ <- settle
+          closing <- scope.close(Exit.unit).fork
+          _ <- store.down.set(false)
+          _ <- settle *> TestClock.adjust(2.seconds) *> settle
+          _ <- closing.join
+          stored <- store.stored.get
+          again <- store.rewritten.get
+        yield assertTrue(stored.size == 2, again == 0)
+      },
+      test("during a backoff, when it does not recover inside the drain timeout: the held rows are counted as not written") {
+        for
+          store <- Store.make(down = true)
+          failedBefore <- counter("audit_events_failed_total", edge)
+          scope <- Scope.make
+          events <- scope.extend(buildOn(store, block, source = edge, sizing = sizing.copy(queueCapacity = 10, batchSize = 10)))
+          _ <- events.record(draft()) *> events.record(draft())
+          _ <- store.entered.take
+          _ <- settle
+          closing <- scope.close(Exit.unit).fork
+          _ <- settle *> TestClock.adjust(AuditEvents.DrainTimeout.plus(1.second)) *> settle
+          _ <- closing.join
+          stored <- store.stored.get
+          failedAfter <- counter("audit_events_failed_total", edge)
+        yield assertTrue(stored.isEmpty, failedAfter - failedBefore == 2.0)
+      },
+    ),
+    suite("the stop and the app's shutdown")(
+      test("the drain timeout and five seconds of margin fit inside the app's graceful shutdown timeout") {
+        assertTrue(AuditEvents.DrainTimeout.plus(5.seconds).compareTo(VersolaApp.GracefulShutdownTimeout) <= 0)
+      },
+      test("the service refuses what is offered after it began to stop: a failure under block, a counted drop otherwise") {
+        for
+          store <- Store.make()
+          unavailableBefore <- counter("audit_events_unavailable_total", central)
+          droppedBefore <- counter("audit_events_dropped_total", edge)
+          scopeBlock <- Scope.make
+          blocking <- scopeBlock.extend(buildOn(store, block, source = central))
+          scopeDrop <- Scope.make
+          dropping <- scopeDrop.extend(buildOn(store, drop, source = edge))
+          _ <- scopeBlock.close(Exit.unit) *> scopeDrop.close(Exit.unit)
+          refused <- blocking.record(draft()).exit
+          bestEffort <- blocking.recordBestEffort(draft()).exit
+          droppedOne <- dropping.record(draft()).exit
+          unavailableAfter <- counter("audit_events_unavailable_total", central)
+          droppedAfter <- counter("audit_events_dropped_total", edge)
+          stored <- store.stored.get
+        yield assertTrue(
+          refused == Exit.fail(AuditUnavailable),
+          bestEffort.isSuccess,
+          droppedOne.isSuccess,
+          unavailableAfter - unavailableBefore == 1.0,
+          droppedAfter - droppedBefore == 1.0,
+          stored.isEmpty,
+        )
+      },
+    ),
     suite("overflow = drop")(
       test("an event that finds the queue full is dropped and counted, and the request is not held up or failed") {
         ZIO.scoped:
@@ -404,7 +704,7 @@ object AuditEventsSpec extends UnitSpecBase:
       },
     ),
     suite("scope")(
-      test("what is queued when the scope closes is written once more on the way out, and the batch in hand is counted failed") {
+      test("what is queued when the scope closes is written on the way out together with the batch in hand, and none of it is counted failed") {
         for
           f <- fixture(gated = true)
           failedBefore <- counter("audit_events_failed_total", edge)
@@ -417,7 +717,7 @@ object AuditEventsSpec extends UnitSpecBase:
             yield ()
           written <- f.written.get
           failedAfter <- counter("audit_events_failed_total", edge)
-        yield assertTrue(written.map(_.size) == List(2), failedAfter - failedBefore == 1.0)
+        yield assertTrue(written.flatten.size == 3, failedAfter == failedBefore)
       },
     ),
     suite("partition maintenance")(
@@ -426,7 +726,8 @@ object AuditEventsSpec extends UnitSpecBase:
           for
             f <- fixture(gated = false)
             _ <- TestClock.setTime(Instant.parse("2026-11-03T10:00:00Z"))
-            _ <- build(f, block)
+            // The writer's and the report's clocks are slowed down: the test moves the clock by an hour, a tick of theirs at a time.
+            _ <- build(f, block, sizing = sizing.copy(flushInterval = 30.minutes, reportWindow = 30.minutes))
             _ <- settle
             atStart = f.repository.maintainPartitions.calls
             pruned = f.repository.pruneDefault.calls

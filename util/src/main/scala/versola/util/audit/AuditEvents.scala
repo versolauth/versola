@@ -36,7 +36,7 @@ object AuditEvents:
     * service's own keys next to these).
     *
     * @param retention    how long the log is kept: a day's partition is dropped once the whole day is older than this
-    * @param overflow     what a full queue does to the request: holds it ([[Overflow.block]]) or loses the event ([[Overflow.drop]])
+    * @param overflow     what a full queue does to the request: holds it ([[Overflow.block]]) or drops the event ([[Overflow.drop]])
     * @param blockTimeout how long a request waits for room in the queue under `block` before it fails
     */
   case class Settings(retention: Duration, overflow: Overflow, blockTimeout: Duration)
@@ -53,6 +53,7 @@ object AuditEvents:
     * @param partitionsAhead     days of partitions created beyond today, so a maintenance run that is late does not leave the
     *                            writer without one
     * @param maintenanceInterval how often the partitions are made ahead, the old ones dropped and the default partition pruned
+    * @param reportWindow       how often the events the log dropped or refused are written to the service's log: one line per window, whatever the number
     */
   case class Sizing(
       queueCapacity: Int = 50000,
@@ -60,6 +61,7 @@ object AuditEvents:
       flushInterval: Duration = 1.second,
       partitionsAhead: Int = 14,
       maintenanceInterval: Duration = 1.hour,
+      reportWindow: Duration = 1.minute,
   )
 
   object Sizing:
@@ -98,9 +100,17 @@ object AuditEvents:
         queue <- settings.overflow match
           case Overflow.block => Queue.bounded[AuditEvent](sizing.queueCapacity)
           case Overflow.drop => Queue.dropping[AuditEvent](sizing.queueCapacity)
+        _ <- AuditMetrics.register(source)
+        intake <- Ref.make(Intake(closed = false, inflight = 0))
+        inHand <- Ref.make(List.empty[AuditEvent])
+        report <- EventReport.make(source, catalog, sizing.reportWindow)
         _ <- Maintenance(repository, settings, sizing, source).run
-        _ <- Writer(queue, repository, sizing, source).run
+        // Before the writer, so that its last report is made after the writer's last drain.
+        _ <- report.run
+        _ <- Writer(queue, repository, sizing, source, report, intake, inHand).run
       yield Impl(
+        intake = intake,
+        report = report,
         queue = queue,
         settings = settings,
         sizing = sizing,
@@ -111,7 +121,13 @@ object AuditEvents:
         random = random,
       )
 
+  /** Whether the service has begun to stop, and how many events are being offered to the queue: the stop waits for those before it
+    * takes the last of the queue, and what is offered after it began is refused. */
+  private case class Intake(closed: Boolean, inflight: Int)
+
   private class Impl(
+      intake: Ref[Intake],
+      report: EventReport,
       queue: Queue[AuditEvent],
       settings: Settings,
       sizing: Sizing,
@@ -123,24 +139,33 @@ object AuditEvents:
   ) extends AuditEvents:
 
     override def record(draft: AuditDraft): IO[AuditUnavailable.type, Unit] =
-      fill(draft).flatMap(enqueue(_, bestEffort = false))
+      fill(draft).flatMap(admitted(_, bestEffort = false))
 
     override def recordBestEffort(draft: AuditDraft): UIO[Unit] =
-      fill(draft).flatMap(enqueue(_, bestEffort = true)).catchAll(_ => ZIO.unit)
+      fill(draft).flatMap(admitted(_, bestEffort = true)).catchAll(_ => ZIO.unit)
+
+    /** An event is offered to the queue while the service is running; once it has begun to stop, nothing is accepted: under `block`
+      * the request fails as for a queue that stayed full, otherwise the event is dropped and counted. */
+    private def admitted(event: AuditEvent, bestEffort: Boolean): IO[AuditUnavailable.type, Unit] =
+      intake.modify(state => if state.closed then (false, state) else (true, state.copy(inflight = state.inflight + 1))).flatMap:
+        case true => enqueue(event, bestEffort).ensuring(intake.update(state => state.copy(inflight = state.inflight - 1)))
+        case false =>
+          if settings.overflow == Overflow.block && !bestEffort then AuditMetrics.unavailable(source) *> ZIO.fail(AuditUnavailable)
+          else AuditMetrics.dropped(source) *> report.note(EventReport.AfterStop, event.kind)
 
     private def enqueue(event: AuditEvent, bestEffort: Boolean): IO[AuditUnavailable.type, Unit] =
       settings.overflow match
         case Overflow.drop =>
           queue.offer(event).flatMap:
             case true => AuditMetrics.recorded(source, event, catalog)
-            case false => AuditMetrics.dropped(source)
+            case false => AuditMetrics.dropped(source) *> report.note(EventReport.QueueFull, event.kind)
         case Overflow.block =>
           // The size is read before the offer so that a request that had to wait is counted, whether or not it got room in time.
           queue.size.flatMap: size =>
             ZIO.when(size >= sizing.queueCapacity)(AuditMetrics.blocked(source)) *>
               queue.offer(event).timeout(settings.blockTimeout).flatMap:
                 case Some(_) => AuditMetrics.recorded(source, event, catalog)
-                case None if bestEffort => AuditMetrics.dropped(source)
+                case None if bestEffort => AuditMetrics.dropped(source) *> report.note(EventReport.WaitedForRoom, event.kind)
                 case None => AuditMetrics.unavailable(source) *> ZIO.fail(AuditUnavailable)
 
     /** The event of a draft: ids and time, then the request's context, from [[AuditContext]] first and the `auth` log context
@@ -195,34 +220,44 @@ object AuditEvents:
   /** The longest rest between rounds while the database is failing. */
   private val MaxBackoff: Duration = 30.seconds
 
-  private class Writer(queue: Queue[AuditEvent], repository: AuditEventRepository, sizing: Sizing, source: AuditSource):
+  private class Writer(
+      queue: Queue[AuditEvent],
+      repository: AuditEventRepository,
+      sizing: Sizing,
+      source: AuditSource,
+      report: EventReport,
+      intake: Ref[Intake],
+      inHand: Ref[List[AuditEvent]],
+  ):
 
     /** Takes what has gathered, writes it, rests, and again. A backlog is written back to back, so the write rate is not capped at
-      * one batch per interval. What a batch that fails does is [[write]]'s. */
+      * one batch per interval. What a batch that fails does is [[write]]'s. The batch being written is kept in `inHand` from the moment
+      * it is taken, in one uninterruptible step with the take, so that a stop finds it. */
     private def loop(failing: Ref[Boolean]): UIO[Nothing] =
       (for
-        first <- queue.take
-        rest <- queue.takeUpTo(sizing.batchSize - 1)
-        batch = (first +: rest).toList
+        batch <- ZIO.uninterruptibleMask: restore =>
+          restore(queue.take).flatMap: first =>
+            queue.takeUpTo(sizing.batchSize - 1).flatMap: rest =>
+              val taken = (first +: rest).toList
+              inHand.set(taken).as(taken)
         _ <- AuditMetrics.queueSize(source, queue)
-        _ <- write(batch, failing, round = 0).onInterrupt(AuditMetrics.failed(source, batch.size))
+        _ <- write(batch, failing, round = 0)
+        _ <- inHand.set(Nil)
         _ <- ZIO.sleep(sizing.flushInterval).when(batch.size < sizing.batchSize)
       yield ()).forever
 
     /** Until every event of the batch is stored or refused. A batch that fails is tried again, a few times, a `flushInterval` apart;
       * a batch that still fails is written row by row, which stores the rows the database takes and finds the ones it refuses for
-      * what is in them (see [[refusedForItself]]): those are dropped and counted, so that one row that can never be stored does not
-      * stop the log for everyone. The rows that failed for another reason (the database is down, a statement timed out) are what
-      * is tried again, with a growing rest, for as long as it takes: the queue fills behind them and the requests block or drop by
-      * the setting, which is what an outage of the log is. */
+      * what is in them (see [[refusedForItself]]): those are dropped and counted. The rows that failed for another reason (the
+      * database is down, a statement timed out) are tried again, with a growing rest, for as long as it takes; meanwhile the queue
+      * fills and requests block or events are dropped, by the setting. */
     private def write(batch: List[AuditEvent], failing: Ref[Boolean], round: Int): UIO[Unit] =
       attemptBatch(batch, failing, attempt = 1).flatMap:
         case true => recovered(failing)
         case false =>
           rowByRow(batch).flatMap: left =>
             if left.isEmpty then recovered(failing)
-            else
-              ZIO.sleep(backoff(round)) *> write(left, failing, round + 1)
+            else inHand.set(left) *> ZIO.sleep(backoff(round)) *> write(left, failing, round + 1)
 
     private def backoff(round: Int): Duration =
       val rest = sizing.flushInterval.multipliedBy(1L << math.min(round, 5))
@@ -245,9 +280,9 @@ object AuditEvents:
     private def recovered(failing: Ref[Boolean]): UIO[Unit] =
       failing.getAndSet(false).flatMap(was => ZIO.logInfo("audit events are being written again").when(was)).unit
 
-    /** Each event on its own: the ones stored are done, the ones refused for themselves are dropped and counted (one warning for the
-      * pass, naming the kinds and never the rows), and the rest are returned to be tried again. A batch is one transaction, so
-      * nothing of a failed batch was stored and no event is written twice. */
+    /** Each event on its own: the ones stored are done, the ones refused for themselves are dropped and counted (and reported once per
+      * window by kind, never by row), and the rest are returned to be tried again. A batch is one transaction, so nothing of a
+      * failed batch was stored and no event is written twice. */
     private def rowByRow(batch: List[AuditEvent]): UIO[List[AuditEvent]] =
       ZIO.foreach(batch)(event => repository.insertBatch(List(event)).either.map(event -> _)).flatMap: results =>
         val stored = results.exists(_._2.isRight)
@@ -255,38 +290,128 @@ object AuditEvents:
         val (refused, left) = failed.partition((_, error) => refusedForItself(error, othersStored = stored))
         ZIO.when(refused.nonEmpty)(
           AuditMetrics.rejected(source, refused.size) *>
-            ZIO.logWarning(
-              s"${refused.size} audit events were refused by the database for what they contain and are not stored: kinds " +
-                refused.groupMapReduce((event, _) => event.kind.value)(_ => 1)(_ + _).toList.sorted.map((kind, n) => s"$kind ($n)").mkString(", ") +
-                s"; SQLSTATE ${refused.flatMap((_, error) => sqlStates(error)).distinct.sorted.mkString(", ")}",
-            ),
+            report.noteAll(EventReport.Refused, refused.map(_._1)) *>
+            report.noteStates(refused.flatMap((_, error) => sqlStates(error))),
         ).as(left.map(_._1))
 
-    /** The final write is bounded and made once: a database that is down must not hold the shutdown up, and what it could not take
-      * is counted as failed. */
-    private def drain(failing: Ref[Boolean]): UIO[Unit] =
-      queue.takeAll.flatMap: events =>
-        ZIO.when(events.nonEmpty)(
-          repository.insertBatch(events.toList).foldZIO(_ => rowByRow(events.toList), _ => ZIO.succeed(Nil)).timeout(DrainTimeout).flatMap:
-            case None =>
-              AuditMetrics.failed(source, events.size) *>
-                ZIO.logWarning(s"${events.size} audit events were lost at shutdown: the write did not finish in $DrainTimeout")
-            case Some(left) =>
-              ZIO.when(left.nonEmpty)(
-                AuditMetrics.failed(source, left.size) *> ZIO.logWarning(s"${left.size} audit events were lost at shutdown"),
-              ).unit,
-        ).unit
+    /** What the service does when it stops, within [[DrainTimeout]]: nothing more is accepted, the writer is stopped, and the batch it
+      * held together with what is queued is written, again and again while the repository fails, until it is stored, refused for
+      * what it contains, or the time is up; what was not written then is counted. Writing the held batch again is safe whether or
+      * not the statement that was interrupted had committed, since a row is written once however often it is offered. One line says
+      * the queue was drained, whatever it held. */
+    private def stop(writer: Fiber[Nothing, Nothing]): UIO[Unit] =
+      for
+        _ <- intake.update(_.copy(closed = true))
+        _ <- writer.interrupt
+        held <- inHand.getAndSet(Nil)
+        pending <- Ref.make(held)
+        taken <- Ref.make(held.size)
+        finished <- drainRound(pending, taken).timeout(DrainTimeout)
+        rest <- queue.takeAll
+        left <- pending.get.map(_ ++ rest)
+        count <- taken.get.map(_ + rest.size)
+        _ <- ZIO.when(left.nonEmpty)(AuditMetrics.failed(source, left.size) *> report.noteAll(EventReport.NotWritten, left))
+        _ <- ZIO.logInfo(
+          s"the audit queue was drained on shutdown: $count events taken, ${left.size} not written" +
+            (if finished.isEmpty then s" (the write did not finish in $DrainTimeout)" else ""),
+        )
+      yield ()
 
-    /** The loop is stopped before the last write, so that nothing is writing while it is made. */
+    /** Writes what is pending and what has been queued since, until nothing is being offered and nothing is queued. */
+    private def drainRound(pending: Ref[List[AuditEvent]], taken: Ref[Int]): UIO[Unit] =
+      for
+        queued <- queue.takeAll
+        _ <- taken.update(_ + queued.size)
+        _ <- pending.update(_ ++ queued)
+        rows <- pending.get
+        _ <- ZIO.foreachDiscard(rows.grouped(sizing.batchSize).toList)(writeUntilDone(_, pending))
+        idle <- intake.get.map(_.inflight == 0)
+        empty <- queue.size.map(_ <= 0)
+        _ <- if idle && empty then ZIO.unit else ZIO.yieldNow *> drainRound(pending, taken)
+      yield ()
+
+    /** The rows of `chunk` are removed from `pending` as they are stored or refused; the rest are tried again a `flushInterval` later. */
+    private def writeUntilDone(chunk: List[AuditEvent], pending: Ref[List[AuditEvent]]): UIO[Unit] =
+      def done(rows: List[AuditEvent]): UIO[Unit] =
+        val ids = rows.map(_.id).toSet
+        pending.update(_.filterNot(event => ids.contains(event.id)))
+      repository.insertBatch(chunk).foldZIO(
+        _ =>
+          rowByRow(chunk).flatMap: left =>
+            val leftIds = left.map(_.id).toSet
+            done(chunk.filterNot(event => leftIds.contains(event.id))) *>
+              ZIO.when(left.nonEmpty)(ZIO.sleep(sizing.flushInterval) *> writeUntilDone(left, pending)).unit
+        ,
+        _ => done(chunk),
+      )
+
     val run: URIO[Scope, Unit] =
       for
         failing <- Ref.make(false)
         // Not `fork`: that would tie the writer to the fiber that builds the layer, which ends once it is built.
         fiber <- loop(failing).forkDaemon
-        _ <- ZIO.addFinalizer(fiber.interrupt *> drain(failing))
+        // The queue's size is read on a clock of its own: it is set only when the writer takes something otherwise, and a writer
+        // held by a failing write takes nothing.
+        _ <- (AuditMetrics.queueSize(source, queue) *> ZIO.sleep(sizing.flushInterval)).forever.forkScoped
+        _ <- ZIO.addFinalizer(stop(fiber))
       yield ()
 
   val DrainTimeout: Duration = 5.seconds
+
+  /** The events the log dropped or refused, written to the service's log once per window and not once per event. Each is also counted
+    * (`audit_events_dropped_total`, `audit_events_rejected_total`, `audit_events_failed_total`); the line names their kinds, never their
+    * rows, and the counts say how many. */
+  private class EventReport(
+      source: AuditSource,
+      catalog: AuditCatalog,
+      window: Duration,
+      counts: Ref[Map[(String, String), Int]],
+      states: Ref[Set[String]],
+  ):
+
+    /** `count` events of `kind` dropped or refused for `reason`. A kind the service did not list is reported as `other`, as in the metrics, so that
+      * what a request built cannot make the line long. */
+    def note(reason: String, kind: AuditKind, count: Int = 1): UIO[Unit] =
+      val label = if catalog.isKnown(kind) then kind.value else AuditMetrics.UnlistedKind
+      counts.update(known => known.updated((reason, label), known.getOrElse((reason, label), 0) + count))
+
+    def noteAll(reason: String, events: Iterable[AuditEvent]): UIO[Unit] =
+      ZIO.foreachDiscard(events.groupBy(_.kind).toList)((kind, group) => note(reason, kind, group.size))
+
+    /** The SQLSTATEs the database refused events with, which say why without saying what was in them. */
+    def noteStates(found: Iterable[String]): UIO[Unit] = states.update(_ ++ found)
+
+    def flush: UIO[Unit] =
+      (counts.getAndSet(Map.empty) <*> states.getAndSet(Set.empty)).flatMap: (reported, sqlstates) =>
+        ZIO.when(reported.nonEmpty):
+          val reasons = reported.groupBy(_._1._1).toList.sortBy(_._1).map: (reason, entries) =>
+            val kinds = entries.toList.map((key, n) => key._2 -> n).sortBy((kind, n) => (-n, kind))
+            val shown = kinds.take(MaxKindsReported).map((kind, n) => s"$kind ($n)").mkString(", ")
+            val more = if kinds.size > MaxKindsReported then s" and ${kinds.size - MaxKindsReported} more kinds" else ""
+            val why = if reason == EventReport.Refused && sqlstates.nonEmpty then s"; SQLSTATE ${sqlstates.toList.sorted.mkString(", ")}" else ""
+            s"${entries.values.sum} $reason: $shown$more$why"
+          ZIO.logWarning(s"audit events were dropped or refused in the last ${window.render} (${source.value}): ${reasons.mkString("; ")}")
+        .unit
+
+    /** A report every window, and a last one when the service stops, after the writer's last drain. */
+    val run: URIO[Scope, Unit] =
+      ZIO.addFinalizer(flush) *> (ZIO.sleep(window) *> flush).forever.forkScoped.unit
+
+  private object EventReport:
+    val QueueFull = "dropped, the queue was full"
+    val WaitedForRoom = "dropped, the queue stayed full for the block timeout"
+    val Refused = "refused by the database for what they contain, not stored"
+    val NotWritten = "not written before the service stopped"
+    val AfterStop = "dropped, offered after the service began to stop"
+
+    def make(source: AuditSource, catalog: AuditCatalog, window: Duration): UIO[EventReport] =
+      for
+        counts <- Ref.make(Map.empty[(String, String), Int])
+        states <- Ref.make(Set.empty[String])
+      yield EventReport(source, catalog, window, counts, states)
+
+  /** The most kinds one line names for one reason; the rest are counted as "more". */
+  private val MaxKindsReported = 10
 
   /** The SQLSTATEs anywhere in the chain of causes and chained exceptions. */
   private[audit] def sqlStates(error: Throwable): List[String] =
@@ -399,6 +524,11 @@ object AuditMetrics:
 
   private def sourceLabel(source: AuditSource) = Set(MetricLabel("source", source.value))
 
+  /** The counters of dropped, refused and failed events, at 0 from the start: a counter that does not exist until its first increment
+    * is a series that appears with a value, and a rate over it does not see that first step. */
+  def register(source: AuditSource): UIO[Unit] =
+    ZIO.foreachDiscard(List(droppedTotal, blockedTotal, unavailableTotal, failedTotal, rejectedTotal))(_.tagged(sourceLabel(source)).incrementBy(0L))
+
   /** An event taken by the queue, by kind and outcome: both closed sets. */
   def recorded(source: AuditSource, event: AuditEvent, catalog: AuditCatalog): UIO[Unit] =
     // The kind is a label only if the service listed it: a kind built from a request would make the label unbounded.
@@ -408,7 +538,8 @@ object AuditMetrics:
   /** The `kind` label of an event whose kind its service did not list. */
   val UnlistedKind = "other"
 
-  /** An event lost at the queue: it was full under `drop`, or stayed full for `blockTimeout` under a best-effort record. */
+  /** An event dropped at the queue: it was full under `drop`, stayed full for `blockTimeout` under a best-effort record, or was offered
+    * after the service began to stop. */
   def dropped(source: AuditSource): UIO[Unit] = droppedTotal.tagged(sourceLabel(source)).increment
 
   /** A request that found the queue full and waited for room. Alert on it: the log is slower than the service. */
@@ -420,12 +551,12 @@ object AuditMetrics:
   /** Events the writer had taken from the queue and could not write before the service stopped. */
   def failed(source: AuditSource, count: Int): UIO[Unit] = failedTotal.tagged(sourceLabel(source)).incrementBy(count.toLong)
 
-  /** Events the database refused one by one for what they contain, after the batch they were in was refused: lost, and the only way
-    * an event is lost that the writer does not retry. Alert on it increasing. */
+  /** Events the database refused one by one for what they contain, after the batch they were in was refused; they are not retried. */
   def rejected(source: AuditSource, count: Int): UIO[Unit] = rejectedTotal.tagged(sourceLabel(source)).incrementBy(count.toLong)
 
   def queueSize(source: AuditSource, queue: Queue[?]): UIO[Unit] =
-    queue.size.flatMap(size => queueSizeGauge.tagged(sourceLabel(source)).set(size.toDouble))
+    // A queue that a taker is waiting on reports a negative size: an empty queue is 0.
+    queue.size.flatMap(size => queueSizeGauge.tagged(sourceLabel(source)).set(math.max(size, 0).toDouble))
 
   /** Days after today that have a partition, as of the last maintenance run. Alert on it falling. */
   def partitionsAhead(source: AuditSource, days: Int): UIO[Unit] = partitionsAheadGauge.tagged(sourceLabel(source)).set(days.toDouble)
