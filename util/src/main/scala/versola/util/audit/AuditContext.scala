@@ -45,5 +45,5 @@ object AuditContext:
   def setUser(userId: UUID): UIO[Unit] = ref.update(_.copy(userId = Some(userId)))
 
   /** The user agent an event stores: the raw `User-Agent` header as the middleware noted it, or the short parsed form where the
-    * service has one (auth stores `browser version / os` with a session). */
+    * service has one (for instance `browser version / os`). */
   def setUserAgent(userAgent: String): UIO[Unit] = ref.update(_.copy(userAgent = Some(userAgent)))
