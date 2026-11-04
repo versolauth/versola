@@ -28,6 +28,9 @@ object StubSut:
   // value that did not look like one would hide a client that tried to parse it.
   val preset = "web-preset"
   val edgeState = "edge-state-1"
+  // What edge's `/login` sets on the browser, and `/complete` refuses to go on without: the login is bound
+  // to the browser that began it.
+  val edgeLoginCookie = LoginCookie(name = "EDGE_LOGIN_" + edgeState, value = "login-secret-1")
   val edgeSession = "web-preset:access-token-1"
   val rotatedEdgeSession = "web-preset:access-token-2"
   val edgeCookieTtl: Duration = 30.minutes
@@ -213,7 +216,11 @@ object StubSut:
         else
           val forwarded = request.url.queryParams.getAll("acr_values").headOption
           val target = URL.decode(authorizeUrl).toOption.get
-          ZIO.succeed(Response.seeOther(forwarded.fold(target)(values => target.addQueryParam("acr_values", values))))
+          ZIO.succeed(
+            Response
+              .seeOther(forwarded.fold(target)(values => target.addQueryParam("acr_values", values)))
+              .addCookie(Cookie.Response(edgeLoginCookie.name, edgeLoginCookie.value, isHttpOnly = true, isSecure = true)),
+          )
       ,
       // §8.4's last hop. Edge exchanges the code itself and answers the cookie; a state it has
       // no pending login for is a 400 (`AuthConversationNotFound`).
@@ -222,6 +229,8 @@ object StubSut:
         val returned = request.url.queryParams.getAll("code").headOption
         val refused = request.url.queryParams.getAll("error").headOption
         if !state.contains(edgeState) then ZIO.succeed(Response.badRequest)
+        // Another browser's callback: no login cookie, or not this login's.
+        else if !request.cookie(edgeLoginCookie.name).exists(_.content == edgeLoginCookie.value) then ZIO.succeed(Response.badRequest)
         // The refusal branch: the pending login is consumed and the app is told, which is the
         // whole point of the hop -- a second call for the same state is the 400 below.
         else if refused.isDefined then

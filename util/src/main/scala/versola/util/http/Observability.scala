@@ -1,6 +1,8 @@
 package versola.util.http
 
 import io.opentelemetry.api.trace.{SpanKind, StatusCode}
+import versola.util.audit.AuditContext
+import versola.util.audit.AuditContext.withAuditContext
 import versola.util.audit.AuditUnavailableException
 import zio.*
 import zio.http.*
@@ -333,7 +335,7 @@ object Observability:
           ZIO.serviceWithZIO[Tracing]: tracing =>
             // the log context is restored once the request completes, so auth details set
             // mid-flow annotate every log line of this request and no other
-            logContext.locallyWith(identity)(
+            (logContext.locallyWith(identity)(
               routeLabel.locally(None)(
                 routePath.locally(None)(
                   for
@@ -397,7 +399,7 @@ object Observability:
               ),
               s"${request.method.name} $pattern",
               SpanKind.SERVER,
-            )
+            )).withAuditContext(AuditContext.State(userAgent = request.rawHeader(Header.UserAgent.name)))
 
   /** Outbound connection pool of the shared client, chosen by environment (all optional, an invalid
     * value falls back to its default):

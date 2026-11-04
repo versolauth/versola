@@ -32,21 +32,17 @@ case object AuditUnavailable
 
 object AuditEvents:
 
-  /** What a deployment sets (the `audit` block of the config).
+  /** What a deployment sets for the log (the service's `audit` block of its config; the kinds a deployment may leave out are the
+    * service's own keys next to these).
     *
     * @param retention    how long the log is kept: a day's partition is dropped once the whole day is older than this
     * @param overflow     what a full queue does to the request: holds it ([[Overflow.block]]) or loses the event ([[Overflow.drop]])
     * @param blockTimeout how long a request waits for room in the queue under `block` before it fails
-    * @param events       the kinds a deployment may leave out, since they are many and tell little ([[EventTiers]])
     */
-  case class Settings(retention: Duration, overflow: Overflow, blockTimeout: Duration, events: EventTiers)
+  case class Settings(retention: Duration, overflow: Overflow, blockTimeout: Duration)
 
   enum Overflow:
     case block, drop
-
-  /** The high-volume successes a deployment may not want: every `refresh_token` grant, every authorize and PAR request that
-    * succeeded, every admin look at a user. */
-  case class EventTiers(tokenRefresh: Boolean, authorizeSuccess: Boolean, parSuccess: Boolean, adminUserViewed: Boolean)
 
   /** What is not configuration: the sizes and the pace of the writer and the maintenance.
     *
@@ -76,13 +72,22 @@ object AuditEvents:
     override def recordBestEffort(draft: AuditDraft): UIO[Unit] = ZIO.unit
 
   /** Starts the writer and the partition maintenance; both stop with the scope, and what is still queued is written once more on
-    * the way out, within a bound. `source` and `nodeId` are the service's: every event it records carries them. */
-  def live(source: AuditSource, nodeId: String): ZLayer[AuditEventRepository & Settings & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
-    liveWith(Sizing.standard)(source, nodeId)
+    * the way out, within a bound. `source`, `nodeId` and `catalog` are the service's: every event it records carries the first two,
+    * and is rated and counted by the third. */
+  def live(
+      source: AuditSource,
+      nodeId: String,
+      catalog: AuditCatalog,
+  ): ZLayer[AuditEventRepository & Settings & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
+    liveWith(Sizing.standard)(source, nodeId, catalog)
 
   def liveWith(
       sizing: Sizing,
-  )(source: AuditSource, nodeId: String): ZLayer[AuditEventRepository & Settings & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
+  )(
+      source: AuditSource,
+      nodeId: String,
+      catalog: AuditCatalog,
+  ): ZLayer[AuditEventRepository & Settings & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
     ZLayer.fromZIO:
       for
         repository <- ZIO.service[AuditEventRepository]
@@ -95,7 +100,16 @@ object AuditEvents:
           case Overflow.drop => Queue.dropping[AuditEvent](sizing.queueCapacity)
         _ <- Maintenance(repository, settings, sizing, source).run
         _ <- Writer(queue, repository, sizing, source).run
-      yield Impl(queue = queue, settings = settings, sizing = sizing, source = source, nodeId = nodeId, tracing = tracing, random = random)
+      yield Impl(
+        queue = queue,
+        settings = settings,
+        sizing = sizing,
+        source = source,
+        nodeId = nodeId,
+        catalog = catalog,
+        tracing = tracing,
+        random = random,
+      )
 
   private class Impl(
       queue: Queue[AuditEvent],
@@ -103,6 +117,7 @@ object AuditEvents:
       sizing: Sizing,
       source: AuditSource,
       nodeId: String,
+      catalog: AuditCatalog,
       tracing: Tracing,
       random: SecureRandom,
   ) extends AuditEvents:
@@ -117,14 +132,14 @@ object AuditEvents:
       settings.overflow match
         case Overflow.drop =>
           queue.offer(event).flatMap:
-            case true => AuditMetrics.recorded(source, event)
+            case true => AuditMetrics.recorded(source, event, catalog)
             case false => AuditMetrics.dropped(source)
         case Overflow.block =>
           // The size is read before the offer so that a request that had to wait is counted, whether or not it got room in time.
           queue.size.flatMap: size =>
             ZIO.when(size >= sizing.queueCapacity)(AuditMetrics.blocked(source)) *>
               queue.offer(event).timeout(settings.blockTimeout).flatMap:
-                case Some(_) => AuditMetrics.recorded(source, event)
+                case Some(_) => AuditMetrics.recorded(source, event, catalog)
                 case None if bestEffort => AuditMetrics.dropped(source)
                 case None => AuditMetrics.unavailable(source) *> ZIO.fail(AuditUnavailable)
 
@@ -153,7 +168,7 @@ object AuditEvents:
           kind = draft.kind,
           outcome = draft.outcome,
           reason = draft.reason,
-          severity = AuditSeverity.of(draft.kind, draft.outcome),
+          severity = catalog.severity(draft.kind, draft.outcome),
           actorType = actorType,
           actorId = actorId,
           userId = userId,
@@ -311,11 +326,16 @@ object AuditMetrics:
   private val inDefaultGauge = Metric.gauge("audit_events_in_default")
   private val ownerMismatchGauge = Metric.gauge("audit_partition_owner_mismatch")
 
-  private def sourceLabel(source: AuditSource) = Set(MetricLabel("source", source.toString))
+  private def sourceLabel(source: AuditSource) = Set(MetricLabel("source", source.value))
 
   /** An event taken by the queue, by kind and outcome: both closed sets. */
-  def recorded(source: AuditSource, event: AuditEvent): UIO[Unit] =
-    eventsTotal.tagged(sourceLabel(source) + MetricLabel("kind", event.kind.value) + MetricLabel("outcome", event.outcome.toString)).increment
+  def recorded(source: AuditSource, event: AuditEvent, catalog: AuditCatalog): UIO[Unit] =
+    // The kind is a label only if the service listed it: a kind built from a request would make the label unbounded.
+    val kind = if catalog.isKnown(event.kind) then event.kind.value else UnlistedKind
+    eventsTotal.tagged(sourceLabel(source) + MetricLabel("kind", kind) + MetricLabel("outcome", event.outcome.toString)).increment
+
+  /** The `kind` label of an event whose kind its service did not list. */
+  val UnlistedKind = "other"
 
   /** An event lost at the queue: it was full under `drop`, or stayed full for `blockTimeout` under a best-effort record. */
   def dropped(source: AuditSource): UIO[Unit] = droppedTotal.tagged(sourceLabel(source)).increment
