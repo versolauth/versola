@@ -1940,7 +1940,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |  max-request-size = 8192
        |}
        |
-       |# Audit log (deploy.md, "Audit log"): the hot window of `audit_event` (a day older than `retention` is dropped; the
+       |# Audit log (deploy.md, "Audit log"): the hot window of `auth_audit_event` (a day older than `retention` is dropped; the
        |# long-term copy is the operator's logical replication), what recording an event does when the writer's queue is full
        |# (`drop`: the event is not queued and is counted in audit_events_dropped_total; `block`: it waits up to `block-timeout` for
        |# room and then is not queued and is counted), and the high-volume kinds that may be switched off. All keys are required.

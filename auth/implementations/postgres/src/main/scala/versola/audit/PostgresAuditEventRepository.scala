@@ -13,7 +13,7 @@ import zio.{Duration, Task, ZIO, ZLayer, durationInt}
 import java.time.{Instant, LocalDate}
 import java.util.UUID
 
-/** `audit_event` (migration `V0031`): written in batches by the audit writer, read by the per-user report, its partitions kept by
+/** `auth_audit_event` (migration `V0031`): written in batches by the audit writer, read by the per-user report, its partitions kept by
   * [[DailyPartitions]] with the default partition's rows left where they are (an insert-only replication would see a moved row
   * twice) and its deletes marked as the service's own maintenance, which the table's trigger otherwise refuses.
   *
@@ -39,7 +39,7 @@ class PostgresAuditEventRepository(
     else
       xa.transactMeasured("insert-audit-events"):
         timed()
-        AuditInsert.insertBatch(events)
+        AuditInsert.insertBatch(events, table = PostgresAuditEventRepository.Table)
       .unit
 
   override def maintainPartitions(from: LocalDate, days: Int, keepFrom: LocalDate): Task[PartitionReport] =
@@ -114,13 +114,13 @@ class PostgresAuditEventRepository(
       after match
         case None =>
           sql"""
-            SELECT $EventColumns FROM audit_event
+            SELECT $EventColumns FROM auth_audit_event
             WHERE user_id = $userId AND at >= $from AND at <= $to
             ORDER BY at DESC, id DESC LIMIT $limit
           """.query[EventRow].run().toList
         case Some(position) =>
           sql"""
-            SELECT $EventColumns FROM audit_event
+            SELECT $EventColumns FROM auth_audit_event
             WHERE user_id = $userId AND at >= $from AND at <= $to AND (at, id) < (${position.at}, ${position.id})
             ORDER BY at DESC, id DESC LIMIT $limit
           """.query[EventRow].run().toList
@@ -130,7 +130,7 @@ class PostgresAuditEventRepository(
     xa.transactMeasured("summarize-audit-user-events"):
       timed()
       val byKind = sql"""
-        SELECT kind, outcome, count(*) FROM audit_event
+        SELECT kind, outcome, count(*) FROM auth_audit_event
         WHERE user_id = $userId AND at >= $from AND at <= $to
         GROUP BY kind, outcome ORDER BY kind, outcome
       """.query[(String, String, Long)].run().toList.map(KindCount.apply.tupled)
@@ -138,46 +138,49 @@ class PostgresAuditEventRepository(
         SELECT client_id,
                count(*) FILTER (WHERE kind = 'login.completed' AND outcome = 'success'),
                count(*) FILTER (WHERE kind = 'token.issued' AND outcome = 'success')
-        FROM audit_event
+        FROM auth_audit_event
         WHERE user_id = $userId AND at >= $from AND at <= $to AND client_id IS NOT NULL
         GROUP BY client_id ORDER BY client_id
       """.query[(String, Long, Long)].run().toList.map(ClientCount.apply.tupled)
       val ips = sql"""
-        SELECT host(ip), min(at), max(at), count(*) FROM audit_event
+        SELECT host(ip), min(at), max(at), count(*) FROM auth_audit_event
         WHERE user_id = $userId AND at >= $from AND at <= $to AND ip IS NOT NULL
         GROUP BY ip ORDER BY count(*) DESC, host(ip) LIMIT $TopLimit
       """.query[(String, Instant, Instant, Long)].run().toList.map((ip, firstSeen, lastSeen, count) =>
         IpCount(ip = ip, firstSeen = firstSeen, lastSeen = lastSeen, count = count),
       )
       val userAgents = sql"""
-        SELECT user_agent, min(at), max(at), count(*) FROM audit_event
+        SELECT user_agent, min(at), max(at), count(*) FROM auth_audit_event
         WHERE user_id = $userId AND at >= $from AND at <= $to AND user_agent IS NOT NULL
         GROUP BY user_agent ORDER BY count(*) DESC, user_agent LIMIT $TopLimit
       """.query[(String, Instant, Instant, Long)].run().toList.map(UserAgentCount.apply.tupled)
       val sessions = sql"""
         SELECT count(*) FILTER (WHERE kind = 'login.completed' AND outcome = 'success'),
                count(*) FILTER (WHERE kind = 'session.ended')
-        FROM audit_event
+        FROM auth_audit_event
         WHERE user_id = $userId AND at >= $from AND at <= $to
       """.query[(Long, Long)].run().headOption.fold(SessionCount(0, 0))(SessionCount.apply.tupled)
       val factors = sql"""
-        SELECT kind, at FROM audit_event
+        SELECT kind, at FROM auth_audit_event
         WHERE user_id = $userId AND at >= $from AND at <= $to AND (starts_with(kind, 'account.password_') OR starts_with(kind, 'account.passkey_'))
         ORDER BY at DESC, id DESC LIMIT $FactorLimit
       """.query[(String, Instant)].run().toList.map(Factor.apply.tupled)
       val high = sql"""
-        SELECT $EventColumns FROM audit_event
+        SELECT $EventColumns FROM auth_audit_event
         WHERE user_id = $userId AND at >= $from AND at <= $to AND severity = 'high'
         ORDER BY at DESC, id DESC LIMIT $TopLimit
       """.query[EventRow].run().toList.map(_.toEvent)
       Summary(byKind, byClient, ips, userAgents, sessions, factors, high)
 
 object PostgresAuditEventRepository:
-  /** The partitions of `audit_event`: the default partition's rows stay, and a delete is marked with the setting the table's trigger
+  /** `auth`'s own audit table; `central` writes `central_audit_event`, in the same database when the two share one. */
+  val Table = "auth_audit_event"
+
+  /** The partitions of `auth_audit_event`: the default partition's rows stay, and a delete is marked with the setting the table's trigger
     * looks for. */
   val partitions: DailyPartitions =
     DailyPartitions(
-      table = "audit_event",
+      table = Table,
       defaultRows = DailyPartitions.DefaultRows.LeaveAndReport,
       deleteGuard = Some("versola.audit_maintenance"),
       label = Some("audit"),

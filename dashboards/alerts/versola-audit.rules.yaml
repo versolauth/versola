@@ -39,7 +39,7 @@ groups:
           severity: critical
         annotations:
           summary: "Requests of {{ $labels.source }} are refused with audit_unavailable in {{ $labels.namespace }}"
-          description: "Requests were answered 503 audit_unavailable for 5 minutes: audit.overflow = block and the queue had no room within audit.block-timeout, or the service was stopping. The writer is slower than the load or the database is unreachable; check audit_queue_size and the write latency of audit_event."
+          description: "Requests were answered 503 audit_unavailable for 5 minutes: audit.overflow = block and the queue had no room within audit.block-timeout, or the service was stopping. The writer is slower than the load or the database is unreachable; check audit_queue_size and the write latency of auth_audit_event."
 
       - alert: AuditQueueHigh
         expr: max by (namespace, source) (audit_queue_size) > 25000
@@ -66,7 +66,7 @@ groups:
           severity: critical
         annotations:
           summary: "Audit log of {{ $labels.source }} has fewer than 3 days of partitions ahead in {{ $labels.namespace }}"
-          description: "Only {{ $value }} days of the audit log of {{ $labels.source }} have a partition (14 when healthy, made hourly). At 0 the events of the day go to the default partition (audit_event_default), from which they are never moved: AuditEventsInDefault follows. Fix the maintenance failure (the {{ $labels.source }} log: 'could not maintain the audit event partitions', or AuditPartitionOwnerMismatch)."
+          description: "Only {{ $value }} days of the audit log of {{ $labels.source }} have a partition (14 when healthy, made hourly). At 0 the events of the day go to the default partition ({{ $labels.source }}_audit_event_default), from which they are never moved: AuditEventsInDefault follows. Fix the maintenance failure (the {{ $labels.source }} log: 'could not maintain the audit event partitions', or AuditPartitionOwnerMismatch)."
 
       - alert: AuditEventsInDefault
         expr: max by (namespace, source) (audit_events_in_default) > 0
@@ -75,7 +75,7 @@ groups:
           severity: warning
         annotations:
           summary: "Audit events sit in the default partition in {{ $labels.namespace }} ({{ $labels.source }})"
-          description: "{{ $value }} days of audit events of {{ $labels.source }} were written to audit_event_default because the day had no partition, and they stay there (the table is append-only and the long-term copy is an insert-only replication, so rows are never moved). A query on audit_event reads them like any other row, and they leave with the retention. The day cannot get a partition while they are there. Find why the maintenance was late (AuditPartitionsRunningOut, AuditPartitionOwnerMismatch)."
+          description: "{{ $value }} days of audit events of {{ $labels.source }} were written to {{ $labels.source }}_audit_event_default because the day had no partition, and they stay there (the table is append-only and the long-term copy is an insert-only replication, so rows are never moved). A query on auth_audit_event reads them like any other row, and they leave with the retention. The day cannot get a partition while they are there. Find why the maintenance was late (AuditPartitionsRunningOut, AuditPartitionOwnerMismatch)."
 
       - alert: AuditPartitionOwnerMismatch
         expr: max by (namespace, source) (audit_partition_owner_mismatch) == 1
@@ -84,7 +84,7 @@ groups:
           severity: warning
         annotations:
           summary: "{{ $labels.source }} does not own its audit log table in {{ $labels.namespace }}"
-          description: "The role {{ $labels.source }} connects as neither owns audit_event nor is a member of its owner, so no partition is created or dropped. The {{ $labels.source }} log has the statement to run: ALTER TABLE audit_event OWNER TO <role>."
+          description: "The role {{ $labels.source }} connects as neither owns {{ $labels.source }}_audit_event nor is a member of its owner, so no partition is created or dropped. The {{ $labels.source }} log has the statement to run: ALTER TABLE {{ $labels.source }}_audit_event OWNER TO <role>."
 
       # The database's own replication slots, read by each service from pg_replication_slots (PostgresWalMetrics). Not specific to
       # one service: the slot of the audit log's logical replication is one of them, and one that is not consumed keeps the WAL on
@@ -96,4 +96,4 @@ groups:
           severity: warning
         annotations:
           summary: "Replication slot {{ $labels.slot }} retains {{ $value | humanize1024 }}B of WAL in {{ $labels.namespace }}"
-          description: "The slot {{ $labels.slot }} holds back more than 10 GiB of WAL on the primary for 15 minutes: its subscriber (the long-term copy of audit_event, see deploy.md) is not reading, or is far behind. The WAL is kept until the slot is read or dropped (DROP_REPLICATION_SLOT / pg_drop_replication_slot), and it fills the primary's disk meanwhile. db_replication_slot_active says whether a subscriber is connected."
+          description: "The slot {{ $labels.slot }} holds back more than 10 GiB of WAL on the primary for 15 minutes: its subscriber (the long-term copy of an audit table, see deploy.md) is not reading, or is far behind. The WAL is kept until the slot is read or dropped (DROP_REPLICATION_SLOT / pg_drop_replication_slot), and it fills the primary's disk meanwhile. db_replication_slot_active says whether a subscriber is connected."

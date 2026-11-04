@@ -17,7 +17,7 @@ SET LOCAL lock_timeout = '5s';
 -- per-user report reads by it). `details` is the kind's own payload (`AuditDetails`), always supplied by the
 -- writer, hence no default. `ip` is INET so the summary can group by it; `user_agent` is the short
 -- "browser version / os" form `UserAgentDetails` makes, never the raw header.
-CREATE TABLE audit_event (
+CREATE TABLE auth_audit_event (
     id          UUID        NOT NULL,
     at          TIMESTAMPTZ NOT NULL,
     tenant_id   TEXT,
@@ -42,22 +42,22 @@ CREATE TABLE audit_event (
 ) PARTITION BY RANGE (at);
 
 -- The window of a report, and what the prune of the default partition walks; BRIN because the rows arrive in time order.
-CREATE INDEX audit_event_at_idx ON audit_event USING brin (at);
+CREATE INDEX auth_audit_event_at_idx ON auth_audit_event USING brin (at);
 
 -- The per-user report (`GET /audit/users/{userId}/events` and `/summary`): every read of the service goes through it.
 -- Partial: the rows with no user (a client-credentials grant, a failed client authentication) are not what it serves.
-CREATE INDEX audit_event_user_idx ON audit_event (user_id, at) WHERE user_id IS NOT NULL;
+CREATE INDEX auth_audit_event_user_idx ON auth_audit_event (user_id, at) WHERE user_id IS NOT NULL;
 
 -- An event of a day that has no partition is written here instead of being refused. Unlike `af_event_default`, the rows are never moved into the day's partition: a move is a delete
 -- and an insert, and the replication the operator keeps is insert-only, so the day whose rows sit here is not
 -- attached and the gauge `audit_events_in_default` says so. The rows older than the retention are deleted from here
 -- by the service's own maintenance, which is the one thing allowed to delete (see the trigger below).
 --
--- It takes the indexes of audit_event, as every partition does.
-CREATE TABLE audit_event_default PARTITION OF audit_event DEFAULT;
+-- It takes the indexes of auth_audit_event, as every partition does.
+CREATE TABLE auth_audit_event_default PARTITION OF auth_audit_event DEFAULT;
 
--- What the triggers below cover: an UPDATE or DELETE of a row of `audit_event` (of any partition) and a TRUNCATE of the
--- parent table `audit_event` are refused unless the transaction has set `versola.audit_maintenance` to 'on' (`SET LOCAL versola.audit_maintenance = 'on'`; a custom setting: unknown settings
+-- What the triggers below cover: an UPDATE or DELETE of a row of `auth_audit_event` (of any partition) and a TRUNCATE of the
+-- parent table `auth_audit_event` are refused unless the transaction has set `versola.audit_maintenance` to 'on' (`SET LOCAL versola.audit_maintenance = 'on'`; a custom setting: unknown settings
 -- under a prefix are allowed, and `current_setting(..., true)` reads NULL when it was never set), as the service's own
 -- prune of the default partition does. A TRUNCATE of a single partition is not covered: a statement trigger on a
 -- partitioned table is not cloned to its partitions. Any session can set the setting, and the role that owns the table can
@@ -68,20 +68,20 @@ CREATE TABLE audit_event_default PARTITION OF audit_event DEFAULT;
 -- schema supports is 12 (deploy.md, the antifraud event log). An AFTER ROW trigger on a partitioned table is cloned
 -- to every partition, present and attached later (PostgreSQL 11 and later), and raising from it aborts the
 -- statement all the same.
-CREATE FUNCTION audit_event_immutable() RETURNS trigger AS $$
+CREATE FUNCTION auth_audit_event_immutable() RETURNS trigger AS $$
 BEGIN
     IF current_setting('versola.audit_maintenance', true) IS DISTINCT FROM 'on' THEN
-        RAISE EXCEPTION 'audit_event is append-only' USING ERRCODE = 'insufficient_privilege';
+        RAISE EXCEPTION 'auth_audit_event is append-only' USING ERRCODE = 'insufficient_privilege';
     END IF;
     RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER audit_event_immutable
-    AFTER UPDATE OR DELETE ON audit_event
-    FOR EACH ROW EXECUTE FUNCTION audit_event_immutable();
+CREATE TRIGGER auth_audit_event_immutable
+    AFTER UPDATE OR DELETE ON auth_audit_event
+    FOR EACH ROW EXECUTE FUNCTION auth_audit_event_immutable();
 
 -- The same refusal for a TRUNCATE of the parent table, which fires no row trigger. A statement trigger, so it is the same function.
-CREATE TRIGGER audit_event_no_truncate
-    BEFORE TRUNCATE ON audit_event
-    FOR EACH STATEMENT EXECUTE FUNCTION audit_event_immutable();
+CREATE TRIGGER auth_audit_event_no_truncate
+    BEFORE TRUNCATE ON auth_audit_event
+    FOR EACH STATEMENT EXECUTE FUNCTION auth_audit_event_immutable();

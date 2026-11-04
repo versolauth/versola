@@ -33,7 +33,7 @@ object PostgresAuditShutdownSpec extends PostgresSpec:
 
   private def stored(node: String) =
     ZIO.serviceWithZIO[TransactorZIO]: xa =>
-      xa.connect(sql"SELECT COUNT(*) FROM audit_event WHERE node_id = $node".query[Long].run().head)
+      xa.connect(sql"SELECT COUNT(*) FROM auth_audit_event WHERE node_id = $node".query[Long].run().head)
 
   /** Records `n` events through the layers of the app, closes their scope and says how many rows of this node are in the table. */
   private def recordedThenClosed(node: String, n: Int, sizing: AuditEvents.Sizing, delay: Option[Duration]) =

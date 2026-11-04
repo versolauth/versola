@@ -9,8 +9,9 @@
 #   PGHOST=localhost PGPORT=5482 PGUSER=dev PGPASSWORD=... PGDATABASE=auth scripts/audit-shutdown-check.sh
 #
 # The request is `GET /authorize?client_id=...` without the other parameters: auth answers 400 and records one
-# `authorize.request` event with the reason `invalid_request`, which is not coalesced with any other. The script counts those rows
-# before the load and after the stop, and compares the difference with the number of responses it received (a response is any
+# `authorize.request` event with the reason `invalid_request`. Each request names a client of its own, so the events are counted per
+# client in memory and written as rows with `details.count`. The script sums those counts before the load and after the stop, and
+# compares the difference with the number of responses it received (a response is any
 # HTTP status; a refused connection is not one). It also prints the lines of the log that mention the audit queue on shutdown.
 #
 # Variables (all optional except the Postgres ones, which are the usual libpq ones; `psql` must be on the path):
@@ -19,7 +20,7 @@
 #   PORT, DPORT, APORT, MPORT   the ports of auth (default 9303, 9304, 9307, 9308)
 #   CLIENTS       parallel clients (default 8)
 #   WARMUP        seconds of load before SIGTERM (default 3)
-#   SLOW_MS       when above 0, every INSERT into audit_event sleeps this many milliseconds (a statement trigger, removed on exit)
+#   SLOW_MS       when above 0, every INSERT into auth_audit_event sleeps this many milliseconds (a statement trigger, removed on exit)
 #   LOG           where the log of auth is written (default /tmp/audit-shutdown-check.log)
 set -euo pipefail
 
@@ -33,10 +34,10 @@ LOG="${LOG:-/tmp/audit-shutdown-check.log}"
 WORK="$(mktemp -d)"
 
 sql() { psql -X -q -t -A -v ON_ERROR_STOP=1 -c "$1"; }
-rows() { sql "SELECT count(*) FROM audit_event WHERE kind = 'authorize.request' AND reason = 'invalid_request'"; }
+rows() { sql "SELECT coalesce(sum(coalesce((details->>'count')::bigint, 1)), 0) FROM auth_audit_event WHERE kind = 'authorize.request' AND reason = 'invalid_request'"; }
 
 cleanup() {
-  if [[ "$SLOW_MS" -gt 0 ]]; then sql "DROP TRIGGER IF EXISTS audit_check_slow ON audit_event; DROP FUNCTION IF EXISTS audit_check_slow()" >/dev/null || true; fi
+  if [[ "$SLOW_MS" -gt 0 ]]; then sql "DROP TRIGGER IF EXISTS audit_check_slow ON auth_audit_event; DROP FUNCTION IF EXISTS audit_check_slow()" >/dev/null || true; fi
   [[ -n "${LOAD_PIDS:-}" ]] && kill $LOAD_PIDS 2>/dev/null || true
   [[ -n "${AUTH_PID:-}" ]] && kill -0 "$AUTH_PID" 2>/dev/null && kill "$AUTH_PID" 2>/dev/null || true
   rm -rf "$WORK"
@@ -45,8 +46,8 @@ trap cleanup EXIT
 
 if [[ "$SLOW_MS" -gt 0 ]]; then
   sql "CREATE OR REPLACE FUNCTION audit_check_slow() RETURNS trigger AS \$\$ BEGIN PERFORM pg_sleep($SLOW_MS / 1000.0); RETURN NULL; END \$\$ LANGUAGE plpgsql;
-       DROP TRIGGER IF EXISTS audit_check_slow ON audit_event;
-       CREATE TRIGGER audit_check_slow AFTER INSERT ON audit_event FOR EACH STATEMENT EXECUTE FUNCTION audit_check_slow()" >/dev/null
+       DROP TRIGGER IF EXISTS audit_check_slow ON auth_audit_event;
+       CREATE TRIGGER audit_check_slow AFTER INSERT ON auth_audit_event FOR EACH STATEMENT EXECUTE FUNCTION audit_check_slow()" >/dev/null
 fi
 
 HTTP_CLIENT_POOL_SIZE=10 PORT="$PORT" DPORT="$DPORT" APORT="$APORT" MPORT="$MPORT" RUN_MIGRATIONS=true \

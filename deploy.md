@@ -934,9 +934,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `dashboards/alerts/README.md` says; both use metrics that exist only from the release that added them. What to alert on
   is in the Antifraud rollout playbook (`antifraud/rollout`).
 
-- **Audit log (`audit_event`, migration `V0031`; #469).** `auth` records every authentication, token, consent,
+- **Audit log (`auth_audit_event`, migration `V0031`; #469).** `auth` records every authentication, token, consent,
   account, antifraud administration and refused certificate enrolment event (the kinds are the closed vocabulary `AuthAuditKinds` of `auth`; the per-user report
-  reads them through `central`) into `audit_event`, partitioned by day like `af_event` and maintained by the service
+  reads them through `central`) into `auth_audit_event`, partitioned by day like `af_event` and maintained by the service
   the same way (today and 14 days ahead, at start-up and every hour; a day older than `audit.retention` is dropped,
   which is the retention: nothing is deleted row by row except from the default partition). Its keys are the `audit`
   block of `auth`'s `env.conf`, **every key required**, written by `scripts/gen-env.scala` (a config written before
@@ -954,13 +954,13 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   }
   ```
 
-  **What the trigger covers.** `audit_event_immutable` is a row trigger on the table and every partition, and a
+  **What the trigger covers.** `auth_audit_event_immutable` is a row trigger on the table and every partition, and a
   `BEFORE TRUNCATE` statement trigger on the parent table. It refuses an `UPDATE` or `DELETE` of a row of any partition and a
-  `TRUNCATE` of `audit_event` itself unless the transaction has set `versola.audit_maintenance = 'on'`. A `TRUNCATE` of a
+  `TRUNCATE` of `auth_audit_event` itself unless the transaction has set `versola.audit_maintenance = 'on'`. A `TRUNCATE` of a
   single partition is not covered (a statement trigger of a partitioned table is not cloned to its partitions). The
   service's own prune of the default partition sets the mark; an operator who must delete (a legal erasure) sets it the
   same way, `SET LOCAL`, in the transaction. Any session can set it, and the table's owner can drop the trigger or a
-  partition. Dropping a partition is DDL and is not refused. A row of a day that had no partition goes to `audit_event_default`
+  partition. Dropping a partition is DDL and is not refused. A row of a day that had no partition goes to `auth_audit_event_default`
   and stays there (it is never moved into the day's partition, unlike the antifraud log, because the replication
   below is insert-only and a move is a delete and an insert): the gauge `audit_events_in_default` counts such days,
   the day gets no partition while they are there, and they leave with the retention. The owner of the table must be
@@ -969,7 +969,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   **Facts to plan for.** The hot window is 7 days (`audit.retention`) unless you change it. A replication slot that is
   not read keeps the WAL it has not sent on the primary's disk until the slot is read or dropped; the alert
   `AuditReplicationSlotRetainsWal` watches the WAL each slot holds back (there is no metric of whether the subscription
-  exists). `audit_event.at` is the clock of the node that records the event, so the nodes need synchronised clocks (NTP
+  exists). `auth_audit_event.at` is the clock of the node that records the event, so the nodes need synchronised clocks (NTP
   or the cloud's time service), and the per-user report compares its window with the clock of the node that serves it.
   `auth` reads the report of one user for at most 4 requests at once; another waits up to 2 seconds for its turn and is
   answered `503` with `Retry-After: 1` and the code `audit_report_busy`.
@@ -982,22 +982,22 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   names `email`, `phone` or `login` and never a value, only when one changed); `DELETE /users` ends the user's sessions with
   `session.ended` and the cause `user_deleted`.
 
-  **Long-term storage is your logical replication** of `audit_event` to another database, which the hot window's
+  **Long-term storage is your logical replication** of `auth_audit_event` to another database, which the hot window's
   drops never reach. PostgreSQL 13 or later on both sides (`publish_via_partition_root` is 13+; the minimum of this
   schema otherwise stays 12). On the source:
 
   ```sql
-  CREATE PUBLICATION versola_audit FOR TABLE audit_event WITH (publish = 'insert', publish_via_partition_root = true);
+  CREATE PUBLICATION versola_audit FOR TABLE auth_audit_event WITH (publish = 'insert', publish_via_partition_root = true);
   ```
 
-  On the subscriber, an **unpartitioned** table of the same columns (the same `CREATE TABLE` without `PARTITION BY`
+  On the subscriber, an **unpartitioned** table of the same name and columns (the same `CREATE TABLE` without `PARTITION BY`
   and with the primary key `(id, at)`, no trigger needed: nothing but the subscription writes it), then
   `CREATE SUBSCRIPTION ... PUBLICATION versola_audit`. `publish = 'insert'` means a drop of a day on the source
   (`DETACH` and `DROP` of the partition, which is not replicated) leaves the subscriber's rows in place, and the
   prune of the default partition is a `DELETE` that is not published either. The subscriber's retention and access
   control are the operator's.
 
-  **Metrics and alerts** (`source` label `auth`; `central` writes its own table with the same names):
+  **Metrics and alerts** (`source` label `auth`; `central` writes its own table, `central_audit_event`, with the same metric names):
   `audit_events_total{source,kind,outcome}`, `audit_events_dropped_total`, `audit_events_blocked_total` (requests
   that waited for room), `audit_events_failed_total` (best-effort inserts that failed), `audit_queue_size`,
   `audit_partitions_ahead`, `audit_events_in_default`, `audit_partition_owner_mismatch`, `audit_events_unavailable_total`
