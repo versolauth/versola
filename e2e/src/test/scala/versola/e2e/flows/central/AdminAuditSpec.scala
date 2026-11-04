@@ -212,7 +212,9 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
         events.flatMap(_.str("at")) == events.flatMap(_.str("at")).sorted(using Ordering.String.reverse),
         body.obj("window").exists(w => w.str("from").nonEmpty && w.str("to").nonEmpty && w.str("retentionFrom").nonEmpty),
         asked.exists(a => a.str("kind").contains("admin.audit.queried") && a.str("actorId").contains(admin) && a.str("targetId").contains(id)),
-        changes.nonEmpty && changes.forall(a => a.str("kind").exists(_.startsWith("admin.")) && !a.str("kind").exists(kind => kind.endsWith(".queried") || kind.endsWith(".viewed"))),
+        changes.nonEmpty && changes.forall(a =>
+          a.str("kind").exists(_.startsWith("admin.")) && !a.str("kind").exists(kind => kind.endsWith(".queried") || kind.endsWith(".viewed")),
+        ),
       )
     },
     test("a report is refused for a user that is no UUID, a page size out of range and a caller without the central credential") {
