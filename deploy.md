@@ -654,6 +654,36 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   learns the new key before anything signs with it; keep the old key published until tokens issued
   under it have expired.
 
+- **Central's audit log.** `audit_event` (V1034) holds what administrators did through central's API (`admin.<resource>.<operation>`,
+  a look at a user, a query of the audit report, every response that hands a secret back) and what bootstrap created
+  (`system.bootstrap`). It is partitioned by day like the antifraud event log, and the service keeps the partitions: it creates
+  14 days ahead and drops a day once the whole day is older than `audit.retention`. Dropping a partition is the retention; nothing is
+  vacuumed. A row whose day had no partition lands in `audit_event_default`; those rows are **never moved** into the day's partition
+  (an insert-only logical replication of the table would see them twice), a day that has rows in the default is not attached and
+  central reports it (`audit_events_in_default`), and the rows leave the default when they age out of the retention. The table is
+  append-only: a trigger refuses `UPDATE` and `DELETE` unless the transaction sets `versola.audit_maintenance` to `on`, which only
+  central's own prune of the default partition does. Creating and dropping partitions needs the role central connects as to own the
+  table (or be a member of the owner); otherwise central logs that the partitions are not maintained and `audit_partition_owner_mismatch`
+  is set. Long-term keeping is the operator's logical replication of `audit_event` (a publication with `publish_via_partition_root = true`
+  and `publish = 'insert'`, an unpartitioned table on the subscriber; the publisher needs PostgreSQL 13 or later).
+  The `audit` block of central's `env.conf` is optional, every key has a default, and a deployment that sets none records admin actions
+  for 7 days:
+
+  ```hocon
+  audit {
+    retention     = "7 days"      # 14 days is the sensible most: the per-user report asks auth, which keeps its log as long, for the same window
+    overflow      = "block"       # block | drop: what a full writer queue does to an event (central writes best effort: it waits block-timeout, then loses the event, counted)
+    block-timeout = "2 seconds"
+    events { admin-user-viewed = true }   # whether a look at a user (GET /users) is an event: the one read that is many
+  }
+  ```
+
+  A call that reaches central without the headers edge adds (`X-Versola-Actor`, `X-Versola-Actor-Tenant`, `X-Versola-Actor-Client`) is
+  not refused: it is recorded as made by a `service` with no id. Edge adds them to every admin route since this release, and central's
+  bootstrap brings the registrations of the existing `central` resource up to date at start (it adds those inject rules to endpoints
+  an earlier release registered and leaves what an operator added alone); until edge has synced them, admin actions are recorded without an actor.
+  Edge's sync is the refresh interval (5 minutes by default).
+
 - **Antifraud configuration.** Each antifraud key has exactly one home.
   1. **Tuned during an attack** (the mode, thresholds, weights, limits, the SMS budget's limits, the proof-of-work difficulty,
      shadow rules): the stored settings below, changed through central's admin API, with no restart.

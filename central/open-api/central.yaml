@@ -57,6 +57,25 @@ info:
       operation states which applies to which field.
     * Secrets and private keys are returned exactly once, at creation or rotation time.
       Central stores only encrypted copies and cannot show them again.
+
+    ## Audit
+
+    Every change an administrator makes through this API is written to central's audit log
+    (`audit_event`, kept for the `audit.retention` of the configuration, 7 days by default), as is a
+    look at a user (`GET /users`, unless `audit.events.admin-user-viewed` is off), a query of the audit
+    report and every response that hands a secret back. A row says who did what to what, when, and how it
+    ended: `admin.<resource>.<operation>` (`admin.client.create`, `admin.client-secret.action:rotate-secret`),
+    a success, a failure with the request's error code, or a denial. The log holds the names of the fields an
+    update carried, never their values. The write is best effort: the response is returned even when the log
+    could not take the row.
+
+    The administrator is the one edge has authenticated. Edge adds three headers to every call and replaces
+    any a client sent: `X-Versola-Actor` (the `sub` of the access token), `X-Versola-Actor-Tenant` (its tenant) and
+    `X-Versola-Actor-Client` (the client it was issued to). A call that carries none, from a caller that
+    reaches central without edge, is recorded as made by a service. Central passes the administrator on to auth
+    as `X-Versola-Actor` on the calls it makes for the request, so that auth records who asked.
+
+    What the log holds about one user is read through `GET /audit/reports/user` (`audit:read`).
   license:
     name: Versola Community License v1.0
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
@@ -139,6 +158,11 @@ tags:
     description: |
       What an operator does and reads while running the antifraud: clearing counters (`antifraud:operate`), the names a rule
       can be fired under and the state of an auth instance (`antifraud:read`).
+  - name: Audit
+    description: |
+      The audit log (#469). `audit:read` reads the report of one user: what auth recorded about them (sign-ins, tokens,
+      sessions, account changes) together with what administrators did to them in central. `audit:manage` is reserved
+      and grants nothing yet. Neither is granted by `users:read` or `users:manage`.
   - name: Service
     description: Operational endpoints that return `404 Not Found` in production.
 
@@ -3171,6 +3195,59 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AntifraudStatus' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─────────────────────────────── Audit ───────────────────────────────
+  /audit/reports/user:
+    get:
+      tags: [Audit]
+      summary: The audit report of a user
+      description: |
+        Everything the audit log holds about one user over a window, newest first: the events auth recorded (sign-ins, token
+        issuance and refusals, sessions, account changes) and the rows of central's own log about the user (what administrators did
+        to them, who looked at them, who asked for this report). Needs `audit:read`.
+
+        The window defaults to everything retained (7 days by default; the log is kept as long as `audit.retention` says, in
+        central and in auth) and is clipped to it. The first page (no `cursor`) carries `summary`: auth's summary of the window
+        (events by kind and outcome, by client, the addresses and user agents seen, sessions, factors changed and the
+        high-severity events) with `adminActions` added. A page is auth's page and every row of central's of the time it
+        covers, so the list is in order across pages.
+
+        Auth may not answer (it is down, or an older release without the endpoint): the report is then central's rows alone, in
+        pages of their own, and `partial` is `["auth"]` on every page of it. A window or cursor auth refuses is `400`.
+
+        Asking is itself recorded (`admin.audit.queried`, with the user as target).
+      operationId: getUserAuditReport
+      parameters:
+        - name: userId
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/UserId' }
+        - name: from
+          in: query
+          description: Start of the window (inclusive); earlier than the retention is clipped to it. Defaults to the start of the retained log.
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: End of the window (inclusive); in the future is clipped to now. Defaults to now.
+          schema: { type: string, format: date-time }
+        - name: cursor
+          in: query
+          description: The `nextCursor` of the previous page, opaque. Send the same `from` and `to` with it.
+          schema: { type: string }
+        - name: limit
+          in: query
+          description: Events of auth's per page, 1 to 500. Defaults to 100. A page also carries central's rows of the span it covers.
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        '200':
+          description: A page of the report.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserAuditReport' }
+        '400':
+          description: "`userId`, a time, `limit` or `cursor` is not valid, `to` is before `from`, or auth refused the window."
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -7316,6 +7393,87 @@ components:
           description: A phone number (auth hashes it), an address or a range of numbers; goes with `valueType`.
         userId: { $ref: '#/components/schemas/UserId' }
       required: [scope, userId]
+    UserAuditReport:
+      type: object
+      required: [userId, window, events, partial]
+      properties:
+        userId: { $ref: '#/components/schemas/UserId' }
+        window: { $ref: '#/components/schemas/AuditReportWindow' }
+        summary:
+          type: object
+          description: |
+            First page only. Auth's summary of the window as it answered it (`byKind`, `byClient`, `ips`, `userAgents`,
+            `sessions`, `factors`, `high`; see auth's `GET /audit/users/{userId}/summary`), with `adminActions` added: what
+            administrators did to the user, newest first (at most 100). Without auth's part it holds `adminActions` alone.
+          additionalProperties: true
+          properties:
+            adminActions:
+              type: array
+              items: { $ref: '#/components/schemas/AuditAdminAction' }
+        events:
+          type: array
+          description: Auth's events and central's rows about the user, newest first.
+          items: { $ref: '#/components/schemas/AuditEvent' }
+        nextCursor:
+          type: string
+          description: Opaque. Absent on the last page.
+        partial:
+          type: array
+          description: "The services whose part is missing: `[\"auth\"]` when auth did not answer. Empty otherwise."
+          items: { type: string, enum: [auth] }
+    AuditReportWindow:
+      type: object
+      required: [from, to, retentionFrom]
+      properties:
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        retentionFrom:
+          type: string
+          format: date-time
+          description: How far back the log reaches at all; nothing older is held.
+    AuditAdminAction:
+      type: object
+      required: [at, kind, changed]
+      properties:
+        at: { type: string, format: date-time }
+        actorId: { type: string, description: "The administrator, or the client that acted; absent for a service." }
+        kind: { type: string, examples: [admin.user-password.action:reset] }
+        targetType: { type: string }
+        targetId: { type: string }
+        changed:
+          type: array
+          description: The names of the fields an update carried; never their values.
+          items: { type: string }
+    AuditEvent:
+      type: object
+      description: One row of an audit log, as auth and central both write it.
+      required: [id, at, source, nodeId, kind, outcome, severity, actorType, details]
+      properties:
+        id: { type: string, format: uuid, description: A UUIDv7. }
+        at: { type: string, format: date-time }
+        tenantId: { type: string }
+        source: { type: string, enum: [auth, central, edge] }
+        nodeId: { type: string, description: The instance that wrote the row. }
+        kind:
+          type: string
+          description: A closed vocabulary, for example `login.completed`, `token.issued`, `admin.client.update`, `admin.user.viewed`.
+        outcome: { type: string, enum: [success, failure, denied] }
+        reason: { type: string, description: The request's error code on a failure or a denial. }
+        severity: { type: string, enum: [info, notice, high] }
+        actorType: { type: string, enum: [user, admin, client, edge, service, system] }
+        actorId: { type: string }
+        userId: { $ref: '#/components/schemas/UserId' }
+        clientId: { type: string }
+        sessionId: { type: string }
+        ip: { type: string }
+        userAgent: { type: string }
+        traceId: { type: string }
+        targetType: { type: string }
+        targetId: { type: string }
+        details:
+          type: object
+          description: The kind's own payload. For an administrator's action `path`, `status`, `query` (identifiers only), `changed` and `tenantId`.
+          additionalProperties: true
     AntifraudStatus:
       type: object
       description: What one auth instance says of its antifraud.

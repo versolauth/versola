@@ -44,7 +44,8 @@ final class CentralApi(
   def asTenantAdmin(userId: String, tenantId: String): CentralApi =
     CentralApi(client, config, credentials, bearer, edgeSurface, Some(userId), Some(tenantId), extraHeaders)
 
-  /** The same, with a header on every call. */
+  /** The same, with a header on every call. Naming the administrator the way edge does (`X-Versola-Actor`) without
+    * the `userId` that `asAdmin` also puts in a query or a body: for a call that reads a `userId` of its own. */
   def withHeader(name: String, value: String): CentralApi =
     CentralApi(client, config, credentials, bearer, edgeSurface, admin, callerTenant, extraHeaders.filterNot(_._1 == name) :+ (name -> value))
 
@@ -157,7 +158,12 @@ final class CentralApi(
         body = callerBody(method, path, body).fold(Body.empty)(Body.fromString(_)),
       )
       withType = callerBody(method, path, body).fold(request)(_ => request.addHeader(Header.ContentType(MediaType.application.json)))
-      withHeaders = extraHeaders.foldLeft(withType)((r, header) => r.addHeader(Header.Custom(header._1, header._2)))
+      // What edge adds to every call (`BootstrapService.actorInjects`), besides the field or parameter above that the antifraud routes read.
+      withActor = admin.fold(withType): userId =>
+        callerTenant.fold(withType.addHeader(Header.Custom("X-Versola-Actor", userId)))(tenant =>
+          withType.addHeader(Header.Custom("X-Versola-Actor", userId)).addHeader(Header.Custom("X-Versola-Actor-Tenant", tenant)),
+        )
+      withHeaders = extraHeaders.foldLeft(withActor)((r, header) => r.addHeader(Header.Custom(header._1, header._2)))
       withBasic = credentials.fold(withHeaders)((user, secret) => withHeaders.addHeader(Authorization.Basic(user, secret)))
       authorized = bearer.fold(withBasic)(token => withBasic.addHeader(Authorization.Bearer(token)))
       connection = edgeSurface.flatten.fold(client)(client.ssl(_))

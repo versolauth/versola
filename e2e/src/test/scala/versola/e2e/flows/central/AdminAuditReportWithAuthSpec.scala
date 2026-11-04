@@ -1,0 +1,70 @@
+package versola.e2e.flows.central
+
+import versola.e2e.support.{*, given}
+import zio.*
+import zio.http.Status
+import zio.json.ast.Json
+import zio.test.*
+
+import java.util.UUID
+
+/** The per-user report with auth's part in it (#469): a sign-in, a token and a revocation of a real user, and what an administrator
+  * did to them, in one list, newest first, from central's `GET /audit/reports/user`.
+  *
+  * Ignored until auth's per-user audit endpoints (`GET /audit/users/{userId}/events` and `/summary`, stream B of the audit log)
+  * are on `main`: without them the report is `partial: ["auth"]`, which `AdminAuditSpec` asserts. Remove the aspect then.
+  */
+object AdminAuditReportWithAuthSpec extends E2ESpec:
+
+  override val aspects: Chunk[TestAspectAtLeastR[TestEnvironment]] = Chunk(TestAspect.withLiveClock)
+
+  private val fixedOtp = "123456"
+
+  def spec = suite("Admin audit: the report with auth's part")(
+    test("a user's sign-in and token are in the report with what an administrator did to them, newest first, and it is not partial") {
+      for
+        (s, auth) <- setup(Flows.Id.EmailOtp)
+        admin = UUID.randomUUID().toString
+        central = auth.central.withHeader("X-Versola-Actor", admin)
+        email <- CentralApi.email("audit-auth")
+        userId <- auth.registerUser(email = Some(email))
+        _ <- auth.flushUserOutbox()
+        authorize <- auth.authorize(scope = "openid email", clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+        cookie = authorize.conversationCookie.get
+        credential <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+        _ <- auth.submitEmail(cookie, email, credential.csrf)
+        otp <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
+        submit <- auth.submitOtp(cookie, fixedOtp, otp.csrf)
+        code <- submit.assertRedirect
+        _ <- auth.token(
+          code,
+          authorize.verifier,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+          redirectUri = Some(s.redirectUri),
+        ).success
+        _ <- central.delete("/users/sessions", "id" -> userId.toString)
+        // the writer of each service rests up to a second between batches
+        result <- central.get("/audit/reports/user", "userId" -> userId.toString)
+          .repeat(Schedule.spaced(500.millis) *> Schedule.recurUntil[ApiResult](r =>
+            r.body.contains("token.issued") && r.body.contains("admin.user-session.delete"),
+          ))
+          .timeout(30.seconds)
+          .someOrElseZIO(central.get("/audit/reports/user", "userId" -> userId.toString))
+        body <- result.obj
+        events = body.objs("events")
+        kinds = events.flatMap(_.str("kind")).toSet
+        times = events.flatMap(_.str("at"))
+      yield assertTrue(
+        result.status == Status.Ok,
+        body.get("partial").contains(Json.Arr()),
+        kinds.contains("login.completed"),
+        kinds.contains("token.issued"),
+        kinds.contains("admin.user-session.delete"),
+        events.filter(_.str("source").contains("auth")).nonEmpty,
+        events.filter(_.str("source").contains("central")).nonEmpty,
+        times == times.sorted(using Ordering.String.reverse),
+        body.obj("summary").exists(_.objs("adminActions").exists(_.str("kind").contains("admin.user-session.delete"))),
+      )
+    } @@ TestAspect.ignore,
+  )
