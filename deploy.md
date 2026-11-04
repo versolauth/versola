@@ -954,11 +954,13 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   }
   ```
 
-  **What the trigger does.** A trigger (`audit_event_immutable`; a row trigger on the table and every partition, and a
-  `BEFORE TRUNCATE` statement trigger on the table) refuses `UPDATE`, `DELETE` and `TRUNCATE` of `audit_event` unless the
-  transaction has set `versola.audit_maintenance = 'on'`. The service's own prune of the default partition sets it; an
-  operator who must delete (a legal erasure) sets it the same way, `SET LOCAL`, in the transaction. Any session can set
-  it, and the table's owner can drop the trigger or a partition. Dropping a partition is DDL and is not refused. A row of a day that had no partition goes to `audit_event_default`
+  **What the trigger covers.** `audit_event_immutable` is a row trigger on the table and every partition, and a
+  `BEFORE TRUNCATE` statement trigger on the parent table. It refuses an `UPDATE` or `DELETE` of a row of any partition and a
+  `TRUNCATE` of `audit_event` itself unless the transaction has set `versola.audit_maintenance = 'on'`. A `TRUNCATE` of a
+  single partition is not covered (a statement trigger of a partitioned table is not cloned to its partitions). The
+  service's own prune of the default partition sets the mark; an operator who must delete (a legal erasure) sets it the
+  same way, `SET LOCAL`, in the transaction. Any session can set it, and the table's owner can drop the trigger or a
+  partition. Dropping a partition is DDL and is not refused. A row of a day that had no partition goes to `audit_event_default`
   and stays there (it is never moved into the day's partition, unlike the antifraud log, because the replication
   below is insert-only and a move is a delete and an insert): the gauge `audit_events_in_default` counts such days,
   the day gets no partition while they are there, and they leave with the retention. The owner of the table must be

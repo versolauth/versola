@@ -56,12 +56,13 @@ CREATE INDEX audit_event_user_idx ON audit_event (user_id, at) WHERE user_id IS 
 -- It takes the indexes of audit_event, as every partition does.
 CREATE TABLE audit_event_default PARTITION OF audit_event DEFAULT;
 
--- What the trigger below does: an UPDATE, DELETE or TRUNCATE of `audit_event` is refused unless the transaction has set
--- `versola.audit_maintenance` to 'on' (`SET LOCAL versola.audit_maintenance = 'on'`; a custom setting: unknown settings
+-- What the triggers below cover: an UPDATE or DELETE of a row of `audit_event` (of any partition) and a TRUNCATE of the
+-- parent table `audit_event` are refused unless the transaction has set `versola.audit_maintenance` to 'on' (`SET LOCAL versola.audit_maintenance = 'on'`; a custom setting: unknown settings
 -- under a prefix are allowed, and `current_setting(..., true)` reads NULL when it was never set), as the service's own
--- prune of the default partition does. Any session can set it, and the role that owns the table can drop the trigger or a
--- partition: the trigger refuses the statements an application bug would issue and says what the maintenance is. Retention
--- itself drops partitions, which is DDL and fires no row trigger, so it needs no mark.
+-- prune of the default partition does. A TRUNCATE of a single partition is not covered: a statement trigger on a
+-- partitioned table is not cloned to its partitions. Any session can set the setting, and the role that owns the table can
+-- drop the trigger or a partition. Retention itself drops partitions, which is DDL and fires no row trigger, so it needs
+-- no mark.
 --
 -- AFTER rather than BEFORE: a BEFORE ROW trigger on a partitioned table needs PostgreSQL 13, and the minimum this
 -- schema supports is 12 (deploy.md, the antifraud event log). An AFTER ROW trigger on a partitioned table is cloned
@@ -80,7 +81,7 @@ CREATE TRIGGER audit_event_immutable
     AFTER UPDATE OR DELETE ON audit_event
     FOR EACH ROW EXECUTE FUNCTION audit_event_immutable();
 
--- The same refusal for TRUNCATE, which fires no row trigger. A statement trigger, so it is the same function.
+-- The same refusal for a TRUNCATE of the parent table, which fires no row trigger. A statement trigger, so it is the same function.
 CREATE TRIGGER audit_event_no_truncate
     BEFORE TRUNCATE ON audit_event
     FOR EACH STATEMENT EXECUTE FUNCTION audit_event_immutable();
