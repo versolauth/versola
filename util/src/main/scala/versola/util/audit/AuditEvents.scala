@@ -159,7 +159,7 @@ object AuditEvents:
         )
         val target = draft.target.orElse(context.target)
         val details = draft.details.toJson
-        AuditEvent(
+        AuditSanitizer(AuditEvent(
           id = id,
           at = now,
           tenantId = context.tenantId,
@@ -184,52 +184,97 @@ object AuditEvents:
           details =
             if context.changed.isEmpty || details.contains(ChangedField) then details
             else Json.Obj(details.fields :+ (ChangedField -> Json.Arr(Chunk.fromIterable(context.changed.toList.sorted).map(Json.Str(_))))*),
-        )
+        ))
 
   /** The member of `details` that lists the fields an update changed, from [[AuditContext.setChanged]]. */
   val ChangedField = "changed"
 
+  /** Batches tried, one `flushInterval` apart, before a batch that keeps failing is written row by row. */
+  private val BatchAttempts = 3
+
+  /** The longest rest between rounds while the database is failing. */
+  private val MaxBackoff: Duration = 30.seconds
+
   private class Writer(queue: Queue[AuditEvent], repository: AuditEventRepository, sizing: Sizing, source: AuditSource):
 
-    /** Takes what has gathered, writes it, rests, and again. A batch that could not be written is not dropped: it is tried
-      * again after the interval, for as long as it takes, while the queue fills behind it and the requests block or drop by
-      * the setting. A backlog is written back to back, so the write rate is not capped at one batch per interval. */
+    /** Takes what has gathered, writes it, rests, and again. A backlog is written back to back, so the write rate is not capped at
+      * one batch per interval. What a batch that fails does is [[write]]'s. */
     private def loop(failing: Ref[Boolean]): UIO[Nothing] =
       (for
         first <- queue.take
         rest <- queue.takeUpTo(sizing.batchSize - 1)
         batch = (first +: rest).toList
         _ <- AuditMetrics.queueSize(source, queue)
-        _ <- write(batch, failing).onInterrupt(AuditMetrics.failed(source, batch.size))
+        _ <- write(batch, failing, round = 0).onInterrupt(AuditMetrics.failed(source, batch.size))
         _ <- ZIO.sleep(sizing.flushInterval).when(batch.size < sizing.batchSize)
       yield ()).forever
 
-    /** Until the batch is written. The warning, with its stack, is logged once when writes start failing and once more when they
-      * recover, not for every attempt in between. */
-    private def write(batch: List[AuditEvent], failing: Ref[Boolean]): UIO[Unit] =
+    /** Until every event of the batch is stored or refused. A batch that fails is tried again, a few times, a `flushInterval` apart;
+      * a batch that still fails is written row by row, which stores the rows the database takes and finds the ones it refuses for
+      * what is in them (see [[refusedForItself]]): those are dropped and counted, so that one row that can never be stored does not
+      * stop the log for everyone. The rows that failed for another reason (the database is down, a statement timed out) are what
+      * is tried again, with a growing rest, for as long as it takes: the queue fills behind them and the requests block or drop by
+      * the setting, which is what an outage of the log is. */
+    private def write(batch: List[AuditEvent], failing: Ref[Boolean], round: Int): UIO[Unit] =
+      attemptBatch(batch, failing, attempt = 1).flatMap:
+        case true => recovered(failing)
+        case false =>
+          rowByRow(batch).flatMap: left =>
+            if left.isEmpty then recovered(failing)
+            else
+              ZIO.sleep(backoff(round)) *> write(left, failing, round + 1)
+
+    private def backoff(round: Int): Duration =
+      val rest = sizing.flushInterval.multipliedBy(1L << math.min(round, 5))
+      if rest.compareTo(MaxBackoff) > 0 then MaxBackoff else rest
+
+    /** The warning, with its stack, is logged once when writes start failing and once more when they recover, not for every
+      * attempt in between. */
+    private def attemptBatch(batch: List[AuditEvent], failing: Ref[Boolean], attempt: Int): UIO[Boolean] =
       repository.insertBatch(batch).foldCauseZIO(
         cause =>
           failing.getAndSet(true).flatMap(was =>
             ZIO.logWarningCause(s"could not write ${batch.size} audit events; they are kept and tried again", cause).unless(was),
-          ) *> ZIO.sleep(sizing.flushInterval) *> write(batch, failing),
-        _ => failing.getAndSet(false).flatMap(was => ZIO.logInfo("audit events are being written again").when(was)).unit,
+          ) *> (
+            if attempt >= BatchAttempts then ZIO.succeed(false)
+            else ZIO.sleep(sizing.flushInterval) *> attemptBatch(batch, failing, attempt + 1)
+          ),
+        _ => ZIO.succeed(true),
       )
 
-    /** The final write is bounded and tried once: a database that is down must not hold the shutdown up, and what it could
-      * not take is counted as failed. */
+    private def recovered(failing: Ref[Boolean]): UIO[Unit] =
+      failing.getAndSet(false).flatMap(was => ZIO.logInfo("audit events are being written again").when(was)).unit
+
+    /** Each event on its own: the ones stored are done, the ones refused for themselves are dropped and counted (one warning for the
+      * pass, naming the kinds and never the rows), and the rest are returned to be tried again. A batch is one transaction, so
+      * nothing of a failed batch was stored and no event is written twice. */
+    private def rowByRow(batch: List[AuditEvent]): UIO[List[AuditEvent]] =
+      ZIO.foreach(batch)(event => repository.insertBatch(List(event)).either.map(event -> _)).flatMap: results =>
+        val stored = results.exists(_._2.isRight)
+        val failed = results.collect { case (event, Left(error)) => (event, error) }
+        val (refused, left) = failed.partition((_, error) => refusedForItself(error, othersStored = stored))
+        ZIO.when(refused.nonEmpty)(
+          AuditMetrics.rejected(source, refused.size) *>
+            ZIO.logWarning(
+              s"${refused.size} audit events were refused by the database for what they contain and are not stored: kinds " +
+                refused.groupMapReduce((event, _) => event.kind.value)(_ => 1)(_ + _).toList.sorted.map((kind, n) => s"$kind ($n)").mkString(", ") +
+                s"; SQLSTATE ${refused.flatMap((_, error) => sqlStates(error)).distinct.sorted.mkString(", ")}",
+            ),
+        ).as(left.map(_._1))
+
+    /** The final write is bounded and made once: a database that is down must not hold the shutdown up, and what it could not take
+      * is counted as failed. */
     private def drain(failing: Ref[Boolean]): UIO[Unit] =
       queue.takeAll.flatMap: events =>
         ZIO.when(events.nonEmpty)(
-          repository.insertBatch(events.toList).timeout(DrainTimeout).foldCauseZIO(
-            cause => AuditMetrics.failed(source, events.size) *> ZIO.logWarningCause(s"${events.size} audit events were lost at shutdown", cause),
-            {
-              case None => AuditMetrics.failed(
-                  source,
-                  events.size,
-                ) *> ZIO.logWarning(s"${events.size} audit events were lost at shutdown: the write did not finish in $DrainTimeout")
-              case Some(_) => ZIO.unit
-            },
-          ),
+          repository.insertBatch(events.toList).foldZIO(_ => rowByRow(events.toList), _ => ZIO.succeed(Nil)).timeout(DrainTimeout).flatMap:
+            case None =>
+              AuditMetrics.failed(source, events.size) *>
+                ZIO.logWarning(s"${events.size} audit events were lost at shutdown: the write did not finish in $DrainTimeout")
+            case Some(left) =>
+              ZIO.when(left.nonEmpty)(
+                AuditMetrics.failed(source, left.size) *> ZIO.logWarning(s"${left.size} audit events were lost at shutdown"),
+              ).unit,
         ).unit
 
     /** The loop is stopped before the last write, so that nothing is writing while it is made. */
@@ -242,6 +287,31 @@ object AuditEvents:
       yield ()
 
   val DrainTimeout: Duration = 5.seconds
+
+  /** The SQLSTATEs anywhere in the chain of causes and chained exceptions. */
+  private[audit] def sqlStates(error: Throwable): List[String] =
+    def chain(e: Throwable): List[Throwable] =
+      if e == null then Nil
+      else
+        val next = e match
+          case sql: java.sql.SQLException => Option(sql.getNextException).toList.flatMap(chain)
+          case _ => Nil
+        e :: chain(e.getCause) ::: next
+    chain(error).collect { case sql: java.sql.SQLException if sql.getSQLState != null => sql.getSQLState }
+
+  /** Classes of SQLSTATE that say the database, not the row, is the problem: a connection that failed (08), no resources (53),
+    * an operator intervention or a shutdown (57, 58), a transaction rolled back (40), an object not in a state to be used (55), an
+    * internal error (XX). */
+  private val infrastructureClasses = List("08", "53", "55", "57", "58", "40", "XX")
+
+  /** Whether a row that failed on its own is one the table can never store, and so is dropped and not tried again. Always when the
+    * database says it is the value (class 22, a data exception) or a constraint (class 23); and when other rows of the same pass
+    * were stored, for any other refusal the database words in a SQLSTATE that is not about itself. An error that carries no SQLSTATE
+    * (a timeout, a dropped connection) is never one: it is tried again. */
+  private[audit] def refusedForItself(error: Throwable, othersStored: Boolean): Boolean =
+    val states = sqlStates(error)
+    states.exists(state => state.startsWith("22") || state.startsWith("23")) ||
+    (othersStored && states.nonEmpty && !states.exists(state => infrastructureClasses.exists(state.startsWith)))
 
   private class Maintenance(repository: AuditEventRepository, settings: Settings, sizing: Sizing, source: AuditSource):
 
@@ -321,6 +391,7 @@ object AuditMetrics:
   private val blockedTotal = Metric.counter("audit_events_blocked_total")
   private val unavailableTotal = Metric.counter("audit_events_unavailable_total")
   private val failedTotal = Metric.counter("audit_events_failed_total")
+  private val rejectedTotal = Metric.counter("audit_events_rejected_total")
   private val queueSizeGauge = Metric.gauge("audit_queue_size")
   private val partitionsAheadGauge = Metric.gauge("audit_partitions_ahead")
   private val inDefaultGauge = Metric.gauge("audit_events_in_default")
@@ -348,6 +419,10 @@ object AuditMetrics:
 
   /** Events the writer had taken from the queue and could not write before the service stopped. */
   def failed(source: AuditSource, count: Int): UIO[Unit] = failedTotal.tagged(sourceLabel(source)).incrementBy(count.toLong)
+
+  /** Events the database refused one by one for what they contain, after the batch they were in was refused: lost, and the only way
+    * an event is lost that the writer does not retry. Alert on it increasing. */
+  def rejected(source: AuditSource, count: Int): UIO[Unit] = rejectedTotal.tagged(sourceLabel(source)).incrementBy(count.toLong)
 
   def queueSize(source: AuditSource, queue: Queue[?]): UIO[Unit] =
     queue.size.flatMap(size => queueSizeGauge.tagged(sourceLabel(source)).set(size.toDouble))
