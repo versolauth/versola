@@ -71,12 +71,15 @@ object AuditEventsSpec extends UnitSpecBase:
       storeBeforeHold: Boolean,
       uninterruptible: Boolean,
       holdAll: Boolean,
+      perRow: Duration,
   ) extends AuditEventRepository:
 
     override def insertBatch(events: List[AuditEvent]): Task[Unit] =
       for
         n <- calls.updateAndGet(_ + 1)
         _ <- entered.offer(())
+        // A statement that takes as long as it has rows, as an insert that is slow does.
+        _ <- ZIO.sleep(perRow.multipliedBy(events.size.toLong)).when(perRow != Duration.Zero && !(holdFirst && n == 1))
         isDown <- down.get
         _ <- ZIO.fail(RuntimeException("connection refused")).when(isDown)
         // The transactor runs a statement uninterruptibly, so a stub that does the same is what a stop meets in a service.
@@ -116,6 +119,7 @@ object AuditEventsSpec extends UnitSpecBase:
         down: Boolean = false,
         uninterruptible: Boolean = false,
         holdAll: Boolean = false,
+        perRow: Duration = Duration.Zero,
     ): UIO[Store] =
       for
         stored <- Ref.make(Map.empty[UUID, AuditEvent])
@@ -124,7 +128,7 @@ object AuditEventsSpec extends UnitSpecBase:
         gate <- Promise.make[Nothing, Unit]
         isDown <- Ref.make(down)
         calls <- Ref.make(0)
-      yield Store(stored, rewritten, entered, gate, isDown, calls, holdFirst, storeBeforeHold, uninterruptible, holdAll)
+      yield Store(stored, rewritten, entered, gate, isDown, calls, holdFirst, storeBeforeHold, uninterruptible, holdAll, perRow)
 
   private def fixture(gated: Boolean, failures: Int = 0, refuse: AuditEvent => Option[Throwable] = _ => None): UIO[Fixture] =
     for
@@ -737,8 +741,27 @@ object AuditEventsSpec extends UnitSpecBase:
       },
     ),
     suite("the stop and the app's shutdown")(
-      test("the drain timeout and five seconds of margin fit inside the app's graceful shutdown timeout") {
-        assertTrue(AuditEvents.DrainTimeout.plus(5.seconds).compareTo(VersolaApp.GracefulShutdownTimeout) <= 0)
+      test("the whole stop, the wait for the writer and the drain, and five seconds of margin fit inside the app's graceful shutdown timeout") {
+        assertTrue(
+          AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout).plus(5.seconds).compareTo(VersolaApp.GracefulShutdownTimeout) <= 0,
+        )
+      },
+      test("a stop whose statements are slow stores what the drain timeout allows, chunk by chunk, and counts the rest as not written") {
+        for
+          // A statement takes 20 ms a row: a chunk of 100 rows takes two seconds, so two chunks fit in the five seconds of the drain.
+          store <- Store.make(holdFirst = true, perRow = 20.millis)
+          failedBefore <- counter("audit_events_failed_total", edge)
+          scope <- Scope.make
+          events <- scope.extend(buildOn(store, block, source = edge, sizing = sizing.copy(queueCapacity = 1000, batchSize = 1000)))
+          _ <- events.record(draft())
+          _ <- store.entered.take
+          _ <- ZIO.foreachDiscard(1 to 299)(_ => events.record(draft()))
+          closing <- scope.close(Exit.unit).fork
+          _ <- settle *> TestClock.adjust(AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout).plus(2.seconds)) *> settle
+          done <- closing.poll
+          stored <- store.stored.get
+          failedAfter <- counter("audit_events_failed_total", edge)
+        yield assertTrue(done.isDefined, stored.size == 200, failedAfter - failedBefore == 100.0)
       },
       test("the service refuses what is offered after it began to stop: a failure under block, a counted drop otherwise") {
         for

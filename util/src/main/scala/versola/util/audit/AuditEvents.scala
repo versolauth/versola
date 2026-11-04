@@ -408,7 +408,7 @@ object AuditEvents:
         _ <- taken.update(_ + queued.size)
         _ <- pending.update(_ ++ queued)
         rows <- pending.get
-        _ <- ZIO.foreachDiscard(rows.grouped(sizing.batchSize).toList)(writeUntilDone(_, pending))
+        _ <- ZIO.foreachDiscard(rows.grouped(math.min(sizing.batchSize, DrainChunk)).toList)(writeUntilDone(_, pending))
         idle <- intake.get.map(_.inflight == 0)
         empty <- queue.size.map(_ <= 0)
         _ <- if idle && empty then ZIO.unit else ZIO.yieldNow *> drainRound(pending, taken)
@@ -457,6 +457,10 @@ object AuditEvents:
   /** How long the stop waits for the writer to give up the statement it is in; a statement the transactor will not interrupt is
     * abandoned after this. */
   val WriterStopWait: Duration = 1.second
+
+  /** The most rows the stop writes in one statement: each is committed on its own, so what the drain timeout cuts short is the chunk
+    * in progress and not everything held. */
+  private val DrainChunk = 100
 
   /** Passes in which other rows were stored and the same row failed the same unexplained way before it is refused. */
   private val SuspectLimit = 5
