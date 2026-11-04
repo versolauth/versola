@@ -1,5 +1,8 @@
 package versola.oauth.conversation
 
+import versola.audit.AuditSupport.*
+import versola.audit.AuthAuditDetails
+import versola.util.audit.{AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
 import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{
@@ -42,7 +45,7 @@ trait ConversationRouter:
   def advance(authId: AuthId, conversation: ConversationRecord): Task[Unit]
 
 object ConversationRouter:
-  def live = ZLayer.fromFunction(Impl(_, _, _, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   class Impl(
       conversationRepository: ConversationRepository,
@@ -50,6 +53,7 @@ object ConversationRouter:
       configService: OAuthConfigurationService,
       secureRandom: SecureRandom,
       userRepository: UserRepository,
+      audit: AuditEvents,
   ) extends ConversationRouter:
 
     /** Sets `auth.user_id` and `auth.user_agent_id` as soon as an already-identified conversation
@@ -202,8 +206,16 @@ object ConversationRouter:
           conversationService.allowConsent(authId, conversation, consentStep, submitted.scope)
             .tap(observeConsent)
 
-        case (_: ConsentDenySubmission, ConversationRecord.Consent(_)) =>
-          conversationService.accessDenied(authId, conversation).zipLeft(AuthMetrics.stepFailed("consent"))
+        case (_: ConsentDenySubmission, ConversationRecord.Consent(consentStep)) =>
+          // The user's own answer, not a failure of the request: the grant they were asked for is the subject.
+          audit.log(
+            AuditDraft(
+              kind = AuditKinds.ConsentDenied,
+              outcome = AuditOutcome.denied,
+              userId = conversation.userId,
+              details = AuthAuditDetails.Consent(scope = consentStep.requestedScope.toList.map(_.toString).sorted),
+            ),
+          ) *> conversationService.accessDenied(authId, conversation).zipLeft(AuthMetrics.stepFailed("consent"))
 
         case _ =>
           // Submission doesn't match the conversation's current step, e.g. a stale form

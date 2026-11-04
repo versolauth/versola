@@ -1,5 +1,8 @@
 package versola.oauth.logout
 
+import versola.audit.AuditSupport.*
+import versola.audit.AuthAuditDetails
+import versola.util.audit.{AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, TenantId}
 import versola.oauth.session.SessionService
@@ -45,22 +48,44 @@ object LogoutService:
 
   private val BackChannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
 
-  val live = ZLayer.fromFunction(Impl(_, _, _, _))
+  val live = ZLayer.fromFunction(Impl(_, _, _, _, _))
 
   class Impl(
       sessionService: SessionService,
       configuration: OAuthConfigurationService,
       config: CoreConfig,
       outbox: BackChannelOutbox,
+      audit: AuditEvents,
   ) extends LogoutService:
+
+    /** `session.ended`: who ended it is the request's context (the user of an RP's logout, the administrator behind a call from
+      * central), `cause` which of the ways it was. */
+    private def auditEnded(cause: String, session: SessionRecord): Task[Unit] =
+      audit.log(
+        AuditDraft(
+          kind = AuditKinds.SessionEnded,
+          outcome = AuditOutcome.success,
+          userId = Some(session.userId),
+          details = AuthAuditDetails.SessionEnded(cause = cause, clients = session.clients.size),
+        ),
+      )
 
     override def logout(
         identifier: Either[PublicSessionId, SessionId],
         postLogoutRedirectUri: Option[URL],
         state: Option[String],
     ): Task[LogoutResult] =
+      end("rp_logout", identifier, postLogoutRedirectUri, state)
+
+    private def end(
+        cause: String,
+        identifier: Either[PublicSessionId, SessionId],
+        postLogoutRedirectUri: Option[URL],
+        state: Option[String],
+    ): Task[LogoutResult] =
       for
         session <- sessionService.invalidate(identifier)
+        _ <- ZIO.foreachDiscard(session)(info => auditEnded(cause, info.record))
 
         result <- session match
           // No session means there is no client to validate the redirect against; drop it
@@ -87,18 +112,19 @@ object LogoutService:
     override def invalidateSession(publicId: PublicSessionId, userId: UserId): Task[Boolean] =
       sessionService.listByUser(userId).map(_.exists(_.publicId == publicId)).flatMap:
         case false => ZIO.succeed(false)
-        case true => logout(Left(publicId), None, None).as(true)
+        case true => end("admin_revoked", Left(publicId), None, None).as(true)
 
     override def forgetUserAgent(userId: UserId, userAgentId: UserAgentId): Task[Boolean] =
       sessionService.listDevicesByUser(userId).map(_.find(_.userAgent.exists(_.id == userAgentId))).flatMap:
         case None => ZIO.succeed(false)
         case Some(device) =>
-          ZIO.foreachDiscard(device.session)(session => logout(Left(session.publicId), None, None)) *>
+          ZIO.foreachDiscard(device.session)(session => end("user_agent_forgotten", Left(session.publicId), None, None)) *>
             sessionService.forgetUserAgent(userId, userAgentId)
 
     override def invalidateAllSessions(userId: UserId): Task[Unit] =
       for
         sessions <- sessionService.invalidateAllByUser(userId)
+        _ <- ZIO.foreachDiscard(sessions)(auditEnded("admin_revoked", _))
         // Stamped here, once, rather than left to each delivery: the RP bounds the
         // revocation at this instant, so a token issued after it is one the user obtained by
         // logging in again and must keep working. Deliveries are forked and sign their own

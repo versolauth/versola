@@ -1,5 +1,8 @@
 package versola.oauth.est
 
+import versola.audit.AuditSupport.*
+import versola.audit.AuthAuditDetails
+import versola.util.audit.{ActorType, AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
 import versola.util.{CertificateSubject, CoreConfig}
 import zio.*
 import zio.metrics.{Metric, MetricLabel}
@@ -37,11 +40,12 @@ object EstService:
   private def count(operation: String, outcome: String): UIO[Unit] =
     requests.tagged(Set(MetricLabel("operation", operation), MetricLabel("outcome", outcome))).increment
 
-  val live: ZLayer[CoreConfig & EstCentralClient, Throwable, EstService] =
+  val live: ZLayer[CoreConfig & EstCentralClient & AuditEvents, Throwable, EstService] =
     ZLayer.fromZIO:
       for
         config <- ZIO.service[CoreConfig]
         central <- ZIO.service[EstCentralClient]
+        audit <- ZIO.service[AuditEvents]
         // Read once, at startup: an EST that cannot say whom to trust is a deployment error, not a request's. The CA is
         // named, never inferred: `mutual-tls.trusted-certificates` is every anchor a client chain is validated against and
         // may hold others (the CA of edges), which a bank must not be told to trust as its own.
@@ -58,18 +62,18 @@ object EstService:
               certificates <- ZIO.fromTry(EstCodec.certificates(pem)).filterOrFail(_.nonEmpty)(IllegalStateException(s"no certificate in $path"))
             yield Some(EstCodec.certsOnly(certificates))
         limiter <- AttemptLimiter.make(EnrollAttempts, 1.minute)
-      yield Impl(ca, central, limiter)
+      yield Impl(ca, central, limiter, audit)
 
   /** Attempts at `simpleenroll` per client id and minute: an operator's token is tried once or twice, not dozens of times. */
   val EnrollAttempts = 30
 
-  class Impl(ca: Option[Array[Byte]], central: EstCentralClient, limiter: AttemptLimiter) extends EstService:
+  class Impl(ca: Option[Array[Byte]], central: EstCentralClient, limiter: AttemptLimiter, audit: AuditEvents) extends EstService:
 
     override def caCertificates: IO[EstError, Array[Byte]] =
       ZIO.fromOption(ca).orElseFail(EstError.Disabled)
 
     override def enroll(credentials: Credentials, body: String): IO[EstError | Throwable, Issued] =
-      counted("enroll"):
+      counted("enroll", credentials.clientId):
         for
           _ <- caCertificates
           admitted <- limiter.admit(credentials.clientId.getOrElse(""))
@@ -77,10 +81,11 @@ object EstService:
           csr <- request(body)
           issued <- central.enroll(credentials.token, credentials.clientId, csr)
           result <- respond(issued)
+          _ <- auditIssued("enroll", AuditKinds.CertEnrolled, credentials.clientId, issued)
         yield result
 
     override def reenroll(presented: X509Certificate, body: String): IO[EstError | Throwable, Issued] =
-      counted("reenroll"):
+      counted("reenroll", CertificateSubject.commonNameOf(presented.getSubjectX500Principal)):
         for
           _ <- caCertificates
           now <- Clock.instant
@@ -90,6 +95,7 @@ object EstService:
           csr <- request(body)
           issued <- central.renew(CertificateSubject.pem("CERTIFICATE", presented.getEncoded), csr)
           result <- respond(issued)
+          _ <- auditIssued("reenroll", AuditKinds.CertRenewed, CertificateSubject.commonNameOf(presented.getSubjectX500Principal), issued)
         yield result
 
     /** A PKCS#10 asking for a key worth issuing for, before central is asked: what an unauthenticated caller sends costs
@@ -103,14 +109,51 @@ object EstService:
     private def respond(issued: EstCentralClient.Issued): IO[Throwable, Issued] =
       ZIO.fromTry(EstCodec.certificates(issued.certificate)).map(certificates => Issued(EstCodec.certsOnly(certificates), issued.chainEndsAt))
 
-    private def counted[A](operation: String)(effect: IO[EstError | Throwable, A]): IO[EstError | Throwable, A] =
+    /** `cert.enrolled` / `cert.renewed`: the client is the actor; `serial` and `notAfter` are of the certificate central issued. */
+    private def auditIssued(operation: String, kind: versola.util.audit.AuditKind, clientId: Option[String], issued: EstCentralClient.Issued): IO[Throwable, Unit] =
+      val leaf = EstCodec.certificates(issued.certificate).toOption.flatMap(_.headOption)
+      audit.log(
+        AuditDraft(
+          kind = kind,
+          outcome = AuditOutcome.success,
+          actor = Some((ActorType.client, clientId)),
+          details = AuthAuditDetails.Cert(
+            operation = operation,
+            clientId = clientId,
+            serial = leaf.map(_.getSerialNumber.toString(16)),
+            notAfter = leaf.map(_.getNotAfter.toInstant.toString),
+          ),
+        ),
+      )
+
+    /** What a refused request is called and how it counts in the audit log: a caller that could not prove who it is, or may not, is
+      * `denied`; a request that was throttled or malformed is `failure`. A refusal that is the server's own (central down) is not an event. */
+    private def auditRefused(operation: String, clientId: Option[String], error: EstError): IO[Throwable, Unit] =
+      val classified = error match
+        case EstError.Unauthorized => Some((AuditOutcome.denied, "est_unauthorized"))
+        case _: EstError.Forbidden => Some((AuditOutcome.denied, "est_forbidden"))
+        case EstError.TooManyRequests => Some((AuditOutcome.failure, "est_rate_limited"))
+        case _: EstError.BadRequest => Some((AuditOutcome.failure, "est_bad_request"))
+        case _ => None
+      ZIO.foreachDiscard(classified): (outcome, reason) =>
+        audit.log(
+          AuditDraft(
+            kind = if operation == "enroll" then AuditKinds.CertEnrolled else AuditKinds.CertRenewed,
+            outcome = outcome,
+            reason = Some(reason),
+            actor = Some((ActorType.client, clientId)),
+            details = AuthAuditDetails.Cert(operation = operation, clientId = clientId),
+          ),
+        )
+
+    private def counted[A](operation: String, clientId: Option[String])(effect: IO[EstError | Throwable, A]): IO[EstError | Throwable, A] =
       effect.tapBoth(
         {
           case EstError.Disabled => ZIO.unit
-          case EstError.Unauthorized => count(operation, "unauthorized")
-          case EstError.TooManyRequests => count(operation, "rate_limited")
-          case _: EstError.BadRequest => count(operation, "bad_request")
-          case _: EstError.Forbidden => count(operation, "forbidden")
+          case EstError.Unauthorized => count(operation, "unauthorized") *> auditRefused(operation, clientId, EstError.Unauthorized)
+          case EstError.TooManyRequests => count(operation, "rate_limited") *> auditRefused(operation, clientId, EstError.TooManyRequests)
+          case error: EstError.BadRequest => count(operation, "bad_request") *> auditRefused(operation, clientId, error)
+          case error: EstError.Forbidden => count(operation, "forbidden") *> auditRefused(operation, clientId, error)
           case _ => count(operation, "error")
         },
         _ => count(operation, "issued"),

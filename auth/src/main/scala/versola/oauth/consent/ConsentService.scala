@@ -1,5 +1,8 @@
 package versola.oauth.consent
 
+import versola.audit.AuditSupport.*
+import versola.audit.AuthAuditDetails
+import versola.util.audit.{AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
 import versola.oauth.authorize.model.Prompt
 import versola.oauth.client.model.{ConsentFlow, OAuthClientRecord, ScopeToken}
 import versola.oauth.consent.model.ConsentRecord
@@ -62,9 +65,9 @@ object ConsentService:
     (if offlineOptional then NonDeselectable - ScopeToken.OfflineAccess else NonDeselectable) ++
       consentFlow.fold(Set.empty[ScopeToken])(_.requiredScopes)
 
-  def live = ZLayer.fromFunction(Impl(_))
+  def live = ZLayer.fromFunction(Impl(_, _))
 
-  class Impl(consentRepository: ConsentRepository) extends ConsentService:
+  class Impl(consentRepository: ConsentRepository, audit: AuditEvents) extends ConsentService:
 
     override def decide(
         userId: UserId,
@@ -107,15 +110,30 @@ object ConsentService:
 
     override def grant(userId: UserId, client: OAuthClientRecord, scope: Set[ScopeToken]): Task[Unit] =
       Clock.instant.flatMap: now =>
+        val expiresAt = client.consentFlow.flatMap(_.rememberDuration).map(d => now.plusSeconds(d.toSeconds))
         consentRepository.upsert(
           ConsentRecord(
             userId = userId,
             clientId = client.id,
             scope = scope,
             grantedAt = now,
-            expiresAt = client.consentFlow.flatMap(_.rememberDuration).map(d => now.plusSeconds(d.toSeconds)),
+            expiresAt = expiresAt,
+          ),
+        ) *> audit.log(
+          AuditDraft(
+            kind = AuditKinds.ConsentGranted,
+            outcome = AuditOutcome.success,
+            userId = Some(userId),
+            details = AuthAuditDetails.Consent(scope = scope.toList.map(_.toString).sorted, expiresAt = expiresAt.map(_.toString)),
           ),
         )
 
     override def revoke(userId: UserId, client: OAuthClientRecord): Task[Unit] =
-      consentRepository.delete(userId, client.id)
+      consentRepository.delete(userId, client.id) *> audit.log(
+        AuditDraft(
+          kind = AuditKinds.ConsentRevoked,
+          outcome = AuditOutcome.success,
+          userId = Some(userId),
+          details = AuthAuditDetails.Consent(scope = Nil),
+        ),
+      )

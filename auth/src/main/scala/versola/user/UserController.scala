@@ -1,5 +1,8 @@
 package versola.user
 
+import versola.audit.AuditSupport.*
+import versola.audit.AuthAuditDetails
+import versola.util.audit.{AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
 import versola.auth.model.CredentialId
 import versola.auth.model.Password
 import versola.oauth.challenge.passkey.PasskeyRepository
@@ -23,7 +26,23 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 
 object UserController extends Controller:
   type Env =
-    Tracing & UserRepository & CoreConfig & LogoutService & SessionService & ChallengeThrottleRepository & PasskeyRepository & PasswordService
+    Tracing & UserRepository & CoreConfig & LogoutService & SessionService & ChallengeThrottleRepository & PasskeyRepository & PasswordService &
+      AuditEvents
+
+  /** What an administrator did to an account, as central told auth: the actor is the administrator (or the `central` service) that
+    * `authorizeInternal` noted, the subject the user. */
+  private def audited(kind: versola.util.audit.AuditKind, userId: UserId, details: versola.util.audit.AuditDetails): ZIO[AuditEvents, Throwable, Unit] =
+    ZIO.serviceWithZIO[AuditEvents](
+      _.log(
+        AuditDraft(
+          kind = kind,
+          outcome = AuditOutcome.success,
+          userId = Some(userId),
+          target = Some(("user", userId.toString)),
+          details = details,
+        ),
+      ),
+    )
 
   def routes: Routes[Env, Throwable] = Routes(
     upsertUserEndpoint,
@@ -80,6 +99,7 @@ object UserController extends Controller:
         repo <- ZIO.service[UserRepository]
         body <- request.body.asJsonFromCodec[PatchUserClaimsPayload]
         _ <- repo.patchClaims(body.id, body.claims)
+        _ <- audited(AuditKinds.AccountClaimsUpdated, body.id, AuthAuditDetails.ClaimsUpdated(body.claims.fields.map(_._1).toList.sorted))
       yield Response.status(Status.NoContent)
     }
 
@@ -217,7 +237,13 @@ object UserController extends Controller:
         userId <- request.queryZIO[UserId]("userId")
         clientId <- request.queryZIO[ClientId]("clientId")
         _ <- Observability.setUserId(userId.toString)
-        _ <- sessionService.revokeRefreshTokensByUserAndClient(userId, clientId)
+        _ <- Observability.setClientId(clientId)
+        revoked <- sessionService.revokeRefreshTokensByUserAndClient(userId, clientId)
+        _ <- audited(
+          AuditKinds.TokenRevoked,
+          userId,
+          AuthAuditDetails.TokenRevoked(tokenType = "refresh_token", jti = None, refreshPrefix = None, cause = "admin_revoked", count = Some(revoked)),
+        )
       yield Response.status(Status.NoContent)
     }
 
@@ -253,6 +279,7 @@ object UserController extends Controller:
         tenantId = body.tenantId
         subjects = (List(body.userId.toString) ++ body.email.map(_.toString) ++ body.phone.map(_.toString)).distinct
         _ <- ZIO.foreachDiscard(subjects)(throttleRepo.deleteAllForSubject(tenantId, _))
+        _ <- audited(AuditKinds.AccountLimitsReset, body.userId, AuthAuditDetails.Account(via = "admin"))
       yield Response.status(Status.NoContent)
     }
 
@@ -286,6 +313,7 @@ object UserController extends Controller:
         userId <- request.queryZIO[UserId]("id")
         credentialId <- request.queryZIO[CredentialId]("credentialId")
         _ <- repo.deleteByUser(credentialId, userId)
+        _ <- audited(AuditKinds.AccountPasskeyRemoved, userId, AuthAuditDetails.Passkey(credentialPrefix = Some(credentialId.toString.take(9))))
       yield Response.status(Status.NoContent)
     }
 
@@ -296,6 +324,11 @@ object UserController extends Controller:
         body <- request.body.asJsonFromCodec[ResetPasswordPayload]
         passwordService <- ZIO.service[PasswordService]
         password <- passwordService.resetPassword(body.userId, body.expiresInSeconds, body.channel)
+        _ <- audited(
+          AuditKinds.AccountPasswordReset,
+          body.userId,
+          AuthAuditDetails.Account(via = "admin", detail = body.channel.map(_.toString)),
+        )
       yield password match
         case Some(plaintext) => Response.json(ResetPasswordResponse(plaintext).toJson)
         case None => Response.status(Status.NoContent)
@@ -311,5 +344,6 @@ object UserController extends Controller:
           .mapError:
             case PasswordReuseError(n) => RuntimeException(s"Password reuse: must differ from last $n passwords")
             case t: Throwable => t
+        _ <- audited(AuditKinds.AccountPasswordSet, body.userId, AuthAuditDetails.Account(via = "admin"))
       yield Response.status(Status.NoContent)
     }

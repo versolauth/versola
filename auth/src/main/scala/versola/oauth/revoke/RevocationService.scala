@@ -1,13 +1,19 @@
 package versola.oauth.revoke
 
+import versola.audit.AuditSupport.*
+import versola.audit.AuthAuditDetails
+import versola.util.audit.{ActorType, AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
 import versola.oauth.client.model.{ClientCredentials, OAuthClientRecord}
 import versola.oauth.clientauth.{AuthenticatedEndpoint, ClientAuthentication}
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.mtls.ClientCertificate
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
-import versola.util.{CoreConfig, Secret, SecurityService}
+import versola.util.{Base64, CoreConfig, Secret, SecurityService}
 import zio.{Clock, IO, NonEmptyChunk, Task, ZIO, ZLayer}
+
+import java.util.UUID
+import scala.util.Try
 
 trait RevocationService:
   def revokeRefreshToken(
@@ -34,10 +40,10 @@ trait RevocationService:
 
 object RevocationService:
   def live: ZLayer[
-    ClientAuthentication & SessionRepository & AccessTokenRevocationService & SecurityService & CoreConfig,
+    ClientAuthentication & SessionRepository & AccessTokenRevocationService & SecurityService & CoreConfig & AuditEvents,
     Nothing,
     RevocationService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _, _))
+  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   private class Impl(
       clientAuthentication: ClientAuthentication,
@@ -45,7 +51,19 @@ object RevocationService:
       accessTokenRevocationService: AccessTokenRevocationService,
       securityService: SecurityService,
       config: CoreConfig,
+      audit: AuditEvents,
   ) extends RevocationService:
+
+    private def audited(client: OAuthClientRecord, userId: Option[UUID], details: AuthAuditDetails.TokenRevoked): IO[Throwable, Unit] =
+      audit.log(
+        AuditDraft(
+          kind = AuditKinds.TokenRevoked,
+          outcome = AuditOutcome.success,
+          actor = Some((ActorType.client, Some(client.id))),
+          userId = userId,
+          details = details,
+        ),
+      )
 
     override def revokeRefreshToken(
         token: RefreshToken,
@@ -75,6 +93,15 @@ object RevocationService:
                   family = record.familyId,
                   subject = record.userId.toString,
                   expiresAt = revokedAt.plus(client.accessTokenTtl),
+                ) *> audited(
+                  client,
+                  Some(record.userId),
+                  AuthAuditDetails.TokenRevoked(
+                    tokenType = "refresh_token",
+                    jti = None,
+                    refreshPrefix = Some(Base64.urlEncode(token).take(9)),
+                    cause = "rfc7009",
+                  ),
                 )
       yield ()
 
@@ -94,6 +121,11 @@ object RevocationService:
           tokens = NonEmptyChunk(token.id),
           subject = token.subject,
           expiresAt = token.expiresAt,
+        )
+        _ <- audited(
+          client,
+          Try(UUID.fromString(token.subject)).toOption,
+          AuthAuditDetails.TokenRevoked(tokenType = "access_token", jti = Some(Base64.urlEncode(token.id)), refreshPrefix = None, cause = "rfc7009"),
         )
       yield ()
 

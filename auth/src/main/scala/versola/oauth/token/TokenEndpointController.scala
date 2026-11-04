@@ -3,6 +3,9 @@ package versola.oauth.token
 import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
+import versola.audit.AuditSupport.*
+import versola.audit.{AuditSupport, AuthAuditDetails}
+import versola.util.audit.{ActorType, AuditDraft, AuditEvents, AuditKinds, AuditOutcome, AuditUnavailableException}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ClientCredentials, ClientId, ClientIdWithSecret, ResourceUri, ScopeToken}
 import versola.oauth.clientauth.{AuthenticatedEndpoint, CertificateRelevance, ClientAuthentication}
@@ -35,7 +38,9 @@ import java.time.Instant
 import java.util.Date
 
 object TokenEndpointController extends Controller:
-  type Env = Tracing & OAuthTokenService & OAuthConfigurationService & ClientAuthentication & UserInfoService & JwksService & DpopService & CoreConfig
+  type Env =
+    Tracing & OAuthTokenService & OAuthConfigurationService & ClientAuthentication & UserInfoService & JwksService & DpopService & CoreConfig &
+      AuditEvents
 
   private val DpopHeader = "DPoP"
   private val DpopNonceHeader = "DPoP-Nonce"
@@ -102,7 +107,7 @@ object TokenEndpointController extends Controller:
         .addHeader(Header.Pragma.NoCache))
         .catchAll {
           case error: TokenEndpointError =>
-            Observability.setError(error.error, error.logDescription).as:
+            (Observability.setError(error.error, error.logDescription) *> auditRefused(error)).as:
               val errorResponse = TokenErrorResponse.from(error)
               val response = Response
                 .json(errorResponse.toJson)
@@ -118,6 +123,32 @@ object TokenEndpointController extends Controller:
             ZIO.fail(error)
         }
     }
+
+  /** `token.refused`: the refusal of a request that got as far as naming a client, `reason` the OAuth error and `detail` what `setError` carries
+    * (the same sub-code an operator reads in the log).
+    *
+    * Not recorded: `invalid_client`, which is `client.auth_failed` (coalesced per client, address and reason, so a flood of guesses is
+    * one row a minute and not one per request), and `use_dpop_nonce`, which is RFC 9449 §8's handshake and not a refusal. */
+  private def auditRefused(error: TokenEndpointError): ZIO[AuditEvents & OAuthConfigurationService, Throwable, Unit] =
+    error match
+      case TokenEndpointError.InvalidClient | TokenEndpointError.UseDpopNonce(_) => ZIO.unit
+      case _ =>
+        for
+          auth <- AuditSupport.currentAuth
+          grant <- Observability.routeLabel.get.map(_.collect { case label if label.startsWith("grant_type=") => label.stripPrefix("grant_type=") })
+          client <- ZIO.foreach(auth.clientId)(id => ZIO.serviceWithZIO[OAuthConfigurationService](_.find(ClientId(id)))).map(_.flatten)
+          _ <- ZIO.serviceWithZIO[AuditEvents](
+            _.log(
+              AuditDraft(
+                kind = AuditKinds.TokenRefused,
+                outcome = AuditOutcome.failure,
+                reason = Some(error.error),
+                actor = Some((ActorType.client, auth.clientId)),
+                details = AuthAuditDetails.TokenRefused(grant = grant, clientAuth = client.map(_.authMethod.toString), detail = error.logDescription),
+              ),
+            ),
+          )
+        yield ()
 
   /** RFC 9449 §5: DPoP is opt-in per request here -- parsing a request with no proof yields
     * `None` rather than a failure. Whether a given client is *required* to use DPoP

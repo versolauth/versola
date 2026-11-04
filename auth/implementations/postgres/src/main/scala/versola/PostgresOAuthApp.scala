@@ -1,7 +1,7 @@
 package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.audit.{AuditController, AuditReadRepository, AuditReportService, PostgresAuditEventRepository}
+import versola.audit.{AuditController, ClientAuthFailures, AuditReadRepository, AuditReportService, PostgresAuditEventRepository}
 import versola.antifraud.{
   Antifraud,
   AntifraudCounterResetRepository,
@@ -176,7 +176,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AuditEvents &
       AuditEvents.Settings &
       AuditReadRepository &
-      AuditReportService
+      AuditReportService &
+      ClientAuthFailures
 
   // central is the one peer auth cannot work without and waits for at start-up
   override protected def guardExemptPeers =
@@ -412,6 +413,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       auditSettings >++>
       AuditEvents.live(AuditSource.auth, auditNodeId) >++>
       AuditReportService.live >++>
+      ClientAuthFailures.live >++>
       // Sizes its own expiry ring from `dpop.iat-leeway`, so it has to follow the config.
       PostgresDpopProofRepository.live >++>
       PostgresClientAssertionRepository.live >++>

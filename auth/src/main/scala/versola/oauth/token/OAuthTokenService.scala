@@ -1,5 +1,8 @@
 package versola.oauth.token
 
+import versola.audit.AuditSupport.*
+import versola.audit.{AuditSupport, AuthAuditDetails}
+import versola.util.audit.{ActorType, AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
 import versola.oauth.client.model.{
   AuthorizationDetail,
   ClientCredentials,
@@ -16,9 +19,10 @@ import versola.oauth.model.{AccessToken, AuthorizationCodeRecord, Cnf, RefreshTo
 import versola.oauth.mtls.ClientCertificate
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionRepository
-import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
+import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenFamilyId, RefreshTokenRecord, WithTtl}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
 import versola.user.UserRepository
+import versola.user.model.UserId
 import versola.util.http.Observability
 import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
 import zio.prelude.These
@@ -85,7 +89,7 @@ object OAuthTokenService:
   /** Admin-console client; admin roles are only embedded in tokens issued for it. */
   val centralAdminClientId: ClientId = ClientId("central-admin")
 
-  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       authorizationCodeRepository: AuthorizationCodeRepository,
@@ -98,7 +102,55 @@ object OAuthTokenService:
       userRepository: UserRepository,
       schemaValidator: JsonSchemaValidator,
       config: CoreConfig,
+      audit: AuditEvents,
+      auditSettings: AuditEvents.Settings,
   ) extends OAuthTokenService:
+
+    /** `token.issued`. The refresh grant is the one a deployment may leave out (`audit.events.token-refresh`): it is the most frequent
+      * event there is. The client is the actor, the user (when there is one) the subject. */
+    private def auditIssued(grant: String, client: OAuthClientRecord, tokens: IssuedTokens): IO[Throwable, Unit] =
+      ZIO.unless(grant == "refresh_token" && !auditSettings.events.tokenRefresh):
+        AuditSupport.currentAuth.flatMap: auth =>
+          audit.log(
+            AuditDraft(
+              kind = AuditKinds.TokenIssued,
+              outcome = AuditOutcome.success,
+              actor = Some((ActorType.client, Some(client.id))),
+              userId = tokens.userId,
+              details = AuthAuditDetails.TokenIssued(
+                grant = grant,
+                scope = tokens.scope.toList.map(_.toString).sorted,
+                resource = tokens.audience.map(_.toString),
+                accessJti = Base64.urlEncode(tokens.accessToken),
+                refreshPrefix = auth.refreshToken,
+                previousRefreshPrefix = auth.previousRefreshToken,
+                binding = tokens.cnf match
+                  case Some(cnf) if cnf.jkt.isDefined => "dpop"
+                  case Some(_) => "mtls"
+                  case None => "none",
+                idToken = tokens.user.isDefined && tokens.scope.contains(ScopeToken.OpenId),
+                clientAuth = client.authMethod.toString,
+              ),
+            ),
+          )
+      .unit
+
+    /** `token.reuse_detected`: a token that was already used was presented again and its family revoked. */
+    private def auditReuse(client: OAuthClientRecord, tokenType: String, family: RefreshTokenFamilyId, userId: UserId): IO[Throwable, Unit] =
+      AuditSupport.currentAuth.flatMap: auth =>
+        audit.log(
+          AuditDraft(
+            kind = AuditKinds.TokenReuseDetected,
+            outcome = AuditOutcome.denied,
+            actor = Some((ActorType.client, Some(client.id))),
+            userId = Some(userId),
+            details = AuthAuditDetails.TokenReuseDetected(
+              tokenType = tokenType,
+              refreshPrefix = auth.previousRefreshToken,
+              familyId = family.toString,
+            ),
+          ),
+        )
 
     /** Bounds how many concurrent copies of the same idempotent refresh request
       * [[continueRefresh]] will chase through the rotation chain before giving up and treating
@@ -210,6 +262,7 @@ object OAuthTokenService:
                 expiresAt = replayedAt.plus(client.accessTokenTtl),
               )
               _ <- sessionRepository.deleteByFamily(family)
+              _ <- auditReuse(client, "authorization_code", family, codeRecord.userId)
               _ <- ZIO.fail(TokenEndpointError.InvalidGrant.CodeReplayed)
             yield ()
 
@@ -253,6 +306,7 @@ object OAuthTokenService:
           case ex: Throwable => ex
           case _ => TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged // illegal state
         }
+        _ <- auditIssued("authorization_code", client, issuedTokens)
       yield issuedTokens
 
     /** Refreshes an access token using a refresh token.
@@ -298,6 +352,7 @@ object OAuthTokenService:
           idempotencyKeyMac,
           resolved,
         )
+        _ <- auditIssued("refresh_token", client, issuedTokens)
       yield issuedTokens
 
     /** Validates the resolved record and issues against it, recovering via the idempotency
@@ -507,6 +562,7 @@ object OAuthTokenService:
                 subject = family.userId.toString,
                 expiresAt = revokedAt.plus(client.accessTokenTtl),
               )
+            .zipRight(auditReuse(client, "refresh_token", family.familyId, family.userId))
             .as(true)
         case None =>
           ZIO.succeed(false)
@@ -605,7 +661,7 @@ object OAuthTokenService:
 
         accessToken <- authPropertyGenerator.nextAccessToken
         _ <- Observability.setToken(accessToken.encoded)
-      yield IssuedTokens(
+        issued = IssuedTokens(
         accessToken = accessToken,
         clientId = client.id,
         audience = audience,
@@ -627,7 +683,9 @@ object OAuthTokenService:
         authTime = None,
         acr = None,
         cnf = confirmation(client, dpopJkt, certificate),
-      )
+        )
+        _ <- auditIssued("client_credentials", client, issued)
+      yield issued
 
     /** Orchestrates token issuance for a specific authentication session.
      * populates AMR, ACR, and user roles based on the client and user record.
