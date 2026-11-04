@@ -10,9 +10,8 @@ import java.util.UUID
 /** A copy of the audit log's table in a schema of its own (the service's migration makes the real one, and a spec must not make a
   * second in the schema the migrations run in), with the default partition every event of a day without a partition goes to, and a
   * trigger that refuses a kind, to stand for what the real table may refuse that this copy does not. A spec names its own schema, so
-  * that specs running side by side do not reset each other's table. The table is `audit_event` unless the spec names another, as a
-  * service that shares its database with another does. */
-final class AuditTestTable(schema: String, table: String = "audit_event"):
+  * that specs running side by side do not reset each other's table. Each spec names its own table, as each service does. */
+final class AuditTestTable(schema: String, table: String):
 
   private val relation = SqlLiteral(table)
   private val defaultRelation = SqlLiteral(s"${table}_default")

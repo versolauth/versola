@@ -23,7 +23,9 @@ import java.time.{Instant, LocalDate}
   * the cost of a row measured on the machine the spec runs on. */
 object PostgresAuditStopSpec extends PostgresSpec:
 
-  private val table = AuditTestTable("audit_stop_spec")
+  private val Table = "stop_spec_audit_event"
+
+  private val table = AuditTestTable("audit_stop_spec", Table)
 
   private val marker = "audit_stop_spec"
 
@@ -41,7 +43,7 @@ object PostgresAuditStopSpec extends PostgresSpec:
     override def insertBatch(events: List[AuditEvent]): Task[Unit] =
       table.inTransaction(xa):
         sql"SELECT set_config('application_name', $marker, true)".query[String].run()
-        AuditInsert.insertBatch(events)
+        AuditInsert.insertBatch(events, table = Table)
 
     override def maintainPartitions(from: LocalDate, days: Int, keepFrom: LocalDate): Task[PartitionReport] =
       ZIO.succeed(PartitionReport(movedFromDefault = 0L, daysLeftInDefault = Nil, created = 0, dropped = 0))
@@ -60,7 +62,7 @@ object PostgresAuditStopSpec extends PostgresSpec:
   private def draftWith(reason: String) = AuditDraft(kind = kind, outcome = AuditOutcome.success, reason = Some(reason))
 
   private def countReason(xa: TransactorZIO, reason: String): Task[Long] =
-    table.inTransaction(xa)(sql"SELECT COUNT(*) FROM audit_event WHERE reason = $reason".query[Long].run().head)
+    table.inTransaction(xa)(sql"SELECT COUNT(*) FROM ${SqlLiteral(Table)} WHERE reason = $reason".query[Long].run().head)
 
   /** Waits, in real time and with a bound, until `rows` of the writer's batch are committed, which is to say it is in the middle of it. */
   private def awaitCommitted(xa: TransactorZIO, rows: Long): Task[Long] =
@@ -128,7 +130,7 @@ object PostgresAuditStopSpec extends PostgresSpec:
       scope <- Scope.make
       events <- scope.extend(
         AuditEvents
-          .liveWith(sizing)(source, "node-1", AuditCatalog.of(Set(kind)))
+          .liveWith(sizing)(source, "node-1", AuditCatalog.of(Set(kind)), Table)
           .build
           .map(_.get[AuditEvents])
           .provideSome[Scope](ZLayer.succeed[AuditEventRepository](repository), ZLayer.succeed(settings), tracingLayer, SecureRandom.live),

@@ -1,13 +1,13 @@
 package versola.util.postgres
 
 import com.augustnagro.magnum.*
-import versola.util.audit.{AuditEvent, AuditEventRepository}
+import versola.util.audit.AuditEvent
 import zio.json.*
 
 import java.time.Instant
 
-/** The one statement that writes audit events into the service's own audit table (`audit_event` unless the service names another,
-  * as a service that shares its database with another does), so that its column list and its conflict rule are in this place and not
+/** The one statement that writes audit events into the service's own audit table (each service names its own: services share a
+  * database), so that its column list and its conflict rule are in this place and not
   * copied into every service's repository. A repository's `insertBatch` calls it inside its own transaction, which is also where the
   * statement timeout is set.
   *
@@ -22,7 +22,7 @@ object AuditInsert extends BasicCodecs:
 
   /** Events in one round trip, in the transaction the caller has open; nothing for an empty list. `table` is a plain identifier
     * ([[TableName.validated]]): it is part of the statement's text, so it is a constant of the service, never a value from a request. */
-  def insertBatch(events: List[AuditEvent], table: String = AuditEventRepository.DefaultTable)(using DbCon): Unit =
+  def insertBatch(events: List[AuditEvent], table: String)(using DbCon): Unit =
     val relation = SqlLiteral(TableName.validated(table))
     if events.nonEmpty then
       batchUpdate(events)(statement(relation))

@@ -86,7 +86,7 @@ object AuditEvents:
       source: AuditSource,
       nodeId: String,
       catalog: AuditCatalog,
-      table: String = AuditEventRepository.DefaultTable,
+      table: String,
   ): ZLayer[AuditEventRepository & Settings & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
     liveWith(Sizing.standard)(source, nodeId, catalog, table)
 
@@ -96,7 +96,7 @@ object AuditEvents:
       source: AuditSource,
       nodeId: String,
       catalog: AuditCatalog,
-      table: String = AuditEventRepository.DefaultTable,
+      table: String,
   ): ZLayer[AuditEventRepository & Settings & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
     ZLayer.fromZIO:
       for

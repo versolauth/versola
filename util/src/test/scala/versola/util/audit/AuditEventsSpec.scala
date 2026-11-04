@@ -186,7 +186,7 @@ object AuditEventsSpec extends UnitSpecBase:
       settings: AuditEvents.Settings,
       source: AuditSource = svcA,
       sizing: AuditEvents.Sizing = sizing,
-      table: String = "audit_event",
+      table: String = "thing_audit_event",
   ): ZIO[Scope, Nothing, AuditEvents] =
     AuditEvents.liveWith(sizing)(source, nodeId, catalog, table).build.map(_.get[AuditEvents]).provideSome[Scope](
       ZLayer.succeed[AuditEventRepository](repository),

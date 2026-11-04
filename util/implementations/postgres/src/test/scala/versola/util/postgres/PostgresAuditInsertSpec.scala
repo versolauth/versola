@@ -44,7 +44,9 @@ object PostgresAuditInsertSpec extends PostgresSpec:
       details = Json.Obj("changed" -> Json.Arr(Json.Str("name")), "n" -> Json.Num(1)),
     )
 
-  private val table = AuditTestTable("audit_insert_spec")
+  private val Table = "insert_spec_audit_event"
+
+  private val table = AuditTestTable("audit_insert_spec", Table)
 
   private type Row = AuditTestTable.Row
 
@@ -55,7 +57,7 @@ object PostgresAuditInsertSpec extends PostgresSpec:
   private def count(xa: TransactorZIO, name: String): Task[Long] = table.count(xa, name)
 
   /** The copy of a service that shares its database with another and names its own table, in a schema of its own, where no
-    * `audit_event` exists: what is written there was written by the name given. */
+    * `insert_spec_audit_event` exists: what is written there was written by the name given. */
   private val Named = "central_audit_event"
   private val named = AuditTestTable("audit_insert_spec_named", Named)
 
@@ -66,7 +68,7 @@ object PostgresAuditInsertSpec extends PostgresSpec:
       val e = event()
       for
         xa <- ZIO.service[TransactorZIO]
-        _ <- inTransaction(xa)(AuditInsert.insertBatch(List(e)))
+        _ <- inTransaction(xa)(AuditInsert.insertBatch(List(e), table = Table))
         stored <- rows(xa)
       yield assertTrue(
         stored.map(_.id) == List(e.id),
@@ -108,7 +110,7 @@ object PostgresAuditInsertSpec extends PostgresSpec:
       )
       for
         xa <- ZIO.service[TransactorZIO]
-        _ <- inTransaction(xa)(AuditInsert.insertBatch(List(e)))
+        _ <- inTransaction(xa)(AuditInsert.insertBatch(List(e), table = Table))
         stored <- rows(xa).map(_.head)
       yield assertTrue(
         stored.tenantId.isEmpty,
@@ -124,7 +126,7 @@ object PostgresAuditInsertSpec extends PostgresSpec:
       val events = List(event(), event().copy(kind = AuditKind("thing.other")), event())
       for
         xa <- ZIO.service[TransactorZIO]
-        _ <- inTransaction(xa)(AuditInsert.insertBatch(events))
+        _ <- inTransaction(xa)(AuditInsert.insertBatch(events, table = Table))
         stored <- rows(xa)
       yield assertTrue(stored.map(_.id).toSet == events.map(_.id).toSet, stored.size == 3)
     },
@@ -132,8 +134,8 @@ object PostgresAuditInsertSpec extends PostgresSpec:
       val events = List(event(), event())
       for
         xa <- ZIO.service[TransactorZIO]
-        _ <- inTransaction(xa)(AuditInsert.insertBatch(events))
-        retried <- inTransaction(xa)(AuditInsert.insertBatch(events)).exit
+        _ <- inTransaction(xa)(AuditInsert.insertBatch(events, table = Table))
+        retried <- inTransaction(xa)(AuditInsert.insertBatch(events, table = Table)).exit
         stored <- rows(xa)
       yield assertTrue(retried.isSuccess, stored.map(_.id).toSet == events.map(_.id).toSet, stored.size == 2)
     },
@@ -142,8 +144,8 @@ object PostgresAuditInsertSpec extends PostgresSpec:
       val second = event()
       for
         xa <- ZIO.service[TransactorZIO]
-        _ <- inTransaction(xa)(AuditInsert.insertBatch(List(first)))
-        _ <- inTransaction(xa)(AuditInsert.insertBatch(List(first.copy(reason = Some("later")), second)))
+        _ <- inTransaction(xa)(AuditInsert.insertBatch(List(first), table = Table))
+        _ <- inTransaction(xa)(AuditInsert.insertBatch(List(first.copy(reason = Some("later")), second), table = Table))
         stored <- rows(xa)
       yield assertTrue(stored.map(_.id).toSet == Set(first.id, second.id), stored.find(_.id == first.id).flatMap(_.reason) == Some("invalid_grant"))
     },
@@ -151,32 +153,33 @@ object PostgresAuditInsertSpec extends PostgresSpec:
       val e = event()
       for
         xa <- ZIO.service[TransactorZIO]
-        _ <- inTransaction(xa)(AuditInsert.insertBatch(List(e, e, e.copy(at = at.plusSeconds(1)))))
-        audited <- count(xa, "audit_event")
+        _ <- inTransaction(xa)(AuditInsert.insertBatch(List(e, e, e.copy(at = at.plusSeconds(1))), table = Table))
+        audited <- count(xa, Table)
       yield assertTrue(audited == 2L)
     },
     test("an empty list writes nothing") {
       for
         xa <- ZIO.service[TransactorZIO]
-        _ <- inTransaction(xa)(AuditInsert.insertBatch(Nil))
-        left <- count(xa, "audit_event")
+        _ <- inTransaction(xa)(AuditInsert.insertBatch(Nil, table = Table))
+        left <- count(xa, Table)
       yield assertTrue(left == 0L)
     },
     test("a batch that rolls back leaves no row") {
       for
         xa <- ZIO.service[TransactorZIO]
         result <- inTransaction(xa):
-          AuditInsert.insertBatch(List(event(), event()))
+          AuditInsert.insertBatch(List(event(), event()), table = Table)
           throw RuntimeException("the change failed")
         .exit
-        left <- count(xa, "audit_event")
+        left <- count(xa, Table)
       yield assertTrue(result.isFailure, left == 0L)
     },
     test("a batch with a row the table refuses fails as a whole and stores none of it") {
       for
         xa <- ZIO.service[TransactorZIO]
-        result <- inTransaction(xa)(AuditInsert.insertBatch(List(event(), event().copy(kind = AuditKind("thing.poison")), event()))).exit
-        left <- count(xa, "audit_event")
+        result <-
+          inTransaction(xa)(AuditInsert.insertBatch(List(event(), event().copy(kind = AuditKind("thing.poison")), event()), table = Table)).exit
+        left <- count(xa, Table)
       yield assertTrue(result.isFailure, left == 0L)
     },
     suite("a table of another name")(
@@ -189,21 +192,13 @@ object PostgresAuditInsertSpec extends PostgresSpec:
           _ <- named.inTransaction(xa)(AuditInsert.insertBatch(List(first), table = Named))
           stored <- named.rows(xa)
           inDefault <- named.count(xa, s"${Named}_default")
-          elsewhere <- count(xa, "audit_event")
+          elsewhere <- count(xa, Table)
         yield assertTrue(stored.map(_.id).toSet == Set(first.id, second.id), stored.size == 2, inDefault == 2L, elsewhere == 0L)
       },
-      test("a call that names no table writes to audit_event, as before") {
+      test("a table that does not exist is not replaced by another: the call fails and stores nothing") {
         for
           xa <- ZIO.service[TransactorZIO]
-          _ <- inTransaction(xa)(AuditInsert.insertBatch(List(event())))
-          audited <- count(xa, "audit_event")
-          other <- named.count(xa, Named)
-        yield assertTrue(audited == 1L, other == 0L)
-      },
-      test("the default name is not a fallback: where only the named table exists, a call that names none fails and stores nothing") {
-        for
-          xa <- ZIO.service[TransactorZIO]
-          result <- named.inTransaction(xa)(AuditInsert.insertBatch(List(event()))).exit
+          result <- named.inTransaction(xa)(AuditInsert.insertBatch(List(event()), table = Table)).exit
           stored <- named.count(xa, Named)
         yield assertTrue(result.isFailure, stored == 0L)
       },
@@ -213,7 +208,7 @@ object PostgresAuditInsertSpec extends PostgresSpec:
         for
           xa <- ZIO.service[TransactorZIO]
           results <- ZIO.foreach(refused)(name => inTransaction(xa)(AuditInsert.insertBatch(List(event()), table = name)).exit.map(name -> _))
-          left <- count(xa, "audit_event")
+          left <- count(xa, Table)
         yield assertTrue(
           results.forall((_, exit) => exit.isFailure),
           results.forall((name, exit) => name.isEmpty || !exit.causeOption.exists(_.prettyPrint.contains(name))),

@@ -19,7 +19,9 @@ import java.time.{Instant, LocalDate}
   * cost of a row measured on the machine the spec runs on. */
 object PostgresAuditChunkSpec extends PostgresSpec:
 
-  private val table = AuditTestTable("audit_chunk_spec")
+  private val Table = "chunk_spec_audit_event"
+
+  private val table = AuditTestTable("audit_chunk_spec", Table)
 
   private val marker = "audit_chunk_spec"
 
@@ -37,7 +39,7 @@ object PostgresAuditChunkSpec extends PostgresSpec:
     override def insertBatch(events: List[AuditEvent]): Task[Unit] =
       table.inTransaction(xa):
         sql"SELECT set_config('application_name', $marker, true)".query[String].run()
-        AuditInsert.insertBatch(events)
+        AuditInsert.insertBatch(events, table = Table)
 
     override def maintainPartitions(from: LocalDate, days: Int, keepFrom: LocalDate): Task[PartitionReport] =
       ZIO.succeed(PartitionReport(movedFromDefault = 0L, daysLeftInDefault = Nil, created = 0, dropped = 0))
@@ -62,14 +64,14 @@ object PostgresAuditChunkSpec extends PostgresSpec:
 
   private def writer(xa: TransactorZIO, chunk: Int): ZIO[Scope, Nothing, AuditEvents] =
     AuditEvents
-      .liveWith(sizing(chunk))(AuditSource("svc"), "node-1", AuditCatalog.of(Set(kind)))
+      .liveWith(sizing(chunk))(AuditSource("svc"), "node-1", AuditCatalog.of(Set(kind)), Table)
       .build
       .map(_.get[AuditEvents])
       .provideSome[Scope](ZLayer.succeed[AuditEventRepository](CopyRepository(xa)), ZLayer.succeed(settings), tracingLayer, SecureRandom.live)
 
   private def draft = AuditDraft(kind = kind, outcome = AuditOutcome.success)
 
-  private def stored(xa: TransactorZIO): Task[Long] = table.count(xa, "audit_event")
+  private def stored(xa: TransactorZIO): Task[Long] = table.count(xa, Table)
 
   /** The `xact_start` (as epoch microseconds) and age in seconds of every open transaction of the writer. */
   private def transactions(xa: TransactorZIO): Task[List[(Long, Double)]] =

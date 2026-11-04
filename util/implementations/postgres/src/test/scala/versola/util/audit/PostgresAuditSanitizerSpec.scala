@@ -13,7 +13,9 @@ import java.util.UUID
   * it has been through [[AuditSanitizer]], and what the database refuses is refused with the SQLSTATE the writer classifies by. */
 object PostgresAuditSanitizerSpec extends PostgresSpec:
 
-  private val table = AuditTestTable("audit_sanitizer_spec")
+  private val Table = "sanitizer_spec_audit_event"
+
+  private val table = AuditTestTable("audit_sanitizer_spec", Table)
 
   private val at = Instant.parse("2026-11-04T10:00:00Z")
 
@@ -43,7 +45,7 @@ object PostgresAuditSanitizerSpec extends PostgresSpec:
 
   /** The outcome of writing one event as it is, in a transaction of its own: the SQLSTATEs of the failure, if there was one. */
   private def written(xa: TransactorZIO, e: AuditEvent): Task[Either[List[String], Unit]] =
-    table.inTransaction(xa)(AuditInsert.insertBatch(List(e))).either.map(_.left.map(AuditEvents.sqlStates))
+    table.inTransaction(xa)(AuditInsert.insertBatch(List(e), table = Table)).either.map(_.left.map(AuditEvents.sqlStates))
 
   /** Each input the database refuses as it comes, with the SQLSTATE it refuses it by. */
   private val refused: List[(String, AuditEvent => AuditEvent, String)] = List(
@@ -187,7 +189,7 @@ object PostgresAuditSanitizerSpec extends PostgresSpec:
       )
       for
         xa <- ZIO.service[TransactorZIO]
-        _ <- table.inTransaction(xa)(AuditInsert.insertBatch(List(AuditSanitizer(raw))))
+        _ <- table.inTransaction(xa)(AuditInsert.insertBatch(List(AuditSanitizer(raw)), table = Table))
         stored <- table.rows(xa).map(_.head)
       yield assertTrue(stored.tenantId == Some("tenant"), stored.ip.isDefined, stored.details.contains("\"k\": \"v\""))
     },
