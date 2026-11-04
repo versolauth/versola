@@ -106,11 +106,11 @@ object DeliverySettingsSyncClientSpec extends ZIOSpecDefault:
         fetched <- fetch
       yield assertTrue(fetched == DeliverySettingsSyncClient.Fetched.empty)
     },
-    test("says so when central has no such endpoint, and leaves it to the caller what that means") {
+    test("fails, rather than treating it as empty, when central has no such endpoint") {
       for
         _ <- serve(Status.NotFound, """{"message":"not found"}""")
         result <- fetch.either
-      yield assertTrue(result.left.exists(_.isInstanceOf[DeliverySettingsSyncClient.EndpointMissing]))
+      yield assertTrue(result.isLeft)
     },
     test("fails, rather than treating it as empty, when central refuses the sync token") {
       for

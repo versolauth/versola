@@ -2,7 +2,7 @@ package versola.oauth.delivery
 
 import versola.auth.TestEnvConfig
 import versola.oauth.delivery.DeliveryChannels.Origin
-import versola.oauth.delivery.DeliverySettingsSyncClient.{EndpointMissing, Fetched, Saved}
+import versola.oauth.delivery.DeliverySettingsSyncClient.{Fetched, Saved}
 import versola.util.delivery.{SmsProviderSettings, SmtpSettings}
 import versola.util.{CacheSource, CoreConfig, Email}
 import zio.*
@@ -90,36 +90,13 @@ object DeliveryChannelsSpec extends ZIOSpecDefault:
         yield assertTrue(r.emailOrigin == Origin.Off, r.email.isEmpty, r.smsOrigin == Origin.Config, r.sms.isDefined)
       },
     ).provide(TestClient.layer),
-    suite("a missing endpoint")(
-      test("as the first answer means nothing is saved, so auth.conf is read") {
-        for
-          client <- ZIO.service[Client]
-          sync = new CacheSource[Fetched]:
-            override def getAll: Task[Fetched] = ZIO.fail(EndpointMissing())
-          source <- DeliveryChannels.resolvedSource(config = withBoth, client = client, sync = sync)
-          r <- source.getAll
-        yield assertTrue(r.emailOrigin == Origin.Config, r.smsOrigin == Origin.Config)
-      },
-      test("after central has answered once is a failed refresh, not nothing saved, so a switched-off channel stays off") {
+    suite("resolvedSource")(
+      test("a failed refresh fails the source, so the senders already built stay") {
         for
           client <- ZIO.service[Client]
           answers <- Ref.make(List[Task[Fetched]](
             ZIO.succeed(Fetched(Some(Saved(centralSmtp, enabled = false)), None)),
-            ZIO.fail(EndpointMissing()),
-          ))
-          sync = new CacheSource[Fetched]:
-            override def getAll: Task[Fetched] = answers.modify(list => list.head -> list.tail).flatten
-          source <- DeliveryChannels.resolvedSource(config = withBoth, client = client, sync = sync)
-          first <- source.getAll
-          second <- source.getAll.either
-        yield assertTrue(first.emailOrigin == Origin.Off, second.left.exists(_.isInstanceOf[EndpointMissing]))
-      },
-      test("a refresh that hits it keeps the senders already built") {
-        for
-          client <- ZIO.service[Client]
-          answers <- Ref.make(List[Task[Fetched]](
-            ZIO.succeed(Fetched(Some(Saved(centralSmtp, enabled = false)), None)),
-            ZIO.fail(EndpointMissing()),
+            ZIO.fail(RuntimeException("central answered 404")),
           ))
           sync = new CacheSource[Fetched]:
             override def getAll: Task[Fetched] = answers.modify(list => list.head -> list.tail).flatten

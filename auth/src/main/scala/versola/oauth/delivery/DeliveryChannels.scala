@@ -1,7 +1,7 @@
 package versola.oauth.delivery
 
 import versola.oauth.client.CentralSyncTokenService
-import versola.oauth.delivery.DeliverySettingsSyncClient.{EndpointMissing, Fetched, Saved}
+import versola.oauth.delivery.DeliverySettingsSyncClient.{Fetched, Saved}
 import versola.util.delivery.{EmailSender, SmsProviderSettings, SmsSender, SmtpSettings}
 import versola.util.{CacheSource, ConfigSnapshot, CoreConfig, ReloadingCache, SecurityService}
 import zio.http.Client
@@ -109,26 +109,13 @@ object DeliveryChannels:
         channels <- make(source, config.configurationCacheRefreshInterval)
       yield channels
 
-  /** What a missing endpoint means depends on when it is heard. As the very first answer it is a central that is older
-    * than auth, which holds nothing: auth reads its own file, as it did before there was a console to save anything in.
-    * After central has answered once it is not that: a path that went wrong, a proxy page, a central rolled back. Taking
-    * it for "nothing is saved" would send through `auth.conf` what an administrator switched off, so it is a failed
-    * refresh, and the senders already built stay.
-    */
   private[delivery] def resolvedSource(config: CoreConfig, client: Client, sync: CacheSource[Fetched]): UIO[CacheSource[Resolved]] =
-    for
-      answeredOnce <- Ref.make(false)
-      announced <- Ref.make(Option.empty[(Origin, Origin)])
+    for announced <- Ref.make(Option.empty[(Origin, Origin)])
     yield new CacheSource[Resolved]:
       override def getAll: Task[Resolved] =
-        sync.getAll
-          .tap(_ => answeredOnce.set(true))
-          .catchSome:
-            case missing: EndpointMissing =>
-              answeredOnce.get.flatMap(answered => if answered then ZIO.fail(missing) else ZIO.succeed(Fetched.empty))
-          .flatMap: fetched =>
-            val resolved = resolve(config = config, client = client, central = fetched)
-            announce(announced, resolved).as(resolved)
+        sync.getAll.flatMap: fetched =>
+          val resolved = resolve(config = config, client = client, central = fetched)
+          announce(announced, resolved).as(resolved)
 
   /** The channels over a source of resolved senders: loaded now, reloaded every `interval` and on [[DeliveryChannels.refresh]]. */
   private[delivery] def make(source: CacheSource[Resolved], interval: Duration): ZIO[Scope, Throwable, DeliveryChannels] =

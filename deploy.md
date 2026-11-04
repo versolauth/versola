@@ -1666,9 +1666,9 @@ notification and refuses to start, naming this setting, if it cannot.
   picked up by auth at its next configuration refresh (5 minutes on `vps`) without a restart. Until
   one is saved, a `vps` deployment has no channel: password resets and additional admin accounts can't
   deliver a temporary password. Each channel is decided on its own, so a block that is not saved in
-  central keeps using the matching block of `auth.conf`, if there is one. Upgrade in any order: an auth that
-  is older does not read the record, and an auth that is newer than its central treats the missing
-  endpoint as nothing saved.
+  central keeps using the matching block of `auth.conf`, if there is one. Upgrade central before auth: an auth that
+  is newer than its central gets `404` from the endpoint, which is a failed sync, so it keeps what it has or, on
+  its first start, does not start.
 
   **Behaviour changes to know before upgrading** (the timeouts apply to every deployment, also one that sends
   through `auth.conf` only):
