@@ -1,6 +1,7 @@
 package versola.oauth.token
 
-import versola.audit.ClientAuthFailures
+import versola.audit.{AuthAuditDetails, CapturingAuditEvents, ClientAuthFailures}
+import versola.util.audit.{AuditKinds, AuditOutcome}
 import versola.util.audit.AuditEvents
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.crypto.RSASSAVerifier
@@ -180,6 +181,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
   def tokenEndpointRoutes(
       config: CoreConfig = TestEnvConfig.coreConfig,
       requireDpopNonce: Boolean = false,
+      audit: AuditEvents = AuditEvents.noop,
   ): ZIO[Scope, Throwable, (Routes[Any, Nothing], Services)] =
     for
       tokenService = stub[OAuthTokenService]
@@ -207,7 +209,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         TokenEndpointController.routes
           .provideEnvironment(ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(
             userInfoService,
-          ) ++ ZEnvironment(jwksService) ++ ZEnvironment(config) ++ ZEnvironment(dpopService) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing),
+          ) ++ ZEnvironment(jwksService) ++ ZEnvironment(config) ++ ZEnvironment(dpopService) ++ ZEnvironment[AuditEvents](audit) ++ tracing),
       )
     yield (routes, services)
 
@@ -216,10 +218,11 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
   def withTokenEndpoint[A](
       config: CoreConfig = TestEnvConfig.coreConfig,
       requireDpopNonce: Boolean = false,
+      audit: AuditEvents = AuditEvents.noop,
   )(use: (Client, Services) => ZIO[Scope, Throwable, A]): ZIO[Client & TestClient & Scope, Throwable, A] =
     for
       client <- ZIO.service[Client]
-      (routes, services) <- tokenEndpointRoutes(config, requireDpopNonce)
+      (routes, services) <- tokenEndpointRoutes(config, requireDpopNonce, audit)
       _ <- TestClient.addRoutes(routes)
       result <- use(client, services)
     yield result
@@ -1481,5 +1484,53 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           for body <- response.body.asString
           yield assertTrue(body.contains("invalid_client")),
       ),
+    ),
+    suite("audit log (token.refused)")(
+      /** A request that got as far as naming a grant and was refused is recorded, with the OAuth error as the reason. */
+      test("a refused code exchange records token.refused: failure, reason invalid_grant, the grant and the sub-code") {
+        val audit = CapturingAuditEvents.shared()
+        withTokenEndpoint(audit = audit): (client, services) =>
+          for
+            _ <- services.oauthTokenService.exchangeAuthorizationCode.failsWith(TokenEndpointError.InvalidGrant.CodeNotFound)
+            response <- client.batched(codeExchangeRequest)
+            drafts <- audit.recorded
+          yield assertTrue(
+            response.status == Status.BadRequest,
+            drafts.map(_.kind) == List(AuditKinds.TokenRefused),
+            drafts.head.outcome == AuditOutcome.failure,
+            drafts.head.reason == Some("invalid_grant"),
+            drafts.head.details == AuthAuditDetails.TokenRefused(
+              grant = Some("authorization_code"),
+              clientAuth = None,
+              detail = TokenEndpointError.InvalidGrant.CodeNotFound.logDescription,
+            ),
+          )
+      }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+      test("invalid_client is not recorded here: it is client.auth_failed, coalesced") {
+        val audit = CapturingAuditEvents.shared()
+        withTokenEndpoint(audit = audit): (client, services) =>
+          for
+            _ <- services.oauthTokenService.exchangeAuthorizationCode.failsWith(TokenEndpointError.InvalidClient)
+            response <- client.batched(codeExchangeRequest)
+            drafts <- audit.recorded
+          yield assertTrue(response.status == Status.Unauthorized, drafts.isEmpty)
+      }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+      test("a DPoP nonce challenge is a handshake, not a refusal: nothing is recorded") {
+        val audit = CapturingAuditEvents.shared()
+        withTokenEndpoint(audit = audit): (client, services) =>
+          for
+            _ <- services.dpopService.verify.failsWith(DpopService.Error.NonceRequired("fresh-nonce"))
+            response <- client.batched(dpopCodeExchangeRequest)
+            drafts <- audit.recorded
+          yield assertTrue(response.status == Status.BadRequest, drafts.isEmpty)
+      }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+      test("a refusal the log cannot take is answered 503 with a retry hint, not the 400 it would have been") {
+        val audit = CapturingAuditEvents.shared(unavailable = true)
+        withTokenEndpoint(audit = audit): (client, services) =>
+          for
+            _ <- services.oauthTokenService.exchangeAuthorizationCode.failsWith(TokenEndpointError.InvalidGrant.CodeNotFound)
+            response <- client.batched(codeExchangeRequest)
+          yield assertTrue(response.status == Status.ServiceUnavailable, response.headers.get("Retry-After").contains("1"))
+      }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     ),
   )

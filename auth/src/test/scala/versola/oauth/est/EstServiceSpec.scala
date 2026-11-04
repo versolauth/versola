@@ -1,6 +1,7 @@
 package versola.oauth.est
 
-import versola.audit.CapturingAuditEvents
+import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
+import versola.util.audit.{ActorType, AuditKinds, AuditOutcome}
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.util.{CoreConfig, TestCertificates}
@@ -47,6 +48,13 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   /** Valid in real time, so the service's clock is set to it. */
   private val realTime: UIO[Unit] = Clock.ClockLive.instant.flatMap(now => TestClock.setTime(now))
+
+  /** An EST whose audit log is its own, so that cases running side by side do not read each other's events. */
+  private def audited(central: EstCentralClient, attempts: Int = 1000) =
+    val recording = CapturingAuditEvents.shared()
+    (recording, EstService.Impl(Option.when(true)(ca.get), central, limiter(attempts), recording))
+
+  private val leaf = EstCodec.certificates(issuedChain).get.head
 
   def spec = suite("EstService")(
     suite("enroll")(
@@ -160,7 +168,7 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val early = TestCertificates.generate(
           subject = "CN=bank-a",
           validity = Some((Date(java.lang.System.currentTimeMillis() + 86_400_000L), Date(java.lang.System.currentTimeMillis() + 2 * 86_400_000L))),
-        )
+  )
         for
           _ <- realTime
           failure <- service(central).reenroll(early.certificate, csrBody).flip
@@ -198,6 +206,87 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           on <- service(central).caCertificates
           off <- service(central, enabled = false).caCertificates.flip
         yield assertTrue(on.nonEmpty, off == EstError.Disabled)
+      },
+    ),
+    suite("audit log (cert.*)")(
+      test("an enrolment records cert.enrolled with the serial and expiry central's certificate has; the client is the actor") {
+        val central = stub[EstCentralClient]
+        val (recording, est) = audited(central)
+        for
+          _ <- central.enroll.succeedsWith(EstCentralClient.Issued(issuedChain, Some(endsAt)))
+          _ <- est.enroll(credentials, csrBody)
+          drafts <- recording.recorded
+        yield assertTrue(
+          drafts.map(_.kind) == List(AuditKinds.CertEnrolled),
+          drafts.head.outcome == AuditOutcome.success,
+          drafts.head.actor == Some((ActorType.client, Some("bank-a"))),
+          drafts.head.details == AuthAuditDetails.Cert(
+            operation = "enroll",
+            clientId = Some("bank-a"),
+            serial = Some(leaf.getSerialNumber.toString(16)),
+            notAfter = Some(leaf.getNotAfter.toInstant.toString),
+          ),
+          // the one-time token is not anywhere in it
+          !drafts.head.details.toJson.toString.contains("TOKEN"),
+        )
+      },
+      test("a renewal records cert.renewed for the client the presented certificate names") {
+        val central = stub[EstCentralClient]
+        val (recording, est) = audited(central)
+        val presented = TestCertificates.generate(subject = "CN=bank-a,OU=tenant-a,O=Versola")
+        for
+          _ <- realTime
+          _ <- central.renew.succeedsWith(EstCentralClient.Issued(issuedChain, None))
+          _ <- est.reenroll(presented.certificate, csrBody)
+          drafts <- recording.recorded
+        yield assertTrue(
+          drafts.map(_.kind) == List(AuditKinds.CertRenewed),
+          drafts.head.actor == Some((ActorType.client, Some("bank-a"))),
+          drafts.head.details.toJson.toString.contains("\"operation\":\"reenroll\""),
+        )
+      },
+      test("what central refuses is recorded by what it says about the caller: denied for who, failure for what was asked") {
+        val central = stub[EstCentralClient]
+        val (recording, est) = audited(central)
+        for
+          _ <- central.enroll.failsWith(EstError.Unauthorized)
+          _ <- est.enroll(credentials, csrBody).flip
+          _ <- central.enroll.failsWith(EstError.Forbidden("chain limit"))
+          _ <- est.enroll(credentials, csrBody).flip
+          _ <- central.enroll.failsWith(EstError.BadRequest("wrong subject"))
+          _ <- est.enroll(credentials, csrBody).flip
+          drafts <- recording.recorded
+        yield assertTrue(
+          drafts.map(d => (d.kind, d.outcome, d.reason)) == List(
+            (AuditKinds.CertEnrolled, AuditOutcome.denied, Some("est_unauthorized")),
+            (AuditKinds.CertEnrolled, AuditOutcome.denied, Some("est_forbidden")),
+            (AuditKinds.CertEnrolled, AuditOutcome.failure, Some("est_bad_request")),
+          ),
+          // the reason central gave is not repeated: it describes the request, and may quote it
+          !drafts.exists(_.details.toJson.toString.contains("wrong subject")),
+        )
+      },
+      test("a client that exceeds its attempts is recorded as a failure, rate limited") {
+        val central = stub[EstCentralClient]
+        val (recording, est) = audited(central, attempts = 1)
+        for
+          _ <- central.enroll.failsWith(EstError.Unauthorized)
+          _ <- est.enroll(credentials, csrBody).flip
+          limited <- est.enroll(credentials, csrBody).flip
+          drafts <- recording.recorded
+        yield assertTrue(limited == EstError.TooManyRequests, drafts.map(_.reason).last == Some("est_rate_limited"))
+      },
+      test("a disabled EST and a failure of central itself record nothing") {
+        val central = stub[EstCentralClient]
+        val disabled = CapturingAuditEvents.shared()
+        val down = CapturingAuditEvents.shared()
+        for
+          _ <- EstService.Impl(None, central, limiter(1000), disabled).enroll(credentials, csrBody).flip
+          _ <- central.enroll.failsWith(RuntimeException("central unavailable"))
+          _ <- EstService.Impl(ca, central, limiter(1000), down).enroll(credentials, csrBody).exit
+          a <- disabled.recorded
+          b <- down.recorded
+        yield assertTrue(a.isEmpty, b.isEmpty)
       },
     ),
   ) @@ TestAspect.sequential

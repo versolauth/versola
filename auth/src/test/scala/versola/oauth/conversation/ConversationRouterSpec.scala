@@ -1,6 +1,7 @@
 package versola.oauth.conversation
 
-import versola.util.audit.AuditEvents
+import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
+import versola.util.audit.{AuditKinds, AuditOutcome}
 import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.client.OAuthConfigurationService
@@ -203,13 +204,14 @@ object ConversationRouterSpec extends UnitSpecBase:
     configService.registrationFor.returnsWith(ZIO.succeed(None))
     val secureRandom = stub[SecureRandom]
     val userRepository = stub[UserRepository]
+    val audit = CapturingAuditEvents.shared()
     val router = ConversationRouter.Impl(
       conversationRepository,
       otpConversationService,
       configService,
       secureRandom,
       userRepository,
-      AuditEvents.noop,
+      audit,
     )
 
   private val passkeyOnlyAcr = Acr("passkey-level")
@@ -1139,7 +1141,23 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.otpConversationService.accessDenied.succeedsWith(accessDeniedResult)
           (result, _) <- env.router.submit(authId, ConsentDenySubmission("test-csrf"), None, None)
           allowTimes = env.otpConversationService.allowConsent.times
-        yield assertTrue(result == accessDeniedResult, allowTimes == 0)
+          drafts <- env.audit.recorded
+        yield assertTrue(
+          result == accessDeniedResult,
+          allowTimes == 0,
+          // the person said no: consent.denied, with what they were asked for
+          drafts.map(_.kind) == List(AuditKinds.ConsentDenied),
+          drafts.head.outcome == AuditOutcome.denied,
+          drafts.head.details == AuthAuditDetails.Consent(scope = List("openid")),
+        )
+      },
+      test("a stale consent submission (the conversation is on another step) records no consent event") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(otpRecord))
+          _ <- env.router.submit(authId, ConsentDenySubmission("test-csrf"), None, None)
+          drafts <- env.audit.recorded
+        yield assertTrue(drafts.isEmpty)
       },
       test("rejects a consent submission when the conversation is on another step") {
         val env = Env()

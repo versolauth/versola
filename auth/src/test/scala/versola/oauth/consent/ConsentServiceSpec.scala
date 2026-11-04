@@ -1,6 +1,7 @@
 package versola.oauth.consent
 
-import versola.audit.CapturingAuditEvents
+import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
+import versola.util.audit.{AuditKinds, AuditOutcome}
 import versola.oauth.authorize.model.Prompt
 import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.{AuthMethod, ClientId, ConsentFlow, OAuthClientRecord, ScopeToken, TenantId}
@@ -308,10 +309,16 @@ object ConsentServiceSpec extends UnitSpecBase:
         for
           _ <- env.consentRepository.upsert.succeedsWith(())
           _ <- env.service.grant(userId, clientWith(), Set(openid, profile))
+          drafts <- env.audit.recorded
         yield assertTrue(
           env.consentRepository.upsert.calls == List(
             ConsentRecord(userId, clientId, Set(openid, profile), grantedAt = now, expiresAt = None),
           ),
+          // consent.granted: what was granted, sorted, and no expiry when it is remembered until revoked
+          drafts.map(_.kind) == List(AuditKinds.ConsentGranted),
+          drafts.head.outcome == AuditOutcome.success,
+          drafts.head.userId == Some(userId.asInstanceOf[UUID]),
+          drafts.head.details == AuthAuditDetails.Consent(scope = List("openid", "profile"), expiresAt = None),
         )
       },
       test("expire the grant after the client's remember duration") {
@@ -319,10 +326,12 @@ object ConsentServiceSpec extends UnitSpecBase:
         for
           _ <- env.consentRepository.upsert.succeedsWith(())
           _ <- env.service.grant(userId, clientWith(rememberDuration = Some(30.days)), Set(openid))
+          drafts <- env.audit.recorded
         yield assertTrue(
           env.consentRepository.upsert.calls == List(
             ConsentRecord(userId, clientId, Set(openid), grantedAt = now, expiresAt = Some(now.plusSeconds(30 * 86400))),
           ),
+          drafts.map(_.details) == List(AuthAuditDetails.Consent(scope = List("openid"), expiresAt = Some(now.plusSeconds(30 * 86400).toString))),
         )
       },
     ) @@ atNow,
@@ -332,7 +341,20 @@ object ConsentServiceSpec extends UnitSpecBase:
         for
           _ <- env.consentRepository.delete.succeedsWith(())
           _ <- env.service.revoke(userId, baseClient)
-        yield assertTrue(env.consentRepository.delete.calls == List((userId, clientId)))
+          drafts <- env.audit.recorded
+        yield assertTrue(
+          env.consentRepository.delete.calls == List((userId, clientId)),
+          drafts.map(_.kind) == List(AuditKinds.ConsentRevoked),
+          drafts.head.userId == Some(userId.asInstanceOf[UUID]),
+        )
+      },
+      test("a grant is not reported as given when the store refused it") {
+        val env = Env()
+        for
+          _ <- env.consentRepository.upsert.failsWith(new RuntimeException("db down"))
+          result <- env.service.grant(userId, clientWith(), Set(openid)).either
+          drafts <- env.audit.recorded
+        yield assertTrue(result.isLeft, drafts.isEmpty)
       },
     ),
   )

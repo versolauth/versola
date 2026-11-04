@@ -25,8 +25,8 @@ object CapturingAuditEvents:
   def make: UIO[CapturingAuditEvents] = Ref.make(Vector.empty[AuditDraft]).map(new CapturingAuditEvents(_, unavailable = false))
 
   /** For a spec whose service is built once at the top of its object: cases `clear` it first and read `recorded` after. */
-  def shared(): CapturingAuditEvents =
-    Unsafe.unsafe((u: Unsafe) ?=> new CapturingAuditEvents(Ref.unsafe.make(Vector.empty[AuditDraft])(using u), unavailable = false))
+  def shared(unavailable: Boolean = false): CapturingAuditEvents =
+    Unsafe.unsafe((u: Unsafe) ?=> new CapturingAuditEvents(Ref.unsafe.make(Vector.empty[AuditDraft])(using u), unavailable))
 
   /** One that refuses every `record`. */
   def refusing: UIO[CapturingAuditEvents] = Ref.make(Vector.empty[AuditDraft]).map(new CapturingAuditEvents(_, unavailable = true))

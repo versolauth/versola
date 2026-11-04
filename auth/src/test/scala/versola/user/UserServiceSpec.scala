@@ -1,6 +1,7 @@
 package versola.user
 
-import versola.audit.CapturingAuditEvents
+import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
+import versola.util.audit.AuditKinds
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.{Email, Phone, UnitSpecBase}
@@ -32,7 +33,13 @@ object UserServiceSpec extends UnitSpecBase:
         _ <- env.userRepository.register.succeedsWith(user)
         result <- env.service.register(Left(email), tenantId, roleIds)
         registerCalls = env.userRepository.register.calls
+        drafts <- env.audit.recorded
       yield assertTrue(
+        // account.registered: about the new user, by registration, and the address they registered with is not in it
+        drafts.map(_.kind) == List(AuditKinds.AccountRegistered),
+        drafts.head.userId == Some(user.id.asInstanceOf[java.util.UUID]),
+        drafts.head.details == AuthAuditDetails.Account(via = "registration"),
+        !drafts.head.details.toJson.toString.contains(email),
         result == user,
         registerCalls.map(_._1) == List(user.id),
         registerCalls.map(_._2) == List(Left(email)),
@@ -62,9 +69,11 @@ object UserServiceSpec extends UnitSpecBase:
       for
         _ <- env.registrationSyncClient.claimRegistration.failsWith(error)
         result <- env.service.register(Left(email), tenantId, roleIds).either
+        drafts <- env.audit.recorded
       yield assertTrue(
         result == Left(error),
         env.userRepository.register.calls.isEmpty,
+        drafts.isEmpty,
       )
     },
   )

@@ -1,6 +1,7 @@
 package versola.oauth.conversation
 
-import versola.audit.CapturingAuditEvents
+import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
+import versola.util.audit.{AuditKinds, AuditOutcome}
 import versola.antifraud.{
   AntifraudAction,
   AntifraudOutcome,
@@ -1464,6 +1465,123 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         yield result match
           case complete: ConversationResult.Complete => assertTrue(complete.idTokenData.isEmpty)
           case _ => assertTrue(false)
+      },
+    ),
+    suite("audit log")(
+      test("a correct code records login.step success for the user; a wrong one failure wrong_code, and no code is in either") {
+        val verified = Env()
+        val wrong = Env()
+        for
+          _ <- verified.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- verified.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
+          _ <- verified.conversationRepository.overwrite.succeedsWith(true)
+          _ <- verified.userRepository.markVerified.succeedsWith(Option.empty[ast.Json.Obj])
+          _ <- verified.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
+          _ <- wrong.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- wrong.otpService.checkOtp.succeedsWith(SubmitOtpResult.Failure)
+          _ <- wrong.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- wrong.conversationRepository.overwrite.succeedsWith(true)
+          _ <- wrong.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
+          a <- verified.audit.recorded
+          b <- wrong.audit.recorded
+        yield assertTrue(
+          a.map(d => (d.kind, d.outcome, d.reason)) == List((AuditKinds.LoginStep, AuditOutcome.success, None)),
+          a.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
+          a.head.details == AuthAuditDetails.LoginStep(step = "otp", conversationId = authId.toString, kind = "login"),
+          b.map(d => (d.outcome, d.reason)) == List((AuditOutcome.failure, Some("wrong_code"))),
+          !a.head.details.toJson.toString.contains(otpCode),
+        )
+      },
+      test("a fake code is answered as a wrong one in the log too: nothing says the code was never real") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Failure)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.checkOtp(otpRecord, submittedOtp.copy(real = None), otpCode, authId)
+          drafts <- env.audit.recorded
+        yield assertTrue(drafts.map(_.reason) == List(Some("wrong_code")))
+      },
+      test("a locked destination records login.step denied locked, and a rate limited one denied throttled") {
+        val banned = Env()
+        val limited = Env()
+        for
+          _ <- banned.submissionLimiter.isBanned.succeedsWith(LimitStatus.Banned)
+          _ <- banned.conversationRepository.overwrite.succeedsWith(true)
+          _ <- banned.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
+          _ <- limited.submissionLimiter.isBanned.succeedsWith(LimitStatus.RateLimited(30L))
+          _ <- limited.conversationRepository.overwrite.succeedsWith(true)
+          _ <- limited.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
+          a <- banned.audit.recorded
+          b <- limited.audit.recorded
+        yield assertTrue(
+          a.map(d => (d.outcome, d.reason)) == List((AuditOutcome.denied, Some("locked"))),
+          b.map(d => (d.outcome, d.reason)) == List((AuditOutcome.denied, Some("throttled"))),
+          banned.otpService.checkOtp.calls.isEmpty,
+        )
+      },
+      test("with no user resolved yet the event carries the keyed hash of the credential, not the address") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Failure)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.checkOtp(otpRecord.copy(userId = None), submittedOtp, otpCode, authId)
+          drafts <- env.audit.recorded
+          details = drafts.map(_.details).collect { case d: AuthAuditDetails.LoginStep => d }
+        yield assertTrue(drafts.head.userId.isEmpty, details.flatMap(_.subjectHash).nonEmpty)
+      },
+      test("a Block decision records login.step denied antifraud_block with the decision, and a Fake one antifraud_fake") {
+        val blocked = Env(decision = Decision(DecisionAction.Block, 12, List("deny_list")))
+        val fake = Env(decision = Decision(DecisionAction.Fake, 0, List("fake_list")))
+        for
+          _ <- blocked.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- blocked.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- blocked.conversationRepository.overwrite.succeedsWith(true)
+          _ <- blocked.service.prepareInitialOtp(authId, initialConversation, Right(Phone("+491512345678")), factorIndex = 0, proof = ProofInput.NoScript)
+          _ <- fake.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- fake.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- fake.otpService.prepareOtp.succeedsWith(realOtp.copy(real = None))
+          _ <- fake.conversationRepository.overwrite.succeedsWith(true)
+          _ <- fake.otpService.sendOtp.succeedsWith(())
+          _ <- fake.service.prepareInitialOtp(authId, initialConversation, Right(Phone("+491512345678")), factorIndex = 0, proof = ProofInput.NoScript)
+          a <- blocked.audit.recorded
+          b <- fake.audit.recorded
+          blockedDetails = a.map(_.details).collect { case d: AuthAuditDetails.LoginStep => d }
+          fakeDetails = b.map(_.details).collect { case d: AuthAuditDetails.LoginStep => d }
+        yield assertTrue(
+          a.map(d => (d.kind, d.outcome, d.reason)) == List((AuditKinds.LoginStep, AuditOutcome.denied, Some("antifraud_block"))),
+          blockedDetails.map(d => (d.step, d.afDecision)) == List(("otp_request", Some("Block"))),
+          b.map(d => (d.outcome, d.reason)) == List((AuditOutcome.denied, Some("antifraud_fake"))),
+          fakeDetails.flatMap(_.afDecision) == List("Fake"),
+          // the phone number is in neither
+          !(a ++ b).exists(_.details.toJson.toString.contains("491512345678")),
+        )
+      },
+      test("a code the SMS budget refused is recorded as denied throttled") {
+        val env = Env(smsAllowed = false)
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.prepareInitialOtp(authId, initialConversation, Right(Phone("+4915123456789")), factorIndex = 0, proof = ProofInput.NoScript)
+          drafts <- env.audit.recorded
+        yield assertTrue(drafts.map(d => (d.outcome, d.reason)) == List((AuditOutcome.denied, Some("throttled"))))
+      },
+      test("a code that was sent, and a request that lost the write race, record no login.step: only judged steps are events") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.otpService.sendOtp.succeedsWith(())
+          _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0, proof = ProofInput.NoScript)
+          drafts <- env.audit.recorded
+        yield assertTrue(drafts.isEmpty)
       },
     ),
   )

@@ -1,6 +1,7 @@
 package versola.oauth.conversation
 
-import versola.audit.CapturingAuditEvents
+import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
+import versola.util.audit.{AuditKinds, AuditOutcome}
 import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord}
 import versola.oauth.authorize.AcrResolutionService
@@ -841,6 +842,110 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.userAgentRepository.create.succeedsWith(())
           result <- env.service.skipPasskey(authId, recordWithUser)
         yield assertTrue(result == ConversationResult.StepPassed(recordWithUser))
+      },
+    ),
+    suite("audit log")(
+      test("a verified assertion records login.step success for the user the passkey belongs to") {
+        val env = Env()
+        val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))
+        val outcome = AssertionOutcome(userId, CredentialId.fromString("id"), 1L)
+        for
+          _ <- env.webAuthnService.credentialIdFromResponse.succeedsWith(Some("cred-123"))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.reset.succeedsWith(())
+          _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+          _ <- env.webAuthnService.finishAssertion.succeedsWith(outcome)
+          _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(userId)))
+          _ <- env.passkeyRepository.findByCredentialIdAndUser.succeedsWith(None)
+          _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
+          _ <- env.webAuthnService.startRegistration.succeedsWith(PasskeyCeremony("reg-req", "{}"))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.finishPasskeyAssertion(authId, recordWithRequest, assertionResponse, None)
+          drafts <- env.audit.recorded
+        yield assertTrue(
+          drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuditKinds.LoginStep, AuditOutcome.success, None)),
+          drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
+          drafts.head.details == AuthAuditDetails.LoginStep(step = "passkey", conversationId = authId.toString, kind = "login"),
+        )
+      },
+      test("an assertion that did not verify records login.step failure invalid_assertion, and no user") {
+        val env = Env()
+        val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))
+        for
+          _ <- env.webAuthnService.credentialIdFromResponse.succeedsWith(Some("cred-123"))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+          _ <- env.webAuthnService.finishAssertion.failsWith(versola.oauth.challenge.passkey.WebAuthnError.CeremonyFailed("fail"))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.finishPasskeyAssertion(authId, recordWithRequest, assertionResponse, Some("1.2.3.4"))
+          drafts <- env.audit.recorded
+        yield assertTrue(
+          drafts.map(d => (d.outcome, d.reason)) == List((AuditOutcome.failure, Some("invalid_assertion"))),
+          drafts.head.userId.isEmpty,
+          // the credential id the client sent is the throttle's subject, not an event's
+          !drafts.head.details.toJson.toString.contains("cred-123"),
+        )
+      },
+      test("a throttled subject records login.step denied throttled, without verifying anything") {
+        val env = Env()
+        val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))
+        for
+          _ <- env.webAuthnService.credentialIdFromResponse.succeedsWith(Some("cred-123"))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Banned)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.finishPasskeyAssertion(authId, recordWithRequest, assertionResponse, Some("1.2.3.4"))
+          drafts <- env.audit.recorded
+        yield assertTrue(
+          drafts.map(d => (d.outcome, d.reason)) == List((AuditOutcome.denied, Some("throttled"))),
+          env.webAuthnService.finishAssertion.calls.isEmpty,
+        )
+      },
+      test("an enrolled passkey records account.passkey_enrolled with a prefix of the credential id and its device type") {
+        val env = Env()
+        val recordWithUser = baseRecord.copy(userId = Some(userId))
+        val enrollStep = ConversationStep.PasskeyEnroll("reg-req", "{}")
+        val enrolled = PasskeyRecord(
+          id = CredentialId(Array.fill(16)(1.toByte)),
+          userId = userId,
+          publicKey = Array.empty,
+          signatureCounter = 0,
+          deviceType = CredentialDeviceType.SingleDevice,
+          backedUp = false,
+          backupEligible = false,
+          transports = Nil,
+          attestationObject = None,
+          clientDataJson = None,
+          aaguid = None,
+          name = None,
+          lastUsedAt = None,
+          createdAt = Instant.EPOCH,
+          updatedAt = Instant.EPOCH,
+        )
+        for
+          _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+          _ <- env.webAuthnService.finishRegistration.succeedsWith(enrolled)
+          _ <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", PasskeyName("my-passkey"))
+          drafts <- env.audit.recorded
+        yield assertTrue(
+          drafts.map(_.kind) == List(AuditKinds.AccountPasskeyEnrolled),
+          drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
+          drafts.head.details == AuthAuditDetails.Passkey(
+            credentialPrefix = Some(enrolled.id.toString.take(9)),
+            deviceType = Some("SingleDevice"),
+          ),
+        )
+      },
+      test("a registration that failed records no account.passkey_enrolled") {
+        val env = Env()
+        val recordWithUser = baseRecord.copy(userId = Some(userId))
+        for
+          _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+          _ <- env.webAuthnService.finishRegistration.failsWith(versola.oauth.challenge.passkey.WebAuthnError.CeremonyFailed("fail"))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.finishPasskeyEnroll(authId, recordWithUser, ConversationStep.PasskeyEnroll("reg-req", "{}"), "resp", PasskeyName("my-passkey"))
+          drafts <- env.audit.recorded
+        yield assertTrue(drafts.isEmpty)
       },
     ),
   )

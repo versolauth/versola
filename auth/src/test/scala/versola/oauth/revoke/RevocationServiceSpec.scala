@@ -1,6 +1,8 @@
 package versola.oauth.revoke
 
-import versola.audit.{CapturingAuditEvents, ClientAuthFailures}
+import versola.audit.{AuthAuditDetails, CapturingAuditEvents, ClientAuthFailures}
+import versola.util.Base64
+import versola.util.audit.{ActorType, AuditKinds, AuditOutcome}
 import versola.util.audit.AuditEvents
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
@@ -162,12 +164,19 @@ object RevocationServiceSpec extends UnitSpecBase:
 
           service <- ZIO.service[RevocationService]
           result <- service.revokeRefreshToken(refreshToken1, credentials, None)
+          drafts <- env.audit.recorded
         yield assertTrue(
           result == (),
           // No access token was presented and none is recorded against the chain, so the push
           // names the family and bounds it by the client's own TTL from now.
           env.accessTokenRevocationService.revokeFamily.calls ==
             List((testClient, familyId1, userId1.toString, now.plus(testClient.accessTokenTtl))),
+          // RFC 7009: the client revoked it, and the log keeps who it was about and the prefix of the token, not the token.
+          drafts.map(_.kind) == List(AuditKinds.TokenRevoked),
+          drafts.head.outcome == AuditOutcome.success,
+          drafts.head.actor == Some((ActorType.client, Some(clientId1: String))),
+          drafts.head.userId == Some(userId1),
+          drafts.head.details == AuthAuditDetails.TokenRevoked("refresh_token", None, Some(Base64.urlEncode(refreshToken1).take(9)), "rfc7009"),
         )).provide(env.layer)
       },
       test("fail with InvalidClient when client authentication fails") {
@@ -194,7 +203,8 @@ object RevocationServiceSpec extends UnitSpecBase:
 
           service <- ZIO.service[RevocationService]
           result <- service.revokeRefreshToken(refreshToken1, credentials, None).either
-        yield assertTrue(result == Left(RevocationError.InvalidClient))).provide(env.layer)
+          drafts <- env.audit.recorded
+        yield assertTrue(result == Left(RevocationError.InvalidClient), drafts.isEmpty)).provide(env.layer)
       },
       test("succeed when token not found (idempotent)") {
         val env = Env()
@@ -208,7 +218,9 @@ object RevocationServiceSpec extends UnitSpecBase:
 
           service <- ZIO.service[RevocationService]
           result <- service.revokeRefreshToken(refreshToken1, credentials, None)
-        yield assertTrue(result == ())).provide(env.layer)
+          drafts <- env.audit.recorded
+        // nothing was revoked, so nothing is said to have been
+        yield assertTrue(result == (), drafts.isEmpty)).provide(env.layer)
       },
     ),
     suite("revokeAccessToken")(
@@ -224,11 +236,15 @@ object RevocationServiceSpec extends UnitSpecBase:
 
           service <- ZIO.service[RevocationService]
           result <- service.revokeAccessToken(payload, credentials, None)
+          drafts <- env.audit.recorded
         yield assertTrue(
           result == (),
           // The token was parsed here, so its own `exp` is used rather than an upper bound.
           env.accessTokenRevocationService.revoke.calls ==
             List((testClient, NonEmptyChunk(accessToken1), userId1.toString, payload.expiresAt)),
+          drafts.map(_.kind) == List(AuditKinds.TokenRevoked),
+          drafts.head.userId == Some(userId1.asInstanceOf[java.util.UUID]),
+          drafts.head.details == AuthAuditDetails.TokenRevoked("access_token", Some(Base64.urlEncode(accessToken1)), None, "rfc7009"),
         )).provide(env.layer)
       },
       test("fail with InvalidClient when client authentication fails") {

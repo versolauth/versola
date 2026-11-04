@@ -1171,7 +1171,7 @@ object ConversationService:
                   conversationId = authId.toString,
                   acr = conversation.targetAcr.map(_.toString),
                   amr = amr.toList.map(_.toString).sorted,
-                  priorSessionId = conversation.priorSessionId.map(_.toString),
+                  priorSession = conversation.priorSessionId.isDefined,
                 ),
               ),
             )

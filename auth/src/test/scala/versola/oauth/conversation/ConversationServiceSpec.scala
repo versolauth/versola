@@ -1,6 +1,7 @@
 package versola.oauth.conversation
 
-import versola.audit.CapturingAuditEvents
+import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
+import versola.util.audit.{AuditKinds, AuditOutcome, AuditUnavailableException}
 import versola.auth.TestEnvConfig
 import versola.auth.model.{CredentialDeviceType, CredentialId, OtpCode, PasskeyRecord, Password}
 import versola.oauth.authorize.AcrResolutionService
@@ -1106,6 +1107,81 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.userAgentRepository.create.succeedsWith(())
           result <- env.service.offerPasskeyEnroll(authId, record)
         yield assertTrue(result.isInstanceOf[ConversationResult.Complete])
+      },
+    ),
+    suite("audit log (login.completed)")(
+      test("a completed sign-in records login.completed with the kind, the conversation and the methods, and names the session created") {
+        val env = Env()
+        for
+          _ <- issueCodeStubs(env)
+          result <- env.service.finish(authId, consentedRecord.copy(userId = Some(userId)))
+          drafts <- env.audit.recorded
+        yield assertTrue(
+          result.isInstanceOf[ConversationResult.Complete],
+          drafts.map(d => (d.kind, d.outcome)) == List((AuditKinds.LoginCompleted, AuditOutcome.success)),
+          drafts.head.userId == Some(userId.asInstanceOf[UUID]),
+          drafts.head.details == AuthAuditDetails.LoginCompleted(
+            kind = "login",
+            conversationId = authId.toString,
+            acr = None,
+            amr = Nil,
+            priorSession = false,
+          ),
+        )
+      },
+      test("a sign-in that replaced a session is recorded as a re-authentication") {
+        val env = Env()
+        for
+          _ <- issueCodeStubs(env)
+          _ <- env.service.finish(authId, consentedRecord.copy(userId = Some(userId), priorSessionId = Some(MAC(Array.fill(32)(2.toByte)))))
+          drafts <- env.audit.recorded
+          details = drafts.map(_.details).collect { case d: AuthAuditDetails.LoginCompleted => d }
+        yield assertTrue(details.map(d => (d.kind, d.priorSession)) == List(("reauth", true)))
+      },
+      test("no login.completed is recorded when the conversation was already claimed or the ACR was not satisfied") {
+        val claimed = Env()
+        val unsatisfied = Env()
+        for
+          _ <- issueCodeStubs(claimed)
+          _ <- claimed.conversationRepository.delete.succeedsWith(false)
+          _ <- claimed.service.finish(authId, consentedRecord.copy(userId = Some(userId)))
+          _ <- issueCodeStubs(unsatisfied, passkeyVocabulary)
+          _ <- unsatisfied.conversationRepository.overwrite.succeedsWith(true)
+          _ <- unsatisfied.service.finish(authId, pursuingPasskey)
+          a <- claimed.audit.recorded
+          b <- unsatisfied.audit.recorded
+        yield assertTrue(a.isEmpty, b.isEmpty)
+      },
+      test("the session is not reported as created when the log cannot take the event") {
+        val env = Env()
+        val refusing = new ConversationService.Impl(
+          env.otpService,
+          env.passwordService,
+          env.conversationRepository,
+          env.userRepository,
+          env.authorizationCodeRepository,
+          env.sessionRepository,
+          env.authPropertyGenerator,
+          env.securityService,
+          env.userInfoService,
+          TestEnvConfig.coreConfig,
+          env.submissionLimiter,
+          env.webAuthnService,
+          env.passkeyRepository,
+          env.configService,
+          env.acrResolver,
+          env.userAgentRepository,
+          env.secureRandom,
+          env.userService,
+          env.consentService,
+          versola.antifraud.AntifraudEvents.noop,
+          versola.antifraud.ChallengeVerifier.off,
+          CapturingAuditEvents.shared(unavailable = true),
+        )
+        for
+          _ <- issueCodeStubs(env)
+          result <- refusing.finish(authId, consentedRecord.copy(userId = Some(userId))).either
+        yield assertTrue(result == Left(AuditUnavailableException))
       },
     ),
   )

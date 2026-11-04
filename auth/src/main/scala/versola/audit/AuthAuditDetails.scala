@@ -22,13 +22,15 @@ object AuthAuditDetails:
   ) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
-  /** `login.completed`: the session was created. */
+  /** `login.completed`: the session was created. `priorSession` says whether it replaced one (a step-up or a re-authentication): the
+    * conversation holds only the keyed MAC of the prior session's id, which is no id to publish, and the public `sid` of the session
+    * created is the event's own `sessionId`. */
   case class LoginCompleted(
       kind: String,
       conversationId: String,
       acr: Option[String],
       amr: List[String],
-      priorSessionId: Option[String],
+      priorSession: Boolean,
   ) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
