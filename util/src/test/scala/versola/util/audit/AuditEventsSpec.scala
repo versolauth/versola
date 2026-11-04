@@ -158,10 +158,11 @@ object AuditEventsSpec extends UnitSpecBase:
 
   /** The lines the log wrote about events it dropped or refused. */
   private def reportLines: UIO[List[String]] =
-    ZTestLogger.logOutput.map(_.toList.map(_.message()).filter(_.contains("audit events were dropped or refused")))
+    // The fiber a clock move wakes writes its line some yields later.
+    (settle *> ZTestLogger.logOutput).map(_.toList.map(_.message()).filter(_.contains("audit events were dropped or refused")))
 
   private def drainLines: UIO[List[String]] =
-    ZTestLogger.logOutput.map(_.toList.map(_.message()).filter(_.contains("the audit queue was drained")))
+    (settle *> ZTestLogger.logOutput).map(_.toList.map(_.message()).filter(_.contains("the audit queue was drained")))
 
   private def counter(name: String, source: AuditSource): UIO[Double] =
     Metric.counter(name).tagged(Set(MetricLabel("source", source.value))).value.map(_.count)
@@ -799,7 +800,7 @@ object AuditEventsSpec extends UnitSpecBase:
           _ <- events.record(draft())
           _ <- f.started.take
           _ <- settle
-          entries <- ZTestLogger.logOutput
+          entries <- (ZIO.yieldNow *> ZTestLogger.logOutput).repeatUntil(_.exists(_.message().contains("could not write")))
           warned = entries.filter(_.message().contains("could not write"))
           everything = entries.map(entry => entry.message() + " " + entry.cause.prettyPrint).mkString("\n")
           _ <- stopped(scope)
