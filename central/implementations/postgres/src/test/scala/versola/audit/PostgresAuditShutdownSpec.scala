@@ -91,7 +91,7 @@ object PostgresAuditShutdownSpec extends PostgresSpec:
       for
         xa <- ZIO.service[TransactorZIO]
         started <- Promise.make[Nothing, Unit]
-        repository = Delayed(PostgresAuditEventRepository(xa), delay = 1.second, started = started)
+        repository = Delayed(PostgresAuditEventRepository(xa), delay = 300.millis, started = started)
         _ <- stopped(repository): events =>
           ZIO.foreachDiscard(1 to total)(_ => events.record(draft(marker)).mapError(_ => RuntimeException("unavailable"))) *> started.await
         counted <- stored(marker)
