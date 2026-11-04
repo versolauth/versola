@@ -27,6 +27,22 @@ trait AuditEvents:
     * `block` it waits as `record` does and then drops the event, counted. */
   def recordBestEffort(draft: AuditDraft): UIO[Unit]
 
+  /** The event of a draft, as it would be stored: the id and the time, the severity the service's catalog gives, the request's
+    * context, the text made storable ([[AuditSanitizer]]). Nothing is queued or written: for an event that is inserted in the
+    * transaction of the change it describes (by [[versola.util.audit.AuditEventRepository]]'s Postgres code, `AuditInsert`), which
+    * the service builds before the change and hands down, and counts with [[committed]] once the transaction has committed. */
+  def build(draft: AuditDraft): UIO[AuditEvent]
+
+  /** [[build]] and a one-row insert in a statement of its own, before the action it witnesses: the event is committed or the action
+    * is not performed. Fails with [[AuditUnavailable]] when the insert fails (the database cannot take it, the statement timed
+    * out), which the caller answers 503 `audit_unavailable` (`setError`). Counted as recorded only after the insert. */
+  def recordNow(draft: AuditDraft): IO[AuditUnavailable.type, Unit]
+
+  /** Counts an event that was inserted in the transaction of its change, which committed: `audit_events_total`, as [[record]] does
+    * for a queued one. Called by the service after the repository returned, so an event of a transaction that rolled back is
+    * never counted. */
+  def committed(event: AuditEvent): UIO[Unit]
+
 /** The audit log could not take the event in time. */
 case object AuditUnavailable
 
@@ -71,6 +87,39 @@ object AuditEvents:
 
     override def recordBestEffort(draft: AuditDraft): UIO[Unit] = ZIO.unit
 
+    /** An event of a source and a node that are nobody's, rated by the draft's outcome alone, with a random id: callers of a `noop`
+      * only need something to hand to a repository stub. */
+    override def build(draft: AuditDraft): UIO[AuditEvent] =
+      for
+        id <- Random.nextUUID
+        now <- Clock.instant
+      yield AuditEvent(
+        id = id,
+        at = now,
+        tenantId = None,
+        source = AuditSource("noop"),
+        nodeId = "noop",
+        kind = draft.kind,
+        outcome = draft.outcome,
+        reason = draft.reason,
+        severity = AuditCatalog.of(Set.empty).severity(draft.kind, draft.outcome),
+        actorType = ActorType.system,
+        actorId = None,
+        userId = draft.userId,
+        clientId = None,
+        sessionId = None,
+        ip = None,
+        userAgent = None,
+        traceId = None,
+        targetType = draft.target.map(_._1),
+        targetId = draft.target.map(_._2),
+        details = draft.details.toJson,
+      )
+
+    override def recordNow(draft: AuditDraft): IO[AuditUnavailable.type, Unit] = ZIO.unit
+
+    override def committed(event: AuditEvent): UIO[Unit] = ZIO.unit
+
   /** Starts the writer and the partition maintenance; both stop with the scope, and what is still queued is written once more on
     * the way out, within a bound. `source`, `nodeId` and `catalog` are the service's: every event it records carries the first two,
     * and is rated and counted by the third. */
@@ -101,6 +150,7 @@ object AuditEvents:
         _ <- Maintenance(repository, settings, sizing, source).run
         _ <- Writer(queue, repository, sizing, source).run
       yield Impl(
+        repository = repository,
         queue = queue,
         settings = settings,
         sizing = sizing,
@@ -112,6 +162,7 @@ object AuditEvents:
       )
 
   private class Impl(
+      repository: AuditEventRepository,
       queue: Queue[AuditEvent],
       settings: Settings,
       sizing: Sizing,
@@ -123,10 +174,24 @@ object AuditEvents:
   ) extends AuditEvents:
 
     override def record(draft: AuditDraft): IO[AuditUnavailable.type, Unit] =
-      fill(draft).flatMap(enqueue(_, bestEffort = false))
+      build(draft).flatMap(enqueue(_, bestEffort = false))
 
     override def recordBestEffort(draft: AuditDraft): UIO[Unit] =
-      fill(draft).flatMap(enqueue(_, bestEffort = true)).catchAll(_ => ZIO.unit)
+      build(draft).flatMap(enqueue(_, bestEffort = true)).catchAll(_ => ZIO.unit)
+
+    override def recordNow(draft: AuditDraft): IO[AuditUnavailable.type, Unit] =
+      build(draft).flatMap: event =>
+        // The repository's own statement, under its statement timeout. The failure is the caller's 503, whose error code says only
+        // that the log was unavailable, so the cause is logged here: a database that cannot take a one-row insert is news.
+        repository.insertBatch(List(event)).foldCauseZIO(
+          cause =>
+            AuditMetrics.unavailable(source) *>
+              ZIO.logWarningCause(s"could not write an audit event of kind ${event.kind.value} before its action", cause) *>
+              ZIO.fail(AuditUnavailable),
+          _ => AuditMetrics.recorded(source, event, catalog),
+        )
+
+    override def committed(event: AuditEvent): UIO[Unit] = AuditMetrics.recorded(source, event, catalog)
 
     private def enqueue(event: AuditEvent, bestEffort: Boolean): IO[AuditUnavailable.type, Unit] =
       settings.overflow match
@@ -145,7 +210,7 @@ object AuditEvents:
 
     /** The event of a draft: ids and time, then the request's context, from [[AuditContext]] first and the `auth` log context
       * second, for what the draft does not say. */
-    private def fill(draft: AuditDraft): UIO[AuditEvent] =
+    override def build(draft: AuditDraft): UIO[AuditEvent] =
       for
         id <- random.nextUUIDv7
         now <- Clock.instant
@@ -414,7 +479,8 @@ object AuditMetrics:
   /** A request that found the queue full and waited for room. Alert on it: the log is slower than the service. */
   def blocked(source: AuditSource): UIO[Unit] = blockedTotal.tagged(sourceLabel(source)).increment
 
-  /** A request that was refused because the queue stayed full for `blockTimeout`. */
+  /** A request that was refused because the queue stayed full for `blockTimeout`, or because an event that had to be written
+    * before its action could not be. */
   def unavailable(source: AuditSource): UIO[Unit] = unavailableTotal.tagged(sourceLabel(source)).increment
 
   /** Events the writer had taken from the queue and could not write before the service stopped. */

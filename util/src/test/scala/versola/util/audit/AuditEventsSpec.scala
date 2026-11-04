@@ -389,6 +389,134 @@ object AuditEventsSpec extends UnitSpecBase:
           )
       },
     ),
+    suite("an event that is not queued")(
+      test("build gives the event a draft would be stored as, and writes and queues nothing") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false)
+            _ <- TestClock.setTime(Instant.parse("2026-11-03T10:00:00Z"))
+            events <- build(f, block)
+            _ <- Observability.setUserId(userId.toString) *> Observability.setIp("203.0.113.7")
+            _ <- AuditContext.setTenant("ten\u0000ant") *> AuditContext.setTarget("client", "client-a")
+            event <- events.build(draft(Changed, AuditOutcome.success).copy(reason = Some("re\u0000ason")))
+            _ <- settle *> TestClock.adjust(10.seconds)
+          yield assertTrue(
+            event.at == Instant.parse("2026-11-03T10:00:00Z"),
+            event.source == svcA,
+            event.nodeId == nodeId,
+            event.kind == Changed,
+            event.severity == AuditSeverity.high,
+            event.actorType == ActorType.user,
+            event.userId == Some(userId),
+            event.ip == Some("203.0.113.7"),
+            event.targetId == Some("client-a"),
+            // Made storable, as for a queued event.
+            event.tenantId == Some("tenant"),
+            event.reason == Some("reason"),
+            f.repository.insertBatch.calls.isEmpty,
+          )
+      },
+      test("build gives every event an id of its own") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false)
+            events <- build(f, block)
+            built <- ZIO.foreach(1 to 5)(_ => events.build(draft()))
+          yield assertTrue(built.map(_.id).distinct.size == 5)
+      },
+      test("recordNow writes the event in one row before it returns, and the writer is not involved") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false)
+            events <- build(f, block, source = central)
+            _ <- events.recordNow(draft(Issued, AuditOutcome.success))
+            written <- f.written.get
+            _ <- settle *> TestClock.adjust(10.seconds)
+            later <- f.written.get
+          yield assertTrue(
+            written.map(_.map(_.kind)) == List(List(Issued)),
+            // Nothing else is written later: it was never queued.
+            later == written,
+            f.repository.insertBatch.calls.size == 1,
+          )
+      },
+      test("recordNow counts the event as recorded after the insert") {
+        val labels = Set(MetricLabel("source", "svc-b"), MetricLabel("kind", "thing.issued"), MetricLabel("outcome", "success"))
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false)
+            events <- build(f, block, source = central)
+            before <- Metric.counter("audit_events_total").tagged(labels).value.map(_.count)
+            _ <- events.recordNow(draft(Issued, AuditOutcome.success))
+            after <- Metric.counter("audit_events_total").tagged(labels).value.map(_.count)
+          yield assertTrue(after - before == 1.0)
+      },
+      test("recordNow fails the caller with AuditUnavailable when the insert fails, and counts the refusal and not the event") {
+        val labels = Set(MetricLabel("source", "svc-c"), MetricLabel("kind", "thing.issued"), MetricLabel("outcome", "success"))
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false, failures = 100)
+            events <- build(f, block, source = edge)
+            before <- Metric.counter("audit_events_total").tagged(labels).value.map(_.count)
+            unavailableBefore <- counter("audit_events_unavailable_total", edge)
+            result <- events.recordNow(draft(Issued, AuditOutcome.success)).exit
+            after <- Metric.counter("audit_events_total").tagged(labels).value.map(_.count)
+            unavailableAfter <- counter("audit_events_unavailable_total", edge)
+            written <- f.written.get
+          yield assertTrue(
+            result == Exit.fail(AuditUnavailable),
+            after == before,
+            unavailableAfter - unavailableBefore == 1.0,
+            written.isEmpty,
+            // One attempt, no retry: the action does not go ahead.
+            f.repository.insertBatch.calls.size == 1,
+          )
+      },
+      test("recordNow does not depend on the queue: it writes under overflow = drop too, and a refused row is not retried by the writer") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false, failures = 1)
+            events <- build(f, drop, source = edge)
+            first <- events.recordNow(draft()).exit
+            _ <- settle *> TestClock.adjust(1.minute)
+            second <- events.recordNow(draft()).exit
+            written <- f.written.get
+          yield assertTrue(
+            first == Exit.fail(AuditUnavailable),
+            second.isSuccess,
+            written.map(_.size) == List(1),
+            f.repository.insertBatch.calls.size == 2,
+          )
+      },
+      test("committed counts an event a repository inserted in its own transaction, with the kind label of the catalog") {
+        val labels = (kind: String) => Set(MetricLabel("source", "svc-c"), MetricLabel("kind", kind), MetricLabel("outcome", "success"))
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false)
+            events <- build(f, block, source = edge)
+            listed <- events.build(draft(Issued, AuditOutcome.success))
+            unlisted <- events.build(draft(AuditKind("thing.unlisted"), AuditOutcome.success))
+            issuedBefore <- Metric.counter("audit_events_total").tagged(labels("thing.issued")).value.map(_.count)
+            otherBefore <- Metric.counter("audit_events_total").tagged(labels("other")).value.map(_.count)
+            _ <- events.committed(listed) *> events.committed(unlisted)
+            issuedAfter <- Metric.counter("audit_events_total").tagged(labels("thing.issued")).value.map(_.count)
+            otherAfter <- Metric.counter("audit_events_total").tagged(labels("other")).value.map(_.count)
+          yield assertTrue(issuedAfter - issuedBefore == 1.0, otherAfter - otherBefore == 1.0, f.repository.insertBatch.calls.isEmpty)
+      },
+      test("the noop service builds an event to hand to a repository and records nothing") {
+        for
+          event <- AuditEvents.noop.build(draft(Refused, AuditOutcome.failure).copy(reason = Some("invalid_grant")))
+          now <- AuditEvents.noop.recordNow(draft()).exit
+          _ <- AuditEvents.noop.committed(event)
+        yield assertTrue(
+          event.kind == Refused,
+          event.reason == Some("invalid_grant"),
+          event.severity == AuditSeverity.notice,
+          event.source == AuditSource("noop"),
+          now.isSuccess,
+        )
+      },
+    ),
     suite("overflow = drop")(
       test("an event that finds the queue full is dropped and counted, and the request is not held up or failed") {
         ZIO.scoped:
