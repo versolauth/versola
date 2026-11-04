@@ -1,8 +1,8 @@
 package versola.central.audit
 
 import io.opentelemetry.api
-import versola.central.{CentralConfig, TestCentralConfig}
 import versola.central.audit.CentralAudit
+import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.SecureRandom
 import versola.util.audit.*
 import versola.util.partitions.{PartitionReport, TableOwnership}
@@ -47,7 +47,8 @@ object AuditQueueFullSpec extends ZIOSpecDefault:
 
   private def writer(overflow: AuditEvents.Overflow, gate: Promise[Nothing, Unit]): ZIO[Scope, Nothing, AuditEvents] =
     val settings = AuditEvents.Settings(retention = 7.days, overflow = overflow, blockTimeout = 100.millis)
-    val composed = ZLayer.succeed[AuditEventRepository](Stuck(gate)) ++ ZLayer.succeed(settings) ++ tracing ++ SecureRandom.live ++ ZLayer.service[Scope]
+    val composed =
+      ZLayer.succeed[AuditEventRepository](Stuck(gate)) ++ ZLayer.succeed(settings) ++ tracing ++ SecureRandom.live ++ ZLayer.service[Scope]
     (composed >>> AuditEvents.liveWith(sizing)(CentralAudit.Source, "test", CentralAudit.catalog)).build.map(_.get[AuditEvents])
 
   private val admin = "00000000-0000-0000-0000-0000000000f1"
@@ -65,7 +66,10 @@ object AuditQueueFullSpec extends ZIOSpecDefault:
       ran <- Ref.make(0)
       client <- ZIO.service[Client]
       routes = Routes(createClient -> handler((_: Request) => ran.update(_ + 1).as(Response.text("ok"))))
-      _ <- TestClient.addRoutes((routes @@ AuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig](events, TestCentralConfig.config)))
+      _ <- TestClient.addRoutes((routes @@ AuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig](
+        events,
+        TestCentralConfig.config,
+      )))
       statuses <- ZIO.foreach(1 to 10)(n => client.batched(changeRequest(s"c$n")).orDie.map(_.status))
       handled <- ran.get
     yield (statuses, handled)
@@ -99,4 +103,6 @@ object AuditQueueFullSpec extends ZIOSpecDefault:
           )
         yield assertTrue(true)
     },
-  ).provideSomeLayer(TestClient.layer) @@ TestAspect.withLiveClock @@ TestAspect.sequential @@ TestAspect.silentLogging @@ TestAspect.timeout(2.minutes)
+  ).provideSomeLayer(TestClient.layer) @@ TestAspect.withLiveClock @@ TestAspect.sequential @@ TestAspect.silentLogging @@ TestAspect.timeout(
+    2.minutes,
+  )
