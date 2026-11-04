@@ -386,11 +386,11 @@ object AuditEvents:
         _ <- intake.update(_.copy(closed = true))
         // The requests waiting for room are released: whatever room the drain makes is for what was queued before the stop began.
         _ <- closing.succeed(())
-        _ <- writer.interrupt.disconnect.timeout(WriterStopWait)
+        _ <- within(WriterStopWait)(writer.interrupt)
         held <- inHand.getAndSet(Nil)
         pending <- Ref.make(held)
         taken <- Ref.make(held.size)
-        finished <- drainRound(pending, taken).disconnect.timeout(DrainTimeout)
+        finished <- within(DrainTimeout)(drainRound(pending, taken))
         rest <- queue.takeAll
         left <- pending.get.map(_ ++ rest)
         count <- taken.get.map(_ + rest.size)
@@ -439,6 +439,20 @@ object AuditEvents:
         _ <- (AuditMetrics.queueSize(source, queue) *> ZIO.sleep(sizing.flushInterval)).forever.forkScoped
         _ <- ZIO.addFinalizer(stop(fiber))
       yield ()
+
+  /** `effect`'s result if it comes within `limit`, else `None`, whatever the interruptibility of the caller. The stop runs as a scope's
+    * finalizer, and a scope releases its finalizers uninterruptibly: there `timeout` and `disconnect` cannot interrupt what they wait
+    * for, so a bound made with them is not one. Here the effect runs in a fiber of its own, interruptible, and the caller waits on a
+    * promise that the effect or a timer completes, which holds in any region. What is still running at the limit is told to stop, and
+    * left: a statement the transactor will not interrupt ends when the statement does. */
+  private def within[A](limit: Duration)(effect: UIO[A]): UIO[Option[A]] =
+    for
+      done <- Promise.make[Nothing, Option[A]]
+      worker <- ZIO.interruptible(effect).flatMap(result => done.succeed(Some(result))).forkDaemon
+      timer <- ZIO.interruptible(ZIO.sleep(limit)).flatMap(_ => done.succeed(None)).forkDaemon
+      result <- done.await
+      _ <- worker.interruptFork *> timer.interruptFork
+    yield result
 
   /** How long the stop waits for the writer to give up the statement it is in; a statement the transactor will not interrupt is
     * abandoned after this. */
