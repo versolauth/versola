@@ -1,9 +1,9 @@
 package versola.user
 
 import versola.audit.AuditSupport.*
-import versola.audit.AuthActors
 import versola.audit.AuthAuditDetails
 import versola.audit.AuthAuditKinds
+import versola.audit.{AuditCursor, AuditReportError, AuditReportService, AuthActors}
 import versola.auth.model.CredentialId
 import versola.auth.model.Password
 import versola.oauth.challenge.passkey.PasskeyRepository
@@ -19,17 +19,19 @@ import versola.user.model.*
 import versola.util.CoreConfig
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{Controller, Observability}
-import versola.util.{Email, Phone}
+import versola.util.{Email, PageLimit, Phone}
 import zio.*
-import zio.http.{Method, Request, Response, Routes, Status, handler}
+import zio.http.{Header, Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 import zio.json.JsonCodec
 import zio.telemetry.opentelemetry.tracing.Tracing
 
+import java.time.Instant
+
 object UserController extends Controller:
   type Env =
     Tracing & UserRepository & CoreConfig & LogoutService & SessionService & ChallengeThrottleRepository & PasskeyRepository & PasswordService &
-      AuditEvents
+      AuditEvents & AuditReportService
 
   /** What an administrator did to an account, as central told auth: the actor is the administrator the call names (`actorId`) or the
     * `central` service, as noted in the request's context, the subject the user. `actor` says it is the service whatever the call names:
@@ -74,6 +76,8 @@ object UserController extends Controller:
     deletePasskeyEndpoint,
     resetPasswordEndpoint,
     setPasswordEndpoint,
+    auditEventsEndpoint,
+    auditSummaryEndpoint,
   )
 
   val upsertUserEndpoint =
@@ -157,6 +161,47 @@ object UserController extends Controller:
         case Some(record) => Response.json(UserClaimsResponse(record.claims).toJson)
         case None => Response.status(Status.NoContent)
     }
+
+  /** The per-user report of the audit log, for central's report of an administrator: a page of the events about the user, newest first,
+    * over a window of the hot retention. Every input is a query parameter decoded to its type, so one that does not decode is a bad
+    * request before the service reads anything. `{ events, nextCursor, retentionFrom }`. */
+  val auditEventsEndpoint =
+    Method.GET / "users" / "audit-events" -> handler { (request: Request) =>
+      (for
+        _ <- authorizeInternal(request)
+        id <- request.url.queryZIO[UserId]("id")
+        from <- request.url.queryZIO[Option[Instant]]("from")
+        to <- request.url.queryZIO[Option[Instant]]("to")
+        cursor <- request.url.queryZIO[Option[AuditCursor]]("cursor")
+        limit <- request.url.queryZIO[Option[PageLimit]]("limit")
+        service <- ZIO.service[AuditReportService]
+        page <- service.events(id, from, to, cursor, limit)
+      yield Response.json(page.toJson)).catchAll(refuseReport)
+    }
+
+  /** The summary of the same events: `{ window, byKind, byClient, ips, userAgents, sessions, countries, factors, high }`. */
+  val auditSummaryEndpoint =
+    Method.GET / "users" / "audit-summary" -> handler { (request: Request) =>
+      (for
+        _ <- authorizeInternal(request)
+        id <- request.url.queryZIO[UserId]("id")
+        from <- request.url.queryZIO[Option[Instant]]("from")
+        to <- request.url.queryZIO[Option[Instant]]("to")
+        service <- ZIO.service[AuditReportService]
+        report <- service.summary(id, from, to)
+      yield Response.json(report.toJson)).catchAll(refuseReport)
+    }
+
+  /** A window that cannot be served is `400` with the reason as text, and a report that finds no place to read is `503`; an
+    * unauthenticated request, an input that does not decode and a failure of the service go on to the global handler. */
+  private def refuseReport(error: Throwable | AuditReportError): ZIO[Any, Throwable, Response] =
+    error match
+      case AuditReportError.Busy =>
+        Observability.setError(AuditReportError.Busy.code).as(
+          Response.text(AuditReportError.Busy.message).status(Status.ServiceUnavailable).addHeader(Header.Custom("Retry-After", "1")),
+        )
+      case error: AuditReportError => Observability.setError(error.code).as(Response.text(error.message).status(Status.BadRequest))
+      case error: Throwable => ZIO.fail(error)
 
   val findRolesEndpoint =
     Method.GET / "users" / "roles" -> handler { (request: Request) =>

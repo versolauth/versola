@@ -10,7 +10,7 @@ import zio.test.*
 import java.time.Instant
 
 /** What auth writes to its audit log (#469) for a user's whole session, read back the way central's per-user report reads it: through auth's
-  * internal `GET /audit/events` and `/audit/summary`, with the service token the two share.
+  * internal `GET /users/audit-events` and `/users/audit-summary`, with the service token the two share.
   *
   * A sign-in with a password, the tokens it issues (the code exchange and a refresh), the revocation of the refresh token and the
   * RP-initiated logout are performed over HTTP against the staged stack, and the rows that come back are the ones the writer stored in
@@ -75,7 +75,7 @@ object AuditLogFlowSpec extends E2ESpec:
 
   private def page(auth: OAuthClient, userId: String, query: String): Task[Page] =
     for
-      response <- auth.auditGet(s"/audit/events?userId=$userId$query")
+      response <- auth.auditGet(s"/users/audit-events?id=$userId$query")
       body <- response.body.asString
       _ <- ZIO.fail(RuntimeException(s"events answered ${response.status}: $body")).unless(response.status == Status.Ok)
       json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
@@ -142,7 +142,7 @@ object AuditLogFlowSpec extends E2ESpec:
         session <- login(s, auth)
         _ <- auth.logoutWithIdTokenHint(session.idToken)
         _ <- awaitRows(auth, userId, started)(r => kinds(r).contains("session.ended"))
-        response <- auth.auditGet(s"/audit/summary?userId=$userId&from=$started")
+        response <- auth.auditGet(s"/users/audit-summary?id=$userId&from=$started")
         body <- response.body.asString
         json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
         byKind = json.get("byKind").flatMap(_.asArray).map(_.toList.flatMap(_.asObject)).getOrElse(Nil)
@@ -186,16 +186,16 @@ object AuditLogFlowSpec extends E2ESpec:
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
         userId = s.userId.toString
-        noToken <- auth.auditGet(s"/audit/events?userId=$userId", OAuthClient.Authenticated.No)
-        wrongKey <- auth.auditGet(s"/audit/events?userId=$userId", OAuthClient.Authenticated.WrongKey)
-        tooEarly <- auth.auditGet(s"/audit/events?userId=$userId&from=${Instant.now.minusSeconds(8 * 86400)}")
-        reversed <- auth.auditGet(s"/audit/events?userId=$userId&from=${Instant.now}&to=${Instant.now.minusSeconds(60)}")
-        notAUser <- auth.auditGet("/audit/events?userId=not-a-uuid")
-        badCursor <- auth.auditGet(s"/audit/events?userId=$userId&cursor=garbage")
-        badLimit <- auth.auditGet(s"/audit/events?userId=$userId&limit=501")
-        noUser <- auth.auditGet("/audit/events")
-        summaryNoToken <- auth.auditGet(s"/audit/summary?userId=$userId", OAuthClient.Authenticated.No)
-        unknownUser <- auth.auditGet(s"/audit/events?userId=${java.util.UUID.randomUUID()}")
+        noToken <- auth.auditGet(s"/users/audit-events?id=$userId", OAuthClient.Authenticated.No)
+        wrongKey <- auth.auditGet(s"/users/audit-events?id=$userId", OAuthClient.Authenticated.WrongKey)
+        tooEarly <- auth.auditGet(s"/users/audit-events?id=$userId&from=${Instant.now.minusSeconds(8 * 86400)}")
+        reversed <- auth.auditGet(s"/users/audit-events?id=$userId&from=${Instant.now}&to=${Instant.now.minusSeconds(60)}")
+        notAUser <- auth.auditGet("/users/audit-events?id=not-a-uuid")
+        badCursor <- auth.auditGet(s"/users/audit-events?id=$userId&cursor=garbage")
+        badLimit <- auth.auditGet(s"/users/audit-events?id=$userId&limit=501")
+        noUser <- auth.auditGet("/users/audit-events")
+        summaryNoToken <- auth.auditGet(s"/users/audit-summary?id=$userId", OAuthClient.Authenticated.No)
+        unknownUser <- auth.auditGet(s"/users/audit-events?id=${java.util.UUID.randomUUID()}")
         unknownBody <- unknownUser.body.asString
       yield assertTrue(
         noToken.status == Status.Unauthorized,

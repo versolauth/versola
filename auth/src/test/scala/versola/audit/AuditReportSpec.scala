@@ -4,6 +4,13 @@ import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.audit.AuditReadRepository.{ClientCount, Factor, IpCount, KindCount, SessionCount, Summary, UserAgentCount}
 import versola.audit.AuditReportService.{EventsPage, SummaryReport}
 import versola.auth.TestEnvConfig
+import versola.oauth.challenge.passkey.PasskeyRepository
+import versola.oauth.challenge.password.PasswordService
+import versola.oauth.conversation.limit.ChallengeThrottleRepository
+import versola.oauth.logout.LogoutService
+import versola.oauth.session.SessionService
+import versola.user.UserController
+import versola.user.UserRepository
 import versola.util.audit.*
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.net.GeoResolver
@@ -18,7 +25,7 @@ import java.time.Instant
 import java.util.UUID
 import javax.crypto.SecretKey
 
-/** The per-user report auth serves central (`GET /audit/events` and `/audit/summary`, every input a typed query parameter): the window it accepts, the pages and
+/** The per-user report auth serves central (`GET /users/audit-events` and `/users/audit-summary`, every input a typed query parameter): the window it accepts, the pages and
   * the cursor between them, the shape of the answers that central codes against, and who may ask. */
 object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
 
@@ -270,13 +277,13 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
         )
       },
     ) @@ atStart,
-    suite("AuditController")(
+    suite("The report routes of UserController")(
       test("answers the events as central codes against them: events, nextCursor and retentionFrom") {
         val repository = stub[AuditReadRepository]
         val shown = event(start.minusSeconds(10))
         for
           _ <- repository.userEvents.succeedsWith(List(shown))
-          response <- call(repository, s"/audit/events?userId=$user")
+          response <- call(repository, s"/users/audit-events?id=$user")
           body <- response.body.asString
           json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
         yield assertTrue(
@@ -295,9 +302,9 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
         val cursor = AuditCursor(start.minusSeconds(40), UUID.fromString("0192b3c0-0000-7000-8000-0000000000ff"))
         for
           _ <- repository.userEvents.succeedsWith(Nil)
-          ok <- call(repository, s"/audit/events?userId=$user&from=${start.minusSeconds(60)}&to=$start&limit=5&cursor=${cursor.render}")
-          outside <- call(repository, s"/audit/events?userId=$user&from=${start.minusSeconds(retention.toSeconds + 1000)}")
-          reversed <- call(repository, s"/audit/events?userId=$user&from=$start&to=${start.minusSeconds(60)}")
+          ok <- call(repository, s"/users/audit-events?id=$user&from=${start.minusSeconds(60)}&to=$start&limit=5&cursor=${cursor.render}")
+          outside <- call(repository, s"/users/audit-events?id=$user&from=${start.minusSeconds(retention.toSeconds + 1000)}")
+          reversed <- call(repository, s"/users/audit-events?id=$user&from=$start&to=${start.minusSeconds(60)}")
           outsideText <- outside.body.asString
         yield assertTrue(
           ok.status == Status.Ok,
@@ -311,23 +318,23 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
       test("an input that does not decode is 400 before anything is read: the user, from, to, cursor and limit of both endpoints") {
         val repository = stub[AuditReadRepository]
         val paths = List(
-          "/audit/events",
-          "/audit/events?userId=not-a-uuid",
-          s"/audit/events?userId=$user&from=yesterday",
-          s"/audit/events?userId=$user&to=2026-13-45",
-          s"/audit/events?userId=$user&cursor=not-a-cursor!",
-          s"/audit/events?userId=$user&limit=abc",
-          s"/audit/events?userId=$user&limit=0",
-          s"/audit/events?userId=$user&limit=501",
-          "/audit/summary",
-          "/audit/summary?userId=not-a-uuid",
-          s"/audit/summary?userId=$user&from=yesterday",
-          s"/audit/summary?userId=$user&to=tomorrow",
+          "/users/audit-events",
+          "/users/audit-events?id=not-a-uuid",
+          s"/users/audit-events?id=$user&from=yesterday",
+          s"/users/audit-events?id=$user&to=2026-13-45",
+          s"/users/audit-events?id=$user&cursor=not-a-cursor!",
+          s"/users/audit-events?id=$user&limit=abc",
+          s"/users/audit-events?id=$user&limit=0",
+          s"/users/audit-events?id=$user&limit=501",
+          "/users/audit-summary",
+          "/users/audit-summary?id=not-a-uuid",
+          s"/users/audit-summary?id=$user&from=yesterday",
+          s"/users/audit-summary?id=$user&to=tomorrow",
         )
         for
           responses <- ZIO.foreach(paths)(call(repository, _))
-          // a route with the user in the path is no route of this service
-          inPath <- call(repository, s"/audit/users/$user/events")
+          // the routes of the first version are not routes of this service
+          inPath <- call(repository, s"/audit/events?userId=$user")
         yield assertTrue(
           responses.map(_.status).forall(_ == Status.BadRequest),
           inPath.status == Status.NotFound,
@@ -339,8 +346,8 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
         val repository = stub[AuditReadRepository]
         for
           _ <- repository.userEvents.succeedsWith(Nil)
-          one <- call(repository, s"/audit/events?userId=$user&limit=1")
-          top <- call(repository, s"/audit/events?userId=$user&limit=500")
+          one <- call(repository, s"/users/audit-events?id=$user&limit=1")
+          top <- call(repository, s"/users/audit-events?id=$user&limit=500")
         yield assertTrue(
           one.status == Status.Ok,
           top.status == Status.Ok,
@@ -353,7 +360,7 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
         val unknown = event(start.minusSeconds(20)).copy(ip = Some("198.51.100.9"))
         for
           _ <- repository.userEvents.succeedsWith(List(inGermany, unknown))
-          response <- callWith(service(repository, geo("203.0.113.7" -> "DE")), s"/audit/events?userId=$user")
+          response <- callWith(service(repository, geo("203.0.113.7" -> "DE")), s"/users/audit-events?id=$user")
           body <- response.body.asString
           json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
           items = json.get("events").flatMap(_.asArray).map(_.toList.flatMap(_.asObject)).getOrElse(Nil)
@@ -368,7 +375,7 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
         val repository = stub[AuditReadRepository]
         for
           _ <- repository.userSummary.succeedsWith(Summary(Nil, Nil, Nil, Nil, SessionCount(0, 0), Nil, Nil))
-          response <- call(repository, s"/audit/summary?userId=$user")
+          response <- call(repository, s"/users/audit-summary?id=$user")
           body <- response.body.asString
           json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
         yield assertTrue(
@@ -381,7 +388,7 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
         val repository = stub[AuditReadRepository]
         for
           full <- serviceWithNoRoom(repository)
-          response <- callWith(full, s"/audit/events?userId=$user").fork
+          response <- callWith(full, s"/users/audit-events?id=$user").fork
           _ <- TestClock.adjust(AuditReportService.ReadWait)
           answered <- response.join
         yield assertTrue(
@@ -394,9 +401,9 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
         val repository = stub[AuditReadRepository]
         for
           _ <- repository.userEvents.succeedsWith(Nil)
-          none <- call(repository, s"/audit/events?userId=$user", signedWith = None)
-          wrong <- call(repository, s"/audit/events?userId=$user", signedWith = Some(wrongKey))
-          summaryNone <- call(repository, s"/audit/summary?userId=$user", signedWith = None)
+          none <- call(repository, s"/users/audit-events?id=$user", signedWith = None)
+          wrong <- call(repository, s"/users/audit-events?id=$user", signedWith = Some(wrongKey))
+          summaryNone <- call(repository, s"/users/audit-summary?id=$user", signedWith = None)
         yield assertTrue(
           none.status == Status.Unauthorized,
           wrong.status == Status.Unauthorized,
@@ -407,6 +414,15 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
       },
     ).provideSome[Scope](TestClient.layer) @@ TestAspect.silentLogging @@ atStart,
   )
+
+  /** What the other routes of the controller need and the report never touches: a call of one of them would fail the test. */
+  private val unused: ZEnvironment[
+    UserRepository & LogoutService & SessionService & ChallengeThrottleRepository & PasskeyRepository & PasswordService & AuditEvents,
+  ] =
+    ZEnvironment[UserRepository](stub[UserRepository]) ++ ZEnvironment[LogoutService](stub[LogoutService]) ++
+      ZEnvironment[SessionService](stub[SessionService]) ++ ZEnvironment[ChallengeThrottleRepository](stub[ChallengeThrottleRepository]) ++
+      ZEnvironment[PasskeyRepository](stub[PasskeyRepository]) ++ ZEnvironment[PasswordService](stub[PasswordService]) ++
+      ZEnvironment[AuditEvents](stub[AuditEvents])
 
   private val key: SecretKey = TestEnvConfig.coreConfig.central.secretKey
   private val wrongKey: SecretKey = javax.crypto.spec.SecretKeySpec(Array.fill(32)(99.toByte), "AES")
@@ -430,8 +446,8 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
       noop <- NoopTracing.layer.build
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
-          AuditController.routes.provideEnvironment(
-            ZEnvironment[AuditReportService](reports) ++ ZEnvironment[CoreConfig](TestEnvConfig.coreConfig) ++ noop,
+          UserController.routes.provideEnvironment(
+            ZEnvironment[AuditReportService](reports) ++ ZEnvironment[CoreConfig](TestEnvConfig.coreConfig) ++ unused ++ noop,
           ),
         ),
       )

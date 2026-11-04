@@ -18,7 +18,7 @@ object AuditLogRefusalFlowSpec extends E2ESpec:
 
   private def rows(auth: OAuthClient, userId: String, from: Instant): Task[List[Row]] =
     for
-      response <- auth.auditGet(s"/audit/events?userId=$userId&from=$from&limit=500")
+      response <- auth.auditGet(s"/users/audit-events?id=$userId&from=$from&limit=500")
       body <- response.body.asString
       json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
     yield json.get("events").flatMap(_.asArray).map(_.toList.flatMap(_.asObject).flatMap: obj =>

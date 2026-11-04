@@ -1,7 +1,7 @@
 package versola.user
 
 import org.scalamock.stubs.ZIOStubs
-import versola.audit.{AuthActors, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.audit.{AuditReportService, AuthActors, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord, Password}
 import versola.oauth.challenge.passkey.PasskeyRepository
@@ -84,7 +84,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         .provideEnvironment(
           ZEnvironment(users) ++ ZEnvironment(config) ++
             ZEnvironment(logout) ++ ZEnvironment(sessionsService) ++ ZEnvironment(throttle) ++ ZEnvironment(passkey) ++
-            ZEnvironment(password) ++ ZEnvironment[AuditEvents](audit) ++ tracing,
+            ZEnvironment(password) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](stub[AuditReportService]) ++ tracing,
         ),
     )
 
@@ -777,7 +777,9 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ZEnvironment(logoutService) ++
                   ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
                   ZEnvironment(sessionService) ++
-                  ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ tracing,
+                  ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](
+                    stub[AuditReportService],
+                  ) ++ tracing,
               ),
           ),
         )
@@ -812,7 +814,9 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ZEnvironment(logoutService) ++
                   ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
                   ZEnvironment(sessionService) ++
-                  ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ tracing,
+                  ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](
+                    stub[AuditReportService],
+                  ) ++ tracing,
               ),
           ),
         )
@@ -846,7 +850,9 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ZEnvironment(logoutService) ++
                   ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
                   ZEnvironment(sessionService) ++
-                  ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ tracing,
+                  ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](
+                    stub[AuditReportService],
+                  ) ++ tracing,
               ),
           ),
         )

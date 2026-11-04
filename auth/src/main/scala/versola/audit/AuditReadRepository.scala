@@ -7,7 +7,7 @@ import zio.json.{JsonCodec, JsonEncoder}
 import java.time.Instant
 import java.util.UUID
 
-/** The read side of auth's audit log: what the per-user report (central's, over [[AuditController]]) asks for. Every read goes by
+/** The read side of auth's audit log: what the per-user report (central's, over `UserController`'s `/users/audit-events` and `/users/audit-summary`) asks for. Every read goes by
   * `user_id` and a time window, through the index on `(user_id, at)`. */
 trait AuditReadRepository:
 
@@ -25,7 +25,7 @@ object AuditReadRepository:
   case class SessionCount(created: Long, ended: Long) derives JsonCodec
   case class Factor(kind: String, at: Instant) derives JsonCodec
 
-  /** What `GET /audit/summary` answers, less the window, which the service adds. */
+  /** What `GET /users/audit-summary` answers, less the window, which the service adds. */
   case class Summary(
       byKind: List[KindCount],
       byClient: List[ClientCount],

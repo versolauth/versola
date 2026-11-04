@@ -30,7 +30,7 @@ import versola.antifraud.{
   VelocityRepository,
   VelocityRules,
 }
-import versola.audit.{AuditController, AuditReadRepository, AuditReportService, AuthAudit, ClientAuthFailures, PostgresAuditEventRepository}
+import versola.audit.{AuditReadRepository, AuditReportService, AuthAudit, ClientAuthFailures, PostgresAuditEventRepository}
 import versola.cleanup.PostgresCleanupManager
 import versola.oauth.account.{AccountSettingsController, AccountSettingsService}
 import versola.oauth.authorize.{
@@ -203,7 +203,6 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       JwksController.routes,
       MetadataController.routes,
       UserController.routes,
-      AuditController.routes,
       AntifraudListController.routes,
       AntifraudCountersController.routes,
       AntifraudSettingsController.routes,
