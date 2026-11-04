@@ -184,7 +184,7 @@ object AccountSettingsController extends Controller:
     ZIO.serviceWithZIO[OAuthConfigurationService] { service =>
       service.accountResourceSecrets.flatMap:
         case Nil => ZIO.fail(Unauthorized)
-        case secrets => authorizeBasic(request, secrets)
+        case secrets => authorizeBasic(request, secrets) *> noteUserAgent(request)
     }
 
   private def parseAndValidatePasskeyTicket(

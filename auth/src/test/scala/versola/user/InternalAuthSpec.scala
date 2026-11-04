@@ -83,6 +83,23 @@ object InternalAuthSpec extends ZIOSpecDefault:
           named.actor == Some((AuthActors.admin, Some(admin.toString))),
         )
       }.provide(configLayer),
+      test("the user agent an event stores is the short form of the header, never the raw header") {
+        val raw =
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15 " + ("x" * 4000)
+        for
+          token <- makeToken(List("central"))
+          authenticated = zio.http.Request.get(zio.http.URL.empty).addHeader(zio.http.Header.Authorization.Bearer(token))
+          browser <-
+            AuditContext.reset(AuditContext.State.empty)(authorizeInternal(authenticated.addHeader("User-Agent", raw)) *> AuditContext.current)
+          unnamed <-
+            AuditContext.reset(AuditContext.State.empty)(authorizeInternal(authenticated.addHeader("User-Agent", "curl/8")) *> AuditContext.current)
+          none <- AuditContext.reset(AuditContext.State.empty)(authorizeInternal(authenticated) *> AuditContext.current)
+        yield assertTrue(
+          browser.userAgent.exists(ua => ua.length < 64 && !ua.contains("xxxx")),
+          unnamed.userAgent.nonEmpty && unnamed.userAgent.forall(_.length < 64),
+          none.userAgent.isEmpty,
+        )
+      }.provide(configLayer),
       test("a call whose token does not verify names no actor") {
         val wrongKey = SecretKeySpec(Array.fill(32)(99.toByte), "AES")
         for

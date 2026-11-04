@@ -1,8 +1,7 @@
 package versola.oauth.clientauth
 
-import versola.oauth.session.model.UserAgentDetails
+import versola.audit.AuditSupport
 import versola.util.CoreConfig
-import versola.util.audit.AuditContext
 import versola.util.http.{
   Checkpoint,
   ClientIpSource,
@@ -147,10 +146,7 @@ object ClientAuthThrottle:
       Handler.fromFunctionZIO[Request]: request =>
         ZIO.serviceWithZIO[ClientAuthThrottle]: throttle =>
           ZIO.foreachDiscard(literalAddress(request, throttle.settings))(Observability.setIp) *>
-            // The raw header is attacker-controlled and up to 8 KB: the log keeps the short form, or `other` for one that names nothing.
-            ZIO.foreachDiscard(request.headers.get("User-Agent"))(header =>
-              AuditContext.setUserAgent(UserAgentDetails.parse(header).summary.getOrElse("other")),
-            ) *> handler(request)
+            AuditSupport.noteUserAgent(request) *> handler(request)
 
   /** The address the request came from, as text an address column holds (`203.0.113.7`, `0:0:0:0:0:0:0:1`), from the same source as
     * [[address]] but not normalized to a rate-limit key: the audit log keeps the address, not the bucket it is counted in. */

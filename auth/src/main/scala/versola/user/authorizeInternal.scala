@@ -1,6 +1,6 @@
 package versola.user
 
-import versola.audit.AuthActors
+import versola.audit.{AuditSupport, AuthActors}
 import versola.user.model.UserId
 import versola.util.audit.AuditContext
 import versola.util.http.Unauthorized
@@ -26,6 +26,7 @@ def authorizeInternal(request: Request): ZIO[CoreConfig, Unauthorized.type, Unit
           .tapError(err => ZIO.logError(s"Internal auth failed: $err"))
           .orElseFail(Unauthorized)
         _ <- AuditContext.setActor(AuthActors.service, Some("central"))
+        _ <- AuditSupport.noteUserAgent(request)
       yield ()
 
     case _ =>
