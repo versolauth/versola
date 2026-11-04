@@ -20,14 +20,19 @@ object AuditEventsSpec extends UnitSpecBase:
   private val nodeId = "node-1"
   private val owned = TableOwnership(owner = "auth", role = "auth", mayAlter = true)
   private val noReport = PartitionReport(movedFromDefault = 0L, daysLeftInDefault = Nil, created = 0, dropped = 0)
+  private val Issued = AuditKind("thing.issued")
+  private val Refused = AuditKind("thing.refused")
+  private val Changed = AuditKind("thing.changed")
+  private val catalog = AuditCatalog.of(kinds = Set(Issued, Refused, Changed), high = Set(Changed))
+
+  private val svcA = AuditSource("svc-a")
+  private val central = AuditSource("svc-b")
+  private val edge = AuditSource("svc-c")
+  private val admin = ActorType("admin")
+
   private val userId = UUID.fromString("5f1c8f0e-6a3e-4a52-9d3e-2b1c0f6f3a01")
 
-  private val block = AuditEvents.Settings(
-    retention = 7.days,
-    overflow = AuditEvents.Overflow.block,
-    blockTimeout = 2.seconds,
-    events = AuditEvents.EventTiers(tokenRefresh = true, authorizeSuccess = true, parSuccess = true, adminUserViewed = true),
-  )
+  private val block = AuditEvents.Settings(retention = 7.days, overflow = AuditEvents.Overflow.block, blockTimeout = 2.seconds)
   private val drop = block.copy(overflow = AuditEvents.Overflow.drop)
 
   private val sizing =
@@ -40,7 +45,7 @@ object AuditEventsSpec extends UnitSpecBase:
       ZLayer.succeed(api.OpenTelemetry.noop().getTracer("test")),
     )
 
-  private def draft(kind: AuditKind = AuditKinds.TokenIssued, outcome: AuditOutcome = AuditOutcome.success) =
+  private def draft(kind: AuditKind = Issued, outcome: AuditOutcome = AuditOutcome.success) =
     AuditDraft(kind = kind, outcome = outcome)
 
   /** A repository whose first `insertBatch` waits for `gate`, so that the writer is held with one batch in hand while the queue is
@@ -73,10 +78,10 @@ object AuditEventsSpec extends UnitSpecBase:
   private def build(
       f: Fixture,
       settings: AuditEvents.Settings,
-      source: AuditSource = AuditSource.auth,
+      source: AuditSource = svcA,
       sizing: AuditEvents.Sizing = sizing,
   ): ZIO[Scope, Nothing, AuditEvents] =
-    AuditEvents.liveWith(sizing)(source, nodeId).build.map(_.get[AuditEvents]).provideSome[Scope](
+    AuditEvents.liveWith(sizing)(source, nodeId, catalog).build.map(_.get[AuditEvents]).provideSome[Scope](
       ZLayer.succeed[AuditEventRepository](f.repository),
       ZLayer.succeed(settings),
       tracingLayer,
@@ -84,10 +89,10 @@ object AuditEventsSpec extends UnitSpecBase:
     )
 
   private def counter(name: String, source: AuditSource): UIO[Double] =
-    Metric.counter(name).tagged(Set(MetricLabel("source", source.toString))).value.map(_.count)
+    Metric.counter(name).tagged(Set(MetricLabel("source", source.value))).value.map(_.count)
 
   private def gauge(name: String, source: AuditSource): UIO[Double] =
-    Metric.gauge(name).tagged(Set(MetricLabel("source", source.toString))).value.map(_.value)
+    Metric.gauge(name).tagged(Set(MetricLabel("source", source.value))).value.map(_.value)
 
   /** Lets the fibers the test forked run: under the test clock a sleep ends only when the clock moves. */
   private def settle = ZIO.yieldNow.repeatN(20)
@@ -108,16 +113,16 @@ object AuditEventsSpec extends UnitSpecBase:
             _ <- Observability.setUserId(userId.toString) *> Observability.setIp("203.0.113.7") *> Observability.setClientId("client-a")
             _ <- AuditContext.setTenant("tenant-a") *> AuditContext.setUserAgent("Firefox 130 / macOS")
             _ <- AuditContext.setTarget("client", "client-a") *> AuditContext.setChanged(Set("redirect_uris", "name"))
-            _ <- events.record(AuditDraft(kind = AuditKinds.TokenRefused, outcome = AuditOutcome.failure, reason = Some("invalid_grant")))
+            _ <- events.record(AuditDraft(kind = Refused, outcome = AuditOutcome.failure, reason = Some("invalid_grant")))
             written <- until(f, 1)
           yield
             val event = written.flatten.head
             assertTrue(
               written.size == 1,
               event.at == Instant.parse("2026-11-03T10:00:00Z"),
-              event.source == AuditSource.auth,
+              event.source == svcA,
               event.nodeId == nodeId,
-              event.kind == AuditKinds.TokenRefused,
+              event.kind == Refused,
               event.outcome == AuditOutcome.failure,
               event.reason == Some("invalid_grant"),
               event.severity == AuditSeverity.notice,
@@ -145,16 +150,16 @@ object AuditEventsSpec extends UnitSpecBase:
             _ <- AuditContext.setTarget("client", "from-context")
             _ <- events.record(
               AuditDraft(
-                kind = AuditKinds.admin("client", "update"),
+                kind = Changed,
                 outcome = AuditOutcome.success,
-                actor = Some((ActorType.admin, Some("admin-1"))),
+                actor = Some((admin, Some("admin-1"))),
                 userId = Some(userId),
                 target = Some(("client", "from-draft")),
               ),
             )
             written <- until(f, 2).map(_.flatten)
           yield assertTrue(
-            written.map(_.actorType) == List(ActorType.system, ActorType.admin),
+            written.map(_.actorType) == List(ActorType.system, admin),
             written.map(_.actorId) == List(None, Some("admin-1")),
             written.map(_.userId) == List(None, Some(userId)),
             written.map(_.targetId) == List(None, Some("from-draft")),
@@ -193,17 +198,42 @@ object AuditEventsSpec extends UnitSpecBase:
             written <- until(f, 4)
           yield assertTrue(written.map(_.size) == List(1, 2, 2, 1))
       },
+      test("rates the event with the service's catalog") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false)
+            events <- build(f, block, sizing = sizing.copy(queueCapacity = 10, batchSize = 10))
+            _ <- events.record(draft(Changed, AuditOutcome.success))
+            _ <- events.record(draft(Issued, AuditOutcome.success))
+            _ <- events.record(draft(Refused, AuditOutcome.denied))
+            written <- until(f, 1).map(_.flatten)
+          yield assertTrue(written.map(_.severity) == List(AuditSeverity.high, AuditSeverity.info, AuditSeverity.notice))
+      },
+      test("a kind the service did not list is recorded, but counted under the label `other`, so a built kind cannot grow the label") {
+        val labels = (kind: String) => Set(MetricLabel("source", "svc-c"), MetricLabel("kind", kind), MetricLabel("outcome", "success"))
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false)
+            events <- build(f, block, source = edge)
+            otherBefore <- Metric.counter("audit_events_total").tagged(labels("other")).value.map(_.count)
+            builtBefore <- Metric.counter("audit_events_total").tagged(labels("thing.built.by.a.request")).value.map(_.count)
+            _ <- events.record(draft(AuditKind("thing.built.by.a.request")))
+            otherAfter <- Metric.counter("audit_events_total").tagged(labels("other")).value.map(_.count)
+            builtAfter <- Metric.counter("audit_events_total").tagged(labels("thing.built.by.a.request")).value.map(_.count)
+            written <- until(f, 1).map(_.flatten)
+          yield assertTrue(otherAfter - otherBefore == 1.0, builtAfter == builtBefore, written.map(_.kind.value) == List("thing.built.by.a.request"))
+      },
       test("counts the event by kind and outcome") {
         ZIO.scoped:
           for
             f <- fixture(gated = false)
-            events <- build(f, block, source = AuditSource.edge)
+            events <- build(f, block, source = edge)
             before <- Metric.counter("audit_events_total").tagged(
-              Set(MetricLabel("source", "edge"), MetricLabel("kind", "token.refused"), MetricLabel("outcome", "failure")),
+              Set(MetricLabel("source", "svc-c"), MetricLabel("kind", "thing.refused"), MetricLabel("outcome", "failure")),
             ).value.map(_.count)
-            _ <- events.record(draft(AuditKinds.TokenRefused, AuditOutcome.failure))
+            _ <- events.record(draft(Refused, AuditOutcome.failure))
             after <- Metric.counter("audit_events_total").tagged(
-              Set(MetricLabel("source", "edge"), MetricLabel("kind", "token.refused"), MetricLabel("outcome", "failure")),
+              Set(MetricLabel("source", "svc-c"), MetricLabel("kind", "thing.refused"), MetricLabel("outcome", "failure")),
             ).value.map(_.count)
           yield assertTrue(after - before == 1.0)
       },
@@ -213,8 +243,8 @@ object AuditEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             f <- fixture(gated = true)
-            events <- build(f, block, source = AuditSource.central)
-            blockedBefore <- counter("audit_events_blocked_total", AuditSource.central)
+            events <- build(f, block, source = central)
+            blockedBefore <- counter("audit_events_blocked_total", central)
             _ <- events.record(draft())
             _ <- f.started.take
             // The writer holds the first; the queue (two) is filled by the next two; the fourth has to wait.
@@ -227,15 +257,15 @@ object AuditEventsSpec extends UnitSpecBase:
             // The writer rests a second after the batch it was holding, then takes two: there is room.
             _ <- TestClock.adjust(1.second)
             result <- waiting.join.exit
-            blockedAfter <- counter("audit_events_blocked_total", AuditSource.central)
+            blockedAfter <- counter("audit_events_blocked_total", central)
           yield assertTrue(stillWaiting.isEmpty, result.isSuccess, blockedAfter - blockedBefore == 1.0)
       },
       test("fails the request with AuditUnavailable once the queue has stayed full for blockTimeout, and counts it") {
         ZIO.scoped:
           for
             f <- fixture(gated = true)
-            events <- build(f, block, source = AuditSource.central)
-            unavailableBefore <- counter("audit_events_unavailable_total", AuditSource.central)
+            events <- build(f, block, source = central)
+            unavailableBefore <- counter("audit_events_unavailable_total", central)
             _ <- events.record(draft())
             _ <- f.started.take
             _ <- events.record(draft()) *> events.record(draft())
@@ -244,15 +274,15 @@ object AuditEventsSpec extends UnitSpecBase:
             early <- TestClock.adjust(1.second) *> waiting.poll
             _ <- TestClock.adjust(1.second)
             result <- waiting.join
-            unavailableAfter <- counter("audit_events_unavailable_total", AuditSource.central)
+            unavailableAfter <- counter("audit_events_unavailable_total", central)
           yield assertTrue(early.isEmpty, result == Exit.fail(AuditUnavailable), unavailableAfter - unavailableBefore == 1.0)
       },
       test("recordBestEffort does not fail when the queue stays full: the event is dropped and counted") {
         ZIO.scoped:
           for
             f <- fixture(gated = true)
-            events <- build(f, block, source = AuditSource.central)
-            droppedBefore <- counter("audit_events_dropped_total", AuditSource.central)
+            events <- build(f, block, source = central)
+            droppedBefore <- counter("audit_events_dropped_total", central)
             _ <- events.record(draft())
             _ <- f.started.take
             _ <- events.record(draft()) *> events.record(draft())
@@ -260,7 +290,7 @@ object AuditEventsSpec extends UnitSpecBase:
             _ <- settle
             _ <- TestClock.adjust(2.seconds)
             _ <- waiting.join
-            droppedAfter <- counter("audit_events_dropped_total", AuditSource.central)
+            droppedAfter <- counter("audit_events_dropped_total", central)
           yield assertTrue(droppedAfter - droppedBefore == 1.0)
       },
       test("a write that fails is kept and tried again every interval, until it is written, with the same events") {
@@ -286,12 +316,12 @@ object AuditEventsSpec extends UnitSpecBase:
         ZIO.scoped:
           for
             f <- fixture(gated = true)
-            events <- build(f, drop, source = AuditSource.edge)
-            droppedBefore <- counter("audit_events_dropped_total", AuditSource.edge)
+            events <- build(f, drop, source = edge)
+            droppedBefore <- counter("audit_events_dropped_total", edge)
             _ <- events.record(draft())
             _ <- f.started.take
             results <- ZIO.foreach(1 to 4)(_ => events.record(draft()).exit)
-            droppedAfter <- counter("audit_events_dropped_total", AuditSource.edge)
+            droppedAfter <- counter("audit_events_dropped_total", edge)
           yield assertTrue(results.forall(_.isSuccess), droppedAfter - droppedBefore == 2.0)
       },
     ),
@@ -299,16 +329,16 @@ object AuditEventsSpec extends UnitSpecBase:
       test("what is queued when the scope closes is written once more on the way out, and the batch in hand is counted failed") {
         for
           f <- fixture(gated = true)
-          failedBefore <- counter("audit_events_failed_total", AuditSource.edge)
+          failedBefore <- counter("audit_events_failed_total", edge)
           _ <- ZIO.scoped:
             for
-              events <- build(f, block, source = AuditSource.edge)
+              events <- build(f, block, source = edge)
               _ <- events.record(draft())
               _ <- f.started.take
               _ <- events.record(draft()) *> events.record(draft())
             yield ()
           written <- f.written.get
-          failedAfter <- counter("audit_events_failed_total", AuditSource.edge)
+          failedAfter <- counter("audit_events_failed_total", edge)
         yield assertTrue(written.map(_.size) == List(2), failedAfter - failedBefore == 1.0)
       },
     ),
@@ -340,10 +370,10 @@ object AuditEventsSpec extends UnitSpecBase:
               noReport.copy(daysLeftInDefault = List(LocalDate.parse("2026-11-04"), LocalDate.parse("2026-11-05"))),
             )
             _ <- f.repository.partitionDaysAhead.succeedsWith(1)
-            _ <- build(f, block, source = AuditSource.edge)
+            _ <- build(f, block, source = edge)
             _ <- settle
-            inDefault <- gauge("audit_events_in_default", AuditSource.edge)
-            ahead <- gauge("audit_partitions_ahead", AuditSource.edge)
+            inDefault <- gauge("audit_events_in_default", edge)
+            ahead <- gauge("audit_partitions_ahead", edge)
           yield assertTrue(inDefault == 2.0, ahead == 1.0, f.repository.maintainPartitions.calls.size == 1)
       },
       test("a service that does not own the table sets the gauge and attempts no partition DDL") {
@@ -351,18 +381,18 @@ object AuditEventsSpec extends UnitSpecBase:
           for
             f <- fixture(gated = false)
             _ <- f.repository.ownership.succeedsWith(TableOwnership(owner = "migrator", role = "versola-auth", mayAlter = false))
-            _ <- build(f, block, source = AuditSource.edge)
+            _ <- build(f, block, source = edge)
             _ <- settle
-            mismatch <- gauge("audit_partition_owner_mismatch", AuditSource.edge)
+            mismatch <- gauge("audit_partition_owner_mismatch", edge)
           yield assertTrue(mismatch == 1.0, f.repository.maintainPartitions.calls.isEmpty)
       },
       test("a role that owns the table clears the gauge") {
         ZIO.scoped:
           for
             f <- fixture(gated = false)
-            _ <- build(f, block, source = AuditSource.edge)
+            _ <- build(f, block, source = edge)
             _ <- settle
-            mismatch <- gauge("audit_partition_owner_mismatch", AuditSource.edge)
+            mismatch <- gauge("audit_partition_owner_mismatch", edge)
           yield assertTrue(mismatch == 0.0, f.repository.maintainPartitions.calls.size == 1)
       },
       test("a run that fails is tried again after a minute, not after the interval, and the days ahead are read after it") {

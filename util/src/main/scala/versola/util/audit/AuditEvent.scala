@@ -6,8 +6,7 @@ import zio.json.{JsonCodec, JsonEncoder}
 import java.time.Instant
 import java.util.UUID
 
-/** One row of the audit log, as it is stored and as it is served (the wire form of auth's per-user endpoints and the replica's
-  * view): the field names are the JSON member names. `details` is the kind's own payload ([[AuditDetails]]). */
+/** One row of the audit log, as it is stored and as it is served (the wire form a service serves and the replica's view): the field names are the JSON member names. `details` is the kind's own payload ([[AuditDetails]]). */
 case class AuditEvent(
     id: UUID,
     at: Instant,

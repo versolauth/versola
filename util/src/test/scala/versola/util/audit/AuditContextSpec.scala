@@ -21,6 +21,9 @@ object AuditContextSpec extends ZIOSpecDefault:
       ZLayer.succeed(api.OpenTelemetry.noop().getTracer("test")),
     )
 
+  private val Admin = ActorType("admin")
+  private val Service = ActorType("service")
+
   private val userId = UUID.fromString("5f1c8f0e-6a3e-4a52-9d3e-2b1c0f6f3a01")
 
   /** What each request's handler saw of the context when it started, in order. */
@@ -32,7 +35,7 @@ object AuditContextSpec extends ZIOSpecDefault:
             before <- AuditContext.current
             _ <- seen.update(_ :+ before)
             _ <- AuditContext.setTenant("tenant-a") *> AuditContext.setTarget("client", "client-a") *> AuditContext.setChanged(Set("name"))
-            _ <- AuditContext.setActor(ActorType.admin, Some("admin-1")) *> AuditContext.setUser(userId)
+            _ <- AuditContext.setActor(Admin, Some("admin-1")) *> AuditContext.setUser(userId)
           yield Response.text("ok"),
         Method.GET / "look" -> Handler.fromFunctionZIO[Request]: _ =>
           AuditContext.current.flatMap(state => seen.update(_ :+ state)).as(Response.text("ok")),
@@ -77,12 +80,12 @@ object AuditContextSpec extends ZIOSpecDefault:
         _ <- AuditContext.setTenant("tenant-a")
         _ <- AuditContext.setTarget("client", "client-a") *> AuditContext.setTarget("user", "u-1")
         _ <- AuditContext.setChanged(Set("a")) *> AuditContext.setChanged(Set("b", "c"))
-        _ <- AuditContext.setActor(ActorType.service, Some("central")) *> AuditContext.setUser(userId) *> AuditContext.setUserAgent("UA")
+        _ <- AuditContext.setActor(Service, Some("central")) *> AuditContext.setUser(userId) *> AuditContext.setUserAgent("UA")
         state <- AuditContext.current
       yield assertTrue(
         state == AuditContext.State(
           tenantId = Some("tenant-a"),
-          actor = Some((ActorType.service, Some("central"))),
+          actor = Some((Service, Some("central"))),
           userId = Some(userId),
           target = Some(("user", "u-1")),
           changed = Set("b", "c"),
