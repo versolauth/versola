@@ -56,6 +56,17 @@ final class EdgeApi(client: Client, config: E2EConfig):
   def complete(params: (String, String)*): Task[Response] =
     send(Method.GET, "/complete", params, None, EdgeAuth.None)
 
+  /** `/complete` as the browser that began the login sends it: the `EDGE_LOGIN_<state>` cookie `/login`
+    * set comes back with the callback. A callback taken to another browser is `callback.copy(loginCookie = None)`
+    * -- or the cookie of a different login.
+    */
+  def complete(callback: EdgeCallback): Task[Response] =
+    completeWith(callback.loginCookie, "code" -> callback.code, "state" -> callback.state)
+
+  /** `/complete` carrying `cookie`, the login cookie of whichever browser the test says is calling. */
+  def completeWith(cookie: Option[(String, String)], params: (String, String)*): Task[Response] =
+    send(Method.GET, "/complete", params, None, EdgeAuth.None, cookie.toList)
+
   /** The URL of `POST /native/{endpoint}/{clientId}` (#420) -- also the `htu` a start proof
     * is signed for. */
   def nativeUrl(endpoint: String, clientId: String): String =
@@ -211,7 +222,7 @@ final class EdgeApi(client: Client, config: E2EConfig):
         .orElseFail(RuntimeException(s"the OP returned no authorization code: $back"))
       state <- ZIO.fromOption(backUrl.queryParams.getAll("state").headOption)
         .orElseFail(RuntimeException(s"the OP returned no state: $back"))
-    yield EdgeCallback(code, state)
+    yield EdgeCallback(code, state, EdgeApi.loginCookie(started))
 
   /** The browser leg of the native flow (#420): the system browser opened on auth's
     * `/authorize` with the `request_uri` `/native/start` handed back, the user signing in, and
@@ -248,7 +259,7 @@ final class EdgeApi(client: Client, config: E2EConfig):
   def browserLogin(auth: OAuthClient, presetId: String, login: String, password: String): Task[EdgeSession] =
     for
       callback <- authorize(auth, presetId, login, password)
-      completed <- complete("code" -> callback.code, "state" -> callback.state)
+      completed <- complete(callback)
       cookie <- ZIO.fromOption(EdgeApi.sessionCookie(completed))
         .orElseFail(RuntimeException(s"/complete set no EDGE_SESSION cookie (status=${completed.status})"))
     yield EdgeSession(cookie, completed)
@@ -272,6 +283,7 @@ final class EdgeApi(client: Client, config: E2EConfig):
       query: Seq[(String, String)],
       body: Option[Json],
       auth: EdgeAuth,
+      cookies: List[(String, String)] = Nil,
   ): Task[Response] =
     for
       url <- ZIO.fromEither(URL.decode(s"${config.edgeUrl}$path")).mapError(RuntimeException(_))
@@ -280,7 +292,9 @@ final class EdgeApi(client: Client, config: E2EConfig):
         url = url.addQueryParams(query.toList),
         body = body.fold(Body.empty)(json => Body.fromString(zio.json.EncoderOps(json).toJson)),
       )
-      response <- Client.batched(authenticate(base, auth)).provide(ZLayer.succeed(client))
+      withCookies = NonEmptyChunk.fromIterableOption(cookies.map((name, value) => Cookie.Request(name, value)))
+        .fold(base)(chunk => base.addHeader(Header.Cookie(chunk)))
+      response <- Client.batched(authenticate(withCookies, auth)).provide(ZLayer.succeed(client))
     yield response
 
   private def formBody(fields: List[(String, String)]): Body =
@@ -293,8 +307,9 @@ final class EdgeApi(client: Client, config: E2EConfig):
 /** What the OS hands a native app from auth's redirect to its App Link. */
 case class NativeCallback(redirect: String, code: String, state: String, iss: String)
 
-/** The parameters the OP hands back to the edge's `/complete`. */
-case class EdgeCallback(code: String, state: String)
+/** The parameters the OP hands back to the edge's `/complete`, with the `EDGE_LOGIN_<state>` cookie `/login`
+  * set on the browser that began the login. */
+case class EdgeCallback(code: String, state: String, loginCookie: Option[(String, String)])
 
 /** What the browser keeps after a completed edge login. */
 case class EdgeSession(cookie: String, response: Response):
@@ -305,6 +320,12 @@ case class EdgeSession(cookie: String, response: Response):
 
 object EdgeApi:
   val sessionCookieName = "EDGE_SESSION"
+  val loginCookiePrefix = "EDGE_LOGIN_"
+
+  /** The `EDGE_LOGIN_<state>` cookie a `/login` response sets, as the (name, value) a browser would send back. */
+  def loginCookie(response: Response): Option[(String, String)] =
+    response.headers.getAll(Header.SetCookie)
+      .collectFirst { case header if header.value.name.startsWith(loginCookiePrefix) => header.value.name -> header.value.content }
 
   val live: ZLayer[Client & E2EConfig, Nothing, EdgeApi] =
     ZLayer.fromFunction(EdgeApi(_, _))
