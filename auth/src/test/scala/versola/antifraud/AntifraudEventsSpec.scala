@@ -16,6 +16,7 @@ import versola.util.net.{
   RangeDatabase,
   RangeDatabaseLoader,
 }
+import versola.util.partitions.TableOwnership
 import versola.util.{Email, Phone, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.json.*
@@ -557,6 +558,29 @@ object AntifraudEventsSpec extends UnitSpecBase:
           limitOpen <- run(List(germany), SmsLimit(sentPerHour = 5, minVolume = 0, minConversion = 0.1))
         yield assertTrue(open, !closed, !limitOpen)
       },
+      test("a range whose codes are all passed by passkey stays open, and one whose codes nobody passes is closed") {
+        val closedGermany = PhoneRegion(region = "DE", dialCode = "+49", length = 11, regex = ".*", registration = false)
+        val breaker = SmsLimit(sentPerHour = 0, minVolume = 5, minConversion = 0.5)
+        def run(passed: AntifraudOutcome | Null) =
+          val e = env
+          ZIO.scoped:
+            for
+              _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+              _ <- e.configService.getPhoneRegions.succeedsWith(List(closedGermany))
+              _ <- e.repository.insertBatch.succeedsWith(())
+              _ <- TestClock.setTime(t0)
+              events <- build(e, small, tuning = AntifraudTestSettings.tuning.copy(smsLimits = SmsLimits(default = breaker, byPrefix = Map.empty)))
+              _ <- ZIO.foreachDiscard(1 to 5): _ =>
+                events.allowSms(clientId, phone, t0, charge = true) *>
+                  ZIO.foreachDiscard(Option(passed))(outcome => events.otpChecked(authId, clientId, None, Right(phone), outcome.nn))
+              allowed <- events.allowSms(clientId, phone, t0, charge = false).map(_ != SmsBudget.Decision.Refused)
+            yield allowed
+        for
+          byPasskey <- run(AntifraudOutcome.passkey_alternative)
+          byCode <- run(AntifraudOutcome.verified)
+          nobody <- run(null)
+        yield assertTrue(byPasskey, byCode, !nobody)
+      },
       test("with no budget configured nothing is looked up") {
         val e = env
         ZIO.scoped:
@@ -1051,6 +1075,54 @@ object AntifraudEventsSpec extends UnitSpecBase:
             third.firedRules == List("velocity_ip_1m"),
           )
       },
+      test("a challenged request made again with its answer is judged on the counts it is in, not as one request more, while a new one after it is") {
+        val e = env
+        // Challenge from 30; a request is the 3rd of the minute and so over its limit of 2 (30), and the 4th of the ten
+        // minutes would be over that limit of 3 too (60, Block).
+        val tuned = AntifraudTestSettings.tuning.copy(
+          challengeAt = 30,
+          blockAt = 50,
+          thresholds = AntifraudTestSettings.thresholds.copy(ip = AntifraudTestSettings.limit.copy(perMinute = 2, perTenMinutes = 3, weight = 30)),
+        )
+        val vsettings = AntifraudTestSettings.velocity.copy(enabled = true)
+        val velocity = VelocityCounters(vsettings, AntifraudTestSettings.velocityLimits, tuned.thresholds)
+        val engine = AntifraudTestSettings.engine(
+          AntifraudTestSettings.decision.copy(enabled = true, timeout = 1.second, failureAction = DecisionAction.Allow),
+          List(AntifraudTestSettings.velocityRules(vsettings, tuned)),
+          tuned,
+        )
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(
+              e,
+              small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true), velocity = vsettings),
+              antifraud = engine,
+              velocity = velocity,
+              tuning = tuned,
+            )
+            _ <- Observability.setIp("203.0.113.7")
+            first <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            second <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            challenged <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            answered <- events.decideOtpRequest(clientId, None, Right(phone), repeated = true)
+            answeredAgain <- events.decideOtpRequest(clientId, None, Right(phone), repeated = true)
+            next <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+          yield assertTrue(
+            first.action == DecisionAction.Allow,
+            second.action == DecisionAction.Allow,
+            challenged.action == DecisionAction.Challenge,
+            challenged.firedRules == List("velocity_ip_1m"),
+            // its own record does not tip it over the other limit
+            answered == challenged,
+            answeredAgain == challenged,
+            // a new request after it is the 4th, and judged as such
+            next.action == DecisionAction.Block,
+            next.firedRules == List("velocity_ip_1m", "velocity_ip_10m"),
+          )
+      },
     ),
     suite("describing a step")(
       test("keeps a keyed hash of the number and its leading digits, never the number") {
@@ -1095,6 +1167,25 @@ object AntifraudEventsSpec extends UnitSpecBase:
             written(0).subjectHash != written(2).subjectHash,
             written(1).action == AntifraudAction.otp_verify,
             written(0).tenantId.isEmpty,
+          )
+      },
+      test("a code page left for a passkey is written as a verification event with its own outcome, of the number it was asked for") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(None)
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small, sizing = smallSizing.copy(queueCapacity = 10))
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.faked)
+            _ <- events.otpChecked(authId, clientId, None, Right(phone), AntifraudOutcome.passkey_alternative)
+            _ <- TestClock.adjust(0.seconds)
+            _ <- TestClock.adjust(1.second)
+            written = e.repository.insertBatch.calls.flatten
+          yield assertTrue(
+            written.map(_.outcome) == List(AntifraudOutcome.faked, AntifraudOutcome.passkey_alternative),
+            written(1).action == AntifraudAction.otp_verify,
+            written(1).conversationId == authId,
+            written(1).subjectHash == written(0).subjectHash,
           )
       },
       test("a secret of its own keys the hash; without one the sessions secret does, so a config that predates it still works") {

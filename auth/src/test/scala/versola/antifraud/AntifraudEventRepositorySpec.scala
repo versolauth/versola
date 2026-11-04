@@ -192,6 +192,8 @@ trait AntifraudEventRepositorySpec extends DatabaseSpecBase[AntifraudEventReposi
               at(8, AntifraudOutcome.challenged),
               at(9, AntifraudOutcome.challenge_failed),
               at(10, AntifraudOutcome.challenge_passed),
+              // a code passed by passkey is no request, and converts the code that was sent as a verification does
+              at(11, AntifraudOutcome.passkey_alternative, AntifraudAction.otp_verify),
               // an address, and a minute outside the window
               event(minute.plusSeconds(7), AntifraudOutcome.sent).copy(channel = AntifraudChannel.email, destPrefix = None),
               at(70, AntifraudOutcome.sent),
@@ -213,7 +215,7 @@ trait AntifraudEventRepositorySpec extends DatabaseSpecBase[AntifraudEventReposi
               requests = 3,
               sent = 2,
               throttled = 1,
-              verified = 1,
+              verified = 2,
               wrong = 1,
               fakeVerifies = 1,
             ),

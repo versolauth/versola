@@ -367,9 +367,15 @@ nothing.
    → *Publish*.
 2. **Wait for the images:** `docker-tools`, `docker-auth`, `docker-central`, `docker-edge` green.
 3. **Check the release does not *edit* an applied migration** — only adding is safe. On a clone with
-   both tags: `git diff --name-status <old>..<new> -- '*/postgres/migrations'` must show only `A`
-   lines (or check *Files changed* at `…/versola/compare/<old>...<new>`). An edited migration fails
-   Flyway's checksum validation and leaves only [recreating that schema](#recreating-the-database).
+   both tags: `git diff --name-status <old>..<new> -- '*/postgres/migrations/*'` must show only `A`
+   lines (or check *Files changed* at `…/versola/compare/<old>...<new>`). Keep the trailing `/*`:
+   migrations live deeper (for example `auth/implementations/postgres/migrations/V0015__….sql`), and
+   without it the pathspec matches nothing, so the command prints nothing, which looks like "all
+   safe". An edited migration fails Flyway's checksum validation and leaves only
+   [recreating that schema](#recreating-the-database).
+   `A` only means nothing was edited, not that the new migrations are compatible with the previous
+   version, which keeps serving while they run (a dropped or renamed column breaks it). Read what was
+   added: `git diff <old>..<new> -- '*/postgres/migrations/*'`.
 4. **On the host**, update the CLI and take a dump right before `migrate` (the cluster has its own
    backups, but this one matches the schema you are about to change; migrations cannot be rolled
    back, the dump is the rollback):
@@ -466,6 +472,24 @@ dump and the rollback is lost. With extra replicas of `auth` or `edge`, remove t
 (`versola replica remove auth|edge <n>`): `configure` refuses while a service has more than one. An
 unfinished `versola rollout` is undone with `versola rollout --abort` instead; secrets the new
 version added stay in OpenBao either way.
+
+#### Behaviour change: edge binds a login to the browser that began it (login CSRF on `/complete`)
+
+`/login/{presetId}` now sets an `EDGE_LOGIN_<state>` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`, `Path` =
+the path of the preset's `redirect-uri`, `Max-Age` 10 minutes) and `/complete` finishes a login only for a
+request that brings it back; any other gets the `400` an unknown `state` gets. Before, whoever held a valid
+`/complete?code&state` link was signed in as the account that produced it. Edge stores only a SHA-256 hash of
+the secret, in `pending_logins.browser_binding_hash` (migration `V2008`, nullable).
+
+- **Migration.** Additive, so the previous release keeps serving on the new schema and a rollback works.
+- **Rolling out.** A login begun before the upgrade has no hash and no cookie; it is accepted without the
+  cookie until it expires (10 minutes). There is no setting for this. Edges of both releases behind one
+  balancer are safe: rows written by the old one have no hash.
+- **What to check.** The cookie is host-only and is sent to the path of `redirect-uri`, so `/login` and the
+  redirect URI must be on the same host, as in the table above. A proxy or CDN that strips `Set-Cookie`
+  from the `/login` redirect, or a client that does not keep cookies between `/login` and `/complete`
+  (a script, a load generator without a cookie jar), now gets `400` on `/complete`.
+- The native flow (`/native/*`) never used the pending login and is unaffected.
 
 #### Breaking change (2026-10-25): the access log is set per edge in central, not by environment
 
@@ -654,638 +678,261 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   learns the new key before anything signs with it; keep the old key published until tokens issued
   under it have expired.
 
-- **Antifraud configuration.** Each antifraud key has exactly one home.
-  1. **Tuned during an attack** (the mode, thresholds, weights, limits, the SMS budget's limits, the proof-of-work difficulty,
-     shadow rules): the stored settings below, changed through central's admin API, with no restart.
-  2. **Deployment-level** (a restart is fine): the `antifraud` block of `auth`'s `env.conf`. **Every key is required**
-     (but `lists.max-broad-ttl`, which has a default so that a config written before it existed keeps working), as
-     for the other services: `scripts/gen-env.scala` writes the block (and a config without it, such as one written
-     before the block existed, makes `auth` refuse to start naming the missing key). The chart takes the config from the
-     Secret you give it, so there is nothing to set in the chart's values. The keys, with what the generator writes:
+- **Antifraud configuration.** Each antifraud key has exactly one home. What is tuned during an attack (the mode,
+  thresholds, weights, limits, the SMS budget's limits, the proof-of-work difficulty, shadow rules) is stored settings,
+  changed through central's admin API with no restart (below). Everything else is the `antifraud` block of `auth`'s
+  `env.conf`, and a restart applies a change. **Every key of the block is required**, as for the other services, except
+  `lists.max-broad-ttl` (it has a default, so a config written before it existed keeps working) and the `asn` and `geo`
+  blocks with each of their keys (a config without them keeps loading, the signal being off). `scripts/gen-env.scala`
+  writes the block, and a config without a required key makes `auth` refuse to start, naming it. The chart takes the
+  config from the Secret you give it, so there is nothing to set in the chart's values. The keys, with what the
+  generator writes:
 
-     ```hocon
-     antifraud {
-       retention        = "14 days"    # the event log's partitions; bounds how long personal data is kept
-       stats-interval   = "1 minute"   # how often af_dest_stats is rolled up; a whole number of minutes (auth refuses to start otherwise)
-       stats-retention  = "30 days"
-       sms-budget { prefix-length = 4 }  # digits of a number that make a range (changing it starts the counts over)
-       decision {
-         enabled        = false        # the rule engine; off, nothing is evaluated
-         timeout        = "20 milliseconds"
-         failure-action = "allow"      # allow, challenge, fake or block: what a request gets when the evaluation fails or
-                                       # is too slow, or the stored settings have not been read yet
-         fake-send-delay = "400 milliseconds"  # how long a fake send waits until a real send has been timed (see "A fake send")
-       }
-       velocity { enabled = false, flush-interval = "10 seconds", load-interval = "20 seconds" }
-       tuning   { refresh-interval = "5 seconds" }      # how often a change of the stored settings is looked for
-       lists    { enabled = false, refresh-interval = "5 seconds", audit-retention = "365 days",
-                  max-broad-ttl = "30 days" }  # the longest a network, mail-domain or prefix entry may live (optional)
-       detectors { enabled = false, interval = "1 minute", retention = "90 days" }
-       challenge { enabled = true, ttl = "2 minutes", max-attempts = 5, pause = "20 seconds" }
-       asn      { file = "", url = "", refresh-interval = "24 hours" }   # optional block, see "ASN signal": empty file is off
-       geo      { file = "", url = "", refresh-interval = "7 days" }     # optional block, see "Country signal": empty file is off
-     }
-     ```
-     `decision.fake-send-delay` and `challenge.pause` are the newest keys: an `env.conf` generated before they exist has to be
-     given the lines (or be regenerated) before `auth` of this version starts, as for any other key.
-
-     The `asn` and `geo` blocks are the only ones that may be left out (and so is each of their keys, `hosting-keywords`
-     included): a config written before they existed keeps loading, with the signal off.
-  3. **Never changed**: constants of the service, named in the code of the component and not keys of anything: the event
-     queue and batch sizes, the velocity counters' `max-keys`, `stripes`, `share-from`, `max-flush-rows` and
-     `max-load-keys`, the SMS budget's `max-ranges`, the lists' hit flush, weights, traffic share and startup timeout, and
-     the detectors' pace and analytics. Where the items below name one of them with its value, that is the constant.
-
-  **What is tuned during an attack is not configuration but stored settings** (`af_settings`, migration `V0024`), changed
-  through central's admin API (`GET`/`PUT`/`PATCH`/`DELETE /antifraud/settings`, see `central/open-api/central.yaml`; `GET` needs
-  `antifraud:read`, `PUT`, `PATCH` and `DELETE` the operator's `antifraud:operate`) with no restart, so no loss of the in-memory velocity counters. The
-  configuration has no key for any of them: they are the `mode` (`shadow` or `enforce`, below), the score thresholds (`challengeAt`, `blockAt`), the
-  proof-of-work difficulty (`pow`), the limits and weights of the velocity rules (and `trustedDiscount`), the weight of any
-  rule by name (`ruleWeights`), the rules that only record (`shadowRules`: evaluated and listed in `af_event.rules` as
-  `shadow:<name>`, adding no weight and forcing nothing) and the limits on codes sent (`smsLimits`: a default and one per
-  number prefix, the longest prefix a number starts with deciding; the SMS budget below). There is no delay step: nothing
-  holds an honest user's request back, and a fake send answers as late as a real one recently did, without sending (*A fake
-  send*, below).
-
-  **Every key has a default, and a stored row that lacks one is read with it** (nothing limited or weighed, and `mode`
-  `shadow`): the version that adds a key must not make the row of the version before it unreadable, which would start the
-  service in `failure-action`. A key that is there with a wrong value is still an error. A `PUT` is held to more than ranges
-  (`400`, with the reason as text): `challengeAt` may not be above `blockAt` when both are set, `blockAt` is at least 10 when
-  set, `pow.maxDifficulty` is at most 24, `sentPerHour` and `minVolume` are 0 or at least 20, and a name in `ruleWeights` or
-  `shadowRules` must be a rule of the catalogue below (a typo would match nothing and look like a rule that never fires).
-
-  There is **one row**, for the whole deployment (no per-tenant settings, and no change history yet; the lists keep their
-  own audit). The migration creates the table empty and auth's bootstrap writes the first row, everything off (nothing limited or
-  weighed), if there is none (a row an operator saved is never overwritten); a deployment with no row yet is taken to have
-  everything off. `GET` reads it, `DELETE` puts everything off again, and there are two ways to change it. `PUT` is the
-  **declarative replace** (every key): the mode for service-to-service clients and tooling that hold the desired state
-  themselves. `PATCH` is the **point tuning** (a JSON merge patch, RFC 7396, `application/merge-patch+json`): it changes what it
-  names and leaves the rest, which is what the console and a script want during an attack; its body has the members of the
-  settings and no others (`AntifraudSettingsPatch` in `central/open-api/central.yaml`), `null` puts a setting back to its default
-  (everything off) and removes a `byPrefix` or `ruleWeights` entry. Auth applies the patch to the stored settings and validates the
-  result as a whole, so the same rules apply to both. **An unknown member is refused**: `PUT` and `PATCH` with a key the settings
-  do not have (a misspelt `blokAt`) are `400`, and a stored row with one fails to decode, so an instance keeps the tuning it
-  has (or, starting, decides as `failure-action` says) until the row is corrected; the keys that builds before the removal of the
-  Delay step wrote (`delayAt`, `delayMillis`, `fakeSendDelayMillis`) are still read and ignored. **The row is versioned**
-  (`af_settings.version`, migration `V0027`; 1 for a row that exists, so the first row is version 1 and "no row" is 0): `GET`
-  answers the settings with `version` next to them and the same number as the `ETag`; `PUT` and `PATCH` may be made on the version they were
-  read at, in `If-Match` (preferred) or as `version` in the body (both given must agree), and then answer `412` (with the current
-  version as the `ETag`) when the row has moved on. **Naming the version is optional, and what it buys is that check**: with it, two
-  admins tuning during the same attack cannot silently overwrite each other; without it a `PUT` replaces whatever is there and
-  the caller takes responsibility for that, and a `PATCH` is applied to what is stored when it is written (once more, on what
-  a concurrent writer left, if it lost a race), so it never overwrites a key it does not name. `DELETE` may name a version
-  and need not. Every change moves the version. A
-  change made by hand in SQL should bump `version` too (and `af_settings_version`, which is what makes the instances
-  reload). Every method of the settings repository runs under a statement timeout (10 s), so a read the refresh fiber waits
-  on cannot hang without `antifraud_tuning_refresh_failed_total` moving. Every instance holds it in
-  memory and rereads it when `af_settings_version` changes, checked every `antifraud.tuning.refresh-interval` (5 s), and in
-  full once a minute; a change applies on the instance that took it at once. **A read that fails keeps the last settings
-  that were read** (`antifraud_tuning_refresh_failed_total`: **alert on it increasing**). An instance that starts with the
-  database unreadable has none yet, and decides every request as `decision.failure-action` says (rule
-  `antifraud_tuning_unavailable`; the SMS limit lets codes through, the velocity counters count) until a read succeeds.
-
-  **Shadow mode (`mode`, default `shadow`).** In `shadow` the engine computes the whole decision (the score and what it
-  comes to against `challengeAt` and `blockAt`, the actions the lists force (`deny`, `fake`), and the SMS budget) and
-  **acts on none of it**: every request is let through as `Allow`, a real code is sent, and what would have happened is
-  recorded. In `enforce` the decision is acted on. The mode is the only switch between them; the finer knobs stay inside
-  `enforce`: a list entry with `shadow` set, and `shadowRules`, only record whatever the mode is. It is the default of
-  every deployment (a `DELETE` of the settings, the first row bootstrap writes, and a row without the key all give
-  `shadow`), so turning `decision.enabled` on changes nothing for the traffic until someone `PUT`s `"mode": "enforce"`.
-
-  What shadow leaves to read:
-
-  - `af_event` (migration `V0025` adds `would_action`): `decision` is what was done and `would_action` what the engine
-    decided, with `score` and `rules`. A decision is written whenever either of the two is not `Allow`, or a rule fired.
-    `SELECT would_action, count(*) FROM af_event WHERE at > now() - interval '1 day' GROUP BY 1` is what enforcing would have
-    done to yesterday's traffic. The SMS budget has no score: a code to a range it would have closed is recorded as
-    `would_action = 'Block'` with the rule `sms_budget` (`sent` is its outcome, because it was). The `receive-http` log line
-    carries `antifraud.would_action` next to `decision`.
-  - Metrics, none of them with a tenant or a value as a label:
-
-    | metric | labels |
-    |---|---|
-    | `antifraud_decisions_total` | `action` (what was done), `would_action` (what was decided) |
-    | `antifraud_rules_fired_total` | `rule` (a name of the catalogue), `shadow` (`true` for a rule in `shadowRules`) |
-    | `antifraud_evaluation_failed_total` | `reason`: `timeout`, `error`, `tuning_unavailable` |
-    | `antifraud_lists_refreshed_timestamp_seconds`, `antifraud_tuning_refreshed_timestamp_seconds` | gauges: when the lists and the stored settings were last read (or found unchanged); alert on `time() - ...` growing, since a refresh that hangs moves no failure counter |
-    | `antifraud_sms_budget_refused_total` | `reason` (`cap`, `conversion`), `mode` (`shadow`, `enforce`) |
-    | `antifraud_list_hits_total` | `list_type`, `value_type`, `shadow` (a hit on an entry that only records) |
-
-    and the older ones: `antifraud_challenges_total{kind,outcome}`, `antifraud_events_*`, `antifraud_velocity_*`,
-    `antifraud_*_refresh_failed_total`.
-  - **A failed evaluation is a decision of its own.** A rule that throws or an evaluation past `decision.timeout` is
-    `failure-action` with the rule `antifraud_error`; the settings not read yet is `failure-action` with
-    `antifraud_tuning_unavailable`. In `shadow` the request is let through and `failure-action` is the would-be action;
-    where the settings have not been read the mode is not known either, so `failure-action` applies as it says. Each is
-    counted in `antifraud_evaluation_failed_total{reason}`: **alert on it increasing**, since a rollout that quietly
-    fails open measures nothing.
-
-  *The rule catalogue*, the names `ruleWeights` and `shadowRules` accept (`GET /antifraud/rules` lists them; the code has them as
-  `Antifraud.ruleNames`): `velocity_<key>_<window>` for the key `phone`, `ip`, `device`,
-  `asn` or `prefix` and the window `1m`, `10m`, `1h` or `24h` (for example `velocity_phone_1h`), `velocity_known_user`,
-  and `<kind>:<value type>` for the kind `deny_list`, `fake_list`, `allow_list`, `shadow_list` or `watch_list` and the
-  value type of a list entry (`phone_hash`, `prefix`, `ip`, `cidr`, `asn`, `device_id`, `ua_hash`, `ja4_hash`,
-  `email_domain`, `country`; for example `deny_list:cidr`), `asn_hosting` (the ASN signal, see "ASN signal"), and `country_mismatch` and `country_outside_regions` (the country signal, see "Country signal"). The two stand-ins of a
-  failed evaluation are not rules.
-
-  *Recommended start against SMS pumping.* Leave `mode` at `shadow`, turn on `decision.enabled` and put the limits in
-  (`PUT` replaces every key, so read the settings first, and send the `ETag` of that read back as `If-Match`, or use `PATCH` for just the keys you change):
-
-  ```json
-  PUT /antifraud/settings        (If-Match: "1")
-  {
-    "settings": {
-      "mode": "shadow",
-      "challengeAt": 20, "blockAt": 50,
-      "pow": {"minDifficulty": 14, "maxDifficulty": 18, "scoreStep": 15},
-      "thresholds": {
-        "phone":  {"perMinute": 0, "perTenMinutes": 0, "perHour": 3,  "perDay": 6,   "weight": 50},
-        "ip":     {"perMinute": 10, "perTenMinutes": 0, "perHour": 0, "perDay": 0,   "weight": 10},
-        "device": {"perMinute": 0, "perTenMinutes": 0, "perHour": 0,  "perDay": 0,   "weight": 60},
-        "asn":    {"perMinute": 0, "perTenMinutes": 0, "perHour": 0,  "perDay": 0,   "weight": 20},
-        "prefix": {"perMinute": 0, "perTenMinutes": 60, "perHour": 200, "perDay": 0, "weight": 30},
-        "trustedDiscount": 40
-      },
-      "smsLimits": {"default": {"sentPerHour": 300, "minVolume": 0, "minConversion": 0.1}, "byPrefix": {}},
-      "ruleWeights": {},
-      "shadowRules": ["asn_hosting"]
+  ```hocon
+  antifraud {
+    retention        = "14 days"    # the event log's partitions; bounds how long personal data is kept
+    stats-interval   = "1 minute"   # how often af_dest_stats is rolled up; a whole number of minutes (auth refuses to start otherwise)
+    stats-retention  = "30 days"
+    sms-budget { prefix-length = 4 }  # digits of a number that make a range (changing it starts the counts over)
+    decision {
+      enabled        = false        # the rule engine; off, nothing is evaluated
+      timeout        = "20 milliseconds"
+      failure-action = "allow"      # allow, challenge, fake or block: what a request gets when the evaluation fails, is too slow,
+                                    # or the stored settings have not been read yet
+      fake-send-delay = "400 milliseconds"  # how long a fake send waits until a real send has been timed
     }
+    velocity { enabled = false, flush-interval = "10 seconds", load-interval = "20 seconds" }
+    tuning   { refresh-interval = "5 seconds" }      # how often a change of the stored settings is looked for
+    lists    { enabled = false, refresh-interval = "5 seconds", audit-retention = "365 days",
+               max-broad-ttl = "30 days" }  # the longest a network, mail-domain or prefix entry may live (optional)
+    detectors { enabled = false, interval = "1 minute", retention = "90 days" }
+    challenge { enabled = true, ttl = "2 minutes", max-attempts = 5, pause = "20 seconds" }
+    asn      { file = "", url = "", refresh-interval = "24 hours" }   # optional block; empty file is off; also an optional hosting-keywords list
+    geo      { file = "", url = "", refresh-interval = "7 days" }     # optional block; empty file is off
   }
   ```
 
-  (`ip` and `asn` weights stay low: carrier-grade NAT shares addresses. `asn_hosting` starts as a shadow rule: see how much
-  honest traffic comes through hosting-class networks (consumer relays and VPNs) before it counts. Size `smsLimits` from the range statistics first.)
-  Run it for at least a week and read what it says it would do: `would_action` in `af_event` against traffic you know to be
-  good, `antifraud_decisions_total{action="Allow",would_action!="Allow"}`, `antifraud_rules_fired_total` for the rules
-  that carry it, `antifraud_sms_budget_refused_total{mode="shadow"}` for the ranges the budget would have closed, the proposals of the detectors. Raise a
-  threshold, or put a noisy rule in `shadowRules`, until what would be refused is what you would refuse; then `PUT` the same
-  settings with `"mode": "enforce"`. Going back is `"mode": "shadow"` (or a `DELETE`, which also puts the limits off); nothing
-  recorded needs undoing.
+  Upgrade: `decision.fake-send-delay` and `challenge.pause` are the newest keys, so an `env.conf` generated before them has
+  to be given the lines (or be regenerated) before `auth` of this version starts. `decision.failure-action` no longer
+  accepts `delay`. Sizes that are constants of the service and not keys: the event queue and batch, the velocity counters'
+  `max-keys` (20000 per kind), `stripes`, `share-from`, `max-flush-rows` and `max-load-keys`, the SMS budget's
+  `max-ranges` (10000), the lists' hit flush (30 seconds), weights and traffic share, and the detectors' pace and
+  thresholds. What each switch does, with the rules and the rollout from `shadow` to `enforce`, is on the Antifraud pages
+  of the documentation (`antifraud/overview`, `antifraud/settings`, `antifraud/rollout`).
 
-  **A fake send.** A request the engine fakes (a `fake` list entry, or a number that is no user's, which is faked whatever
-  the engine says) is answered as a real send would be, and nothing is sent. Were the fake answered at once, a pumper who
-  times the POSTs would see that the fast ones are never delivered and drop those numbers, which would leave `fake` only the
-  false positives. So a fake send is as slow as one of the last 256 real provider sends took, picked at random (what is left
-  of it after the fake's own work, which a real send's time includes too; a ring
-  held in memory per instance, no lock); until one has been timed, after a start, it waits `decision.fake-send-delay`
-  (400 ms). While `decision.enabled` is `false` it does not wait. In `shadow` nothing is faked, so nothing waits.
+  **The module fails open.** A failed evaluation (a rule that throws, `decision.timeout` passed, the stored settings
+  not read yet) gets `decision.failure-action`, recorded under the rule `antifraud_error` or `antifraud_tuning_unavailable`, a failed refresh of the settings or the lists keeps the last ones read,
+  a velocity table that cannot be reached leaves per-instance counts, and a full event queue drops events; nothing of it
+  delays a sign-in. Every switch is off by default (the exception is `challenge.enabled`, which acts only once
+  `decision.enabled` is on and `mode` is `enforce`), and `mode` is `shadow` by default, so turning `decision.enabled` on
+  changes nothing for the traffic until someone sets `mode` to `enforce`.
 
-- **The antifraud event log (`af_event`, migration `V0018`)** is partitioned by day, and `auth` itself creates
-  the partitions (today and seven days ahead, at start-up and every six hours) and drops the ones older than
-  `antifraud.retention` (14 days; a partition is dropped once the whole day it holds is older than that, and the rows of
-  the day the limit falls in that are older than it are deleted every 5 minutes, in batches of 5000 rows each under its own
-  statement timeout and at most 200 batches a run, so the log keeps the retention to the minute and no longer, and the
-  first run after an upgrade on a busy deployment makes progress instead of timing out on a day of rows). A partition can be
-  created or dropped only by the role that owns the parent `af_event`: that is the role `versola migrate` and the Helm
-  migration Job use, which read the same `postgres.user` as the service, so it is `auth`'s own role. A deployment that
-  migrates as a different role must run `ALTER TABLE af_event OWNER TO <auth's role>` once after `migrate`. The service
-  checks this at start and before every maintenance run (every six hours): when its role neither owns the table nor is a
-  member of the owner, it logs an ERROR with the owner, the role and that statement, sets the gauge
-  `antifraud_partition_owner_mismatch` to 1 (0 otherwise) and does not attempt the DDL. The owner change does not reach the
-  partitions that exist: `af_event_default` (below) and the day tables are owned by whoever created them.
-  Since V0030 the partitions are attached and detached without a lock that stops the writer, as far as PostgreSQL allows. A
-  day is made as a table of its own (`CREATE TABLE af_event_YYYYMMDD (LIKE af_event INCLUDING ALL)` with a `CHECK` that
-  carries the day's bounds, so that the attach does not scan it) and then `ALTER TABLE af_event ATTACH PARTITION`, which takes
-  SHARE UPDATE EXCLUSIVE on `af_event` (conflicts with neither reads nor inserts) and ACCESS EXCLUSIVE on `af_event_default`
-  only, for the check that no row there belongs to the new day (so it waits, up to `lock_timeout`, 5 seconds, behind a read of
-  `af_event`, and reads that start meanwhile wait behind it; the writer does not, unless it is writing to the default
-  partition). An old day is `ALTER TABLE af_event DETACH PARTITION` (ACCESS EXCLUSIVE on `af_event`, instantly when nothing
-  reads it; tried with a `lock_timeout` of 500 ms, so the writer's inserts queue behind it for that long at most, and the
-  next run, a minute later, tries again) and then `DROP TABLE` of the detached table (ACCESS EXCLUSIVE on that table alone,
-  `lock_timeout` 5 seconds). `DETACH ... CONCURRENTLY` (PostgreSQL 14 and later) is not used: PostgreSQL refuses it while the
-  table has a default partition. A table named `af_event_YYYYMMDD` that is no partition and is of a day older than the
-  retention (what a run cut off between the detach and the drop leaves) is dropped by the next run. The minimum PostgreSQL
-  version is 12 (the weaker attach); the project's own images and tests use 18. The partitions are created ahead in one phase and the old
-  ones dropped in another, so a drop that cannot get its lock never takes the new
-  partitions with it; both are retried after a minute.
-  **Migration `V0030` adds the default partition `af_event_default`**: an event of a day that has no partition is written
-  there instead of being refused, and when maintenance creates the day's partition it moves that day's rows out of the default
-  first (in batches of 5000 when there are more, then the rest in the transaction that attaches; `ATTACH` fails while the
-  default holds a row of the new day) and logs a warning with the count. Rows older than the retention are deleted from the
-  default by the same 5-minute prune; it is never dropped and the days-ahead gauge ignores it. `CREATE TABLE af_event_default
-  PARTITION OF af_event DEFAULT` takes ACCESS EXCLUSIVE on `af_event` once, for an instant, in the migration (which sets
-  `lock_timeout` to 5 seconds and fails, to be run again, rather than stall the writer's inserts behind it): run `versola migrate`
-  outside a long query on the table. **Alert on the gauge `antifraud_partition_days_ahead` (days after today that have a
-  partition; 7 when healthy) falling below 3, on `antifraud_partition_maintenance_failed_total` increasing, on
-  `antifraud_partition_owner_mismatch` being 1, and on `antifraud_events_moved_from_default_total` increasing** (a day ran
-  without a partition; its events are safe in the default partition, which a query on `af_event` reads like any other). Before
-  V0030 the events of such a day were dropped (`antifraud_events_dropped_total{reason="write_failed"}`). Migration `V0026` drops the two indexes of `af_event` that nothing read
-  (`af_event_subject_idx`, `af_event_dest_idx`, and with them the same index of every partition): the single writer
-  inserts into one B-tree fewer per event, and nothing that reads the table changes (a preview of a phone or a user
-  agent scans the day under its timeout, a preview of a prefix reads `af_dest_stats`). `DROP INDEX` takes a brief
-  exclusive lock on each partition; run `versola migrate` outside a long query on the table.
-  Events are queued in memory and written in batches: a full queue or a failed write drops events and counts them,
-  never delays a sign-in. A restart loses what was queued and unwritten. Under an attack the log is a lower
-  estimate: requests that were turned away (`throttled`, `locked`) give way first once the queue is half full
-  (`reason="throttled_shed"`), and what is still dropped is counted, so read statistics together with that counter.
-  The user agent is stored whole (a header is at most 8 KB), so that the hash an operator makes of it for a `ua_hash` entry
-  matches what a request carries and what `preview` counts, however long it is.
-  Phone numbers and addresses are stored as a keyed hash made with `security.antifraud-subject-secret`
-  (`ANTIFRAUD_SUBJECT_SECRET`, generated like the other secrets that only sign or authenticate): a new one breaks
-  the match between events before and after it, nothing else. A config written before the secret existed has no
-  such key and falls back on `security.sessions-secret`, so an upgrade needs no change, but rotating the sessions
-  secret then changes the hashes too. `versola configure` generates the secret for a deployment that wants its own;
-  the Helm chart reads it from the release's Secret as an optional key, so a release whose Secret predates it keeps
-  starting (an `env.conf` regenerated to reference `${ANTIFRAUD_SUBJECT_SECRET}` needs the key in the Secret too: add the
-  key together with the new config). **The hash is pseudonymous, not anonymous:** the space of phone numbers is small enough to be tried
-  against it by anyone who holds both the table and the key, and with the user agent the rows are personal data.
-  Deleting a user does not delete their events; they leave with `antifraud.retention`, which must not exceed the
-  retention you promise for such data. Rows are not under `cleanup` (the table has no `expires_at`). Its keys are the
-  `antifraud` block of `auth`'s config.
+  **Stored settings (`af_settings`, migration `V0024`; `V0027` adds `version`).** One row for the whole deployment, with the
+  keys `mode` (`shadow` or `enforce`), `challengeAt`, `blockAt`, `pow`, `thresholds` (with `trustedDiscount`), `smsLimits`,
+  `ruleWeights` and `shadowRules`. Every key has a default and a stored row that lacks one is read with it, so a release
+  that adds a key never makes the row of the version before it unreadable. The migration creates the table empty and
+  `auth` writes the first row, everything off, at start if there is none (a row an operator saved is never
+  overwritten). They are changed through central's `GET`/`PUT`/`PATCH`/`DELETE /antifraud/settings` (see
+  `central/open-api/central.yaml`; `GET` needs `antifraud:read`, the others `antifraud:operate`). `PATCH` is a typed
+  settings patch (`AntifraudSettingsPatch` in that file, the members of the settings and no others): it changes what it
+  names, and `null` puts a setting back to its default (everything off) and removes a `byPrefix` or `ruleWeights` entry.
+  **An unknown key is refused**: a `PUT` or `PATCH` with a key the settings do not have (a misspelt `blokAt`) is `400`, and a
+  stored row with one fails to read, so an instance keeps the tuning it has (or, starting, decides as `failure-action`
+  says) until the row is corrected; the three keys that builds before the removal of the Delay step wrote (`delayAt`,
+  `delayMillis`, `fakeSendDelayMillis`) are still read and ignored. `PUT` and `PATCH` may name the version they were
+  read at, in `If-Match`, and are answered `412` if the row has moved on. Every instance
+  holds the row in memory and rereads it when `af_settings_version` changes, checked every
+  `antifraud.tuning.refresh-interval`, and in full once a minute; a change made by hand in SQL has to bump `version` and
+  `af_settings_version` too. An instance that starts with the database unreadable decides every request as
+  `decision.failure-action` says until a read succeeds. The request and response shapes, the validation and the rule
+  names are on the Antifraud settings page of the documentation (`antifraud/settings`).
 
-- **Antifraud lists (`af_list_entry` and `af_list_audit`, migration `V0020`)** hold values the antifraud rules
-  recognise at once (a destination hash, a number prefix, an IP or network, a user-agent hash, the mail domain of an
-  address a code is asked for, an ASN; a device or a JA4 hash is refused until a request carries one, P1-1,
-  since such an entry would match nothing): `deny` blocks, `fake` answers as if the step succeeded, `watch` only adds to the score, `allow`
-  outweighs score-based rules but never a `deny` of the same or a narrower value. The migration only adds tables. They
-  are **off by default** (`antifraud.lists.enabled`, `false`): nothing is read and no rule is contributed until it is
-  turned on. Once on, each instance reads the whole table every `antifraud.lists.refresh-interval` (5 seconds), so a
-  change made through another instance shows within that time, and a refresh that fails keeps the previous lists
-  (`antifraud_list_refresh_failed_total`; fail-open, so alert on it). Hit counters are kept in memory and written every
-  every 30 seconds, expired entries are removed then, in batches of 1000, and audit records older than `antifraud.lists.audit-retention` (365 days) too; a restart loses at most that
-  interval of counts. `watch` adds 20 and `allow` takes off 1000 of the score (`ruleWeights` of the tuned settings replaces either by rule name); they are the score a `watch` adds and
-  an `allow` takes off. The lists are changed through central's admin API (`/antifraud/lists`, `/antifraud/lists/preview`,
-  `/antifraud/lists/audit`, see `central/open-api/central.yaml`), which names the caller and passes the request to `auth`'s internal
-  `/antifraud/lists`; the console has no screen for them yet. A `prefix` entry is 1 to 6 digits (the event log keeps six),
-  not the 4 of the statistics range below. Every statement of the list repository runs under a 10-second `statement_timeout`, so a
-  refresh or a flush that hangs fails (`antifraud_list_refresh_failed_total`) instead of stopping for good. Entries added by SQL skip the audit and the version bump (an
-  instance still picks them up within a minute). The endpoints are central resource endpoints with three permissions:
-  `antifraud:read` (the reads, the rule catalogue and the status), `antifraud:manage` (a tenant's lists) and
-  `antifraud:operate` (the operator's routes, below): every start registers them on the `central` resource and gives them to
-  `oauth-admin` (all permissions), `security` (`read` and `manage`), and the read-only roles (`antifraud:read`, except `viewer`,
-  which sees no PII). `antifraud:operate` is seeded into the default tenant's administrator role (`oauth-admin`) only. Edge tells central who the admin is (an inject rule for `userId` on the calls that change something: a body field, as for the account endpoints, from the verified token and overwriting what a client sent; so a removal is a `DELETE` with a JSON body naming the `id`; a request to such an endpoint whose body is not JSON (`application/json`, or `application/merge-patch+json`) is refused by edge with `415` rather than forwarded unrewritten, which would let a client choose the field edge overwrites), and auth records that user id as who made each change (`created_by`, the audit). Reads of the settings, the rules, the status and the operator's lists need no caller and are told nothing. A change sent to central with the resource secret but no `userId` is `400`.
+- **Antifraud migrations, in `auth`'s migration set** (there is no `V0023`). None is undoable except by a dump, like every
+  migration, and the additions to existing tables are compatible with the previous release, which does not name them.
 
-  **Who may change what.** A tenant's admin (`antifraud:manage`) acts through `/antifraud/lists/...` in the scope of **the tenant
-  of its access token**: edge adds it (`callerTenantId`, from the token's `tenant_id`, overwriting what a client sent; on the
-  reads too) and central sets the scope from the route it was called on and passes it to auth, which decides in one place
-  (`AntifraudScope`); nothing in a body can widen it. Such an admin lists the global entries and its own tenant's, adds entries
-  of its tenant only (an entry that names no tenant is the tenant's; naming another is `403`), removes its tenant's entries only
-  (another tenant's or a global one is `403`, an entry that does not exist `404`), and reads the audit of the entries it can see.
-  The operator (`antifraud:operate`) uses the twin routes `/antifraud/global/lists/...`: global entries and any tenant's, no
-  restriction, plus `PUT`/`PATCH`/`DELETE /antifraud/settings` and `POST /antifraud/counters/reset`. Do not grant `antifraud:operate` to a role of any other tenant: it carries the deployment-wide routes, and a role is
-  all that decides which tenant's admin may use them. Upgrade: an administrator who changed the settings or reset them with `antifraud:manage`
-  now needs `antifraud:operate`.
+  | migration | adds | lock and rewrite |
+  |---|---|---|
+  | `V0018` | `af_event`, the event log: the parent table partitioned by day, with two indexes (`af_event_subject_idx`, `af_event_dest_idx`) | creates the parent only; `auth` creates the partitions (below) |
+  | `V0019` | `af_dest_stats`, the log rolled up per tenant, range of numbers and minute, and a BRIN index `af_event_at_idx` on `af_event (at)` | new table and indexes; the BRIN index is built on `af_event` and its partitions |
+  | `V0020` | `af_list_entry` (fillfactor 80), `af_list_audit` and `af_list_version` (one row, version 0) | new tables only |
+  | `V0021` | `af_velocity`, the velocity counters: `UNLOGGED`, fillfactor 70, vacuumed after 2% of it has died | new table only |
+  | `V0022` | `af_proposal`, and `af_dest_stats.fake_verifies INTEGER NOT NULL DEFAULT 0` (the previous release's rollup does not name it) | new table; a column with a constant default |
+  | `V0024` | `af_settings` (one row, JSONB) and `af_settings_version` | new tables only, created empty |
+  | `V0025` | `af_event.would_action TEXT`, and `auth_conversations.challenge_failed` and `challenge_solved`, `INTEGER NOT NULL DEFAULT 0` (the default is there because the table has rows and the previous release inserts conversations without naming them) | nullable column; two columns with a constant default |
+  | `V0026` | drops `af_event_subject_idx` and `af_event_dest_idx` (and with them the same index of every partition: nothing read them, and the writer inserts into two B-trees fewer per event); adds `af_rollup_state` (one row), `af_list_audit.previous_expires_at`, `previous_reason`, `previous_source`, `previous_shadow` (nullable) and `af_counter_reset` | `DROP INDEX` takes a brief exclusive lock on each partition, under `lock_timeout = 5s`: if it fails, run the migration again, outside a long query on `af_event` |
+  | `V0027` | `af_settings.version BIGINT NOT NULL DEFAULT 1` | constant default |
+  | `V0028` | `af_event.asn INTEGER` and `asn_class TEXT`, nullable, no default, no index | a catalog change on the partitioned table, no rewrite; the `ALTER` runs under `lock_timeout = 5s`, and if it fails the migration is run again |
+  | `V0029` | `af_event.country TEXT`, nullable, no default, no index | as `V0028` |
+  | `V0030` | `af_event_default`, the default partition of `af_event`: an event of a day that has no partition goes there instead of being refused | `CREATE TABLE ... PARTITION OF af_event DEFAULT` takes `ACCESS EXCLUSIVE` on `af_event` once, for an instant, under `lock_timeout = 5s`: if it fails, run the migration again, outside a long query on the table |
 
-  *Reading the state.* `GET /antifraud/rules` lists the names a rule can be fired under (what `ruleWeights` and `shadowRules`
-  are made of) and `GET /antifraud/status` says, for the auth instance that answers, whether `decision` and `lists` are on, the
-  version of the settings it holds and how long ago it last checked them, the age, size and skipped entries of the lists'
-  snapshot and the last refresh error. Both need `antifraud:read`. `POST /antifraud/counters/reset` clears velocity counters
-  or the SMS budget, all or for one phone, address or range of numbers (the support path for "my number gets no code"); it
-  answers `202` with the generation number every instance picks up (see "Resetting the counters" below). A `phone_hash` entry is made from a phone number (`phone`); the
-  number is hashed in `auth` with `security.antifraud-subject-secret` and only the hash is stored.
-  Safety rules the service enforces: `allow` only for an exact subject (phone hash, address, /32 or /128; a network of
-  one address is the address, so a `deny` on `X/32` ties with an `allow` on `X` and wins);
-  entries that name many clients (anything but an exact subject, networks wider than /24 or /48) and automated ones
-  (`source` other than `manual`) must expire; a `cidr` entry is **not wider than /8 (IPv4) or /32 (IPv6)** (`0.0.0.0/0`
-  is every client); a `cidr` wider than /24 (IPv4) or /48 (IPv6), an `email_domain` or a `prefix` entry may be **made to live 30 days at most**
-  (`antifraud.lists.max-broad-ttl`; add it again to extend it); `source` is **set by the server** (`manual` for a request
-  of the API whatever its body says, `detector:<kind>` for an approved proposal), so a client cannot call an entry
-  manual to be rid of the expiry an automated one needs; an upsert of an existing entry is audited as `update` with the
-  previous expiry, reason, source and shadow flag (`previous` in the audit record), the first time as `create`;
-  an enforcing entry that would have matched more than
-  5% of the last 24 hours of events (judged over at least
-  100 events; over the events of the entry's tenant for a tenant's entry, of all tenants for a global one; a prefix is
-  counted from the rolled-up requests of `af_dest_stats`, so a prefix longer than the 4 digits it keeps is counted as
-  the range it falls in, and the guard is as old as the last rollup; an address, network, ASN or mail domain has no
-  column in the log and is not counted) is refused, so add it as a `shadow` entry first (matched and counted, enforces nothing, shows as
-  `shadow_list:<type>` in the fired rules; unrelated to the tuning's `mode`, which holds back the enforcing ones too). **`fake` is for confirmed fraud only:**
-  a real person on a faked number or device is told a code was sent and gets none, so have a support path for "why am
-  I not getting a code". Hits are counted in `antifraud_list_hits_total{list_type,value_type,shadow}`. Starting waits up to
-  30 seconds for the first successful load so that lists are enforced from the first
-  request; if it fails it starts without them, logs it and retries every second. **Rotating
-  `security.antifraud-subject-secret` silently stops every `phone_hash` entry from matching**: re-create them.
+  Upgrade: before this version an administrator who changed the settings or reset them with `antifraud:manage` now needs
+  `antifraud:operate` (below).
 
-- **SMS budget and range statistics (`af_dest_stats`, migration `V0019`).** The service rolls `af_event` up every
-  minute into `af_dest_stats` (per tenant, range of numbers — the first 4 digits, a constant of the service,
-  default, country code included — and minute: codes asked for, sent, refused, verified), keeps 30 days of it
-  (`antifraud.stats-retention`) and reads it for nothing itself yet: it is what an operator or a report asks "which
-  ranges send but do not convert" of. Changing the prefix length mixes lengths in the table; clear it first. The
-  instances share the work: one rolls up per `stats-interval` (a marker, `af_rollup_state`, under the advisory lock; one that
-  finds the last run less than half an interval old skips) and a group of a minute that has not changed is not rewritten, so
-  the rollup leaves no dead tuple for what it recomputes. `stats-interval` is a whole number of minutes (`auth` refuses to
-  start with a fraction). A failed run is logged and counted (`antifraud_stats_rollup_failed_total`) and the
-  next run recomputes the last `stats-lookback` (2 minutes, or twice `stats-interval` when that is longer, so that
-  every minute is rolled up twice; an event the writer was later with than that is never counted, which under an
-  attack makes the statistics a lower estimate, as the log itself is). A BRIN index on `af_event (at)` keeps that read to the
-  blocks of those minutes.
-  Separately, the SMS budget closes a range (tenant plus the first `antifraud.sms-budget.prefix-length` digits) for the next hour:
-  `sentPerHour` (that many codes may be sent to it, no more) and `minVolume` with `minConversion` (a range with at
-  least that many codes sent of which fewer than that share were verified), the tuned setting `smsLimits`. Both are
-  **off by default** (`0`).
-  **Think before turning one on:** a range is an operator's number block, possibly millions of numbers, and a closed
-  range refuses *every* code to it, the legitimate users' included, for up to an hour. The refusal has to be the same
-  for a number that is a user and one that is not (otherwise it would say which are), so existing users cannot be
-  exempted. Where self-registration is open for a number, anyone can ask for codes to its range and leave them
-  unverified, which closes it. For that reason the conversion breaker (`minVolume`) is never applied to a number
-  whose region allows registration (`phoneRegions[].registration`); `sentPerHour` is, so keep it well above the
-  real peak. Where registration is closed, an unknown number gets no real code, is not counted, and so cannot close a
-  range. The other side of that: a code for a user is counted and the stand-in for an unknown number is not, so
-  someone who owns numbers in a range can bring its count to the limit and see by the next refusal whether a
-  candidate number is a user. That oracle exists only where registration is closed, is slow (the range is closed for
-  an hour by each hit, the asker's own numbers included) and costs the asker real codes; where enumeration of numbers
-  matters more than the pumping it protects against, leave `sentPerHour` off. A refusal ends the sign-in in "access denied", the event is `throttled`
-  and `antifraud_sms_budget_refused_total{reason,mode}` counts it (`reason` is `cap` or `conversion`). **In `shadow` mode
-  the code is sent**, counted as sent all the same, the metric says `mode="shadow"` and the event records the would-be refusal
-  (`would_action = 'Block'`, rule `sms_budget`); that is how a limit is sized before it closes anything. The counts are kept in memory per instance, over the last
-  hour, so the limit holds to within the number of instances and starts again from zero after a restart. Only a code
-  that is really sent is counted, in the same step as the check, and given back if it is then not sent. At most
-  10000 ranges are tracked. A full table makes room for a new range by evicting the one with the fewest codes sent in
-  the last hour (the window the limit counts) of **eight picked at random** (`antifraud_sms_budget_evicted_total`), so a flood of made-up ranges
-  replaces other made-up ranges and the busy, closed ones stay; the bound on what an attacker can do is that evicting a
-  closed range takes a sample of eight that are all as busy, which falls off with the eighth power of the share of
-  such ranges in the table. A range that is evicted starts its hour again. Only when no range can be picked is a new one let
-  through untracked (`antifraud_sms_budget_full_total`; a race, so nonzero is rare and is worth an alert), and a steady
-  `antifraud_sms_budget_evicted_total` is a flood of ranges. The hour's counts of one range, or all, can be reset
-  (below). Enforcement of `phoneRegions` is unchanged: a number outside the
-  tenant's regions is refused before the conversation takes it, whatever the budget says.
+- **What runs where.** Everything that decides runs in `auth`: the rule engine, the velocity counters, the lists, the SMS
+  budget, the challenge, the detectors and the event log. `central` serves the admin API (settings, lists, counter reset,
+  rule names, status) and keeps no antifraud state, passing the calls to `auth`'s internal `/antifraud/...` routes. `edge`
+  takes no part in a decision. Auth keeps in memory, per instance: the settings and the lists (reread every
+  `tuning.refresh-interval` and `lists.refresh-interval`; a request never queries the database), the velocity counters
+  (at most 20000 keys of each of five kinds, see the velocity bullet below),
+  the SMS budget's counts over the last hour (at most 10000 ranges), the list hit counters, the event queue, and the
+  ASN and country databases (some 30 MB for the ASN one). A restart loses what was queued and unwritten of the events, the
+  budget's counts and up to the flush interval of the other counts. Postgres holds the tables of the migrations above; the
+  velocity table and the conversations are `UNLOGGED`, so a crash of the database empties them and a standby never
+  receives them. Background jobs, in every instance, with an advisory lock where one instance at a time must run them:
 
-- **Velocity counters (`af_velocity`, migration `V0021`)** count requests per network of the IP address, device, ASN
-  and range of numbers, and **codes sent** per phone (the keyed hash), over the last minute, 10 minutes, hour and day,
-  for the antifraud rules. The phone key is the one that counts sends and not requests: a request that is refused,
-  challenged or faked sends nothing, and were it counted, asking for codes to somebody else's number from anywhere
-  would raise the count held against that number's owner until the number is blocked. So the `phone` limits bound
-  the codes a number can be sent (SMS bombing), and cannot lock its owner out. They
-  count *requests* (or sends), not distinct values: how many different phones one device, address or ASN asked for, or how many
-  ranges one address tried, needs the device identity of P1-1 and is the next thing to build on them. They are **off
-  by default** (`antifraud.velocity.enabled`); nothing is counted, written or read while they are, and no rule fires.
-  The counters' sizes are constants of the service: `max-keys` (20000 per kind), `stripes` (8), `share-from` (3),
-  `max-flush-rows` (20000, a strict cap, the busiest keys first) and `max-load-keys` (20000 per query, the busiest first);
-  `flush-interval` and `load-interval` are keys of the block above. The limits are the tuned setting `thresholds`:
-  `<phone|ip|device|asn|prefix>` with `perMinute`, `perTenMinutes`, `perHour`, `perDay` and `weight` (phone 50, device 60,
-  prefix 30, ip 20, asn 20) and `trustedDiscount` (40): the most requests a key may have in the window, 0 for no limit; a
-  rule fires above it and adds its `weight` to the score the decision thresholds turn into an action. **Keep `ip` and `asn` weights low:** in carrier-grade NAT networks (common in KZ and the CIS) thousands of
-  subscribers share one IPv4 address; a device key outweighs them. The `asn` key is filled from the ASN database (see
-  "ASN signal" below) and counts nothing while it is off. A request of a known user (`device.known` or `session.recent_success` `true` in the rule
-  context, filled by later tasks) that fired a velocity rule gets `trustedDiscount` taken off its score.
-  *Counting what is attacker-chosen.* Memory is bounded by `max-keys` per kind (five kinds). Estimated, not measured on a
-  JVM: a key seen for the first time costs about 0.4 to 0.8 KB (its text, the map entry, and one 8-byte bucket per
-  minute in each of up to `stripes` stripes), so a full table of 100,000 keys is about 50 to 80 MB; every minute a key is
-  active adds 8 bytes in each stripe that recorded it, up to 1440 minutes, so a key busy all day and recorded from every
-  stripe holds up to about 90 to 130 KB (8 stripes). The other instances' counts are held too, per instance and key,
-  about the same again for each other instance at most. A load or a flush briefly holds a list of the rows moved
-  (tens of MB at the most extreme). The sizes are constants: build with smaller ones to spend less.
-  A full table does not stop counting: a new key takes the place of the key with the fewest requests in the last
-  day (the longest window a rule enforces) of **eight picked at random** (`antifraud_velocity_evicted_total`; a steady rate is a flood of throwaway
-  keys), whether or not it was seen again. *The bound:* a key is evicted when every key of a sample of eight is as busy
-  as it, so with a share `h` of the table as busy as a key, it is evicted at a rate of `h^8` per new key (about 4 in 10^11 for
-  5% of the table, 0.07% for 40%): an established key survives a flood of made-up keys unless the table is mostly
-  established keys of its own weight, in which case `max-keys` is too small. The new key is not counted, and its rules do not fire, only
-  when no key can be picked (a race; `antifraud_velocity_untracked_total`). **Alert on `antifraud_velocity_untracked_total`
-  increasing, and on a steady `antifraud_velocity_evicted_total`: both are a sign of an attack or of a `max-keys` too
-  small for the traffic.**
-  *Accuracy.* Counts live in memory per instance; each instance writes its changed minutes to `af_velocity` every
-  `flush-interval` and reads the others' every `load-interval`: the last few minutes each time, and one hour of the older
-  day with them in turn (24 loads cover it, so a flush that was late is found within about 8 minutes); the first load
-  reads the whole day, in 24 queries of an hour each (a query ranks the keys of its range by a sum, keeping the busiest `max-load-keys`, and reads the rows of those keys by their primary key: no row of the range is held for a second step), starting at a random moment within half a `load-interval` so that a deploy does not hit the database from every instance at once, so a count is the instance's own exactly plus the others' as of the last load: **stale by up to
-  `flush-interval + load-interval`, accurate to within `(instances - 1) * (the key's requests per second at one
-  instance) * (flush-interval + load-interval)`**, and by up to `share-from - 1` further requests per instance for a key
-  too quiet to be shared. A window of n minutes is the current minute and the n-1 before it, so the **1-minute window is
-  the current clock minute: a burst across a minute boundary is split, and up to about twice the limit can pass**. A
-  restart keeps the counts the instance had written (they are read back as the others'); what it had not written yet
-  is lost. A database that is down leaves per-instance counts and never slows a request: failures count in
-  `antifraud_velocity_failed_total{what="flush"|"load"|"prune"}` and are logged once per outage.
-  *The table.* `af_velocity` is `UNLOGGED` (rewritten every few seconds, worth a day at most): a crash of the database
-  empties it, and the counts are per instance until it fills again. It is not on a replica. One instance at a time
-  (an advisory lock) deletes the rows older than a day and an hour, every ten minutes, 10000 rows per statement with a
-  rest between. Every flush updates rows (a dead tuple each): the table is created with a fillfactor of 70 and is
-  vacuumed after 2% of it has died.
-  *Personal data.* The key of a phone number is the keyed hash of `af_event`, **not scoped to a tenant**: one number
-  is one key across tenants, so abuse of one tenant weighs on the next and a person's number is correlated across
-  tenants; that is a privacy decision of the operator's, and scoping it per tenant means keying the hash per tenant.
-  An IP address is stored as a keyed hash of its network (`/32` of an IPv4 address, `/64` of an IPv6 one; IPv4-mapped
-  addresses are IPv4), made with a key derived from `security.antifraud-subject-secret` under a label of its own, so
-  the table holds no address. **Rotating `security.antifraud-subject-secret` changes every phone and address key and so
-  starts the counts over** (the old rows expire within a day). The address is the request's `auth.ip`: it is the client's only when the proxies in front set the header as expected.
+  - Events are queued and written in batches by one writer per instance, each statement under a 30-second statement timeout.
+    A full queue or a failed write drops events and counts them, never delaying a sign-in; under an attack the log is a
+    lower estimate.
+  - The partition upkeep of `af_event`: today and seven days ahead are created at start and every six hours, and partitions
+    older than `antifraud.retention` are dropped, in separate phases, both retried after a minute if they fail. The
+    rows of the day the limit falls in that are older than it are deleted every 5 minutes, in batches of 5000 under their
+    own statement timeout, at most 200 batches a run. Since `V0030` a day is made as a table of its own and attached
+    (`ATTACH PARTITION`: `SHARE UPDATE EXCLUSIVE` on `af_event`, which stops neither reads nor inserts, and `ACCESS EXCLUSIVE`
+    on `af_event_default` only, waited for up to 5 seconds), and an old day is detached (`DETACH PARTITION`: `ACCESS
+    EXCLUSIVE` on `af_event`, tried with a `lock_timeout` of 500 ms, so inserts queue behind it for that long at most) and then
+    dropped on its own. `DETACH ... CONCURRENTLY` is not used, PostgreSQL refuses it with a default partition; the minimum
+    PostgreSQL version is 12. Before a day's partition is attached its rows are moved out of `af_event_default` (where an
+    event of a day without a partition is written, instead of being dropped as before `V0030`), with a warning naming the
+    count; the default partition is never dropped and the retention prune deletes from it too.
+  - The rollup of `af_event` into `af_dest_stats` every `stats-interval`, one instance at a time (a marker row in
+    `af_rollup_state` under the advisory lock), recomputing the last 2 minutes (or twice the interval); rows older than
+    `antifraud.stats-retention` are removed.
+  - The velocity counters: each instance writes its changed minutes every `flush-interval` and reads the others'
+    every `load-interval` (its first load reads the whole day, starting at a random moment within half a `load-interval`
+    so that a deploy does not hit the database from every instance at once), and one instance deletes the rows older than
+    a day and an hour every ten minutes, 10000 rows per statement.
+  - The lists: the whole table is reread every `lists.refresh-interval`; every 30 seconds the hit counters are written
+    and the expired entries are removed in batches of 1000, with the audit records older than `lists.audit-retention`.
+    Starting waits up to 30 seconds for the first load of the lists, then starts without them and retries every second.
+  - The detectors, every `detectors.interval`, one instance per detector; the proposals expire after 12 hours and are
+    removed after `detectors.retention`.
+  - Every statement of the lists, settings and counter-reset repositories runs under a 10-second statement timeout, so a
+    refresh that hangs fails and is counted.
+  - The counter reset (`af_counter_reset`): every instance reads new rows every `tuning.refresh-interval` and applies them
+    to its memory.
 
-- **Resetting the counters (`af_counter_reset`, migration `V0026`).** `POST /antifraud/counters/reset` on `auth`'s internal
-  API (central's route for it follows with the admin API) forgets what the velocity counters and the SMS budget have
-  counted: `{ "scope": "velocity" | "budget" | "all", "valueType"?: "phone" | "ip" | "prefix", "value"?: string, "userId": uuid }`,
-  answered `202 { "generation": n }`. Without `valueType` and `value` the whole scope is reset. A `phone` or an `ip` resets
-  the velocity counters of that key only (the budget is per range: a support case for one number does not reopen a
-  range an attack closed), and a `prefix` (1 to 6 digits, every tenant) resets the ranges it is in or contains, in both. It
-  replaces `TRUNCATE af_velocity`, which left the memory of the instances as it was. The request is a row with a
-  generation (also its audit: `requested_by` is the `userId` central names; rows older than
-  `antifraud.lists.audit-retention` are pruned with the list audit, the newest one kept). Every instance reads new rows every
-  `antifraud.tuning.refresh-interval` and forgets the target in memory and its own `af_velocity` rows, then once more,
-  after two refresh intervals plus a flush and a load interval, what it loaded from the others. A reset is therefore
-  complete on every instance **within two refresh intervals plus one flush-and-load cycle**; the instance that took the
-  request forgets at once. An instance that starts later does not replay old resets. Metrics:
-  `antifraud_counters_reset_total{scope}` and `antifraud_counters_reset_failed_total{what="poll"|"delete"}`.
-- **ASN signal (`af_event.asn` and `asn_class`, migration `V0028`).** The autonomous system (AS) that announces the client's
-  IP address is a signal the rules use: a data centre or a hosting provider is where scripts, proxies and VPN exits live, a
-  carrier or a broadband provider is where people live, and a flood from one AS is a campaign. **Off by default**, and
-  nothing changes until it is turned on. The lookup is made by `auth` in memory, from a database it holds; **no request
-  ever calls anything outside the process**, so the signal costs a binary search (about a microsecond) and cannot fail
-  or wait.
-  - *Source.* The free `ip2asn-combined.tsv.gz` of [iptoasn.com](https://iptoasn.com) (a public-domain dedication, PDDL;
-    check the terms of whatever mirror you use): one range per line, `range_start`, `range_end`, `AS_number`,
-    `country_code`, `AS_description`, tab-separated, IPv4 and IPv6 together, gzipped or plain (told by the first bytes, not
-    by the name). A range of AS 0 is the space nobody announces and is not held. `auth` reads it with no new dependency;
-    a file in this format from another source works as well.
-  - *Switching it on.* `antifraud.asn.file` is where the database is: put the file there (or let `url` fetch it) and restart.
-    The service reads it before it starts serving, in about half a second for the 500 thousand ranges the real file has,
-    and holds some 30 MB for them. An empty `file` (the default, and what a config without the block means) is off: the
-    signals are absent, every lookup counts as `unavailable`, no rule of it fires and no `asn` entry matches. A file that is
-    missing or is not a database is a warning in the log and the same as off; it never stops the service from starting.
-    A line that is not a range (a wrong address, too few columns, a range that overlaps the one before) is left out and
-    counted in a warning; a file with more than a tenth of its lines wrong is taken for a wrong file (an error page, another
-    format) and is not used at all. An AS number above 2147483647 (private use, never in the public table) is left out, and a file of
-    more than 4 million ranges (the real one has about half a million) or that unpacks to more than 1 GiB fails to read.
-  - *Refresh.* The file is written by a download from `antifraud.asn.url` (`https` preferred; an `http` mirror inside the
-    network is accepted; a redirect is not followed, so the URL must serve the file itself) at the start if there is no
-    file yet, and then every `antifraud.asn.refresh-interval` (24 hours; the source is updated daily). The download goes
-    to a temporary file next to `file` (so that directory must be writable by `auth`), is read as a database, and only then
-    moved over `file` in one atomic step: a half-written or wrong download never replaces a good database, and the one in
-    use is never changed under a request. **On any failure (an unreachable server, an error status, a download over
-    5 minutes or 256 MB, a file that is not a database) the previous database stays in use**, the failure is a warning in
-    the log (naming the host, never the whole URL, which may carry a token) and
-    `antifraud_asn_database_refresh_failed_total` counts it: **alert on it increasing**, and on
-    `time() - antifraud_asn_database_loaded_timestamp_seconds` growing past a few intervals. Without a `url` the file is
-    looked at every `refresh-interval` and read again when its modification time has changed, so an operator (or a cron
-    job) can replace it; replace it by writing a new file and renaming it over the old one. With several instances,
-    each downloads for itself; point them at a shared mirror rather than the public site if there are many. A download
-    is one `send-http` line at `INFO` (the peer is external).
-  - *Metrics.* `antifraud_asn_lookups_total{result}` with `hit` (the address is in an announced range), `miss` (it is in
-    none, or the text is no address) and `unavailable` (no database is loaded: the feature is off, or the file is not
-    there yet); `antifraud_asn_database_loaded_timestamp_seconds` (when the file in use was written, not when it was read:
-    a stale file shows its age) and `antifraud_asn_database_ranges` (a database that suddenly holds a fraction of its usual
-    size is a wrong file). The request is looked up once, when the antifraud decision is made on an OTP request; the
-    events that follow read it again from memory and are not counted again. With `antifraud.decision.enabled = false`
-    nothing is looked up.
-  - *The class.* An AS is `hosting` when its description contains one of `antifraud.asn.hosting-keywords`, compared
-    case-insensitively as a whole word or phrase (between characters that are not letters or digits, runs of white space
-    counting as one), and `other` otherwise. The default list is: `hosting`, `cloud`, `datacenter`,
-    `data center`, `data-center`, `vps`, `dedicated`, `colocation`, `amazon`, `aws`, `google cloud`, `google-cloud`,
-    `microsoft`, `azure`, `digitalocean`, `ovh`, `hetzner`, `linode`, `vultr`, `choopa`, `alibaba`, `oracle`,
-    `contabo`, `leaseweb`, `m247`, `scaleway`, `online s.a.s`, `ionos`, `godaddy`, `rackspace`, `tencent`, `huawei cloud`.
-    Setting `hosting-keywords` replaces the list (an empty list classifies nothing as hosting). **A name is a guess:** a
-    keyword is never found inside a longer word (`cloud` is not in `Cloudy`, `dedicated` not in `Undedicated`), but a
-    provider with a plain name is `other`, and a carrier with one of the words in its name (`Cloud` in a mobile brand) is
-    `hosting`. And people sit behind hosting-class addresses too: Apple's Private Relay egresses through CDN space
-    (Akamai, Cloudflare, Fastly), corporate VPNs exit in clouds, a cloud company's residential arm shares its name
-    (`GOOGLE-FIBER`); the default list therefore names cloud arms (`google cloud`), not the company, and leaves Akamai
-    out (Linode, its hosting arm, is listed). That is why the rule is weighed low, starts as a shadow rule, and why the
-    exact tool is the list: an `asn` entry corrects one network, whatever its name says.
-  - *What a request carries.* For an OTP request with an address the context gets the AS number (`asn`, which the
-    `asn` velocity key and the `asn` list entries read) and the signal `asn_class` (`hosting` or `other`). An address that
-    is no literal (the proxy sent a name) or is in no AS carries neither. The address is the request's `auth.ip`, with the caveat
-    of the velocity counters: it is the client's only if the proxy in front sets the header as configured.
-  - *Rules.* The rule `asn_hosting` fires when `asn_class` is `hosting`. It is not forcing: it adds its weight, **20 by
-    default**, to the score, and a score alone turns into an action through the tuned `challengeAt` and `blockAt`. Its
-    weight is tuned by name in `ruleWeights` (`{"asn_hosting": 40}`) and it can run as a `shadowRules` entry first (listed
-    as `shadow:asn_hosting`, no weight), the way to see how much honest traffic comes from a VPN before it counts. The
-    per-AS velocity limit is the existing `thresholds.asn` (`perMinute`, `perTenMinutes`, `perHour`, `perDay`, `weight`; all
-    limits 0, weight 20). **A limit on an AS is a limit on everyone in it.** A mobile carrier's AS is millions of
-    subscribers behind a handful of gateways, so it is a hard number to set and a limit low enough for a hosting provider
-    refuses a town; leave the limits 0 and the weight low until the traffic shows one AS that sends a campaign, and set
-    the limit for that. Like the other counts it counts the requests of the AS that were let through (a refused request is
-    not counted), per minute, 10 minutes, hour and day, in memory per instance and shared through `af_velocity` like the
-    others; the AS number is stored there as plain digits.
-  - *List entries.* `asn` is now an accepted `valueType` of the lists (`64500` or `AS64500`, stored as `64500`): `deny`
-    blocks, `fake` fakes, `watch` adds the watch weight. It is **not allowable**: an `allow` on an AS is refused, as it
-    would exempt a whole network from the score (allow an exact `ip` instead, which outranks an `asn` deny). An `asn` entry
-    names many clients, so it needs `expiresAt`, and the share-of-traffic guard applies: the dry run
-    (`/antifraud/lists/preview`) now counts the events of the last 24 hours with that AS (`af_event.asn`), so an entry for
-    a carrier that would have matched most of the traffic is refused unless it is a shadow entry. Without a database an
-    `asn` entry matches nothing. By specificity an `asn` entry outranks only a mail domain: an address, a network, a number
-    prefix, a fingerprint and a user agent all decide over it.
-  - *The migration.* `V0028` adds two nullable columns to `af_event`, `asn INTEGER` and `asn_class TEXT`, with no default and
-    no index: a catalog change on the partitioned table, no rewrite, compatible with the previous release (whose inserts do
-    not name them), and not undoable except by a dump (like every migration). Events written without the signal have both
-    empty.
-  - *Personal data.* An AS number names a network of thousands to millions of subscribers and is not personal data. The
-    IP address it was derived from is **not stored**: not in `af_event`, not in `af_velocity` (which keeps its keyed hash of the
-    network, as before), not in the `receive-http` line beyond the `auth.ip` it already carries. The ASN and its class are
-    on that line under `antifraud` (`asn`, `asn_class`) next to the decision. The database file holds public registry data
-    only. The country in it is where the AS is registered, not where a user is, and it is not used as a signal (see "Country
-    signal").
-  - *Where it does not apply.* The sign-in forms and the OTP request go to `auth` directly, through the deployment's proxy,
-    not through `edge`; `auth` already has the client address (the tenant's `ipHeader`), so the lookup is in `auth`. The
-    code that does it is in `util` (`versola.util.net`), so that `edge` can use it for policies later; `edge` does not use it today.
+  The Antifraud pages of the documentation describe what each of them is for (`antifraud/velocity`, `antifraud/lists`,
+  `antifraud/detectors`, `antifraud/challenge`).
 
-- **Country signal (`af_event.country`, migration `V0029`).** The country of the client's IP address, from a database `auth` holds
-  in memory like the ASN one (no request calls anything outside the process). **Off by default.**
-  - *Config.* An optional block, each key with its default:
-    ```
-    antifraud {
-      geo { file = "", url = "", refresh-interval = "7 days" }   # empty file is off; the block may be left out
-    }
-    ```
-    `url` is held as a secret in memory and only its host is logged (the same now holds for `antifraud.asn.url`, whose
-    config keys and values are unchanged). It may hold `{yyyy}` and `{mm}`, the year and the month (UTC) of the download:
-    a month with no file yet (a 404) is retried once with the month before. Refresh, failure handling and the writable
-    directory next to `file` are as for the ASN database.
-  - *Source.* DB-IP IP to Country Lite, CC BY 4.0, attribution required; one file, gzip or plain, CSV with the first
-    address, the last address and the ISO 3166-1 alpha-2 code of each range, IPv4 and IPv6 together. A range with `ZZ`
-    (or no code) is not held.
-  - *Attribution.* DB-IP asks for a visible credit, "IP Geolocation by DB-IP" with a link to https://db-ip.com, on the site or
-    product that uses the data (the sign-in form footer, say, or the deployment's own site); a paid DB-IP licence lifts it.
-  - *Metrics.* `antifraud_geo_lookups_total{result}` (`hit`, `miss`, `unavailable`), `antifraud_geo_database_loaded_timestamp_seconds`,
-    `antifraud_geo_database_ranges` and `antifraud_geo_database_refresh_failed_total`; the `antifraud_asn_*` series are
-    unchanged.
-  - *What a request carries.* The context signal `country` (upper-case code) is the country database's answer and nothing
-    else: without the geo file it is absent, whatever the ASN database knows (the country an AS is registered in is not where
-    its subscribers are). It is on the `receive-http` line under `antifraud` and in `af_event.country`. No rule reads it: it is read by the
-    `country` list entries.
-  - *List entries.* `country` is a `valueType` of the lists (two letters, stored upper-case): `deny`, `fake` or `watch`, never
-    `allow`; it needs `expiresAt` and `max-broad-ttl` applies; by specificity it ranks above a mail domain and below an AS. The
-    dry run counts the events of the last 24 hours with that `af_event.country`. Without a database a `country` entry
-    matches nothing.
-  - *The migration.* `V0029` adds one nullable column to `af_event`, `country TEXT`, with no default and no index; compatible
-    with the previous release and not undoable except by a dump. Its `ALTER` runs under `lock_timeout = 5s`: if it fails,
-    run the migration again.
+- **Secrets and personal data.** Phone numbers and addresses in the event log, the velocity counters and the `phone_hash` list
+  entries are a keyed hash made with `security.antifraud-subject-secret` (`ANTIFRAUD_SUBJECT_SECRET`, generated like the
+  other secrets that only sign or authenticate; an IP address is hashed as its network, with a key derived from the secret
+  under a label of its own), and the same secret, or the sessions secret without it, signs the challenge tokens. A config
+  written before the secret existed has no such key and falls back on `security.sessions-secret`, so an upgrade needs no
+  change, but rotating the sessions secret then changes the hashes too. `versola configure` generates the secret for a
+  deployment that wants its own; the Helm chart reads it from the release's Secret as an optional key, so a release whose
+  Secret predates it keeps starting (an `env.conf` regenerated to reference `${ANTIFRAUD_SUBJECT_SECRET}` needs the key in
+  the Secret too: add the key together with the new config). **Rotating it** breaks the match between events before and
+  after it, starts the velocity counts over (the old rows expire within a day) and stops every `phone_hash` list entry
+  from matching until it is re-created; nothing else. **The hash is pseudonymous, not anonymous**, and the user agent is stored
+  whole, so the rows of `af_event` are personal data: deleting a user does not delete their events, they leave with
+  `antifraud.retention`, which must not exceed the retention you promise for such data. `af_event` is not under `cleanup`
+  (it has no `expires_at`). A phone key is not scoped to a tenant. The address is the request's `auth.ip`, which is the
+  client's only when the proxies in front set the header as expected. A partition can be created or dropped only by the
+  role that owns the parent: that is the role `versola migrate` and the Helm migration Job use, which read the same
+  `postgres.user` as the service, so it is `auth`'s own role. A deployment that migrates as a different role must run
+  `ALTER TABLE af_event OWNER TO <auth's role>` once after `migrate`. The service checks this at start and before every
+  upkeep run: when its role neither owns the table nor is a member of the owner, it logs an ERROR naming the owner, the role
+  and that statement, sets the gauge `antifraud_partition_owner_mismatch` to 1 and does not attempt the DDL (the partitions
+  that exist, `af_event_default` included, stay owned by whoever created them). Antifraud and the secrets are also
+  described in `antifraud/overview` and `operations/secrets` of the documentation.
 
-- **Antifraud detectors and proposals (`af_proposal`, migration `V0022`).** Every `antifraud.detectors.interval` (1
-  minute) each instance runs two detectors over the last minutes of `af_dest_stats` and **proposes** list entries; it
-  never creates one. **Off by default** (`antifraud.detectors.enabled`, `false`), and each detector has its own
-  `enabled`. `interval`, `retention` and `enabled` are keys of the block above; the rest are constants of the service: `settle` 2 minutes (the newest minutes of the rollup are not read), `statement-timeout`
-  10 s, `max-proposals` 20 per detector and run, `candidates` 200 (ranges looked at closely, busiest first), `open-for`
-  12 hours (an undecided proposal then expires), `cooldown` 24 hours (a value approved or rejected is not proposed
-  again for that long), `ttl` 24 hours (what an entry made from a proposal lives), `retention` 90 days, `batch-size`
-  1000.
-  `prefix-anomaly` proposes a range (tenant plus the first 4 digits) for `fake` when in the last
-  `window` (15 minutes) it was asked for at least `min-requests` (50) codes, `spike-factor` (5) times what the
-  `baseline` (24 hours before the window) gives for a window of that length (at least `baseline-floor`, 5), at least
-  `min-sent` (20) were sent and its conversion (verified over sent) is at most `max-conversion` (0.2) and, if the
-  baseline sent `min-baseline-sent` (50), at most `conversion-drop` (0.5) times the baseline's. `fake-verify` proposes
-  a range for `deny` when in its `window` (30 minutes) at least `min-fake-verifies` (5) codes were entered after a fake
-  send and at most `max-verified` (0) real ones were verified. A range with no tenant is never proposed. Nothing
-  proposes a value that is already open, was decided on lately, or is covered by an unexpired list entry of any type
-  (a shorter prefix covers a longer one). Sequential numbers are not detected: the log keeps a number as a keyed hash
-  and its first six digits, which cannot tell consecutive numbers from others.
-  One instance runs a detector at a time (an advisory lock; the others skip it), each statement under
-  the statement timeout (10 s) and on the service's own pool. `V0022` also adds `af_dest_stats.fake_verifies`
-  with `DEFAULT 0` (the previous release's rollup does not name it); it counts `fake_verify` events. Proposals are
-  counted in `antifraud_proposals_created_total{kind}`; **alert on** `antifraud_detector_failed_total{kind}` and
-  `antifraud_proposal_housekeeping_failed_total` increasing: a failing detector is only a warning in the log. There
-  is no way yet to approve a proposal: that, and creating the entry (`AntifraudProposal.toNewListEntry`), is a
-  follow-up.
+- **Who may change what.** Three permissions on the `central` resource guard the routes: `antifraud:read` (the reads: the
+  settings, the rule catalogue, the status, a tenant's lists and their audit), `antifraud:manage` (a tenant's lists) and
+  `antifraud:operate` (the operator's routes: `PUT`/`PATCH`/`DELETE /antifraud/settings`, `POST /antifraud/counters/reset`
+  and the twin routes `/antifraud/global/lists/...`). Every start registers them on the `central` resource and gives them
+  to `oauth-admin` (all permissions), `security` (`read` and `manage`), and the read-only roles (`antifraud:read`, except
+  `viewer`, which sees no PII). `antifraud:operate` is seeded into the default tenant's administrator role (`oauth-admin`)
+  only. **Do not grant `antifraud:operate` to a role of any other tenant:** it carries the deployment-wide routes, and a
+  role is all that decides which tenant's admin may use them. A tenant's admin (`antifraud:manage`) acts through
+  `/antifraud/lists/...` in the scope of the tenant of its access token: edge adds it (`callerTenantId`, from the token's
+  `tenant_id`, overwriting what a client sent) and central sets the scope from the route, so nothing in a body can widen
+  it. Edge also tells central who the admin is (an inject rule for `userId` on the calls that change something, a body
+  field from the verified token; a removal is a `DELETE` with a JSON body naming the `id`), and a request to such an endpoint
+  whose body is not JSON (`application/json`, or `application/merge-patch+json`) is refused by edge with `415` rather than
+  forwarded. A change that reaches central with the resource secret but no `userId` is `400`; auth records that user id as
+  who made each change (`created_by`, the audit). The lists are **off by default** (`antifraud.lists.enabled`); the
+  console has no screen for them yet. Upgrade: an administrator who changed the settings or reset them with
+  `antifraud:manage` now needs `antifraud:operate`. Rules of the lists (precedence, expiry, preview, the audit) are on
+  the Antifraud lists page of the documentation (`antifraud/lists`).
 
-- **Challenges (a proof of work before a code is sent; no table, no new page).** A request for a code that the decision
-  engine scores at or above the tuned `challengeAt` (and below `blockAt`) is not sent until the client has done some work. The credential (email, phone) and
-  OTP-resend forms send their request from script (`proof_inline=1` among the fields) and auth answers
-  `{"challenge": {"kind", "token", "params"}}` instead of a redirect, leaving the conversation where it was. The page
-  finds, in Web Workers, a number for which SHA-256 of `seed:number` starts with *difficulty* zero bits and makes **the same
-  request again** with two more fields, `proof_token` and `proof_solution`; the code is sent only if they are right. The
-  person sees nothing but the submit they made. The request is judged again with its answer (a block, a fake and the
-  lists still apply, and the answer only settles a `Challenge`) but is neither counted a second time by the velocity counters
-  nor charged a second time to the per-credential OTP request limit: **a challenged request takes one step of that limit**,
-  paid by the request that is challenged, and the one that carries a right answer (checked before the limit is claimed) is not
-  charged again. The same holds on the pending step below (the post that leaves it pays; the ask for the code, once honoured,
-  does not). A wrong or forged answer proves nothing and is charged like any request, and a banned credential is refused whatever the answer. Measured in headless Chromium (4 workers, 2.7 M
-  hashes/s per thread): 14 bits 13 ms, 16 bits 33 ms, 18 bits 77 ms mean (p90 165 ms), 20 bits 219 ms (p90 460 ms); on a mid
-  phone take 3 to 5 times that, so the default maximum is 18 bits. Each bit doubles the work, and a request that scores
-  higher is asked for more: `minDifficulty` (14) plus one bit per `scoreStep` (15) points above `challengeAt`, at most
-  `maxDifficulty` (18).
-  The token is signed (a key derived from `security.antifraud-subject-secret`, or the sessions secret without one) and
-  names the tenant, client, conversation, the hash of the destination, the expiry (`ttl`, 2 minutes; then a new challenge
-  is made), the difficulty, the seed, which code of the conversation it is for (the moment the last one was sent) and how
-  many challenges the conversation has solved so far. **The state is the conversation's** (`auth_conversations`,
-  `challenge_failed` and `challenge_solved`, migration `V0025`), kept by statements of their own, not in the token, which a
-  client can keep and send again: a wrong solution is counted there (`challenge_failed`, in the event log too) and a new
-  challenge made; the `max-attempts`th (5) of a conversation refuses the request (`blocked`), however many tokens it
-  holds. A right solution is **spent in the same step it is accepted**: the conversation moves its solved count on, once,
-  for the one request that gets there first, so the same token (or one issued before it) cannot pass again, and the wrong
-  solutions so far are forgotten; a replay of it is a wrong solution and is charged like one. Sending a code also spends
-  every challenge made before it. A guess costs the server one SHA-256 and a statement.
-  **A client with script that is challenged does work; one without waits `challenge.pause`.** A plain form post (the
-  password form that leads on to a code as the second factor, `/authorize` with `login_hint`, no JavaScript) cannot do the
-  work, so it is left on the code step with nothing sent (`challenged` in the log, once) and the step is stamped with the
-  moment its pause ends (`antifraud.challenge.pause`, 20 seconds after it was left; it travels in the conversation, no
-  migration). The code page then asks for the code from script, at once, and is given the proof of work like the credential
-  form: a person who came through the password form and has script pays with work and waits for nothing. An ask made as a
-  plain post, which carries no proof, is **honoured only after the pause**: sooner it is answered with the same page, no
-  code and no error, and it is not charged, counted or recorded. (A script's ask also waits the pause when the proof of
-  work is off, `challenge.enabled = false`, the only friction there is.) A solved answer, and an ask honoured after the
-  pause, are the request that was left pending, made again: judged again (a block, a fake and the lists still apply; for
-  the pause, a decision that is still `Challenge` no longer stops it) and send the code with **no further step of the OTP
-  request limit and no further velocity record: such a client pays one step of the limit per code**. An attacker without
-  script therefore gets at most one code per pause per conversation, besides the limits above; one with script, one proof
-  of work per code. The pause is counted as a challenge of its own kind, `antifraud_challenges_total{kind="pause"}`:
-  `outcome="challenged"` for a step left pending and `outcome="challenge_passed"` for an ask honoured after waiting, so the
-  dashboard shows how many challenges are paid by waiting and how many by work (`kind="pow"`, which a pending step that
-  ends in a proof of work is counted under). When the code is sent the page shows it in place (the wait for the next one
-  starts again and the code field is focused) instead of reloading. A client that
-  cannot answer a challenge at all (an unsolvable kind) stays on the page and gets no code. Only a verifier that is
-  off (`enabled = false`) or that fails to make a token lets a `Challenge` through, as a plain send. `failure-action` is
-  `allow` by default (a plain send; `delay` is no longer accepted); set it to `challenge` only if you want an engine that
-  times out to ask every request for a proof.
-  The keys of the `antifraud.challenge` block are `enabled` (`true`), `ttl` (2 minutes), `max-attempts` (5) and `pause`
-  (20 seconds, above): the switch, what a challenge lives for and what a client that cannot do the work waits instead. How much work it asks is the tuned setting `pow` (`minDifficulty` 14,
-  `maxDifficulty` 18, `scoreStep` 15, in zero bits of a hash), so that it can be raised during an attack; the score it
-  starts at is the tuned `challengeAt`. The outcomes `challenged`, `challenge_passed` and `challenge_failed` are in the event log (`af_event`, a text
-  column, no migration); the rollup does not count them as requests, the send that follows is the one counted; the
-  `receive-http` line carries `antifraud.challenge` (`pow`) and `challenge_level`, and `antifraud_challenges_total{kind,outcome}`
-  counts them. A script that does the work gets its code: the proof makes an attack cost CPU, it does not stop one, so keep
-  the lists, the velocity limits and the SMS budget. A challenge is a decision to act on and is only put in `enforce`; in `shadow`
-  the request is let through and `would_action` says `Challenge`. Only the proof of work is built; the `ChallengeVerifier` interface and
-  the `kind` and `params` of the answer are where a provider's check (Turnstile and the like, drawn by the same page) is added.
+- **SMS budget, velocity counters, detectors and the challenge: what to know when deploying.** The SMS budget
+  (`antifraud.sms-budget.prefix-length`, the tuned `smsLimits`) and the velocity counters (`antifraud.velocity.enabled`, the
+  tuned `thresholds`) hold their counts in memory per instance (an estimate, not a measurement: a key seen for the first time
+  costs about 0.4 to 0.8 KB, so a full table of 100000 keys, the five kinds of 20000, is about 50 to 80 MB, a key busy all
+  day up to about 90 to 130 KB, and the other instances' counts are held too, about the same again for each of them), so a limit holds to within the number of instances
+  and starts again from zero after a restart; both limits are off by default (`0`). **A closed range refuses every
+  code to it, the legitimate users' included**: size `sentPerHour` above the real peak of the busiest range before it is
+  turned on, see the Velocity counters and SMS budget page of the documentation (`antifraud/velocity`). Changing the
+  prefix length mixes lengths in `af_dest_stats`, so clear the table first. The detectors (`antifraud.detectors.enabled`,
+  off by default) only propose list entries; there is no way yet to approve a proposal. The challenge needs no table and no new
+  page: its state is the conversation's (`auth_conversations.challenge_failed` and `challenge_solved`, `V0025`), its token is
+  signed with the key of `security.antifraud-subject-secret`, and `challenge.pause` travels in the conversation with no
+  migration. Only the proof of work is built. The `pow` defaults (`minDifficulty` 14, `maxDifficulty` 18, `scoreStep` 15, in zero bits
+  of a hash) come from a measurement in headless Chromium with 4 workers (2.7 M hashes/s per thread): 14 bits 13 ms, 16 bits
+  33 ms, 18 bits 77 ms mean (p90 165 ms), 20 bits 219 ms (p90 460 ms); a mid-range phone takes 3 to 5 times that, which is
+  why the default maximum is 18 bits. For the work a difficulty asks, see the Challenge and Fake page of the
+  documentation (`antifraud/challenge`).
 
-- **Dashboards and alerts.** The Grafana board `versola-antifraud` (`dashboards/grafana/versola-antifraud.json`) shows
-  decisions against what enforcing would do, rules, challenges, the SMS budget, the event pipeline, velocity, lists,
-  detectors and storage; read its Decisions row during a shadow rollout. The alert rules are in
-  `dashboards/alerts/versola-antifraud.rules.yaml` (Prometheus rule format, also read by vmalert); how to load them is in
-  `dashboards/alerts/README.md`. Both use metrics that exist only from the release that added them.
+- **ASN signal (`af_event.asn` and `asn_class`, migration `V0028`).** Off by default; with an empty `antifraud.asn.file` every
+  lookup counts as `unavailable` and no rule or `asn` list entry acts. The lookup is made by `auth` in memory, from a database
+  it holds, so no request calls anything outside the process. The source is the free `ip2asn-combined.tsv.gz` of
+  [iptoasn.com](https://iptoasn.com), a public-domain dedication (PDDL; check the terms of whatever mirror you use), gzipped or
+  plain, IPv4 and IPv6 together; a file in the same tab-separated format from another source works. Put the file at
+  `antifraud.asn.file` (or let `antifraud.asn.url` fetch it) and restart: it is read before the service serves, in about half a
+  second, and held in some 30 MB. A file that is missing or is not a database is a warning in the log and the same as off.
+  With a `url` (`https` preferred; a redirect is not followed) the file is downloaded at start if there is none and then every
+  `antifraud.asn.refresh-interval` (24 hours): into a temporary file next to `file`, **so that directory must be writable by
+  `auth`**, read as a database and moved over `file` in one atomic step, and on any failure the previous database stays in use.
+  `url` is held as a secret in memory and only its host is logged. Without a `url` the file is looked at every interval and
+  read again when its modification time has changed. Each instance downloads for itself: point many instances at a shared
+  mirror. A download is one `send-http` line at `INFO`. An AS is `hosting` when its description contains one of
+  `antifraud.asn.hosting-keywords`, as a whole word, case-insensitively; the default list is `hosting`, `cloud`, `datacenter`,
+  `data center`, `data-center`, `vps`, `dedicated`, `colocation`, `amazon`, `aws`, `google cloud`, `google-cloud`,
+  `microsoft`, `azure`, `digitalocean`, `ovh`, `hetzner`, `linode`, `vultr`, `choopa`, `alibaba`, `oracle`, `contabo`,
+  `leaseweb`, `m247`, `scaleway`, `online s.a.s`, `ionos`, `godaddy`, `rackspace`, `tencent` and `huawei cloud`, and setting
+  the key replaces it (an empty list classifies nothing as hosting). The IP address is not stored; the AS number and its class
+  are in `af_event` and on the `receive-http` line under `antifraud`. The sign-in forms and the OTP request go to `auth`
+  directly, not through `edge`, and `edge` does not use the signal. See `antifraud/asn` of the documentation for the rules.
+
+- **Country signal (`af_event.country`, migration `V0029`).** Off by default, from a database `auth` holds in memory like the
+  ASN one: the block `antifraud.geo { file, url, refresh-interval = "7 days" }` is optional, an empty `file` is off, and
+  refresh, failure handling and the writable directory next to `file` are as for the ASN database. `url` is held as a secret in
+  memory and only its host is logged (the same holds for `antifraud.asn.url`); it may hold `{yyyy}` and `{mm}`, the year and
+  the month (UTC) of the download, and a month with no file yet (a 404) is retried once with the month before. The source is
+  DB-IP IP to Country Lite, **CC BY 4.0, attribution required**: one file, gzip or plain, CSV with the first address, the last
+  address and the ISO 3166-1 alpha-2 code of each range; a range with `ZZ` (or no code) is not held. **Attribution:** DB-IP
+  asks for a visible credit, "IP Geolocation by DB-IP" with a link to https://db-ip.com, on the site or product that uses the
+  data (the sign-in form footer, say, or the deployment's own site); a paid DB-IP licence lifts it. The signal is the
+  database's answer and nothing else (the country an AS is registered in is not used), it is in `af_event.country` and on
+  the `receive-http` line, and it is read by the `country` list entries and by two rules, `country_mismatch` and
+  `country_outside_regions` (rule names that `ruleWeights` and `shadowRules` accept, with `asn_hosting`). What they fire on
+  is on the Country signal page of the documentation (`antifraud/geo`).
+
+- **Antifraud metrics** (all in `auth`; none has a tenant or a value as a label). Decisions: `antifraud_decisions_total{action,would_action}`,
+  `antifraud_rules_fired_total{rule,shadow}`, `antifraud_evaluation_failed_total{reason}` (`timeout`, `error`,
+  `tuning_unavailable`), `antifraud_challenges_total{kind,outcome}`. Event log: `antifraud_events_enqueued_total`,
+  `antifraud_events_written_total`, `antifraud_events_dropped_total{reason}` (`queue_full`, `write_failed`, `throttled_shed`),
+  `antifraud_event_queue_size`, `antifraud_partition_days_ahead` (7 when healthy; the default partition is not counted),
+  `antifraud_partition_maintenance_failed_total`, `antifraud_partition_owner_mismatch` (1 when the role cannot keep the
+  partitions), `antifraud_events_moved_from_default_total` (a day ran without a partition; its events are safe),
+  `antifraud_stats_rollup_failed_total`. Settings and lists: `antifraud_tuning_refresh_failed_total`,
+  `antifraud_tuning_refreshed_timestamp_seconds`, `antifraud_list_refresh_failed_total`,
+  `antifraud_lists_refreshed_timestamp_seconds`, `antifraud_list_hit_flush_failed_total`,
+  `antifraud_list_hits_total{list_type,value_type,shadow}`. Velocity and the SMS budget: `antifraud_velocity_flushed_total`,
+  `antifraud_velocity_keys`, `antifraud_velocity_failed_total{what}` (`flush`, `load`, `prune`),
+  `antifraud_velocity_evicted_total`, `antifraud_velocity_untracked_total`, `antifraud_sms_budget_refused_total{reason,mode}`
+  (`cap`, `conversion`; `shadow`, `enforce`), `antifraud_sms_budget_evicted_total`, `antifraud_sms_budget_full_total`,
+  `antifraud_counters_reset_total{scope}`, `antifraud_counters_reset_failed_total{what}` (`poll`, `delete`). Detectors:
+  `antifraud_proposals_created_total{kind}`, `antifraud_detector_failed_total{kind}`,
+  `antifraud_proposal_housekeeping_failed_total`. The signals: `antifraud_asn_lookups_total{result}` and
+  `antifraud_geo_lookups_total{result}` (`hit`, `miss`, `unavailable`), `antifraud_asn_database_loaded_timestamp_seconds`,
+  `antifraud_asn_database_ranges`, `antifraud_asn_database_refresh_failed_total`,
+  `antifraud_geo_database_loaded_timestamp_seconds`, `antifraud_geo_database_ranges` and
+  `antifraud_geo_database_refresh_failed_total`. The Grafana board `versola-antifraud` is `dashboards/grafana/versola-antifraud.json` and the
+  Prometheus alert rules (also read by vmalert) are `dashboards/alerts/versola-antifraud.rules.yaml`, loaded as
+  `dashboards/alerts/README.md` says; both use metrics that exist only from the release that added them. What to alert on
+  is in the Antifraud rollout playbook (`antifraud/rollout`).
 
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).

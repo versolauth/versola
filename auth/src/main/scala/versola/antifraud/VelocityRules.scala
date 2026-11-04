@@ -102,20 +102,20 @@ object VelocityRules:
       ctx.destPrefix.map(prefix => VelocityKey.prefix -> s"${ctx.tenantId.map(identity[String]).getOrElse("")}/$prefix"),
     ).flatten
 
-  /** Reads the counts of the windows that have a limit, plus `extra` for the request that is not recorded yet, into
-    * the context's `signals`. */
+  /** Reads the counts of the windows that have a limit, plus `extra` of a key for the request that is not recorded
+    * under it yet, into the context's `signals`. */
   def withSignals(
       counters: VelocityCounters,
       thresholds: Thresholds,
       ctx: AntifraudContext,
       keys: List[(VelocityKey, String)],
       at: Instant,
-      extra: Int,
+      extra: VelocityKey => Int,
   ): AntifraudContext =
     val counts = keys.flatMap: (keyType, key) =>
       VelocityWindow.values.toList.collect:
         case window if thresholds.of(keyType).of(window) > 0 =>
-          signal(keyType, window) -> (counters.count(keyType, key, window, at) + extra).toString
+          signal(keyType, window) -> (counters.count(keyType, key, window, at) + extra(keyType)).toString
     ctx.copy(signals = ctx.signals ++ counts)
 
   /** The rules of the configured limits. Carry no state: the counts are in the context. */

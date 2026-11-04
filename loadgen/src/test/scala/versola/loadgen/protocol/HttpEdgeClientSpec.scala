@@ -40,7 +40,11 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
         started <- edge.login(preset, None)
         paths <- recorder.paths
       yield assertTrue(
-        started == EdgeLoginStarted(StubSut.authorizeUrl, Some(StubSut.edgeState)),
+        started == EdgeLoginStarted(
+          authorizeUrl = StubSut.authorizeUrl,
+          state = Some(StubSut.edgeState),
+          loginCookie = Some(StubSut.edgeLoginCookie),
+        ),
         paths == Vector("GET /login/" + StubSut.preset),
       )
     },
@@ -88,7 +92,8 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
       for
         both <- edgeForStub
         (recorder, edge) = both
-        conversation <- edge.startConversation(EdgeLoginStarted(StubSut.authorizeUrl, Some(StubSut.edgeState)), None)
+        conversation <-
+          edge.startConversation(EdgeLoginStarted(authorizeUrl = StubSut.authorizeUrl, state = Some(StubSut.edgeState), loginCookie = None), None)
         paths <- recorder.paths
       yield assertTrue(
         conversation == EdgeAuthorization.Conversation(ConversationCookie(StubSut.conversation)),
@@ -103,7 +108,7 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
       for
         edge <- edgeAnswering(Response.seeOther(URL.decode(back).toOption.get))
         answered <- edge.startConversation(
-          EdgeLoginStarted(StubSut.authorizeUrl, None),
+          EdgeLoginStarted(authorizeUrl = StubSut.authorizeUrl, state = None, loginCookie = None),
           Some(SsoSession(StubSut.ssoSession)),
         )
       yield assertTrue(
@@ -118,13 +123,13 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
       val back = StubSut.edgeUrl + "/complete?error=login_required&state=" + StubSut.edgeState
       for
         edge <- edgeAnswering(Response.seeOther(URL.decode(back).toOption.get))
-        answered <- edge.startConversation(EdgeLoginStarted(StubSut.authorizeUrl, None), None)
+        answered <- edge.startConversation(EdgeLoginStarted(authorizeUrl = StubSut.authorizeUrl, state = None, loginCookie = None), None)
       yield assertTrue(answered == EdgeAuthorization.Answered(ConversationOutcome.Refused("login_required", Some(StubSut.edgeState))))
     },
     test("an authorize response that is neither names where it was sent") {
       for
         edge <- edgeAnswering(Response.seeOther(URL.decode("/somewhere/else").toOption.get))
-        failure <- edge.startConversation(EdgeLoginStarted(StubSut.authorizeUrl, None), None).either
+        failure <- edge.startConversation(EdgeLoginStarted(authorizeUrl = StubSut.authorizeUrl, state = None, loginCookie = None), None).either
       yield assertTrue(failure.left.exists:
         case ProtocolError.MalformedResponse("/authorize", detail) => detail.contains("/somewhere/else") && detail.contains("SSO_CONVERSATION")
         case _ => false)
@@ -132,7 +137,10 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
     test("an authorize response that starts no conversation is malformed") {
       for
         edge <- edgeAnswering(Response.seeOther(URL.decode("/challenge").toOption.get))
-        failure <- edge.startConversation(EdgeLoginStarted(StubSut.authorizeUrl, Some(StubSut.edgeState)), None).either
+        failure <- edge.startConversation(
+          EdgeLoginStarted(authorizeUrl = StubSut.authorizeUrl, state = Some(StubSut.edgeState), loginCookie = None),
+          None,
+        ).either
       yield assertTrue(failure.left.exists:
         case ProtocolError.MalformedResponse("/authorize", detail) => detail.contains("SSO_CONVERSATION")
         case _ => false)
@@ -141,18 +149,27 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
       for
         both <- edgeForStub
         (recorder, edge) = both
-        cookie <- edge.complete(StubSut.edgeState, AuthCode(StubSut.code))
+        cookie <- edge.complete(state = StubSut.edgeState, code = AuthCode(StubSut.code), loginCookie = Some(StubSut.edgeLoginCookie))
         paths <- recorder.paths
       yield assertTrue(
         cookie == EdgeCookie(EdgeSession(StubSut.edgeSession), Some(StubSut.edgeCookieTtl)),
         paths == Vector("GET /complete"),
       )
     },
+    test("complete without the login cookie edge set is refused: the login belongs to the browser that began it") {
+      for
+        both <- edgeForStub
+        (_, edge) = both
+        failure <- edge.complete(state = StubSut.edgeState, code = AuthCode(StubSut.code), loginCookie = None).either
+      yield assertTrue(
+        failure == Left(ProtocolError.UnexpectedStatus(Set(Status.SeeOther), Status.BadRequest, "/complete")),
+      )
+    },
     test("a state edge has no pending login for is a 400, and stays an unexpected status") {
       for
         both <- edgeForStub
         (_, edge) = both
-        failure <- edge.complete("someone-elses-state", AuthCode(StubSut.code)).either
+        failure <- edge.complete(state = "someone-elses-state", code = AuthCode(StubSut.code), loginCookie = None).either
       yield assertTrue(
         failure == Left(ProtocolError.UnexpectedStatus(Set(Status.SeeOther), Status.BadRequest, "/complete")),
       )
@@ -160,7 +177,7 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
     test("a complete that redirects without the cookie is malformed: there is no session to use") {
       for
         edge <- edgeAnswering(Response.seeOther(URL.decode(StubSut.postLoginRedirect).toOption.get))
-        failure <- edge.complete(StubSut.edgeState, AuthCode(StubSut.code)).either
+        failure <- edge.complete(state = StubSut.edgeState, code = AuthCode(StubSut.code), loginCookie = None).either
       yield assertTrue(failure.left.exists:
         case ProtocolError.MalformedResponse("/complete", detail) => detail.contains("EDGE_SESSION")
         case _ => false)
@@ -169,10 +186,10 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
       for
         both <- edgeForStub
         (recorder, edge) = both
-        _ <- edge.completeError(StubSut.edgeState, StubSut.refusalError)
+        _ <- edge.completeError(state = StubSut.edgeState, error = StubSut.refusalError, loginCookie = Some(StubSut.edgeLoginCookie))
         // Edge answers the second one 400 (`AuthConversationNotFound`). Nothing is left to
         // consume, which is the only thing this hop is for, so it is not a failure.
-        _ <- edge.completeError(StubSut.edgeState, StubSut.refusalError)
+        _ <- edge.completeError(state = StubSut.edgeState, error = StubSut.refusalError, loginCookie = Some(StubSut.edgeLoginCookie))
         paths <- recorder.paths
         params <- recorder.queryOf("/complete")
       yield assertTrue(
@@ -184,7 +201,7 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
     test("a completeError answered with neither a redirect nor a 400 is an unexpected status") {
       for
         edge <- edgeAnswering(Response.status(Status.InternalServerError))
-        failure <- edge.completeError(StubSut.edgeState, StubSut.refusalError).either
+        failure <- edge.completeError(state = StubSut.edgeState, error = StubSut.refusalError, loginCookie = None).either
       yield assertTrue(
         failure == Left(
           ProtocolError.UnexpectedStatus(Set(Status.SeeOther, Status.BadRequest), Status.InternalServerError, "/complete"),

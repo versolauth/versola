@@ -1,5 +1,6 @@
 package versola.antifraud
 
+import versola.util.partitions.TableOwnership
 import zio.{Duration, Task}
 
 import java.time.{Instant, LocalDate}
@@ -39,7 +40,3 @@ trait AntifraudEventRepository:
 
   /** Deletes the statistics of minutes before `before`. */
   def pruneStats(before: Instant): Task[Unit]
-
-/** The owner of `af_event` (a role name), the role the service connects as, and whether that role may alter the table: it
-  * owns it, is a member of the owner, or is a superuser. */
-case class TableOwnership(owner: String, role: String, mayAlter: Boolean)

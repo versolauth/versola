@@ -65,7 +65,12 @@ final class HttpEdgeClient(exchange: HttpExchange, endpoints: EdgeEndpoints, act
           _ <- ZIO
             .fail(ProtocolError.MalformedResponse(loginEndpoint, "neither a state nor a request_uri on the authorize URL edge redirected to"))
             .when(state.isEmpty && HttpExchange.redirectParam(location, requestUriParam).isEmpty)
-        yield EdgeLoginStarted(location, state)
+        yield EdgeLoginStarted(
+          authorizeUrl = location,
+          state = state,
+          loginCookie = received.response.headers.getAll(Header.SetCookie).collectFirst:
+            case header if header.value.name.startsWith(loginCookiePrefix) => LoginCookie(name = header.value.name, value = header.value.content),
+        )
 
   override def startConversation(started: EdgeLoginStarted, ssoSession: Option[SsoSession]): IO[ProtocolError, EdgeAuthorization] =
     for
@@ -108,9 +113,9 @@ final class HttpEdgeClient(exchange: HttpExchange, endpoints: EdgeEndpoints, act
               ),
             ))
 
-  override def complete(state: String, code: AuthCode): IO[ProtocolError, EdgeCookie] =
+  override def complete(state: String, code: AuthCode, loginCookie: Option[LoginCookie]): IO[ProtocolError, EdgeCookie] =
     val url = endpoints.complete.addQueryParams(List(codeParam -> code.value, stateParam -> state))
-    exchange.send(Request.get(url)).flatMap: received =>
+    exchange.send(withLoginCookie(Request.get(url), loginCookie)).flatMap: received =>
       if !HttpExchange.isRedirect(received.status) then
         ZIO.fail(HttpExchange.unexpected(expectedRedirect, received.status, completeEndpoint))
       else
@@ -122,14 +127,17 @@ final class HttpEdgeClient(exchange: HttpExchange, endpoints: EdgeEndpoints, act
           )
           .map(EdgeCookie.of)
 
-  override def completeError(state: String, error: String): IO[ProtocolError, Unit] =
+  override def completeError(state: String, error: String, loginCookie: Option[LoginCookie]): IO[ProtocolError, Unit] =
     val url = endpoints.complete.addQueryParam(errorParam, error).addQueryParam(stateParam, state)
-    exchange.send(Request.get(url)).flatMap: received =>
+    exchange.send(withLoginCookie(Request.get(url), loginCookie)).flatMap: received =>
       // A redirect is the record consumed and the app told; a 400 is `AuthConversationNotFound`,
       // meaning there was nothing left to consume. Both satisfy the only reason for this hop, so
       // neither is a failure -- the refusal the caller is about to report is the outcome.
       if HttpExchange.isRedirect(received.status) || received.status == Status.BadRequest then ZIO.unit
       else ZIO.fail(HttpExchange.unexpected(expectedCompleteError, received.status, completeEndpoint))
+
+  private def withLoginCookie(request: Request, loginCookie: Option[LoginCookie]): Request =
+    loginCookie.fold(request)(cookie => request.addHeader(HttpExchange.cookieHeader(cookie.name, cookie.value)))
 
   override def logout(preset: PresetId, session: EdgeSession): IO[ProtocolError, String] =
     val url = endpoints.logout.copy(path = endpoints.logout.path / preset.value)
@@ -153,6 +161,7 @@ final class HttpEdgeClient(exchange: HttpExchange, endpoints: EdgeEndpoints, act
 object HttpEdgeClient:
   private val acrValuesParam = "acr_values"
   private val stateParam = "state"
+  private val loginCookiePrefix = "EDGE_LOGIN_"
   private val requestUriParam = "request_uri"
   private val codeParam = "code"
   private val errorParam = "error"

@@ -363,6 +363,8 @@ lazy val securityPins = Seq(
   "io.netty" % "netty-transport-native-kqueue" % "4.2.19.Final",
   "io.netty" % "netty-transport-native-unix-common" % "4.2.19.Final",
   "com.google.protobuf" % "protobuf-java" % "4.36.2",
+  // GHSA-xxph-c9ww-hj94: bound allocation during Guava collection deserialization.
+  "com.google.guava" % "guava" % "33.7.2-jre",
   "org.yaml" % "snakeyaml" % "2.7",
   "com.nimbusds" % "nimbus-jose-jwt" % "10.10",
   // zio-http drags netty-pkitesting, which pulls BouncyCastle 1.84 (CVE-2026 name-constraints

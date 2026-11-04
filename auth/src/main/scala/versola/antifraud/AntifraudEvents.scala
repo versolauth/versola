@@ -51,7 +51,8 @@ trait AntifraudEvents:
   /** Decides what to do with an OTP request for `credential` (see [[Antifraud]]); the request's IP is the one the
     * request's log context carries. Never fails; always [[Decision.allow]] while the decision engine is off.
     * A `repeated` request is one that was challenged and is made again with its answer: it is judged, but not counted
-    * a second time. What is counted here is the request's source (address, device, ASN, range); the destination is
+    * a second time, and judged on the counts it is already in, not as one request more than it is. What is counted here is
+    * the request's source (address, device, ASN, range); the destination is
     * counted by [[otpRequested]] when a code is really sent, so that asking for codes to somebody else's number, and
     * being challenged or faked for it, never raises the count that is held against that number's owner. */
   def decideOtpRequest(
@@ -337,7 +338,7 @@ object AntifraudEvents:
           // Decided on the counts with this request in them, and counted only if it is let through. The number itself
           // is not counted here but when a code is sent to it (`otpRequested`): a request that is refused, challenged
           // or faked sends nothing, and counting it would let anyone raise the count held against the number's owner.
-          counted <- velocity.snapshot(context)
+          counted <- velocity.snapshot(context, recorded = repeated)
           decision <- antifraud.evaluate(counted)
           _ <- ZIO.unless(decision.action == DecisionAction.Block || repeated)(velocity.record(context.copy(subjectHash = None)))
           _ <- AntifraudMetrics.decided(decision) *> AntifraudMetrics.rulesFired(decision.firedRules)
@@ -393,7 +394,9 @@ object AntifraudEvents:
     private def feedBudget(event: AntifraudEvent): UIO[Unit] =
       ZIO.foreachDiscard(event.destPrefix.filter(_ => event.channel == AntifraudChannel.sms)): prefix =>
         event.outcome match
-          case AntifraudOutcome.verified => ZIO.succeed(budget.verified(event.tenantId, prefix, event.at))
+          // A passkey that passed in place of a sent code converts it as a verified code does: a range whose codes are passed by passkey is not one
+          // whose codes nobody enters.
+          case AntifraudOutcome.verified | AntifraudOutcome.passkey_alternative => ZIO.succeed(budget.verified(event.tenantId, prefix, event.at))
           case _ => ZIO.unit
 
     private def enqueue(event: AntifraudEvent): UIO[Unit] =
