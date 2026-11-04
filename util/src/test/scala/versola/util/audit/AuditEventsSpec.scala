@@ -170,6 +170,10 @@ object AuditEventsSpec extends UnitSpecBase:
   private def gauge(name: String, source: AuditSource): UIO[Double] =
     Metric.gauge(name).tagged(Set(MetricLabel("source", source.value))).value.map(_.value)
 
+  /** Reads until the condition holds. A fiber that a clock move woke, or a write the writer made, runs when the scheduler gets to it,
+    * and a count of yields says nothing of when; a test that waits for a positive state waits on that state. */
+  private def eventually[A](read: UIO[A])(holds: A => Boolean): UIO[A] = (ZIO.yieldNow *> read).repeatUntil(holds)
+
   /** Lets the fibers the test forked run: under the test clock a sleep ends only when the clock moves. */
   private def settle = ZIO.yieldNow.repeatN(20)
 
@@ -382,8 +386,7 @@ object AuditEventsSpec extends UnitSpecBase:
             _ <- f.started.take
             _ <- TestClock.adjust(1.second)
             _ <- f.started.take
-            _ <- settle
-            written <- f.written.get
+            written <- eventually(f.written.get)(_.nonEmpty)
           yield assertTrue(afterFirst.isEmpty, written.size == 1, written.head.size == 1)
       },
     ),
@@ -479,7 +482,7 @@ object AuditEventsSpec extends UnitSpecBase:
             _ <- ZIO.foreachDiscard(1 to 2)(_ => events.record(draft(AuditKind("thing.unlisted"))))
             before <- reportLines
             _ <- TestClock.adjust(1.minute)
-            lines <- reportLines
+            lines <- eventually(reportLines)(_.nonEmpty)
             _ <- TestClock.adjust(2.minutes)
             later <- reportLines
           yield assertTrue(
@@ -505,7 +508,7 @@ object AuditEventsSpec extends UnitSpecBase:
             _ <- TestClock.adjust(2.seconds)
             _ <- waiting.join
             _ <- TestClock.adjust(1.minute)
-            lines <- reportLines
+            lines <- eventually(reportLines)(_.nonEmpty)
           yield assertTrue(lines.size == 1, lines.head.contains("1 dropped, the queue stayed full for the block timeout: thing.refused (1)"))
       }.provideLayer(ZTestLogger.default),
       test("rows the database refused are reported once per window by kind with their SQLSTATE, and never by content") {
@@ -520,7 +523,7 @@ object AuditEventsSpec extends UnitSpecBase:
             // The batch is refused, then written row by row: the good row is stored, the refused one is not.
             _ <- until(f, 1)
             _ <- TestClock.adjust(1.minute)
-            lines <- reportLines
+            lines <- eventually(reportLines)(_.nonEmpty)
           yield assertTrue(
             lines.size == 1,
             lines.head.contains("1 refused by the database for what they contain, not stored: thing.issued (1); SQLSTATE 22P02"),
@@ -563,7 +566,7 @@ object AuditEventsSpec extends UnitSpecBase:
           _ <- closing.join
           failedAfter <- counter("audit_events_failed_total", edge)
           drained <- drainLines
-          reported <- reportLines
+          reported <- eventually(reportLines)(_.nonEmpty)
         yield assertTrue(
           failedAfter - failedBefore == 3.0,
           drained.size == 1,
@@ -581,7 +584,7 @@ object AuditEventsSpec extends UnitSpecBase:
             _ <- f.started.take
             _ <- events.record(draft()) *> events.record(draft())
             _ <- settle *> TestClock.adjust(2.seconds) *> settle
-            size <- gauge("audit_queue_size", edge)
+            size <- eventually(gauge("audit_queue_size", edge))(_ == 2.0)
           yield assertTrue(size == 2.0)
       },
     ),
@@ -763,7 +766,7 @@ object AuditEventsSpec extends UnitSpecBase:
           rejectedBefore <- counter("audit_events_rejected_total", edge)
           _ <- events.record(draft().copy(reason = Some("suspect")))
           _ <- ZIO.foreachDiscard(1 to 8)(_ => events.record(draft()) *> settle *> TestClock.adjust(1.minute) *> settle)
-          rejectedAfter <- counter("audit_events_rejected_total", edge)
+          rejectedAfter <- eventually(counter("audit_events_rejected_total", edge))(_ - rejectedBefore >= 1.0)
           written <- f.written.get.map(_.flatten)
           _ <- stopped(scope)
         yield assertTrue(rejectedAfter - rejectedBefore == 1.0, !written.exists(_.reason.contains("suspect")), written.size >= 8)
@@ -851,7 +854,7 @@ object AuditEventsSpec extends UnitSpecBase:
             atStart = f.repository.maintainPartitions.calls
             pruned = f.repository.pruneDefault.calls
             _ <- TestClock.adjust(1.hour)
-            _ <- settle
+            _ <- eventually(ZIO.succeed((f.repository.maintainPartitions.calls.size, f.repository.pruneDefault.calls.size)))(_ == (2, 2))
           yield assertTrue(
             // today, the days ahead plus today, and the first day that is kept: retention is 7 days.
             atStart == List((LocalDate.parse("2026-11-03"), 4, LocalDate.parse("2026-10-27"))),
@@ -904,7 +907,9 @@ object AuditEventsSpec extends UnitSpecBase:
             _ <- settle
             first = f.repository.maintainPartitions.calls.size
             _ <- TestClock.adjust(1.minute)
-            _ <- settle
+            _ <- eventually(ZIO.succeed((f.repository.maintainPartitions.calls.size, f.repository.partitionDaysAhead.calls.size)))((runs, ahead) =>
+              runs >= 2 && ahead >= 1,
+            )
           yield assertTrue(first == 1, f.repository.maintainPartitions.calls.size == 2, f.repository.partitionDaysAhead.calls.size >= 1)
       },
       test("the service keeps fourteen days of partitions ahead and a maintenance run an hour") {
