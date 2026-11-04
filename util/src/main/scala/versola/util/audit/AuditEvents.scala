@@ -53,8 +53,9 @@ object AuditEvents:
     * @param partitionsAhead     days of partitions created beyond today, so a maintenance run that is late does not leave the
     *                            writer without one
     * @param maintenanceInterval how often the partitions are made ahead, the old ones dropped and the default partition pruned
-    * @param drainChunk          the most rows the stop writes in one statement, each statement committed on its own, so that what the
-    *                            drain timeout cuts short is the statement in progress and not everything held; never more than `batchSize`
+    * @param writeChunk          the most rows written in one transaction, by the writer and by the stop's drain alike: a batch is
+    *                            written as a run of chunks, each committed on its own, so that a transaction holds a chunk's worth of
+    *                            statements and what a stop cuts short is the chunk in progress and not the batch; never more than `batchSize`
     * @param reportWindow       how often the events the log dropped or refused are written to the service's log: one line per window, whatever the number
     */
   case class Sizing(
@@ -64,7 +65,7 @@ object AuditEvents:
       partitionsAhead: Int = 14,
       maintenanceInterval: Duration = 1.hour,
       reportWindow: Duration = 1.minute,
-      drainChunk: Int = 100,
+      writeChunk: Int = 100,
   )
 
   object Sizing:
@@ -78,13 +79,16 @@ object AuditEvents:
 
   /** Starts the writer and the partition maintenance; both stop with the scope, and what is still queued is written once more on
     * the way out, within a bound. `source`, `nodeId` and `catalog` are the service's: every event it records carries the first two,
-    * and is rated and counted by the third. */
+    * and is rated and counted by the third. `table` is the table the service's repository writes and maintains, which the lines the
+    * service logs about its partitions name (with `<table>_default`, the default partition); a service that shares its database with
+    * another names its own, and passes the same constant to its repository. */
   def live(
       source: AuditSource,
       nodeId: String,
       catalog: AuditCatalog,
+      table: String,
   ): ZLayer[AuditEventRepository & Settings & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
-    liveWith(Sizing.standard)(source, nodeId, catalog)
+    liveWith(Sizing.standard)(source, nodeId, catalog, table)
 
   def liveWith(
       sizing: Sizing,
@@ -92,6 +96,7 @@ object AuditEvents:
       source: AuditSource,
       nodeId: String,
       catalog: AuditCatalog,
+      table: String,
   ): ZLayer[AuditEventRepository & Settings & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
     ZLayer.fromZIO:
       for
@@ -109,7 +114,7 @@ object AuditEvents:
         inHand <- Ref.make(List.empty[AuditEvent])
         suspects <- Ref.make(Map.empty[UUID, Int])
         report <- EventReport.make(source, catalog, sizing.reportWindow)
-        _ <- Maintenance(repository, settings, sizing, source).run
+        _ <- Maintenance(repository, settings, sizing, source, table).run
         // Before the writer, so that its last report is made after the writer's last drain.
         _ <- report.run
         _ <- Writer(queue, repository, sizing, source, report, intake, closing, inHand, suspects).run
@@ -269,6 +274,8 @@ object AuditEvents:
 
     private val noPass = Pass(refused = Nil, left = Nil, unexplained = Nil, stored = false, stopped = false, states = Nil)
 
+    private val chunkSize = math.max(1, math.min(sizing.batchSize, sizing.writeChunk))
+
     /** Takes what has gathered, writes it, rests, and again. A backlog is written back to back, so the write rate is not capped at
       * one batch per interval. The rows a pass could not write go into the next batch, after a rest, so that the rows behind them in
       * the queue are written meanwhile. The batch being written is kept in `inHand` from the moment it is taken, in one uninterruptible
@@ -294,14 +301,29 @@ object AuditEvents:
         yield next
       go(Nil, 0)
 
-    /** The rows of the batch that are not stored or refused. A batch that fails is tried again, a few times, a `flushInterval` apart;
-      * one that still fails is settled by [[settleAfterFailure]]. */
+    /** The rows of the batch that are not stored or refused. The batch is written as a run of chunks of at most `writeChunk` rows, in
+      * order, each in a transaction of its own, and `inHand` is set to the rows not yet settled after each, so that a stop finds only
+      * those. A chunk that made no progress at all ends the run: the database is failing, and the chunks behind it wait for the next
+      * pass with it. */
     private def write(batch: List[AuditEvent], failing: Ref[Boolean]): UIO[List[AuditEvent]] =
-      attemptBatch(batch, failing, attempt = 1).flatMap:
+      def go(chunks: List[List[AuditEvent]], kept: List[AuditEvent]): UIO[List[AuditEvent]] =
+        chunks match
+          case Nil => ZIO.succeed(kept)
+          case chunk :: rest =>
+            writeChunkOf(chunk, failing).flatMap: unsettled =>
+              val keptNow = kept ++ unsettled
+              inHand.set(keptNow ++ rest.flatten) *>
+                (if unsettled.size == chunk.size then ZIO.succeed(keptNow ++ rest.flatten) else go(rest, keptNow))
+      go(batch.grouped(chunkSize).toList, Nil)
+
+    /** The rows of the chunk that are not stored or refused. A chunk that fails is tried again, a few times, a `flushInterval` apart;
+      * one that still fails is settled by [[settleAfterFailure]]. */
+    private def writeChunkOf(chunk: List[AuditEvent], failing: Ref[Boolean]): UIO[List[AuditEvent]] =
+      attemptBatch(chunk, failing, attempt = 1).flatMap:
         case true => recovered(failing).as(Nil)
         case false =>
-          settleAfterFailure(batch).flatMap: left =>
-            (if left.size < batch.size then recovered(failing) else ZIO.unit).as(left)
+          settleAfterFailure(chunk).flatMap: left =>
+            (if left.size < chunk.size then recovered(failing) else ZIO.unit).as(left)
 
     private def backoff(round: Int): Duration =
       val rest = sizing.flushInterval.multipliedBy(1L << math.min(round, 5))
@@ -419,7 +441,7 @@ object AuditEvents:
           queue.takeAll.flatMap: queued =>
             taken.update(_ + queued.size) *> pending.update(queued.toList ++ _)
         rows <- pending.get
-        _ <- ZIO.foreachDiscard(rows.grouped(math.max(1, math.min(sizing.batchSize, sizing.drainChunk))).toList)(writeChunk(_, pending))
+        _ <- ZIO.foreachDiscard(rows.grouped(chunkSize).toList)(drainChunk(_, pending))
         idle <- intake.get.map(_.inflight == 0)
         empty <- queue.size.map(_ <= 0)
         unsettled <- pending.get.map(_.nonEmpty)
@@ -430,7 +452,7 @@ object AuditEvents:
       yield ()
 
     /** One attempt at `chunk`: the rows stored or refused leave `pending`, the rest move to its end. */
-    private def writeChunk(chunk: List[AuditEvent], pending: Ref[List[AuditEvent]]): UIO[Unit] =
+    private def drainChunk(chunk: List[AuditEvent], pending: Ref[List[AuditEvent]]): UIO[Unit] =
       def settled(left: List[AuditEvent]): UIO[Unit] =
         val ids = chunk.map(_.id).toSet
         val leftIds = left.map(_.id).toSet
@@ -597,7 +619,7 @@ object AuditEvents:
     * internal error (XX). */
   private val infrastructureClasses = List("08", "53", "55", "57", "58", "40", "XX")
 
-  private class Maintenance(repository: AuditEventRepository, settings: Settings, sizing: Sizing, source: AuditSource):
+  private class Maintenance(repository: AuditEventRepository, settings: Settings, sizing: Sizing, source: AuditSource, table: String):
 
     private val once: IO[Unit, Unit] =
       Clock.instant.flatMap: now =>
@@ -614,7 +636,7 @@ object AuditEvents:
                 AuditMetrics.inDefault(source, report.daysLeftInDefault.size) *>
                   ZIO.when(report.daysLeftInDefault.nonEmpty)(
                     ZIO.logWarning(
-                      s"audit events of ${report.daysLeftInDefault.mkString(", ")} sit in audit_event_default, since the days had no partition when " +
+                      s"audit events of ${report.daysLeftInDefault.mkString(", ")} sit in ${table}_default, since the days had no partition when " +
                         "they were written; they are never moved, and the days get no partition until the rows are past the retention",
                     ),
                   ) *> daysAhead(today),
@@ -639,10 +661,10 @@ object AuditEvents:
           else
             AuditMetrics.partitionOwnerMismatch(source, true) *>
               ZIO.logError(
-                s"the audit event partitions are not maintained: the table audit_event is owned by ${ownership.owner} and the service " +
+                s"the audit event partitions are not maintained: the table $table is owned by ${ownership.owner} and the service " +
                   s"connects as ${ownership.role}, which is neither that role nor a member of it. Run as ${ownership.owner} or a superuser: " +
-                  s"ALTER TABLE audit_event OWNER TO ${quoted(ownership.role)}, and the same for audit_event_default. Until then no partition " +
-                  s"is created or dropped, and the events of a day without a partition are written to audit_event_default. Checked again at " +
+                  s"ALTER TABLE $table OWNER TO ${quoted(ownership.role)}, and the same for ${table}_default. Until then no partition " +
+                  s"is created or dropped, and the events of a day without a partition are written to ${table}_default. Checked again at " +
                   s"the next run, in ${sizing.maintenanceInterval.render}, or at a restart",
               ).as(false),
       )
