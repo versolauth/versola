@@ -100,4 +100,11 @@ object AuditReportControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body <- response.body.asString
       yield assertTrue(response.status == Status.BadRequest, body == "limit is 1 to 500")
     },
+    test("a report that finds no place free is 503, with its error code") {
+      val service = stub[AuditReportService]
+      for
+        _ <- service.userReport.failsWith(AuditReportError.Busy)
+        response <- run(Request.get(base.addQueryParam("userId", userId.toString)), service)
+      yield assertTrue(response.status == Status.ServiceUnavailable)
+    },
   ).provideSomeLayer(TestClient.layer) @@ TestAspect.sequential @@ TestAspect.silentLogging

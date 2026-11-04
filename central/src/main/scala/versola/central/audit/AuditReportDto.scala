@@ -40,3 +40,6 @@ case class AdminAction(
 enum AuditReportError:
   /** The window, the page size or the cursor is not valid. */
   case Invalid(message: String)
+
+  /** Too many reports are running: none of the places freed in time. */
+  case Busy

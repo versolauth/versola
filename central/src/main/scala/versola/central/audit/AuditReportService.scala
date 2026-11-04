@@ -55,12 +55,32 @@ object AuditReportService:
       "the cursor is not valid",
     ))
 
-  val live: ZLayer[CentralAuditRepository & AuthClient & CentralConfig, Nothing, AuditReportService] =
-    ZLayer.fromFunction(Impl(_, _, _))
+  /** Reports that run at the same time: each reads the table and asks auth, so a few at once are served and the rest wait. */
+  val MaxConcurrentReports = 4
 
-  private[audit] class Impl(repository: CentralAuditRepository, authClient: AuthClient, config: CentralConfig) extends AuditReportService:
+  /** How long a report waits for one of the places before it is refused as busy. */
+  val WaitForPlace: Duration = 5.seconds
+
+  val live: ZLayer[CentralAuditRepository & AuthClient & CentralConfig, Nothing, AuditReportService] =
+    ZLayer.fromZIO(Semaphore.make(MaxConcurrentReports)) ++ ZLayer.environment[CentralAuditRepository & AuthClient & CentralConfig] >>>
+      ZLayer.fromFunction(Impl(_, _, _, _))
+
+  private[audit] class Impl(repository: CentralAuditRepository, authClient: AuthClient, config: CentralConfig, places: Semaphore)
+    extends AuditReportService:
 
     override def userReport(
+        userId: UserId,
+        from: Option[Instant],
+        to: Option[Instant],
+        cursor: Option[String],
+        limit: Option[Int],
+    ): IO[AuditReportError | Throwable, UserAuditReport] =
+      ZIO.scoped:
+        places.withPermitScoped.timeout(WaitForPlace).flatMap:
+          case None => ZIO.fail(AuditReportError.Busy)
+          case Some(_) => report(userId, from, to, cursor, limit)
+
+    private def report(
         userId: UserId,
         from: Option[Instant],
         to: Option[Instant],

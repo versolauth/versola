@@ -684,8 +684,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   14 days ahead and drops a day once the whole day is older than `audit.retention`. Dropping a partition is the retention; nothing is
   vacuumed. A row whose day had no partition lands in `audit_event_default`; those rows are **never moved** into the day's partition
   (an insert-only logical replication of the table would see them twice), a day that has rows in the default is not attached and
-  central reports it (`audit_events_in_default`), and the rows leave the default when they age out of the retention. The table is
-  append-only: a trigger refuses `UPDATE` and `DELETE` unless the transaction sets `versola.audit_maintenance` to `on`, which only
+  central reports it (`audit_events_in_default`), and the rows leave the default when they age out of the retention. A trigger
+  refuses `UPDATE`, `DELETE` and `TRUNCATE` unless the transaction sets `versola.audit_maintenance` to `on`, which only
   central's own prune of the default partition does. Creating and dropping partitions needs the role central connects as to own the
   table (or be a member of the owner); otherwise central logs that the partitions are not maintained and `audit_partition_owner_mismatch`
   is set. Long-term keeping is the operator's logical replication of `audit_event` (a publication with `publish_via_partition_root = true`
@@ -696,7 +696,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   ```hocon
   audit {
     retention     = "7 days"      # 14 days is the sensible most: the per-user report asks auth, which keeps its log as long, for the same window
-    overflow      = "block"       # block | drop: what a full writer queue does to an event (block waits up to block-timeout for room, drop does not wait)
+    overflow      = "drop"        # drop | block: what a full writer queue does to an event (drop does not wait, block waits up to block-timeout for room)
     block-timeout = "2 seconds"
     events { admin-user-viewed = true }   # whether a look at a user (GET /users) is an event: the one read that is many
   }

@@ -54,7 +54,8 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private class Env:
     val repository = stub[CentralAuditRepository]
     val authClient = stub[AuthClient]
-    val service = AuditReportService.Impl(repository, authClient, TestCentralConfig.config)
+    val places = Unsafe.unsafe(Semaphore.unsafe.make(AuditReportService.MaxConcurrentReports)(using _))
+    val service = AuditReportService.Impl(repository, authClient, TestCentralConfig.config, places)
 
   private val clock = TestClock.setTime(now)
 
@@ -188,6 +189,31 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.userEvents.succeedsWith(List(reset))
         report <- env.service.userReport(userId, None, None, None, None)
       yield assertTrue(report.partial == List("auth"), report.events == List(reset))
+    },
+    test("only four reports run at a time: a fifth waits for a place and is refused as busy when none frees in time") {
+      val env = Env()
+      for
+        _ <- clock
+        gate <- Promise.make[Nothing, Unit]
+        // auth does not answer until the gate opens, so every report that got a place holds it
+        _ <- env.authClient.getUserAuditEvents.returnsZIO(_ => gate.await.as(authPage(Nil, None)))
+        _ <- env.authClient.getUserAuditSummary.succeedsWith(authSummary)
+        _ <- env.repository.userEvents.succeedsWith(Nil)
+        running <- ZIO.foreach(1 to AuditReportService.MaxConcurrentReports)(_ => env.service.userReport(userId, None, None, None, None).fork)
+        _ <- ZIO.yieldNow.repeatN(20)
+        fifth <- env.service.userReport(userId, None, None, None, None).either.fork
+        _ <- ZIO.yieldNow.repeatN(20)
+        _ <- TestClock.adjust(AuditReportService.WaitForPlace + 1.second)
+        refused <- fifth.join
+        _ <- gate.succeed(())
+        served <- ZIO.foreach(running)(_.join)
+        // the places are free again
+        again <- env.service.userReport(userId, None, None, None, None).either
+      yield assertTrue(
+        refused == Left(AuditReportError.Busy),
+        served.size == AuditReportService.MaxConcurrentReports,
+        again.isRight,
+      )
     },
     test("auth's refusal of the window is the caller's: a bad request, not a report without auth") {
       val env = Env()

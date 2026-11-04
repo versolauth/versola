@@ -42,26 +42,17 @@ CREATE INDEX audit_event_at_idx ON audit_event USING brin (at);
 -- The per-user report: everything that was done to a user, newest first.
 CREATE INDEX audit_event_user_idx ON audit_event (user_id, at) WHERE user_id IS NOT NULL;
 
--- Everything done from one address.
-CREATE INDEX audit_event_ip_idx ON audit_event (ip, at) WHERE ip IS NOT NULL;
-
--- Everything one administrator did (central only: the auditor's first question).
-CREATE INDEX audit_event_actor_idx ON audit_event (actor_id, at) WHERE actor_id IS NOT NULL;
-
--- Everything done to one object (a client, a role, a key).
-CREATE INDEX audit_event_target_idx ON audit_event (target_type, target_id, at) WHERE target_id IS NOT NULL;
-
 -- A row of a day that has no partition is written here instead of being refused, so a maintenance that cannot run
 -- loses no events (the reasoning of V0030 of auth). Unlike the antifraud log, a day's rows are never moved out of
 -- here into the day's partition: an insert-only logical replication would see them a second time. A day whose rows sit
 -- here is not attached and the service reports it (audit_events_in_default) until the rows age out of retention.
 CREATE TABLE audit_event_default PARTITION OF audit_event DEFAULT;
 
--- Append-only: a row is never changed or deleted by anybody but the service's own retention, which prunes the default
--- partition (dropping a day's partition fires no row trigger) under this transaction setting. An AFTER trigger rather
--- than BEFORE, because PostgreSQL 12, the oldest version the antifraud log supports, allows no BEFORE ROW trigger on
--- a partitioned table (13 does); raising in AFTER rolls the statement back all the same. The trigger is cloned onto
--- every partition created or attached later.
+-- The trigger below refuses UPDATE, DELETE and TRUNCATE of audit_event unless the transaction sets versola.audit_maintenance to
+-- 'on', which only the service's own retention does, when it prunes the default partition (dropping a day's partition fires no
+-- row trigger). The row trigger is an AFTER trigger rather than BEFORE, because PostgreSQL 12, the oldest version the antifraud
+-- log supports, allows no BEFORE ROW trigger on a partitioned table (13 does); raising in AFTER rolls the statement back all the
+-- same. It is cloned onto every partition created or attached later; the TRUNCATE trigger is on the table itself.
 CREATE FUNCTION audit_event_immutable() RETURNS trigger AS $$
 BEGIN
     IF current_setting('versola.audit_maintenance', true) IS DISTINCT FROM 'on' THEN
@@ -74,3 +65,7 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER audit_event_immutable
     AFTER UPDATE OR DELETE ON audit_event
     FOR EACH ROW EXECUTE FUNCTION audit_event_immutable();
+
+CREATE TRIGGER audit_event_no_truncate
+    BEFORE TRUNCATE ON audit_event
+    FOR EACH STATEMENT EXECUTE FUNCTION audit_event_immutable();

@@ -32,6 +32,10 @@ object AuditReportController extends Controller:
           .catchAll:
             case AuditReportError.Invalid(message) =>
               Observability.setError("invalid_audit_query", Some(message)).as(Response.text(message).status(Status.BadRequest))
+            case AuditReportError.Busy =>
+              Observability.setError("audit_report_busy").as(
+                Response.text("too many audit reports are running, try again").status(Status.ServiceUnavailable),
+              )
             case cause: Throwable => ZIO.fail(cause)
       yield response
     }

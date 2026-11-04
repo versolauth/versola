@@ -32,7 +32,7 @@ object PostgresCentralAuditConfigSpec extends ZIOSpecDefault:
       yield assertTrue(
         config.audit == CentralConfig.AuditConfig(),
         config.audit.retention == 7.days,
-        config.audit.overflow == AuditEvents.Overflow.block,
+        config.audit.overflow == AuditEvents.Overflow.drop,
         config.audit.blockTimeout == 2.seconds,
         config.audit.events.adminUserViewed,
       )
@@ -48,7 +48,7 @@ object PostgresCentralAuditConfigSpec extends ZIOSpecDefault:
       for config <- load("""audit { retention = "10 days" }""")
       yield assertTrue(
         config.audit.retention == 10.days,
-        config.audit.overflow == AuditEvents.Overflow.block,
+        config.audit.overflow == AuditEvents.Overflow.drop,
         config.audit.events.adminUserViewed,
       )
     },

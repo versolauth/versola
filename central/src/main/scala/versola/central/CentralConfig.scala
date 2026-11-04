@@ -298,7 +298,7 @@ object CentralConfig:
     */
   case class AuditConfig(
       retention: Duration = Duration.fromSeconds(7 * 24 * 3600L),
-      overflow: AuditEvents.Overflow = AuditEvents.Overflow.block,
+      overflow: AuditEvents.Overflow = AuditEvents.Overflow.drop,
       blockTimeout: Duration = Duration.fromSeconds(2),
       events: AuditConfig.Events = AuditConfig.Events(),
   ):
