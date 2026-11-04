@@ -53,6 +53,8 @@ object AuditEvents:
     * @param partitionsAhead     days of partitions created beyond today, so a maintenance run that is late does not leave the
     *                            writer without one
     * @param maintenanceInterval how often the partitions are made ahead, the old ones dropped and the default partition pruned
+    * @param drainChunk          the most rows the stop writes in one statement, each statement committed on its own, so that what the
+    *                            drain timeout cuts short is the statement in progress and not everything held; never more than `batchSize`
     * @param reportWindow       how often the events the log dropped or refused are written to the service's log: one line per window, whatever the number
     */
   case class Sizing(
@@ -62,6 +64,7 @@ object AuditEvents:
       partitionsAhead: Int = 14,
       maintenanceInterval: Duration = 1.hour,
       reportWindow: Duration = 1.minute,
+      drainChunk: Int = 100,
   )
 
   object Sizing:
@@ -397,38 +400,45 @@ object AuditEvents:
         _ <- ZIO.when(left.nonEmpty)(AuditMetrics.failed(source, left.size) *> report.noteAll(EventReport.NotWritten, left))
         _ <- ZIO.logInfo(
           s"the audit queue was drained on shutdown: $count events taken, ${left.size} not written" +
-            (if finished.isEmpty then s" (the write did not finish in $DrainTimeout)" else ""),
+            (finished match
+              case Bounded.Finished(_) => ""
+              case Bounded.TimedOut => s" (the write did not finish in $DrainTimeout)"
+              case Bounded.Failed => " (the write failed)"),
         )
       yield ()
 
-    /** Writes what is pending and what has been queued since, until nothing is being offered and nothing is queued. */
+    /** Writes what is pending and what has been queued since, each chunk once, until nothing is being offered, nothing is queued and
+      * nothing is pending. The rows a chunk could not settle go to the end of `pending` and are tried again when the round is over,
+      * a `flushInterval` later, so that they do not hold up the chunks behind them. What the queue gives up and what `pending` takes is
+      * one uninterruptible step, since the bound abandons this work wherever it stands. */
     private def drainRound(pending: Ref[List[AuditEvent]], taken: Ref[Int]): UIO[Unit] =
       for
-        queued <- queue.takeAll
-        _ <- taken.update(_ + queued.size)
         // What was queued goes first: the rows the writer held may be waiting on the statement that was abandoned, which holds them
         // uncommitted in the database, and must not stand in front of rows that nothing holds.
-        _ <- pending.update(queued.toList ++ _)
+        _ <- ZIO.uninterruptible:
+          queue.takeAll.flatMap: queued =>
+            taken.update(_ + queued.size) *> pending.update(queued.toList ++ _)
         rows <- pending.get
-        _ <- ZIO.foreachDiscard(rows.grouped(math.min(sizing.batchSize, DrainChunk)).toList)(writeUntilDone(_, pending))
+        _ <- ZIO.foreachDiscard(rows.grouped(math.max(1, math.min(sizing.batchSize, sizing.drainChunk))).toList)(writeChunk(_, pending))
         idle <- intake.get.map(_.inflight == 0)
         empty <- queue.size.map(_ <= 0)
-        _ <- if idle && empty then ZIO.unit else ZIO.yieldNow *> drainRound(pending, taken)
+        unsettled <- pending.get.map(_.nonEmpty)
+        _ <-
+          if idle && empty && !unsettled then ZIO.unit
+          else if idle && empty then ZIO.sleep(sizing.flushInterval) *> drainRound(pending, taken)
+          else ZIO.yieldNow *> drainRound(pending, taken)
       yield ()
 
-    /** The rows of `chunk` are removed from `pending` as they are stored or refused; the rest are tried again a `flushInterval` later. */
-    private def writeUntilDone(chunk: List[AuditEvent], pending: Ref[List[AuditEvent]]): UIO[Unit] =
-      def done(rows: List[AuditEvent]): UIO[Unit] =
-        val ids = rows.map(_.id).toSet
-        pending.update(_.filterNot(event => ids.contains(event.id)))
+    /** One attempt at `chunk`: the rows stored or refused leave `pending`, the rest move to its end. */
+    private def writeChunk(chunk: List[AuditEvent], pending: Ref[List[AuditEvent]]): UIO[Unit] =
+      def settled(left: List[AuditEvent]): UIO[Unit] =
+        val ids = chunk.map(_.id).toSet
+        val leftIds = left.map(_.id).toSet
+        pending.update: rows =>
+          rows.filterNot(event => ids.contains(event.id)) ++ rows.filter(event => leftIds.contains(event.id))
       repository.insertBatch(chunk).foldZIO(
-        _ =>
-          settleAfterFailure(chunk).flatMap: left =>
-            val leftIds = left.map(_.id).toSet
-            done(chunk.filterNot(event => leftIds.contains(event.id))) *>
-              ZIO.when(left.nonEmpty)(ZIO.sleep(sizing.flushInterval) *> writeUntilDone(left, pending)).unit
-        ,
-        _ => done(chunk),
+        _ => settleAfterFailure(chunk).flatMap(settled),
+        _ => settled(Nil),
       )
 
     val run: URIO[Scope, Unit] =
@@ -442,16 +452,31 @@ object AuditEvents:
         _ <- ZIO.addFinalizer(stop(fiber))
       yield ()
 
-  /** `effect`'s result if it comes within `limit`, else `None`, whatever the interruptibility of the caller. The stop runs as a scope's
-    * finalizer, and a scope releases its finalizers uninterruptibly: there `timeout` and `disconnect` cannot interrupt what they wait
-    * for, so a bound made with them is not one. Here the effect runs in a fiber of its own, interruptible, and the caller waits on a
-    * promise that the effect or a timer completes, which holds in any region. What is still running at the limit is told to stop, and
-    * left: a statement the transactor will not interrupt ends when the statement does. */
-  private def within[A](limit: Duration)(effect: UIO[A]): UIO[Option[A]] =
+  /** What became of the work of a bounded step. */
+  private enum Bounded[+A]:
+    case Finished(result: A)
+    case TimedOut
+
+    /** The work died, with a defect; the cause is in the log, by class and SQLSTATE. */
+    case Failed
+
+  /** `effect`'s result if it comes within `limit`, else [[Bounded.TimedOut]], and [[Bounded.Failed]] at once if it dies, whatever the
+    * interruptibility of the caller. The stop runs as a scope's finalizer, and a scope releases its finalizers uninterruptibly: there
+    * `timeout` and `disconnect` cannot interrupt what they wait for, so a bound made with them is not one. Here the effect runs in a
+    * fiber of its own, interruptible, and the caller waits on a promise that the effect (on any exit) or a timer completes, which holds
+    * in any region. What is still running at the limit is told to stop, and left: a statement the transactor will not interrupt ends
+    * when the statement does. */
+  private def within[A](limit: Duration)(effect: UIO[A]): UIO[Bounded[A]] =
     for
-      done <- Promise.make[Nothing, Option[A]]
-      worker <- ZIO.interruptible(effect).flatMap(result => done.succeed(Some(result))).forkDaemon
-      timer <- ZIO.interruptible(ZIO.sleep(limit)).flatMap(_ => done.succeed(None)).forkDaemon
+      done <- Promise.make[Nothing, Bounded[A]]
+      worker <- ZIO.interruptible(effect).foldCauseZIO(
+        cause =>
+          // A defect is named (classes and SQLSTATEs, never what the database said); being told to stop is not one.
+          ZIO.unless(cause.isInterruptedOnly)(ZIO.logWarning(s"a step of the audit stop failed (${describe(cause)})")) *>
+            done.succeed(Bounded.Failed),
+        result => done.succeed(Bounded.Finished(result)),
+      ).forkDaemon
+      timer <- ZIO.interruptible(ZIO.sleep(limit)).flatMap(_ => done.succeed(Bounded.TimedOut)).forkDaemon
       result <- done.await
       _ <- worker.interruptFork *> timer.interruptFork
     yield result
@@ -459,10 +484,6 @@ object AuditEvents:
   /** How long the stop waits for the writer to give up the statement it is in; a statement the transactor will not interrupt is
     * abandoned after this. */
   val WriterStopWait: Duration = 1.second
-
-  /** The most rows the stop writes in one statement: each is committed on its own, so what the drain timeout cuts short is the chunk
-    * in progress and not everything held. */
-  private val DrainChunk = 100
 
   /** Passes in which other rows were stored and the same row failed the same unexplained way before it is refused. */
   private val SuspectLimit = 5

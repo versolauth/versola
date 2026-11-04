@@ -72,12 +72,15 @@ object AuditEventsSpec extends UnitSpecBase:
       uninterruptible: Boolean,
       holdAll: Boolean,
       perRow: Duration,
+      diesAfterFirst: Boolean,
   ) extends AuditEventRepository:
 
     override def insertBatch(events: List[AuditEvent]): Task[Unit] =
       for
         n <- calls.updateAndGet(_ + 1)
         _ <- entered.offer(())
+        // A defect, not a failure: the kind of error the transactor raises when it cannot give a connection back.
+        _ <- ZIO.die(RuntimeException("secret-value-of-a-defect")).when(diesAfterFirst && n > 1)
         // A statement that takes as long as it has rows, as an insert that is slow does.
         _ <- ZIO.sleep(perRow.multipliedBy(events.size.toLong)).when(perRow != Duration.Zero && !(holdFirst && n == 1))
         isDown <- down.get
@@ -120,6 +123,7 @@ object AuditEventsSpec extends UnitSpecBase:
         uninterruptible: Boolean = false,
         holdAll: Boolean = false,
         perRow: Duration = Duration.Zero,
+        diesAfterFirst: Boolean = false,
     ): UIO[Store] =
       for
         stored <- Ref.make(Map.empty[UUID, AuditEvent])
@@ -128,7 +132,7 @@ object AuditEventsSpec extends UnitSpecBase:
         gate <- Promise.make[Nothing, Unit]
         isDown <- Ref.make(down)
         calls <- Ref.make(0)
-      yield Store(stored, rewritten, entered, gate, isDown, calls, holdFirst, storeBeforeHold, uninterruptible, holdAll, perRow)
+      yield Store(stored, rewritten, entered, gate, isDown, calls, holdFirst, storeBeforeHold, uninterruptible, holdAll, perRow, diesAfterFirst)
 
   private def fixture(gated: Boolean, failures: Int = 0, refuse: AuditEvent => Option[Throwable] = _ => None): UIO[Fixture] =
     for
@@ -738,6 +742,83 @@ object AuditEventsSpec extends UnitSpecBase:
           _ <- closing.join
           _ <- store.gate.succeed(())
         yield assertTrue(result.exists(_.isSuccess), droppedAfter - droppedBefore == 1.0)
+      },
+    ),
+    suite("the drain of the stop")(
+      test("a defect in the drain's write ends the stop at once, is named by class, and the rows are counted as not written") {
+        for
+          store <- Store.make(holdFirst = true, diesAfterFirst = true)
+          failedBefore <- counter("audit_events_failed_total", edge)
+          scope <- Scope.make
+          events <- scope.extend(buildOn(store, block, source = edge, sizing = sizing.copy(queueCapacity = 10)))
+          _ <- events.record(draft())
+          _ <- store.entered.take
+          _ <- events.record(draft())
+          closing <- closedAsTheAppDoes(scope).fork
+          // The clock is not moved: nothing but the failure can end the drain before its limit. Yields are not time, so the fiber is
+          // given many of them.
+          done <- ZIO.foldLeft(1 to 20000)(Option.empty[Exit[Nothing, Unit]]): (found, _) =>
+            if found.isDefined then ZIO.succeed(found) else ZIO.yieldNow *> closing.poll
+          failedAfter <- counter("audit_events_failed_total", edge)
+          entries <- ZTestLogger.logOutput
+          everything = entries.map(entry => entry.message() + " " + entry.cause.prettyPrint).mkString("\n")
+          _ <- settle *> TestClock.adjust(AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout).plus(2.seconds)) *> settle
+          _ <- closing.join
+        yield assertTrue(
+          done.isDefined,
+          failedAfter - failedBefore == 2.0,
+          everything.contains("java.lang.RuntimeException"),
+          !everything.contains("secret-value-of-a-defect"),
+          everything.contains("the write failed"),
+          !everything.contains("did not finish"),
+        )
+      }.provideLayer(ZTestLogger.default),
+      test("the stop writes statements of at most the chunk size, and of at most the batch size when that is smaller") {
+        def statements(small: AuditEvents.Sizing): IO[AuditUnavailable.type, List[Int]] =
+          for
+            f <- fixture(gated = true)
+            scope <- Scope.make
+            events <- scope.extend(build(f, block, source = edge, sizing = small))
+            _ <- events.record(draft())
+            _ <- f.started.take
+            _ <- ZIO.foreachDiscard(1 to 100)(_ => events.record(draft()))
+            closing <- closedAsTheAppDoes(scope).fork
+            _ <- settle *> TestClock.adjust(AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout)) *> settle
+            _ <- closing.join
+            written <- f.written.get
+          yield written.map(_.size)
+        for
+          byChunk <- statements(sizing.copy(queueCapacity = 1000, batchSize = 1000, drainChunk = 40))
+          byBatch <- statements(sizing.copy(queueCapacity = 1000, batchSize = 30, drainChunk = 100))
+        yield assertTrue(
+          byChunk.sum == 101,
+          byChunk.max == 40,
+          byBatch.sum == 101,
+          byBatch.max == 30,
+        )
+      },
+      test("a row that cannot be settled, at the front of the first chunk, does not hold up the chunks behind it") {
+        val readOnly = (event: AuditEvent) =>
+          Option.when(event.reason.contains("suspect"))(SQLException("cannot execute INSERT in a read-only transaction", "25006"))
+        for
+          f <- fixture(gated = true, refuse = readOnly)
+          failedBefore <- counter("audit_events_failed_total", edge)
+          scope <- Scope.make
+          events <- scope.extend(build(f, block, source = edge, sizing = sizing.copy(queueCapacity = 1000, batchSize = 1000)))
+          _ <- events.record(draft())
+          _ <- f.started.take
+          _ <- events.record(draft().copy(reason = Some("suspect")))
+          _ <- ZIO.foreachDiscard(1 to 250)(_ => events.record(draft()))
+          closing <- closedAsTheAppDoes(scope).fork
+          _ <- settle *> TestClock.adjust(AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout).plus(2.seconds)) *> settle
+          _ <- closing.join
+          written <- f.written.get.map(_.flatten)
+          failedAfter <- counter("audit_events_failed_total", edge)
+        yield assertTrue(
+          // The 250 queued and the one the writer held, whatever happens to the one that cannot be written.
+          written.count(!_.reason.contains("suspect")) == 251,
+          failedAfter - failedBefore == 1.0,
+        )
       },
     ),
     suite("the stop and the app's shutdown")(
