@@ -9,6 +9,7 @@ import versola.central.configuration.tenants.TenantId
 import versola.util.audit.AuditContext
 import versola.util.http.EntityVersion
 import versola.util.{Email, PageLimit, Patch, Phone}
+import zio.Duration
 import zio.http.{Body, Client, Header, MediaType, Method, QueryParams, Request, Response, Status, URL}
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder}
@@ -146,6 +147,9 @@ object AuthClient:
     * audit context of the request, which the audit hook fills from what edge added to the request, so no controller has to pass it
     * on. The antifraud calls do not carry it: the administrator travels in their `userId`. */
   val ActorParam = "actorId"
+
+  /** Auth's answer to an audit read that it had no place for (`503`, `Retry-After`): not a failure of the report, asked again. */
+  private case class AuditBusy(after: Duration) extends Exception("auth is busy with other audit reads")
 
   private[users] case object TokenExpiredError extends Exception("central→auth token expired; retrying with fresh token")
 
@@ -578,18 +582,27 @@ object AuthClient:
     /** Auth's 400 is its refusal of the window or the cursor; a 5xx, a 404 (an auth without the endpoint) and a connection that
       * cannot be made are auth not answering. */
     private def auditAnswer[A: JsonDecoder](request: Request): IO[AuthAuditError | Throwable, A] =
+      attemptAudit[A](request)
+        // Auth says it is busy with other reads (503 and how long to wait): asked once more after that, and then it is not answering.
+        .catchSome { case AuthClient.AuditBusy(after) => ZIO.sleep(after) *> attemptAudit[A](request) }
+        .catchSome { case _: AuthClient.AuditBusy => ZIO.succeed(Left(AuthAuditError.Unavailable("auth answered 503"))) }
+        .catchSome:
+          case _: IOException => ZIO.succeed(Left(AuthAuditError.Unavailable("auth could not be reached")))
+        .flatMap(ZIO.fromEither(_))
+
+    private def attemptAudit[A: JsonDecoder](request: Request): Task[Either[AuthAuditError, A]] =
       execute(request): response =>
         response.status match
           case status if status.isSuccess =>
             response.body.asString.flatMap: body =>
               ZIO.fromEither(body.fromJson[A]).mapBoth(msg => new RuntimeException(s"Auth response decode failed: $msg"), Right(_))
           case Status.BadRequest => response.body.asString.map(message => Left(AuthAuditError.Invalid(message)))
+          case Status.ServiceUnavailable =>
+            val seconds = response.headers.get("Retry-After").flatMap(_.trim.toLongOption).getOrElse(1L)
+            ZIO.fail(AuthClient.AuditBusy(Duration.fromSeconds(seconds.max(1L).min(2L))))
           case status if status.isServerError || status == Status.NotFound =>
             ZIO.succeed(Left(AuthAuditError.Unavailable(s"auth answered ${status.code}")))
           case status => ZIO.fail(new RuntimeException(s"Auth call failed: ${status.code}"))
-      .catchSome:
-        case _: IOException => ZIO.succeed(Left(AuthAuditError.Unavailable("auth could not be reached")))
-      .flatMap(ZIO.fromEither(_))
 
     /** The administrator the request being served came from: a call central makes on its own (the outbox) or for a provisioning
       * client names nobody, and auth records central. */

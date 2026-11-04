@@ -573,7 +573,7 @@ object AuthClientSpec extends ZIOSpecDefault:
         client <- ZIO.service[AuthClient]
         _ <- TestClient.addRoutes(answer(Status.BadRequest, "from is before the retention"))
         invalid <- client.getUserAuditEvents(userId, query).either
-        _ <- TestClient.addRoutes(answer(Status.ServiceUnavailable, ""))
+        _ <- TestClient.addRoutes(answer(Status.InternalServerError, ""))
         unavailable <- client.getUserAuditEvents(userId, query).either
         _ <- TestClient.addRoutes(answer(Status.NotFound, ""))
         missing <- client.getUserAuditSummary(userId, None, None).either
@@ -581,10 +581,46 @@ object AuthClientSpec extends ZIOSpecDefault:
         forbidden <- client.getUserAuditEvents(userId, query).either
       yield assertTrue(
         invalid == Left(AuthAuditError.Invalid("from is before the retention")),
-        unavailable == Left(AuthAuditError.Unavailable("auth answered 503")),
+        unavailable == Left(AuthAuditError.Unavailable("auth answered 500")),
         missing == Left(AuthAuditError.Unavailable("auth answered 404")),
         // any other answer is not a thing auth should say: a failure, not a part left out
         forbidden.left.exists(_.isInstanceOf[RuntimeException]),
+      )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("auth's 503 on an audit read is asked once more after its Retry-After, and a second 503 is auth not answering") {
+      val query = UserAuditEventsQuery(None, None, None, 10)
+      val page = "{\"events\":[],\"nextCursor\":null,\"retentionFrom\":\"2026-10-27T00:00:00Z\"}"
+      for
+        client <- ZIO.service[AuthClient]
+        calls <- Ref.make(0)
+        // busy the first time, then a page
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request]: _ =>
+            calls.updateAndGet(_ + 1).map: n =>
+              if n == 1 then Response.text("").status(Status.ServiceUnavailable).addHeader(Header.Custom("Retry-After", "1"))
+              else Response.json(page)
+          .toRoutes,
+        )
+        first <- client.getUserAuditEvents(userId, query).either.fork
+        _ <- TestClock.adjust(3.seconds)
+        served <- first.join
+        retried <- calls.get
+        // busy both times
+        _ <- calls.set(0)
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request]: _ =>
+            calls.update(_ + 1).as(Response.text("").status(Status.ServiceUnavailable).addHeader(Header.Custom("Retry-After", "1")))
+          .toRoutes,
+        )
+        second <- client.getUserAuditEvents(userId, query).either.fork
+        _ <- TestClock.adjust(3.seconds)
+        refused <- second.join
+        asked <- calls.get
+      yield assertTrue(
+        served.isRight,
+        retried == 2,
+        refused == Left(AuthAuditError.Unavailable("auth answered 503")),
+        asked == 2,
       )
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("resetPassword returns None when server responds 204") {
