@@ -69,8 +69,11 @@ writer and the same metric names.
 | `AuditPartitionsRunningOut` | `audit_partitions_ahead` below 3 | 5m | critical |
 | `AuditEventsInDefault` | `audit_events_in_default` above 0: a day's events sit in the default partition and are never moved | 30m | warning |
 | `AuditPartitionOwnerMismatch` | `audit_partition_owner_mismatch` is 1: the service's role does not own `audit_event` | 10m | warning |
+| `AuditReplicationSlotRetainsWal` | `db_replication_slot_retained_bytes` of a slot above 10 GiB: a slot (the audit log's replication is one) is not read and the primary keeps its WAL | 15m | warning |
 
-The file passes `promtool check rules` (9 rules); the tool is not in the repository, so a reviewer runs it.
+The file passes `promtool check rules` (10 rules); the tool is not in the repository, so a reviewer runs it.
+
+The last rule reads the gauges the services publish about the database's replication slots (`db_replication_slot_retained_bytes{slot}`, `db_replication_slot_active{slot}`); there is no metric of whether a subscription to `audit_event` exists at all, so a replication that was never set up, or whose slot was dropped, raises no alert.
 
 Counters appear with their first increment, so `increase()` does not see the very first failure of a new pod; a failure
 that repeats is seen. The two stale-age rules read gauges the service sets after each successful refresh, so they stay

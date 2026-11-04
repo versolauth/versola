@@ -945,22 +945,40 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   ```hocon
   audit {
     retention     = "7 days"      # the hot window; 14 days is the sensible maximum, the long-term copy is the replication below
-    overflow      = "block"       # block: a request waits up to block-timeout for room in the writer's queue, then fails with
-                                  #   503 audit_unavailable;
-                                  # drop: the event is not queued and is counted in audit_events_dropped_total, the request goes on
+    overflow      = "drop"        # drop: an event that finds no room in the writer's queue is counted in audit_events_dropped_total
+                                  #   and the request goes on;
+                                  # block: the event waits up to block-timeout for room first, then it is counted as dropped
+                                  #   (the request goes on in both cases)
     block-timeout = "2 seconds"
-    events { token-refresh = true, authorize-success = true, par-success = true }   # the high-volume kinds; failures are always recorded
+    events { token-refresh = false, authorize-success = true, par-success = true }   # the high-volume kinds; refusals, reuse detection and failures are always recorded
   }
   ```
 
-  **The table is append-only.** A trigger (`audit_event_immutable`, on every partition) refuses `UPDATE` and `DELETE`
-  unless the transaction has set `versola.audit_maintenance = 'on'`, which only the service's own prune of the default
-  partition does; an operator who must delete (a legal erasure) sets it the same way, `SET LOCAL`, in the transaction.
-  Dropping a partition is DDL and is not refused. A row of a day that had no partition goes to `audit_event_default`
+  **What the trigger does.** A trigger (`audit_event_immutable`; a row trigger on the table and every partition, and a
+  `BEFORE TRUNCATE` statement trigger on the table) refuses `UPDATE`, `DELETE` and `TRUNCATE` of `audit_event` unless the
+  transaction has set `versola.audit_maintenance = 'on'`. The service's own prune of the default partition sets it; an
+  operator who must delete (a legal erasure) sets it the same way, `SET LOCAL`, in the transaction. Any session can set
+  it, and the table's owner can drop the trigger or a partition. Dropping a partition is DDL and is not refused. A row of a day that had no partition goes to `audit_event_default`
   and stays there (it is never moved into the day's partition, unlike the antifraud log, because the replication
   below is insert-only and a move is a delete and an insert): the gauge `audit_events_in_default` counts such days,
   the day gets no partition while they are there, and they leave with the retention. The owner of the table must be
   the service's role, as for `af_event` (`audit_partition_owner_mismatch`).
+
+  **Facts to plan for.** The hot window is 7 days (`audit.retention`) unless you change it. A replication slot that is
+  not read keeps the WAL it has not sent on the primary's disk until the slot is read or dropped; the alert
+  `AuditReplicationSlotRetainsWal` watches the WAL each slot holds back (there is no metric of whether the subscription
+  exists). `audit_event.at` is the clock of the node that records the event, so the nodes need synchronised clocks (NTP
+  or the cloud's time service), and the per-user report compares its window with the clock of the node that serves it.
+  `auth` reads the report of one user for at most 4 requests at once; another waits up to 2 seconds for its turn and is
+  answered `503` with `Retry-After: 1` and the code `audit_report_busy`.
+
+  **What is recorded, and how often.** Refusals reachable without signing in (`client.auth_failed`, `token.refused`, a
+  failed `authorize.request`, a refused `par.request`) are counted in memory per (kind, client, address, reason) and written
+  as one row a minute with `details.count`; the table of keys holds at most 10 000, past which new keys are counted
+  together in one more row. The `token.issued` of a refresh-token grant is off by default (`events.token-refresh = false`); `token.refused` and
+  `token.reuse_detected` are always recorded. `PUT /users` records `account.updated` (actor `service`, `details.changed`
+  names `email`, `phone` or `login` and never a value, only when one changed); `DELETE /users` ends the user's sessions with
+  `session.ended` and the cause `user_deleted`.
 
   **Long-term storage is your logical replication** of `audit_event` to another database, which the hot window's
   drops never reach. PostgreSQL 13 or later on both sides (`publish_via_partition_root` is 13+; the minimum of this
@@ -981,11 +999,11 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `audit_events_total{source,kind,outcome}`, `audit_events_dropped_total`, `audit_events_blocked_total` (requests
   that waited for room), `audit_events_failed_total` (best-effort inserts that failed), `audit_queue_size`,
   `audit_partitions_ahead`, `audit_events_in_default`, `audit_partition_owner_mismatch`, `audit_events_unavailable_total`
-  (requests refused with 503 `audit_unavailable` after waiting for the queue) and `audit_events_rejected_total`
+  (`central`'s requests refused with 503 `audit_unavailable`; `auth` does not refuse a request for it) and `audit_events_rejected_total`
   (events the database refused one by one; a text with U+0000 and an address that is none are cleaned before the insert, so this
   stays at zero) and `audit_events_failed_total`. The alert rules are `dashboards/alerts/versola-audit.rules.yaml`
   (`AuditEventsDropped`, `AuditEventsRejected`, `AuditEventsFailed`, `AuditEventsUnavailable`, `AuditQueueHigh`, `AuditEventsBlocked`,
-  `AuditPartitionsRunningOut`, `AuditEventsInDefault`, `AuditPartitionOwnerMismatch`), loaded like the antifraud ones. **The rows are personal data** (an address, a user agent, a user id): the hot window and the replica's
+  `AuditPartitionsRunningOut`, `AuditEventsInDefault`, `AuditPartitionOwnerMismatch`, `AuditReplicationSlotRetainsWal`), loaded like the antifraud ones. **The rows are personal data** (an address, a user agent, a user id): the hot window and the replica's
   retention must not exceed what you promise for such data; deleting a user does not delete their events.
 
   Central reads auth's rows through two internal endpoints (`GET /audit/users/{userId}/events` and `/summary`,

@@ -103,7 +103,7 @@ object AuditLogFlowSpec extends E2ESpec:
         started = Instant.now.minusMillis(200)
         userId = s.userId.toString
         session <- login(s, auth)
-        // RFC 6749 §6: the refresh grant, then RFC 7009: the refresh token revoked, then OIDC RP-Initiated Logout
+        // RFC 6749 §6: the refresh grant (not an event by default, `audit.events.token-refresh = false`), then RFC 7009: the refresh token revoked, then OIDC RP-Initiated Logout
         refreshed <- auth.refresh(session.refreshToken, Some(s.clientId), Some(s.clientSecret)).success
         refreshedRefresh <- ZIO.fromOption(refreshed.refreshToken).orElseFail(RuntimeException("expected the rotated refresh token"))
         revoked <- auth.revoke(refreshedRefresh, s.clientId, s.clientSecret, tokenTypeHint = Some("refresh_token"))
@@ -116,7 +116,6 @@ object AuditLogFlowSpec extends E2ESpec:
         story.map(r => (r.kind, r.outcome)).filter((k, _) => k != "login.step") == List(
           ("login.completed", "success"),
           ("token.issued", "success"),
-          ("token.issued", "success"),
           ("token.revoked", "success"),
           ("session.ended", "success"),
         ),
@@ -125,10 +124,7 @@ object AuditLogFlowSpec extends E2ESpec:
         story.map(_.at) == story.map(_.at).sorted,
         // newest first: what the endpoint serves is the reverse of the story
         rows.map(_.at) == rows.map(_.at).sorted.reverse,
-        story.filter(_.kind == "token.issued").flatMap(r => r.details.get("grant").flatMap(_.asString)) == List(
-          "authorization_code",
-          "refresh_token",
-        ),
+        story.filter(_.kind == "token.issued").flatMap(r => r.details.get("grant").flatMap(_.asString)) == List("authorization_code"),
         story.filter(_.kind == "token.issued").flatMap(_.clientId).toSet == Set(s.clientId),
         story.find(_.kind == "token.revoked").flatMap(r => r.details.get("cause").flatMap(_.asString)).contains("rfc7009"),
         story.find(_.kind == "session.ended").flatMap(r => r.details.get("cause").flatMap(_.asString)).contains("rp_logout"),

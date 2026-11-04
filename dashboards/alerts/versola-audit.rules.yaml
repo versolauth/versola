@@ -57,7 +57,7 @@ groups:
           severity: warning
         annotations:
           summary: "Requests wait for the audit writer in {{ $labels.namespace }} ({{ $labels.source }})"
-          description: "The audit queue of {{ $labels.source }} was full for 5 minutes (audit.overflow = block): requests waited up to audit.block-timeout for room, and those that found none were refused with 503 audit_unavailable. The writer is slower than the load; check the database's write latency and audit_queue_size."
+          description: "The audit queue of {{ $labels.source }} was full for 5 minutes (audit.overflow = block): requests waited up to audit.block-timeout for room. The writer is slower than the load; check the database's write latency and audit_queue_size."
 
       - alert: AuditPartitionsRunningOut
         expr: min by (namespace, source) (audit_partitions_ahead) < 3
@@ -85,3 +85,15 @@ groups:
         annotations:
           summary: "{{ $labels.source }} does not own its audit log table in {{ $labels.namespace }}"
           description: "The role {{ $labels.source }} connects as neither owns audit_event nor is a member of its owner, so no partition is created or dropped. The {{ $labels.source }} log has the statement to run: ALTER TABLE audit_event OWNER TO <role>."
+
+      # The database's own replication slots, read by each service from pg_replication_slots (PostgresWalMetrics). Not specific to
+      # one service: the slot of the audit log's logical replication is one of them, and one that is not consumed keeps the WAL on
+      # the primary. Every service reads the same database, so the series are taken once per slot.
+      - alert: AuditReplicationSlotRetainsWal
+        expr: max by (namespace, slot) (db_replication_slot_retained_bytes) > 10 * 1024 * 1024 * 1024
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Replication slot {{ $labels.slot }} retains {{ $value | humanize1024 }}B of WAL in {{ $labels.namespace }}"
+          description: "The slot {{ $labels.slot }} holds back more than 10 GiB of WAL on the primary for 15 minutes: its subscriber (the long-term copy of audit_event, see deploy.md) is not reading, or is far behind. The WAL is kept until the slot is read or dropped (DROP_REPLICATION_SLOT / pg_drop_replication_slot), and it fills the primary's disk meanwhile. db_replication_slot_active says whether a subscriber is connected."
