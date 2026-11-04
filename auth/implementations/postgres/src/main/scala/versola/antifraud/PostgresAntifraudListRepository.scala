@@ -18,6 +18,7 @@ import scala.util.chaining.*
 class PostgresAntifraudListRepository(xa: TransactorZIO, previewTimeout: Duration = 10.seconds, statementTimeout: Duration = 10.seconds)
   extends AntifraudListRepository,
     BasicCodecs:
+  import PostgresAntifraudEventRepository.CountedRequest
   import PostgresAntifraudListRepository.*
 
   private given DbCodec[Instant] = DbCodec.InstantCodec
@@ -104,10 +105,21 @@ class PostgresAntifraudListRepository(xa: TransactorZIO, previewTimeout: Duratio
             WHERE at >= $since AND (NOT $scoped OR tenant_id = $tenant)
           """.query[Counts].run().head
           ListPreview(matched = Some(c.matched), total = c.total)
+        case AntifraudValueType.prefix if value.length > StatsPrefixLength =>
+          // The statistics keep only the first `StatsPrefixLength` digits of a number, so they cannot tell a longer prefix from the
+          // range it falls in, and the share of the whole range would be held against a narrow entry. The event log keeps more
+          // digits per event, and is counted here for the entry alone. The events are the ones the rollup makes `requests` of (the
+          // same channel and `CountedRequest`), so that matched / total is the ratio the rollup would give for the same traffic.
+          val c = sql"""
+            SELECT COUNT(*) FILTER (WHERE starts_with(dest_prefix, $value)), COUNT(*) FROM af_event
+            WHERE channel = 'sms' AND dest_prefix IS NOT NULL AND $CountedRequest
+              AND at >= $since AND (NOT $scoped OR tenant_id = $tenant)
+          """.query[Counts].run().head
+          ListPreview(matched = Some(c.matched), total = c.total)
         case AntifraudValueType.prefix =>
           // The rolled-up requests of the range per minute, not the day's events: the traffic of a range is what
-          // af_dest_stats is made of, and reading it is a few hundred rows. The statistics keep the first digits of a number
-          // (as many as the rollup is run with), so a value longer than that is the range it falls in.
+          // af_dest_stats is made of, and reading it is a few hundred rows. A value of up to `StatsPrefixLength` digits is a range
+          // of the statistics, or one that contains such ranges.
           val c = sql"""
             SELECT COALESCE(SUM(requests) FILTER (WHERE starts_with(dest_prefix, $value) OR starts_with($value, dest_prefix)), 0),
                    COALESCE(SUM(requests), 0)
@@ -332,6 +344,9 @@ class PostgresAntifraudListRepository(xa: TransactorZIO, previewTimeout: Duratio
     )
 
 object PostgresAntifraudListRepository:
+  /** The digits of a number a range of `af_dest_stats` has: the rollup is run with this length. */
+  private val StatsPrefixLength = AntifraudEvents.Sizing.standard.statsPrefixLength
+
   val live: ZLayer[TransactorZIO, Nothing, AntifraudListRepository] =
     ZLayer.fromFunction(PostgresAntifraudListRepository(_))
 

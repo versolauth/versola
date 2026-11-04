@@ -46,11 +46,16 @@ object AntifraudListsSpec extends UnitSpecBase:
 
     /** Answers by tenant, as the repository does; by default `previewResult` for all. */
     var previewBy: Option[Option[TenantId] => ListPreview] = None
+    var previewedValues: List[String] = Nil
+
+    /** Answers by value, as a repository that counts a prefix for that prefix does. */
+    var previewOf: Option[String => ListPreview] = None
 
     override def preview(valueType: AntifraudValueType, value: String, tenantId: Option[TenantId], since: Instant): Task[ListPreview] =
       ZIO.succeed:
         previewedFor = previewedFor :+ tenantId
-        previewBy.fold(previewResult)(_(tenantId))
+        previewedValues = previewedValues :+ value
+        previewOf.fold(previewBy.fold(previewResult)(_(tenantId)))(_(value))
 
     override def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]] = ZIO.succeed(entries)
 
@@ -718,6 +723,26 @@ object AntifraudListsSpec extends UnitSpecBase:
         scoped <- guarded.create(entry(Some(tenant)), operator).either
         global <- guarded.create(entry(None), operator).either
       yield assertTrue(scoped.left.exists(_.isInstanceOf[InvalidListEntry]), global.isRight)
+    },
+    test("a prefix of six digits is judged by its own share: a narrow one in a heavy range is accepted, a broad one of it is refused") {
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
+      // The range 4915 holds 80% of the traffic; of it 491512 is 1% and 491599 is 40%.
+      repository.previewOf = Some:
+        case "491512" => ListPreview(Some(10), 1000)
+        case "491599" => ListPreview(Some(400), 1000)
+        case _ => ListPreview(Some(800), 1000)
+      for
+        narrow <- add(lists, AntifraudListType.fake, AntifraudValueType.prefix, "491512").either
+        broad <- add(lists, AntifraudListType.fake, AntifraudValueType.prefix, "491599").either
+        range <- add(lists, AntifraudListType.fake, AntifraudValueType.prefix, "4915").either
+      yield assertTrue(
+        narrow.isRight,
+        broad.left.exists(_.isInstanceOf[InvalidListEntry]),
+        range.left.exists(_.isInstanceOf[InvalidListEntry]),
+        // The value is asked about whole, not cut to a range.
+        repository.previewedValues == List("491512", "491599", "4915"),
+      )
     },
     test("a shadow entry enforces nothing and only shows in the fired rules") {
       val (lists, _) = make(FakeRepository())
