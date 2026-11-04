@@ -113,31 +113,53 @@ object AuditSanitizerSpec extends UnitSpecBase:
         assertTrue(cut == Some("a" * (AuditSanitizer.MaxUserAgent - 1)))
       },
     ),
-    suite("which refusals of the database drop a row")(
-      test("a data exception or a constraint violation always does") {
+    suite("what the sanitizer caps and reports")(
+      test("a text is cut to its bound, a user agent to its own, and the field is reported") {
+        val long = "x" * (AuditSanitizer.MaxText + 40)
+        val (cut, fields) = AuditSanitizer.run(event.copy(reason = Some(long), targetId = Some(long), userAgent = Some("a" * 700)))
         assertTrue(
-          AuditEvents.refusedForItself(SQLException("bad", "22P02"), othersStored = false),
-          AuditEvents.refusedForItself(SQLException("bad", "22021"), othersStored = false),
-          AuditEvents.refusedForItself(SQLException("bad", "23502"), othersStored = false),
-          AuditEvents.refusedForItself(RuntimeException("wrapped", SQLException("bad", "22P02")), othersStored = false),
-          AuditEvents.refusedForItself(RuntimeException("wrapped", RuntimeException("deeper", SQLException("bad", "23505"))), othersStored = false),
+          cut.reason.map(_.length) == Some(AuditSanitizer.MaxText),
+          cut.targetId.map(_.length) == Some(AuditSanitizer.MaxText),
+          cut.userAgent.map(_.length) == Some(AuditSanitizer.MaxUserAgent),
+          fields == List(AuditSanitizer.Field.Text, AuditSanitizer.Field.UserAgent),
         )
       },
-      test("a failure that carries no SQLSTATE or says the database is the problem never does, whatever else was stored") {
+      test("details past the bound are replaced by a marker, and the field is reported") {
+        val big = event.copy(details = Json.Obj("list" -> Json.Arr(Chunk.fromIterable(List.fill(2000)(Json.Str("0123456789"))))))
+        val (cut, fields) = AuditSanitizer.run(big)
+        assertTrue(cut.details == Json.Obj("truncated" -> Json.Bool(true)), fields == List(AuditSanitizer.Field.Details))
+      },
+      test("an address that is none is dropped and reported, and an event that needed nothing reports nothing") {
+        val (dropped, fields) = AuditSanitizer.run(event.copy(ip = Some("not an address")))
+        val (same, none) = AuditSanitizer.run(event.copy(ip = Some("203.0.113.7")))
+        assertTrue(dropped.ip.isEmpty, fields == List(AuditSanitizer.Field.Ip), same.ip == Some("203.0.113.7"), none.isEmpty)
+      },
+      test("U+0000 is reported as a change of text, and of the details when it was in them") {
+        val (_, text) = AuditSanitizer.run(event.copy(reason = Some("a\u0000b")))
+        val (_, details) = AuditSanitizer.run(event.copy(details = Json.Obj("k" -> Json.Str("v\u0000"))))
+        assertTrue(text == List(AuditSanitizer.Field.Text), details == List(AuditSanitizer.Field.Details))
+      },
+    ),
+    suite("what a statement's error says about its rows")(
+      test("a data exception, a constraint violation or a value too large for an index is the row's") {
+        val states = List("22P02", "22021", "22P05", "23502", "23505", "54000")
         assertTrue(
-          !AuditEvents.refusedForItself(RuntimeException("timeout"), othersStored = true),
-          !AuditEvents.refusedForItself(SQLException("gone", "08006"), othersStored = true),
-          !AuditEvents.refusedForItself(SQLException("no resources", "53300"), othersStored = true),
-          !AuditEvents.refusedForItself(SQLException("shutdown", "57P01"), othersStored = true),
-          !AuditEvents.refusedForItself(SQLException("rolled back", "40001"), othersStored = true),
-          !AuditEvents.refusedForItself(SQLException("bad", "42P01"), othersStored = false),
+          states.forall(state => AuditEvents.verdictOf(SQLException("bad", state)) == AuditEvents.Verdict.Data),
+          AuditEvents.verdictOf(RuntimeException("wrapped", RuntimeException("deeper", SQLException("bad", "23505")))) == AuditEvents.Verdict.Data,
         )
       },
-      test("another SQLSTATE drops a row only when other rows of the same pass were stored, which shows it is the row") {
+      test("a failure with no SQLSTATE or one about the server is the database's, and is never the row's") {
+        val states = List("08006", "53300", "55000", "57P01", "58030", "40001", "XX000")
         assertTrue(
-          AuditEvents.refusedForItself(SQLException("too long", "54000"), othersStored = true),
-          !AuditEvents.refusedForItself(SQLException("too long", "54000"), othersStored = false),
+          states.forall(state => AuditEvents.verdictOf(SQLException("bad", state)) == AuditEvents.Verdict.Infrastructure),
+          AuditEvents.verdictOf(RuntimeException("timeout")) == AuditEvents.Verdict.Infrastructure,
         )
+      },
+      test(
+        "any other SQLSTATE is neither: a read-only transaction after a failover, a credential rotation, a missing database or a missing privilege",
+      ) {
+        val states = List("25006", "28P01", "3D000", "42501", "42P01")
+        assertTrue(states.forall(state => AuditEvents.verdictOf(SQLException("bad", state)) == AuditEvents.Verdict.Other))
       },
     ),
   )

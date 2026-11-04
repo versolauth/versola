@@ -44,77 +44,17 @@ object PostgresAuditInsertSpec extends PostgresSpec:
       details = Json.Obj("changed" -> Json.Arr(Json.Str("name")), "n" -> Json.Num(1)),
     )
 
-  private case class Row(
-      id: UUID,
-      at: Instant,
-      tenantId: Option[String],
-      source: String,
-      nodeId: String,
-      kind: String,
-      outcome: String,
-      reason: Option[String],
-      severity: String,
-      actorType: String,
-      actorId: Option[String],
-      userId: Option[UUID],
-      clientId: Option[String],
-      sessionId: Option[String],
-      ip: Option[String],
-      userAgent: Option[String],
-      traceId: Option[String],
-      targetType: Option[String],
-      targetId: Option[String],
-      details: String,
-  ) derives DbCodec
+  private val table = AuditTestTable("audit_insert_spec")
 
-  /** A transaction that sees the copy of the table, as the service's connection sees its own. */
-  private def inTransaction[A](xa: TransactorZIO)(f: DbTx ?=> A): Task[A] =
-    xa.transact:
-      sql"SET LOCAL search_path = audit_insert_spec, public".update.run()
-      f
+  private type Row = AuditTestTable.Row
 
-  private def rows(xa: TransactorZIO): Task[List[Row]] =
-    inTransaction(xa):
-      sql"""
-        SELECT id, at, tenant_id, source, node_id, kind, outcome, reason, severity, actor_type, actor_id, user_id, client_id,
-               session_id, host(ip), user_agent, trace_id, target_type, target_id, details::text
-        FROM audit_event ORDER BY kind, id
-      """.query[Row].run().toList
+  private def inTransaction[A](xa: TransactorZIO)(f: DbTx ?=> A): Task[A] = table.inTransaction(xa)(f)
 
-  private def count(xa: TransactorZIO, table: String): Task[Long] =
-    inTransaction(xa)(sql"SELECT COUNT(*) FROM ${SqlLiteral(table)}".query[Long].run().head)
+  private def rows(xa: TransactorZIO): Task[List[Row]] = table.rows(xa)
 
-  private val reset: URIO[TransactorZIO, Unit] =
-    ZIO.serviceWithZIO[TransactorZIO]: xa =>
-      xa.connect:
-        sql"DROP SCHEMA IF EXISTS audit_insert_spec CASCADE".update.run()
-        sql"CREATE SCHEMA audit_insert_spec".update.run()
-        sql"""
-          CREATE TABLE audit_insert_spec.audit_event (
-            id UUID NOT NULL, at TIMESTAMPTZ NOT NULL, tenant_id TEXT, source TEXT NOT NULL, node_id TEXT NOT NULL,
-            kind TEXT NOT NULL, outcome TEXT NOT NULL, reason TEXT, severity TEXT NOT NULL,
-            actor_type TEXT NOT NULL, actor_id TEXT, user_id UUID, client_id TEXT, session_id TEXT,
-            ip INET, user_agent TEXT, trace_id TEXT, target_type TEXT, target_id TEXT,
-            details JSONB NOT NULL,
-            PRIMARY KEY (id, at)
-          ) PARTITION BY RANGE (at)
-        """.update.run()
-        sql"CREATE TABLE audit_insert_spec.audit_event_default PARTITION OF audit_insert_spec.audit_event DEFAULT".update.run()
-        sql"CREATE TABLE audit_insert_spec.change_probe (id INT PRIMARY KEY)".update.run()
-        // What stands for an event the table cannot take: a constraint of the real table that this copy does not have.
-        sql"""
-          CREATE FUNCTION audit_insert_spec.refuse_poison() RETURNS trigger AS $$$$
-          BEGIN
-            IF NEW.kind = 'thing.poison' THEN RAISE EXCEPTION 'refused'; END IF;
-            RETURN NEW;
-          END $$$$ LANGUAGE plpgsql
-        """.update.run()
-        sql"""
-          CREATE TRIGGER refuse_poison BEFORE INSERT ON audit_insert_spec.audit_event
-          FOR EACH ROW EXECUTE FUNCTION audit_insert_spec.refuse_poison()
-        """.update.run()
-        ()
-      .orDie
+  private def count(xa: TransactorZIO, name: String): Task[Long] = table.count(xa, name)
+
+  private val reset = table.reset
 
   val spec = suite("AuditInsert.insertBatch")(
     test("stores every column of the event") {

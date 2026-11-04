@@ -42,11 +42,15 @@ object AuditMetricsSpec extends ZIOSpecDefault:
       ZLayer.succeed(api.OpenTelemetry.noop().getTracer("test")),
     )
 
-  /** The scrape, once the publisher has taken the registry's contents (it samples on an interval of its own). */
-  private val scrape: ZIO[PrometheusPublisher, Nothing, String] =
+  /** The scrape, once the publisher has taken the registry's contents of `source` (it samples on an interval of its own, and the
+    * registry holds what other specs of the same process registered). */
+  private def scrape(source: String): ZIO[PrometheusPublisher, Nothing, String] =
     ZIO
       .serviceWithZIO[PrometheusPublisher](_.get)
-      .repeat(Schedule.spaced(100.millis) *> Schedule.identity[String].untilOutput(_.contains("audit_events_rejected_total")))
+      .repeat(
+        Schedule.spaced(100.millis) *> Schedule.identity[String].untilOutput: scraped =>
+          counterNames.forall(name => scraped.linesIterator.exists(line => line.startsWith(name + "{") && line.contains(s"""source="$source""""))),
+      )
       .timeout(30.seconds)
       .map(_.getOrElse(""))
 
@@ -65,7 +69,7 @@ object AuditMetricsSpec extends ZIOSpecDefault:
               tracingLayer,
               SecureRandom.live,
             )
-          scraped <- scrape
+          scraped <- scrape("svc-fresh")
           lines = scraped.linesIterator.filter(_.contains("""source="svc-fresh"""")).toList
         yield assertTrue(
           counterNames.forall(name => lines.exists(line => line.startsWith(name + "{") && line.trim.split("\\s+").lift(1).contains("0.0"))),
