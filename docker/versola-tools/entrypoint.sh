@@ -294,28 +294,16 @@ cp .local/env/"$TARGET"/edge.conf    "$OUT_DIR"/edge.conf
 rm -f "$OUT_DIR"/secrets.schema.json
 cp .local/env/"$TARGET"/secrets.schema.json "$OUT_DIR"/secrets.schema.json
 
-# The compatibility manifest (versolauth/versola#823), both targets: which running versions can be
-# rolled to this one without stopping (`rollingFrom`) and from which there is no way in at all
-# (`freshDatabaseFrom`). versola-cli reads it to decide `rollout` and `configure` instead of asking
-# the operator for --assume-compatible. The source file is checked into the repository and its
-# `version` is kept equal to the release tag by CI (.github/scripts/check-release-manifest.sh); the
-# copy always says the version this image was built as, so a test build (VERSION=<test tag>) never
-# claims to be a release. Rewritten line by line, no jq in this image: the "version" entry sits on a
-# line of its own, which the check script enforces. VERSION goes into JSON as it is, so only what
-# cannot break a string is accepted. The rm first: a reused OUT_DIR must not keep a stale copy.
-case "${VERSION:-}" in
-  ''|*[!A-Za-z0-9._+-]*)
-    echo "versola-tools: VERSION '${VERSION:-}' cannot go into release.json (letters, digits, '.', '_', '+' and '-' only: it is also an image tag)" >&2
-    exit 1
-    ;;
-esac
+# The compatibility manifest (versolauth/versola#823), both targets: one entry per release, each saying
+# from which running versions that release can be rolled to without stopping (`rollingFrom`) and from
+# which there is no way in at all (`freshDatabaseFrom`). versola-cli reads the entry of the version it
+# is deploying instead of asking the operator for --assume-compatible; a version with no entry, or one
+# in neither list, is "unknown" and keeps today's behaviour (so a test build, whose VERSION is no
+# release, claims nothing). Copied as it is: CI keeps the file well-formed and its newest entry equal
+# to the release tag (.github/scripts/check-release-manifest.sh). The rm first: a reused OUT_DIR must
+# not keep a stale copy.
 rm -f "$OUT_DIR"/release.json
-while IFS= read -r line || [ -n "$line" ]; do
-  case "$line" in
-    '  "version":'*) printf '  "version": "%s",\n' "$VERSION" ;;
-    *) printf '%s\n' "$line" ;;
-  esac
-done < release.json > "$OUT_DIR"/release.json
+cp release.json "$OUT_DIR"/release.json
 
 # Bake this image's own version (and IMAGE_REGISTRY, validated above) into the compose fragment so
 # it pulls the matching auth/central/edge/gateway images. sed instead of envsubst: fewer

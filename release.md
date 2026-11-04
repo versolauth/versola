@@ -18,13 +18,14 @@ If one item fails, the release does not go out.
 - [ ] New migrations work with the previous version running (additive, see
       `.claude/rules/database-migrations.md`).
 - [ ] A secret was added or changed: `SecretSchema.Revision` in `scripts/gen-env.scala` is raised.
-- [ ] `docker/versola-tools/release.json` is filled in for this version: `version` is the tag,
+- [ ] `docker/versola-tools/release.json` has an entry for this version at the top (one entry per release,
+      newest first; earlier entries stay as they are): `version` is the tag, `notes` the release page,
       `rollingFrom` lists the versions whose running services work on this schema (additive
       migrations, see above, and the old and new services side by side during a rollout, e.g. old auth
       against the new central's API: not "migrations only"; when in doubt leave a version out, the CLI
       then asks the operator; a version of this release's own line may be matched by a glob),
       `freshDatabaseFrom` the versions with no in-place way in (the glob syntax cannot say "below 0.7.0":
-      list every earlier minor, `0.1.*` ... `0.6.*`), `notes` the release page.
+      list every earlier minor, `0.1.*` ... `0.6.*`).
       Then run `bash .github/scripts/check-release-manifest.sh <tag>` with the tag you are about to
       publish; the tag build runs the same script and a published tag cannot be reused.
 - [ ] No critical or high scanner finding is open past its SLA in `SECURITY.md`.

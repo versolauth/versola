@@ -213,12 +213,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The manifest's `version` has to be the tag being published (release.md: run the same script with
+      # The manifest's newest entry has to be the tag being published (release.md: run the same script with
       # the tag before Publish, a published tag cannot be reused). It is the first step of `build` so that a
       # wrong manifest fails in seconds, before any image is pushed: every docker-* job needs this job, so
       # auth, central, edge and the rest are not published under a tag whose versola-tools image never
       # gets built (a release the CLI cannot configure, and a tag that cannot be reused). The operator
-      # deletes the release and the tag, fixes release.json and publishes again.
+      # deletes the release and the tag, adds the entry to release.json and publishes again.
       # The tag goes through env:, like the "Extract version from tag" step in the docker-* jobs.
       - name: Check the release manifest matches the tag
         if: ${{ github.event_name == 'release' }}
@@ -966,7 +966,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The manifest's `version` has to be the tag being published (release.md: run the same script with
+      # The manifest's newest entry has to be the tag being published (release.md: run the same script with
       # the tag before Publish, a published tag cannot be reused). Fails before the image is built and
       # pushed (versola-tools only: the other images build in parallel jobs), so no versola-tools image says it is a version whose compatibility nobody wrote down.
       # The tag goes through env:, like the "Extract version from tag" step below.

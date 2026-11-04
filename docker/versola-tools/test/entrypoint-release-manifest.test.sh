@@ -1,9 +1,9 @@
 #!/bin/sh
-# release.json (versolauth/versola#823): entrypoint.sh writes the compatibility manifest to /out on both
-# targets with the version the image was built as, replaces a stale copy and refuses a VERSION that
-# would break the JSON; and check-release-manifest.sh accepts the checked-in manifest and rejects
-# what it must. The entrypoint runs with a stub `java`, so no JVM and no docker. Plain POSIX sh
-# (the check script part needs bash and jq and is skipped without them):
+# release.json (versolauth/versola#823): entrypoint.sh copies the compatibility manifest to /out on both
+# targets as it is, whatever VERSION the image was built as, and replaces a stale copy; and
+# check-release-manifest.sh accepts the checked-in manifest and rejects what it must. The entrypoint runs
+# with a stub `java`, so no JVM and no docker. Plain POSIX sh (the check script part needs bash and jq
+# and is skipped without them):
 #
 #   sh docker/versola-tools/test/entrypoint-release-manifest.test.sh
 set -eu
@@ -33,6 +33,8 @@ STUB
 chmod +x "$work/bin/java"
 
 # run_entrypoint <target> <version>: exit status of one run, output in $work/out, bundle in $work/out.d
+
+# run_entrypoint <target> <version>: exit status of one run, output in $work/out, bundle in $work/out.d
 run_entrypoint() {
   target=$1; version=$2
   rm -rf "$work/app/.local"
@@ -44,71 +46,69 @@ for target in docker-local vps; do
   rm -rf "$work/out.d"; mkdir -p "$work/out.d"
   echo stale > "$work/out.d/release.json"
   if run_entrypoint "$target" 9.9.9 && [ -f "$work/out.d/release.json" ]; then
-    grep -qF '"version": "9.9.9",' "$work/out.d/release.json" && pass "$target: release.json says the built version" \
-      || fail "$target: release.json says the built version"
-    ! grep -q stale "$work/out.d/release.json" && pass "$target: a stale release.json is replaced" || fail "$target: a stale release.json is replaced"
-    # Everything but the version line is the checked-in file, byte for byte.
-    if [ "$(grep -v '"version"' "$work/out.d/release.json")" = "$(grep -v '"version"' "$tools/release.json")" ]; then
-      pass "$target: the lists and notes are the checked-in ones"
-    else fail "$target: the lists and notes are the checked-in ones"; fi
+    cmp -s "$tools/release.json" "$work/out.d/release.json" && pass "$target: release.json is the checked-in file, the stale copy is replaced" \
+      || fail "$target: release.json is the checked-in file, the stale copy is replaced"
   else
     cat "$work/out" >&2; fail "$target: the run writes release.json"
   fi
 done
 
+# A test build's VERSION is no release and has no entry: the file is the same, so the CLI finds no entry and asks.
+if run_entrypoint vps test-jlink.1 && cmp -s "$tools/release.json" "$work/out.d/release.json"; then
+  pass "a test build ships the same file"
+else fail "a test build ships the same file"; fi
+
 # A source file whose last line has no newline (an editor stripped it) still comes out complete.
 printf '%s' "$(cat "$tools/release.json")" > "$work/app/release.json"
-if run_entrypoint vps 9.9.9 && [ "$(tail -c 2 "$work/out.d/release.json" | tr -d '\n')" = "}" ] && grep -q '"notes"' "$work/out.d/release.json"; then
+if run_entrypoint vps 9.9.9 && cmp -s "$work/app/release.json" "$work/out.d/release.json"; then
   pass "a last line without a newline is kept"
 else fail "a last line without a newline is kept"; fi
 cp "$tools/release.json" "$work/app/release.json"
-
-if run_entrypoint vps 'test-jlink.1+b' && grep -qF '"version": "test-jlink.1+b",' "$work/out.d/release.json"; then
-  pass "a test tag is accepted"
-else fail "a test tag is accepted"; fi
-
-for bad in 'a/b' '1.0"x' '1.0\x' 'a b' '$(id)' '1.0;x'; do
-  rm -rf "$work/out.d"
-  if run_entrypoint vps "$bad"; then fail "refused VERSION: $bad"
-  elif [ -e "$work/out.d/release.json" ]; then fail "no release.json for VERSION: $bad"
-  else pass "refused VERSION: $bad"; fi
-done
 
 # The check script.
 if command -v jq >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then
   check() { (cd "$repo" && bash .github/scripts/check-release-manifest.sh "$@" > "$work/check.out" 2>&1); }
   expect_ok() { label=$1; shift; if check "$@"; then pass "$label"; else cat "$work/check.out" >&2; fail "$label"; fi; }
   expect_bad() { label=$1; shift; if check "$@"; then fail "$label"; else pass "$label"; fi; }
-  # No `sed -i` below: BSD sed (macOS) reads its expression as the backup suffix, GNU sed does not.
-  manifest() { # manifest <rollingFrom> <freshDatabaseFrom> [version] [notes tag] [schemaVersion]
-    cat > "$work/m.json" <<JSON
-{
-  "schemaVersion": ${5:-1},
-  "version": "${3:-1.2.3}",
-  "rollingFrom": [$1],
-  "freshDatabaseFrom": [$2],
-  "notes": "https://example.com/tag/${4:-1.2.3}"
-}
-JSON
+  m="$work/m.json"
+  # entry <version> <rollingFrom> <freshDatabaseFrom> [notes]: one entry, the JSON array items are given as they are written
+  entry() {
+    printf '{"version": "%s", "rollingFrom": [%s], "freshDatabaseFrom": [%s], "notes": "%s"}' "$1" "$2" "$3" "${4:-https://example.com/tag/$1}"
   }
+  # manifest <entry>...: a manifest with these entries, in this order
+  manifest() {
+    out=
+    for e in "$@"; do out="${out:+$out,}$e"; done
+    printf '{"schemaVersion": 1, "releases": [%s]}\n' "$out" > "$m"
+  }
+
   expect_ok "the checked-in manifest passes"
-  manifest '"1.2.0", "1.2.1"' '"1.0.*"'; expect_ok "a well-formed manifest passes" "" "$work/m.json"
-  manifest '"1.2.0"' '"1.0.*"'; expect_ok "the tag equals the version" 1.2.3 "$work/m.json"
-  expect_bad "a tag that differs from the version" 1.2.4 "$work/m.json"
-  manifest '"1.2.0"' '' 1.2.4; expect_bad "notes copied from another release" 1.2.4 "$work/m.json"
-  manifest '"1.2.0"' '' 1.2.4 1.2.4; expect_ok "notes ending in the tag" 1.2.4 "$work/m.json"
-  manifest '"1.2.*"' '"1.2.1"'; expect_bad "a glob and an exact version that overlap" "" "$work/m.json"
-  manifest '"1.2.*"' '"1.*"'; expect_bad "two globs that overlap" "" "$work/m.json"
-  manifest '"1.2.1"' '"1.2.1"'; expect_bad "the same exact version in both lists" "" "$work/m.json"
-  manifest '"1.2.1", "1.2.3"' ''; expect_ok "the release rolling from itself is a redeploy" "" "$work/m.json"
-  manifest '"1.2.*"' ''; expect_ok "a glob of the release's own line in rollingFrom" "" "$work/m.json"
-  manifest '' '"1.2.*"'; expect_bad "the release needing a fresh database from its own line" "" "$work/m.json"
-  manifest '"^1.2.0"' ''; expect_bad "a semver range" "" "$work/m.json"
-  manifest '"1.2.x"' ''; expect_bad "a glob that is not a prefix glob" "" "$work/m.json"
-  manifest '"1.2.0"' '' 1.2.3 1.2.3 2; expect_bad "an unknown schemaVersion" "" "$work/m.json"
-  printf '{\n  "schemaVersion": 1,\n  "version":\n "1.2.3",\n  "rollingFrom": ["1.2.0"],\n  "freshDatabaseFrom": [],\n  "notes": "https://example.com/tag/1.2.3"\n}\n' > "$work/m.json"
-  expect_bad "version not on one line" "" "$work/m.json"
-  echo '{' > "$work/m.json"; expect_bad "invalid JSON" "" "$work/m.json"
+  expect_ok "the checked-in manifest passes for its newest release" "$(jq -r '.releases[0].version' "$repo/docker/versola-tools/release.json" | tr -d '\r')"
+  manifest "$(entry 1.2.3 '"1.2.0"' '"1.0.*"')" "$(entry 1.2.0 '' '"1.0.*"')"; expect_ok "two entries, newest first" "" "$m"
+  expect_ok "the tag is the newest entry" 1.2.3 "$m"
+  expect_bad "a tag that is not the newest entry" 1.2.4 "$m"
+  expect_bad "a tag that is an older entry" 1.2.0 "$m"
+  manifest "$(entry 1.2.4 '' '' https://example.com/tag/1.2.3)"; expect_bad "notes copied from another release" 1.2.4 "$m"
+  manifest "$(entry 1.2.3 '' '')" "$(entry 1.2.3 '' '')"; expect_bad "the same version twice" "" "$m"
+  manifest "$(entry 1.2.0 '' '')" "$(entry 1.2.3 '' '')"; expect_bad "oldest first" "" "$m"
+  manifest "$(entry 0.7.10 '' '')" "$(entry 0.7.6 '' '')"; expect_ok "0.7.10 is above 0.7.6" "" "$m"
+  manifest "$(entry 0.7.6 '' '')" "$(entry 0.7.10 '' '')"; expect_bad "0.7.6 is not above 0.7.10" "" "$m"
+  manifest "$(entry 1.0.0 '' '')" "$(entry 1.0.0-rc1 '' '')"; expect_ok "a release is above its pre-release" "" "$m"
+  manifest "$(entry 1.0.0-rc1 '' '')" "$(entry 1.0.0 '' '')"; expect_bad "a pre-release is not above its release" "" "$m"
+  manifest "$(entry 1.2.3 '"1.2.*"' '"1.0.*"')"; expect_ok "rollingFrom may match the release's own line" "" "$m"
+  manifest "$(entry 1.2.3 '"1.2.*"' '"1.2.1"')"; expect_bad "a glob and an exact version that overlap" "" "$m"
+  manifest "$(entry 1.2.3 '"1.2.*"' '"1.*"')"; expect_bad "two globs that overlap" "" "$m"
+  manifest "$(entry 1.2.3 '"1.2.1"' '"1.2.1"')"; expect_bad "the same exact version in both lists" "" "$m"
+  manifest "$(entry 1.2.3 '' '"1.2.*"')"; expect_bad "freshDatabaseFrom matching the release itself" "" "$m"
+  manifest "$(entry 1.2.3 '"^1.2.0"' '')"; expect_bad "a semver range" "" "$m"
+  manifest "$(entry 1.2.3 '"1.2.x"' '')"; expect_bad "a glob that is not a prefix glob" "" "$m"
+  manifest "$(entry 1.2.x '' '')"; expect_bad "a version that is not exact" "" "$m"
+  manifest "$(entry 1.2.3 '' '' http://example.com)"; expect_bad "notes that are not https" "" "$m"
+  printf '{"schemaVersion": 1, "releases": []}\n' > "$m"; expect_bad "no releases" "" "$m"
+  printf '{"schemaVersion": 2, "releases": [%s]}\n' "$(entry 1.2.3 '' '')" > "$m"; expect_bad "an unknown schemaVersion" "" "$m"
+  printf '{"schemaVersion": 1, "releases": [{"version": "1.2.3", "rollingFrom": [], "notes": "https://example.com/tag/1.2.3"}]}\n' > "$m"
+  expect_bad "an entry without freshDatabaseFrom" "" "$m"
+  echo '{' > "$m"; expect_bad "invalid JSON" "" "$m"
   expect_bad "a missing file" "" "$work/missing.json"
 else
   echo "skip the check-release-manifest.sh cases: bash and jq are needed"
