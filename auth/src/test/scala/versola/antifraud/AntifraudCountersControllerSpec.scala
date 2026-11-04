@@ -1,8 +1,10 @@
 package versola.antifraud
 
 import org.scalamock.stubs.ZIOStubs
+import versola.audit.{AuthActors, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
 import versola.util.JWT
+import versola.util.audit.AuditEvents
 import versola.util.http.{NoopTracing, Observability}
 import zio.*
 import zio.http.*
@@ -16,6 +18,7 @@ import javax.crypto.spec.SecretKeySpec
 object AntifraudCountersControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val config = TestEnvConfig.coreConfig
+  private val audit = CapturingAuditEvents.shared()
   private val wrongKey = SecretKeySpec(Array.fill(32)(99.toByte), "AES")
   private val userId = "00000000-0000-0000-0000-0000000000f1"
   private val url = URL.empty / "antifraud" / "counters" / "reset"
@@ -27,13 +30,21 @@ object AntifraudCountersControllerSpec extends ZIOSpecDefault, ZIOStubs:
       signature = JWT.Signature.Symmetric(key),
     )
 
-  private def call(counters: AntifraudCounters, request: Request, key: SecretKey = config.central.secretKey, signed: Boolean = true) =
+  private def call(
+      counters: AntifraudCounters,
+      request: Request,
+      key: SecretKey = config.central.secretKey,
+      signed: Boolean = true,
+      events: AuditEvents = audit,
+  ) =
     for
       client <- ZIO.service[Client]
       tracing <- NoopTracing.layer.build
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
-          AntifraudCountersController.routes.provideEnvironment(ZEnvironment(counters) ++ ZEnvironment(config) ++ tracing),
+          AntifraudCountersController.routes.provideEnvironment(
+            ZEnvironment(counters) ++ ZEnvironment(config) ++ ZEnvironment[AuditEvents](events) ++ tracing,
+          ),
         ),
       )
       sent <-
@@ -64,6 +75,29 @@ object AntifraudCountersControllerSpec extends ZIOSpecDefault, ZIOStubs:
         text == """{"generation":7}""",
         counters.reset.calls == List((CounterScope.velocity, Some(CounterValueType.phone), Some("+77011234567"), userId)),
       )
+    },
+    test("records antifraud.counters_reset with the administrator, the scope and the generation, and not the value that was reset") {
+      val counters = stub[AntifraudCounters]
+      val audit = CapturingAuditEvents.shared()
+      for
+        _ <- counters.reset.succeedsWith(7L)
+        _ <- call(counters, Request.post(url, body("""{"scope":"velocity","valueType":"phone","value":"+77011234567"}""")), events = audit)
+        drafts <- audit.recorded
+      yield assertTrue(
+        drafts.map(_.kind) == List(AuthAuditKinds.AntifraudCountersReset),
+        drafts.head.actor == Some((AuthActors.admin, Some(userId))),
+        drafts.head.details == AuthAuditDetails.AntifraudCountersReset("velocity", Some("phone"), 7L),
+        !drafts.head.details.toJson.toString.contains("77011234567"),
+      )
+    },
+    test("a reset the service refuses records nothing") {
+      val counters = stub[AntifraudCounters]
+      val audit = CapturingAuditEvents.shared()
+      for
+        _ <- counters.reset.failsWith(InvalidCounterReset("no"))
+        _ <- call(counters, Request.post(url, body("""{"scope":"all","value":"1"}""")), events = audit)
+        drafts <- audit.recorded
+      yield assertTrue(drafts.isEmpty)
     },
     test("the whole scope needs no value") {
       val counters = stub[AntifraudCounters]

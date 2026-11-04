@@ -1,7 +1,7 @@
 package versola.user
 
 import org.scalamock.stubs.ZIOStubs
-import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.audit.{AuthActors, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord, Password}
 import versola.oauth.challenge.passkey.PasskeyRepository
@@ -97,12 +97,13 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       passkey: PasskeyRepository = noopPasskeyRepo,
       password: PasswordService = noopPasswordSvc,
       refusing: Boolean = false,
+      events: Option[CapturingAuditEvents] = None,
   ): ZIO[Client & TestClient & Scope, Throwable, (Response, List[AuditDraft])] =
     for
       client <- ZIO.service[Client]
       tracing <- NoopTracing.layer.build
       token <- validToken(secretKey)
-      capture = CapturingAuditEvents.shared(unavailable = refusing)
+      capture = events.getOrElse(CapturingAuditEvents.shared(unavailable = refusing))
       _ <- TestClient.addRoutes(routes(tracing, users, logoutService, throttle, passkey, sessions, password, capture))
       response <- client.batched(build(token))
       drafts <- capture.recorded
@@ -898,6 +899,86 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
             users = repo,
           )
         yield assertTrue(resp.status == Status.InternalServerError, drafts.isEmpty)
+      },
+      test("DELETE /users records account.deleted as the effect of central's decision: the actor is the service") {
+        val repo = stub[UserRepository]
+        for
+          _ <- repo.delete.succeedsWith(())
+          _ <- logoutService.invalidateAllSessions.succeedsWith(())
+          (resp, drafts) <- audited(
+            token =>
+              Request(method = Method.DELETE, url = (URL.empty / "users").addQueryParam("id", passkeyUserId.toString))
+                .addHeader(Header.Authorization.Bearer(token)),
+            users = repo,
+          )
+        yield assertTrue(
+          resp.status == Status.NoContent,
+          drafts.map(_.kind) == List(AuthAuditKinds.AccountDeleted),
+          drafts.head.actor == Some((AuthActors.service, Some("central"))),
+          drafts.head.userId == Some(passkeyUserId.asInstanceOf[UUID]),
+        )
+      },
+      test("PATCH /users/roles records account.roles_updated with the roles asked for, as the service's effect") {
+        val repo = stub[UserRepository]
+        for
+          _ <- repo.updateRoles.succeedsWith(())
+          (resp, drafts) <- audited(
+            json(
+              Method.PATCH,
+              List("users", "roles"),
+              s"""{"userId":"$passkeyUserId","tenantId":"t1","add":["editor","viewer"],"remove":["guest"]}""",
+              _,
+            ),
+            users = repo,
+          )
+        yield assertTrue(
+          resp.status == Status.NoContent,
+          drafts.map(_.kind) == List(AuthAuditKinds.AccountRolesUpdated),
+          drafts.head.actor == Some((AuthActors.service, Some("central"))),
+          drafts.head.details == AuthAuditDetails.RolesUpdated("t1", List("editor", "viewer"), List("guest")),
+        )
+      },
+      test(
+        "an administrator is named by actorId, in the body of a POST or PATCH and in the query of a DELETE; without it the actor is the central service",
+      ) {
+        val repo = stub[UserRepository]
+        val sessions = stub[SessionService]
+        val admin = "0192b3c0-0000-7000-8000-0000000000aa"
+        val withBody = CapturingAuditEvents.shared()
+        val withQuery = CapturingAuditEvents.shared()
+        val without = CapturingAuditEvents.shared()
+        for
+          _ <- repo.patchClaims.succeedsWith(())
+          _ <- sessions.revokeRefreshTokensByUserAndClient.succeedsWith(1)
+          claims = (actor: String) =>
+            json(
+              Method.PATCH,
+              List("users", "claims"),
+              s"""{"id":"$passkeyUserId","claims":{"name":"John"}$actor}""",
+              _,
+            )
+          _ <- audited(claims(s""","actorId":"$admin""""), users = repo, events = Some(withBody))
+          _ <- audited(claims(""), users = repo, events = Some(without))
+          _ <- audited(
+            token =>
+              Request(
+                method = Method.DELETE,
+                url = (URL.empty / "users" / "refresh-tokens")
+                  .addQueryParam("userId", passkeyUserId.toString)
+                  .addQueryParam("clientId", "app")
+                  .addQueryParam("actorId", admin),
+              ).addHeader(Header.Authorization.Bearer(token)),
+            sessions = sessions,
+            events = Some(withQuery),
+          )
+          body <- withBody.actorsOfContext
+          query <- withQuery.actorsOfContext
+          none <- without.actorsOfContext
+        yield assertTrue(
+          body == List(Some((AuthActors.admin, Some(admin)))),
+          query == List(Some((AuthActors.admin, Some(admin)))),
+          none == List(Some((AuthActors.service, Some("central")))),
+        )
       },
       test("a call without the service token is refused and records nothing") {
         for

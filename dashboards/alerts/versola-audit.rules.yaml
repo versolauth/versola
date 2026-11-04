@@ -2,9 +2,8 @@
 # Prometheus (`rule_files`) and by VictoriaMetrics' vmalert (`-rule`). See dashboards/alerts/README.md.
 #
 # Every rule sums by namespace and by `source` (`auth`, `central`): one deployment, one alert per service. The
-# counters here are created by the first increment, so a loss that happens once on a fresh pod is not seen by
-# increase(); a loss that repeats is. An audit row that is lost is a gap in the evidence the log exists for, so
-# the writer's alerts are stricter than the antifraud ones: 5 minutes, not 10, and the queue filling is critical.
+# writer's counters exist from the start, at 0, so the first increase of one is seen by increase(). The writer's alerts
+# use 5 minutes, not the 10 of the antifraud ones.
 groups:
   - name: versola-audit
     rules:
@@ -15,7 +14,7 @@ groups:
           severity: critical
         annotations:
           summary: "Audit events are being lost in {{ $labels.namespace }} ({{ $labels.source }})"
-          description: "The audit writer of {{ $labels.source }} dropped events for 5 minutes (audit.overflow = drop and a queue the writer cannot empty, or a best-effort insert that failed). The log has gaps meanwhile. Check the database and the {{ $labels.source }} log: 'could not write the audit events'."
+          description: "The audit writer of {{ $labels.source }} dropped events for 5 minutes (audit.overflow = drop and a queue the writer cannot empty, or a best-effort insert that failed). Check the database and the {{ $labels.source }} log: 'could not write the audit events'."
 
       - alert: AuditEventsRejected
         expr: sum by (namespace, source) (increase(audit_events_rejected_total[5m])) > 0
@@ -24,6 +23,32 @@ groups:
         annotations:
           summary: "The database refused audit events of {{ $labels.source }} in {{ $labels.namespace }}"
           description: "Audit events were refused by the database one by one (a value the table cannot hold) and are not stored: they cannot be retried, and the writer carried on without them. The {{ $labels.source }} log has the kind and id of each, never its content: 'an audit event of kind ... was refused by the database'. A value that reaches here after the cleaning auth does (U+0000, an address that is none) is a bug."
+
+      - alert: AuditEventsFailed
+        expr: sum by (namespace, source) (increase(audit_events_failed_total[5m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Audit events of {{ $labels.source }} were not written in {{ $labels.namespace }}"
+          description: "Events counted by audit_events_failed_total: a batch the writer could not write (the database was unreachable or refused it) and a write that was interrupted before it finished. The {{ $labels.source }} log has a line per window with the kinds."
+
+      - alert: AuditEventsUnavailable
+        expr: sum by (namespace, source) (increase(audit_events_unavailable_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Requests of {{ $labels.source }} are refused with audit_unavailable in {{ $labels.namespace }}"
+          description: "Requests were answered 503 audit_unavailable for 5 minutes: audit.overflow = block and the queue had no room within audit.block-timeout, or the service was stopping. The writer is slower than the load or the database is unreachable; check audit_queue_size and the write latency of audit_event."
+
+      - alert: AuditQueueHigh
+        expr: max by (namespace, source) (audit_queue_size) > 25000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The audit queue of {{ $labels.source }} is above 25000 events in {{ $labels.namespace }}"
+          description: "{{ $value }} events wait for the writer of {{ $labels.source }} (the queue holds 50000). The writer is behind: check the database and the log line 'could not write the audit events'."
 
       - alert: AuditEventsBlocked
         expr: sum by (namespace, source) (increase(audit_events_blocked_total[5m])) > 0

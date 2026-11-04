@@ -51,8 +51,7 @@ CREATE INDEX audit_event_user_idx ON audit_event (user_id, at) WHERE user_id IS 
 -- What an address did, for the investigation that starts from an address rather than from an account.
 CREATE INDEX audit_event_ip_idx ON audit_event (ip, at) WHERE ip IS NOT NULL;
 
--- An event of a day that has no partition is written here instead of being refused (a maintenance that cannot run
--- loses no event). Unlike `af_event_default`, the rows are never moved into the day's partition: a move is a delete
+-- An event of a day that has no partition is written here instead of being refused. Unlike `af_event_default`, the rows are never moved into the day's partition: a move is a delete
 -- and an insert, and the replication the operator keeps is insert-only, so the day whose rows sit here is not
 -- attached and the gauge `audit_events_in_default` says so. The rows older than the retention are deleted from here
 -- by the service's own maintenance, which is the one thing allowed to delete (see the trigger below).

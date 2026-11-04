@@ -1,6 +1,7 @@
 package versola.user
 
 import versola.audit.AuditSupport.*
+import versola.audit.AuthActors
 import versola.audit.AuthAuditDetails
 import versola.audit.AuthAuditKinds
 import versola.auth.model.CredentialId
@@ -30,24 +31,29 @@ object UserController extends Controller:
     Tracing & UserRepository & CoreConfig & LogoutService & SessionService & ChallengeThrottleRepository & PasskeyRepository & PasswordService &
       AuditEvents
 
-  /** What an administrator did to an account, as central told auth: the actor is the administrator (or the `central` service) that
-    * `authorizeInternal` noted, the subject the user. */
+  /** What an administrator did to an account, as central told auth: the actor is the administrator the call names (`actorId`) or the
+    * `central` service, as noted in the request's context, the subject the user. `actor` says it is the service whatever the call names:
+    * what auth does as the effect of a decision central recorded (the account removed, its roles changed). */
   private def audited(
       kind: versola.util.audit.AuditKind,
       userId: UserId,
       details: versola.util.audit.AuditDetails,
+      actor: Option[(versola.util.audit.ActorType, Option[String])] = None,
   ): ZIO[AuditEvents, Throwable, Unit] =
     ZIO.serviceWithZIO[AuditEvents](
       _.log(
         AuditDraft(
           kind = kind,
           outcome = AuditOutcome.success,
+          actor = actor,
           userId = Some(userId),
           target = Some(("user", userId.toString)),
           details = details,
         ),
       ),
     )
+
+  private val asService = Some((AuthActors.service, Some("central")))
 
   def routes: Routes[Env, Throwable] = Routes(
     upsertUserEndpoint,
@@ -94,6 +100,7 @@ object UserController extends Controller:
         _ <- Observability.setUserId(id.toString)
         _ <- logoutService.invalidateAllSessions(id)
         _ <- repo.delete(id)
+        _ <- audited(AuthAuditKinds.AccountDeleted, id, AuthAuditDetails.Account(via = "admin"), asService)
       yield Response.status(Status.NoContent)
     }
 
@@ -103,6 +110,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         repo <- ZIO.service[UserRepository]
         body <- request.body.asJsonFromCodec[PatchUserClaimsPayload]
+        _ <- actedBy(body.actorId)
         _ <- repo.patchClaims(body.id, body.claims)
         _ <- audited(AuthAuditKinds.AccountClaimsUpdated, body.id, AuthAuditDetails.ClaimsUpdated(body.claims.fields.map(_._1).toList.sorted))
       yield Response.status(Status.NoContent)
@@ -115,6 +123,16 @@ object UserController extends Controller:
         repo <- ZIO.service[UserRepository]
         body <- request.body.asJsonFromCodec[UpdateUserRolesPayload]
         _ <- repo.updateRoles(body.userId, body.tenantId, body.add, body.remove)
+        _ <- audited(
+          AuthAuditKinds.AccountRolesUpdated,
+          body.userId,
+          AuthAuditDetails.RolesUpdated(
+            tenantId = body.tenantId.toString,
+            added = body.add.toList.map(_.toString).sorted,
+            removed = body.remove.toList.map(_.toString).sorted,
+          ),
+          asService,
+        )
       yield Response.status(Status.NoContent)
     }
 
@@ -205,6 +223,8 @@ object UserController extends Controller:
         logoutService <- ZIO.service[LogoutService]
         userId <- request.queryZIO[UserId]("userId")
         userAgentId <- request.queryZIO[UserAgentId]("userAgentId")
+        actorId <- request.queryZIO[Option[UserId]]("actorId")
+        _ <- actedBy(actorId)
         _ <- Observability.setUserId(userId.toString)
         forgotten <- logoutService.forgetUserAgent(userId, userAgentId)
         response <-
@@ -223,6 +243,8 @@ object UserController extends Controller:
         logoutService <- ZIO.service[LogoutService]
         userId <- request.queryZIO[UserId]("userId")
         sessionId <- request.queryZIO[Option[PublicSessionId]]("sessionId")
+        actorId <- request.queryZIO[Option[UserId]]("actorId")
+        _ <- actedBy(actorId)
         response <- sessionId match
           case None => logoutService.invalidateAllSessions(userId).as(Response.status(Status.NoContent))
           case Some(publicId) =>
@@ -241,6 +263,8 @@ object UserController extends Controller:
         sessionService <- ZIO.service[SessionService]
         userId <- request.queryZIO[UserId]("userId")
         clientId <- request.queryZIO[ClientId]("clientId")
+        actorId <- request.queryZIO[Option[UserId]]("actorId")
+        _ <- actedBy(actorId)
         _ <- Observability.setUserId(userId.toString)
         _ <- Observability.setClientId(clientId)
         revoked <- sessionService.revokeRefreshTokensByUserAndClient(userId, clientId)
@@ -281,6 +305,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         throttleRepo <- ZIO.service[ChallengeThrottleRepository]
         body <- request.body.asJsonFromCodec[ResetUserLimitsPayload]
+        _ <- actedBy(body.actorId)
         tenantId = body.tenantId
         subjects = (List(body.userId.toString) ++ body.email.map(_.toString) ++ body.phone.map(_.toString)).distinct
         _ <- ZIO.foreachDiscard(subjects)(throttleRepo.deleteAllForSubject(tenantId, _))
@@ -317,6 +342,8 @@ object UserController extends Controller:
         repo <- ZIO.service[PasskeyRepository]
         userId <- request.queryZIO[UserId]("id")
         credentialId <- request.queryZIO[CredentialId]("credentialId")
+        actorId <- request.queryZIO[Option[UserId]]("actorId")
+        _ <- actedBy(actorId)
         _ <- repo.deleteByUser(credentialId, userId)
         _ <- audited(AuthAuditKinds.AccountPasskeyRemoved, userId, AuthAuditDetails.Passkey(credentialPrefix = Some(credentialId.toString.take(9))))
       yield Response.status(Status.NoContent)
@@ -327,6 +354,7 @@ object UserController extends Controller:
       for
         _ <- authorizeInternal(request)
         body <- request.body.asJsonFromCodec[ResetPasswordPayload]
+        _ <- actedBy(body.actorId)
         passwordService <- ZIO.service[PasswordService]
         password <- passwordService.resetPassword(body.userId, body.expiresInSeconds, body.channel)
         _ <- audited(
@@ -344,6 +372,7 @@ object UserController extends Controller:
       for
         _ <- authorizeInternal(request)
         body <- request.body.asJsonFromCodec[SetPasswordPayload]
+        _ <- actedBy(body.actorId)
         passwordService <- ZIO.service[PasswordService]
         _ <- passwordService.setPassword(body.userId, Password(body.password))
           .mapError:

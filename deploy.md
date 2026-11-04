@@ -935,7 +935,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   is in the Antifraud rollout playbook (`antifraud/rollout`).
 
 - **Audit log (`audit_event`, migration `V0031`; #469).** `auth` records every authentication, token, consent,
-  account and certificate event (the kinds are the closed vocabulary `AuthAuditKinds` of `auth`; the per-user report
+  account, antifraud administration and refused certificate enrolment event (the kinds are the closed vocabulary `AuthAuditKinds` of `auth`; the per-user report
   reads them through `central`) into `audit_event`, partitioned by day like `af_event` and maintained by the service
   the same way (today and 14 days ahead, at start-up and every hour; a day older than `audit.retention` is dropped,
   which is the retention: nothing is deleted row by row except from the default partition). Its keys are the `audit`
@@ -946,9 +946,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   audit {
     retention     = "7 days"      # the hot window; 14 days is the sensible maximum, the long-term copy is the replication below
     overflow      = "block"       # block: a request waits up to block-timeout for room in the writer's queue, then fails with
-                                  #   503 audit_unavailable (the event is not recorded; what the request did before it
-                                  #   recorded, a token stored or a password changed, is not undone);
-                                  # drop: the event is lost and counted in audit_events_dropped_total, the request goes on
+                                  #   503 audit_unavailable;
+                                  # drop: the event is not queued and is counted in audit_events_dropped_total, the request goes on
     block-timeout = "2 seconds"
     events { token-refresh = true, authorize-success = true, par-success = true }   # the high-volume kinds; failures are always recorded
   }
@@ -983,18 +982,17 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   that waited for room), `audit_events_failed_total` (best-effort inserts that failed), `audit_queue_size`,
   `audit_partitions_ahead`, `audit_events_in_default`, `audit_partition_owner_mismatch`, `audit_events_unavailable_total`
   (requests refused with 503 `audit_unavailable` after waiting for the queue) and `audit_events_rejected_total`
-  (events the database refused one by one, which are not stored: a text with U+0000 and an address that is none are cleaned before the
-  insert, so this stays at zero). A batch the database refuses for what is in it is retried and then written row by row; a batch it
-  cannot take because it is unreachable is kept and tried again, and under `overflow = block` the queue fills and requests are refused meanwhile. The alert rules are
-  `dashboards/alerts/versola-audit.rules.yaml` (`AuditEventsDropped`, `AuditEventsRejected`, `AuditEventsBlocked`,
-  `AuditPartitionsRunningOut`, `AuditEventsInDefault`, `AuditPartitionOwnerMismatch`), loaded like the antifraud
-  ones. **The rows are personal data** (an address, a user agent, a user id): the hot window and the replica's
+  (events the database refused one by one; a text with U+0000 and an address that is none are cleaned before the insert, so this
+  stays at zero) and `audit_events_failed_total`. The alert rules are `dashboards/alerts/versola-audit.rules.yaml`
+  (`AuditEventsDropped`, `AuditEventsRejected`, `AuditEventsFailed`, `AuditEventsUnavailable`, `AuditQueueHigh`, `AuditEventsBlocked`,
+  `AuditPartitionsRunningOut`, `AuditEventsInDefault`, `AuditPartitionOwnerMismatch`), loaded like the antifraud ones. **The rows are personal data** (an address, a user agent, a user id): the hot window and the replica's
   retention must not exceed what you promise for such data; deleting a user does not delete their events.
 
   Central reads auth's rows through two internal endpoints (`GET /audit/users/{userId}/events` and `/summary`,
   authenticated with the service token like `/users/*`; not public, not in the OpenAPI specs), and tells auth which
-  administrator acts on a user with the `X-Versola-Actor` header on every `/users/*` call it makes for one; a call
-  without it is recorded as the `central` service's.
+  administrator acts with the optional `actorId` of the call it makes for one (a query parameter of a `GET` or `DELETE`, a field of the
+  body of a `POST`, `PUT` or `PATCH`; the antifraud calls carry the administrator as `userId`); a call without it is recorded
+  as the `central` service's.
 
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).

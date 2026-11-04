@@ -9,7 +9,7 @@ import zio.logging.logContext
   * at a secret), and one row for each would be the cheapest way to fill the log: so a failure is counted in memory under (client,
   * address, reason) and the counts are written once a minute, one row each, with `count`.
   *
-  * The counts are per instance and an instance that stops loses at most the last minute (the stop flushes once, within a bound).
+  * The counts are per instance; the stop of the service flushes them once, within a bound.
   * Memory is bounded: past `maxKeys` distinct keys the failures of new ones are counted together under one key, so a flood of made-up
   * client ids is one row more. */
 trait ClientAuthFailures:

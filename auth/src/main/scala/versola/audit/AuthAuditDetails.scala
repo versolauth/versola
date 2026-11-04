@@ -101,6 +101,31 @@ object AuthAuditDetails:
   case class Passkey(credentialPrefix: Option[String], deviceType: Option[String] = None) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
+  /** `antifraud.list_changed`: `action` is `upsert` or `delete`. The value of the entry is not here: it can be a phone's hash or an
+    * address, and `af_list_audit` keeps it for the antifraud console. */
+  case class AntifraudListChanged(
+      action: String,
+      listType: String,
+      valueType: String,
+      tenantId: Option[String],
+      entryId: Option[String] = None,
+      shadow: Option[Boolean] = None,
+      expiresAt: Option[String] = None,
+  ) extends AuditDetails derives JsonEncoder:
+    def toJson = AuditDetails.render(this)
+
+  /** `antifraud.settings_changed`: `action` is `put`, `patch` or `reset`, `version` the one the row became. */
+  case class AntifraudSettingsChanged(action: String, version: Option[Long] = None) extends AuditDetails derives JsonEncoder:
+    def toJson = AuditDetails.render(this)
+
+  /** `antifraud.counters_reset`: `generation` is the one the reset took. */
+  case class AntifraudCountersReset(scope: String, valueType: Option[String], generation: Long) extends AuditDetails derives JsonEncoder:
+    def toJson = AuditDetails.render(this)
+
+  /** `account.roles_updated`: what the request asked for in one tenant. */
+  case class RolesUpdated(tenantId: String, added: List[String], removed: List[String]) extends AuditDetails derives JsonEncoder:
+    def toJson = AuditDetails.render(this)
+
   /** `account.claims_updated`: the names of the claims, never their values. */
   case class ClaimsUpdated(claims: List[String]) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)

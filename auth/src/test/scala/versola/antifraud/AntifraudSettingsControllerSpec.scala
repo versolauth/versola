@@ -1,7 +1,9 @@
 package versola.antifraud
 
 import org.scalamock.stubs.ZIOStubs
+import versola.audit.{AuthActors, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
+import versola.util.audit.AuditEvents
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.{JWT, Patch}
 import zio.*
@@ -15,6 +17,7 @@ import javax.crypto.spec.SecretKeySpec
 
 object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
+  private val audit = CapturingAuditEvents.shared()
   private val config = TestEnvConfig.coreConfig
   private val wrongKey = SecretKeySpec(Array.fill(32)(99.toByte), "AES")
   private val userId = "00000000-0000-0000-0000-0000000000f1"
@@ -32,13 +35,16 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       tuning: AntifraudTuningStore,
       request: Request,
       key: SecretKey = config.central.secretKey,
+      events: AuditEvents = audit,
   ): ZIO[Client & TestClient & Scope, Throwable, Response] =
     for
       client <- ZIO.service[Client]
       tracing <- NoopTracing.layer.build
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
-          AntifraudSettingsController.routes.provideEnvironment(ZEnvironment(tuning) ++ ZEnvironment(config) ++ tracing),
+          AntifraudSettingsController.routes.provideEnvironment(
+            ZEnvironment(tuning) ++ ZEnvironment(config) ++ ZEnvironment[AuditEvents](events) ++ tracing,
+          ),
         ),
       )
       signed <- token(key).map(t => request.addHeader(Header.Authorization.Bearer(t)).addHeader(Header.ContentType(MediaType.application.json)))
@@ -65,7 +71,9 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         tracing <- NoopTracing.layer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
-            AntifraudSettingsController.routes.provideEnvironment(ZEnvironment(tuning) ++ ZEnvironment(config) ++ tracing),
+            AntifraudSettingsController.routes.provideEnvironment(
+              ZEnvironment(tuning) ++ ZEnvironment(config) ++ ZEnvironment[AuditEvents](audit) ++ tracing,
+            ),
           ),
         )
         anonymous <- client.batched(Request.get(base))
@@ -106,6 +114,35 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         text.fromJson[Json.Obj].exists(_.get("version").contains(Json.Num(4))),
         response.headers.get("ETag").contains("\"4\""),
         tuning.put.calls == List((settings, userId, Some(3L))),
+      )
+    },
+    test(
+      "PUT, PATCH and DELETE record antifraud.settings_changed with the administrator and the version the row became; a refused change records nothing",
+    ) {
+      val tuning = stub[AntifraudTuningStore]
+      val audit = CapturingAuditEvents.shared()
+      for
+        _ <- tuning.put.succeedsWith(4L)
+        _ <- tuning.patch.succeedsWith(StoredTuning(settings, 5L))
+        _ <- tuning.reset.succeedsWith(6L)
+        _ <- call(tuning, Request.put(base, body(settings.toJson)), events = audit)
+        _ <- call(tuning, Request.patch(base, patchBody(blockAt(60))), events = audit)
+        _ <- call(tuning, Request.delete(withUser()), events = audit)
+        drafts <- audit.recorded
+        _ <- audit.clear
+        _ <- tuning.put.failsWith(VersionMismatch(9L))
+        refused <- call(tuning, Request.put(base, body(settings.toJson)), events = audit)
+        none <- audit.recorded
+      yield assertTrue(
+        drafts.map(_.kind).distinct == List(AuthAuditKinds.AntifraudSettingsChanged),
+        drafts.map(_.details) == List(
+          AuthAuditDetails.AntifraudSettingsChanged("put", Some(4L)),
+          AuthAuditDetails.AntifraudSettingsChanged("patch", Some(5L)),
+          AuthAuditDetails.AntifraudSettingsChanged("reset", Some(6L)),
+        ),
+        drafts.forall(_.actor == Some((AuthActors.admin, Some(userId)))),
+        refused.status == Status.PreconditionFailed,
+        none.isEmpty,
       )
     },
     test("PUT takes the version from the body when there is no If-Match; both must agree, and a header that is not a version is 400") {
