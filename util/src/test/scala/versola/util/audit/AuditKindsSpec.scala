@@ -53,10 +53,11 @@ object AuditKindsSpec extends UnitSpecBase:
         assertTrue(AuditKinds.isKnown("token.issued"), AuditKinds.isKnown("admin.user.viewed"))
       },
       test("a built admin kind is known for every resource and operation") {
-        val built = for
-          resource <- AuditKinds.adminResources.toList
-          operation <- List("create", "update", "delete", "action:rotate-secret", "action:flush")
-        yield AuditKinds.admin(resource, operation)
+        val built =
+          for
+            resource <- AuditKinds.adminResources.toList
+            operation <- List("create", "update", "delete", "action:rotate-secret", "action:flush")
+          yield AuditKinds.admin(resource, operation)
         assertTrue(built.forall(kind => AuditKinds.isKnown(kind.value)))
       },
       test("a built admin kind with an unknown resource or operation is not known") {

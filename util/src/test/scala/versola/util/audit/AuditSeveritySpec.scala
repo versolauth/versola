@@ -17,10 +17,11 @@ object AuditSeveritySpec extends UnitSpecBase:
         assertTrue(kinds.forall(kind => List(success, failure, denied).forall(AuditSeverity.of(kind, _) == high)))
       },
       test("an admin action on a key, a secret, a role or a password is high, a failed one too") {
-        val kinds = for
-          resource <- highResources
-          operation <- List("create", "update", "delete", "action:rotate-secret")
-        yield AuditKinds.admin(resource, operation)
+        val kinds =
+          for
+            resource <- highResources
+            operation <- List("create", "update", "delete", "action:rotate-secret")
+          yield AuditKinds.admin(resource, operation)
         assertTrue(kinds.forall(kind => AuditSeverity.of(kind, success) == high && AuditSeverity.of(kind, failure) == high))
       },
     ),

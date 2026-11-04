@@ -2,8 +2,8 @@ package versola.util.audit
 
 import io.opentelemetry.api
 import org.scalamock.stubs.Stub
-import versola.util.partitions.{PartitionReport, TableOwnership}
 import versola.util.http.Observability
+import versola.util.partitions.{PartitionReport, TableOwnership}
 import versola.util.{SecureRandom, UnitSpecBase}
 import zio.*
 import zio.json.ast.Json
@@ -30,7 +30,8 @@ object AuditEventsSpec extends UnitSpecBase:
   )
   private val drop = block.copy(overflow = AuditEvents.Overflow.drop)
 
-  private val sizing = AuditEvents.Sizing(queueCapacity = 2, batchSize = 2, flushInterval = 1.second, partitionsAhead = 3, maintenanceInterval = 1.hour)
+  private val sizing =
+    AuditEvents.Sizing(queueCapacity = 2, batchSize = 2, flushInterval = 1.second, partitionsAhead = 3, maintenanceInterval = 1.hour)
 
   private val tracingLayer: ULayer[Tracing] =
     ZLayer.make[Tracing](

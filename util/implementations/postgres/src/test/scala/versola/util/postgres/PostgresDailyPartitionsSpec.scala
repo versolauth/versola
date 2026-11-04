@@ -24,8 +24,9 @@ object PostgresDailyPartitionsSpec extends PostgresSpec:
   private def fresh(xa: TransactorZIO, name: String, guarded: Boolean): Task[Unit] =
     xa.connect:
       val table = SqlLiteral(name)
-      val leftovers = sql"""SELECT relname FROM pg_class WHERE relkind = 'r' AND relname ~ ${s"^${name}_"} AND relnamespace = current_schema()::text::regnamespace"""
-        .query[String].run().toList
+      val leftovers =
+        sql"""SELECT relname FROM pg_class WHERE relkind = 'r' AND relname ~ ${s"^${name}_"} AND relnamespace = current_schema()::text::regnamespace"""
+          .query[String].run().toList
       leftovers.foreach(left => sql"DROP TABLE IF EXISTS ${SqlLiteral(left)} CASCADE".update.run())
       sql"DROP TABLE IF EXISTS $table CASCADE".update.run()
       sql"""CREATE TABLE $table (id UUID NOT NULL, at TIMESTAMPTZ NOT NULL, PRIMARY KEY (id, at)) PARTITION BY RANGE (at)""".update.run()
