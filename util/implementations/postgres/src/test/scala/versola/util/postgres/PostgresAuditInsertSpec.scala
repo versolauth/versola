@@ -101,6 +101,18 @@ object PostgresAuditInsertSpec extends PostgresSpec:
         """.update.run()
         sql"CREATE TABLE audit_insert_spec.audit_event_default PARTITION OF audit_insert_spec.audit_event DEFAULT".update.run()
         sql"CREATE TABLE audit_insert_spec.change_probe (id INT PRIMARY KEY)".update.run()
+        // What stands for an event the table cannot take: a constraint of the real table that this copy does not have.
+        sql"""
+          CREATE FUNCTION audit_insert_spec.refuse_poison() RETURNS trigger AS $$$$
+          BEGIN
+            IF NEW.kind = 'thing.poison' THEN RAISE EXCEPTION 'refused'; END IF;
+            RETURN NEW;
+          END $$$$ LANGUAGE plpgsql
+        """.update.run()
+        sql"""
+          CREATE TRIGGER refuse_poison BEFORE INSERT ON audit_insert_spec.audit_event
+          FOR EACH ROW EXECUTE FUNCTION audit_insert_spec.refuse_poison()
+        """.update.run()
         ()
       .orDie
 
@@ -210,18 +222,48 @@ object PostgresAuditInsertSpec extends PostgresSpec:
         yield assertTrue(changed == 1L, audited == 1L)
       },
       test("an insert the table refuses fails the transaction and takes the change with it") {
-        val e = event()
         for
           xa <- ZIO.service[TransactorZIO]
           result <- inTransaction(xa):
             sql"INSERT INTO change_probe (id) VALUES (1)".update.run()
-            AuditInsert.insert(e)
-            // The same id and time again: the primary key refuses it, as it would any event the table cannot take.
-            AuditInsert.insert(e)
+            AuditInsert.insert(event().copy(kind = AuditKind("thing.poison")))
           .exit
           changed <- count(xa, "change_probe")
           audited <- count(xa, "audit_event")
         yield assertTrue(result.isFailure, changed == 0L, audited == 0L)
+      },
+      test("the same event inserted again in the same transaction is one row") {
+        val e = event()
+        for
+          xa <- ZIO.service[TransactorZIO]
+          _ <- inTransaction(xa):
+            AuditInsert.insert(e)
+            AuditInsert.insert(e)
+          audited <- count(xa, "audit_event")
+        yield assertTrue(audited == 1L)
+      },
+      test("the same event inserted again in another transaction is one row, the first one's, and the second transaction succeeds") {
+        val e = event()
+        for
+          xa <- ZIO.service[TransactorZIO]
+          _ <- inTransaction(xa)(AuditInsert.insert(e))
+          second <- inTransaction(xa):
+            sql"INSERT INTO change_probe (id) VALUES (1)".update.run()
+            AuditInsert.insert(e.copy(reason = Some("later")))
+          .exit
+          stored <- rows(xa)
+          changed <- count(xa, "change_probe")
+        yield assertTrue(second.isSuccess, stored.size == 1, stored.head.reason == Some("invalid_grant"), changed == 1L)
+      },
+      test("an event with the same id at another time is another row") {
+        val e = event()
+        for
+          xa <- ZIO.service[TransactorZIO]
+          _ <- inTransaction(xa):
+            AuditInsert.insert(e)
+            AuditInsert.insert(e.copy(at = at.plusSeconds(1)))
+          audited <- count(xa, "audit_event")
+        yield assertTrue(audited == 2L)
       },
     ),
     suite("insertBatch")(
@@ -239,6 +281,16 @@ object PostgresAuditInsertSpec extends PostgresSpec:
           _ <- inTransaction(xa)(AuditInsert.insertBatch(List(dirty)))
           stored <- rows(xa).map(_.head)
         yield assertSanitized(stored)
+      },
+      test("an event already stored, or twice in the batch, is stored once and does not fail the batch") {
+        val e = event()
+        val other = event()
+        for
+          xa <- ZIO.service[TransactorZIO]
+          _ <- inTransaction(xa)(AuditInsert.insert(e))
+          _ <- inTransaction(xa)(AuditInsert.insertBatch(List(e, other, other)))
+          stored <- rows(xa)
+        yield assertTrue(stored.map(_.id).toSet == Set(e.id, other.id), stored.size == 2)
       },
       test("an empty list writes nothing") {
         for

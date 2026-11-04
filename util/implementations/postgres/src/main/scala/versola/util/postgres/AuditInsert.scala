@@ -12,6 +12,11 @@ import java.time.Instant
   * transaction, and the statement timeout inside it, are the caller's: this adds one INSERT to whatever transaction it is in and
   * never commits.
   *
+  * An event is written once however often it is offered: the row is keyed by `(id, at)` and a second insert of the same event does
+  * nothing, in the same transaction or another. One act that several audited writes witness (a tenant and its default settings, each
+  * in a repository of its own) is one event they all carry, and a retry of a write that already committed is harmless. The first
+  * insert wins: two different events are told apart by their ids, which are UUIDv7.
+  *
   * The text of an event is made storable here as well ([[AuditSanitizer]]), since what reaches a repository need not have come
   * through `AuditEvents.build`, and one row the table refuses would fail the whole transaction it is in. */
 object AuditInsert extends BasicCodecs:
@@ -45,4 +50,5 @@ object AuditInsert extends BasicCodecs:
         ${event.userId}, ${event.clientId}, ${event.sessionId}, CAST(${event.ip} AS inet), ${event.userAgent}, ${event.traceId},
         ${event.targetType}, ${event.targetId}, CAST(${event.details.toJson} AS jsonb)
       )
+      ON CONFLICT (id, at) DO NOTHING
     """.update
