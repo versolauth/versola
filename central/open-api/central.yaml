@@ -3211,7 +3211,8 @@ paths:
       description: |
         Everything the audit log holds about one user over a window, newest first: the events auth recorded (sign-ins, token
         issuance and refusals, sessions, account changes) and the rows of central's own log about the user (what administrators did
-        to them, who looked at them, who asked for this report). Needs `audit:read`.
+        to them, who looked at them, who asked for this report). Needs `audit:read`, which is not tenant-scoped, like `users:read`;
+        an unknown user returns an empty report.
 
         The window defaults to everything retained (7 days by default; the log is kept as long as `audit.retention` says, in
         central and in auth) and is clipped to it. The first page (no `cursor`) carries `summary`: auth's summary of the window
