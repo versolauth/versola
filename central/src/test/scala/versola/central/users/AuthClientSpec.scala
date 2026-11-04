@@ -1,11 +1,13 @@
 package versola.central.users
 
 import versola.central.antifraud.*
+import versola.central.audit.{AuthAuditError, UserAuditEventsQuery}
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.JWT
+import versola.util.audit.{ActorType, AuditContext}
 import versola.util.{PageLimit, PageOffset, Patch}
 import zio.*
 import zio.http.*
@@ -487,6 +489,74 @@ object AuthClientSpec extends ZIOSpecDefault:
         forbidden == Left(AntifraudListError.Forbidden("not your tenant")),
         stale == Left(AntifraudListError.StaleVersion("the settings are at version 5", Some(5))),
         broken.left.exists(_.isInstanceOf[RuntimeException]),
+      )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("a call made for an administrator names them to auth, a call made by central itself names nobody") {
+      val admin = "00000000-0000-0000-0000-0000000000f1"
+      for
+        seen <- Ref.make(List.empty[Request])
+        _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(r :: _).as(Response.status(Status.NoContent))).toRoutes)
+        client <- ZIO.service[AuthClient]
+        _ <- AuditContext.setActor(ActorType.admin, Some(admin)) *> client.invalidateSession(userId)
+        // a provisioning client is not a user of auth: its calls are central's own
+        _ <- AuditContext.reset(AuditContext.State(actor = Some((ActorType.client, Some("utils")))))(client.invalidateSession(userId))
+        _ <- AuditContext.reset(AuditContext.State.empty)(client.invalidateSession(userId))
+        requests <- seen.get.map(_.reverse)
+      yield assertTrue(
+        requests.map(_.headers.get(AuthClient.ActorHeader)) == List(Some(admin), None, None),
+        AuthClient.ActorHeader == "X-Versola-Actor",
+      )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("the per-user audit endpoints are asked for the window, the cursor and the page size, and answer what auth answered") {
+      val eventJson =
+        """{"id":"00000000-0000-7000-8000-000000000001","at":"2026-11-03T10:00:00Z","tenantId":"default","source":"auth","nodeId":"n1","kind":"token.issued","outcome":"success","reason":null,"severity":"info","actorType":"user","actorId":"u","userId":"00000000-0000-0000-0000-000000000001","clientId":"c","sessionId":null,"ip":"10.0.0.1","userAgent":null,"traceId":null,"targetType":null,"targetId":null,"details":{"grant":"authorization_code"}}"""
+      for
+        seen <- Ref.make(List.empty[Request])
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request]: r =>
+            seen.update(r :: _).as:
+              if r.url.path.encode.endsWith("/events") then
+                Response.json(s"""{"events":[$eventJson],"nextCursor":"abc","retentionFrom":"2026-10-27T00:00:00Z"}""")
+              else Response.json("""{"byKind":[],"sessions":{"created":1,"ended":0}}""")
+          .toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        from = Instant.parse("2026-11-01T00:00:00Z")
+        events <- client.getUserAuditEvents(userId, UserAuditEventsQuery(Some(from), None, Some("cur"), 50))
+        summary <- client.getUserAuditSummary(userId, Some(from), None)
+        requests <- seen.get.map(_.reverse)
+      yield assertTrue(
+        requests.map(_.url.path.encode) == List(s"audit/users/$userId/events", s"audit/users/$userId/summary"),
+        requests.head.url.queryParams.map.get("from").flatMap(_.headOption).contains("2026-11-01T00:00:00Z"),
+        requests.head.url.queryParams.map.get("cursor").flatMap(_.headOption).contains("cur"),
+        requests.head.url.queryParams.map.get("limit").flatMap(_.headOption).contains("50"),
+        requests.head.url.queryParams.map.get("to").isEmpty,
+        events.nextCursor.contains("abc"),
+        events.retentionFrom == Instant.parse("2026-10-27T00:00:00Z"),
+        events.events.map(_.kind.value) == List("token.issued"),
+        events.events.head.ip.contains("10.0.0.1"),
+        summary.fields.exists(_._1 == "sessions"),
+      )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("auth's 400 on the audit endpoints is a refusal of the window, and 5xx, 404 and an unreachable auth are auth not answering") {
+      def answer(status: Status, body: String) = Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.text(body).status(status))).toRoutes
+      val query = UserAuditEventsQuery(None, None, None, 10)
+      for
+        client <- ZIO.service[AuthClient]
+        _ <- TestClient.addRoutes(answer(Status.BadRequest, "from is before the retention"))
+        invalid <- client.getUserAuditEvents(userId, query).either
+        _ <- TestClient.addRoutes(answer(Status.ServiceUnavailable, ""))
+        unavailable <- client.getUserAuditEvents(userId, query).either
+        _ <- TestClient.addRoutes(answer(Status.NotFound, ""))
+        missing <- client.getUserAuditSummary(userId, None, None).either
+        _ <- TestClient.addRoutes(answer(Status.Forbidden, "no"))
+        forbidden <- client.getUserAuditEvents(userId, query).either
+      yield assertTrue(
+        invalid == Left(AuthAuditError.Invalid("from is before the retention")),
+        unavailable == Left(AuthAuditError.Unavailable("auth answered 503")),
+        missing == Left(AuthAuditError.Unavailable("auth answered 404")),
+        // any other answer is not a thing auth should say: a failure, not a part left out
+        forbidden.left.exists(_.isInstanceOf[RuntimeException]),
       )
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("resetPassword returns None when server responds 204") {

@@ -299,7 +299,9 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
     ) {
       val prod = BootstrapService.centralEndpoints(EnvName.Prod)
       val antifraud = prod.filter((_, path) => path.startsWith("/antifraud/"))
-      def injected(method: String, path: String) = BootstrapService.centralInjects(method, path).map(r => (r.target, r.name, r.expression))
+      // what the controllers read from the body or the query; the actor headers have a test of their own
+      def injected(method: String, path: String) =
+        BootstrapService.centralInjects(method, path).filter(_.target != InjectTarget.header).map(r => (r.target, r.name, r.expression))
       val user = (method: String) => (if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub")
       assertTrue(
         antifraud.size == 17,
@@ -339,7 +341,8 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     test("the tenant routes of the lists are told the tenant of the token as well, reads included, and the operator routes are not") {
-      def injected(method: String, path: String) = BootstrapService.centralInjects(method, path).map(r => (r.target, r.name, r.expression)).toSet
+      def injected(method: String, path: String) =
+        BootstrapService.centralInjects(method, path).filter(_.target != InjectTarget.header).map(r => (r.target, r.name, r.expression)).toSet
       val tenant = (method: String) => (if method == "GET" then InjectTarget.query else InjectTarget.body, "callerTenantId", "token.tenant_id")
       val user = (method: String) => (if method == "GET" then InjectTarget.query else InjectTarget.body, "userId", "token.sub")
       val tenantRoutes = List(
@@ -421,7 +424,51 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         !holders("antifraud:read").contains("viewer"),
       )
     },
-    test("a deployment that registered the antifraud endpoints with older inject rules gets the current ones, and nothing else is rewritten") {
+    test("every endpoint central serves to the console is told who the caller is by headers, and the service endpoints are not") {
+      val headers = BootstrapService.actorInjects.map(r => (r.target, r.name, r.expression))
+      def injected(method: String, path: String) =
+        BootstrapService.centralInjects(method, path).filter(_.target == InjectTarget.header).map(r => (r.target, r.name, r.expression))
+      val prod = BootstrapService.centralEndpoints(EnvName.Prod)
+      val service = BootstrapService.centralEndpoints(EnvName.Test("local")).filter(_._2.startsWith("/service/"))
+      assertTrue(
+        headers == Vector(
+          (InjectTarget.header, "X-Versola-Actor", "token.sub"),
+          (InjectTarget.header, "X-Versola-Actor-Tenant", "token.tenant_id"),
+          (InjectTarget.header, "X-Versola-Actor-Client", "token.client_id"),
+        ),
+        prod.nonEmpty,
+        // reads and changes alike, a call without a body as well as one with: the header needs neither
+        prod.forall((method, path) => injected(method, path) == headers),
+        service.nonEmpty,
+        service.forall((method, path) => BootstrapService.centralInjects(method, path).isEmpty),
+        // the user routes keep `userId` for the target: nothing here is injected into a body or a query
+        BootstrapService.centralInjects("POST", "/users/password/reset") == BootstrapService.actorInjects,
+        BootstrapService.centralInjects("DELETE", "/configuration/clients") == BootstrapService.actorInjects,
+        prod.contains("GET" -> "/audit/reports/user"),
+      )
+    },
+    test(
+      "audit:read is the report, seeded to the administrator, security officer and auditor, and not to the roles that must not read people's trails",
+    ) {
+      def endpoints(permission: String) =
+        BootstrapService.permissionCatalog.find(_._1 == versola.central.configuration.permissions.Permission(permission)).map(_._3)
+      def holders(permission: String) =
+        BootstrapService.roleCatalog.collect {
+          case (role, _, permissions) if permissions.contains(versola.central.configuration.permissions.Permission(permission)) => role.toString
+        }.toSet
+      assertTrue(
+        endpoints("audit:read").contains(Set(endpointId("GET", "/audit/reports/user"))),
+        // reserved: nothing is managed yet
+        endpoints("audit:manage").contains(Set.empty),
+        holders("audit:read") == Set("oauth-admin", "security", "auditor"),
+        holders("audit:manage") == Set("oauth-admin"),
+        // users:manage does not grant a look at the trail
+        !BootstrapService.permissionCatalog.filter(
+          _._1 == versola.central.configuration.permissions.Permission("users:manage"),
+        ).exists(_._3.contains(endpointId("GET", "/audit/reports/user"))),
+      )
+    },
+    test("a deployment that registered the endpoints with older inject rules gets the current ones, and nothing but the inject rules is rewritten") {
       def record(method: String, path: String, inject: Vector[InjectRule], allow: Option[String] = None) =
         versola.central.configuration.resources.ResourceEndpointRecord(
           id = endpointId(method, path),
@@ -435,25 +482,44 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
           maxAge = None,
         )
       val user = InjectRule(InjectTarget.body, "userId", "token.sub")
+      val custom = InjectRule(InjectTarget.query, "custom", "token.sub")
       def wanted(method: String, path: String) = record(method, path, BootstrapService.centralInjects(method, path))
       val catalogue =
-        List(wanted("POST", "/antifraud/lists"), wanted("GET", "/antifraud/lists"), wanted("GET", "/users"), wanted("PUT", "/antifraud/settings"))
-      // as an earlier release left them: a tenant route with the user only, one that is current, a custom allow rule on another
+        List(
+          wanted("POST", "/antifraud/lists"),
+          wanted("GET", "/antifraud/lists"),
+          wanted("GET", "/users"),
+          wanted("PUT", "/antifraud/settings"),
+          wanted("POST", "/users"),
+        )
+      // as an earlier release left them: a tenant route with the user only, one with a rule the code no longer has, a custom allow
+      // rule on another, an operator's own rule on a user route, and one that is current
       val existing = Vector(
         record("POST", "/antifraud/lists", Vector(user), allow = Some("token.sub != ''")),
         record("GET", "/antifraud/lists", Vector(InjectRule(InjectTarget.query, "userId", "token.sub"))),
         record("PUT", "/antifraud/settings", Vector(user)),
-        record("GET", "/users", Vector(InjectRule(InjectTarget.query, "custom", "token.sub"))),
+        record("GET", "/users", Vector(custom)),
+        record("POST", "/users", BootstrapService.actorInjects),
         record("GET", "/antifraud/gone", Vector.empty),
       )
-      val drifted = BootstrapService.antifraudInjectDrift(existing, catalogue)
+      val drifted = BootstrapService.injectDrift(existing, catalogue)
+      def of(method: String, path: String) = drifted.find(e => e.method == method && e.path == path)
       assertTrue(
-        drifted.map(e => (e.method, e.path)).toSet == Set("POST" -> "/antifraud/lists", "GET" -> "/antifraud/lists"),
-        drifted.forall(e => e.inject == BootstrapService.centralInjects(e.method, e.path)),
+        drifted.map(e => (e.method, e.path)).toSet == Set(
+          "POST" -> "/antifraud/lists",
+          "GET" -> "/antifraud/lists",
+          "PUT" -> "/antifraud/settings",
+          "GET" -> "/users",
+        ),
+        // the antifraud endpoints have exactly the current rules, as they always had
+        drifted.filter(_.path.startsWith("/antifraud/")).forall(e => e.inject == BootstrapService.centralInjects(e.method, e.path)),
+        // another endpoint keeps what an operator added and gains the code's rules
+        of("GET", "/users").exists(e => e.inject.toSet == (BootstrapService.actorInjects :+ custom).toSet),
         // the rest of the record is the operator's: the custom allow rule stays
-        drifted.find(_.method == "POST").flatMap(_.allowExpression).contains("token.sub != ''"),
-        BootstrapService.antifraudInjectDrift(
-          drifted ++ existing.filter(e => e.path == "/antifraud/settings" || e.path == "/users"),
+        of("POST", "/antifraud/lists").flatMap(_.allowExpression).contains("token.sub != ''"),
+        // a second pass finds nothing to do
+        BootstrapService.injectDrift(
+          drifted ++ existing.filter(e => e.path == "/antifraud/gone" || e.path == "/users" && e.method == "POST"),
           catalogue,
         ).isEmpty,
       )

@@ -4,6 +4,7 @@ import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.tenants.TenantId
 import versola.util.Secret
+import versola.util.audit.AuditEvents
 import zio.Duration
 import zio.http.URL
 import zio.json.ast.Json
@@ -43,6 +44,9 @@ case class CentralConfig(
       * central has no such listener and no edge can sync from it -- there is deliberately no
       * fallback to the main listener, which is the admin console's and auth's. */
     mutualTls: Option[CentralConfig.MutualTlsConfig] = None,
+    /** The audit log (#469). Every key has a default, so a deployment that sets none keeps what an earlier release did and
+      * records admin actions for 7 days. */
+    audit: CentralConfig.AuditConfig = CentralConfig.AuditConfig(),
 ):
   /** `client-certificates` only where it names a CA. A config with no such block still decodes to
     * `Some(defaults)` -- every field has a default, so an absent block parses -- and must read as
@@ -284,6 +288,39 @@ object CentralConfig:
         cookieDomain: Option[String] = None,
         cookiePath: Option[String] = None,
     )
+
+  /** How long the audit log is kept and what a full writer queue does. Central writes its events best effort (the action has
+    * happened), so `overflow = block` makes an event wait for room up to `blockTimeout` and then lose it, counted; `drop` loses it
+    * at once.
+    *
+    * @param retention    a day's partition is dropped once the whole day is older than this; 14 days is the sensible most (the
+    *                     per-user report asks auth, whose log is kept as long, for the same window)
+    * @param events       the kinds a deployment may leave out
+    */
+  case class AuditConfig(
+      retention: Duration = Duration.fromSeconds(7 * 24 * 3600L),
+      overflow: AuditEvents.Overflow = AuditEvents.Overflow.block,
+      blockTimeout: Duration = Duration.fromSeconds(2),
+      events: AuditConfig.Events = AuditConfig.Events(),
+  ):
+    /** What the writer of `versola.util.audit` takes. The tiers that are auth's (token refresh, authorize and PAR successes) are
+      * not central's events and stay on. */
+    def settings: AuditEvents.Settings =
+      AuditEvents.Settings(
+        retention = retention,
+        overflow = overflow,
+        blockTimeout = blockTimeout,
+        events = AuditEvents.EventTiers(
+          tokenRefresh = true,
+          authorizeSuccess = true,
+          parSuccess = true,
+          adminUserViewed = events.adminUserViewed,
+        ),
+      )
+
+  object AuditConfig:
+    /** @param adminUserViewed whether a look at a user (`GET /users`) is an event: it is the one read that is many */
+    case class Events(adminUserViewed: Boolean = true)
 
   case class UserOutboxConfig(
       pollInterval: Duration,
