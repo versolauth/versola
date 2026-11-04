@@ -184,20 +184,29 @@ lazy val e2e = project
     // from caches a Postgres notification refreshes just after the write commits. Run in
     // parallel, suites read each other's load as lag and see a write that has not landed yet.
     Test / parallelExecution := false,
-    // One JVM per spec. zio-test merges the `bootstrap` layers of every spec it runs in a JVM
-    // into a single shared environment, so two specs asking for the same service — the edge
-    // specs all build an `EdgeFixture` — would silently be handed one another's fixture.
+    // One JVM per spec, so that two specs asking for the same service -- the edge specs all build an
+    // `EdgeFixture` -- are not handed one another's fixture: zio-test merges the `bootstrap` layers of every
+    // spec it runs in a JVM into a single shared environment. Each JVM costs ~3.7 s on a CI runner.
+    //
+    // The exception is the central admin API specs (`CentralApiSpec`, the `flows.central` package): their
+    // bootstrap is only the `CentralApi` client and each test creates and removes what it needs, so they
+    // share one JVM, one after the other (`parallelExecution` is off). A spec in that package with a
+    // bootstrap of its own belongs in `ownJvm`.
     //
     // `-De2e.skipProvision=true` leaves out `LoadgenProvisionSpec`: CI runs it as a step of its own ahead of
     // the rest (so a decode mismatch is reported as "provisioning broke") and would otherwise run it twice.
-    Test / testGrouping := (Test / definedTests).value
-      .filterNot(spec => sys.props.get("e2e.skipProvision").contains("true") && spec.name.endsWith(".LoadgenProvisionSpec"))
-      .map { spec =>
-      Tests.Group(
-        name = spec.name,
-        tests = Seq(spec),
-        runPolicy = Tests.SubProcess((Test / forkOptions).value),
-      )
+    Test / testGrouping := {
+      val ownJvm = Set("ConfigSnapshotColdStartSpec", "BootstrapAuthMethodSpec")
+      def sharedCentralApi(name: String) =
+        name.startsWith("versola.e2e.flows.central.") && !ownJvm.exists(n => name.endsWith("." + n))
+      val options = (Test / forkOptions).value
+      val specs = (Test / definedTests).value
+        .filterNot(spec => sys.props.get("e2e.skipProvision").contains("true") && spec.name.endsWith(".LoadgenProvisionSpec"))
+      val (central, others) = specs.partition(spec => sharedCentralApi(spec.name))
+      val centralGroup =
+        if (central.isEmpty) Nil
+        else Seq(Tests.Group(name = "central-api", tests = central, runPolicy = Tests.SubProcess(options)))
+      others.map(spec => Tests.Group(name = spec.name, tests = Seq(spec), runPolicy = Tests.SubProcess(options))) ++ centralGroup
     },
   )
 
