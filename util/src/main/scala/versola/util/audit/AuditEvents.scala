@@ -53,7 +53,7 @@ object AuditEvents:
     * @param partitionsAhead     days of partitions created beyond today, so a maintenance run that is late does not leave the
     *                            writer without one
     * @param maintenanceInterval how often the partitions are made ahead, the old ones dropped and the default partition pruned
-    * @param lossLogWindow       how often the events the log dropped or refused are written to the service's log: one line per window, whatever the number
+    * @param reportWindow       how often the events the log dropped or refused are written to the service's log: one line per window, whatever the number
     */
   case class Sizing(
       queueCapacity: Int = 50000,
@@ -61,7 +61,7 @@ object AuditEvents:
       flushInterval: Duration = 1.second,
       partitionsAhead: Int = 14,
       maintenanceInterval: Duration = 1.hour,
-      lossLogWindow: Duration = 1.minute,
+      reportWindow: Duration = 1.minute,
   )
 
   object Sizing:
@@ -103,14 +103,14 @@ object AuditEvents:
         _ <- AuditMetrics.register(source)
         intake <- Ref.make(Intake(closed = false, inflight = 0))
         inHand <- Ref.make(List.empty[AuditEvent])
-        losses <- LossLog.make(source, catalog, sizing.lossLogWindow)
+        report <- EventReport.make(source, catalog, sizing.reportWindow)
         _ <- Maintenance(repository, settings, sizing, source).run
         // Before the writer, so that its last report is made after the writer's last drain.
-        _ <- losses.run
-        _ <- Writer(queue, repository, sizing, source, losses, intake, inHand).run
+        _ <- report.run
+        _ <- Writer(queue, repository, sizing, source, report, intake, inHand).run
       yield Impl(
         intake = intake,
-        losses = losses,
+        report = report,
         queue = queue,
         settings = settings,
         sizing = sizing,
@@ -127,7 +127,7 @@ object AuditEvents:
 
   private class Impl(
       intake: Ref[Intake],
-      losses: LossLog,
+      report: EventReport,
       queue: Queue[AuditEvent],
       settings: Settings,
       sizing: Sizing,
@@ -151,21 +151,21 @@ object AuditEvents:
         case true => enqueue(event, bestEffort).ensuring(intake.update(state => state.copy(inflight = state.inflight - 1)))
         case false =>
           if settings.overflow == Overflow.block && !bestEffort then AuditMetrics.unavailable(source) *> ZIO.fail(AuditUnavailable)
-          else AuditMetrics.dropped(source) *> losses.note(LossLog.AfterStop, event.kind)
+          else AuditMetrics.dropped(source) *> report.note(EventReport.AfterStop, event.kind)
 
     private def enqueue(event: AuditEvent, bestEffort: Boolean): IO[AuditUnavailable.type, Unit] =
       settings.overflow match
         case Overflow.drop =>
           queue.offer(event).flatMap:
             case true => AuditMetrics.recorded(source, event, catalog)
-            case false => AuditMetrics.dropped(source) *> losses.note(LossLog.QueueFull, event.kind)
+            case false => AuditMetrics.dropped(source) *> report.note(EventReport.QueueFull, event.kind)
         case Overflow.block =>
           // The size is read before the offer so that a request that had to wait is counted, whether or not it got room in time.
           queue.size.flatMap: size =>
             ZIO.when(size >= sizing.queueCapacity)(AuditMetrics.blocked(source)) *>
               queue.offer(event).timeout(settings.blockTimeout).flatMap:
                 case Some(_) => AuditMetrics.recorded(source, event, catalog)
-                case None if bestEffort => AuditMetrics.dropped(source) *> losses.note(LossLog.WaitedForRoom, event.kind)
+                case None if bestEffort => AuditMetrics.dropped(source) *> report.note(EventReport.WaitedForRoom, event.kind)
                 case None => AuditMetrics.unavailable(source) *> ZIO.fail(AuditUnavailable)
 
     /** The event of a draft: ids and time, then the request's context, from [[AuditContext]] first and the `auth` log context
@@ -225,7 +225,7 @@ object AuditEvents:
       repository: AuditEventRepository,
       sizing: Sizing,
       source: AuditSource,
-      losses: LossLog,
+      report: EventReport,
       intake: Ref[Intake],
       inHand: Ref[List[AuditEvent]],
   ):
@@ -290,8 +290,8 @@ object AuditEvents:
         val (refused, left) = failed.partition((_, error) => refusedForItself(error, othersStored = stored))
         ZIO.when(refused.nonEmpty)(
           AuditMetrics.rejected(source, refused.size) *>
-            losses.noteAll(LossLog.Refused, refused.map(_._1)) *>
-            losses.noteStates(refused.flatMap((_, error) => sqlStates(error))),
+            report.noteAll(EventReport.Refused, refused.map(_._1)) *>
+            report.noteStates(refused.flatMap((_, error) => sqlStates(error))),
         ).as(left.map(_._1))
 
     /** What the service does when it stops, within [[DrainTimeout]]: nothing more is accepted, the writer is stopped, and the batch it
@@ -310,7 +310,7 @@ object AuditEvents:
         rest <- queue.takeAll
         left <- pending.get.map(_ ++ rest)
         count <- taken.get.map(_ + rest.size)
-        _ <- ZIO.when(left.nonEmpty)(AuditMetrics.failed(source, left.size) *> losses.noteAll(LossLog.NotWritten, left))
+        _ <- ZIO.when(left.nonEmpty)(AuditMetrics.failed(source, left.size) *> report.noteAll(EventReport.NotWritten, left))
         _ <- ZIO.logInfo(
           s"the audit queue was drained on shutdown: $count events taken, ${left.size} not written" +
             (if finished.isEmpty then s" (the write did not finish in $DrainTimeout)" else ""),
@@ -361,7 +361,7 @@ object AuditEvents:
   /** The events the log dropped or refused, written to the service's log once per window and not once per event. Each is also counted
     * (`audit_events_dropped_total`, `audit_events_rejected_total`, `audit_events_failed_total`); the line names their kinds, never their
     * rows, and the counts say how many. */
-  private class LossLog(
+  private class EventReport(
       source: AuditSource,
       catalog: AuditCatalog,
       window: Duration,
@@ -382,13 +382,13 @@ object AuditEvents:
     def noteStates(found: Iterable[String]): UIO[Unit] = states.update(_ ++ found)
 
     def flush: UIO[Unit] =
-      (counts.getAndSet(Map.empty) <*> states.getAndSet(Set.empty)).flatMap: (lost, sqlstates) =>
-        ZIO.when(lost.nonEmpty):
-          val reasons = lost.groupBy(_._1._1).toList.sortBy(_._1).map: (reason, entries) =>
+      (counts.getAndSet(Map.empty) <*> states.getAndSet(Set.empty)).flatMap: (reported, sqlstates) =>
+        ZIO.when(reported.nonEmpty):
+          val reasons = reported.groupBy(_._1._1).toList.sortBy(_._1).map: (reason, entries) =>
             val kinds = entries.toList.map((key, n) => key._2 -> n).sortBy((kind, n) => (-n, kind))
             val shown = kinds.take(MaxKindsReported).map((kind, n) => s"$kind ($n)").mkString(", ")
             val more = if kinds.size > MaxKindsReported then s" and ${kinds.size - MaxKindsReported} more kinds" else ""
-            val why = if reason == LossLog.Refused && sqlstates.nonEmpty then s"; SQLSTATE ${sqlstates.toList.sorted.mkString(", ")}" else ""
+            val why = if reason == EventReport.Refused && sqlstates.nonEmpty then s"; SQLSTATE ${sqlstates.toList.sorted.mkString(", ")}" else ""
             s"${entries.values.sum} $reason: $shown$more$why"
           ZIO.logWarning(s"audit events were dropped or refused in the last ${window.render} (${source.value}): ${reasons.mkString("; ")}")
         .unit
@@ -397,18 +397,18 @@ object AuditEvents:
     val run: URIO[Scope, Unit] =
       ZIO.addFinalizer(flush) *> (ZIO.sleep(window) *> flush).forever.forkScoped.unit
 
-  private object LossLog:
+  private object EventReport:
     val QueueFull = "dropped, the queue was full"
     val WaitedForRoom = "dropped, the queue stayed full for the block timeout"
     val Refused = "refused by the database for what they contain, not stored"
     val NotWritten = "not written before the service stopped"
     val AfterStop = "dropped, offered after the service began to stop"
 
-    def make(source: AuditSource, catalog: AuditCatalog, window: Duration): UIO[LossLog] =
+    def make(source: AuditSource, catalog: AuditCatalog, window: Duration): UIO[EventReport] =
       for
         counts <- Ref.make(Map.empty[(String, String), Int])
         states <- Ref.make(Set.empty[String])
-      yield LossLog(source, catalog, window, counts, states)
+      yield EventReport(source, catalog, window, counts, states)
 
   /** The most kinds one line names for one reason; the rest are counted as "more". */
   private val MaxKindsReported = 10
