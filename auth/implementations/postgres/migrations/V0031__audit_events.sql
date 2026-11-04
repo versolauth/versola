@@ -10,8 +10,8 @@ SET LOCAL lock_timeout = '5s';
 -- storage is an operator's logical replication of this table to another database (deploy.md, "Audit log"), so a row
 -- is never updated or moved: an insert-only subscriber would see a duplicate key.
 --
--- Column by column: `kind`, `outcome`, `severity`, `actor_type` and `source` are the closed vocabularies of
--- `versola.util.audit` (`AuditKinds`, `AuditOutcome`, ...), stored as text so that the replica needs no enum of its
+-- Column by column: `kind`, `outcome`, `severity`, `actor_type` and `source` are closed vocabularies (`AuthAuditKinds` of auth,
+-- `AuditOutcome` and `AuditSeverity` of `versola.util.audit`, ...), stored as text so that the replica needs no enum of its
 -- own and central can store what another service sends. `reason` is the `setError` code of a failed request.
 -- `actor_id` is the user, admin, client or service that acted; `user_id` the account the event is about (the
 -- per-user report reads by it). `details` is the kind's own payload (`AuditDetails`), always supplied by the

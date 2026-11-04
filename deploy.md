@@ -935,7 +935,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   is in the Antifraud rollout playbook (`antifraud/rollout`).
 
 - **Audit log (`audit_event`, migration `V0031`; #469).** `auth` records every authentication, token, consent,
-  account and certificate event (the kinds are the closed vocabulary `AuditKinds` in `util`; the per-user report
+  account and certificate event (the kinds are the closed vocabulary `AuthAuditKinds` of `auth`; the per-user report
   reads them through `central`) into `audit_event`, partitioned by day like `af_event` and maintained by the service
   the same way (today and 14 days ahead, at start-up and every hour; a day older than `audit.retention` is dropped,
   which is the retention: nothing is deleted row by row except from the default partition). Its keys are the `audit`
