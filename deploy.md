@@ -1422,7 +1422,9 @@ grep ADMIN_BOOTSTRAP_PASSWORD <bundle printed by versola up>/auth.secrets.env
 ```
 
 If the temporary password expired without a first login, `docker restart versola-auth` makes
-bootstrap set a fresh one (and a new link). More admin users: Console → **Users** → **Create
+bootstrap set a fresh one (and a new link). An environment upgraded to this release while its
+temporary password is still valid gets no link until that password expires; set `BOOTSTRAP_RESET=1`
+once to get one now. More admin users: Console → **Users** → **Create
 User**, **Edit Roles**, **Reset Password** — in prod the temporary password can only be delivered by
 email or SMS, and neither is configured yet ([5](#5-known-gaps)).
 
