@@ -373,7 +373,9 @@ object ConversationRouterSpec extends UnitSpecBase:
           (result, _) <- env.router.submit(authId, OtpResendSubmission(answered, "test-csrf"), None, None)
         yield assertTrue(env.otpConversationService.prepareInitialOtp.calls.map(_._5) == List(answered))
       },
-      test("a resend from the pending step, plain or from script, reaches the one service method that applies the pause, with the pending conversation") {
+      test(
+        "a resend from the pending step, plain or from script, reaches the one service method that applies the pause, with the pending conversation",
+      ) {
         val env = Env()
         val pendingStep = ConversationStep.Otp(
           real = None,
