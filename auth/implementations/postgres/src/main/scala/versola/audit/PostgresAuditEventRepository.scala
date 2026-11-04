@@ -146,7 +146,9 @@ class PostgresAuditEventRepository(
         SELECT host(ip), min(at), max(at), count(*) FROM audit_event
         WHERE user_id = $userId AND at >= $from AND at <= $to AND ip IS NOT NULL
         GROUP BY ip ORDER BY count(*) DESC, host(ip) LIMIT $TopLimit
-      """.query[(String, Instant, Instant, Long)].run().toList.map(IpCount.apply.tupled)
+      """.query[(String, Instant, Instant, Long)].run().toList.map((ip, firstSeen, lastSeen, count) =>
+        IpCount(ip = ip, firstSeen = firstSeen, lastSeen = lastSeen, count = count),
+      )
       val userAgents = sql"""
         SELECT user_agent, min(at), max(at), count(*) FROM audit_event
         WHERE user_id = $userId AND at >= $from AND at <= $to AND user_agent IS NOT NULL

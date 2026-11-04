@@ -6,6 +6,7 @@ import versola.audit.AuditReportService.{EventsPage, SummaryReport}
 import versola.auth.TestEnvConfig
 import versola.util.audit.*
 import versola.util.http.{NoopTracing, Observability}
+import versola.util.net.GeoResolver
 import versola.util.{CoreConfig, JWT, PageLimit}
 import zio.*
 import zio.http.*
@@ -55,8 +56,19 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
     blockTimeout = 2.seconds,
   )
 
-  private def service(repository: Stub[AuditReadRepository]) =
-    AuditReportService.Impl(repository, settings, Unsafe.unsafe((u: Unsafe) ?=> Semaphore.unsafe.make(AuditReportService.ReadConcurrency)(using u)))
+  /** The country database as the report sees it: the addresses it knows. `resolve` is the lookup antifraud counts, which the report must
+    * not use, so it is a defect here. */
+  private def geo(known: (String, String)*): GeoResolver = new GeoResolver:
+    override def resolve(ip: String): UIO[Option[String]] = ZIO.die(RuntimeException("the report counted a lookup"))
+    override def peek(ip: String): UIO[Option[String]] = ZIO.succeed(known.toMap.get(ip))
+
+  private def service(repository: Stub[AuditReadRepository], countries: GeoResolver = GeoResolver.off) =
+    AuditReportService.Impl(
+      repository,
+      settings,
+      countries,
+      Unsafe.unsafe((u: Unsafe) ?=> Semaphore.unsafe.make(AuditReportService.ReadConcurrency)(using u)),
+    )
 
   private val atStart = TestAspect.before(TestClock.setTime(start))
 
@@ -67,7 +79,7 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
       taken <- Promise.make[Nothing, Unit]
       _ <- reads.withPermit(taken.succeed(()) *> ZIO.never).forkDaemon
       _ <- taken.await
-    yield AuditReportService.Impl(repository, settings, reads)
+    yield AuditReportService.Impl(repository, settings, GeoResolver.off, reads)
 
   def spec = suite("AuditReport")(
     suite("AuditReportService")(
@@ -142,9 +154,61 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
         for
           _ <- repository.userEvents.succeedsWith(Nil)
           reads <- Semaphore.make(AuditReportService.ReadConcurrency)
-          service = AuditReportService.Impl(repository, settings, reads)
+          service = AuditReportService.Impl(repository, settings, GeoResolver.off, reads)
           results <- ZIO.foreachPar(1 to 20)(_ => service.events(user, None, None, None, None).either)
         yield assertTrue(results.forall(_.isRight), repository.userEvents.calls.size == 20)
+      },
+      test("the events carry the country of their address, looked up without counting: a hit, a miss, a private address, no address") {
+        val repository = stub[AuditReadRepository]
+        val inGermany = event(start.minusSeconds(10)).copy(ip = Some("203.0.113.7"))
+        val unknown = event(start.minusSeconds(20)).copy(ip = Some("198.51.100.9"))
+        val private_ = event(start.minusSeconds(30)).copy(ip = Some("10.0.0.1"))
+        val noAddress = event(start.minusSeconds(40)).copy(ip = None)
+        for
+          _ <- repository.userEvents.succeedsWith(List(inGermany, unknown, private_, noAddress))
+          page <- service(repository, geo("203.0.113.7" -> "DE")).events(user, None, None, None, None)
+        yield assertTrue(
+          page.events.map(_.country) == List(Some("DE"), None, None, None),
+          page.events.map(_.event) == List(inGermany, unknown, private_, noAddress),
+        )
+      },
+      test("with no country database the report is as it was: no country anywhere, and no countries") {
+        val repository = stub[AuditReadRepository]
+        val shown = event(start.minusSeconds(10)).copy(ip = Some("203.0.113.7"))
+        val ip = AuditReadRepository.IpCount("203.0.113.7", start, start, 3)
+        for
+          _ <- repository.userEvents.succeedsWith(List(shown))
+          _ <- repository.userSummary.succeedsWith(Summary(Nil, Nil, List(ip), Nil, SessionCount(0, 0), Nil, List(shown)))
+          page <- service(repository).events(user, None, None, None, None)
+          report <- service(repository).summary(user, None, None)
+        yield assertTrue(
+          !page.toJson.contains("country"),
+          !report.toJson.contains("\"country\""),
+          report.countries.isEmpty,
+          report.ips == List(ip),
+        )
+      },
+      test("the summary names the country of each address and of the high events, and groups the addresses by country, most used first") {
+        val repository = stub[AuditReadRepository]
+        val ips = List(
+          AuditReadRepository.IpCount("203.0.113.7", start.minusSeconds(100), start.minusSeconds(10), 5),
+          AuditReadRepository.IpCount("198.51.100.9", start.minusSeconds(300), start.minusSeconds(200), 4),
+          AuditReadRepository.IpCount("203.0.113.8", start.minusSeconds(50), start.minusSeconds(5), 3),
+          AuditReadRepository.IpCount("10.0.0.1", start, start, 9),
+        )
+        val high = event(start.minusSeconds(10)).copy(ip = Some("198.51.100.9"))
+        val known = geo("203.0.113.7" -> "DE", "203.0.113.8" -> "DE", "198.51.100.9" -> "FR")
+        for
+          _ <- repository.userSummary.succeedsWith(Summary(Nil, Nil, ips, Nil, SessionCount(0, 0), Nil, List(high)))
+          report <- service(repository, known).summary(user, None, None)
+        yield assertTrue(
+          report.ips.map(_.country) == List(Some("DE"), Some("FR"), Some("DE"), None),
+          report.countries == List(
+            AuditReportService.CountryCount("DE", start.minusSeconds(100), start.minusSeconds(5), 8),
+            AuditReportService.CountryCount("FR", start.minusSeconds(300), start.minusSeconds(200), 4),
+          ),
+          report.high.map(_.country) == List(Some("FR")),
+        )
       },
       test("a page asks for one event more than it shows, and there is a next cursor exactly when it came back") {
         val repository = stub[AuditReadRepository]
@@ -158,11 +222,11 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
           last <- service(repository).events(user, None, None, first.nextCursor.flatMap(AuditCursor.parse(_).toOption), Some(PageLimit(2)))
         yield assertTrue(
           repository.userEvents.calls.map(_._5) == List(3, 3),
-          first.events == List(newest, middle),
+          first.events.map(_.event) == List(newest, middle),
           first.nextCursor.flatMap(AuditCursor.parse(_).toOption) == Some(AuditCursor(middle.at, middle.id)),
           // the next page resumes after the last event shown
           repository.userEvents.calls(1)._4 == Some(AuditCursor(middle.at, middle.id)),
-          last.events == List(oldest),
+          last.events.map(_.event) == List(oldest),
           last.nextCursor.isEmpty,
         )
       },
@@ -283,6 +347,23 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
           repository.userEvents.calls.map(_._5) == List(2, 501),
         )
       },
+      test("serves the country as a member of the event it belongs to, and leaves it out when there is none") {
+        val repository = stub[AuditReadRepository]
+        val inGermany = event(start.minusSeconds(10)).copy(ip = Some("203.0.113.7"))
+        val unknown = event(start.minusSeconds(20)).copy(ip = Some("198.51.100.9"))
+        for
+          _ <- repository.userEvents.succeedsWith(List(inGermany, unknown))
+          response <- callWith(service(repository, geo("203.0.113.7" -> "DE")), s"/audit/events?userId=$user")
+          body <- response.body.asString
+          json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
+          items = json.get("events").flatMap(_.asArray).map(_.toList.flatMap(_.asObject)).getOrElse(Nil)
+        yield assertTrue(
+          response.status == Status.Ok,
+          items.map(_.get("country").flatMap(_.asString)) == List(Some("DE"), None),
+          items.map(_.keys.contains("country")) == List(true, false),
+          items.forall(_.get("ip").isDefined),
+        )
+      },
       test("answers the summary with its blocks") {
         val repository = stub[AuditReadRepository]
         for
@@ -292,7 +373,7 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
           json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
         yield assertTrue(
           response.status == Status.Ok,
-          json.keys.toSet == Set("window", "byKind", "byClient", "ips", "userAgents", "sessions", "factors", "high"),
+          json.keys.toSet == Set("window", "byKind", "byClient", "ips", "userAgents", "sessions", "countries", "factors", "high"),
           json.get("window").flatMap(_.asObject).map(_.keys.toSet) == Some(Set("from", "to", "retentionFrom")),
         )
       },

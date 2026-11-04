@@ -3,8 +3,10 @@ package versola.audit
 import versola.audit.AuditReadRepository.Summary
 import versola.util.PageLimit
 import versola.util.audit.{AuditEvent, AuditEvents}
+import versola.util.net.GeoResolver
 import zio.*
-import zio.json.{JsonCodec, jsonExplicitNull}
+import zio.json.ast.Json
+import zio.json.{DeriveJsonDecoder, JsonCodec, JsonDecoder, JsonEncoder, jsonExplicitNull}
 
 import java.nio.charset.StandardCharsets
 import java.time.Instant
@@ -41,7 +43,21 @@ object AuditReportService:
   val ClockSkew: Duration = 1.minute
 
   /** `nextCursor` is `null`, not left out, on the last page: central codes against that. */
-  case class EventsPage(events: List[AuditEvent], @jsonExplicitNull nextCursor: Option[String], retentionFrom: Instant) derives JsonCodec
+  /** An event as the report serves it: the stored event, flat, and the `country` of its address when the country database of
+    * `antifraud.geo` is loaded and has one. The country is looked up when the report is read and is not stored. */
+  case class ReportEvent(event: AuditEvent, country: Option[String])
+
+  object ReportEvent:
+    given JsonCodec[ReportEvent] = JsonCodec(
+      JsonEncoder[Json.Obj].contramap: item =>
+        val stored = JsonEncoder[AuditEvent].toJsonAST(item.event).toOption.flatMap(_.asObject).getOrElse(Json.Obj())
+        item.country.fold(stored)(code => Json.Obj(stored.fields :+ ("country" -> Json.Str(code))))
+      ,
+      JsonDecoder[Json.Obj].mapOrFail: obj =>
+        obj.as[AuditEvent].map(event => ReportEvent(event, obj.get("country").flatMap(_.asString))),
+    )
+
+  case class EventsPage(events: List[ReportEvent], @jsonExplicitNull nextCursor: Option[String], retentionFrom: Instant) derives JsonCodec
   case class Window(from: Instant, to: Instant, retentionFrom: Instant) derives JsonCodec
 
   case class SummaryReport(
@@ -51,19 +67,43 @@ object AuditReportService:
       ips: List[AuditReadRepository.IpCount],
       userAgents: List[AuditReadRepository.UserAgentCount],
       sessions: AuditReadRepository.SessionCount,
+      countries: List[CountryCount],
       factors: List[AuditReadRepository.Factor],
-      high: List[AuditEvent],
+      high: List[ReportEvent],
   ) derives JsonCodec
 
-  val live: ZLayer[AuditReadRepository & AuditEvents.Settings, Nothing, AuditReportService] =
+  /** The addresses of `ips` grouped by their country, most used first. */
+  case class CountryCount(country: String, firstSeen: Instant, lastSeen: Instant, count: Long) derives JsonCodec
+
+  /** The countries of the addresses of the summary (so as many as `ips` holds, at most), most used first, then by code. */
+  def countriesOfIps(ips: List[AuditReadRepository.IpCount]): List[CountryCount] =
+    ips.flatMap(entry => entry.country.map(entry -> _)).groupBy(_._2).toList.map: (country, entries) =>
+      CountryCount(
+        country = country,
+        firstSeen = entries.map(_._1.firstSeen).min,
+        lastSeen = entries.map(_._1.lastSeen).max,
+        count = entries.map(_._1.count).sum,
+      )
+    .sortBy(entry => (-entry.count, entry.country))
+
+  val live: ZLayer[AuditReadRepository & AuditEvents.Settings & GeoResolver, Nothing, AuditReportService] =
     ZLayer.fromZIO:
       for
         repository <- ZIO.service[AuditReadRepository]
         settings <- ZIO.service[AuditEvents.Settings]
+        geo <- ZIO.service[GeoResolver]
         reads <- Semaphore.make(ReadConcurrency)
-      yield Impl(repository, settings, reads)
+      yield Impl(repository, settings, geo, reads)
 
-  class Impl(repository: AuditReadRepository, settings: AuditEvents.Settings, reads: Semaphore) extends AuditReportService:
+  class Impl(repository: AuditReadRepository, settings: AuditEvents.Settings, geo: GeoResolver, reads: Semaphore) extends AuditReportService:
+
+    /** The country of each of the addresses, looked up in the database in memory without counting a lookup (`peek`); an address with
+      * none (no database loaded, a private or unknown address, or no address) is left out. */
+    private def countriesOf(ips: Iterable[String]): UIO[Map[String, String]] =
+      ZIO.foreach(ips.toList.distinct)(ip => geo.peek(ip).map(country => country.map(ip -> _))).map(_.flatten.toMap)
+
+    private def withCountries(events: List[AuditEvent]): UIO[List[ReportEvent]] =
+      countriesOf(events.flatMap(_.ip)).map(found => events.map(event => ReportEvent(event, event.ip.flatMap(found.get))))
 
     /** Runs a read when one of the `ReadConcurrency` places is free, waiting up to `ReadWait` for it. */
     private def gated[A](read: IO[Throwable | AuditReportError, A]): IO[Throwable | AuditReportError, A] =
@@ -97,8 +137,9 @@ object AuditReportService:
         // One more than a page: whether there is a next page is whether it came back.
         found <- gated(repository.userEvents(userId, window.from, window.to, cursor, size + 1))
         page = found.take(size)
+        shown <- withCountries(page)
       yield EventsPage(
-        events = page,
+        events = shown,
         nextCursor = Option.when(found.size > size)(page.lastOption.map(last => AuditCursor(last.at, last.id).render)).flatten,
         retentionFrom = window.retentionFrom,
       )
@@ -107,13 +148,17 @@ object AuditReportService:
       for
         window <- window(from, to)
         found <- gated(repository.userSummary(userId, window.from, window.to))
+        countries <- countriesOf(found.ips.map(_.ip) ++ found.high.flatMap(_.ip))
+        ips = found.ips.map(entry => entry.copy(country = countries.get(entry.ip)))
+        high <- withCountries(found.high)
       yield SummaryReport(
         window = window,
         byKind = found.byKind,
         byClient = found.byClient,
-        ips = found.ips,
+        ips = ips,
         userAgents = found.userAgents,
         sessions = found.sessions,
+        countries = countriesOfIps(ips),
         factors = found.factors,
-        high = found.high,
+        high = high,
       )

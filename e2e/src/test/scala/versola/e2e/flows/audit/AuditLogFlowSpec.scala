@@ -151,7 +151,7 @@ object AuditLogFlowSpec extends E2ESpec:
         sessions = json.get("sessions").flatMap(_.asObject)
       yield assertTrue(
         response.status == Status.Ok,
-        json.keys.toSet == Set("window", "byKind", "byClient", "ips", "userAgents", "sessions", "factors", "high"),
+        json.keys.toSet == Set("window", "byKind", "byClient", "ips", "userAgents", "sessions", "countries", "factors", "high"),
         count("login.completed") == 1L,
         count("token.issued") == 1L,
         count("session.ended") == 1L,

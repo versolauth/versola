@@ -1008,6 +1008,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `AuditPartitionsRunningOut`, `AuditEventsInDefault`, `AuditPartitionOwnerMismatch`, `AuditReplicationSlotRetainsWal`), loaded like the antifraud ones. **The rows are personal data** (an address, a user agent, a user id): the hot window and the replica's
   retention must not exceed what you promise for such data; deleting a user does not delete their events.
 
+  The per-user report shows the country of an address (a `country` on an event and on an entry of `ips`, and a `countries` list in the summary) only when `antifraud.geo` is configured; it is looked up when the report is read and is not stored. With no database loaded the field is absent. The database's attribution requirement is described with `antifraud.geo`.
+
   Central reads auth's rows through two internal endpoints (`GET /audit/events` and `GET /audit/summary`, the user a query parameter `userId`,
   authenticated with the service token like `/users/*`; not public, not in the OpenAPI specs), and tells auth which
   administrator acts with the optional `actorId` of the call it makes for one (a query parameter of a `GET` or `DELETE`, a field of the
