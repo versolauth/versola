@@ -143,8 +143,8 @@ object AuditEventsSpec extends UnitSpecBase:
       SecureRandom.live,
     )
 
-  /** The lines the log wrote about events it lost. */
-  private def lossLines: UIO[List[String]] =
+  /** The lines the log wrote about events it dropped or refused. */
+  private def reportLines: UIO[List[String]] =
     ZTestLogger.logOutput.map(_.toList.map(_.message()).filter(_.contains("audit events were dropped or refused")))
 
   private def drainLines: UIO[List[String]] =
@@ -463,18 +463,18 @@ object AuditEventsSpec extends UnitSpecBase:
             // Two are queued behind the one the writer holds, three are dropped; then two of a kind the service did not list.
             _ <- ZIO.foreachDiscard(1 to 5)(_ => events.record(draft(Issued, AuditOutcome.success).copy(reason = Some("secret-detail"))))
             _ <- ZIO.foreachDiscard(1 to 2)(_ => events.record(draft(AuditKind("thing.unlisted"))))
-            before <- lossLines
+            before <- reportLines
             _ <- TestClock.adjust(1.minute)
-            lines <- lossLines
+            lines <- reportLines
             _ <- TestClock.adjust(2.minutes)
-            later <- lossLines
+            later <- reportLines
           yield assertTrue(
             before.isEmpty,
             lines.size == 1,
             lines.head.contains("5 dropped, the queue was full: thing.issued (3), other (2)"),
             lines.head.contains("(svc-c)"),
             !lines.head.contains("secret-detail"),
-            // A window with nothing lost says nothing.
+            // A window with nothing to report says nothing.
             later == lines,
           )
       }.provideLayer(ZTestLogger.default),
@@ -491,7 +491,7 @@ object AuditEventsSpec extends UnitSpecBase:
             _ <- TestClock.adjust(2.seconds)
             _ <- waiting.join
             _ <- TestClock.adjust(1.minute)
-            lines <- lossLines
+            lines <- reportLines
           yield assertTrue(lines.size == 1, lines.head.contains("1 dropped, the queue stayed full for the block timeout: thing.refused (1)"))
       }.provideLayer(ZTestLogger.default),
       test("rows the database refused are reported once per window by kind with their SQLSTATE, and never by content") {
@@ -506,7 +506,7 @@ object AuditEventsSpec extends UnitSpecBase:
             // The batch is refused, then written row by row: the good row is stored, the refused one is not.
             _ <- until(f, 1)
             _ <- TestClock.adjust(1.minute)
-            lines <- lossLines
+            lines <- reportLines
           yield assertTrue(
             lines.size == 1,
             lines.head.contains("1 refused by the database for what they contain, not stored: thing.issued (1); SQLSTATE 22P02"),
@@ -549,13 +549,13 @@ object AuditEventsSpec extends UnitSpecBase:
           _ <- closing.join
           failedAfter <- counter("audit_events_failed_total", edge)
           drained <- drainLines
-          lost <- lossLines
+          reported <- reportLines
         yield assertTrue(
           failedAfter - failedBefore == 3.0,
           drained.size == 1,
           drained.head.contains("3 events taken, 3 not written"),
-          lost.size == 1,
-          lost.head.contains("3 not written before the service stopped: thing.refused (2), thing.issued (1)"),
+          reported.size == 1,
+          reported.head.contains("3 not written before the service stopped: thing.refused (2), thing.issued (1)"),
         )
       }.provideLayer(ZTestLogger.default),
       test("the queue's size is read while the writer is held by a database that is down, not only when it takes something") {
@@ -727,7 +727,7 @@ object AuditEventsSpec extends UnitSpecBase:
             f <- fixture(gated = false)
             _ <- TestClock.setTime(Instant.parse("2026-11-03T10:00:00Z"))
             // The writer's and the report's clocks are slowed down: the test moves the clock by an hour, a tick of theirs at a time.
-            _ <- build(f, block, sizing = sizing.copy(flushInterval = 30.minutes, lossLogWindow = 30.minutes))
+            _ <- build(f, block, sizing = sizing.copy(flushInterval = 30.minutes, reportWindow = 30.minutes))
             _ <- settle
             atStart = f.repository.maintainPartitions.calls
             pruned = f.repository.pruneDefault.calls

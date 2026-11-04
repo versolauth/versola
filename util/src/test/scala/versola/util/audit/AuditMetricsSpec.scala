@@ -12,10 +12,10 @@ import zio.test.*
 
 import java.time.{Instant, LocalDate}
 
-/** What a scrape of the metrics shows of a service that has lost nothing. */
+/** What a scrape of the metrics shows of a service that dropped or refused nothing. */
 object AuditMetricsSpec extends ZIOSpecDefault:
 
-  private val lossCounters = List(
+  private val counterNames = List(
     "audit_events_dropped_total",
     "audit_events_blocked_total",
     "audit_events_unavailable_total",
@@ -51,7 +51,7 @@ object AuditMetricsSpec extends ZIOSpecDefault:
       .map(_.getOrElse(""))
 
   val spec = suite("AuditMetrics")(
-    test("the counters that mean something was lost exist at 0 from the start, so that the first loss is a step a rate can see") {
+    test("the counters of dropped, refused and failed events exist at 0 from the start, so that the first increment is a step a rate can see") {
       val source = AuditSource("svc-fresh")
       val settings = AuditEvents.Settings(retention = 7.days, overflow = AuditEvents.Overflow.block, blockTimeout = 2.seconds)
       ZIO.scoped:
@@ -68,7 +68,7 @@ object AuditMetricsSpec extends ZIOSpecDefault:
           scraped <- scrape
           lines = scraped.linesIterator.filter(_.contains("""source="svc-fresh"""")).toList
         yield assertTrue(
-          lossCounters.forall(name => lines.exists(line => line.startsWith(name + "{") && line.trim.split("\\s+").lift(1).contains("0.0"))),
+          counterNames.forall(name => lines.exists(line => line.startsWith(name + "{") && line.trim.split("\\s+").lift(1).contains("0.0"))),
         ).label(s"scraped audit lines: ${scraped.linesIterator.filter(_.contains("audit_")).take(30).mkString(" | ")}")
     },
   ).provideShared(
