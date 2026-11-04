@@ -354,7 +354,7 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
           countryGlobal == ListPreview(matched = Some(6), total = 6),
         )
       },
-      test("a preview of a prefix reads the rolled-up requests of the range, of the entry's tenant, and a longer prefix is its range") {
+      test("a preview of a prefix of up to the statistics' length reads the rolled-up requests of the range, of the entry's tenant") {
         val since = at.minusSeconds(3600)
         for
           _ <- f.clearStats
@@ -365,18 +365,87 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
           _ <- f.stats("tenant-a", "4915", since.minusSeconds(60), 1000)
           global <- repository.preview(AntifraudValueType.prefix, "4915", None, since)
           ofA <- repository.preview(AntifraudValueType.prefix, "4915", Some(TenantId("tenant-a")), since)
-          longer <- repository.preview(AntifraudValueType.prefix, "491512", Some(TenantId("tenant-a")), since)
           shorter <- repository.preview(AntifraudValueType.prefix, "49", Some(TenantId("tenant-a")), since)
           none <- repository.preview(AntifraudValueType.prefix, "33", Some(TenantId("tenant-a")), since)
           empty <- repository.preview(AntifraudValueType.prefix, "4915", Some(TenantId("nobody")), since)
         yield assertTrue(
           global == ListPreview(matched = Some(40), total = 100),
           ofA == ListPreview(matched = Some(30), total = 90),
-          longer == ListPreview(matched = Some(30), total = 90),
           shorter == ListPreview(matched = Some(90), total = 90),
           none == ListPreview(matched = Some(0), total = 90),
           empty == ListPreview(matched = Some(0), total = 0),
         )
+      },
+      test(
+        "a preview of a prefix longer than the statistics keep is counted for that prefix alone: two prefixes of one range have their own shares",
+      ) {
+        val a = Some(TenantId("tenant-a"))
+        val since = at.minusSeconds(3600)
+        for
+          today = at.atZone(ZoneOffset.UTC).toLocalDate
+          _ <- events.maintainPartitions(from = today.minusDays(2), days = 3, keepFrom = today.minusDays(30))
+          _ <- f.clearStats
+          // The rollup says the whole range 4915 is all of the traffic (the 4-digit bucket every longer prefix of it would be judged by).
+          _ <- f.stats("tenant-a", "4915", since.plusSeconds(600), 1000)
+          _ <- events.insertBatch(
+            List.fill(2)(smsRequest(Some("491512"))) ++
+              List.fill(18)(smsRequest(Some("491599"))) ++
+              List.fill(80)(smsRequest(Some("333333"))),
+          )
+          narrow <- repository.preview(AntifraudValueType.prefix, "491512", a, since)
+          broad <- repository.preview(AntifraudValueType.prefix, "491599", a, since)
+          fiveDigits <- repository.preview(AntifraudValueType.prefix, "49159", a, since)
+          absent <- repository.preview(AntifraudValueType.prefix, "491507", a, since)
+          global <- repository.preview(AntifraudValueType.prefix, "491512", None, since)
+        yield assertTrue(
+          narrow == ListPreview(matched = Some(2), total = 100),
+          broad == ListPreview(matched = Some(18), total = 100),
+          fiveDigits == ListPreview(matched = Some(18), total = 100),
+          absent == ListPreview(matched = Some(0), total = 100),
+          global == narrow,
+        )
+      },
+      test("a preview of a prefix of exactly the statistics' length still reads the rollup, not the event log") {
+        val a = Some(TenantId("tenant-a"))
+        val since = at.minusSeconds(3600)
+        for
+          today = at.atZone(ZoneOffset.UTC).toLocalDate
+          _ <- events.maintainPartitions(from = today.minusDays(2), days = 3, keepFrom = today.minusDays(30))
+          _ <- f.clearStats
+          _ <- f.stats("tenant-a", "4915", since.plusSeconds(600), 30)
+          _ <- f.stats("tenant-a", "4916", since.plusSeconds(660), 70)
+          _ <- events.insertBatch(List.fill(5)(smsRequest(Some("491512"))))
+          preview <- repository.preview(AntifraudValueType.prefix, "4915", a, since)
+        yield assertTrue(preview == ListPreview(matched = Some(30), total = 100))
+      },
+      test("a preview of a longer prefix counts only the requests the rollup counts, of its tenant and window") {
+        val a = Some(TenantId("tenant-a"))
+        // A narrower window than the runner clears, so that the event before it is cleared too.
+        val since = at.minusSeconds(600)
+        for
+          today = at.atZone(ZoneOffset.UTC).toLocalDate
+          _ <- events.maintainPartitions(from = today.minusDays(2), days = 3, keepFrom = today.minusDays(30))
+          _ <- events.insertBatch(
+            List(
+              // counted: a request, whatever came of it
+              smsRequest(Some("491512")),
+              smsRequest(Some("491512"), outcome = AntifraudOutcome.suppressed),
+              smsRequest(Some("333333"), outcome = AntifraudOutcome.throttled),
+              // not requests: the code that follows a challenge is the request, and a verification is the step after
+              smsRequest(Some("491512"), outcome = AntifraudOutcome.challenged),
+              smsRequest(Some("491512"), outcome = AntifraudOutcome.challenge_passed),
+              smsRequest(Some("491512"), outcome = AntifraudOutcome.challenge_failed),
+              smsRequest(Some("491512"), action = AntifraudAction.otp_verify, outcome = AntifraudOutcome.verified),
+              // not what the statistics are made of: another channel, no destination
+              smsRequest(Some("491512"), channel = AntifraudChannel.email),
+              smsRequest(None),
+              // not of the entry's tenant, nor of the window
+              smsRequest(Some("491512"), tenant = Some(TenantId("tenant-b"))),
+              smsRequest(Some("491512"), when = since.minusSeconds(60)),
+            ),
+          )
+          preview <- repository.preview(AntifraudValueType.prefix, "491512", a, since)
+        yield assertTrue(preview == ListPreview(matched = Some(2), total = 3))
       },
       test("an entry added again is audited as an update, with what it was; the first time as a create") {
         for
@@ -431,6 +500,30 @@ object AntifraudListRepositorySpec:
     def clearStats: Task[Unit]
 
   val at: Instant = Instant.parse("2026-10-23T10:00:00Z")
+
+  /** An SMS code request of tenant A a minute before `at`, unless it says otherwise: the kind of event the rollup makes `requests` of. */
+  def smsRequest(
+      destPrefix: Option[String],
+      tenant: Option[TenantId] = Some(TenantId("tenant-a")),
+      when: Instant = at.minusSeconds(60),
+      action: AntifraudAction = AntifraudAction.otp_request,
+      outcome: AntifraudOutcome = AntifraudOutcome.sent,
+      channel: AntifraudChannel = AntifraudChannel.sms,
+  ): AntifraudEvent = AntifraudEvent(
+    id = UUID.randomUUID(),
+    at = when,
+    tenantId = tenant,
+    clientId = ClientId("c"),
+    conversationId = UUID.randomUUID(),
+    action = action,
+    outcome = outcome,
+    channel = channel,
+    subjectHash = "h",
+    destPrefix = destPrefix,
+    userAgent = None,
+    score = None,
+    rules = Nil,
+  )
 
   def entry(
       listType: AntifraudListType = AntifraudListType.deny,

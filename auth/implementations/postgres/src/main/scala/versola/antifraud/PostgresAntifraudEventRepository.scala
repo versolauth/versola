@@ -105,8 +105,7 @@ class PostgresAntifraudEventRepository(
           INSERT INTO af_dest_stats (tenant_id, dest_prefix, minute, requests, sent, suppressed, throttled,
                                      provider_errors, verified, wrong_codes, fake_verifies)
           SELECT COALESCE(tenant_id, ''), left(dest_prefix, $prefixLength), date_trunc('minute', at),
-                 -- A challenge is a step of a request, not a request: the code that follows it is the one counted.
-                 COUNT(*) FILTER (WHERE action = 'otp_request' AND outcome NOT IN ('challenged', 'challenge_passed', 'challenge_failed')),
+                 COUNT(*) FILTER (WHERE $CountedRequest),
                  COUNT(*) FILTER (WHERE outcome = 'sent'),
                  COUNT(*) FILTER (WHERE outcome = 'suppressed'),
                  COUNT(*) FILTER (WHERE outcome IN ('throttled', 'locked')),
@@ -154,6 +153,13 @@ object PostgresAntifraudEventRepository:
     ZLayer.fromFunction(PostgresAntifraudEventRepository(_))
 
   private val RollupLock = 7430002L
+
+  /** What makes a request of `af_dest_stats.requests`. A challenge is a step of a request, not a request: the code that follows it is the
+    * one counted. The preview of a prefix longer than the statistics keep counts the event log with this same condition, so that its
+    * total is what the rollup's would be. */
+  private[antifraud] val CountedRequest = SqlLiteral(
+    "action = 'otp_request' AND outcome NOT IN ('challenged', 'challenge_passed', 'challenge_failed')",
+  )
 
   /** Batches of one prune run: with the 5-minute pace that is far more than the rows a day can hold, and it bounds the run. */
   private val MaxPruneBatches = 200
