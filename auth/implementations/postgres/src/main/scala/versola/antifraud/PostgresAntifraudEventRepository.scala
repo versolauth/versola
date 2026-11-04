@@ -92,7 +92,8 @@ class PostgresAntifraudEventRepository(
                  COUNT(*) FILTER (WHERE outcome = 'suppressed'),
                  COUNT(*) FILTER (WHERE outcome IN ('throttled', 'locked')),
                  COUNT(*) FILTER (WHERE outcome = 'provider_error'),
-                 COUNT(*) FILTER (WHERE outcome = 'verified'),
+                 -- A passkey passed in place of a sent code is that code's conversion.
+                 COUNT(*) FILTER (WHERE outcome IN ('verified', 'passkey_alternative')),
                  COUNT(*) FILTER (WHERE outcome = 'wrong_code'),
                  COUNT(*) FILTER (WHERE outcome = 'fake_verify')
           FROM af_event

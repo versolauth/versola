@@ -1199,8 +1199,10 @@ object ConversationService:
             passkeyRequest = Some(ceremony.request),
             passkeyFailed = false,
           )
-          conversationRepository.overwrite(authId, conversation.copy(step = updatedStep))
-            .as(ceremony.publicKeyOptions),
+          conversationRepository.overwrite(authId, conversation.copy(step = updatedStep)).flatMap:
+            case true => ZIO.succeed(ceremony.publicKeyOptions)
+            // The ceremony was not stored, so a response to it could not be checked: its options are not handed out.
+            case false => ZIO.fail(WebAuthnError.CeremonyFailed("conversation write lost")),
       )
 
     /** A failed assertion offers another try on the ordinary credential card; a passkey-only step has nothing
@@ -1273,8 +1275,10 @@ object ConversationService:
             conversationRepository.overwrite(
               authId,
               conversation.copy(step = otp.copy(passkeyRequest = Some(ceremony.request), passkeyFailed = false)),
-            )
-              .as(Some(ceremony.publicKeyOptions))
+            ).flatMap:
+              case true => ZIO.succeed(Some(ceremony.publicKeyOptions))
+              // The ceremony was not stored, so a response to it could not be checked: its options are not handed out.
+              case false => Observability.setError("write_conflict").as(None)
 
     override def checkPasskeyOnCode(
         authId: AuthId,
@@ -1347,6 +1351,7 @@ object ConversationService:
                   failed
         case Some(credSubject) =>
           val banSubjects = ipSubjectOpt.toList :+ credSubject
+          val resetBoth = resetIp.zipPar(submissionLimiter.reset(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion))
           submissionLimiter.statusForSubjects(conversation.clientId, banSubjects, ChallengeType.PasskeyAssertion).flatMap:
             case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
               accessDenied(authId, conversation)
@@ -1365,7 +1370,9 @@ object ConversationService:
                     },
                     outcome =>
                       Observability.setUserId(outcome.userId.toString) *>
-                        (resetIp.zipPar(submissionLimiter.reset(conversation.clientId, credSubject, ChallengeType.PasskeyAssertion))) *>
+                        // From the code page the counters are cleared only for a passkey that is accepted below: a valid passkey of
+                        // someone else must not wipe the failures of an address or a credential that has been guessing.
+                        ZIO.unless(strictUser)(resetBoth).unit *>
                         userRepository.find(outcome.userId).zipPar(
                           passkeyRepository.findByCredentialIdAndUser(outcome.credentialId, outcome.userId),
                         ).flatMap:
@@ -1383,28 +1390,40 @@ object ConversationService:
                             val identityMismatch =
                               if strictUser then conversation.isRegistering || !conversation.userId.contains(outcome.userId)
                               else conversation.userId.exists(_ != outcome.userId)
-                            if identityMismatch then
+                            if identityMismatch && strictUser then
+                              // The ceremony is discoverable, so a person with two accounts or a shared device can pick the wrong passkey:
+                              // the same code page again, as for any assertion that does not verify (the same for every number), and the
+                              // attempt counted as a failed one. The log says what it was.
+                              Observability.setError("identity_mismatch") *>
+                                (recordIp.zipPar(submissionLimiter.recordLimit(
+                                  conversation.clientId,
+                                  credSubject,
+                                  ChallengeType.PasskeyAssertion,
+                                ))) *>
+                                failed
+                            else if identityMismatch then
                               Observability.setError("identity_mismatch") *>
                                 accessDenied(authId, conversation)
                             else
-                              Clock.instant.flatMap: now =>
-                                val keyType = passkeyOpt.fold(AuthMethodRef.swk)(pk =>
-                                  if pk.deviceType == CredentialDeviceType.SingleDevice then AuthMethodRef.hwk
-                                  else AuthMethodRef.swk,
-                                )
-                                val passkeyMethods = Set(keyType, AuthMethodRef.user, AuthMethodRef.mfa)
-                                val updated = conversation.copy(
-                                  step = passedStep,
-                                  userId = Some(outcome.userId),
-                                  userEmail = user.email,
-                                  userPhone = user.phone,
-                                  userLogin = user.login,
-                                  userClaims = Some(user.claims),
-                                  amr = conversation.amr + (PassedAuthFactor.passkey -> PassedFactorRecord(now, passkeyMethods)),
-                                )
-                                conversationRepository.overwrite(authId, updated).flatMap:
-                                  case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
-                                  case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict),
+                              (if strictUser then resetBoth else ZIO.unit) *>
+                                Clock.instant.flatMap: now =>
+                                  val keyType = passkeyOpt.fold(AuthMethodRef.swk)(pk =>
+                                    if pk.deviceType == CredentialDeviceType.SingleDevice then AuthMethodRef.hwk
+                                    else AuthMethodRef.swk,
+                                  )
+                                  val passkeyMethods = Set(keyType, AuthMethodRef.user, AuthMethodRef.mfa)
+                                  val updated = conversation.copy(
+                                    step = passedStep,
+                                    userId = Some(outcome.userId),
+                                    userEmail = user.email,
+                                    userPhone = user.phone,
+                                    userLogin = user.login,
+                                    userClaims = Some(user.claims),
+                                    amr = conversation.amr + (PassedAuthFactor.passkey -> PassedFactorRecord(now, passkeyMethods)),
+                                  )
+                                  conversationRepository.overwrite(authId, updated).flatMap:
+                                    case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                                    case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict),
                   )
 
     override def offerPasskeyEnroll(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =

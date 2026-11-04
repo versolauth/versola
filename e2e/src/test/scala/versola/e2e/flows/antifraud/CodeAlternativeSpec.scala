@@ -291,7 +291,9 @@ object CodeAlternativeSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client
         onNoFlow.page.step.contains(ConversationStep.AccessDenied),
       )
     },
-    test("the page and the options are the same for a user without a passkey, a user with one and an unknown number, and the passkey fails closed") {
+    test(
+      "the page and the options are the same for a user without a passkey, a user with one and an unknown number, and the passkey fails closed, on the same code page",
+    ) {
       for
         f <- ZIO.service[AntifraudFixture]
         holder <- f.nextPasskeyUser
@@ -304,11 +306,14 @@ object CodeAlternativeSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client
         optionsWithout <- optionsOf(f.a, onWithout)
         optionsWith <- optionsOf(f.a, onWith)
         optionsUnknown <- optionsOf(f.a, onUnknown)
-        // Somebody else's passkey, which is a valid one: refused where the conversation is not that user's, as a stranger's.
+        // Somebody else's passkey, which is a valid one: refused where the conversation is not that user's, with the same code page as a passkey that does not verify.
         strangerOnWithout <- assertWith(f.a, holder, onWithout)
         strangerOnUnknown <- assertWith(f.a, holder, onUnknown)
         afterWithout <- auth.getChallenge(onWithout.cookie)
         afterUnknown <- auth.getChallenge(onUnknown.cookie)
+        // The code that was sent still passes: a wrong passkey costs the person nothing but the attempt.
+        code <- auth.submitOtp(onWithout.cookie, "123456", afterWithout.csrf).assertRedirect(auth, onWithout.cookie)
+        token <- signedIn(f.a, without, onWithout, code)
       yield assertTrue(
         List(onWithout, onWith, onUnknown).forall(_.page.step.contains(ConversationStep.Otp)),
         List(onWithout, onWith, onUnknown).forall(_.page.html.contains(PasskeyOffered)),
@@ -319,8 +324,11 @@ object CodeAlternativeSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client
         !optionsWith.contains(withPasskey.credential.id),
         strangerOnWithout.response.status == Status.SeeOther,
         strangerOnUnknown.response.status == Status.SeeOther,
-        afterWithout.step.contains(ConversationStep.AccessDenied),
-        afterUnknown.step.contains(ConversationStep.AccessDenied),
+        afterWithout.step.contains(ConversationStep.Otp),
+        afterUnknown.step.contains(ConversationStep.Otp),
+        afterWithout.html.contains("\"error\":\"passkey_failed\""),
+        afterUnknown.html.contains("\"error\":\"passkey_failed\""),
+        token.idToken.isDefined,
       )
     },
     test(

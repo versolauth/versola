@@ -216,6 +216,14 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           env.conversationRepository.overwrite.calls.head._2.step == credentialStep.copy(passkeyRequest = Some("req-state")),
         )
       },
+      test("fail, handing out no options, when the write of the ceremony was lost") {
+        val env = Env()
+        for
+          _ <- env.webAuthnService.startAssertion.succeedsWith(PasskeyCeremony("req-state", "{}"))
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          exit <- env.service.startPasskeyAssertion(authId, baseRecord, credentialStep, passkeySettings).exit
+        yield assertTrue(exit.isFailure)
+      },
       test("restrict a passkey-only step to the passkeys of the identified user") {
         val env = Env()
         val step = credentialStep.copy(passkeyOnly = true)
@@ -658,6 +666,15 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           env.conversationRepository.overwrite.calls.map(_._2.step).head == Alt.asking(Alt.sentCode),
         )
       },
+      test("hands out no options for a ceremony that was not stored: a lost write answers None") {
+        val env = Env()
+        for
+          _ <- altTenant(env)
+          _ <- env.webAuthnService.startAssertion.succeedsWith(PasskeyCeremony("req-state", "{}"))
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          result <- env.service.startPasskeyOnCode(authId, Alt.onCode, Alt.sentCode, passkeySettings)
+        yield assertTrue(result.isEmpty)
+      },
       test("answers None, starting nothing and writing nothing, when the page does not offer a passkey: no flow passkey, or one passed already") {
         val env = Env()
         for
@@ -733,38 +750,47 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           result <- env.service.checkPasskeyOnCode(authId, altRecord, altOtp, "not json", None)
         yield assertTrue(result == altPageAgain)
       },
-      test("an assertion that resolves to another user is denied, and no passkey is recorded") {
+      test("an assertion that resolves to another user brings back the same code page, counted as a failed one, and records no passkey") {
+        val env = Env()
+        val stranger = AssertionOutcome(UserId(UUID.randomUUID()), CredentialId.fromString("id"), 1L)
+        for
+          _ <- altPassing(env, None)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.webAuthnService.finishAssertion.succeedsWith(stranger)
+          result <- env.service.checkPasskeyOnCode(authId, altRecord, altOtp, assertionResponse, Some("1.2.3.4"))
+        yield assertTrue(
+          result == altPageAgain,
+          env.submissionLimiter.recordLimit.calls.map(_._2).toSet == Set("ip:1.2.3.4", "cred-123"),
+          // A valid passkey of someone else does not clear the failures of the address or the credential.
+          env.submissionLimiter.reset.calls.isEmpty,
+          env.conversationRepository.overwrite.calls.forall(!_._2.amr.contains(PassedAuthFactor.passkey)),
+          env.antifraud.steps.isEmpty,
+        )
+      },
+      test("a passkey asserted in a conversation with no user, or in a registration, is the same: the code page again, and none is recorded") {
+        val env = Env()
+        for
+          _ <- altPassing(env, None)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          noUser <- env.service.checkPasskeyOnCode(authId, altRecord.copy(userId = None), altOtp, assertionResponse, None)
+          registration <- env.service.checkPasskeyOnCode(authId, registeringRecord, altOtp, assertionResponse, None)
+        yield assertTrue(
+          noUser == altPageAgain,
+          registration == altPageAgain,
+          env.conversationRepository.overwrite.calls.forall(!_._2.amr.contains(PassedAuthFactor.passkey)),
+        )
+      },
+      test("a mismatch that keeps being repeated is stopped by the limits of the assertion, as any failure is") {
         val env = Env()
         val stranger = AssertionOutcome(UserId(UUID.randomUUID()), CredentialId.fromString("id"), 1L)
         for
           _ <- altPassing(env, None)
           _ <- env.webAuthnService.finishAssertion.succeedsWith(stranger)
-          result <- env.service.checkPasskeyOnCode(authId, altRecord, altOtp, assertionResponse, None)
-        yield assertTrue(
-          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
-          env.conversationRepository.overwrite.calls.forall(!_._2.amr.contains(PassedAuthFactor.passkey)),
-          env.antifraud.steps.isEmpty,
-        )
-      },
-      test("a passkey asserted in a conversation with no user is refused as another user's is, and none is recorded") {
-        val env = Env()
-        for
-          _ <- altPassing(env, None)
-          result <- env.service.checkPasskeyOnCode(authId, altRecord.copy(userId = None), altOtp, assertionResponse, None)
-        yield assertTrue(
-          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
-          env.conversationRepository.overwrite.calls.forall(!_._2.amr.contains(PassedAuthFactor.passkey)),
-        )
-      },
-      test("a passkey asserted in a registration is refused, even the one of the user the number later becomes") {
-        val env = Env()
-        for
-          _ <- altPassing(env, None)
-          result <- env.service.checkPasskeyOnCode(authId, registeringRecord, altOtp, assertionResponse, None)
-        yield assertTrue(
-          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
-          env.conversationRepository.overwrite.calls.forall(!_._2.amr.contains(PassedAuthFactor.passkey)),
-        )
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          first <- env.service.checkPasskeyOnCode(authId, altRecord, altOtp, assertionResponse, Some("1.2.3.4"))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Banned)
+          later <- env.service.checkPasskeyOnCode(authId, altRecord, altOtp, assertionResponse, Some("1.2.3.4"))
+        yield assertTrue(first == altPageAgain, later == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
       test("a banned credential or address is denied, as it is on any passkey step") {
         val env = Env()
