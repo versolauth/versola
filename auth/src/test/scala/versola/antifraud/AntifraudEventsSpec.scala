@@ -1075,6 +1075,54 @@ object AntifraudEventsSpec extends UnitSpecBase:
             third.firedRules == List("velocity_ip_1m"),
           )
       },
+      test("a challenged request made again with its answer is judged on the counts it is in, not as one request more, while a new one after it is") {
+        val e = env
+        // Challenge from 30; a request is the 3rd of the minute and so over its limit of 2 (30), and the 4th of the ten
+        // minutes would be over that limit of 3 too (60, Block).
+        val tuned = AntifraudTestSettings.tuning.copy(
+          challengeAt = 30,
+          blockAt = 50,
+          thresholds = AntifraudTestSettings.thresholds.copy(ip = AntifraudTestSettings.limit.copy(perMinute = 2, perTenMinutes = 3, weight = 30)),
+        )
+        val vsettings = AntifraudTestSettings.velocity.copy(enabled = true)
+        val velocity = VelocityCounters(vsettings, AntifraudTestSettings.velocityLimits, tuned.thresholds)
+        val engine = AntifraudTestSettings.engine(
+          AntifraudTestSettings.decision.copy(enabled = true, timeout = 1.second, failureAction = DecisionAction.Allow),
+          List(AntifraudTestSettings.velocityRules(vsettings, tuned)),
+          tuned,
+        )
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+            _ <- e.configService.getPhoneRegions.succeedsWith(Nil)
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(
+              e,
+              small.copy(decision = AntifraudTestSettings.decision.copy(enabled = true), velocity = vsettings),
+              antifraud = engine,
+              velocity = velocity,
+              tuning = tuned,
+            )
+            _ <- Observability.setIp("203.0.113.7")
+            first <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            second <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            challenged <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+            answered <- events.decideOtpRequest(clientId, None, Right(phone), repeated = true)
+            answeredAgain <- events.decideOtpRequest(clientId, None, Right(phone), repeated = true)
+            next <- events.decideOtpRequest(clientId, None, Right(phone), repeated = false)
+          yield assertTrue(
+            first.action == DecisionAction.Allow,
+            second.action == DecisionAction.Allow,
+            challenged.action == DecisionAction.Challenge,
+            challenged.firedRules == List("velocity_ip_1m"),
+            // its own record does not tip it over the other limit
+            answered == challenged,
+            answeredAgain == challenged,
+            // a new request after it is the 4th, and judged as such
+            next.action == DecisionAction.Block,
+            next.firedRules == List("velocity_ip_1m", "velocity_ip_10m"),
+          )
+      },
     ),
     suite("describing a step")(
       test("keeps a keyed hash of the number and its leading digits, never the number") {
