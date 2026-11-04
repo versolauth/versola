@@ -1,8 +1,8 @@
 package versola.oauth.authorize
 
 import versola.audit.AuditSupport.*
-import versola.audit.{AuditSupport, AuthAuditDetails}
-import versola.util.audit.{ActorType, AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
+import versola.audit.{AuditSupport, AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.oauth.authorize.model.{PushedAuthorizationError, PushedAuthorizationErrorResponse}
 import versola.oauth.clientauth.{CertificateRelevance, ClientAuthentication}
 import versola.util.CoreConfig
@@ -20,7 +20,7 @@ object PushedAuthorizationController extends Controller:
   private val DpopHeader = "DPoP"
   private val DpopNonceHeader = "DPoP-Nonce"
 
-  type Env = Tracing & PushedAuthorizationService & ClientAuthentication & CoreConfig & AuditEvents & AuditEvents.Settings
+  type Env = Tracing & PushedAuthorizationService & ClientAuthentication & CoreConfig & AuditEvents & AuthAudit.Tiers
 
   def routes: Routes[Env, Throwable] = Routes(
     parEndpoint,
@@ -70,24 +70,24 @@ object PushedAuthorizationController extends Controller:
       outcome: AuditOutcome,
       reason: Option[String],
       params: Map[String, Chunk[String]],
-  ): ZIO[AuditEvents & AuditEvents.Settings, Throwable, Unit] =
+  ): ZIO[AuditEvents & AuthAudit.Tiers, Throwable, Unit] =
     for
-      settings <- ZIO.service[AuditEvents.Settings]
+      tiers <- ZIO.service[AuthAudit.Tiers]
       auth <- AuditSupport.currentAuth
       _ <- ZIO.serviceWithZIO[AuditEvents](
         _.log(
           AuditDraft(
-            kind = AuditKinds.ParRequest,
+            kind = AuthAuditKinds.ParRequest,
             outcome = outcome,
             reason = reason,
-            actor = Some((ActorType.client, auth.clientId)),
+            actor = Some((AuthActors.client, auth.clientId)),
             details = AuthAuditDetails.ParRequest(
               scope = params.get("scope").flatMap(_.headOption).toList.flatMap(_.split(' ').toList.filter(_.nonEmpty)).sorted,
               requestObject = params.contains("request"),
             ),
           ),
         ),
-      ).when(outcome != AuditOutcome.success || settings.events.parSuccess)
+      ).when(outcome != AuditOutcome.success || tiers.parSuccess)
     yield ()
 
   /** RFC 9126 §2.3: anything but POST is answered with 405 rather than the router's 404. */

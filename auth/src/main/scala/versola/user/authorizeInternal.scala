@@ -1,6 +1,7 @@
 package versola.user
 
-import versola.util.audit.{ActorType, AuditContext}
+import versola.audit.{AuthActors}
+import versola.util.audit.{AuditContext}
 import versola.util.http.Unauthorized
 import versola.util.{CoreConfig, JWT}
 import zio.ZIO
@@ -28,8 +29,8 @@ def authorizeInternal(request: Request): ZIO[CoreConfig, Unauthorized.type, Unit
         // Only a user id is taken as an administrator: anything else is no one's, and the call is the service's.
         admin = request.headers.get(ActorHeader).map(_.trim).filter(value => Try(UUID.fromString(value)).isSuccess)
         _ <- admin match
-          case Some(id) => AuditContext.setActor(ActorType.admin, Some(id))
-          case None => AuditContext.setActor(ActorType.service, Some("central"))
+          case Some(id) => AuditContext.setActor(AuthActors.admin, Some(id))
+          case None => AuditContext.setActor(AuthActors.service, Some("central"))
       yield ()
 
     case _ =>

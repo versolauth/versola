@@ -1,7 +1,7 @@
 package versola.user
 
-import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
-import versola.util.audit.AuditKinds
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.audit.AuthAuditKinds
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.{Email, Phone, UnitSpecBase}
@@ -36,7 +36,7 @@ object UserServiceSpec extends UnitSpecBase:
         drafts <- env.audit.recorded
       yield assertTrue(
         // account.registered: about the new user, by registration, and the address they registered with is not in it
-        drafts.map(_.kind) == List(AuditKinds.AccountRegistered),
+        drafts.map(_.kind) == List(AuthAuditKinds.AccountRegistered),
         drafts.head.userId == Some(user.id.asInstanceOf[java.util.UUID]),
         drafts.head.details == AuthAuditDetails.Account(via = "registration"),
         !drafts.head.details.toJson.toString.contains(email),

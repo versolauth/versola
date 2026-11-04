@@ -1,5 +1,6 @@
 package versola.oauth.conversation
 
+import versola.audit.{AuthAuditKinds}
 import versola.antifraud.{
   AntifraudEvents,
   AntifraudOutcome,
@@ -14,7 +15,7 @@ import versola.antifraud.{
 import versola.auth.model.{CredentialDeviceType, OtpCode, PasskeyName, Password}
 import versola.audit.AuditSupport.*
 import versola.audit.AuthAuditDetails
-import versola.util.audit.{AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.oauth.AuthMetrics
 import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.authorize.model.{Prompt, ResponseTypeEntry}
@@ -275,7 +276,7 @@ object ConversationService:
         hash <- if subject.isEmpty then ZIO.foreach(conversation.credential)(antifraudEvents.subjectHash(_)).orElseSucceed(None) else ZIO.none
         _ <- audit.log(
           AuditDraft(
-            kind = AuditKinds.LoginStep,
+            kind = AuthAuditKinds.LoginStep,
             outcome = outcome,
             reason = reason,
             userId = subject,
@@ -1163,7 +1164,7 @@ object ConversationService:
             _ <- sessionRepository.create(sessionIdMac, session, sessionTtl, sessionIdleTtl, priorSession)
             _ <- audit.log(
               AuditDraft(
-                kind = AuditKinds.LoginCompleted,
+                kind = AuthAuditKinds.LoginCompleted,
                 outcome = AuditOutcome.success,
                 userId = Some(userId),
                 details = AuthAuditDetails.LoginCompleted(
@@ -1399,7 +1400,7 @@ object ConversationService:
             record =>
               audit.log(
                 AuditDraft(
-                  kind = AuditKinds.AccountPasskeyEnrolled,
+                  kind = AuthAuditKinds.AccountPasskeyEnrolled,
                   outcome = AuditOutcome.success,
                   userId = Some(userId),
                   details = AuthAuditDetails.Passkey(credentialPrefix = Some(record.id.toString.take(9)), deviceType = Some(record.deviceType.toString)),
@@ -1502,7 +1503,7 @@ object ConversationService:
                 _ =>
                   audit.log(
                     AuditDraft(
-                      kind = AuditKinds.AccountPasswordSet,
+                      kind = AuthAuditKinds.AccountPasswordSet,
                       outcome = AuditOutcome.success,
                       userId = Some(userId),
                       details = AuthAuditDetails.Account(via = "login_flow"),

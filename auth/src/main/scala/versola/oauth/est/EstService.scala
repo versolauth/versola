@@ -1,8 +1,9 @@
 package versola.oauth.est
 
+import versola.audit.{AuthActors, AuthAuditKinds}
 import versola.audit.AuditSupport.*
 import versola.audit.AuthAuditDetails
-import versola.util.audit.{ActorType, AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.{CertificateSubject, CoreConfig}
 import zio.*
 import zio.metrics.{Metric, MetricLabel}
@@ -81,7 +82,7 @@ object EstService:
           csr <- request(body)
           issued <- central.enroll(credentials.token, credentials.clientId, csr)
           result <- respond(issued)
-          _ <- auditIssued("enroll", AuditKinds.CertEnrolled, credentials.clientId, issued)
+          _ <- auditIssued("enroll", AuthAuditKinds.CertEnrolled, credentials.clientId, issued)
         yield result
 
     override def reenroll(presented: X509Certificate, body: String): IO[EstError | Throwable, Issued] =
@@ -95,7 +96,7 @@ object EstService:
           csr <- request(body)
           issued <- central.renew(CertificateSubject.pem("CERTIFICATE", presented.getEncoded), csr)
           result <- respond(issued)
-          _ <- auditIssued("reenroll", AuditKinds.CertRenewed, CertificateSubject.commonNameOf(presented.getSubjectX500Principal), issued)
+          _ <- auditIssued("reenroll", AuthAuditKinds.CertRenewed, CertificateSubject.commonNameOf(presented.getSubjectX500Principal), issued)
         yield result
 
     /** A PKCS#10 asking for a key worth issuing for, before central is asked: what an unauthenticated caller sends costs
@@ -116,7 +117,7 @@ object EstService:
         AuditDraft(
           kind = kind,
           outcome = AuditOutcome.success,
-          actor = Some((ActorType.client, clientId)),
+          actor = Some((AuthActors.client, clientId)),
           details = AuthAuditDetails.Cert(
             operation = operation,
             clientId = clientId,
@@ -138,10 +139,10 @@ object EstService:
       ZIO.foreachDiscard(classified): (outcome, reason) =>
         audit.log(
           AuditDraft(
-            kind = if operation == "enroll" then AuditKinds.CertEnrolled else AuditKinds.CertRenewed,
+            kind = if operation == "enroll" then AuthAuditKinds.CertEnrolled else AuthAuditKinds.CertRenewed,
             outcome = outcome,
             reason = Some(reason),
-            actor = Some((ActorType.client, clientId)),
+            actor = Some((AuthActors.client, clientId)),
             details = AuthAuditDetails.Cert(operation = operation, clientId = clientId),
           ),
         )

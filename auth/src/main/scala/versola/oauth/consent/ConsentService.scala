@@ -1,8 +1,9 @@
 package versola.oauth.consent
 
+import versola.audit.{AuthAuditKinds}
 import versola.audit.AuditSupport.*
 import versola.audit.AuthAuditDetails
-import versola.util.audit.{AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.oauth.authorize.model.Prompt
 import versola.oauth.client.model.{ConsentFlow, OAuthClientRecord, ScopeToken}
 import versola.oauth.consent.model.ConsentRecord
@@ -121,7 +122,7 @@ object ConsentService:
           ),
         ) *> audit.log(
           AuditDraft(
-            kind = AuditKinds.ConsentGranted,
+            kind = AuthAuditKinds.ConsentGranted,
             outcome = AuditOutcome.success,
             userId = Some(userId),
             details = AuthAuditDetails.Consent(scope = scope.toList.map(_.toString).sorted, expiresAt = expiresAt.map(_.toString)),
@@ -131,7 +132,7 @@ object ConsentService:
     override def revoke(userId: UserId, client: OAuthClientRecord): Task[Unit] =
       consentRepository.delete(userId, client.id) *> audit.log(
         AuditDraft(
-          kind = AuditKinds.ConsentRevoked,
+          kind = AuthAuditKinds.ConsentRevoked,
           outcome = AuditOutcome.success,
           userId = Some(userId),
           details = AuthAuditDetails.Consent(scope = Nil),

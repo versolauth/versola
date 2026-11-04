@@ -1,7 +1,7 @@
 package versola.oauth.conversation
 
-import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
-import versola.util.audit.{AuditKinds, AuditOutcome}
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.util.audit.{AuditOutcome}
 import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord}
 import versola.oauth.authorize.AcrResolutionService
@@ -863,7 +863,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.service.finishPasskeyAssertion(authId, recordWithRequest, assertionResponse, None)
           drafts <- env.audit.recorded
         yield assertTrue(
-          drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuditKinds.LoginStep, AuditOutcome.success, None)),
+          drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuthAuditKinds.LoginStep, AuditOutcome.success, None)),
           drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
           drafts.head.details == AuthAuditDetails.LoginStep(step = "passkey", conversationId = authId.toString, kind = "login"),
         )
@@ -928,7 +928,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", PasskeyName("my-passkey"))
           drafts <- env.audit.recorded
         yield assertTrue(
-          drafts.map(_.kind) == List(AuditKinds.AccountPasskeyEnrolled),
+          drafts.map(_.kind) == List(AuthAuditKinds.AccountPasskeyEnrolled),
           drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
           drafts.head.details == AuthAuditDetails.Passkey(
             credentialPrefix = Some(enrolled.id.toString.take(9)),

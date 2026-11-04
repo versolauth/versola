@@ -1,8 +1,8 @@
 package versola.oauth.token
 
 import versola.util.Base64
-import versola.audit.{AuthAuditDetails, CapturingAuditEvents, ClientAuthFailures}
-import versola.util.audit.{ActorType, AuditEvents, AuditKinds, AuditOutcome, AuditUnavailableException}
+import versola.audit.{AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures}
+import versola.util.audit.{AuditEvents, AuditOutcome, AuditUnavailableException}
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
@@ -299,7 +299,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val securityService = stub[SecurityService]
     val propertyGenerator = stub[AuthPropertyGenerator]
     val userRepo = stub[UserRepository]
-    def serviceWith(settings: AuditEvents.Settings) = OAuthTokenService.Impl(
+    def serviceWith(tiers: AuthAudit.Tiers) = OAuthTokenService.Impl(
       authCodeRepo,
       clientService,
       clientAuthentication,
@@ -311,9 +311,9 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
       schemaValidator,
       TestEnvConfig.coreConfig,
       audit,
-      settings,
+      tiers,
     )
-    val service = serviceWith(CapturingAuditEvents.settings)
+    val service = serviceWith(CapturingAuditEvents.tiers)
 
   def spec = suite("OAuthTokenService")(
     suite("exchangeAuthorizationCode")(
@@ -2314,9 +2314,9 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           drafts <- env.audit.recorded
           details = drafts.headOption.map(_.details.toJson)
         yield assertTrue(
-          drafts.map(_.kind) == List(AuditKinds.TokenIssued),
+          drafts.map(_.kind) == List(AuthAuditKinds.TokenIssued),
           drafts.head.outcome == AuditOutcome.success,
-          drafts.head.actor == Some((ActorType.client, Some(clientId1: String))),
+          drafts.head.actor == Some((AuthActors.client, Some(clientId1: String))),
           drafts.head.userId == Some(userId1),
           drafts.head.details == AuthAuditDetails.TokenIssued(
             grant = "authorization_code",
@@ -2351,7 +2351,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             Some(jkt1),
             None,
           )
-          drafts <- env.audit.of(AuditKinds.TokenIssued)
+          drafts <- env.audit.of(AuthAuditKinds.TokenIssued)
         yield assertTrue(drafts.map(_.details).collect { case d: AuthAuditDetails.TokenIssued => d.binding } == List("dpop"))
       },
       test("a refresh records token.issued with the prefix of the token it consumed, and the prefix of the one it issued") {
@@ -2396,7 +2396,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           drafts <- env.audit.recorded
           issued = drafts.map(_.details).collect { case d: AuthAuditDetails.TokenIssued => d }
         yield assertTrue(
-          drafts.map(_.kind) == List(AuditKinds.TokenIssued),
+          drafts.map(_.kind) == List(AuthAuditKinds.TokenIssued),
           issued.map(_.grant) == List("refresh_token"),
           issued.flatMap(_.previousRefreshPrefix) == List(Base64.urlEncode(refreshToken1).take(9)),
           issued.flatMap(_.refreshPrefix) == List(Base64.urlEncode(newRefreshToken).take(9)),
@@ -2404,7 +2404,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
       test("a refresh is not recorded when the deployment left audit.events.token-refresh off, and a code exchange still is") {
         val env = new Env
-        val off = env.serviceWith(CapturingAuditEvents.settings.copy(events = CapturingAuditEvents.settings.events.copy(tokenRefresh = false)))
+        val off = env.serviceWith(CapturingAuditEvents.tiers.copy(tokenRefresh = false))
         for
           now <- Clock.instant
           tokenRecord = RefreshTokenRecord(
@@ -2462,7 +2462,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           drafts <- env.audit.recorded
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidGrant.CodeReplayed),
-          drafts.map(_.kind) == List(AuditKinds.TokenReuseDetected),
+          drafts.map(_.kind) == List(AuthAuditKinds.TokenReuseDetected),
           drafts.head.outcome == AuditOutcome.denied,
           drafts.head.userId == Some(authorizationCodeRecord.userId),
           drafts.head.details == AuthAuditDetails.TokenReuseDetected("authorization_code", None, familyId1.toString),
@@ -2486,7 +2486,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           drafts <- env.audit.recorded
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
-          drafts.map(_.kind) == List(AuditKinds.TokenReuseDetected),
+          drafts.map(_.kind) == List(AuthAuditKinds.TokenReuseDetected),
           drafts.head.userId == Some(userId1),
           drafts.head.details == AuthAuditDetails.TokenReuseDetected("refresh_token", Some(Base64.urlEncode(refreshToken1).take(9)), familyId1.toString),
         )
@@ -2522,9 +2522,9 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           drafts <- env.audit.recorded
           issued = drafts.map(_.details).collect { case d: AuthAuditDetails.TokenIssued => d }
         yield assertTrue(
-          drafts.map(_.kind) == List(AuditKinds.TokenIssued),
+          drafts.map(_.kind) == List(AuthAuditKinds.TokenIssued),
           drafts.head.userId.isEmpty,
-          drafts.head.actor == Some((ActorType.client, Some(clientId1: String))),
+          drafts.head.actor == Some((AuthActors.client, Some(clientId1: String))),
           issued.map(_.grant) == List("client_credentials"),
           issued.flatMap(_.refreshPrefix).isEmpty,
         )

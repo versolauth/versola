@@ -1,7 +1,8 @@
 package versola.user
 
+import versola.audit.{AuthActors}
 import versola.auth.TestEnvConfig
-import versola.util.audit.{ActorType, AuditContext}
+import versola.util.audit.{AuditContext}
 import versola.util.{CoreConfig, JWT}
 import zio.*
 import zio.json.*
@@ -77,7 +78,7 @@ object InternalAuthSpec extends ZIOSpecDefault:
             .addHeader(zio.http.Header.Authorization.Bearer(token))
             .addHeader(ActorHeader, admin)
           context <- AuditContext.reset(AuditContext.State.empty)(authorizeInternal(request) *> AuditContext.current)
-        yield assertTrue(context.actor == Some((ActorType.admin, Some(admin))))
+        yield assertTrue(context.actor == Some((AuthActors.admin, Some(admin))))
       }.provide(configLayer),
       test("a call without the header, or with one that is no user id, is the central service's") {
         for
@@ -88,8 +89,8 @@ object InternalAuthSpec extends ZIOSpecDefault:
             authorizeInternal(authenticated.addHeader(ActorHeader, "root; drop table")) *> AuditContext.current,
           )
         yield assertTrue(
-          without.actor == Some((ActorType.service, Some("central"))),
-          garbage.actor == Some((ActorType.service, Some("central"))),
+          without.actor == Some((AuthActors.service, Some("central"))),
+          garbage.actor == Some((AuthActors.service, Some("central"))),
         )
       }.provide(configLayer),
       test("a header on a call whose token does not verify names no actor") {

@@ -1,7 +1,7 @@
 package versola.oauth.account
 
-import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
-import versola.util.audit.{AuditDraft, AuditEvents, AuditKinds}
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.util.audit.{AuditDraft, AuditEvents}
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.auth.model.{CredentialId, PasskeyName, PasskeyRecord}
@@ -315,7 +315,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         // session.ended by the user themself: the subject is the caller, and the cause says it was their own doing
         verifyAudit = drafts =>
           assertTrue(
-            drafts.map(_.kind) == List(AuditKinds.SessionEnded),
+            drafts.map(_.kind) == List(AuthAuditKinds.SessionEnded),
             drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
             drafts.head.details == AuthAuditDetails.SessionEnded(cause = "user_revoked", clients = 0),
           ),
@@ -408,7 +408,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           )),
         verifyAudit = drafts =>
           assertTrue(
-            drafts.map(_.kind) == List(AuditKinds.AccountPasskeyRemoved),
+            drafts.map(_.kind) == List(AuthAuditKinds.AccountPasskeyRemoved),
             drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
             // a prefix of the credential id, enough to tell passkeys apart and not the id
             !drafts.head.details.toJson.toString.contains(Base64.urlEncode(passkeyId)),
@@ -433,7 +433,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           ),
         verifyAudit = drafts =>
           assertTrue(
-            drafts.map(_.kind) == List(AuditKinds.AccountPasskeyEnrolled),
+            drafts.map(_.kind) == List(AuthAuditKinds.AccountPasskeyEnrolled),
             drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
             drafts.head.details == AuthAuditDetails.Passkey(
               credentialPrefix = Some(passkey.id.toString.take(9)),

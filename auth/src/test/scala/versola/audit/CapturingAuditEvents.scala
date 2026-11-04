@@ -35,10 +35,8 @@ object CapturingAuditEvents:
   val layer: ULayer[CapturingAuditEvents & AuditEvents] =
     ZLayer.fromZIO(make).flatMap(env => ZLayer.succeedEnvironment(ZEnvironment[CapturingAuditEvents, AuditEvents](env.get, env.get)))
 
-  /** The settings every kind enabled, as the generated config has them. */
-  val settings: AuditEvents.Settings = AuditEvents.Settings(
-    retention = 7.days,
-    overflow = AuditEvents.Overflow.block,
-    blockTimeout = 2.seconds,
-    events = AuditEvents.EventTiers(tokenRefresh = true, authorizeSuccess = true, parSuccess = true, adminUserViewed = false),
-  )
+  /** The settings the generated config has. */
+  val settings: AuditEvents.Settings = AuditEvents.Settings(retention = 7.days, overflow = AuditEvents.Overflow.block, blockTimeout = 2.seconds)
+
+  /** Every kind a deployment may leave out, enabled, as the generated config has them. */
+  val tiers: AuthAudit.Tiers = AuthAudit.Tiers.all

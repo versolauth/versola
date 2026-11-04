@@ -1,8 +1,9 @@
 package versola.oauth.conversation
 
+import versola.audit.{AuthAuditKinds}
 import versola.audit.AuditSupport.*
 import versola.audit.AuthAuditDetails
-import versola.util.audit.{AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{
@@ -210,7 +211,7 @@ object ConversationRouter:
           // The user's own answer, not a failure of the request: the grant they were asked for is the subject.
           audit.log(
             AuditDraft(
-              kind = AuditKinds.ConsentDenied,
+              kind = AuthAuditKinds.ConsentDenied,
               outcome = AuditOutcome.denied,
               userId = conversation.userId,
               details = AuthAuditDetails.Consent(scope = consentStep.requestedScope.toList.map(_.toString).sorted),

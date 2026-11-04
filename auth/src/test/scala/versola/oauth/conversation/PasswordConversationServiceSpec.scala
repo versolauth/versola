@@ -1,7 +1,7 @@
 package versola.oauth.conversation
 
-import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
-import versola.util.audit.{AuditKinds, AuditOutcome, AuditUnavailableException}
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.util.audit.{AuditOutcome, AuditUnavailableException}
 import versola.auth.TestEnvConfig
 import versola.auth.model.Password
 import versola.oauth.authorize.AcrResolutionService
@@ -725,7 +725,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           _ <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
           drafts <- env.audit.recorded
         yield assertTrue(
-          drafts.map(_.kind) == List(AuditKinds.LoginStep),
+          drafts.map(_.kind) == List(AuthAuditKinds.LoginStep),
           drafts.head.outcome == AuditOutcome.success,
           drafts.head.userId == passwordRecord.userId,
           drafts.head.details == step(),
@@ -742,7 +742,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
           drafts <- env.audit.recorded
-        yield assertTrue(drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuditKinds.LoginStep, AuditOutcome.failure, Some("invalid_password"))))
+        yield assertTrue(drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuthAuditKinds.LoginStep, AuditOutcome.failure, Some("invalid_password"))))
       },
       test("a retired or expired temporary password is a failure with its own reason") {
         val env = Env()
@@ -808,7 +808,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           _ <- env.service.setNewPassword(passwordRecord.copy(needsPasswordChange = true), setPasswordStep, password, authId)
           reused <- env.audit.recorded
         yield assertTrue(
-          accepted.map(d => (d.kind, d.details)) == List((AuditKinds.AccountPasswordSet, AuthAuditDetails.Account(via = "login_flow"))),
+          accepted.map(d => (d.kind, d.details)) == List((AuthAuditKinds.AccountPasswordSet, AuthAuditDetails.Account(via = "login_flow"))),
           reused.isEmpty,
         )
       },

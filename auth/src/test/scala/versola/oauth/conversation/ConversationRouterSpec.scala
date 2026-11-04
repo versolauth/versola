@@ -1,7 +1,7 @@
 package versola.oauth.conversation
 
-import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
-import versola.util.audit.{AuditKinds, AuditOutcome}
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.util.audit.{AuditOutcome}
 import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.client.OAuthConfigurationService
@@ -1146,7 +1146,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           result == accessDeniedResult,
           allowTimes == 0,
           // the person said no: consent.denied, with what they were asked for
-          drafts.map(_.kind) == List(AuditKinds.ConsentDenied),
+          drafts.map(_.kind) == List(AuthAuditKinds.ConsentDenied),
           drafts.head.outcome == AuditOutcome.denied,
           drafts.head.details == AuthAuditDetails.Consent(scope = List("openid")),
         )

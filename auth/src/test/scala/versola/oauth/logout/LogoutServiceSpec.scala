@@ -1,7 +1,7 @@
 package versola.oauth.logout
 
-import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
-import versola.util.audit.{AuditKinds, AuditOutcome, AuditUnavailableException}
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.util.audit.{AuditOutcome, AuditUnavailableException}
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ApplicationType
@@ -425,7 +425,7 @@ object LogoutServiceSpec extends UnitSpecBase:
           _ <- env.service.logout(Right(rawSessionId), None, None)
           drafts <- env.audit.recorded
         yield assertTrue(
-          drafts.map(_.kind) == List(AuditKinds.SessionEnded),
+          drafts.map(_.kind) == List(AuthAuditKinds.SessionEnded),
           drafts.head.outcome == AuditOutcome.success,
           drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
           drafts.head.details == AuthAuditDetails.SessionEnded(cause = "rp_logout", clients = 1),

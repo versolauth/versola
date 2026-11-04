@@ -71,8 +71,8 @@ class PostgresAuditEventRepository(
       INSERT INTO audit_event (id, at, tenant_id, source, node_id, kind, outcome, reason, severity, actor_type, actor_id,
                                user_id, client_id, session_id, ip, user_agent, trace_id, target_type, target_id, details)
       VALUES (
-        ${event.id}, ${event.at}, ${event.tenantId}, ${event.source.toString}, ${event.nodeId}, ${event.kind.value},
-        ${event.outcome.toString}, ${event.reason}, ${event.severity.toString}, ${event.actorType.toString}, ${event.actorId},
+        ${event.id}, ${event.at}, ${event.tenantId}, ${event.source.value}, ${event.nodeId}, ${event.kind.value},
+        ${event.outcome.toString}, ${event.reason}, ${event.severity.toString}, ${event.actorType.value}, ${event.actorId},
         ${event.userId}, ${event.clientId}, ${event.sessionId}, CAST(${event.ip} AS inet), ${event.userAgent}, ${event.traceId},
         ${event.targetType}, ${event.targetId}, CAST(${event.details.toJson} AS jsonb)
       )
@@ -123,13 +123,13 @@ class PostgresAuditEventRepository(
         id = id,
         at = at,
         tenantId = tenantId,
-        source = AuditSource.valueOf(source),
+        source = AuditSource(source),
         nodeId = nodeId,
         kind = AuditKind(kind),
         outcome = AuditOutcome.valueOf(outcome),
         reason = reason,
         severity = AuditSeverity.valueOf(severity),
-        actorType = ActorType.valueOf(actorType),
+        actorType = ActorType(actorType),
         actorId = actorId,
         userId = userId,
         clientId = clientId,

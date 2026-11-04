@@ -4,8 +4,8 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.audit.AuditSupport.*
-import versola.audit.{AuditSupport, AuthAuditDetails}
-import versola.util.audit.{ActorType, AuditDraft, AuditEvents, AuditKinds, AuditOutcome, AuditUnavailableException}
+import versola.audit.{AuditSupport, AuthActors, AuthAuditDetails, AuthAuditKinds}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome, AuditUnavailableException}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ClientCredentials, ClientId, ClientIdWithSecret, ResourceUri, ScopeToken}
 import versola.oauth.clientauth.{AuthenticatedEndpoint, CertificateRelevance, ClientAuthentication}
@@ -140,10 +140,10 @@ object TokenEndpointController extends Controller:
           _ <- ZIO.serviceWithZIO[AuditEvents](
             _.log(
               AuditDraft(
-                kind = AuditKinds.TokenRefused,
+                kind = AuthAuditKinds.TokenRefused,
                 outcome = AuditOutcome.failure,
                 reason = Some(error.error),
-                actor = Some((ActorType.client, auth.clientId)),
+                actor = Some((AuthActors.client, auth.clientId)),
                 details = AuthAuditDetails.TokenRefused(grant = grant, clientAuth = client.map(_.authMethod.toString), detail = error.logDescription),
               ),
             ),

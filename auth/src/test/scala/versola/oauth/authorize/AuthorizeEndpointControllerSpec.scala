@@ -1,8 +1,8 @@
 package versola.oauth.authorize
 
-import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
+import versola.audit.{AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.oauth.authorize.model.Prompt
-import versola.util.audit.{ActorType, AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseMode, ResponseTypeEntry}
@@ -65,7 +65,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
       setup: Services => UIO[Unit] = _ => ZIO.unit,
       verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
       verifyAudit: List[AuditDraft] => TestResult = _ => assertCompletes,
-      settings: AuditEvents.Settings = CapturingAuditEvents.settings,
+      tiers: AuthAudit.Tiers = CapturingAuditEvents.tiers,
       audit: CapturingAuditEvents = CapturingAuditEvents.shared(),
   ) =
     test(description) {
@@ -87,7 +87,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
                   ZEnvironment[AuthorizationResponseService](responseService) ++
                   ZEnvironment(config) ++
                   ZEnvironment[AuditEvents](audit) ++
-                  ZEnvironment(settings) ++
+                  ZEnvironment(tiers) ++
                   tracing,
               ),
           ),
@@ -217,8 +217,8 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
           yield (),
         verifyAudit = drafts =>
           assertTrue(
-            drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuditKinds.AuthorizeRequest, AuditOutcome.success, None)),
-            drafts.head.actor == Some((ActorType.client, Some(clientId: String))),
+            drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuthAuditKinds.AuthorizeRequest, AuditOutcome.success, None)),
+            drafts.head.actor == Some((AuthActors.client, Some(clientId: String))),
             drafts.head.details == AuthAuditDetails.AuthorizeRequest(
               responseType = List("Code"),
               scope = List("openid", "profile"),
@@ -245,7 +245,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
         description = "a success is left out when the deployment turned audit.events.authorize-success off",
         request = Request.get(URL.root / "authorize"),
         expectedStatus = Status.SeeOther,
-        settings = CapturingAuditEvents.settings.copy(events = CapturingAuditEvents.settings.events.copy(authorizeSuccess = false)),
+        tiers = CapturingAuditEvents.tiers.copy(authorizeSuccess = false),
         setup = services =>
           for
             _ <- services.parser.parse.succeedsWith(baseRequest)
@@ -258,10 +258,10 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
         description = "a request that does not parse records authorize.request failure invalid_request, even with successes left out",
         request = Request.get(URL.root / "authorize"),
         expectedStatus = Status.BadRequest,
-        settings = CapturingAuditEvents.settings.copy(events = CapturingAuditEvents.settings.events.copy(authorizeSuccess = false)),
+        tiers = CapturingAuditEvents.tiers.copy(authorizeSuccess = false),
         setup = _.parser.parse.failsWith(Error.BadRequest),
         verifyAudit = drafts =>
-          assertTrue(drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuditKinds.AuthorizeRequest, AuditOutcome.failure, Some("invalid_request")))),
+          assertTrue(drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuthAuditKinds.AuthorizeRequest, AuditOutcome.failure, Some("invalid_request")))),
       ),
       controllerTestCase(
         description = "a request object that fails verification records invalid_request_object",
@@ -285,7 +285,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
         verifyAudit = drafts =>
           assertTrue(
             drafts.map(d => (d.outcome, d.reason)) == List((AuditOutcome.failure, Some("invalid_request"))),
-            drafts.head.actor == Some((ActorType.client, Some(clientId: String))),
+            drafts.head.actor == Some((AuthActors.client, Some(clientId: String))),
           ),
       ),
       controllerTestCase(

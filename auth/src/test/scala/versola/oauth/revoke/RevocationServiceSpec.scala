@@ -1,8 +1,8 @@
 package versola.oauth.revoke
 
-import versola.audit.{AuthAuditDetails, CapturingAuditEvents, ClientAuthFailures}
+import versola.audit.{AuthActors, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures}
 import versola.util.Base64
-import versola.util.audit.{ActorType, AuditKinds, AuditOutcome}
+import versola.util.audit.{AuditOutcome}
 import versola.util.audit.AuditEvents
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
@@ -172,9 +172,9 @@ object RevocationServiceSpec extends UnitSpecBase:
           env.accessTokenRevocationService.revokeFamily.calls ==
             List((testClient, familyId1, userId1.toString, now.plus(testClient.accessTokenTtl))),
           // RFC 7009: the client revoked it, and the log keeps who it was about and the prefix of the token, not the token.
-          drafts.map(_.kind) == List(AuditKinds.TokenRevoked),
+          drafts.map(_.kind) == List(AuthAuditKinds.TokenRevoked),
           drafts.head.outcome == AuditOutcome.success,
-          drafts.head.actor == Some((ActorType.client, Some(clientId1: String))),
+          drafts.head.actor == Some((AuthActors.client, Some(clientId1: String))),
           drafts.head.userId == Some(userId1),
           drafts.head.details == AuthAuditDetails.TokenRevoked("refresh_token", None, Some(Base64.urlEncode(refreshToken1).take(9)), "rfc7009"),
         )).provide(env.layer)
@@ -242,7 +242,7 @@ object RevocationServiceSpec extends UnitSpecBase:
           // The token was parsed here, so its own `exp` is used rather than an upper bound.
           env.accessTokenRevocationService.revoke.calls ==
             List((testClient, NonEmptyChunk(accessToken1), userId1.toString, payload.expiresAt)),
-          drafts.map(_.kind) == List(AuditKinds.TokenRevoked),
+          drafts.map(_.kind) == List(AuthAuditKinds.TokenRevoked),
           drafts.head.userId == Some(userId1.asInstanceOf[java.util.UUID]),
           drafts.head.details == AuthAuditDetails.TokenRevoked("access_token", Some(Base64.urlEncode(accessToken1)), None, "rfc7009"),
         )).provide(env.layer)

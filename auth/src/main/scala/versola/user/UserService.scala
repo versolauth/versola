@@ -1,9 +1,10 @@
 package versola.user
 
+import versola.audit.{AuthAuditKinds}
 import versola.audit.AuditSupport.*
 import versola.audit.AuthAuditDetails
 import versola.oauth.client.model.TenantId
-import versola.util.audit.{AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.role.model.RoleId
 import versola.user.model.UserRecord
 import versola.util.{Email, Phone}
@@ -46,7 +47,7 @@ object UserService:
         user <- userRepository.register(userId, credential, tenantId, roleIds)
         _ <- audit.log(
           AuditDraft(
-            kind = AuditKinds.AccountRegistered,
+            kind = AuthAuditKinds.AccountRegistered,
             outcome = AuditOutcome.success,
             userId = Some(user.id),
             details = AuthAuditDetails.Account(via = "registration"),

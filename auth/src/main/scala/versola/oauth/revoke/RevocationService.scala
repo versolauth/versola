@@ -1,8 +1,9 @@
 package versola.oauth.revoke
 
+import versola.audit.{AuthActors, AuthAuditKinds}
 import versola.audit.AuditSupport.*
 import versola.audit.AuthAuditDetails
-import versola.util.audit.{ActorType, AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.oauth.client.model.{ClientCredentials, OAuthClientRecord}
 import versola.oauth.clientauth.{AuthenticatedEndpoint, ClientAuthentication}
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
@@ -57,9 +58,9 @@ object RevocationService:
     private def audited(client: OAuthClientRecord, userId: Option[UUID], details: AuthAuditDetails.TokenRevoked): IO[Throwable, Unit] =
       audit.log(
         AuditDraft(
-          kind = AuditKinds.TokenRevoked,
+          kind = AuthAuditKinds.TokenRevoked,
           outcome = AuditOutcome.success,
-          actor = Some((ActorType.client, Some(client.id))),
+          actor = Some((AuthActors.client, Some(client.id))),
           userId = userId,
           details = details,
         ),

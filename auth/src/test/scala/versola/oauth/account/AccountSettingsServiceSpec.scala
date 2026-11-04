@@ -1,7 +1,7 @@
 package versola.oauth.account
 
-import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
-import versola.util.audit.{AuditDraft, AuditKinds, AuditOutcome}
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.util.audit.{AuditDraft, AuditOutcome}
 import org.scalamock.stubs.Stub
 import versola.auth.model.Password
 import versola.oauth.challenge.password.PasswordService
@@ -67,7 +67,7 @@ object AccountSettingsServiceSpec extends UnitSpecBase:
         // account.password_changed: the user is the subject (and, with no actor given, the actor), and neither password is in it
         verifyAudit = drafts =>
           assertTrue(
-            drafts.map(_.kind) == List(AuditKinds.AccountPasswordChanged),
+            drafts.map(_.kind) == List(AuthAuditKinds.AccountPasswordChanged),
             drafts.head.outcome == AuditOutcome.success,
             drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
             drafts.head.details == AuthAuditDetails.Account(via = "account_settings"),
@@ -99,7 +99,7 @@ object AccountSettingsServiceSpec extends UnitSpecBase:
             // a wrong current password on a change is what a person who has taken over a session would produce: it is on record
             verifyAudit = drafts =>
               assertTrue(
-                drafts.map(_.kind) == List(AuditKinds.AccountPasswordChanged),
+                drafts.map(_.kind) == List(AuthAuditKinds.AccountPasswordChanged),
                 drafts.head.outcome == AuditOutcome.failure,
                 drafts.head.reason == Some("current_password_incorrect"),
               ),

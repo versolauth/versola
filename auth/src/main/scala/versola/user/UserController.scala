@@ -1,8 +1,9 @@
 package versola.user
 
+import versola.audit.{AuthAuditKinds}
 import versola.audit.AuditSupport.*
 import versola.audit.AuthAuditDetails
-import versola.util.audit.{AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.auth.model.CredentialId
 import versola.auth.model.Password
 import versola.oauth.challenge.passkey.PasskeyRepository
@@ -99,7 +100,7 @@ object UserController extends Controller:
         repo <- ZIO.service[UserRepository]
         body <- request.body.asJsonFromCodec[PatchUserClaimsPayload]
         _ <- repo.patchClaims(body.id, body.claims)
-        _ <- audited(AuditKinds.AccountClaimsUpdated, body.id, AuthAuditDetails.ClaimsUpdated(body.claims.fields.map(_._1).toList.sorted))
+        _ <- audited(AuthAuditKinds.AccountClaimsUpdated, body.id, AuthAuditDetails.ClaimsUpdated(body.claims.fields.map(_._1).toList.sorted))
       yield Response.status(Status.NoContent)
     }
 
@@ -240,7 +241,7 @@ object UserController extends Controller:
         _ <- Observability.setClientId(clientId)
         revoked <- sessionService.revokeRefreshTokensByUserAndClient(userId, clientId)
         _ <- audited(
-          AuditKinds.TokenRevoked,
+          AuthAuditKinds.TokenRevoked,
           userId,
           AuthAuditDetails.TokenRevoked(tokenType = "refresh_token", jti = None, refreshPrefix = None, cause = "admin_revoked", count = Some(revoked)),
         )
@@ -279,7 +280,7 @@ object UserController extends Controller:
         tenantId = body.tenantId
         subjects = (List(body.userId.toString) ++ body.email.map(_.toString) ++ body.phone.map(_.toString)).distinct
         _ <- ZIO.foreachDiscard(subjects)(throttleRepo.deleteAllForSubject(tenantId, _))
-        _ <- audited(AuditKinds.AccountLimitsReset, body.userId, AuthAuditDetails.Account(via = "admin"))
+        _ <- audited(AuthAuditKinds.AccountLimitsReset, body.userId, AuthAuditDetails.Account(via = "admin"))
       yield Response.status(Status.NoContent)
     }
 
@@ -313,7 +314,7 @@ object UserController extends Controller:
         userId <- request.queryZIO[UserId]("id")
         credentialId <- request.queryZIO[CredentialId]("credentialId")
         _ <- repo.deleteByUser(credentialId, userId)
-        _ <- audited(AuditKinds.AccountPasskeyRemoved, userId, AuthAuditDetails.Passkey(credentialPrefix = Some(credentialId.toString.take(9))))
+        _ <- audited(AuthAuditKinds.AccountPasskeyRemoved, userId, AuthAuditDetails.Passkey(credentialPrefix = Some(credentialId.toString.take(9))))
       yield Response.status(Status.NoContent)
     }
 
@@ -325,7 +326,7 @@ object UserController extends Controller:
         passwordService <- ZIO.service[PasswordService]
         password <- passwordService.resetPassword(body.userId, body.expiresInSeconds, body.channel)
         _ <- audited(
-          AuditKinds.AccountPasswordReset,
+          AuthAuditKinds.AccountPasswordReset,
           body.userId,
           AuthAuditDetails.Account(via = "admin", detail = body.channel.map(_.toString)),
         )
@@ -344,6 +345,6 @@ object UserController extends Controller:
           .mapError:
             case PasswordReuseError(n) => RuntimeException(s"Password reuse: must differ from last $n passwords")
             case t: Throwable => t
-        _ <- audited(AuditKinds.AccountPasswordSet, body.userId, AuthAuditDetails.Account(via = "admin"))
+        _ <- audited(AuthAuditKinds.AccountPasswordSet, body.userId, AuthAuditDetails.Account(via = "admin"))
       yield Response.status(Status.NoContent)
     }

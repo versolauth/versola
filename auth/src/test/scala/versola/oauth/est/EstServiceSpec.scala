@@ -1,7 +1,7 @@
 package versola.oauth.est
 
-import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
-import versola.util.audit.{ActorType, AuditKinds, AuditOutcome}
+import versola.audit.{AuthActors, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.util.audit.{AuditOutcome}
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.util.{CoreConfig, TestCertificates}
@@ -217,9 +217,9 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- est.enroll(credentials, csrBody)
           drafts <- recording.recorded
         yield assertTrue(
-          drafts.map(_.kind) == List(AuditKinds.CertEnrolled),
+          drafts.map(_.kind) == List(AuthAuditKinds.CertEnrolled),
           drafts.head.outcome == AuditOutcome.success,
-          drafts.head.actor == Some((ActorType.client, Some("bank-a"))),
+          drafts.head.actor == Some((AuthActors.client, Some("bank-a"))),
           drafts.head.details == AuthAuditDetails.Cert(
             operation = "enroll",
             clientId = Some("bank-a"),
@@ -240,8 +240,8 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- est.reenroll(presented.certificate, csrBody)
           drafts <- recording.recorded
         yield assertTrue(
-          drafts.map(_.kind) == List(AuditKinds.CertRenewed),
-          drafts.head.actor == Some((ActorType.client, Some("bank-a"))),
+          drafts.map(_.kind) == List(AuthAuditKinds.CertRenewed),
+          drafts.head.actor == Some((AuthActors.client, Some("bank-a"))),
           drafts.head.details.toJson.toString.contains("\"operation\":\"reenroll\""),
         )
       },
@@ -258,9 +258,9 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           drafts <- recording.recorded
         yield assertTrue(
           drafts.map(d => (d.kind, d.outcome, d.reason)) == List(
-            (AuditKinds.CertEnrolled, AuditOutcome.denied, Some("est_unauthorized")),
-            (AuditKinds.CertEnrolled, AuditOutcome.denied, Some("est_forbidden")),
-            (AuditKinds.CertEnrolled, AuditOutcome.failure, Some("est_bad_request")),
+            (AuthAuditKinds.CertEnrolled, AuditOutcome.denied, Some("est_unauthorized")),
+            (AuthAuditKinds.CertEnrolled, AuditOutcome.denied, Some("est_forbidden")),
+            (AuthAuditKinds.CertEnrolled, AuditOutcome.failure, Some("est_bad_request")),
           ),
           // the reason central gave is not repeated: it describes the request, and may quote it
           !drafts.exists(_.details.toJson.toString.contains("wrong subject")),

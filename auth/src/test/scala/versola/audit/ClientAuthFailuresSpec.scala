@@ -1,7 +1,7 @@
 package versola.audit
 
 import versola.util.UnitSpecBase
-import versola.util.audit.{ActorType, AuditDraft, AuditEvents, AuditKinds, AuditOutcome, AuditUnavailable}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome, AuditUnavailable}
 import versola.util.http.Observability
 import zio.*
 import zio.test.*
@@ -46,10 +46,10 @@ object ClientAuthFailuresSpec extends UnitSpecBase:
       yield assertTrue(
         before.isEmpty,
         after.size == 1,
-        after.head.draft.kind == AuditKinds.ClientAuthFailed,
+        after.head.draft.kind == AuthAuditKinds.ClientAuthFailed,
         after.head.draft.outcome == AuditOutcome.denied,
         after.head.draft.reason == Some("invalid_credentials"),
-        after.head.draft.actor == Some((ActorType.client, Some("app"))),
+        after.head.draft.actor == Some((AuthActors.client, Some("app"))),
         after.head.draft.details == AuthAuditDetails.ClientAuthFailed(method = "client_secret", count = 5),
         // the address and client are the failures', put in the context the event is filled in from
         after.head.ip == Some("203.0.113.7"),

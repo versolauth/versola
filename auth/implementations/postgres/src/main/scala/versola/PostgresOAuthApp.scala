@@ -1,7 +1,7 @@
 package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.audit.{AuditController, ClientAuthFailures, AuditReadRepository, AuditReportService, PostgresAuditEventRepository}
+import versola.audit.{AuditController, AuditReadRepository, AuditReportService, AuthAudit, ClientAuthFailures, PostgresAuditEventRepository}
 import versola.antifraud.{
   Antifraud,
   AntifraudCounterResetRepository,
@@ -83,7 +83,7 @@ import versola.user.{PostgresUserRepository, UserController, UserRegistrationSyn
 import versola.util.*
 import versola.util.SequentialLayers.*
 import versola.util.http.VersolaApp
-import versola.util.audit.{AuditEventRepository, AuditEvents, AuditSource}
+import versola.util.audit.{AuditEventRepository, AuditEvents}
 import versola.util.net.{AsnResolver, AsnSettings, GeoResolver, GeoSettings}
 import versola.util.postgres.{PostgresConfig, PostgresConfigSnapshotRepository, PostgresHikariDataSource, PostgresWalMetrics}
 import zio.*
@@ -175,6 +175,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       EstService &
       AuditEvents &
       AuditEvents.Settings &
+      AuthAudit.Tiers &
       AuditReadRepository &
       AuditReportService &
       ClientAuthFailures
@@ -317,7 +318,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     case class Events(tokenRefresh: Boolean, authorizeSuccess: Boolean, parSuccess: Boolean)
 
     /** A retention the partitions cannot keep or an overflow that is neither word stops the start, naming the key. */
-    def settings(config: AuditConfig): Either[Config.Error, AuditEvents.Settings] =
+    def settings(config: AuditConfig): Either[Config.Error, (AuditEvents.Settings, AuthAudit.Tiers)] =
       for
         overflow <- AuditEvents.Overflow.values.find(_.toString == config.overflow)
           .toRight(Config.Error.InvalidData(message = s"audit.overflow must be one of block, drop, not '${config.overflow}'"))
@@ -331,24 +332,22 @@ object PostgresOAuthApp extends VersolaApp("auth"):
           (),
           Config.Error.InvalidData(message = "audit.block-timeout must be positive"),
         )
-      yield AuditEvents.Settings(
-        retention = config.retention,
-        overflow = overflow,
-        blockTimeout = config.blockTimeout,
-        events = AuditEvents.EventTiers(
+      yield (
+        AuditEvents.Settings(retention = config.retention, overflow = overflow, blockTimeout = config.blockTimeout),
+        AuthAudit.Tiers(
           tokenRefresh = config.events.tokenRefresh,
           authorizeSuccess = config.events.authorizeSuccess,
           parSuccess = config.events.parSuccess,
-          adminUserViewed = false,
         ),
       )
 
   /** The `audit` block of the config: every key is required, so a config written before it existed makes auth refuse to start
     * naming the missing key. */
-  private[versola] val auditSettings: ZLayer[ConfigProvider, Config.Error, AuditEvents.Settings] =
-    ZLayer.fromZIO:
+  private[versola] val auditSettings: ZLayer[ConfigProvider, Config.Error, AuditEvents.Settings & AuthAudit.Tiers] =
+    ZLayer.fromZIOEnvironment:
       ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("audit", deriveConfig[AuditConfig])))
         .flatMap(config => ZIO.fromEither(AuditConfig.settings(config)))
+        .map((settings, tiers) => ZEnvironment[AuditEvents.Settings, AuthAudit.Tiers](settings, tiers))
 
   /** The `antifraud` block of the config; every key has its value in `versola-defaults.conf`. */
   private val antifraudSettings: ZLayer[ConfigProvider, Config.Error, AntifraudEvents.Settings] =
@@ -411,7 +410,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       securityService >++>
       // The audit writer and its partition maintenance: before everything that records into it.
       auditSettings >++>
-      AuditEvents.live(AuditSource.auth, auditNodeId) >++>
+      AuditEvents.live(AuthAudit.source, auditNodeId, AuthAudit.catalog) >++>
       AuditReportService.live >++>
       ClientAuthFailures.live >++>
       // Sizes its own expiry ring from `dpop.iat-leeway`, so it has to follow the config.

@@ -107,24 +107,24 @@ trait AuditEventRepositorySpec extends DatabaseSpecBase[AuditEventRepositorySpec
       test("summarizes a user's events: by kind, client, address and user agent, sessions, factors and the severe ones") {
         for
           _ <- repository.maintainPartitions(from = today, days = 1, keepFrom = today.minusDays(30))
-          login = event(utc(today.atTime(9, 0)), user = Some(user1), kind = AuditKinds.LoginCompleted).copy(
+          login = event(utc(today.atTime(9, 0)), user = Some(user1), kind = AuthAuditKinds.LoginCompleted).copy(
             clientId = Some("client-a"),
             ip = Some("203.0.113.7"),
             userAgent = Some("Chrome 130 / macOS"),
           )
-          token = event(utc(today.atTime(9, 1)), user = Some(user1), kind = AuditKinds.TokenIssued).copy(
+          token = event(utc(today.atTime(9, 1)), user = Some(user1), kind = AuthAuditKinds.TokenIssued).copy(
             clientId = Some("client-a"),
             ip = Some("203.0.113.7"),
             userAgent = Some("Chrome 130 / macOS"),
           )
-          refusedToken = event(utc(today.atTime(9, 2)), user = Some(user1), kind = AuditKinds.TokenRefused, outcome = AuditOutcome.failure)
+          refusedToken = event(utc(today.atTime(9, 2)), user = Some(user1), kind = AuthAuditKinds.TokenRefused, outcome = AuditOutcome.failure)
             .copy(clientId = Some("client-b"), ip = Some("198.51.100.9"), userAgent = Some("Firefox 131 / Linux"))
-          password = event(utc(today.atTime(9, 3)), user = Some(user1), kind = AuditKinds.AccountPasswordChanged)
-          passkey = event(utc(today.atTime(9, 4)), user = Some(user1), kind = AuditKinds.AccountPasskeyEnrolled)
-          reuse = event(utc(today.atTime(9, 5)), user = Some(user1), kind = AuditKinds.TokenReuseDetected, outcome = AuditOutcome.denied)
+          password = event(utc(today.atTime(9, 3)), user = Some(user1), kind = AuthAuditKinds.AccountPasswordChanged)
+          passkey = event(utc(today.atTime(9, 4)), user = Some(user1), kind = AuthAuditKinds.AccountPasskeyEnrolled)
+          reuse = event(utc(today.atTime(9, 5)), user = Some(user1), kind = AuthAuditKinds.TokenReuseDetected, outcome = AuditOutcome.denied)
             .copy(severity = AuditSeverity.high)
-          ended = event(utc(today.atTime(9, 6)), user = Some(user1), kind = AuditKinds.SessionEnded)
-          other = event(utc(today.atTime(9, 7)), user = Some(user2), kind = AuditKinds.LoginCompleted)
+          ended = event(utc(today.atTime(9, 6)), user = Some(user1), kind = AuthAuditKinds.SessionEnded)
+          other = event(utc(today.atTime(9, 7)), user = Some(user2), kind = AuthAuditKinds.LoginCompleted)
           _ <- repository.insertBatch(List(login, token, refusedToken, password, passkey, reuse, ended, other))
           summary <- reader.userSummary(user1, wholeDay._1, wholeDay._2)
         yield assertTrue(
@@ -230,19 +230,19 @@ object AuditEventRepositorySpec:
   def event(
       at: Instant,
       user: Option[UUID],
-      kind: AuditKind = AuditKinds.LoginStep,
+      kind: AuditKind = AuthAuditKinds.LoginStep,
       outcome: AuditOutcome = AuditOutcome.success,
   ): AuditEvent =
     AuditEvent(
       id = UUID.randomUUID(),
       at = at,
       tenantId = None,
-      source = AuditSource.auth,
+      source = AuthAudit.source,
       nodeId = "node-1",
       kind = kind,
       outcome = outcome,
       reason = None,
-      severity = AuditSeverity.of(kind, outcome),
+      severity = AuthAudit.catalog.severity(kind, outcome),
       actorType = ActorType.user,
       actorId = user.map(_.toString),
       userId = user,

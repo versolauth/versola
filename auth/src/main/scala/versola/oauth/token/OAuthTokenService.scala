@@ -1,8 +1,8 @@
 package versola.oauth.token
 
 import versola.audit.AuditSupport.*
-import versola.audit.{AuditSupport, AuthAuditDetails}
-import versola.util.audit.{ActorType, AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
+import versola.audit.{AuditSupport, AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.oauth.client.model.{
   AuthorizationDetail,
   ClientCredentials,
@@ -103,19 +103,19 @@ object OAuthTokenService:
       schemaValidator: JsonSchemaValidator,
       config: CoreConfig,
       audit: AuditEvents,
-      auditSettings: AuditEvents.Settings,
+      auditTiers: AuthAudit.Tiers,
   ) extends OAuthTokenService:
 
     /** `token.issued`. The refresh grant is the one a deployment may leave out (`audit.events.token-refresh`): it is the most frequent
       * event there is. The client is the actor, the user (when there is one) the subject. */
     private def auditIssued(grant: String, client: OAuthClientRecord, tokens: IssuedTokens): IO[Throwable, Unit] =
-      ZIO.unless(grant == "refresh_token" && !auditSettings.events.tokenRefresh):
+      ZIO.unless(grant == "refresh_token" && !auditTiers.tokenRefresh):
         AuditSupport.currentAuth.flatMap: auth =>
           audit.log(
             AuditDraft(
-              kind = AuditKinds.TokenIssued,
+              kind = AuthAuditKinds.TokenIssued,
               outcome = AuditOutcome.success,
-              actor = Some((ActorType.client, Some(client.id))),
+              actor = Some((AuthActors.client, Some(client.id))),
               userId = tokens.userId,
               details = AuthAuditDetails.TokenIssued(
                 grant = grant,
@@ -140,9 +140,9 @@ object OAuthTokenService:
       AuditSupport.currentAuth.flatMap: auth =>
         audit.log(
           AuditDraft(
-            kind = AuditKinds.TokenReuseDetected,
+            kind = AuthAuditKinds.TokenReuseDetected,
             outcome = AuditOutcome.denied,
-            actor = Some((ActorType.client, Some(client.id))),
+            actor = Some((AuthActors.client, Some(client.id))),
             userId = Some(userId),
             details = AuthAuditDetails.TokenReuseDetected(
               tokenType = tokenType,

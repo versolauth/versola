@@ -1,7 +1,7 @@
 package versola.oauth.conversation
 
-import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
-import versola.util.audit.{AuditKinds, AuditOutcome, AuditUnavailableException}
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.util.audit.{AuditOutcome, AuditUnavailableException}
 import versola.auth.TestEnvConfig
 import versola.auth.model.{CredentialDeviceType, CredentialId, OtpCode, PasskeyRecord, Password}
 import versola.oauth.authorize.AcrResolutionService
@@ -1118,7 +1118,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           drafts <- env.audit.recorded
         yield assertTrue(
           result.isInstanceOf[ConversationResult.Complete],
-          drafts.map(d => (d.kind, d.outcome)) == List((AuditKinds.LoginCompleted, AuditOutcome.success)),
+          drafts.map(d => (d.kind, d.outcome)) == List((AuthAuditKinds.LoginCompleted, AuditOutcome.success)),
           drafts.head.userId == Some(userId.asInstanceOf[UUID]),
           drafts.head.details == AuthAuditDetails.LoginCompleted(
             kind = "login",

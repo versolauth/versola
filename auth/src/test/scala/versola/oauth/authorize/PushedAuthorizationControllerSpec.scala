@@ -1,7 +1,7 @@
 package versola.oauth.authorize
 
-import versola.audit.{AuthAuditDetails, CapturingAuditEvents, ClientAuthFailures}
-import versola.util.audit.{ActorType, AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
+import versola.audit.{AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{PushedAuthorizationError, PushedAuthorizationResponse}
@@ -64,7 +64,7 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
       verifyService: Stub[PushedAuthorizationService] => UIO[TestResult] =
         (_: Stub[PushedAuthorizationService]) => ZIO.succeed(assertTrue(true)),
       verifyAudit: List[AuditDraft] => TestResult = _ => assertCompletes,
-      settings: AuditEvents.Settings = CapturingAuditEvents.settings,
+      tiers: AuthAudit.Tiers = CapturingAuditEvents.tiers,
       audit: CapturingAuditEvents = CapturingAuditEvents.shared(),
   ) =
     test(description) {
@@ -82,7 +82,7 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
             PushedAuthorizationController.routes
               .provideEnvironment(
                 ZEnvironment(service) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(config) ++ ZEnvironment[AuditEvents](audit) ++
-                  ZEnvironment(settings) ++ tracing,
+                  ZEnvironment(tiers) ++ tracing,
               ),
           ),
         )
@@ -280,8 +280,8 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
         setup = _.push.succeedsWith(pushedResponse),
         verifyAudit = drafts =>
           assertTrue(
-            drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuditKinds.ParRequest, AuditOutcome.success, None)),
-            drafts.head.actor == Some((ActorType.client, Some(clientId: String))),
+            drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuthAuditKinds.ParRequest, AuditOutcome.success, None)),
+            drafts.head.actor == Some((AuthActors.client, Some(clientId: String))),
             drafts.head.details == AuthAuditDetails.ParRequest(scope = List("openid"), requestObject = false),
           ),
       ),
@@ -296,7 +296,7 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
         description = "a success is left out when the deployment turned audit.events.par-success off",
         request = parRequest(validForm()),
         expectedStatus = Status.Created,
-        settings = CapturingAuditEvents.settings.copy(events = CapturingAuditEvents.settings.events.copy(parSuccess = false)),
+        tiers = CapturingAuditEvents.tiers.copy(parSuccess = false),
         setup = _.push.succeedsWith(pushedResponse),
         verifyAudit = drafts => assertTrue(drafts.isEmpty),
       ),
@@ -304,10 +304,10 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
         description = "a refused push is always recorded, with the OAuth error as the reason",
         request = parRequest(validForm()),
         expectedStatus = Status.BadRequest,
-        settings = CapturingAuditEvents.settings.copy(events = CapturingAuditEvents.settings.events.copy(parSuccess = false)),
+        tiers = CapturingAuditEvents.tiers.copy(parSuccess = false),
         setup = _.push.failsWith(PushedAuthorizationError.RequestUriNotAllowed),
         verifyAudit = drafts =>
-          assertTrue(drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuditKinds.ParRequest, AuditOutcome.failure, Some(PushedAuthorizationError.RequestUriNotAllowed.error)))),
+          assertTrue(drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuthAuditKinds.ParRequest, AuditOutcome.failure, Some(PushedAuthorizationError.RequestUriNotAllowed.error)))),
       ),
       controllerTestCase(
         description = "invalid_client is not recorded here: it is client.auth_failed, coalesced",

@@ -1,6 +1,6 @@
 package versola.audit
 
-import versola.util.audit.{ActorType, AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Observability
 import zio.*
 import zio.logging.logContext
@@ -65,10 +65,10 @@ object ClientAuthFailures:
             Observability.setClientId(key.clientId).when(key.clientId.nonEmpty) *>
             audit.recordBestEffort(
               AuditDraft(
-                kind = AuditKinds.ClientAuthFailed,
+                kind = AuthAuditKinds.ClientAuthFailed,
                 outcome = AuditOutcome.denied,
                 reason = Some(key.reason),
-                actor = Some((ActorType.client, Option.when(key.clientId.nonEmpty)(key.clientId))),
+                actor = Some((AuthActors.client, Option.when(key.clientId.nonEmpty)(key.clientId))),
                 details = AuthAuditDetails.ClientAuthFailed(method = key.method, count = count),
               ),
             ),

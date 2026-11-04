@@ -1,8 +1,8 @@
 package versola.oauth.authorize
 
 import versola.audit.AuditSupport.*
-import versola.audit.{AuditSupport, AuthAuditDetails}
-import versola.util.audit.{ActorType, AuditDraft, AuditEvents, AuditKinds, AuditOutcome, AuditUnavailableException}
+import versola.audit.{AuditSupport, AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome, AuditUnavailableException}
 import versola.oauth.AuthMetrics
 import versola.oauth.authorize.model.{AuthorizeErrorResponse, AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
@@ -17,7 +17,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 
 object AuthorizeEndpointController extends Controller:
   type Env = Tracing & AuthorizeRequestParser & AuthorizeEndpointService & AuthorizationResponseService &
-    OAuthConfigurationService & CoreConfig & AuditEvents & AuditEvents.Settings
+    OAuthConfigurationService & CoreConfig & AuditEvents & AuthAudit.Tiers
 
   def routes: Routes[Env, Throwable] = Routes(
     getAuthorizeRoute,
@@ -81,10 +81,10 @@ object AuthorizeEndpointController extends Controller:
       ZIO.serviceWithZIO[AuditEvents](
         _.log(
           AuditDraft(
-            kind = AuditKinds.AuthorizeRequest,
+            kind = AuthAuditKinds.AuthorizeRequest,
             outcome = AuditOutcome.failure,
             reason = Some(reason),
-            actor = Some((ActorType.client, clientId)),
+            actor = Some((AuthActors.client, clientId)),
             details = AuthAuditDetails.AuthorizeRequest(responseType = Nil, scope = Nil, resource = Nil, prompt = Nil, acrValues = Nil, par = false),
           ),
         ),
@@ -92,14 +92,14 @@ object AuthorizeEndpointController extends Controller:
 
   /** `authorize.request`, succeeded: a conversation was started or a code issued silently. A deployment may leave it out
     * (`audit.events.authorize-success`): it is every sign-in's first line. */
-  private def auditSuccess(request: AuthorizeRequest, par: Boolean): ZIO[AuditEvents & AuditEvents.Settings, AuditUnavailableException.type, Unit] =
-    ZIO.serviceWithZIO[AuditEvents.Settings]: settings =>
+  private def auditSuccess(request: AuthorizeRequest, par: Boolean): ZIO[AuditEvents & AuthAudit.Tiers, AuditUnavailableException.type, Unit] =
+    ZIO.serviceWithZIO[AuthAudit.Tiers]: tiers =>
       ZIO.serviceWithZIO[AuditEvents](
         _.log(
           AuditDraft(
-            kind = AuditKinds.AuthorizeRequest,
+            kind = AuthAuditKinds.AuthorizeRequest,
             outcome = AuditOutcome.success,
-            actor = Some((ActorType.client, Some(request.clientId))),
+            actor = Some((AuthActors.client, Some(request.clientId))),
             details = AuthAuditDetails.AuthorizeRequest(
               responseType = request.responseType.toList.map(_.toString).sorted,
               scope = request.scope.toList.map(_.toString).sorted,
@@ -110,7 +110,7 @@ object AuthorizeEndpointController extends Controller:
             ),
           ),
         ),
-      ).when(settings.events.authorizeSuccess).unit
+      ).when(tiers.authorizeSuccess).unit
 
   private def authorizeAndRedirect(request: AuthorizeRequest, par: Boolean) =
     for

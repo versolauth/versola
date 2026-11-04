@@ -1,7 +1,7 @@
 package versola.user
 
-import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
-import versola.util.audit.{AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord, Password}
@@ -873,7 +873,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
           )
         yield assertTrue(
           resp.status == Status.NoContent,
-          drafts.map(_.kind) == List(AuditKinds.AccountClaimsUpdated),
+          drafts.map(_.kind) == List(AuthAuditKinds.AccountClaimsUpdated),
           drafts.head.outcome == AuditOutcome.success,
           drafts.head.userId == Some(passkeyUserId.asInstanceOf[UUID]),
           drafts.head.target == Some(("user", passkeyUserId.toString)),
@@ -918,7 +918,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
           )
         yield assertTrue(
           resp.status == Status.NoContent,
-          drafts.map(_.kind) == List(AuditKinds.TokenRevoked),
+          drafts.map(_.kind) == List(AuthAuditKinds.TokenRevoked),
           drafts.head.details == AuthAuditDetails.TokenRevoked("refresh_token", None, None, "admin_revoked", Some(2)),
           drafts.head.userId == Some(passkeyUserId.asInstanceOf[UUID]),
         )
@@ -938,7 +938,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
           )
         yield assertTrue(
           resp.status == Status.NoContent,
-          drafts.map(_.kind) == List(AuditKinds.AccountLimitsReset),
+          drafts.map(_.kind) == List(AuthAuditKinds.AccountLimitsReset),
           drafts.head.details == AuthAuditDetails.Account(via = "admin"),
           !drafts.head.details.toJson.toString.contains("john@doe.com"),
           !drafts.head.details.toJson.toString.contains("+1234567890"),
@@ -960,7 +960,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
           )
         yield assertTrue(
           resp.status == Status.NoContent,
-          drafts.map(_.kind) == List(AuditKinds.AccountPasskeyRemoved),
+          drafts.map(_.kind) == List(AuthAuditKinds.AccountPasskeyRemoved),
           drafts.head.details.toJson.toString.contains("credentialPrefix"),
           !drafts.head.details.toJson.toString.contains(Base64.urlEncode(credentialId)),
         )
@@ -974,7 +974,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
             password = passwordSvc,
           )
         yield assertTrue(
-          drafts.map(_.kind) == List(AuditKinds.AccountPasswordReset),
+          drafts.map(_.kind) == List(AuthAuditKinds.AccountPasswordReset),
           drafts.head.details == AuthAuditDetails.Account(via = "admin", detail = Some("show")),
           !drafts.head.details.toJson.toString.contains("Temp1234!"),
         )
@@ -989,7 +989,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
           )
         yield assertTrue(
           resp.status == Status.NoContent,
-          drafts.map(_.kind) == List(AuditKinds.AccountPasswordSet),
+          drafts.map(_.kind) == List(AuthAuditKinds.AccountPasswordSet),
           drafts.head.details == AuthAuditDetails.Account(via = "admin"),
           !drafts.head.details.toJson.toString.contains("S3cret-Pass!"),
         )

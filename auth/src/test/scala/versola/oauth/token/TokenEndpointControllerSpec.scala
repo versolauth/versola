@@ -1,7 +1,7 @@
 package versola.oauth.token
 
-import versola.audit.{AuthAuditDetails, CapturingAuditEvents, ClientAuthFailures}
-import versola.util.audit.{AuditKinds, AuditOutcome}
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures}
+import versola.util.audit.{AuditOutcome}
 import versola.util.audit.AuditEvents
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.crypto.RSASSAVerifier
@@ -1496,7 +1496,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             drafts <- audit.recorded
           yield assertTrue(
             response.status == Status.BadRequest,
-            drafts.map(_.kind) == List(AuditKinds.TokenRefused),
+            drafts.map(_.kind) == List(AuthAuditKinds.TokenRefused),
             drafts.head.outcome == AuditOutcome.failure,
             drafts.head.reason == Some("invalid_grant"),
             drafts.head.details == AuthAuditDetails.TokenRefused(

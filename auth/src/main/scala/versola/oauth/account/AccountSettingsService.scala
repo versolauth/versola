@@ -1,8 +1,9 @@
 package versola.oauth.account
 
+import versola.audit.{AuthAuditKinds}
 import versola.audit.AuditSupport.*
 import versola.audit.AuthAuditDetails
-import versola.util.audit.{AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.auth.model.Password
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
@@ -47,7 +48,7 @@ object AccountSettingsService:
     private def auditPasswordChange(userId: UserId, outcome: AuditOutcome, reason: Option[String]): IO[Throwable, Unit] =
       audit.log(
         AuditDraft(
-          kind = AuditKinds.AccountPasswordChanged,
+          kind = AuthAuditKinds.AccountPasswordChanged,
           outcome = outcome,
           reason = reason,
           userId = Some(userId),

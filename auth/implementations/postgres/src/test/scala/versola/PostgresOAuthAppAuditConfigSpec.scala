@@ -1,6 +1,7 @@
 package versola
 
 import com.typesafe.config.ConfigFactory
+import versola.audit.AuthAudit
 import versola.util.audit.AuditEvents
 import zio.*
 import zio.config.typesafe.*
@@ -21,10 +22,15 @@ object PostgresOAuthAppAuditConfigSpec extends ZIOSpecDefault:
     val to = lines.indexWhere(_.trim.startsWith("|# Antifraud"), from)
     lines.slice(from, to).map(_.trim.stripPrefix("|")).mkString("\n")
 
-  private def load(config: String): IO[Config.Error, AuditEvents.Settings] =
+  /** The settings of the writer and the kinds a deployment left out, as the app loads them. */
+  private def loadBoth(config: String): IO[Config.Error, (AuditEvents.Settings, AuthAudit.Tiers)] =
     ZIO.attempt(ConfigFactory.parseString(config).resolve()).orDie
       .flatMap(parsed => ConfigProvider.fromTypesafeConfigZIO(parsed).orDie)
-      .flatMap(provider => ZIO.service[AuditEvents.Settings].provide(PostgresOAuthApp.auditSettings, ZLayer.succeed(provider.kebabCase)))
+      .flatMap(provider =>
+        (ZIO.service[AuditEvents.Settings] <*> ZIO.service[AuthAudit.Tiers]).provide(PostgresOAuthApp.auditSettings, ZLayer.succeed(provider.kebabCase)),
+      )
+
+  private def load(config: String): IO[Config.Error, AuditEvents.Settings] = loadBoth(config).map(_._1)
 
   private def without(key: String): String =
     generated.linesIterator.filterNot(_.trim.startsWith(key)).mkString("\n")
@@ -34,15 +40,10 @@ object PostgresOAuthAppAuditConfigSpec extends ZIOSpecDefault:
 
   def spec = suite("auth's audit config")(
     test("the block gen-env writes parses into the settings the writer runs with") {
-      for settings <- load(generated)
+      for both <- loadBoth(generated)
       yield assertTrue(
-        settings == AuditEvents.Settings(
-          retention = 7.days,
-          overflow = AuditEvents.Overflow.block,
-          blockTimeout = 2.seconds,
-          // `adminUserViewed` is central's, and auth has no such event
-          events = AuditEvents.EventTiers(tokenRefresh = true, authorizeSuccess = true, parSuccess = true, adminUserViewed = false),
-        ),
+        both._1 == AuditEvents.Settings(retention = 7.days, overflow = AuditEvents.Overflow.block, blockTimeout = 2.seconds),
+        both._2 == AuthAudit.Tiers(tokenRefresh = true, authorizeSuccess = true, parSuccess = true),
       )
     },
     test("a config written before the block existed makes auth refuse to start, naming the key") {
@@ -91,10 +92,10 @@ object PostgresOAuthAppAuditConfigSpec extends ZIOSpecDefault:
       yield assertTrue(result.left.exists(_.toString.contains("audit.block-timeout")))
     },
     test("the high-volume kinds can be turned off one by one") {
-      for settings <- load(
+      for both <- loadBoth(
           withValue("token-refresh", "false").linesIterator
             .map(line => if line.trim.startsWith("par-success") then "    par-success = false" else line).mkString("\n"),
         )
-      yield assertTrue(!settings.events.tokenRefresh, settings.events.authorizeSuccess, !settings.events.parSuccess)
+      yield assertTrue(!both._2.tokenRefresh, both._2.authorizeSuccess, !both._2.parSuccess)
     },
   ) @@ TestAspect.sequential

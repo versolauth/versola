@@ -1,8 +1,9 @@
 package versola.oauth.account
 
+import versola.audit.{AuthAuditKinds}
 import versola.audit.AuthAuditDetails
 import versola.auth.model.{CredentialId, PasskeyName}
-import versola.util.audit.{AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.audit.AuditSupport.*
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
@@ -76,7 +77,7 @@ object AccountSettingsController extends Controller:
             ZIO.serviceWithZIO[AuditEvents](
               _.log(
                 AuditDraft(
-                  kind = AuditKinds.SessionEnded,
+                  kind = AuthAuditKinds.SessionEnded,
                   outcome = AuditOutcome.success,
                   userId = Some(body.userId),
                   details = AuthAuditDetails.SessionEnded(cause = "user_revoked", clients = 0),
@@ -122,7 +123,7 @@ object AccountSettingsController extends Controller:
         _ <- ZIO.serviceWithZIO[AuditEvents](
           _.log(
             AuditDraft(
-              kind = AuditKinds.AccountPasskeyRemoved,
+              kind = AuthAuditKinds.AccountPasskeyRemoved,
               outcome = AuditOutcome.success,
               userId = Some(body.userId),
               details = AuthAuditDetails.Passkey(credentialPrefix = Some(body.credentialId.toString.take(9))),
@@ -167,7 +168,7 @@ object AccountSettingsController extends Controller:
         _ <- ZIO.serviceWithZIO[AuditEvents](
           _.log(
             AuditDraft(
-              kind = AuditKinds.AccountPasskeyEnrolled,
+              kind = AuthAuditKinds.AccountPasskeyEnrolled,
               outcome = AuditOutcome.success,
               userId = Some(body.userId),
               details = AuthAuditDetails.Passkey(credentialPrefix = Some(record.id.toString.take(9)), deviceType = Some(record.deviceType.toString)),

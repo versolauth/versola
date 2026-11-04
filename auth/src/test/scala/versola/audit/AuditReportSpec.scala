@@ -30,9 +30,9 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
       id = id,
       at = at,
       tenantId = None,
-      source = AuditSource.auth,
+      source = AuthAudit.source,
       nodeId = "node-1",
-      kind = AuditKinds.LoginCompleted,
+      kind = AuthAuditKinds.LoginCompleted,
       outcome = AuditOutcome.success,
       reason = None,
       severity = AuditSeverity.info,
@@ -53,7 +53,6 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
     retention = retention,
     overflow = AuditEvents.Overflow.block,
     blockTimeout = 2.seconds,
-    events = AuditEvents.EventTiers(true, true, true, false),
   )
 
   private def service(repository: Stub[AuditReadRepository]) = AuditReportService.Impl(repository, settings)

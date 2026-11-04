@@ -1,8 +1,9 @@
 package versola.oauth.logout
 
+import versola.audit.{AuthAuditKinds}
 import versola.audit.AuditSupport.*
 import versola.audit.AuthAuditDetails
-import versola.util.audit.{AuditDraft, AuditEvents, AuditKinds, AuditOutcome}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, TenantId}
 import versola.oauth.session.SessionService
@@ -63,7 +64,7 @@ object LogoutService:
     private def auditEnded(cause: String, session: SessionRecord): Task[Unit] =
       audit.log(
         AuditDraft(
-          kind = AuditKinds.SessionEnded,
+          kind = AuthAuditKinds.SessionEnded,
           outcome = AuditOutcome.success,
           userId = Some(session.userId),
           details = AuthAuditDetails.SessionEnded(cause = cause, clients = session.clients.size),

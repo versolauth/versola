@@ -1,7 +1,7 @@
 package versola.oauth.consent
 
-import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
-import versola.util.audit.{AuditKinds, AuditOutcome}
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.util.audit.{AuditOutcome}
 import versola.oauth.authorize.model.Prompt
 import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.{AuthMethod, ClientId, ConsentFlow, OAuthClientRecord, ScopeToken, TenantId}
@@ -315,7 +315,7 @@ object ConsentServiceSpec extends UnitSpecBase:
             ConsentRecord(userId, clientId, Set(openid, profile), grantedAt = now, expiresAt = None),
           ),
           // consent.granted: what was granted, sorted, and no expiry when it is remembered until revoked
-          drafts.map(_.kind) == List(AuditKinds.ConsentGranted),
+          drafts.map(_.kind) == List(AuthAuditKinds.ConsentGranted),
           drafts.head.outcome == AuditOutcome.success,
           drafts.head.userId == Some(userId.asInstanceOf[UUID]),
           drafts.head.details == AuthAuditDetails.Consent(scope = List("openid", "profile"), expiresAt = None),
@@ -344,7 +344,7 @@ object ConsentServiceSpec extends UnitSpecBase:
           drafts <- env.audit.recorded
         yield assertTrue(
           env.consentRepository.delete.calls == List((userId, clientId)),
-          drafts.map(_.kind) == List(AuditKinds.ConsentRevoked),
+          drafts.map(_.kind) == List(AuthAuditKinds.ConsentRevoked),
           drafts.head.userId == Some(userId.asInstanceOf[UUID]),
         )
       },

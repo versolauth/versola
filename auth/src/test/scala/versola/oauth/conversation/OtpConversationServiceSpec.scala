@@ -1,7 +1,7 @@
 package versola.oauth.conversation
 
-import versola.audit.{AuthAuditDetails, CapturingAuditEvents}
-import versola.util.audit.{AuditKinds, AuditOutcome}
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.util.audit.{AuditOutcome}
 import versola.antifraud.{
   AntifraudAction,
   AntifraudOutcome,
@@ -1485,7 +1485,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           a <- verified.audit.recorded
           b <- wrong.audit.recorded
         yield assertTrue(
-          a.map(d => (d.kind, d.outcome, d.reason)) == List((AuditKinds.LoginStep, AuditOutcome.success, None)),
+          a.map(d => (d.kind, d.outcome, d.reason)) == List((AuthAuditKinds.LoginStep, AuditOutcome.success, None)),
           a.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
           a.head.details == AuthAuditDetails.LoginStep(step = "otp", conversationId = authId.toString, kind = "login"),
           b.map(d => (d.outcome, d.reason)) == List((AuditOutcome.failure, Some("wrong_code"))),
@@ -1552,7 +1552,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           blockedDetails = a.map(_.details).collect { case d: AuthAuditDetails.LoginStep => d }
           fakeDetails = b.map(_.details).collect { case d: AuthAuditDetails.LoginStep => d }
         yield assertTrue(
-          a.map(d => (d.kind, d.outcome, d.reason)) == List((AuditKinds.LoginStep, AuditOutcome.denied, Some("antifraud_block"))),
+          a.map(d => (d.kind, d.outcome, d.reason)) == List((AuthAuditKinds.LoginStep, AuditOutcome.denied, Some("antifraud_block"))),
           blockedDetails.map(d => (d.step, d.afDecision)) == List(("otp_request", Some("Block"))),
           b.map(d => (d.outcome, d.reason)) == List((AuditOutcome.denied, Some("antifraud_fake"))),
           fakeDetails.flatMap(_.afDecision) == List("Fake"),
