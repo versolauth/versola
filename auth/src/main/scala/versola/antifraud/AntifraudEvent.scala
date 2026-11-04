@@ -82,5 +82,11 @@ enum AntifraudOutcome:
   /** The client's solution was wrong. After too many of them the request is refused (`blocked`). */
   case challenge_failed
 
+  /** The person passed the code step with a passkey from the code page, not with the code: a code that will never be entered,
+    * whether one was sent or not. An `otp_verify` event, so it is no request; it counts as a verification (a conversion of the
+    * code that was sent) in the SMS budget and the statistics, and is kept apart so that codes sent and never entered can be told from codes
+    * passed by passkey. */
+  case passkey_alternative
+
 enum AntifraudChannel:
   case sms, email

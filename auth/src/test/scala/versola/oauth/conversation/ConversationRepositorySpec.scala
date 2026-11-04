@@ -13,6 +13,7 @@ import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
 
+import java.time.Instant
 import java.util.UUID
 
 trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepositorySpec.Env]:
@@ -168,6 +169,23 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           found <- env.repository.find(authId1)
         yield assertTrue(found.contains(sensitive))
       },
+      test("a code step that has asked for the options of a passkey keeps the ceremony and what it says of it") {
+        val sentAt = Instant.parse("2026-11-03T10:00:00Z")
+        val asking = realOtp.copy(lastSentAt = Some(sentAt), passkeyRequest = Some("{\"ceremony\":true}"), passkeyFailed = true)
+        for
+          _ <- env.repository.create(authId1, record1.copy(step = asking), ttl)
+          found <- env.repository.find(authId1).map(_.get)
+        yield assertTrue(found.step == asking)
+      },
+      test("a code step stored before it could ask for a passkey reads back with no ceremony and no passkey error") {
+        val asking = realOtp.copy(passkeyRequest = Some("{\"ceremony\":true}"), passkeyFailed = true)
+        for
+          _ <- env.repository.create(authId1, record1.copy(step = asking), ttl)
+          _ <- env.fixtures.withoutStepField(authId1, step = "Otp", field = "passkeyRequest")
+          _ <- env.fixtures.withoutStepField(authId1, step = "Otp", field = "passkeyFailed")
+          found <- env.repository.find(authId1).map(_.map(_.step))
+        yield assertTrue(found == Some(realOtp))
+      },
       test("a conversation that fixed no factors reads back with none") {
         for
           _ <- env.repository.create(authId1, record1, ttl)
@@ -295,4 +313,11 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     )
 
 object ConversationRepositorySpec:
-  case class Env(repository: ConversationRepository)
+  case class Env(repository: ConversationRepository, fixtures: Fixtures)
+
+  /** What a case needs the storage to do that the repository under test does not: rows as an earlier release wrote them.
+    * The storage's runner implements it. */
+  trait Fixtures:
+    /** Takes `field` out of the stored `step` (`Otp`, `Credential`, ...) of the conversation, which is what a row written
+      * before the field existed holds: the field is not there, not null. */
+    def withoutStepField(authId: AuthId, step: String, field: String): Task[Unit]

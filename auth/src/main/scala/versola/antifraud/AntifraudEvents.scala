@@ -393,7 +393,9 @@ object AntifraudEvents:
     private def feedBudget(event: AntifraudEvent): UIO[Unit] =
       ZIO.foreachDiscard(event.destPrefix.filter(_ => event.channel == AntifraudChannel.sms)): prefix =>
         event.outcome match
-          case AntifraudOutcome.verified => ZIO.succeed(budget.verified(event.tenantId, prefix, event.at))
+          // A passkey that passed in place of a sent code converts it as a verified code does: a range whose codes are passed by passkey is not one
+          // whose codes nobody enters.
+          case AntifraudOutcome.verified | AntifraudOutcome.passkey_alternative => ZIO.succeed(budget.verified(event.tenantId, prefix, event.at))
           case _ => ZIO.unit
 
     private def enqueue(event: AntifraudEvent): UIO[Unit] =

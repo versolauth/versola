@@ -558,6 +558,29 @@ object AntifraudEventsSpec extends UnitSpecBase:
           limitOpen <- run(List(germany), SmsLimit(sentPerHour = 5, minVolume = 0, minConversion = 0.1))
         yield assertTrue(open, !closed, !limitOpen)
       },
+      test("a range whose codes are all passed by passkey stays open, and one whose codes nobody passes is closed") {
+        val closedGermany = PhoneRegion(region = "DE", dialCode = "+49", length = 11, regex = ".*", registration = false)
+        val breaker = SmsLimit(sentPerHour = 0, minVolume = 5, minConversion = 0.5)
+        def run(passed: AntifraudOutcome | Null) =
+          val e = env
+          ZIO.scoped:
+            for
+              _ <- e.configService.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+              _ <- e.configService.getPhoneRegions.succeedsWith(List(closedGermany))
+              _ <- e.repository.insertBatch.succeedsWith(())
+              _ <- TestClock.setTime(t0)
+              events <- build(e, small, tuning = AntifraudTestSettings.tuning.copy(smsLimits = SmsLimits(default = breaker, byPrefix = Map.empty)))
+              _ <- ZIO.foreachDiscard(1 to 5): _ =>
+                events.allowSms(clientId, phone, t0, charge = true) *>
+                  ZIO.foreachDiscard(Option(passed))(outcome => events.otpChecked(authId, clientId, None, Right(phone), outcome.nn))
+              allowed <- events.allowSms(clientId, phone, t0, charge = false).map(_ != SmsBudget.Decision.Refused)
+            yield allowed
+        for
+          byPasskey <- run(AntifraudOutcome.passkey_alternative)
+          byCode <- run(AntifraudOutcome.verified)
+          nobody <- run(null)
+        yield assertTrue(byPasskey, byCode, !nobody)
+      },
       test("with no budget configured nothing is looked up") {
         val e = env
         ZIO.scoped:
@@ -1096,6 +1119,25 @@ object AntifraudEventsSpec extends UnitSpecBase:
             written(0).subjectHash != written(2).subjectHash,
             written(1).action == AntifraudAction.otp_verify,
             written(0).tenantId.isEmpty,
+          )
+      },
+      test("a code page left for a passkey is written as a verification event with its own outcome, of the number it was asked for") {
+        val e = env
+        ZIO.scoped:
+          for
+            _ <- e.configService.find.succeedsWith(None)
+            _ <- e.repository.insertBatch.succeedsWith(())
+            events <- build(e, small, sizing = smallSizing.copy(queueCapacity = 10))
+            _ <- events.otpRequested(authId, clientId, None, Right(phone), AntifraudOutcome.faked)
+            _ <- events.otpChecked(authId, clientId, None, Right(phone), AntifraudOutcome.passkey_alternative)
+            _ <- TestClock.adjust(0.seconds)
+            _ <- TestClock.adjust(1.second)
+            written = e.repository.insertBatch.calls.flatten
+          yield assertTrue(
+            written.map(_.outcome) == List(AntifraudOutcome.faked, AntifraudOutcome.passkey_alternative),
+            written(1).action == AntifraudAction.otp_verify,
+            written(1).conversationId == authId,
+            written(1).subjectHash == written(0).subjectHash,
           )
       },
       test("a secret of its own keys the hash; without one the sessions secret does, so a config that predates it still works") {

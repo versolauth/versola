@@ -83,6 +83,11 @@ object ConversationRouter:
                     conversationService.startPasskeyAssertion(authId, record, cred, settings).map(Some(_))
               case _: ConversationStep.Credential =>
                 ZIO.none
+              // From the code page itself; not an alternative of this page now answers as a passkey that cannot be had.
+              case otp: ConversationStep.Otp =>
+                configService.getPasskeySettings(record.clientId).flatMap:
+                  case None => ZIO.none
+                  case Some(settings) => conversationService.startPasskeyOnCode(authId, record, otp, settings)
               case _ =>
                 ZIO.fail(new Exception("startPasskeyAssertion called outside Credential step"))
 
@@ -159,6 +164,21 @@ object ConversationRouter:
                 afterFactor(authId, updated, nextFactorIndex = 0)
               case other: ConversationResult.Render =>
                 ZIO.succeed(other)
+
+        // A passkey submitted from the code page satisfies the factor the code was for, and the conversation goes on as it would
+        // after the code: a passkey that proves the user is not a reason to skip what comes after.
+        case (submitted: PasskeyAssertionSubmission, ConversationRecord.Otp(otp, _)) =>
+          conversationService.checkPasskeyOnCode(authId, conversation, otp, submitted.response, ipAddress)
+            .tap(observeDecision("passkey"))
+            .flatMap:
+              case ConversationResult.StepPassed(updated) =>
+                afterFactor(authId, updated, otp.factorIndex + 1)
+              case other: ConversationResult.Render =>
+                ZIO.succeed(other)
+
+        // The browser could not make a passkey, or the prompt was dismissed: the code page, as it was.
+        case (_: PasskeyUnavailableSubmission, ConversationRecord.Otp(otp, _)) =>
+          ZIO.succeed(ConversationResult.RenderStep(otp))
 
         case (submitted: PasskeyAssertionSubmission, _) =>
           conversationService.finishPasskeyAssertion(authId, conversation, submitted.response, ipAddress)
