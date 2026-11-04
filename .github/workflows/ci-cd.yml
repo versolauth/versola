@@ -700,9 +700,10 @@ jobs:
         if: github.event_name != 'release'
         run: sbt "e2e/testOnly versola.e2e.flows.provision.LoadgenProvisionSpec"
 
+      # LoadgenProvisionSpec ran in the step above: `e2e.skipProvision` keeps it from running a second time (~48 s).
       - name: Run e2e tests
         if: github.event_name != 'release'
-        run: sbt e2e/test
+        run: sbt -De2e.skipProvision=true e2e/test
 
       - name: Stop services
         if: always()

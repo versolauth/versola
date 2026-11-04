@@ -187,7 +187,12 @@ lazy val e2e = project
     // One JVM per spec. zio-test merges the `bootstrap` layers of every spec it runs in a JVM
     // into a single shared environment, so two specs asking for the same service — the edge
     // specs all build an `EdgeFixture` — would silently be handed one another's fixture.
-    Test / testGrouping := (Test / definedTests).value.map { spec =>
+    //
+    // `-De2e.skipProvision=true` leaves out `LoadgenProvisionSpec`: CI runs it as a step of its own ahead of
+    // the rest (so a decode mismatch is reported as "provisioning broke") and would otherwise run it twice.
+    Test / testGrouping := (Test / definedTests).value
+      .filterNot(spec => sys.props.get("e2e.skipProvision").contains("true") && spec.name.endsWith(".LoadgenProvisionSpec"))
+      .map { spec =>
       Tests.Group(
         name = spec.name,
         tests = Seq(spec),

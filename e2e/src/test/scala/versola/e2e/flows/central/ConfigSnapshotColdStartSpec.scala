@@ -62,7 +62,7 @@ object ConfigSnapshotColdStartSpec extends ZIOSpec[OAuthClient & EdgeApi & EdgeF
         builder.environment().nn.putIfAbsent("HTTP_CLIENT_POOL_SIZE", "10")
         // Central is unreachable by construction, so the full two-minute wait for it (twice, one per
         // test) would only be paid to learn that. What is under test starts after the wait ends.
-        builder.environment().nn.putIfAbsent("CACHE_DEPENDENCY_WAIT_SECONDS", "10")
+        builder.environment().nn.putIfAbsent("CACHE_DEPENDENCY_WAIT_SECONDS", "3")
         (builder.start().nn, conf, log),
     )((process, conf, log) =>
       ZIO.attemptBlocking {
