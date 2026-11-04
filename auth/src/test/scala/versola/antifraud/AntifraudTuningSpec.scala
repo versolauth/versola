@@ -1,9 +1,9 @@
 package versola.antifraud
 
-import versola.oauth.client.model.{ClientId, TenantId}
-import versola.util.{Patch, UnitSpecBase}
 import versola.audit.AuditProbe
+import versola.oauth.client.model.{ClientId, TenantId}
 import versola.util.audit.AuditEvent
+import versola.util.{Patch, UnitSpecBase}
 import zio.*
 import zio.json.*
 import zio.json.ast.Json

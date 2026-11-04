@@ -125,7 +125,7 @@ object AuthAuditDetails:
 
   /** `antifraud.counters_reset`: `generation` is the one the reset took. */
   case class AntifraudCountersReset(scope: String, valueType: Option[String], generation: Option[Long] = None) extends AuditDetails
-      derives JsonEncoder:
+    derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
   /** `account.roles_updated`: what the request asked for in one tenant; the roles are those of the account, not secrets. */

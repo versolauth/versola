@@ -945,14 +945,34 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   ```hocon
   audit {
     retention     = "7 days"      # the hot window; 14 days is the sensible maximum, the long-term copy is the replication below
-    overflow      = "block"       # block: a request waits up to block-timeout for room in the writer's queue, then fails with
-                                  #   503 audit_unavailable (the event is not recorded; what the request did before it
-                                  #   recorded, a token stored or a password changed, is not undone);
+    overflow      = "block"       # of the queued events only (below): block: a request waits up to block-timeout for room in the
+                                  #   writer's queue, then fails with 503 audit_unavailable (the event is not recorded; what the
+                                  #   request did before it recorded, a refusal answered, is not undone);
                                   # drop: the event is lost and counted in audit_events_dropped_total, the request goes on
     block-timeout = "2 seconds"
     events { token-refresh = true, authorize-success = true, par-success = true }   # the high-volume kinds; failures are always recorded
   }
   ```
+
+  **Three ways an event is written, by what it witnesses.** An event of a *state change* is inserted **in the transaction
+  of the change**, by the same statement batch that makes it: the sign-in that creates the session (`login.completed`), the
+  refresh token a grant writes (`token.issued` when a refresh token is written with it, `token.reuse_detected`,
+  `token.revoked`), the sessions an end of session ends (`session.ended`, one row per session), an account registered, changed
+  or removed (`account.registered`, `account.claims_updated`, `account.deleted`, `account.roles_updated`), a password
+  (`account.password_set`, `account.password_changed`, `account.password_reset`), a consent (`consent.granted`,
+  `consent.revoked`), a passkey (`account.passkey_enrolled`, `account.passkey_removed`) and an administrator's change to the
+  antifraud lists, settings or counters (`antifraud.list_changed`, `antifraud.settings_changed`, `antifraud.counters_reset`).
+  The change and its row commit or roll back together, only a change that happened has a row (a repeated revocation, a
+  session already ended or a role already granted writes none), and the writer's queue and `audit.overflow` are not in the
+  way: a database that cannot take the row fails the request, with the status it would answer for the change itself (500), and
+  nothing was changed. These statements add one INSERT to the transaction (two statements where the change was one autocommit
+  statement). The `account.limits_reset` event, whose change is counters held by other rows, is written in a statement of its
+  own *before* the action, and the action is refused with 503 `audit_unavailable` when it cannot be written. Every other event
+  (refusals, `login.step`, `authorize.request`, `par.request`, `consent.denied`, `client.auth_failed`, a `token.issued` with no
+  refresh token written with it, the revocation of an access token) has no change of auth's own to be written with, and is
+  **queued** and written in batches by the writer, under `audit.overflow`. `account.deleted` and `account.roles_updated` are the
+  effect of what an administrator decided in `central`, whose own row records the decision: they are recorded here with the
+  actor `service`.
 
   **The table is append-only.** A trigger (`audit_event_immutable`, on every partition) refuses `UPDATE` and `DELETE`
   unless the transaction has set `versola.audit_maintenance = 'on'`, which only the service's own prune of the default
@@ -993,8 +1013,8 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 
   Central reads auth's rows through two internal endpoints (`GET /audit/users/{userId}/events` and `/summary`,
   authenticated with the service token like `/users/*`; not public, not in the OpenAPI specs), and tells auth which
-  administrator acts on a user with the `X-Versola-Actor` header on every `/users/*` call it makes for one; a call
-  without it is recorded as the `central` service's.
+  administrator acts on a user with the `X-Versola-Actor` header on every `/users/*` and `/antifraud/*` call it makes for
+  one; a call without it is recorded as the `central` service's.
 
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).

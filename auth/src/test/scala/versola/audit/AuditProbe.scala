@@ -2,18 +2,10 @@ package versola.audit
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.util.audit.{
-  ActorType,
-  AuditDetails,
-  AuditDraft,
-  AuditEvent,
-  AuditEvents,
-  AuditKind,
-  AuditOutcome,
-  AuditSeverity,
-  AuditSource,
-}
+import versola.util.audit.{ActorType, AuditDetails, AuditDraft, AuditEvent, AuditEvents, AuditKind, AuditOutcome, AuditSeverity, AuditSource}
 import zio.*
+import zio.json.*
+import zio.json.ast.Json
 
 import java.time.Instant
 import java.util.UUID
@@ -72,6 +64,15 @@ object AuditProbe:
       xa.connect:
         sql"""SELECT kind, session_id, details::text FROM audit_event WHERE kind = ${kind.value} AND user_id = $userId ORDER BY id"""
           .query[(String, Option[String], String)].run().toList
+
+  /** One field of the `details` of the row of this event: what the repository filled in, a count or an id. */
+  def detail(event: AuditEvent, name: String): ZIO[TransactorZIO, Throwable, Option[Json]] =
+    detailsOf(event).map(_.flatMap(_.fromJson[Json.Obj].toOption).flatMap(_.fields.toMap.get(name)))
+
+  /** The user and the session the row of this event names. */
+  def subject(event: AuditEvent): ZIO[TransactorZIO, Throwable, Option[(Option[UUID], Option[String])]] =
+    ZIO.serviceWithZIO[TransactorZIO]: xa =>
+      xa.connect(sql"SELECT user_id, session_id FROM audit_event WHERE id = ${event.id}".query[(Option[UUID], Option[String])].run().headOption)
 
   /** The `details` of the row of this event, as text. */
   def detailsOf(event: AuditEvent): ZIO[TransactorZIO, Throwable, Option[String]] =

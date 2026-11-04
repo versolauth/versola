@@ -2,8 +2,8 @@ package versola.antifraud
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.oauth.client.model.TenantId
 import versola.audit.AuditSupport.*
+import versola.oauth.client.model.TenantId
 import versola.util.audit.AuditEvent
 import versola.util.postgres.{AuditInsert, BasicCodecs}
 import zio.json.ast.Json

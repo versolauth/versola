@@ -1,10 +1,10 @@
 package versola.antifraud
 
+import versola.audit.AuditSupport.*
+import versola.audit.{AuthAuditDetails, AuthAuditKinds}
 import versola.user.authorizeInternal
 import versola.user.model.UserId
 import versola.util.CoreConfig
-import versola.audit.AuditSupport.*
-import versola.audit.{AuthAuditDetails, AuthAuditKinds}
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{Controller, Observability}
 import zio.*

@@ -23,11 +23,11 @@ import com.yubico.webauthn.{
   StartAssertionOptions,
   StartRegistrationOptions,
 }
+import versola.audit.AuditSupport.*
+import versola.audit.{AuthAuditDetails, AuthAuditKinds}
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PasskeySettings}
-import versola.audit.AuditSupport.*
-import versola.audit.{AuthAuditDetails, AuthAuditKinds}
 import versola.user.model.UserId
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Observability

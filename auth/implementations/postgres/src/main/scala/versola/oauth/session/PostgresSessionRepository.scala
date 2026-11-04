@@ -4,6 +4,7 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.json.JsonBDbCodec
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
+import versola.audit.AuditSupport.*
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, ResourceUri, ScopeToken}
 import versola.oauth.model.{AccessToken, Cnf, Nonce, RefreshToken}
 import versola.oauth.model.{Nonce, RefreshToken}
@@ -35,7 +36,6 @@ import versola.oauth.session.model.{
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.MAC
-import versola.audit.AuditSupport.*
 import versola.util.audit.AuditEvent
 import versola.util.postgres.{AuditInsert, BasicCodecs}
 import zio.json.*
@@ -562,11 +562,14 @@ class PostgresSessionRepository(xa: TransactorZIO)
           .run()
           .headOption
           .map: (family, userId) =>
+            // The rows brought forward include the generations kept for replay detection; the count is of the tokens that could still
+            // have been exchanged, which is what the event is about.
             val revoked = sql"""
               UPDATE refresh_tokens
               SET expires_at = $now
               WHERE family_id = $family AND expires_at > $now
-            """.update.run()
+              RETURNING rotated_at IS NULL
+            """.query[Boolean].run().count(identity)
 
             // A replay is only known once the family is found, and the row says which family, whose, and how much of it was
             // still live: those are filled into the service's template. A token that names no family is no event.
@@ -643,7 +646,8 @@ class PostgresSessionRepository(xa: TransactorZIO)
         val revoked = sql"""
           UPDATE refresh_tokens SET expires_at = $now
           WHERE family_id = $familyId AND expires_at > $now
-        """.update.run()
+          RETURNING rotated_at IS NULL
+        """.query[Boolean].run().count(identity)
         // The replay of an authorization code is the fact, whether or not any token of its family is left to revoke.
         AuditInsert.insert(audit.withDetail("familyId", Json.Str(familyId.toString)).withCount("revokedCount", revoked))
       .unit

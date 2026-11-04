@@ -35,7 +35,9 @@ object AntifraudCountersControllerSpec extends ZIOSpecDefault, ZIOStubs:
       tracing <- NoopTracing.layer.build
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
-          AntifraudCountersController.routes.provideEnvironment(ZEnvironment(counters) ++ ZEnvironment(config) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing),
+          AntifraudCountersController.routes.provideEnvironment(
+            ZEnvironment(counters) ++ ZEnvironment(config) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing,
+          ),
         ),
       )
       sent <-
@@ -75,7 +77,15 @@ object AntifraudCountersControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- counters.reset.succeedsWith(1L)
         response <- call(counters, Request.post(url, body("""{"scope":"budget"}""")))
-      yield assertTrue(response.status == Status.Accepted, counters.reset.calls.map((scope, valueType, value, actor, _) => (scope, valueType, value, actor)) == List((CounterScope.budget, None, None, userId)))
+      yield assertTrue(
+        response.status == Status.Accepted,
+        counters.reset.calls.map((scope, valueType, value, actor, _) => (scope, valueType, value, actor)) == List((
+          CounterScope.budget,
+          None,
+          None,
+          userId,
+        )),
+      )
     },
     test("a request the service refuses is 400 with its reason") {
       val counters = stub[AntifraudCounters]

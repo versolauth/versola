@@ -1,7 +1,7 @@
 package versola.user
 
 import org.scalamock.stubs.ZIOStubs
-import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.audit.{AuthActors, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord, Password}
 import versola.oauth.challenge.passkey.PasskeyRepository
@@ -900,6 +900,46 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
           )
         yield assertTrue(resp.status == Status.InternalServerError, drafts.isEmpty)
       },
+      test("DELETE /users hands account.deleted down to be inserted with the removal, as an effect of central's decision: the actor is the service") {
+        val repo = stub[UserRepository]
+        for
+          _ <- repo.delete.succeedsWith(())
+          _ <- logoutService.invalidateAllSessions.succeedsWith(())
+          (resp, drafts) <- audited(
+            token =>
+              Request(method = Method.DELETE, url = (URL.empty / "users").addQueryParam("id", passkeyUserId.toString))
+                .addHeader(Header.Authorization.Bearer(token)),
+            users = repo,
+          )
+        yield assertTrue(
+          resp.status == Status.NoContent,
+          drafts.map(_.kind) == List(AuthAuditKinds.AccountDeleted),
+          drafts.head.actor == Some((AuthActors.service, None)),
+          drafts.head.userId == Some(passkeyUserId.asInstanceOf[UUID]),
+          repo.delete.calls.map(_._2.kind) == List(AuthAuditKinds.AccountDeleted),
+        )
+      },
+      test("PATCH /users/roles hands account.roles_updated down with the roles asked for, as the service's effect") {
+        val repo = stub[UserRepository]
+        for
+          _ <- repo.updateRoles.succeedsWith(())
+          (resp, drafts) <- audited(
+            json(
+              Method.PATCH,
+              List("users", "roles"),
+              s"""{"userId":"$passkeyUserId","tenantId":"t1","add":["editor","viewer"],"remove":["guest"]}""",
+              _,
+            ),
+            users = repo,
+          )
+        yield assertTrue(
+          resp.status == Status.NoContent,
+          drafts.map(_.kind) == List(AuthAuditKinds.AccountRolesUpdated),
+          drafts.head.actor == Some((AuthActors.service, None)),
+          drafts.head.details == AuthAuditDetails.RolesUpdated("t1", List("editor", "viewer"), List("guest")),
+          repo.updateRoles.calls.map(_._5.kind) == List(AuthAuditKinds.AccountRolesUpdated),
+        )
+      },
       test("a call without the service token is refused and records nothing") {
         for
           client <- ZIO.service[Client]
@@ -1001,16 +1041,6 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
           drafts.head.details == AuthAuditDetails.Account(via = "admin"),
           !drafts.head.details.toJson.toString.contains("S3cret-Pass!"),
         )
-      },
-      test("a change whose event the repository cannot insert is not made: 500, and nothing is counted") {
-        val repo = stub[UserRepository]
-        for
-          _ <- repo.patchClaims.failsWith(RuntimeException("audit insert refused"))
-          (resp, drafts) <- audited(
-            json(Method.PATCH, List("users", "claims"), """{"id":"00000000-0000-0000-0000-000000000001","claims":{"name":"John"}}""", _),
-            users = repo,
-          )
-        yield assertTrue(resp.status == Status.InternalServerError, drafts.isEmpty)
       },
       test("limits reset (S′) is refused with 503 before anything is cleared when the log cannot take the event") {
         val throttle = stub[ChallengeThrottleRepository]

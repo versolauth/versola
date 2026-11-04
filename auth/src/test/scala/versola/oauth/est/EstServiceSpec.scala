@@ -54,8 +54,6 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val recording = CapturingAuditEvents.shared()
     (recording, EstService.Impl(Option.when(true)(ca.get), central, limiter(attempts), recording))
 
-  private val leaf = EstCodec.certificates(issuedChain).get.head
-
   def spec = suite("EstService")(
     suite("enroll")(
       test("passes the token, the user name and the request to central, and answers with a certs-only PKCS#7") {
@@ -217,41 +215,18 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
     ),
     suite("audit log (cert.*)")(
-      test("an enrolment records cert.enrolled with the serial and expiry central's certificate has; the client is the actor") {
-        val central = stub[EstCentralClient]
-        val (recording, est) = audited(central)
-        for
-          _ <- central.enroll.succeedsWith(EstCentralClient.Issued(issuedChain, Some(endsAt)))
-          _ <- est.enroll(credentials, csrBody)
-          drafts <- recording.recorded
-        yield assertTrue(
-          drafts.map(_.kind) == List(AuthAuditKinds.CertEnrolled),
-          drafts.head.outcome == AuditOutcome.success,
-          drafts.head.actor == Some((AuthActors.client, Some("bank-a"))),
-          drafts.head.details == AuthAuditDetails.Cert(
-            operation = "enroll",
-            clientId = Some("bank-a"),
-            serial = Some(leaf.getSerialNumber.toString(16)),
-            notAfter = Some(leaf.getNotAfter.toInstant.toString),
-          ),
-          // the one-time token is not anywhere in it
-          !drafts.head.details.toJson.toString.contains("TOKEN"),
-        )
-      },
-      test("a renewal records cert.renewed for the client the presented certificate names") {
+      test("a certificate that is issued records nothing here: central records it in the transaction that stores it") {
         val central = stub[EstCentralClient]
         val (recording, est) = audited(central)
         val presented = TestCertificates.generate(subject = "CN=bank-a,OU=tenant-a,O=Versola")
         for
           _ <- realTime
+          _ <- central.enroll.succeedsWith(EstCentralClient.Issued(issuedChain, Some(endsAt)))
           _ <- central.renew.succeedsWith(EstCentralClient.Issued(issuedChain, None))
+          _ <- est.enroll(credentials, csrBody)
           _ <- est.reenroll(presented.certificate, csrBody)
           drafts <- recording.recorded
-        yield assertTrue(
-          drafts.map(_.kind) == List(AuthAuditKinds.CertRenewed),
-          drafts.head.actor == Some((AuthActors.client, Some("bank-a"))),
-          drafts.head.details.toJson.toString.contains("\"operation\":\"reenroll\""),
-        )
+        yield assertTrue(drafts.isEmpty)
       },
       test("what central refuses is recorded by what it says about the caller: denied for who, failure for what was asked") {
         val central = stub[EstCentralClient]

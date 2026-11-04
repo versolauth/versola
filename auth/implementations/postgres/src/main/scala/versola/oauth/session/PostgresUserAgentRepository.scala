@@ -2,10 +2,10 @@ package versola.oauth.session
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
+import versola.audit.AuditSupport.*
 import versola.oauth.model.UserAgentData
 import versola.oauth.session.model.{UserAgentDetails, UserAgentId, UserAgentRecord}
 import versola.user.model.UserId
-import versola.audit.AuditSupport.*
 import versola.util.audit.AuditEvent
 import versola.util.postgres.{AuditInsert, BasicCodecs}
 import zio.{Clock, Duration, Task, ZIO, ZLayer}

@@ -1,9 +1,9 @@
 package versola.user
 
 import versola.audit.AuditSupport.*
+import versola.audit.AuthActors
 import versola.audit.AuthAuditDetails
 import versola.audit.AuthAuditKinds
-import versola.audit.AuthActors
 import versola.auth.model.CredentialId
 import versola.auth.model.Password
 import versola.oauth.challenge.passkey.PasskeyRepository

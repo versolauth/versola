@@ -65,7 +65,9 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
           AntifraudListController.routes.provideEnvironment(
-            ZEnvironment(lists) ++ ZEnvironment(config) ++ ZEnvironment(RecordingAntifraudEvents()) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing,
+            ZEnvironment(lists) ++ ZEnvironment(config) ++ ZEnvironment(RecordingAntifraudEvents()) ++ ZEnvironment[AuditEvents](
+              AuditEvents.noop,
+            ) ++ tracing,
           ),
         ),
       )
@@ -100,7 +102,9 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             AntifraudListController.routes.provideEnvironment(
-              ZEnvironment(lists) ++ ZEnvironment(config) ++ ZEnvironment(RecordingAntifraudEvents()) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing,
+              ZEnvironment(lists) ++ ZEnvironment(config) ++ ZEnvironment(RecordingAntifraudEvents()) ++ ZEnvironment[AuditEvents](
+                AuditEvents.noop,
+              ) ++ tracing,
             ),
           ),
         )

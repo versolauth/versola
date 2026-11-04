@@ -425,7 +425,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
           service <- ZIO.service[WebAuthnService].provide(
             ZLayer.succeed(repository),
             ZLayer.succeed(configService),
-          ZLayer.succeed[AuditEvents](AuditEvents.noop),
+            ZLayer.succeed[AuditEvents](AuditEvents.noop),
             WebAuthnService.live,
           )
           _ <- repository.listByUser.succeedsWith(Vector.empty)

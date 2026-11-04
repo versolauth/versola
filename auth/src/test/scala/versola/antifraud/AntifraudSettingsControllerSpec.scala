@@ -40,7 +40,9 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       tracing <- NoopTracing.layer.build
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
-          AntifraudSettingsController.routes.provideEnvironment(ZEnvironment(tuning) ++ ZEnvironment(config) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing),
+          AntifraudSettingsController.routes.provideEnvironment(
+            ZEnvironment(tuning) ++ ZEnvironment(config) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing,
+          ),
         ),
       )
       signed <- token(key).map(t => request.addHeader(Header.Authorization.Bearer(t)).addHeader(Header.ContentType(MediaType.application.json)))
@@ -67,7 +69,9 @@ object AntifraudSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
         tracing <- NoopTracing.layer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
-            AntifraudSettingsController.routes.provideEnvironment(ZEnvironment(tuning) ++ ZEnvironment(config) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing),
+            AntifraudSettingsController.routes.provideEnvironment(
+              ZEnvironment(tuning) ++ ZEnvironment(config) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing,
+            ),
           ),
         )
         anonymous <- client.batched(Request.get(base))

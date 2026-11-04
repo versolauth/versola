@@ -1,10 +1,10 @@
 package versola.oauth.client
 
+import versola.audit.AuditSupport.*
+import versola.audit.{AuthActors, AuthAuditDetails, AuthAuditKinds}
 import versola.oauth.delivery.DeliveryChannels
 import versola.oauth.jwks.JwksService
 import versola.oauth.mtls.EdgeCertificateTrust
-import versola.audit.AuditSupport.*
-import versola.audit.{AuthActors, AuthAuditDetails, AuthAuditKinds}
 import versola.user.authorizeInternal
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Controller

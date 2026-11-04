@@ -33,10 +33,11 @@ final class CapturingAuditEvents private (
     built.get.flatMap(_.get(event.id).fold(ZIO.unit)(draft => drafts.update(_ :+ draft)))
 
   /** The drafts that were built and not (yet) committed: what a repository was handed and may or may not have inserted. */
-  val builtOnly: UIO[List[AuditDraft]] = for
-    all <- built.get
-    kept <- drafts.get
-  yield all.values.filterNot(kept.contains).toList
+  val builtOnly: UIO[List[AuditDraft]] =
+    for
+      all <- built.get
+      kept <- drafts.get
+    yield all.values.filterNot(kept.contains).toList
 
   /** What was recorded, oldest first. */
   val recorded: UIO[List[AuditDraft]] = drafts.get.map(_.toList)

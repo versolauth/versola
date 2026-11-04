@@ -109,7 +109,13 @@ object AntifraudCounters:
     // Resets whose second pass (forget what was loaded of the others, delete own rows again) is due, and when.
     private val settling = AtomicReference(List.empty[(Instant, CounterReset)])
 
-    override def reset(scope: CounterScope, valueType: Option[CounterValueType], value: Option[String], actor: String, audit: AuditEvent): Task[Long] =
+    override def reset(
+        scope: CounterScope,
+        valueType: Option[CounterValueType],
+        value: Option[String],
+        actor: String,
+        audit: AuditEvent,
+    ): Task[Long] =
       for
         resolved <- resolve(scope, valueType, value)
         now <- Clock.instant
