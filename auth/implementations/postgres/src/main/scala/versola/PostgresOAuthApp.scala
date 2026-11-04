@@ -1,6 +1,7 @@
 package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
+import versola.audit.{AuditController, AuditReadRepository, AuditReportService, PostgresAuditEventRepository}
 import versola.antifraud.{
   Antifraud,
   AntifraudCounterResetRepository,
@@ -82,6 +83,7 @@ import versola.user.{PostgresUserRepository, UserController, UserRegistrationSyn
 import versola.util.*
 import versola.util.SequentialLayers.*
 import versola.util.http.VersolaApp
+import versola.util.audit.{AuditEventRepository, AuditEvents, AuditSource}
 import versola.util.net.{AsnResolver, AsnSettings, GeoResolver, GeoSettings}
 import versola.util.postgres.{PostgresConfig, PostgresConfigSnapshotRepository, PostgresHikariDataSource, PostgresWalMetrics}
 import zio.*
@@ -91,6 +93,7 @@ import zio.http.Server.RequestStreaming
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.security.PrivateKey
+import java.util.UUID
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
 
@@ -169,7 +172,11 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       SessionService &
       UserRegistrationSyncClient &
       EstCentralClient &
-      EstService
+      EstService &
+      AuditEvents &
+      AuditEvents.Settings &
+      AuditReadRepository &
+      AuditReportService
 
   // central is the one peer auth cannot work without and waits for at start-up
   override protected def guardExemptPeers =
@@ -193,6 +200,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       JwksController.routes,
       MetadataController.routes,
       UserController.routes,
+      AuditController.routes,
       AntifraudListController.routes,
       AntifraudCountersController.routes,
       AntifraudSettingsController.routes,
@@ -275,6 +283,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresPasskeyRepository.live >++>
       PostgresChallengeThrottleRepository.live >++>
       PostgresAntifraudEventRepository.live >++>
+      PostgresAuditEventRepository.live >++>
       PostgresVelocityRepository.live >++>
       PostgresAntifraudCounterResetRepository.live >++>
       PostgresAntifraudListRepository.live >++>
@@ -290,6 +299,55 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     ZLayer.service[CoreConfig].flatMap { env =>
       SecurityService.live(env.get[CoreConfig].argon2OrDefault)
     }
+
+  /** One per process: what tells the rows of one instance from another's in the audit log, as the velocity counters' instance id does. */
+  private val auditNodeId: String = UUID.randomUUID().toString
+
+  /** The keys of the `audit` block of the config, every one required (`scripts/gen-env.scala` writes them). `adminUserViewed` is central's
+    * and auth has no such event, so it is off here. */
+  private case class AuditConfig(
+      retention: Duration,
+      overflow: String,
+      blockTimeout: Duration,
+      events: AuditConfig.Events,
+  )
+
+  private object AuditConfig:
+    case class Events(tokenRefresh: Boolean, authorizeSuccess: Boolean, parSuccess: Boolean)
+
+    /** A retention the partitions cannot keep or an overflow that is neither word stops the start, naming the key. */
+    def settings(config: AuditConfig): Either[Config.Error, AuditEvents.Settings] =
+      for
+        overflow <- AuditEvents.Overflow.values.find(_.toString == config.overflow)
+          .toRight(Config.Error.InvalidData(message = s"audit.overflow must be one of block, drop, not '${config.overflow}'"))
+        _ <- Either.cond(
+          config.retention.toDays >= 1 && config.retention.toDays <= 14,
+          (),
+          Config.Error.InvalidData(message = "audit.retention must be between 1 and 14 days"),
+        )
+        _ <- Either.cond(
+          config.blockTimeout.toMillis > 0,
+          (),
+          Config.Error.InvalidData(message = "audit.block-timeout must be positive"),
+        )
+      yield AuditEvents.Settings(
+        retention = config.retention,
+        overflow = overflow,
+        blockTimeout = config.blockTimeout,
+        events = AuditEvents.EventTiers(
+          tokenRefresh = config.events.tokenRefresh,
+          authorizeSuccess = config.events.authorizeSuccess,
+          parSuccess = config.events.parSuccess,
+          adminUserViewed = false,
+        ),
+      )
+
+  /** The `audit` block of the config: every key is required, so a config written before it existed makes auth refuse to start
+    * naming the missing key. */
+  private val auditSettings: ZLayer[ConfigProvider, Config.Error, AuditEvents.Settings] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("audit", deriveConfig[AuditConfig])))
+        .flatMap(config => ZIO.fromEither(AuditConfig.settings(config)))
 
   /** The `antifraud` block of the config; every key has its value in `versola-defaults.conf`. */
   private val antifraudSettings: ZLayer[ConfigProvider, Config.Error, AntifraudEvents.Settings] =
@@ -350,6 +408,10 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       configSnapshot >++>
       SecureRandom.live >++>
       securityService >++>
+      // The audit writer and its partition maintenance: before everything that records into it.
+      auditSettings >++>
+      AuditEvents.live(AuditSource.auth, auditNodeId) >++>
+      AuditReportService.live >++>
       // Sizes its own expiry ring from `dpop.iat-leeway`, so it has to follow the config.
       PostgresDpopProofRepository.live >++>
       PostgresClientAssertionRepository.live >++>

@@ -1,11 +1,22 @@
 package versola.user
 
+import versola.util.audit.{ActorType, AuditContext}
 import versola.util.http.Unauthorized
 import versola.util.{CoreConfig, JWT}
 import zio.ZIO
 import zio.http.{Header, Request}
 import zio.json.JsonCodec
 
+import java.util.UUID
+import scala.util.Try
+
+/** Who the administrator behind a call from central is, for the audit log: the user id edge verified, which central forwards as
+  * this header on the calls it makes for one. */
+val ActorHeader = "X-Versola-Actor"
+
+/** Verifies the service token of a call from central. Also tells the audit log who acts: the administrator named by
+  * [[ActorHeader]] when it carries a user id, else the `central` service itself (a call that no administrator made, or one from
+  * a central that does not send the header yet). The header is read only once the token has verified, so no one else can name an actor. */
 def authorizeInternal(request: Request): ZIO[CoreConfig, Unauthorized.type, Unit] =
   request.header(Header.Authorization) match
     case Some(Header.Authorization.Bearer(token)) =>
@@ -14,6 +25,11 @@ def authorizeInternal(request: Request): ZIO[CoreConfig, Unauthorized.type, Unit
         _ <- JWT.deserialize[InternalAuthClaims](token.stringValue, config.central.secretKey, JWT.Type.JWT)
           .tapError(err => ZIO.logError(s"Internal auth failed: $err"))
           .orElseFail(Unauthorized)
+        // Only a user id is taken as an administrator: anything else is no one's, and the call is the service's.
+        admin = request.headers.get(ActorHeader).map(_.trim).filter(value => Try(UUID.fromString(value)).isSuccess)
+        _ <- admin match
+          case Some(id) => AuditContext.setActor(ActorType.admin, Some(id))
+          case None => AuditContext.setActor(ActorType.service, Some("central"))
       yield ()
 
     case _ =>
