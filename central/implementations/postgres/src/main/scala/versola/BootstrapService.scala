@@ -507,7 +507,7 @@ object BootstrapService:
     (
       Permission("audit:read"),
       localized("View the audit report of a user", "Просмотр отчёта аудита по пользователю"),
-      Set(endpointId("GET", "/audit/reports/user")),
+      Set(endpointId("GET", "/users/audit")),
     ),
     // Reserved (#469): nothing is managed through the console yet (the log is configured in a file). Not granted by
     // `users:manage`, nor by anything else but the administrator role.
@@ -1058,7 +1058,7 @@ object BootstrapService:
     "POST" -> "/antifraud/counters/reset",
     "GET" -> "/antifraud/rules",
     "GET" -> "/antifraud/status",
-    "GET" -> "/audit/reports/user",
+    "GET" -> "/users/audit",
   )
 
   /** The routes that act in the scope of a tenant, the tenant of the token (the lists' `/antifraud/lists/...`; the

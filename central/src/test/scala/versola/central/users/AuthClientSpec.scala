@@ -542,7 +542,7 @@ object AuthClientSpec extends ZIOSpecDefault:
         _ <- TestClient.addRoutes(
           Handler.fromFunctionZIO[Request]: r =>
             seen.update(r :: _).as:
-              if r.url.path.encode.endsWith("/events") then
+              if r.url.path.encode.endsWith("audit-events") then
                 Response.json(s"""{"events":[$eventJson],"nextCursor":"abc","retentionFrom":"2026-10-27T00:00:00Z"}""")
               else Response.json("""{"byKind":[],"sessions":{"created":1,"ended":0}}""")
           .toRoutes,
@@ -553,8 +553,8 @@ object AuthClientSpec extends ZIOSpecDefault:
         summary <- client.getUserAuditSummary(userId, Some(from), None)
         requests <- seen.get.map(_.reverse)
       yield assertTrue(
-        requests.map(_.url.path.encode) == List("audit/events", "audit/summary"),
-        requests.forall(_.url.queryParams.map.get("userId").flatMap(_.headOption).contains(userId.toString)),
+        requests.map(_.url.path.encode) == List("users/audit-events", "users/audit-summary"),
+        requests.forall(_.url.queryParams.map.get("id").flatMap(_.headOption).contains(userId.toString)),
         requests.head.url.queryParams.map.get("from").flatMap(_.headOption).contains("2026-11-01T00:00:00Z"),
         requests.head.url.queryParams.map.get("cursor").flatMap(_.headOption).contains("cur"),
         requests.head.url.queryParams.map.get("limit").flatMap(_.headOption).contains("50"),

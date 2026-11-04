@@ -1,13 +1,14 @@
-package versola.central.audit
+package versola.central.users
 
 import io.opentelemetry.api
 import org.scalamock.stubs.ZIOStubs
-import versola.central.TestAdminAuth
+import versola.central.audit.{AuditCursor, AuditReportError, AuditReportService, ReportWindow, UserAuditReport}
+import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
-import versola.central.users.UserId
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.Base64Url
-import versola.util.PageLimit
 import versola.util.http.Observability
+import versola.util.{EnvName, PageLimit}
 import zio.*
 import zio.http.*
 import zio.telemetry.opentelemetry.OpenTelemetry
@@ -17,7 +18,7 @@ import zio.test.*
 import java.time.Instant
 import java.util.UUID
 
-object AuditReportControllerSpec extends ZIOSpecDefault, ZIOStubs:
+object UserAuditEndpointSpec extends ZIOSpecDefault, ZIOStubs:
   private val userId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
 
   private val tracingLayer: ULayer[Tracing] =
@@ -40,11 +41,17 @@ object AuditReportControllerSpec extends ZIOSpecDefault, ZIOStubs:
     for
       client <- ZIO.service[Client]
       resources = stub[ResourceService]
+      users = stub[UserService]
+      edge = stub[EdgeService]
       tracing <- tracingLayer.build
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
-          AuditReportController.routes.provideEnvironment(
-            ZEnvironment[AuditReportService](service) ++ ZEnvironment[ResourceService](resources) ++ tracing,
+          UserController.routes.provideEnvironment(
+            ZEnvironment[AuditReportService](service) ++ ZEnvironment[ResourceService](resources) ++ ZEnvironment[UserService](users) ++
+              ZEnvironment[EdgeService](edge) ++ ZEnvironment[CentralConfig](TestCentralConfig.config) ++ ZEnvironment[EnvName](
+                EnvName.Test("test"),
+              ) ++
+              tracing,
           ),
         ),
       )
@@ -52,18 +59,18 @@ object AuditReportControllerSpec extends ZIOSpecDefault, ZIOStubs:
       response <- client.batched(if authorized then request.addHeader(TestAdminAuth.basicAuthHeader) else request)
     yield response
 
-  private val base = URL.empty / "audit" / "reports" / "user"
+  private val base = URL.empty / "users" / "audit"
   private val cursor = AuditCursor(until = Instant.parse("2026-11-02T00:00:00Z"), auth = Some("more"), key = None, centralOnly = false)
   private val cursorParam = AuditCursor.encode(cursor)
 
-  def spec = suite("AuditReportController")(
+  def spec = suite("UserController: the audit report")(
     test("the report is served with the user, the window, the cursor and the page size the request named") {
       val service = stub[AuditReportService]
       for
         _ <- service.userReport.succeedsWith(report)
         response <- run(
           Request.get(
-            base.addQueryParam("userId", userId.toString).addQueryParam("from", "2026-11-01T00:00:00Z").addQueryParam("to", "2026-11-03T00:00:00Z")
+            base.addQueryParam("id", userId.toString).addQueryParam("from", "2026-11-01T00:00:00Z").addQueryParam("to", "2026-11-03T00:00:00Z")
               .addQueryParam("cursor", cursorParam).addQueryParam("limit", "25"),
           ),
           service,
@@ -80,18 +87,18 @@ object AuditReportControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("a request without the central credential is refused and asks nothing of the service") {
       val service = stub[AuditReportService]
-      for response <- run(Request.get(base.addQueryParam("userId", userId.toString)), service, authorized = false)
+      for response <- run(Request.get(base.addQueryParam("id", userId.toString)), service, authorized = false)
       yield assertTrue(response.status == Status.Unauthorized, service.userReport.calls.isEmpty)
     },
     test("a malformed userId, from, to, limit or cursor is a bad request with the error code set, and reaches nothing") {
       val service = stub[AuditReportService]
-      val good = base.addQueryParam("userId", userId.toString)
+      val good = base.addQueryParam("id", userId.toString)
       val garbage = Base64Url.encode("{}".getBytes("UTF-8")).toString
       val notJson = Base64Url.encode("not json".getBytes("UTF-8")).toString
       def get(url: URL) = run(Request.get(url), service)
       for
         missing <- get(base)
-        user <- get(base.addQueryParam("userId", "someone"))
+        user <- get(base.addQueryParam("id", "someone"))
         from <- get(good.addQueryParam("from", "yesterday"))
         to <- get(good.addQueryParam("to", "2026-13-45"))
         zero <- get(good.addQueryParam("limit", "0"))
@@ -115,7 +122,7 @@ object AuditReportControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- service.userReport.failsWith(AuditReportError.Invalid("to is before from"))
         response <- run(
           Request.get(base.addQueryParam(
-            "userId",
+            "id",
             userId.toString,
           ).addQueryParam("from", "2026-11-03T00:00:00Z").addQueryParam("to", "2026-11-01T00:00:00Z")),
           service,
@@ -127,7 +134,7 @@ object AuditReportControllerSpec extends ZIOSpecDefault, ZIOStubs:
       val service = stub[AuditReportService]
       for
         _ <- service.userReport.failsWith(AuditReportError.Busy)
-        response <- run(Request.get(base.addQueryParam("userId", userId.toString)), service)
+        response <- run(Request.get(base.addQueryParam("id", userId.toString)), service)
       yield assertTrue(response.status == Status.ServiceUnavailable)
     },
   ).provideSomeLayer(TestClient.layer) @@ TestAspect.sequential @@ TestAspect.silentLogging

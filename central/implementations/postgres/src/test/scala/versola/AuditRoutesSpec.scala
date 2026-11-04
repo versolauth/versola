@@ -81,7 +81,7 @@ object AuditRoutesSpec extends ZIOSpecDefault:
       assertTrue(
         reads == Set(
           ("GET", "/users", "admin.user.viewed", "user"),
-          ("GET", "/audit/reports/user", "admin.audit.queried", "user"),
+          ("GET", "/users/audit", "admin.audit.queried", "user"),
         ),
       )
     },

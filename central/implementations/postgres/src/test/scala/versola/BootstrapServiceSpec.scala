@@ -448,7 +448,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         // the user routes keep `userId` for the target: nothing here is injected into a body, and the names are the actor's own
         BootstrapService.centralInjects("POST", "/users/password/reset") == BootstrapService.actorInjects,
         BootstrapService.centralInjects("DELETE", "/configuration/clients") == BootstrapService.actorInjects,
-        prod.contains("GET" -> "/audit/reports/user"),
+        prod.contains("GET" -> "/users/audit"),
       )
     },
     test(
@@ -461,15 +461,14 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
           case (role, _, permissions) if permissions.contains(versola.central.configuration.permissions.Permission(permission)) => role.toString
         }.toSet
       assertTrue(
-        endpoints("audit:read").contains(Set(endpointId("GET", "/audit/reports/user"))),
+        endpoints("audit:read").contains(Set(endpointId("GET", "/users/audit"))),
         // reserved: nothing is managed yet
         endpoints("audit:manage").contains(Set.empty),
         holders("audit:read") == Set("oauth-admin", "security", "auditor"),
         holders("audit:manage") == Set("oauth-admin"),
-        // users:manage does not grant a look at the trail
-        !BootstrapService.permissionCatalog.filter(
-          _._1 == versola.central.configuration.permissions.Permission("users:manage"),
-        ).exists(_._3.contains(endpointId("GET", "/audit/reports/user"))),
+        // the path is under /users, but the endpoint is its own: no other permission grants a look at the trail (edge matches a path to
+        // an endpoint segment by segment, not by prefix)
+        BootstrapService.permissionCatalog.filter(_._3.contains(endpointId("GET", "/users/audit"))).map(_._1.toString) == List("audit:read"),
       )
     },
     test("a deployment that registered the endpoints with older inject rules gets the current ones, and nothing but the inject rules is rewritten") {

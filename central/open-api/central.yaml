@@ -80,7 +80,7 @@ info:
     as `actorId` (a query parameter, or a field of the body) on the calls it makes for the request, so that auth records
     who asked.
 
-    What the log holds about one user is read through `GET /audit/reports/user` (`audit:read`).
+    What the log holds about one user is read through `GET /users/audit` (`audit:read`, not `users:read`).
   license:
     name: Versola Community License v1.0
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
@@ -3204,7 +3204,7 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
   # ─────────────────────────────── Audit ───────────────────────────────
-  /audit/reports/user:
+  /users/audit:
     get:
       tags: [Audit]
       summary: The audit report of a user
@@ -3226,8 +3226,9 @@ paths:
         Asking is itself recorded (`admin.audit.queried`, with the user as target).
       operationId: getUserAuditReport
       parameters:
-        - name: userId
+        - name: id
           in: query
+          description: The user.
           required: true
           schema: { $ref: '#/components/schemas/UserId' }
         - name: from
@@ -7412,7 +7413,7 @@ components:
           description: |
             First page only. Auth's summary of the window as it answered it (`byKind`, `byClient`, `ips`, `userAgents`,
             `sessions`, `factors`, `high`, `countries`; the entries of `ips` and the events of `high` may carry a `country`; see auth's
-            `GET /audit/summary?userId=`), with `adminActions` added: what
+            `GET /users/audit-summary?id=`), with `adminActions` added: what
             administrators did to the user, newest first (at most 100). Without auth's part it holds `adminActions` alone.
           additionalProperties: true
           properties:

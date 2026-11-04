@@ -20,7 +20,7 @@ object ReportedEvent:
       obj.as[AuditEvent].map(event => ReportedEvent(event, obj.get("country").flatMap(_.asString))),
   )
 
-/** What auth's `GET /audit/events?userId=` answers: a page of the user's events, newest first. */
+/** What auth's `GET /users/audit-events?id=` answers: a page of the user's events, newest first. */
 case class UserAuditEventsResponse(
     events: List[ReportedEvent],
     nextCursor: Option[String],

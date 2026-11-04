@@ -1,5 +1,6 @@
 package versola.central.users
 
+import versola.central.audit.{AuditCursor, AuditReportError, AuditReportService}
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
@@ -7,17 +8,20 @@ import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.audit.AuditContext
 import versola.util.http.{Controller, Observability}
-import versola.util.{Email, EnvName, Phone}
+import versola.util.{Email, EnvName, PageLimit, Phone}
 import zio.ZIO
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 import zio.telemetry.opentelemetry.tracing.Tracing
 
+import java.time.Instant
+
 object UserController extends Controller:
-  type Env = Tracing & CentralConfig & EdgeService & UserService & ResourceService & EnvName
+  type Env = Tracing & CentralConfig & EdgeService & UserService & ResourceService & EnvName & AuditReportService
 
   def routes: Routes[Env, Throwable] = Routes(
     findUsersEndpoint,
+    getUserAuditEndpoint,
     getUserRolesEndpoint,
     getUserSessionsEndpoint,
     getUserDevicesEndpoint,
@@ -58,6 +62,32 @@ object UserController extends Controller:
         identity,
         result => Response.json(UserSearchResponse(result).toJson),
       )
+    }
+
+  /** The audit report of one user (`audit:read`, not `users:read`: see [[AuditReportService]]): what auth recorded about them and what
+    * administrators did to them. The user is named `id`, like on the other routes. Asking is itself an audit event
+    * (`admin.audit.queried`), which `AuditHook` records. */
+  val getUserAuditEndpoint =
+    Method.GET / "users" / "audit" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        userId <- request.queryZIO[UserId]("id")
+        from <- request.queryZIO[Option[Instant]]("from")
+        to <- request.queryZIO[Option[Instant]]("to")
+        cursor <- request.queryZIO[Option[AuditCursor]]("cursor")
+        limit <- request.queryZIO[Option[PageLimit]]("limit")
+        service <- ZIO.service[AuditReportService]
+        response <- service.userReport(userId, from, to, cursor, limit)
+          .map(report => Response.json(report.toJson))
+          .catchAll:
+            case AuditReportError.Invalid(message) =>
+              Observability.setError("invalid_audit_query", Some(message)).as(Response.text(message).status(Status.BadRequest))
+            case AuditReportError.Busy =>
+              Observability.setError("audit_report_busy").as(
+                Response.text("too many audit reports are running, try again").status(Status.ServiceUnavailable),
+              )
+            case cause: Throwable => ZIO.fail(cause)
+      yield response
     }
 
   val getUserRolesEndpoint =

@@ -7,7 +7,7 @@ import zio.json.ast.Json
 
 import java.time.Instant
 
-/** The report of one user (`GET /audit/reports/user`): what auth recorded about them (sign-ins, tokens, sessions, account
+/** The report of one user (`GET /users/audit?id=`): what auth recorded about them (sign-ins, tokens, sessions, account
   * changes) and what administrators did to them, as one list, newest first.
   *
   * @param summary    auth's summary of the window as it answered it, with `adminActions` from central's own rows added; only on

@@ -223,8 +223,8 @@ object AuditRoutes:
     (Method.PATCH, "/antifraud/settings") -> change("antifraud-settings", update, Target.Nowhere),
     (Method.DELETE, "/antifraud/settings") -> change("antifraud-settings", delete, Target.Nowhere),
     (Method.POST, "/antifraud/counters/reset") -> change("antifraud-counters", action("reset"), Target.Nowhere),
-    // the audit log itself
-    (Method.GET, "/audit/reports/user") -> Entry.Read(AdminAuditQueried, query("userId"), "user"),
+    // the audit report of a user: its own permission (`audit:read`), not `users:read`
+    (Method.GET, "/users/audit") -> Entry.Read(AdminAuditQueried, query("id"), "user"),
     // the service surface (outside production only): the operator's tooling, not an administrator
     (Method.POST, "/service/users/outbox/flush") -> Entry.Internal,
     (Method.POST, "/service/configuration/sync") -> Entry.Internal,

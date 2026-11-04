@@ -13,7 +13,7 @@ import versola.central.antifraud.{
   AntifraudStatusController,
   AntifraudStatusService,
 }
-import versola.central.audit.{AuditHook, AuditReportController, AuditReportService, CentralAudit, CentralAuditRepository}
+import versola.central.audit.{AuditHook, AuditReportService, CentralAudit, CentralAuditRepository}
 import versola.central.configuration.challenges.{
   ChallengeSettingsRepository,
   ChallengeSettingsService,
@@ -218,7 +218,6 @@ object PostgresCentralApp extends VersolaApp("central"):
       AntifraudStatusController.routes,
       JwksController.routes,
       ServerMetadataController.routes,
-      AuditReportController.routes,
     ).reduce(_ ++ _)
     // #469: what an administrator does is recorded on every one of these routes, by one hook (`AuditRoutes` says what each
     // route means). The service surface is the operator's tooling and is not.

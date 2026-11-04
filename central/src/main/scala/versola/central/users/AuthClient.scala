@@ -92,10 +92,10 @@ trait AuthClient:
   /** Forces auth to reload all configuration caches from central (non-prod only). */
   def syncConfiguration(): Task[Unit]
 
-  /** A page of the user's audit events from auth, newest first (`GET /audit/events?userId=`). */
+  /** A page of the user's audit events from auth, newest first (`GET /users/audit-events?id=`). */
   def getUserAuditEvents(userId: UserId, query: UserAuditEventsQuery): IO[AuthAuditError | Throwable, UserAuditEventsResponse]
 
-  /** Auth's summary of the user's audit events over the window (`GET /audit/summary?userId=`), as it answers it: central
+  /** Auth's summary of the user's audit events over the window (`GET /users/audit-summary?id=`), as it answers it: central
     * adds to it and does not read into it. */
   def getUserAuditSummary(userId: UserId, from: Option[Instant], to: Option[Instant]): IO[AuthAuditError | Throwable, Json.Obj]
 
@@ -275,9 +275,8 @@ object AuthClient:
     private val antifraudRulesUrl: URL = config.auth.url / "antifraud" / "rules"
     private val antifraudStatusUrl: URL = config.auth.url / "antifraud" / "status"
     private val configSyncUrl: URL = config.auth.url / "service" / "configuration" / "sync"
-    private val auditUrl: URL = config.auth.url / "audit"
-    private val auditEventsUrl: URL = auditUrl / "events"
-    private val auditSummaryUrl: URL = auditUrl / "summary"
+    private val auditEventsUrl: URL = usersUrl / "audit-events"
+    private val auditSummaryUrl: URL = usersUrl / "audit-summary"
 
     override def upsertUser(
         id: UserId,
@@ -573,11 +572,11 @@ object AuthClient:
         query.cursor.map("cursor" -> _),
         Some("limit" -> query.limit.toString),
       ).flatten
-      auditAnswer[UserAuditEventsResponse](Request.get(auditEventsUrl.addQueryParams(("userId" -> userId.toString) :: params)))
+      auditAnswer[UserAuditEventsResponse](Request.get(auditEventsUrl.addQueryParams(("id" -> userId.toString) :: params)))
 
     override def getUserAuditSummary(userId: UserId, from: Option[Instant], to: Option[Instant]): IO[AuthAuditError | Throwable, Json.Obj] =
       val params = List(from.map("from" -> _.toString), to.map("to" -> _.toString)).flatten
-      auditAnswer[Json.Obj](Request.get(auditSummaryUrl.addQueryParams(("userId" -> userId.toString) :: params)))
+      auditAnswer[Json.Obj](Request.get(auditSummaryUrl.addQueryParams(("id" -> userId.toString) :: params)))
 
     /** Auth's 400 is its refusal of the window or the cursor; a 5xx, a 404 (an auth without the endpoint) and a connection that
       * cannot be made are auth not answering. */
@@ -615,7 +614,7 @@ object AuthClient:
     /** A `GET` or a `DELETE` to the user or the audit endpoints of auth. Their calls with a body have the field in it. */
     private def carriesActorInQuery(request: Request): Boolean =
       (request.method == Method.GET || request.method == Method.DELETE) &&
-        (request.url.path.startsWith(usersUrl.path) || request.url.path.startsWith(auditUrl.path))
+        request.url.path.startsWith(usersUrl.path)
 
     private def execute[A](request: Request)(handle: Response => Task[A]): Task[A] =
       def attemptWithToken(request: Request)(token: String): Task[A] =

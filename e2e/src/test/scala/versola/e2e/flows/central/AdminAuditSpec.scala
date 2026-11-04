@@ -60,7 +60,7 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
   private def detail(row: CentralDatabase.AuditRow): Json.Obj = row.details.fromJson[Json.Obj].getOrElse(Json.Obj())
 
   private def report(central: CentralApi, userId: String, query: (String, String)*) =
-    central.get("/audit/reports/user", (("userId" -> userId) +: query)*)
+    central.get("/users/audit", (("id" -> userId) +: query)*)
 
   private def adminActions(result: ApiResult): Task[Chunk[Json.Obj]] =
     result.obj.map(_.obj("summary").fold(Chunk.empty[Json.Obj])(_.objs("adminActions")))
@@ -220,10 +220,10 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
     test("a report is refused for a user that is no UUID, a page size out of range and a caller without the central credential") {
       for
         central <- ZIO.service[CentralApi]
-        user <- central.get("/audit/reports/user", "userId" -> "someone")
-        size <- central.get("/audit/reports/user", "userId" -> UUID.randomUUID().toString, "limit" -> "0")
-        cursor <- central.get("/audit/reports/user", "userId" -> UUID.randomUUID().toString, "cursor" -> "not-a-cursor")
-        anonymous <- central.anonymous.get("/audit/reports/user", "userId" -> UUID.randomUUID().toString)
+        user <- central.get("/users/audit", "id" -> "someone")
+        size <- central.get("/users/audit", "id" -> UUID.randomUUID().toString, "limit" -> "0")
+        cursor <- central.get("/users/audit", "id" -> UUID.randomUUID().toString, "cursor" -> "not-a-cursor")
+        anonymous <- central.anonymous.get("/users/audit", "id" -> UUID.randomUUID().toString)
       yield assertTrue(
         user.status == Status.BadRequest,
         size.status == Status.BadRequest,

@@ -9,9 +9,9 @@ import zio.test.*
 import java.util.UUID
 
 /** The per-user report with auth's part in it (#469): a sign-in, a token and a revocation of a real user, and what an administrator
-  * did to them, in one list, newest first, from central's `GET /audit/reports/user`.
+  * did to them, in one list, newest first, from central's `GET /users/audit?id=`.
   *
-  * Needs an auth that serves `GET /audit/events?userId=` and `/summary` (stream B of the audit log): without them the report is
+  * Needs an auth that serves `GET /users/audit-events?id=` and `/users/audit-summary?id=` (stream B of the audit log): without them the report is
   * `partial: ["auth"]`, which `AdminAuditSpec` asserts.
   */
 object AdminAuditReportWithAuthSpec extends E2ESpec:
@@ -45,12 +45,12 @@ object AdminAuditReportWithAuthSpec extends E2ESpec:
         ).success
         _ <- central.delete("/users/sessions", "userId" -> userId.toString)
         // the writer of each service rests up to a second between batches
-        result <- central.get("/audit/reports/user", "userId" -> userId.toString)
+        result <- central.get("/users/audit", "id" -> userId.toString)
           .repeat(Schedule.spaced(500.millis) *> Schedule.recurUntil[ApiResult](r =>
             r.body.contains("token.issued") && r.body.contains("admin.user-session.delete") && r.body.contains("session.ended"),
           ))
           .timeout(30.seconds)
-          .someOrElseZIO(central.get("/audit/reports/user", "userId" -> userId.toString))
+          .someOrElseZIO(central.get("/users/audit", "id" -> userId.toString))
         body <- result.obj
         events = body.objs("events")
         kinds = events.flatMap(_.str("kind")).toSet
