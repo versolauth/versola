@@ -1,0 +1,54 @@
+# Alert rules for the audit log of auth and central (#469). Prometheus rule-group format: loaded as it is by
+# Prometheus (`rule_files`) and by VictoriaMetrics' vmalert (`-rule`). See dashboards/alerts/README.md.
+#
+# Every rule sums by namespace and by `source` (`auth`, `central`): one deployment, one alert per service. The
+# counters here are created by the first increment, so a loss that happens once on a fresh pod is not seen by
+# increase(); a loss that repeats is. An audit row that is lost is a gap in the evidence the log exists for, so
+# the writer's alerts are stricter than the antifraud ones: 5 minutes, not 10, and the queue filling is critical.
+groups:
+  - name: versola-audit
+    rules:
+      - alert: AuditEventsDropped
+        expr: sum by (namespace, source) (increase(audit_events_dropped_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Audit events are being lost in {{ $labels.namespace }} ({{ $labels.source }})"
+          description: "The audit writer of {{ $labels.source }} dropped events for 5 minutes (audit.overflow = drop and a queue the writer cannot empty, or a best-effort insert that failed). The log has gaps meanwhile. Check the database and the {{ $labels.source }} log: 'could not write the audit events'."
+
+      - alert: AuditEventsBlocked
+        expr: sum by (namespace, source) (increase(audit_events_blocked_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Requests wait for the audit writer in {{ $labels.namespace }} ({{ $labels.source }})"
+          description: "The audit queue of {{ $labels.source }} was full for 5 minutes (audit.overflow = block): requests waited up to audit.block-timeout for room, and those that found none were refused with 503 audit_unavailable. The writer is slower than the load; check the database's write latency and audit_queue_size."
+
+      - alert: AuditPartitionsRunningOut
+        expr: min by (namespace, source) (audit_partitions_ahead) < 3
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Audit log of {{ $labels.source }} has fewer than 3 days of partitions ahead in {{ $labels.namespace }}"
+          description: "Only {{ $value }} days of the audit log of {{ $labels.source }} have a partition (14 when healthy, made hourly). At 0 the events of the day go to the default partition (audit_event_default), from which they are never moved: AuditEventsInDefault follows. Fix the maintenance failure (the {{ $labels.source }} log: 'could not maintain the audit event partitions', or AuditPartitionOwnerMismatch)."
+
+      - alert: AuditEventsInDefault
+        expr: max by (namespace, source) (audit_events_in_default) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Audit events sit in the default partition in {{ $labels.namespace }} ({{ $labels.source }})"
+          description: "{{ $value }} days of audit events of {{ $labels.source }} were written to audit_event_default because the day had no partition, and they stay there (the table is append-only and the long-term copy is an insert-only replication, so rows are never moved). A query on audit_event reads them like any other row, and they leave with the retention. The day cannot get a partition while they are there. Find why the maintenance was late (AuditPartitionsRunningOut, AuditPartitionOwnerMismatch)."
+
+      - alert: AuditPartitionOwnerMismatch
+        expr: max by (namespace, source) (audit_partition_owner_mismatch) == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.source }} does not own its audit log table in {{ $labels.namespace }}"
+          description: "The role {{ $labels.source }} connects as neither owns audit_event nor is a member of its owner, so no partition is created or dropped. The {{ $labels.source }} log has the statement to run: ALTER TABLE audit_event OWNER TO <role>."

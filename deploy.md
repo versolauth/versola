@@ -1287,6 +1287,63 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `dashboards/alerts/versola-antifraud.rules.yaml` (Prometheus rule format, also read by vmalert); how to load them is in
   `dashboards/alerts/README.md`. Both use metrics that exist only from the release that added them.
 
+- **Audit log (`audit_event`, migration `V0031`; #469).** `auth` records every authentication, token, consent,
+  account and certificate event (the kinds are the closed vocabulary `AuditKinds` in `util`; the per-user report
+  reads them through `central`) into `audit_event`, partitioned by day like `af_event` and maintained by the service
+  the same way (today and 14 days ahead, at start-up and every hour; a day older than `audit.retention` is dropped,
+  which is the retention: nothing is deleted row by row except from the default partition). Its keys are the `audit`
+  block of `auth`'s `env.conf`, **every key required**, written by `scripts/gen-env.scala` (a config written before
+  the block existed makes `auth` refuse to start naming the missing key, as for `antifraud`):
+
+  ```hocon
+  audit {
+    retention     = "7 days"      # the hot window; 14 days is the sensible maximum, the long-term copy is the replication below
+    overflow      = "block"       # block: a request waits up to block-timeout for room in the writer's queue, then fails with
+                                  #   503 audit_unavailable (the login or token is refused rather than go unrecorded);
+                                  # drop: the event is lost and counted in audit_events_dropped_total, the request goes on
+    block-timeout = "2 seconds"
+    events { token-refresh = true, authorize-success = true, par-success = true }   # the high-volume kinds; failures are always recorded
+  }
+  ```
+
+  **The table is append-only.** A trigger (`audit_event_immutable`, on every partition) refuses `UPDATE` and `DELETE`
+  unless the transaction has set `versola.audit_maintenance = 'on'`, which only the service's own prune of the default
+  partition does; an operator who must delete (a legal erasure) sets it the same way, `SET LOCAL`, in the transaction.
+  Dropping a partition is DDL and is not refused. A row of a day that had no partition goes to `audit_event_default`
+  and stays there (it is never moved into the day's partition, unlike the antifraud log, because the replication
+  below is insert-only and a move is a delete and an insert): the gauge `audit_events_in_default` counts such days,
+  the day gets no partition while they are there, and they leave with the retention. The owner of the table must be
+  the service's role, as for `af_event` (`audit_partition_owner_mismatch`).
+
+  **Long-term storage is your logical replication** of `audit_event` to another database, which the hot window's
+  drops never reach. PostgreSQL 13 or later on both sides (`publish_via_partition_root` is 13+; the minimum of this
+  schema otherwise stays 12). On the source:
+
+  ```sql
+  CREATE PUBLICATION versola_audit FOR TABLE audit_event WITH (publish = 'insert', publish_via_partition_root = true);
+  ```
+
+  On the subscriber, an **unpartitioned** table of the same columns (the same `CREATE TABLE` without `PARTITION BY`
+  and with the primary key `(id, at)`, no trigger needed: nothing but the subscription writes it), then
+  `CREATE SUBSCRIPTION ... PUBLICATION versola_audit`. `publish = 'insert'` means a drop of a day on the source
+  (`DETACH` and `DROP` of the partition, which is not replicated) leaves the subscriber's rows in place, and the
+  prune of the default partition is a `DELETE` that is not published either. The subscriber's retention and access
+  control are the operator's.
+
+  **Metrics and alerts** (`source` label `auth`; `central` writes its own table with the same names):
+  `audit_events_total{source,kind,outcome}`, `audit_events_dropped_total`, `audit_events_blocked_total` (requests
+  that waited for room), `audit_events_failed_total` (best-effort inserts that failed), `audit_queue_size`,
+  `audit_partitions_ahead`, `audit_events_in_default`, `audit_partition_owner_mismatch`. The alert rules are
+  `dashboards/alerts/versola-audit.rules.yaml` (`AuditEventsDropped`, `AuditEventsBlocked`,
+  `AuditPartitionsRunningOut`, `AuditEventsInDefault`, `AuditPartitionOwnerMismatch`), loaded like the antifraud
+  ones. **The rows are personal data** (an address, a user agent, a user id): the hot window and the replica's
+  retention must not exceed what you promise for such data; deleting a user does not delete their events.
+
+  Central reads auth's rows through two internal endpoints (`GET /audit/users/{userId}/events` and `/summary`,
+  authenticated with the service token like `/users/*`; not public, not in the OpenAPI specs), and tells auth which
+  administrator acts on a user with the `X-Versola-Actor` header on every `/users/*` call it makes for one; a call
+  without it is recorded as the `central` service's.
+
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).
 

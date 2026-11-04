@@ -119,14 +119,32 @@ object ClientAuthThrottle:
     else if pattern == "/authorize" then Kind.Entry
     else Kind.None
 
-  /** Wraps the routes of the main listener. Not applied to the mutual-TLS listener: a certificate is not a guessable secret. */
+  /** Wraps the routes of the main listener. Not applied to the mutual-TLS listener: a certificate is not a guessable secret.
+    *
+    * Every route, limited or not, gets the request's address into the log context (`auth.ip`, see [[withAddress]]): this is
+    * the one place that knows the deployment's source of it. */
   def apply[Env <: ClientAuthThrottle, Err](routes: Routes[Env, Err]): Routes[Env, Err] =
     Routes.fromIterable(
       routes.routes.map: route =>
         kindOf(route.routePattern.method, route.routePattern.pathCodec.render) match
-          case Kind.None => route
-          case kind => route.transform[Env](protect(kind)),
+          case Kind.None => route.transform[Env](recordAddress)
+          case kind => route.transform[Env](handler => recordAddress(protect(kind)(handler))),
     )
+
+  /** Sets `auth.ip` of the log context from the address the limits read ([[Settings.clientIp]]) before the handler runs, so
+    * that the audit log (and the access log) of a token, authorize or revocation request names the caller's address. Nothing
+    * is limited here: it is what the mutual-TLS listener gets, where [[apply]] does not go. A handler that knows a better
+    * source (the conversation endpoints read the client's own `ipHeader`) sets it again, and the later value wins. */
+  def withAddress[Env <: ClientAuthThrottle, Err](routes: Routes[Env, Err]): Routes[Env, Err] =
+    Routes.fromIterable(routes.routes.map(route => route.transform[Env](recordAddress)))
+
+  private def recordAddress[Env <: ClientAuthThrottle](
+      handler: Handler[Env, Response, Request, Response],
+  ): Handler[Env, Response, Request, Response] =
+    Handler.scoped[Env]:
+      Handler.fromFunctionZIO[Request]: request =>
+        ZIO.serviceWithZIO[ClientAuthThrottle]: throttle =>
+          ZIO.foreachDiscard(address(request, throttle.settings))(Observability.setIp) *> handler(request)
 
   private def address(request: Request, settings: Settings): Option[String] =
     val socket = request.remoteAddress.flatMap(IpAddress.normalize)

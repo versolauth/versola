@@ -217,14 +217,17 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     */
   override def mutualTlsRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
     Some(
-      List(
-        TokenEndpointController.routes,
-        IntrospectionController.routes,
-        RevocationController.routes,
-        PushedAuthorizationController.routes,
-        UserInfoController.routes,
-        EstController.reenrollmentRoutes,
-      ).reduce(_ ++ _),
+      // Not limited (a certificate is not a guessable secret), but the caller's address goes into the log context here too.
+      ClientAuthThrottle.withAddress(
+        List(
+          TokenEndpointController.routes,
+          IntrospectionController.routes,
+          RevocationController.routes,
+          PushedAuthorizationController.routes,
+          UserInfoController.routes,
+          EstController.reenrollmentRoutes,
+        ).reduce(_ ++ _),
+      ),
     )
 
   /** `ClientAuth.Required`, not `Optional`, and that is not a preference.

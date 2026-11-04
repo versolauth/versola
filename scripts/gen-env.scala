@@ -1940,6 +1940,21 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |  max-request-size = 8192
        |}
        |
+       |# Audit log (deploy.md, "Audit log"): the hot window of `audit_event` (a day older than `retention` is dropped; the
+       |# long-term copy is the operator's logical replication), what a request does when the writer's queue is full
+       |# (`block`: waits up to `block-timeout`, then the request fails with 503 `audit_unavailable`; `drop`: the event is lost
+       |# and counted in audit_events_dropped_total), and the high-volume kinds that may be switched off. All keys are required.
+       |audit {
+       |  retention     = "7 days"
+       |  overflow      = "block"          # block | drop
+       |  block-timeout = "2 seconds"
+       |  events {
+       |    token-refresh     = true       # token.issued for the refresh_token grant
+       |    authorize-success = true       # authorize.request that succeeded (failures are always recorded)
+       |    par-success       = true       # par.request that succeeded (failures are always recorded)
+       |  }
+       |}
+       |
        |# Antifraud (deploy.md, "Antifraud configuration"): the switches, the retention that bounds how long personal data is
        |# kept, and the intervals. All keys are required, except the `asn` and `geo` blocks, which a config written before they existed
        |# may leave out. Everything is off: thresholds, weights and limits are not here,

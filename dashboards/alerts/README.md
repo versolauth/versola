@@ -52,6 +52,22 @@ The rules select by metric name and sum by `namespace`; they do not assume a `jo
 
 The file passes `promtool check rules` (15 rules, run by the reviewer of the PR that added it).
 
+## `versola-audit.rules.yaml`
+
+The audit log of `auth` and `central` (#469): the same format, loaded the same way. Every rule groups by `source`
+(`auth`, `central`) as well as `namespace`, since both services write their own `audit_event` table with the same
+writer and the same metric names.
+
+| Alert | Fires when | For | Severity |
+| --- | --- | --- | --- |
+| `AuditEventsDropped` | `audit_events_dropped_total` increases: `overflow = drop` lost events, or a best-effort insert failed | 5m | critical |
+| `AuditEventsBlocked` | `audit_events_blocked_total` increases: requests waited for room in the queue (`overflow = block`) | 5m | warning |
+| `AuditPartitionsRunningOut` | `audit_partitions_ahead` below 3 | 5m | critical |
+| `AuditEventsInDefault` | `audit_events_in_default` above 0: a day's events sit in the default partition and are never moved | 30m | warning |
+| `AuditPartitionOwnerMismatch` | `audit_partition_owner_mismatch` is 1: the service's role does not own `audit_event` | 10m | warning |
+
+The file passes `promtool check rules` (5 rules); the tool is not in the repository, so a reviewer runs it.
+
 Counters appear with their first increment, so `increase()` does not see the very first failure of a new pod; a failure
 that repeats is seen. The two stale-age rules read gauges the service sets after each successful refresh, so they stay
 silent while lists are off (the default), and they catch a refresh that hangs, which moves no failure counter.
