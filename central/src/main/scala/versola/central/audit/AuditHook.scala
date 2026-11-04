@@ -2,6 +2,7 @@ package versola.central.audit
 
 import versola.central.CentralConfig
 import versola.central.audit.AuditRoutes.{Entry, Target}
+import versola.central.users.UserId
 import versola.util.audit.*
 import versola.util.http.Observability
 import zio.*
@@ -11,7 +12,6 @@ import zio.json.ast.Json
 import zio.logging.logContext
 
 import java.nio.charset.StandardCharsets
-import java.util.UUID
 
 /** Records what an administrator does through central's API (#469), on every route in one place, so that an endpoint added later
   * is recorded without anyone remembering to (and a route that [[AuditRoutes]] does not know fails its spec).
@@ -163,7 +163,7 @@ object AuditHook:
     )
     val resolvedTarget = state.target.orElse(for t <- targetType; id <- targetId yield (t, id))
     // The user the action was about, when the target is one; an id that is not a UUID is not a user of ours.
-    val user = state.userId.orElse(resolvedTarget.filter(_._1 == "user").flatMap((_, id) => scala.util.Try(UUID.fromString(id)).toOption))
+    val user = state.userId.orElse(resolvedTarget.filter(_._1 == "user").flatMap((_, id) => UserId.parse(id).toOption))
     def draft(kind: AuditKind, outcome: AuditOutcome, reason: Option[String]) = AuditDraft(
       kind = kind,
       outcome = outcome,

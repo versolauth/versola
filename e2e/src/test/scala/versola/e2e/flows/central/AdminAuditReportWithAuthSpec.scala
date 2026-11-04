@@ -11,7 +11,7 @@ import java.util.UUID
 /** The per-user report with auth's part in it (#469): a sign-in, a token and a revocation of a real user, and what an administrator
   * did to them, in one list, newest first, from central's `GET /audit/reports/user`.
   *
-  * Ignored until auth's per-user audit endpoints (`GET /audit/users/{userId}/events` and `/summary`, stream B of the audit log)
+  * Ignored until auth's per-user audit endpoints (`GET /audit/events?userId=` and `/summary`, stream B of the audit log)
   * are on `main`: without them the report is `partial: ["auth"]`, which `AdminAuditSpec` asserts. Remove the aspect then.
   */
 object AdminAuditReportWithAuthSpec extends E2ESpec:

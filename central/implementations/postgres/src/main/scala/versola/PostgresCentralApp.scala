@@ -111,8 +111,11 @@ import zio.json.ast.Json
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.lang.System as JavaSystem
+import java.net.InetAddress
+import java.util.UUID
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
+import scala.util.Try
 
 object PostgresCentralApp extends VersolaApp("central"):
   override given Tag[Dependencies] = Tag[Dependencies]
@@ -293,8 +296,8 @@ object PostgresCentralApp extends VersolaApp("central"):
   /** This process in the audit log: its host, which is what tells the instances of a deployment apart, and a part that is its own
     * (a host can run more than one). */
   private val nodeId: String =
-    val host = scala.util.Try(java.net.InetAddress.getLocalHost.getHostName).getOrElse("central")
-    s"$host-${java.util.UUID.randomUUID().toString.take(8)}"
+    val host = Try(InetAddress.getLocalHost.getHostName).getOrElse("central")
+    s"$host-${UUID.randomUUID().toString.take(8)}"
 
   /** The audit log's writer (#469): it makes the partitions of `audit_event` and writes the events the services record, and writes
     * what is queued once more when its scope closes. It is built on the transactor and the repository, before everything that records:

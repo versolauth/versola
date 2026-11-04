@@ -15,6 +15,7 @@ import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder}
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
 import zio.{Chunk, IO, Schedule, Scope, Task, ZIO, ZLayer, durationInt}
 
+import java.io.IOException
 import java.time.Instant
 import java.util.UUID
 
@@ -90,10 +91,10 @@ trait AuthClient:
   /** Forces auth to reload all configuration caches from central (non-prod only). */
   def syncConfiguration(): Task[Unit]
 
-  /** A page of the user's audit events from auth, newest first (`GET /audit/users/{userId}/events`). */
+  /** A page of the user's audit events from auth, newest first (`GET /audit/events?userId=`). */
   def getUserAuditEvents(userId: UserId, query: UserAuditEventsQuery): IO[AuthAuditError | Throwable, UserAuditEventsResponse]
 
-  /** Auth's summary of the user's audit events over the window (`GET /audit/users/{userId}/summary`), as it answers it: central
+  /** Auth's summary of the user's audit events over the window (`GET /audit/summary?userId=`), as it answers it: central
     * adds to it and does not read into it. */
   def getUserAuditSummary(userId: UserId, from: Option[Instant], to: Option[Instant]): IO[AuthAuditError | Throwable, Json.Obj]
 
@@ -165,7 +166,7 @@ object AuthClient:
 
   private case class UserClaimsResponse(claims: Json.Obj) derives JsonCodec
 
-  private case class PatchUserClaimsPayload(id: UserId, claims: Json.Obj, actorId: Option[String] = None) derives JsonCodec
+  private case class PatchUserClaimsPayload(id: UserId, claims: Json.Obj, actorId: Option[UserId] = None) derives JsonCodec
 
   private case class UserRolesResponse(roles: List[RoleId]) derives JsonCodec
 
@@ -226,27 +227,27 @@ object AuthClient:
       tenantId: TenantId,
       email: Option[Email],
       phone: Option[Phone],
-      actorId: Option[String] = None,
+      actorId: Option[UserId] = None,
   ) derives JsonCodec
 
   private case class RenamePasskeyPayload(
       userId: UserId,
       credentialId: String,
       name: Option[String],
-      actorId: Option[String] = None,
+      actorId: Option[UserId] = None,
   ) derives JsonCodec
 
   private case class ResetPasswordPayload(
       userId: UserId,
       expiresInSeconds: Long,
       channel: Option[DeliveryChannel],
-      actorId: Option[String] = None,
+      actorId: Option[UserId] = None,
   ) derives JsonCodec
 
   private case class SetPasswordPayload(
       userId: UserId,
       password: String,
-      actorId: Option[String] = None,
+      actorId: Option[UserId] = None,
   ) derives JsonCodec
 
   class Impl(
@@ -271,7 +272,8 @@ object AuthClient:
     private val antifraudStatusUrl: URL = config.auth.url / "antifraud" / "status"
     private val configSyncUrl: URL = config.auth.url / "service" / "configuration" / "sync"
     private val auditUrl: URL = config.auth.url / "audit"
-    private val auditUsersUrl: URL = auditUrl / "users"
+    private val auditEventsUrl: URL = auditUrl / "events"
+    private val auditSummaryUrl: URL = auditUrl / "summary"
 
     override def upsertUser(
         id: UserId,
@@ -567,11 +569,11 @@ object AuthClient:
         query.cursor.map("cursor" -> _),
         Some("limit" -> query.limit.toString),
       ).flatten
-      auditAnswer[UserAuditEventsResponse](Request.get((auditUsersUrl / userId.toString / "events").addQueryParams(params)))
+      auditAnswer[UserAuditEventsResponse](Request.get(auditEventsUrl.addQueryParams(("userId" -> userId.toString) :: params)))
 
     override def getUserAuditSummary(userId: UserId, from: Option[Instant], to: Option[Instant]): IO[AuthAuditError | Throwable, Json.Obj] =
       val params = List(from.map("from" -> _.toString), to.map("to" -> _.toString)).flatten
-      auditAnswer[Json.Obj](Request.get((auditUsersUrl / userId.toString / "summary").addQueryParams(params)))
+      auditAnswer[Json.Obj](Request.get(auditSummaryUrl.addQueryParams(("userId" -> userId.toString) :: params)))
 
     /** Auth's 400 is its refusal of the window or the cursor; a 5xx, a 404 (an auth without the endpoint) and a connection that
       * cannot be made are auth not answering. */
@@ -586,13 +588,15 @@ object AuthClient:
             ZIO.succeed(Left(AuthAuditError.Unavailable(s"auth answered ${status.code}")))
           case status => ZIO.fail(new RuntimeException(s"Auth call failed: ${status.code}"))
       .catchSome:
-        case _: java.io.IOException => ZIO.succeed(Left(AuthAuditError.Unavailable("auth could not be reached")))
+        case _: IOException => ZIO.succeed(Left(AuthAuditError.Unavailable("auth could not be reached")))
       .flatMap(ZIO.fromEither(_))
 
     /** The administrator the request being served came from: a call central makes on its own (the outbox) or for a provisioning
       * client names nobody, and auth records central. */
-    private val admin: ZIO[Any, Nothing, Option[String]] =
-      AuditContext.current.map(_.actor.collect { case (actorType, Some(id)) if actorType == CentralAudit.Actors.Admin => id })
+    private val admin: ZIO[Any, Nothing, Option[UserId]] =
+      AuditContext.current.map(
+        _.actor.collect { case (actorType, Some(id)) if actorType == CentralAudit.Actors.Admin => id }.flatMap(UserId.parse(_).toOption),
+      )
 
     /** A `GET` or a `DELETE` to the user or the audit endpoints of auth. Their calls with a body have the field in it. */
     private def carriesActorInQuery(request: Request): Boolean =
@@ -610,7 +614,7 @@ object AuthClient:
         actor <- admin
         // On behalf of the administrator the request came from, when it is one: a call that has no body carries it in its query.
         onBehalf =
-          actor.filter(_ => carriesActorInQuery(request)).fold(request)(id => request.updateURL(_.addQueryParam(AuthClient.ActorParam, id)))
+          actor.filter(_ => carriesActorInQuery(request)).fold(request)(id => request.updateURL(_.addQueryParam(AuthClient.ActorParam, id.toString)))
         token <- tokenService.getToken
         result <- attemptWithToken(onBehalf)(token).catchSome:
           case AuthClient.TokenExpiredError =>

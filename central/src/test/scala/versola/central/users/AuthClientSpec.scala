@@ -553,7 +553,8 @@ object AuthClientSpec extends ZIOSpecDefault:
         summary <- client.getUserAuditSummary(userId, Some(from), None)
         requests <- seen.get.map(_.reverse)
       yield assertTrue(
-        requests.map(_.url.path.encode) == List(s"audit/users/$userId/events", s"audit/users/$userId/summary"),
+        requests.map(_.url.path.encode) == List("audit/events", "audit/summary"),
+        requests.forall(_.url.queryParams.map.get("userId").flatMap(_.headOption).contains(userId.toString)),
         requests.head.url.queryParams.map.get("from").flatMap(_.headOption).contains("2026-11-01T00:00:00Z"),
         requests.head.url.queryParams.map.get("cursor").flatMap(_.headOption).contains("cur"),
         requests.head.url.queryParams.map.get("limit").flatMap(_.headOption).contains("50"),

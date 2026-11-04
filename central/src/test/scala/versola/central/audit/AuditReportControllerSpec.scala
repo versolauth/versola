@@ -5,6 +5,8 @@ import org.scalamock.stubs.ZIOStubs
 import versola.central.TestAdminAuth
 import versola.central.configuration.resources.ResourceService
 import versola.central.users.UserId
+import versola.util.Base64Url
+import versola.util.PageLimit
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
@@ -51,6 +53,8 @@ object AuditReportControllerSpec extends ZIOSpecDefault, ZIOStubs:
     yield response
 
   private val base = URL.empty / "audit" / "reports" / "user"
+  private val cursor = AuditCursor(until = Instant.parse("2026-11-02T00:00:00Z"), auth = Some("more"), key = None, centralOnly = false)
+  private val cursorParam = AuditCursor.encode(cursor)
 
   def spec = suite("AuditReportController")(
     test("the report is served with the user, the window, the cursor and the page size the request named") {
@@ -60,7 +64,7 @@ object AuditReportControllerSpec extends ZIOSpecDefault, ZIOStubs:
         response <- run(
           Request.get(
             base.addQueryParam("userId", userId.toString).addQueryParam("from", "2026-11-01T00:00:00Z").addQueryParam("to", "2026-11-03T00:00:00Z")
-              .addQueryParam("cursor", "abc").addQueryParam("limit", "25"),
+              .addQueryParam("cursor", cursorParam).addQueryParam("limit", "25"),
           ),
           service,
         )
@@ -68,7 +72,7 @@ object AuditReportControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.status == Status.Ok,
         service.userReport.calls == List(
-          (userId, Some(Instant.parse("2026-11-01T00:00:00Z")), Some(Instant.parse("2026-11-03T00:00:00Z")), Some("abc"), Some(25)),
+          (userId, Some(Instant.parse("2026-11-01T00:00:00Z")), Some(Instant.parse("2026-11-03T00:00:00Z")), Some(cursor), Some(PageLimit(25))),
         ),
         body.contains("\"partial\":[\"auth\"]"),
         body.contains("\"nextCursor\":\"next\""),
@@ -79,26 +83,45 @@ object AuditReportControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for response <- run(Request.get(base.addQueryParam("userId", userId.toString)), service, authorized = false)
       yield assertTrue(response.status == Status.Unauthorized, service.userReport.calls.isEmpty)
     },
-    test("a user that is not a UUID, and a window that is not an instant, are a bad request") {
+    test("a malformed userId, from, to, limit or cursor is a bad request with the error code set, and reaches nothing") {
       val service = stub[AuditReportService]
+      val good = base.addQueryParam("userId", userId.toString)
+      val garbage = Base64Url.encode("{}".getBytes("UTF-8")).toString
+      val notJson = Base64Url.encode("not json".getBytes("UTF-8")).toString
+      def get(url: URL) = run(Request.get(url), service)
       for
-        user <- run(Request.get(base.addQueryParam("userId", "someone")), service)
-        window <- run(Request.get(base.addQueryParam("userId", userId.toString).addQueryParam("from", "yesterday")), service)
-        missing <- run(Request.get(base), service)
+        missing <- get(base)
+        user <- get(base.addQueryParam("userId", "someone"))
+        from <- get(good.addQueryParam("from", "yesterday"))
+        to <- get(good.addQueryParam("to", "2026-13-45"))
+        zero <- get(good.addQueryParam("limit", "0"))
+        huge <- get(good.addQueryParam("limit", "501"))
+        word <- get(good.addQueryParam("limit", "many"))
+        bytes <- get(good.addQueryParam("cursor", "%%%"))
+        emptyObject <- get(good.addQueryParam("cursor", garbage))
+        text <- get(good.addQueryParam("cursor", notJson))
+        codes <- ZIO.foreach(List(missing, user, from, to, zero, huge, word, bytes, emptyObject, text))(response =>
+          response.body.asString.map(response.status -> _),
+        )
       yield assertTrue(
-        user.status == Status.BadRequest,
-        window.status == Status.BadRequest,
-        missing.status == Status.BadRequest,
+        codes.forall(_._1 == Status.BadRequest),
+        codes.forall(_._2.nonEmpty),
         service.userReport.calls.isEmpty,
       )
     },
     test("what the service refuses is a bad request with its reason") {
       val service = stub[AuditReportService]
       for
-        _ <- service.userReport.failsWith(AuditReportError.Invalid("limit is 1 to 500"))
-        response <- run(Request.get(base.addQueryParam("userId", userId.toString).addQueryParam("limit", "0")), service)
+        _ <- service.userReport.failsWith(AuditReportError.Invalid("to is before from"))
+        response <- run(
+          Request.get(base.addQueryParam(
+            "userId",
+            userId.toString,
+          ).addQueryParam("from", "2026-11-03T00:00:00Z").addQueryParam("to", "2026-11-01T00:00:00Z")),
+          service,
+        )
         body <- response.body.asString
-      yield assertTrue(response.status == Status.BadRequest, body == "limit is 1 to 500")
+      yield assertTrue(response.status == Status.BadRequest, body == "to is before from")
     },
     test("a report that finds no place free is 503, with its error code") {
       val service = stub[AuditReportService]

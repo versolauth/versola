@@ -3,7 +3,7 @@ package versola.central.audit
 import versola.central.CentralConfig
 import versola.central.audit.AuditReportService.*
 import versola.central.users.{AuthClient, UserId}
-import versola.util.Base64Url
+import versola.util.PageLimit
 import versola.util.audit.AuditEvent
 import zio.*
 import zio.json.*
@@ -11,7 +11,6 @@ import zio.json.ast.Json
 
 import java.time.Instant
 import java.time.temporal.ChronoUnit
-import java.util.UUID
 
 /** The per-user report: auth's per-user events merged with central's own rows about the user (what administrators did to them).
   *
@@ -25,13 +24,11 @@ trait AuditReportService:
       userId: UserId,
       from: Option[Instant],
       to: Option[Instant],
-      cursor: Option[String],
-      limit: Option[Int],
+      cursor: Option[AuditCursor],
+      limit: Option[PageLimit],
   ): IO[AuditReportError | Throwable, UserAuditReport]
 
 object AuditReportService:
-  val DefaultLimit = 100
-  val MaxLimit = 500
 
   /** Rows of central's one page of auth's can bring with it. An administrator does not act on one user that often within a page of
     * their sign-ins; the bound keeps a page small whatever is in the table. */
@@ -42,18 +39,6 @@ object AuditReportService:
 
   /** Postgres keeps microseconds: an exclusive upper bound that includes `to` itself. */
   private val Micro = 1
-
-  /** Where the previous page ended. `until` is where central's rows resume (exclusive); `auth` is auth's own cursor; `key` is the
-    * position in central's rows when they are paged alone (`centralOnly`). */
-  private[audit] case class Cursor(until: Instant, auth: Option[String], key: Option[Key], centralOnly: Boolean) derives JsonCodec
-  private[audit] case class Key(at: Instant, id: UUID) derives JsonCodec
-
-  private[audit] def encode(cursor: Cursor): String = Base64Url.encode(cursor.toJson.getBytes("UTF-8")).toString
-
-  private[audit] def decode(raw: String): Either[String, Cursor] =
-    scala.util.Try(Base64Url.decodeStr(raw)).toOption.toRight("the cursor is not valid").flatMap(_.fromJson[Cursor].left.map(_ =>
-      "the cursor is not valid",
-    ))
 
   /** Reports that run at the same time: each reads the table and asks auth, so a few at once are served and the rest wait. */
   val MaxConcurrentReports = 4
@@ -72,8 +57,8 @@ object AuditReportService:
         userId: UserId,
         from: Option[Instant],
         to: Option[Instant],
-        cursor: Option[String],
-        limit: Option[Int],
+        cursor: Option[AuditCursor],
+        limit: Option[PageLimit],
     ): IO[AuditReportError | Throwable, UserAuditReport] =
       ZIO.scoped:
         places.withPermitScoped.timeout(WaitForPlace).flatMap:
@@ -84,16 +69,12 @@ object AuditReportService:
         userId: UserId,
         from: Option[Instant],
         to: Option[Instant],
-        cursor: Option[String],
-        limit: Option[Int],
+        position: Option[AuditCursor],
+        limit: Option[PageLimit],
     ): IO[AuditReportError | Throwable, UserAuditReport] =
       for
         now <- Clock.instant
-        pageSize <- limit match
-          case None => ZIO.succeed(DefaultLimit)
-          case Some(n) if n >= 1 && n <= MaxLimit => ZIO.succeed(n)
-          case Some(_) => ZIO.fail(AuditReportError.Invalid(s"limit is 1 to $MaxLimit"))
-        position <- ZIO.foreach(cursor)(raw => ZIO.fromEither(decode(raw)).mapError(AuditReportError.Invalid(_)))
+        pageSize = limit.getOrElse(PageLimit.Default)
         retentionFrom = now.minusMillis(config.audit.retention.toMillis).truncatedTo(ChronoUnit.MICROS)
         upper = to.fold(now)(t => if t.isAfter(now) then now else t)
         lower = from.fold(retentionFrom)(f => if f.isBefore(retentionFrom) then retentionFrom else f)
@@ -141,7 +122,8 @@ object AuditReportService:
               window = ReportWindow(from = lower, to = upper, retentionFrom = laterOf(retentionFrom, page.retentionFrom)),
               summary = actions.map(withActions(authSummary, _)),
               events = ordered(page.events ++ mine),
-              nextCursor = page.nextCursor.map(next => encode(Cursor(until = low, auth = Some(next), key = None, centralOnly = false))),
+              nextCursor =
+                page.nextCursor.map(next => AuditCursor.encode(AuditCursor(until = low, auth = Some(next), key = None, centralOnly = false))),
               partial = Nil,
             )
 
@@ -151,7 +133,7 @@ object AuditReportService:
         lower: Instant,
         upper: Instant,
         until: Instant,
-        key: Option[Key],
+        key: Option[AuditCursor.Key],
         pageSize: Int,
         retentionFrom: Instant,
         authSummary: Option[Json.Obj],
@@ -167,7 +149,7 @@ object AuditReportService:
         summary = actions.map(withActions(authSummary, _)),
         events = page,
         nextCursor = Option.when(rows.size > pageSize)(page.last).map(last =>
-          encode(Cursor(until = until, auth = None, key = Some(Key(last.at, last.id)), centralOnly = true)),
+          AuditCursor.encode(AuditCursor(until = until, auth = None, key = Some(AuditCursor.Key(last.at, last.id)), centralOnly = true)),
         ),
         partial = List("auth"),
       )

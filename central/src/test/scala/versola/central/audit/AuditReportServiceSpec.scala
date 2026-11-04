@@ -3,6 +3,7 @@ package versola.central.audit
 import org.scalamock.stubs.ZIOStubs
 import versola.central.TestCentralConfig
 import versola.central.users.{AuthClient, UserId}
+import versola.util.PageLimit
 import versola.util.audit.*
 import zio.*
 import zio.json.ast.Json
@@ -67,7 +68,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.authClient.getUserAuditEvents.succeedsWith(authPage(List(login, token), Some("more")))
         _ <- env.authClient.getUserAuditSummary.succeedsWith(authSummary)
         _ <- env.repository.userEvents.succeedsWith(List(claims, reset))
-        report <- env.service.userReport(userId, None, None, None, Some(2))
+        report <- env.service.userReport(userId, None, None, None, Some(PageLimit(2)))
       yield
         val (from, until) = env.repository.userEvents.calls.head match
           case (_, from, until, _, _) => (from, until)
@@ -78,8 +79,8 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
           env.repository.userEvents.calls.map(c => (c._2, c._3)).contains((token.at, now.plus(1, ChronoUnit.MICROS))),
           from == token.at,
           until == now.plus(1, ChronoUnit.MICROS),
-          report.nextCursor.flatMap(c => AuditReportService.decode(c).toOption).contains(
-            AuditReportService.Cursor(until = token.at, auth = Some("more"), key = None, centralOnly = false),
+          report.nextCursor.flatMap(c => AuditCursor.decode(c).toOption).contains(
+            AuditCursor(until = token.at, auth = Some("more"), key = None, centralOnly = false),
           ),
           report.window.to == now,
           report.window.retentionFrom == now.minus(7, ChronoUnit.DAYS),
@@ -105,7 +106,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
           Some(at("08:00")),
           Some(at("11:00")),
           None,
-          AuditReportService.DefaultLimit,
+          PageLimit.Default,
         ),
       )
     },
@@ -118,7 +119,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.userEvents.succeedsWith(Nil)
         _ <- env.service.userReport(userId, None, None, None, None)
       yield assertTrue(
-        env.authClient.getUserAuditEvents.calls.head._2 == UserAuditEventsQuery(None, None, None, AuditReportService.DefaultLimit),
+        env.authClient.getUserAuditEvents.calls.head._2 == UserAuditEventsQuery(None, None, None, PageLimit.Default),
         env.authClient.getUserAuditSummary.calls.head._2.isEmpty,
         env.repository.userEvents.calls.head._2 == now.minus(7, ChronoUnit.DAYS),
       )
@@ -140,12 +141,12 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("the next page continues auth's cursor and central's rows from where the last one stopped, and carries no summary") {
       val env = Env()
-      val cursor = AuditReportService.encode(AuditReportService.Cursor(until = token.at, auth = Some("more"), key = None, centralOnly = false))
+      val cursor = AuditCursor(until = token.at, auth = Some("more"), key = None, centralOnly = false)
       for
         _ <- clock
         _ <- env.authClient.getUserAuditEvents.succeedsWith(authPage(List(event(5, AuditSource("auth"), at("08:00"), "session.ended")), None))
         _ <- env.repository.userEvents.succeedsWith(Nil)
-        report <- env.service.userReport(userId, None, None, Some(cursor), Some(10))
+        report <- env.service.userReport(userId, None, None, Some(cursor), Some(PageLimit(10)))
       yield assertTrue(
         env.authClient.getUserAuditEvents.calls.head._2.cursor.contains("more"),
         env.authClient.getUserAuditSummary.calls.isEmpty,
@@ -162,15 +163,15 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.authClient.getUserAuditEvents.failsWith(AuthAuditError.Unavailable("auth answered 503"))
         _ <- env.authClient.getUserAuditSummary.failsWith(AuthAuditError.Unavailable("auth answered 503"))
         _ <- env.repository.userEvents.succeedsWith(rows)
-        first <- env.service.userReport(userId, None, None, None, Some(2))
-        next = first.nextCursor.flatMap(c => AuditReportService.decode(c).toOption)
-        second <- env.service.userReport(userId, None, None, first.nextCursor, Some(2))
+        first <- env.service.userReport(userId, None, None, None, Some(PageLimit(2)))
+        next = first.nextCursor.flatMap(c => AuditCursor.decode(c).toOption)
+        second <- env.service.userReport(userId, None, None, next, Some(PageLimit(2)))
       yield assertTrue(
         first.partial == List("auth"),
         first.events == List(claims, reset),
         // the actions of the administrators are the summary, which is all there is of it
         first.summary.exists(_.fields.map(_._1) == Chunk("adminActions")),
-        next.exists(c => c.centralOnly && c.key.contains(AuditReportService.Key(reset.at, reset.id)) && c.auth.isEmpty),
+        next.exists(c => c.centralOnly && c.key.contains(AuditCursor.Key(reset.at, reset.id)) && c.auth.isEmpty),
         // asked one more than the page, to know there is a next
         env.repository.userEvents.calls.head._5 == 3,
         second.partial == List("auth"),
@@ -225,20 +226,12 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         refused <- env.service.userReport(userId, None, None, None, None).either
       yield assertTrue(refused == Left(AuditReportError.Invalid("from is before the retention")))
     },
-    test(
-      "a page size outside 1 to 500, a cursor that is not ours and a window that ends before it starts are refused, and nothing is asked of anyone",
-    ) {
+    test("a window that ends before it starts is refused, and nothing is asked of anyone") {
       val env = Env()
       for
         _ <- clock
-        zero <- env.service.userReport(userId, None, None, None, Some(0)).either
-        tooMany <- env.service.userReport(userId, None, None, None, Some(501)).either
-        garbage <- env.service.userReport(userId, None, None, Some("not-a-cursor"), None).either
         backwards <- env.service.userReport(userId, Some(at("11:00")), Some(at("10:00")), None, None).either
       yield assertTrue(
-        zero.isLeft && zero.left.exists(_.isInstanceOf[AuditReportError.Invalid]),
-        tooMany.left.exists(_.isInstanceOf[AuditReportError.Invalid]),
-        garbage == Left(AuditReportError.Invalid("the cursor is not valid")),
         backwards == Left(AuditReportError.Invalid("to is before from")),
         env.authClient.getUserAuditEvents.calls.isEmpty,
         env.repository.userEvents.calls.isEmpty,

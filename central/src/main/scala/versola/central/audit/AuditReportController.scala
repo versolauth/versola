@@ -3,6 +3,7 @@ package versola.central.audit
 import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
 import versola.central.users.UserId
+import versola.util.PageLimit
 import versola.util.http.{Controller, Observability}
 import zio.*
 import zio.http.{Method, Request, Response, Routes, Status, handler}
@@ -24,8 +25,8 @@ object AuditReportController extends Controller:
         userId <- request.queryZIO[UserId]("userId")
         from <- request.queryZIO[Option[Instant]]("from")
         to <- request.queryZIO[Option[Instant]]("to")
-        cursor <- request.queryZIO[Option[String]]("cursor")
-        limit <- request.queryZIO[Option[Int]]("limit")
+        cursor <- request.queryZIO[Option[AuditCursor]]("cursor")
+        limit <- request.queryZIO[Option[PageLimit]]("limit")
         service <- ZIO.service[AuditReportService]
         response <- service.userReport(userId, from, to, cursor, limit)
           .map(report => Response.json(report.toJson))

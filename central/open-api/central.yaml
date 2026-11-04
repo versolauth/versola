@@ -7409,7 +7409,7 @@ components:
           type: object
           description: |
             First page only. Auth's summary of the window as it answered it (`byKind`, `byClient`, `ips`, `userAgents`,
-            `sessions`, `factors`, `high`; see auth's `GET /audit/users/{userId}/summary`), with `adminActions` added: what
+            `sessions`, `factors`, `high`; see auth's `GET /audit/summary?userId=`), with `adminActions` added: what
             administrators did to the user, newest first (at most 100). Without auth's part it holds `adminActions` alone.
           additionalProperties: true
           properties:

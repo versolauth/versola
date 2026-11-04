@@ -1,6 +1,6 @@
 package versola.central.audit
 
-/** Why auth did not serve a per-user audit endpoint (its contract: `GET /audit/users/{userId}/events` and `.../summary`). */
+/** Why auth did not serve a per-user audit endpoint (its contract: `GET /audit/events?userId=` and `.../summary`). */
 enum AuthAuditError:
   /** Auth refused the window or the cursor (400): the caller's request is wrong, not auth. */
   case Invalid(message: String)

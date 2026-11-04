@@ -6,7 +6,7 @@ import zio.json.ast.Json
 
 import java.time.Instant
 
-/** What auth's `GET /audit/users/{userId}/events` answers: a page of the user's events, newest first. */
+/** What auth's `GET /audit/events?userId=` answers: a page of the user's events, newest first. */
 case class UserAuditEventsResponse(
     events: List[AuditEvent],
     nextCursor: Option[String],
