@@ -1006,7 +1006,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `AuditPartitionsRunningOut`, `AuditEventsInDefault`, `AuditPartitionOwnerMismatch`, `AuditReplicationSlotRetainsWal`), loaded like the antifraud ones. **The rows are personal data** (an address, a user agent, a user id): the hot window and the replica's
   retention must not exceed what you promise for such data; deleting a user does not delete their events.
 
-  Central reads auth's rows through two internal endpoints (`GET /audit/users/{userId}/events` and `/summary`,
+  Central reads auth's rows through two internal endpoints (`GET /audit/events` and `GET /audit/summary`, the user a query parameter `userId`,
   authenticated with the service token like `/users/*`; not public, not in the OpenAPI specs), and tells auth which
   administrator acts with the optional `actorId` of the call it makes for one (a query parameter of a `GET` or `DELETE`, a field of the
   body of a `POST`, `PUT` or `PATCH`; the antifraud calls carry the administrator as `userId`); a call without it is recorded

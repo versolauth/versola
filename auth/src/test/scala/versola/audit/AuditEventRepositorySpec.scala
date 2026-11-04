@@ -1,7 +1,6 @@
 package versola.audit
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.audit.AuditReadRepository.Position
 import versola.util.DatabaseSpecBase
 import versola.util.audit.*
 import zio.*
@@ -92,9 +91,9 @@ trait AuditEventRepositorySpec extends DatabaseSpecBase[AuditEventRepositorySpec
           events = (1 to 5).toList.map(_ => event(same, user = Some(user1))) :+ event(utc(today.atTime(9, 0)), user = Some(user1))
           _ <- repository.insertBatch(events)
           first <- eventsOf(user1, wholeDay._1, wholeDay._2, limit = 2)
-          second <- reader.userEvents(user1, wholeDay._1, wholeDay._2, first.lastOption.map(e => Position(e.at, e.id)), 2)
-          third <- reader.userEvents(user1, wholeDay._1, wholeDay._2, second.lastOption.map(e => Position(e.at, e.id)), 2)
-          fourth <- reader.userEvents(user1, wholeDay._1, wholeDay._2, third.lastOption.map(e => Position(e.at, e.id)), 2)
+          second <- reader.userEvents(user1, wholeDay._1, wholeDay._2, first.lastOption.map(e => AuditCursor(e.at, e.id)), 2)
+          third <- reader.userEvents(user1, wholeDay._1, wholeDay._2, second.lastOption.map(e => AuditCursor(e.at, e.id)), 2)
+          fourth <- reader.userEvents(user1, wholeDay._1, wholeDay._2, third.lastOption.map(e => AuditCursor(e.at, e.id)), 2)
           paged = (first ++ second ++ third).map(_.id)
         yield assertTrue(
           paged.size == 6,

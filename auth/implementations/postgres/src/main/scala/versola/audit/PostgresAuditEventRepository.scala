@@ -106,7 +106,7 @@ class PostgresAuditEventRepository(
         details = details.fromJson[Json.Obj].getOrElse(Json.Obj()),
       )
 
-  override def userEvents(userId: UUID, from: Instant, to: Instant, after: Option[Position], limit: Int): Task[List[AuditEvent]] =
+  override def userEvents(userId: UUID, from: Instant, to: Instant, after: Option[AuditCursor], limit: Int): Task[List[AuditEvent]] =
     xa.transactMeasured("find-audit-user-events"):
       timed()
       // The page boundary is a row comparison on the order the page is read in, so the next page starts exactly where this one

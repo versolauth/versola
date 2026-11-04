@@ -1,7 +1,7 @@
 package versola.audit
 
-import versola.audit.AuditReadRepository.{Position, Summary}
-import versola.util.Base64
+import versola.audit.AuditReadRepository.Summary
+import versola.util.PageLimit
 import versola.util.audit.{AuditEvent, AuditEvents}
 import zio.*
 import zio.json.{JsonCodec, jsonExplicitNull}
@@ -16,8 +16,6 @@ enum AuditReportError(val code: String, val message: String):
   case WindowOutsideRetention
     extends AuditReportError("audit_window_outside_retention", "from is before the start of the retained window, or to is in the future")
   case WindowReversed extends AuditReportError("audit_window_reversed", "to is before from")
-  case BadLimit extends AuditReportError("audit_bad_limit", "limit must be between 1 and 500")
-  case BadCursor extends AuditReportError("audit_bad_cursor", "the cursor is not one this endpoint issued")
   case Busy extends AuditReportError("audit_report_busy", "too many reports are being read; retry shortly")
 
 /** The per-user report of auth's audit log, which central serves to an administrator: a page of the events about one user, and a
@@ -27,16 +25,13 @@ trait AuditReportService:
       userId: UUID,
       from: Option[Instant],
       to: Option[Instant],
-      cursor: Option[String],
-      limit: Option[Int],
+      cursor: Option[AuditCursor],
+      limit: Option[PageLimit],
   ): IO[Throwable | AuditReportError, AuditReportService.EventsPage]
 
   def summary(userId: UUID, from: Option[Instant], to: Option[Instant]): IO[Throwable | AuditReportError, AuditReportService.SummaryReport]
 
 object AuditReportService:
-  val DefaultLimit = 100
-  val MaxLimit = 500
-
   /** How many reports are read from the database at once, and how long one waits for its turn before it is refused (503 `audit_report_busy`).
     * The reads share the database with the writer. */
   val ReadConcurrency = 4
@@ -59,20 +54,6 @@ object AuditReportService:
       factors: List[AuditReadRepository.Factor],
       high: List[AuditEvent],
   ) derives JsonCodec
-
-  /** `base64url(at|id)`: opaque to the caller, and the only thing the next page needs. */
-  def encodeCursor(position: Position): String =
-    Base64.urlEncode(s"${position.at}|${position.id}".getBytes(StandardCharsets.UTF_8))
-
-  def decodeCursor(cursor: String): Option[Position] =
-    Try(Base64.urlDecode(cursor)).toOption.flatMap: bytes =>
-      String(bytes, StandardCharsets.UTF_8).split('|') match
-        case Array(at, id) =>
-          for
-            parsedAt <- Try(Instant.parse(at)).toOption
-            parsedId <- Try(UUID.fromString(id)).toOption
-          yield Position(parsedAt, parsedId)
-        case _ => None
 
   val live: ZLayer[AuditReadRepository & AuditEvents.Settings, Nothing, AuditReportService] =
     ZLayer.fromZIO:
@@ -107,20 +88,18 @@ object AuditReportService:
         userId: UUID,
         from: Option[Instant],
         to: Option[Instant],
-        cursor: Option[String],
-        limit: Option[Int],
+        cursor: Option[AuditCursor],
+        limit: Option[PageLimit],
     ): IO[Throwable | AuditReportError, EventsPage] =
       for
         window <- window(from, to)
-        size = limit.getOrElse(DefaultLimit)
-        _ <- ZIO.fail(AuditReportError.BadLimit).unless(size >= 1 && size <= MaxLimit)
-        after <- ZIO.foreach(cursor)(value => ZIO.fromOption(decodeCursor(value)).orElseFail(AuditReportError.BadCursor))
+        size: Int = limit.getOrElse(PageLimit.Default)
         // One more than a page: whether there is a next page is whether it came back.
-        found <- gated(repository.userEvents(userId, window.from, window.to, after, size + 1))
+        found <- gated(repository.userEvents(userId, window.from, window.to, cursor, size + 1))
         page = found.take(size)
       yield EventsPage(
         events = page,
-        nextCursor = Option.when(found.size > size)(page.lastOption.map(last => encodeCursor(Position(last.at, last.id)))).flatten,
+        nextCursor = Option.when(found.size > size)(page.lastOption.map(last => AuditCursor(last.at, last.id).render)).flatten,
         retentionFrom = window.retentionFrom,
       )
 

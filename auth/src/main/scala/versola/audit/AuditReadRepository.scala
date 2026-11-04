@@ -12,14 +12,11 @@ import java.util.UUID
 trait AuditReadRepository:
 
   /** The events about `userId` in `[from, to]`, newest first, after `after` (the last event of the previous page) when given. */
-  def userEvents(userId: UUID, from: Instant, to: Instant, after: Option[AuditReadRepository.Position], limit: Int): Task[List[AuditEvent]]
+  def userEvents(userId: UUID, from: Instant, to: Instant, after: Option[AuditCursor], limit: Int): Task[List[AuditEvent]]
 
   def userSummary(userId: UUID, from: Instant, to: Instant): Task[AuditReadRepository.Summary]
 
 object AuditReadRepository:
-
-  /** Where a page stopped: the event's time and id, which is the order of the pages. */
-  case class Position(at: Instant, id: UUID)
 
   case class KindCount(kind: String, outcome: String, count: Long) derives JsonCodec
   case class ClientCount(clientId: String, logins: Long, tokens: Long) derives JsonCodec
@@ -28,7 +25,7 @@ object AuditReadRepository:
   case class SessionCount(created: Long, ended: Long) derives JsonCodec
   case class Factor(kind: String, at: Instant) derives JsonCodec
 
-  /** What `GET /audit/users/{userId}/summary` answers, less the window, which the service adds. */
+  /** What `GET /audit/summary` answers, less the window, which the service adds. */
   case class Summary(
       byKind: List[KindCount],
       byClient: List[ClientCount],

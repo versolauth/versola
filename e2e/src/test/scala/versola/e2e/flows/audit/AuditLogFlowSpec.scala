@@ -10,7 +10,7 @@ import zio.test.*
 import java.time.Instant
 
 /** What auth writes to its audit log (#469) for a user's whole session, read back the way central's per-user report reads it: through auth's
-  * internal `GET /audit/users/{userId}/events` and `/summary`, with the service token the two share.
+  * internal `GET /audit/events` and `/audit/summary`, with the service token the two share.
   *
   * A sign-in with a password, the tokens it issues (the code exchange and a refresh), the revocation of the refresh token and the
   * RP-initiated logout are performed over HTTP against the staged stack, and the rows that come back are the ones the writer stored in
@@ -75,7 +75,7 @@ object AuditLogFlowSpec extends E2ESpec:
 
   private def page(auth: OAuthClient, userId: String, query: String): Task[Page] =
     for
-      response <- auth.auditGet(s"/audit/users/$userId/events$query")
+      response <- auth.auditGet(s"/audit/events?userId=$userId$query")
       body <- response.body.asString
       _ <- ZIO.fail(RuntimeException(s"events answered ${response.status}: $body")).unless(response.status == Status.Ok)
       json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
@@ -89,7 +89,7 @@ object AuditLogFlowSpec extends E2ESpec:
     * batch is written, up to a second after the request that made them. */
   private def awaitRows(auth: OAuthClient, userId: String, from: Instant)(done: List[Row] => Boolean): Task[List[Row]] =
     def attempt(left: Int): Task[List[Row]] =
-      page(auth, userId, s"?from=$from&limit=500").map(_.rows).flatMap: rows =>
+      page(auth, userId, s"&from=$from&limit=500").map(_.rows).flatMap: rows =>
         if done(rows) || left == 0 then ZIO.succeed(rows) else ZIO.sleep(250.millis) *> attempt(left - 1)
     attempt(80)
 
@@ -142,7 +142,7 @@ object AuditLogFlowSpec extends E2ESpec:
         session <- login(s, auth)
         _ <- auth.logoutWithIdTokenHint(session.idToken)
         _ <- awaitRows(auth, userId, started)(r => kinds(r).contains("session.ended"))
-        response <- auth.auditGet(s"/audit/users/$userId/summary?from=$started")
+        response <- auth.auditGet(s"/audit/summary?userId=$userId&from=$started")
         body <- response.body.asString
         json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
         byKind = json.get("byKind").flatMap(_.asArray).map(_.toList.flatMap(_.asObject)).getOrElse(Nil)
@@ -172,10 +172,10 @@ object AuditLogFlowSpec extends E2ESpec:
         session <- login(s, auth)
         _ <- auth.logoutWithIdTokenHint(session.idToken)
         all <- awaitRows(auth, userId, started)(r => kinds(r).contains("session.ended"))
-        first <- page(auth, userId, s"?from=$started&limit=2")
-        second <- page(auth, userId, s"?from=$started&limit=2&cursor=${first.nextCursor.getOrElse("")}")
+        first <- page(auth, userId, s"&from=$started&limit=2")
+        second <- page(auth, userId, s"&from=$started&limit=2&cursor=${first.nextCursor.getOrElse("")}")
         rest <- ZIO.iterate((second.nextCursor, List.empty[Row]))(_._1.isDefined): (cursor, acc) =>
-          page(auth, userId, s"?from=$started&limit=2&cursor=${cursor.get}").map(p => (p.nextCursor, acc ++ p.rows))
+          page(auth, userId, s"&from=$started&limit=2&cursor=${cursor.get}").map(p => (p.nextCursor, acc ++ p.rows))
       yield assertTrue(
         first.rows.size == 2,
         first.nextCursor.isDefined,
@@ -186,14 +186,16 @@ object AuditLogFlowSpec extends E2ESpec:
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
         userId = s.userId.toString
-        noToken <- auth.auditGet(s"/audit/users/$userId/events", OAuthClient.Authenticated.No)
-        wrongKey <- auth.auditGet(s"/audit/users/$userId/events", OAuthClient.Authenticated.WrongKey)
-        tooEarly <- auth.auditGet(s"/audit/users/$userId/events?from=${Instant.now.minusSeconds(8 * 86400)}")
-        reversed <- auth.auditGet(s"/audit/users/$userId/events?from=${Instant.now}&to=${Instant.now.minusSeconds(60)}")
-        notAUser <- auth.auditGet("/audit/users/not-a-uuid/events")
-        badCursor <- auth.auditGet(s"/audit/users/$userId/events?cursor=garbage")
-        summaryNoToken <- auth.auditGet(s"/audit/users/$userId/summary", OAuthClient.Authenticated.No)
-        unknownUser <- auth.auditGet(s"/audit/users/${java.util.UUID.randomUUID()}/events")
+        noToken <- auth.auditGet(s"/audit/events?userId=$userId", OAuthClient.Authenticated.No)
+        wrongKey <- auth.auditGet(s"/audit/events?userId=$userId", OAuthClient.Authenticated.WrongKey)
+        tooEarly <- auth.auditGet(s"/audit/events?userId=$userId&from=${Instant.now.minusSeconds(8 * 86400)}")
+        reversed <- auth.auditGet(s"/audit/events?userId=$userId&from=${Instant.now}&to=${Instant.now.minusSeconds(60)}")
+        notAUser <- auth.auditGet("/audit/events?userId=not-a-uuid")
+        badCursor <- auth.auditGet(s"/audit/events?userId=$userId&cursor=garbage")
+        badLimit <- auth.auditGet(s"/audit/events?userId=$userId&limit=501")
+        noUser <- auth.auditGet("/audit/events")
+        summaryNoToken <- auth.auditGet(s"/audit/summary?userId=$userId", OAuthClient.Authenticated.No)
+        unknownUser <- auth.auditGet(s"/audit/events?userId=${java.util.UUID.randomUUID()}")
         unknownBody <- unknownUser.body.asString
       yield assertTrue(
         noToken.status == Status.Unauthorized,
@@ -203,6 +205,8 @@ object AuditLogFlowSpec extends E2ESpec:
         reversed.status == Status.BadRequest,
         notAUser.status == Status.BadRequest,
         badCursor.status == Status.BadRequest,
+        badLimit.status == Status.BadRequest,
+        noUser.status == Status.BadRequest,
         // a user with no events is an empty page, not an error and not a 404
         unknownUser.status == Status.Ok,
         unknownBody.contains("\"events\":[]"),
