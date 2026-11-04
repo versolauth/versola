@@ -40,7 +40,7 @@ class DailyPartitions(
   import DailyPartitions.*
 
   private val name = label.getOrElse(table)
-  private val relation = SqlLiteral(table)
+  private val relation = SqlLiteral(TableName.validated(table))
   private val defaultPartition = SqlLiteral(s"${table}_default")
   private val partitionPattern = raw"${table}_(\d{8})".r
   private val loosePattern = s"^${table}_[0-9]{8}"

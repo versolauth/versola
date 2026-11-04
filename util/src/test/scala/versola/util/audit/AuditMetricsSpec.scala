@@ -61,7 +61,7 @@ object AuditMetricsSpec extends ZIOSpecDefault:
       ZIO.scoped:
         for
           _ <- AuditEvents
-            .live(source, "node-1", AuditCatalog.of(Set.empty))
+            .live(source, "node-1", AuditCatalog.of(Set.empty), table = "metrics_spec_audit_event")
             .build
             .provideSome[PrometheusPublisher & Scope](
               ZLayer.succeed(repository),
