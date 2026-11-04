@@ -17,6 +17,14 @@ groups:
           summary: "Audit events are being lost in {{ $labels.namespace }} ({{ $labels.source }})"
           description: "The audit writer of {{ $labels.source }} dropped events for 5 minutes (audit.overflow = drop and a queue the writer cannot empty, or a best-effort insert that failed). The log has gaps meanwhile. Check the database and the {{ $labels.source }} log: 'could not write the audit events'."
 
+      - alert: AuditEventsRejected
+        expr: sum by (namespace) (increase(audit_events_rejected_total[5m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "The database refused audit events of auth in {{ $labels.namespace }}"
+          description: "Audit events were refused by the database one by one (a value the table cannot hold) and are not stored: they cannot be retried, and the writer carried on without them. The auth log has the kind and id of each, never its content: 'an audit event of kind ... was refused by the database'. A value that reaches here after the cleaning auth does (U+0000, an address that is none) is a bug."
+
       - alert: AuditEventsBlocked
         expr: sum by (namespace, source) (increase(audit_events_blocked_total[5m])) > 0
         for: 5m

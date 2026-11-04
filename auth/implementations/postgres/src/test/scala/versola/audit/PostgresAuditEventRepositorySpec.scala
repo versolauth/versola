@@ -7,6 +7,9 @@ import versola.util.postgres.PostgresSpec
 import zio.*
 import zio.test.*
 
+import java.time.Instant
+import scala.util.chaining.*
+
 /** Runs [[AuditEventRepositorySpec]] against `audit_event`, and adds what only this storage promises: the trigger that refuses an
   * `UPDATE` or `DELETE` that is not the service's own maintenance, on the table and on every partition, those attached later included. */
 object PostgresAuditEventRepositorySpec extends PostgresSpec, AuditEventRepositorySpec:
@@ -50,6 +53,52 @@ object PostgresAuditEventRepositorySpec extends PostgresSpec, AuditEventReposito
           _ <- repository.maintainPartitions(from = today, days = 3, keepFrom = today.minusDays(30))
           names <- partitionNames(xa)
         yield assertTrue(names == List("audit_event_20261021", "audit_event_20261022", "audit_event_20261023"))
+      },
+      test("what the table cannot hold of an event is cleaned, not refused: a NUL in a text or JSON string, and an `ip` that is no address") {
+        val dirty = event(utc(today.atTime(10, 0)), user = Some(user1)).copy(
+          actorId = Some("a\u0000b"),
+          clientId = Some("client\u0000"),
+          ip = Some("v6/0000000000000000"),
+          details = zio.json.ast.Json.Obj("detail" -> zio.json.ast.Json.Str("x\u0000y"), "nested" -> zio.json.ast.Json.Arr(zio.json.ast.Json.Str("\u0000"))),
+        )
+        val other = event(utc(today.atTime(11, 0)), user = Some(user1))
+        for
+          _ <- repository.maintainPartitions(from = today, days = 1, keepFrom = today.minusDays(30))
+          _ <- repository.insertBatch(List(dirty, other))
+          read <- env.reader.userEvents(user1, utc(today.atTime(0, 0)), utc(today.atTime(23, 59)), None, 10)
+          stored = read.find(_.id == dirty.id)
+        yield assertTrue(
+          read.size == 2,
+          stored.flatMap(_.actorId).contains("a\uFFFDb"),
+          stored.flatMap(_.clientId).contains("client\uFFFD"),
+          stored.flatMap(_.ip).isEmpty,
+          stored.map(_.details).contains(
+            zio.json.ast.Json.Obj("detail" -> zio.json.ast.Json.Str("x\uFFFDy"), "nested" -> zio.json.ast.Json.Arr(zio.json.ast.Json.Str("\uFFFD"))),
+          ),
+        )
+      },
+      test("an event the database refuses on its own does not stop the ones written with it, and is counted") {
+        // a year the column cannot hold: a data exception (SQLSTATE 22008) however the text is cleaned
+        val impossible = event(Instant.parse("+300000-01-01T00:00:00Z"), user = Some(user1))
+        val good = event(utc(today.atTime(10, 0)), user = Some(user1))
+        val good2 = event(utc(today.atTime(11, 0)), user = Some(user1))
+        for
+          _ <- repository.maintainPartitions(from = today, days = 1, keepFrom = today.minusDays(30))
+          before <- PostgresAuditEventRepository.rejected.value
+          _ <- repository.insertBatch(List(good, impossible, good2))
+          after <- PostgresAuditEventRepository.rejected.value
+          read <- env.reader.userEvents(user1, utc(today.atTime(0, 0)), utc(today.atTime(23, 59)), None, 10)
+        yield assertTrue(
+          read.map(_.id).toSet == Set(good.id, good2.id),
+          after.count - before.count == 1.0,
+        )
+      },
+      test("a database that is not reachable is not a data exception: the batch fails as a whole, for the writer to keep and try again") {
+        val unreachable = new java.sql.SQLException("connection refused", "08001")
+        assertTrue(
+          !PostgresAuditEventRepository.isDataException(RuntimeException("x", unreachable)),
+          PostgresAuditEventRepository.isDataException(RuntimeException("x", java.sql.SQLException("outer", "XX000").tap(_.setNextException(java.sql.SQLException("bad text", "22P02")))))
+        )
       },
       test("refuses an UPDATE and a DELETE of a row, on a partition made by the service as on the table, unless marked as maintenance") {
         for

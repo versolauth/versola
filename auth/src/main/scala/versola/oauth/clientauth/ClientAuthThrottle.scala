@@ -146,11 +146,20 @@ object ClientAuthThrottle:
     Handler.scoped[Env]:
       Handler.fromFunctionZIO[Request]: request =>
         ZIO.serviceWithZIO[ClientAuthThrottle]: throttle =>
-          ZIO.foreachDiscard(address(request, throttle.settings))(Observability.setIp) *>
+          ZIO.foreachDiscard(literalAddress(request, throttle.settings))(Observability.setIp) *>
             // The raw header is attacker-controlled and up to 8 KB: the log keeps the short form, or `other` for one that names nothing.
             ZIO.foreachDiscard(request.headers.get("User-Agent"))(header =>
               AuditContext.setUserAgent(UserAgentDetails.parse(header).summary.getOrElse("other")),
             ) *> handler(request)
+
+  /** The address the request came from, as text an address column holds (`203.0.113.7`, `0:0:0:0:0:0:0:1`), from the same source as
+    * [[address]] but not normalized to a rate-limit key: the audit log keeps the address, not the bucket it is counted in. */
+  private def literalAddress(request: Request, settings: Settings): Option[String] =
+    val socket = request.remoteAddress.map(_.getHostAddress.takeWhile(_ != '%'))
+    settings.clientIp match
+      case ClientIpSource.Socket => socket
+      case ClientIpSource.Forwarded =>
+        request.headers.get(settings.ipHeader).map(_.trim.split(',').last.trim).filter(value => IpAddress.normalize(value).isDefined).orElse(socket)
 
   private def address(request: Request, settings: Settings): Option[String] =
     val socket = request.remoteAddress.flatMap(IpAddress.normalize)

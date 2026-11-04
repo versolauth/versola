@@ -105,12 +105,15 @@ object ClientAuthThrottleSpec extends ZIOSpecDefault:
           socket <- ClientAuthThrottle.make(small)
           forwarded <- ClientAuthThrottle.make(small.copy(clientIp = ClientIpSource.Forwarded))
           limited <- ipOf(socket, ClientAuthThrottle(echo), request(Method.POST, "/token", "203.0.113.7"))
+          // an IPv6 peer is the address, not the /64 bucket the limits count it in (`v6/...` is no address)
+          v6 <- ipOf(socket, ClientAuthThrottle(echo), request(Method.GET, "/jwks", "2001:db8:1:2:3:4:5:6"))
           plain <- ipOf(socket, ClientAuthThrottle(echo), request(Method.GET, "/jwks", "203.0.113.8").addHeader("X-Real-IP", "198.51.100.1"))
           header <- ipOf(forwarded, ClientAuthThrottle(echo), request(Method.GET, "/jwks", "172.16.0.5").addHeader("X-Real-IP", "198.51.100.1"))
           mtls <- ipOf(socket, ClientAuthThrottle.withAddress(echo), request(Method.POST, "/token", "203.0.113.9"))
           none <- ipOf(socket, ClientAuthThrottle.withAddress(echo), Request(method = Method.GET, url = URL.decode("/jwks").toOption.get))
         yield assertTrue(
           limited == "203.0.113.7",
+          v6 == "2001:db8:1:2:3:4:5:6",
           plain == "203.0.113.8",
           header == "198.51.100.1",
           mtls == "203.0.113.9",
