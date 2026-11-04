@@ -2,12 +2,10 @@ package versola.oauth.session
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.audit.AuditSupport.*
 import versola.oauth.model.UserAgentData
 import versola.oauth.session.model.{UserAgentDetails, UserAgentId, UserAgentRecord}
 import versola.user.model.UserId
-import versola.util.audit.AuditEvent
-import versola.util.postgres.{AuditInsert, BasicCodecs}
+import versola.util.postgres.BasicCodecs
 import zio.{Clock, Duration, Task, ZIO, ZLayer}
 
 import java.util.UUID
@@ -74,7 +72,7 @@ class PostgresUserAgentRepository(xa: TransactorZIO) extends UserAgentRepository
           ORDER BY expires_at DESC
         """.query[UserAgentRecord].run().toList
 
-  override def forget(id: UserAgentId, userId: UserId, audit: AuditEvent): Task[Boolean] =
+  override def forget(id: UserAgentId, userId: UserId): Task[Boolean] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("forget-user-agent"):
         sql"""
@@ -82,12 +80,10 @@ class PostgresUserAgentRepository(xa: TransactorZIO) extends UserAgentRepository
           WHERE expires_at > $now
             AND session_id IN (SELECT id FROM sso_sessions WHERE user_agent_id = $id AND user_id = $userId)
         """.update.run()
-        val ended = sql"""
+        sql"""
           UPDATE sso_sessions SET expires_at = $now
           WHERE user_agent_id = $id AND user_id = $userId AND expires_at > $now
-          RETURNING public_id, user_id, jsonb_array_length(clients)
-        """.query[(String, UserId, Int)].run().toList
-        AuditInsert.insertBatch(ended.map((publicId, owner, clients) => audit.forSession(publicId, owner, clients)))
+        """.update.run()
         sql"""
           DELETE FROM user_agents WHERE id = $id AND user_id = $userId
         """.update.run() > 0

@@ -7,8 +7,7 @@ import com.augustnagro.magnum.pg.PgCodec.given
 import versola.oauth.client.model.TenantId
 import versola.role.model.RoleId
 import versola.user.model.*
-import versola.util.audit.AuditEvent
-import versola.util.postgres.{AuditInsert, BasicCodecs}
+import versola.util.postgres.BasicCodecs
 import versola.util.{Email, Phone}
 import zio.json.*
 import zio.json.ast.Json
@@ -26,11 +25,9 @@ class PostgresUserRepository(
       credential: Either[Email, Phone],
       tenantId: TenantId,
       roleIds: Set[RoleId],
-      audit: AuditEvent,
   ): Task[UserRecord] =
     xa.transactMeasured("register-user"):
-      val (user, created) = findOrCreateSql(userId, credential)
-      if created then AuditInsert.insert(audit)
+      val (user, _) = findOrCreateSql(userId, credential)
       if roleIds.nonEmpty then
         sql"""insert into user_roles (user_id, tenant_id, role_id)
               select ${user.id}, $tenantId, unnest($roleIds)
@@ -102,13 +99,12 @@ class PostgresUserRepository(
          """.update.run()
     .unit
 
-  override def patchClaims(id: UserId, patch: Json.Obj, audit: AuditEvent): Task[Unit] =
-    xa.transactMeasured("patch-user-claims"):
-      val updated = sql"update users set claims = jsonb_strip_nulls(claims || $patch::jsonb) where id = $id".update.run()
-      if updated > 0 then AuditInsert.insert(audit)
+  override def patchClaims(id: UserId, patch: Json.Obj): Task[Unit] =
+    xa.connectMeasured("patch-user-claims"):
+      sql"update users set claims = jsonb_strip_nulls(claims || $patch::jsonb) where id = $id".update.run()
     .unit
 
-  override def delete(id: UserId, audit: AuditEvent): Task[Unit] =
+  override def delete(id: UserId): Task[Unit] =
     xa.transactMeasured("delete-user"):
       // Throttling is keyed by subject text -- the user id or the identifier a challenge was
       // sent to -- so the identifiers are read before the account row goes.
@@ -127,8 +123,7 @@ class PostgresUserRepository(
       sql"delete from passkeys where user_id = $id".update.run()
       sql"delete from user_passwords where user_id = $id".update.run()
       // user_roles and user_consents reference users and go with the row.
-      val deleted = sql"delete from users where id = $id".update.run()
-      if deleted > 0 then AuditInsert.insert(audit)
+      sql"delete from users where id = $id".update.run()
     .unit
 
   override def findRolesByUserAndTenant(userId: UserId, tenantId: TenantId): Task[List[RoleId]] =
@@ -152,25 +147,18 @@ class PostgresUserRepository(
       tenantId: TenantId,
       add: Set[RoleId],
       remove: Set[RoleId],
-      audit: AuditEvent,
   ): Task[Unit] =
     if add.isEmpty && remove.isEmpty then ZIO.unit
     else
       xa.transactMeasured("update-roles"):
-        val removed =
-          if remove.nonEmpty then
-            sql"DELETE FROM user_roles WHERE user_id = $userId AND tenant_id = $tenantId AND role_id = ANY($remove)"
-              .update.run()
-          else 0
-        val added =
-          if add.nonEmpty then
-            sql"""INSERT INTO user_roles (user_id, tenant_id, role_id)
-                  SELECT $userId, $tenantId, unnest($add)
-                  ON CONFLICT DO NOTHING"""
-              .update.run()
-          else 0
-        // A request that changed no role (the roles were already as asked) writes no row.
-        if removed + added > 0 then AuditInsert.insert(audit)
+        if remove.nonEmpty then
+          sql"DELETE FROM user_roles WHERE user_id = $userId AND tenant_id = $tenantId AND role_id = ANY($remove)"
+            .update.run()
+        if add.nonEmpty then
+          sql"""INSERT INTO user_roles (user_id, tenant_id, role_id)
+                SELECT $userId, $tenantId, unnest($add)
+                ON CONFLICT DO NOTHING"""
+            .update.run()
       .unit
 
   override def markVerified(userId: UserId, credential: Either[Email, Phone]): Task[Option[Json.Obj]] =

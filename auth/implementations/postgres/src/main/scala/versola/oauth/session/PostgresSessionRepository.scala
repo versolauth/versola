@@ -4,7 +4,6 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.json.JsonBDbCodec
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
-import versola.audit.AuditSupport.*
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, ResourceUri, ScopeToken}
 import versola.oauth.model.{AccessToken, Cnf, Nonce, RefreshToken}
 import versola.oauth.model.{Nonce, RefreshToken}
@@ -36,10 +35,8 @@ import versola.oauth.session.model.{
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.MAC
-import versola.util.audit.AuditEvent
-import versola.util.postgres.{AuditInsert, BasicCodecs}
+import versola.util.postgres.BasicCodecs
 import zio.json.*
-import zio.json.ast.Json
 import zio.{Clock, Duration, IO, Task, ZIO, ZLayer}
 
 import java.sql.{Connection, SQLException}
@@ -95,7 +92,6 @@ class PostgresSessionRepository(xa: TransactorZIO)
       ttl: Duration,
       idleTtl: Option[Duration],
       priorSession: Option[PriorSession],
-      audit: AuditEvent,
   ): Task[Unit] =
     Clock.instant.flatMap: now =>
       val idleExpiresAt = idleTtl.map(t => now.plusSeconds(t.toSeconds))
@@ -144,8 +140,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
               SET session_id = $id, amr = $amr, auth_time = $authTime, acr = $acr
               WHERE session_id IN (SELECT id FROM expired_prior) AND expires_at > $now
             """.update.run()
-        // The session exists once this commits, and not otherwise: the event of the sign-in shares its fate.
-        AuditInsert.insert(audit)
+        ()
 
   override def findSession(id: MAC.Of[SessionId]): Task[Option[SessionRecord]] =
     Clock.instant.flatMap: now =>
@@ -215,10 +210,10 @@ class PostgresSessionRepository(xa: TransactorZIO)
     * session's, so a token can still be live long after its session expired on its own, and
     * force-logout has to revoke those too, not only the ones under a still-active session.
     */
-  override def invalidateByUserId(userId: UserId, audit: AuditEvent): Task[List[SessionRecord]] =
+  override def invalidateByUserId(userId: UserId): Task[List[SessionRecord]] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("invalidate-sessions-by-user"):
-        val ended = sql"""
+        sql"""
           WITH expired AS (
             UPDATE sso_sessions
             SET expires_at = $now
@@ -231,22 +226,12 @@ class PostgresSessionRepository(xa: TransactorZIO)
           )
           SELECT user_id, clients, user_agent_id, created_at, amr, public_id, expires_at FROM expired
         """.query[SessionRecord].run().toList
-        insertEnded(audit, ended)
-        ended
 
-  /** One `session.ended` for each session the statement just ended: what only the statement knows (which sessions, how many
-    * relying parties each had) is filled into the service's template. */
-  private def insertEnded(audit: AuditEvent, ended: List[SessionRecord])(using DbCon): Unit =
-    AuditInsert.insertBatch(ended.map(session => audit.forSession(session.publicId.toString, session.userId, session.clients.size)))
-
-  override def revokeRefreshTokensByUserAndClient(userId: UserId, clientId: ClientId, audit: AuditEvent): Task[Int] =
+  override def revokeRefreshTokensByUserAndClient(userId: UserId, clientId: ClientId): Task[Int] =
     Clock.instant.flatMap: now =>
-      xa.transactMeasured("revoke-refresh-tokens-by-user-and-client"):
-        val revoked = sql"""UPDATE refresh_tokens SET expires_at = $now
+      xa.connectMeasured("revoke-refresh-tokens-by-user-and-client"):
+        sql"""UPDATE refresh_tokens SET expires_at = $now
               WHERE user_id = $userId AND client_id = $clientId AND expires_at > $now AND rotated_at IS NULL""".update.run()
-        // Nothing revoked is nothing to witness: a repeated call writes no row.
-        if revoked > 0 then AuditInsert.insert(audit.forUser(userId).withCount("count", revoked))
-        revoked
 
   override def findRefreshTokensByUserId(userId: UserId): Task[List[RefreshTokenRecord]] =
     Clock.instant.flatMap: now =>
@@ -261,7 +246,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
           ORDER BY issued_at DESC
         """.query[RefreshTokenRecord].run().toList
 
-  override def invalidate(id: MAC.Of[SessionId], audit: AuditEvent): Task[Option[SessionRecord]] =
+  override def invalidate(id: MAC.Of[SessionId]): Task[Option[SessionRecord]] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("invalidate-session"):
         val session = sql"""
@@ -275,13 +260,11 @@ class PostgresSessionRepository(xa: TransactorZIO)
         sql"""
           UPDATE refresh_tokens SET expires_at = $now WHERE session_id = $id
         """.update.run()
-        insertEnded(audit, session.toList)
         session
 
-  override def invalidateByPublicId(publicId: PublicSessionId, audit: AuditEvent): Task[Option[(MAC.Of[SessionId], SessionRecord)]] =
+  override def invalidateByPublicId(publicId: PublicSessionId): Task[Option[(MAC.Of[SessionId], SessionRecord)]] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("invalidate-session-by-public-id"):
-        val live = isLive(sql"WHERE public_id = $publicId", now)
         val session = sql"""
           UPDATE sso_sessions
           SET expires_at = $now
@@ -291,34 +274,20 @@ class PostgresSessionRepository(xa: TransactorZIO)
         session.foreach { case (id, _) =>
           sql"""UPDATE refresh_tokens SET expires_at = $now WHERE session_id = $id""".update.run()
         }
-        // The update above runs for a session that had already ended, and its caller still answers for it (the logout of an
-        // expired session is a logout all the same); only a session this call ended is an event.
-        if live then insertEnded(audit, session.map(_._2).toList)
         session
 
-  override def invalidateByPublicIdForUser(publicId: PublicSessionId, userId: UserId, audit: AuditEvent): Task[Boolean] =
+  override def invalidateByPublicIdForUser(publicId: PublicSessionId, userId: UserId): Task[Boolean] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("invalidate-session-by-public-id-for-user"):
-        val live = isLive(sql"WHERE public_id = $publicId AND user_id = $userId", now)
-        val session = sql"""
+        val sessionId = sql"""
           UPDATE sso_sessions
           SET expires_at = $now
           WHERE public_id = $publicId AND user_id = $userId
-          RETURNING id, user_id, clients, user_agent_id, created_at, amr, public_id, expires_at
-        """.query[(MAC, SessionRecord)].run().headOption
-        session.foreach: (id, _) =>
+          RETURNING id
+        """.query[MAC].run().headOption
+        sessionId.foreach: id =>
           sql"""UPDATE refresh_tokens SET expires_at = $now WHERE session_id = $id""".update.run()
-        if live then insertEnded(audit, session.map(_._2).toList)
-        session.isDefined
-
-  /** Whether the session the `where` names is live now, read (and locked) before the statement that ends it: that statement
-    * answers for a session that had already ended too, and an event is for a session this call ended. */
-  private def isLive(where: Frag, now: Instant)(using DbCon): Boolean =
-    sql"""
-      SELECT 1 FROM sso_sessions $where
-        AND expires_at > $now AND (idle_expires_at IS NULL OR idle_expires_at > $now)
-      FOR UPDATE
-    """.query[Int].run().nonEmpty
+        sessionId.isDefined
 
   // ── refresh token methods ─────────────────────────────────────────────────
 
@@ -370,7 +339,6 @@ class PostgresSessionRepository(xa: TransactorZIO)
       previous: Option[MAC.Of[RefreshToken]],
       record: RefreshTokenRecord,
       idempotencyKey: Option[MAC],
-      audit: Option[AuditEvent],
   ): IO[Throwable | RefreshAlreadyExchanged, Unit] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("create-refresh-token") {
@@ -477,8 +445,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
             // Nothing retired means nothing inserted: the token was already exchanged, either
             // earlier or by a concurrent request that just released the row lock.
             if inserted == 0 then throw PostgresSessionRepository.RotationLost
-        // Only a token that was written is witnessed: a lost rotation throws above and a rolled-back one leaves no row.
-        audit.foreach(AuditInsert.insert)
+        ()
       }.catchSome {
         case PostgresSessionRepository.RotationLost =>
           ZIO.fail(RefreshAlreadyExchanged())
@@ -544,7 +511,6 @@ class PostgresSessionRepository(xa: TransactorZIO)
   override def revokeFamily(
       token: MAC.Of[RefreshToken],
       clientId: ClientId,
-      audit: AuditEvent,
   ): Task[Option[RevokedFamily]] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("revoke-refresh-token-family") {
@@ -562,20 +528,11 @@ class PostgresSessionRepository(xa: TransactorZIO)
           .run()
           .headOption
           .map: (family, userId) =>
-            // The rows brought forward include the generations kept for replay detection; the count is of the tokens that could still
-            // have been exchanged, which is what the event is about.
-            val revoked = sql"""
+            sql"""
               UPDATE refresh_tokens
               SET expires_at = $now
               WHERE family_id = $family AND expires_at > $now
-              RETURNING rotated_at IS NULL
-            """.query[Boolean].run().count(identity)
-
-            // A replay is only known once the family is found, and the row says which family, whose, and how much of it was
-            // still live: those are filled into the service's template. A token that names no family is no event.
-            AuditInsert.insert(
-              audit.forUser(userId).withDetail("familyId", Json.Str(family.toString)).withCount("revokedCount", revoked),
-            )
+            """.update.run()
 
             // The access tokens the family issued are not enumerated, because they cannot be:
             // the rows name no token, and a generation that has rotated away or been swept
@@ -622,19 +579,13 @@ class PostgresSessionRepository(xa: TransactorZIO)
               WHERE id = $token AND rotated_at IS NULL AND expires_at > $now
             """.query[Int].run().nonEmpty
 
-  override def delete(token: MAC.Of[RefreshToken], audit: AuditEvent): Task[Unit] =
+  override def delete(token: MAC.Of[RefreshToken]): Task[Unit] =
     Clock.instant.flatMap: now =>
-      xa.transactMeasured("delete-refresh-token"):
-        // What the update below does to a token that is no longer live (it brings the end of a retired one's replay window
-        // forward) is unchanged; only a token that was live is an event, so a repeated revocation writes no row.
-        val live = sql"""
-          SELECT user_id FROM refresh_tokens WHERE id = $token AND rotated_at IS NULL AND expires_at > $now FOR UPDATE
-        """.query[UserId].run().headOption
+      xa.connectMeasured("delete-refresh-token"):
         sql"""UPDATE refresh_tokens SET expires_at = $now WHERE id = $token""".update.run()
-        live.foreach(userId => AuditInsert.insert(audit.forUser(userId)))
       .unit
 
-  override def deleteByFamily(familyId: RefreshTokenFamilyId, audit: AuditEvent): Task[Unit] =
+  override def deleteByFamily(familyId: RefreshTokenFamilyId): Task[Unit] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("delete-refresh-token-family"):
         // The same lock rotation takes, for the same reason `revokeFamily` takes it: without
@@ -643,13 +594,10 @@ class PostgresSessionRepository(xa: TransactorZIO)
         // the `fam` deny-list entry, so the grant this call is meant to end stays refreshable.
         lockFamilyById(familyId)
 
-        val revoked = sql"""
+        sql"""
           UPDATE refresh_tokens SET expires_at = $now
           WHERE family_id = $familyId AND expires_at > $now
-          RETURNING rotated_at IS NULL
-        """.query[Boolean].run().count(identity)
-        // The replay of an authorization code is the fact, whether or not any token of its family is left to revoke.
-        AuditInsert.insert(audit.withDetail("familyId", Json.Str(familyId.toString)).withCount("revokedCount", revoked))
+        """.update.run()
       .unit
 
 object PostgresSessionRepository:

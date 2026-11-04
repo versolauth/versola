@@ -14,13 +14,9 @@ import versola.oauth.session.model.{
   UserDevice,
 }
 import versola.user.model.UserId
-import versola.util.audit.AuditEvent
 import versola.util.{CoreConfig, MAC, Secret, SecurityService}
 import zio.{Duration, Task, ZLayer}
 
-/** The methods that take an `audit` end sessions or refresh tokens in a transaction that also inserts the event they describe: it is
-  * the template of `session.ended` or `token.revoked`, which the repository completes per session, and writes only for what the call
-  * ended (see [[SessionRepository]]). */
 trait SessionService:
   def find(rawId: SessionId): Task[Option[SessionInfo]]
   def prolongIdle(id: MAC.Of[SessionId], idleTtl: Duration): Task[Unit]
@@ -28,10 +24,10 @@ trait SessionService:
   /** Atomically invalidates the session resolved by either its public id or raw id,
    *  returning the session that was invalidated so callers (e.g. logout) can use its
    *  data without a separate lookup. */
-  def invalidate(id: Either[PublicSessionId, SessionId], audit: AuditEvent): Task[Option[SessionInfo]]
+  def invalidate(id: Either[PublicSessionId, SessionId]): Task[Option[SessionInfo]]
 
   /** Invalidates a public session id only when it belongs to the supplied user. */
-  def invalidateForUser(publicId: PublicSessionId, userId: UserId, audit: AuditEvent): Task[Boolean]
+  def invalidateForUser(publicId: PublicSessionId, userId: UserId): Task[Boolean]
 
   /** Registers a relying party as logged-in on this session, so it can be notified on
    *  front/back-channel logout. Idempotent: a no-op if the client is already registered. */
@@ -49,12 +45,12 @@ trait SessionService:
 
   /** Forgets one of the user's user agents together with its sessions and their refresh tokens
    *  (see [[UserAgentRepository.forget]]). `false` when it is not this user's. */
-  def forgetUserAgent(userId: UserId, userAgentId: UserAgentId, audit: AuditEvent): Task[Boolean]
+  def forgetUserAgent(userId: UserId, userAgentId: UserAgentId): Task[Boolean]
 
   /** Invalidates every active session of a user (admin-panel force-logout), returning
    *  each session's record so callers (e.g. [[versola.oauth.logout.LogoutService]]) can
    *  fan out back-channel logout to its participating clients without a separate lookup. */
-  def invalidateAllByUser(userId: UserId, audit: AuditEvent): Task[List[SessionRecord]]
+  def invalidateAllByUser(userId: UserId): Task[List[SessionRecord]]
 
   /** Every currently-live refresh token issued to a user, for admin-panel display. Not
    *  derived from [[listByUser]]'s sessions: a refresh token's expiry is fixed at issuance
@@ -64,7 +60,7 @@ trait SessionService:
 
   /** Revokes the offline access one client holds for a user (admin-panel action): every live
    *  refresh token the client was issued for them expires now. The user's sessions stay. */
-  def revokeRefreshTokensByUserAndClient(userId: UserId, clientId: ClientId, audit: AuditEvent): Task[Int]
+  def revokeRefreshTokensByUserAndClient(userId: UserId, clientId: ClientId): Task[Int]
 
 object SessionService:
   def live = ZLayer.fromFunction(Impl(_, _, _, _))
@@ -135,27 +131,27 @@ object SessionService:
         // Signed-in devices lead, newest session first; the signed-out ones follow, most recently remembered first.
         signedIn ++ signedOut
 
-    override def forgetUserAgent(userId: UserId, userAgentId: UserAgentId, audit: AuditEvent): Task[Boolean] =
-      userAgentRepository.forget(userAgentId, userId, audit)
+    override def forgetUserAgent(userId: UserId, userAgentId: UserAgentId): Task[Boolean] =
+      userAgentRepository.forget(userAgentId, userId)
 
-    override def invalidate(id: Either[PublicSessionId, SessionId], audit: AuditEvent): Task[Option[SessionInfo]] =
+    override def invalidate(id: Either[PublicSessionId, SessionId]): Task[Option[SessionInfo]] =
       id match
         case Left(publicId) =>
-          repository.invalidateByPublicId(publicId, audit).map(_.map(SessionInfo(_, _)))
+          repository.invalidateByPublicId(publicId).map(_.map(SessionInfo(_, _)))
         case Right(rawId) =>
           for
             mac <- macOf(rawId)
-            record <- repository.invalidate(mac, audit)
+            record <- repository.invalidate(mac)
           yield record.map(SessionInfo(mac, _))
 
-    override def invalidateForUser(publicId: PublicSessionId, userId: UserId, audit: AuditEvent): Task[Boolean] =
-      repository.invalidateByPublicIdForUser(publicId, userId, audit)
+    override def invalidateForUser(publicId: PublicSessionId, userId: UserId): Task[Boolean] =
+      repository.invalidateByPublicIdForUser(publicId, userId)
 
-    override def invalidateAllByUser(userId: UserId, audit: AuditEvent): Task[List[SessionRecord]] =
-      repository.invalidateByUserId(userId, audit)
+    override def invalidateAllByUser(userId: UserId): Task[List[SessionRecord]] =
+      repository.invalidateByUserId(userId)
 
     override def listRefreshTokensByUser(userId: UserId): Task[List[RefreshTokenRecord]] =
       repository.findRefreshTokensByUserId(userId)
 
-    override def revokeRefreshTokensByUserAndClient(userId: UserId, clientId: ClientId, audit: AuditEvent): Task[Int] =
-      repository.revokeRefreshTokensByUserAndClient(userId, clientId, audit)
+    override def revokeRefreshTokensByUserAndClient(userId: UserId, clientId: ClientId): Task[Int] =
+      repository.revokeRefreshTokensByUserAndClient(userId, clientId)

@@ -1,11 +1,8 @@
 package versola.antifraud
 
-import versola.audit.AuditSupport.*
-import versola.audit.{AuthAuditDetails, AuthAuditKinds}
 import versola.user.authorizeInternal
 import versola.user.model.UserId
 import versola.util.CoreConfig
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{Controller, EntityVersion, Observability}
 import zio.*
 import zio.http.{Header, Method, Request, Response, Routes, Status, handler}
@@ -26,7 +23,7 @@ import zio.json.{EncoderOps, JsonCodec, JsonEncoder}
   * version.
   */
 object AntifraudSettingsController extends Controller:
-  type Env = Tracing & CoreConfig & AntifraudTuningStore & AuditEvents
+  type Env = Tracing & CoreConfig & AntifraudTuningStore
 
   def routes: Routes[Env, Throwable] = Routes(getEndpoint, putEndpoint, patchEndpoint, deleteEndpoint)
 
@@ -38,15 +35,6 @@ object AntifraudSettingsController extends Controller:
 
   private def versioned(row: StoredTuning): Response =
     Response.json(row.toJson).addHeader(Header.Custom("ETag", EntityVersion.etag(row.version)))
-
-  /** `antifraud.settings_changed`, inserted by the transaction that writes the row (which says which version it became). The settings
-    * themselves are not in it: what changed is the antifraud console's `af_settings` row, and an event is for who changed it and when. */
-  private def changeDraft(action: String): AuditDraft =
-    AuditDraft(
-      kind = AuthAuditKinds.AntifraudSettingsChanged,
-      outcome = AuditOutcome.success,
-      details = AuthAuditDetails.AntifraudSettingsChanged(action = action),
-    )
 
   /** The row as stored, which is what applies (everything off where there is none, at version 0). */
   val getEndpoint =
@@ -65,11 +53,9 @@ object AntifraudSettingsController extends Controller:
         _ <- authorizeInternal(request)
         body <- request.bodyAs[SettingsPayload]
         tuning <- ZIO.service[AntifraudTuningStore]
-        events <- ZIO.service[AuditEvents]
         response <- guarded:
           withVersion(request, body.version): expected =>
-            events.atomically(changeDraft("put"))(tuning.put(body.settings, body.userId.toString, expected, _))
-              .map(version => versioned(StoredTuning(body.settings, version)))
+            tuning.put(body.settings, body.userId.toString, expected).map(version => versioned(StoredTuning(body.settings, version)))
       yield response
     }
 
@@ -80,10 +66,9 @@ object AntifraudSettingsController extends Controller:
         _ <- authorizeInternal(request)
         body <- request.bodyAs[PatchAntifraudSettingsPayload]
         tuning <- ZIO.service[AntifraudTuningStore]
-        events <- ZIO.service[AuditEvents]
         response <- guarded:
           withVersion(request, body.version): expected =>
-            events.atomically(changeDraft("patch"))(tuning.patch(body.patch, body.userId.toString, expected, _)).map(versioned)
+            tuning.patch(body.patch, body.userId.toString, expected).map(versioned)
       yield response
     }
 
@@ -94,10 +79,9 @@ object AntifraudSettingsController extends Controller:
         _ <- authorizeInternal(request)
         userId <- request.queryZIO[UserId]("userId")
         tuning <- ZIO.service[AntifraudTuningStore]
-        events <- ZIO.service[AuditEvents]
         response <- guarded:
           withVersion(request, None): expected =>
-            events.atomically(changeDraft("reset"))(tuning.reset(userId.toString, expected, _)).map: version =>
+            tuning.reset(userId.toString, expected).map: version =>
               Response.status(Status.NoContent).addHeader(Header.Custom("ETag", EntityVersion.etag(version)))
       yield response
     }

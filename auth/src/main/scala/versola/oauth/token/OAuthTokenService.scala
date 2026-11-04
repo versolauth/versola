@@ -26,7 +26,7 @@ import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Observability
 import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
 import zio.prelude.These
-import zio.{Duration, IO, Task, UIO, ZIO, ZLayer}
+import zio.{Duration, IO, Task, ZIO, ZLayer}
 
 trait OAuthTokenService:
 
@@ -110,62 +110,46 @@ object OAuthTokenService:
       * event there is. The client is the actor, the user (when there is one) the subject. */
     private def auditIssued(grant: String, client: OAuthClientRecord, tokens: IssuedTokens): IO[Throwable, Unit] =
       ZIO.unless(grant == "refresh_token" && !auditTiers.tokenRefresh):
-        issuedDraft(
-          grant = grant,
-          client = client,
-          userId = tokens.userId,
-          scope = tokens.scope,
-          audience = tokens.audience,
-          accessToken = tokens.accessToken,
-          cnf = tokens.cnf,
-          idToken = tokens.user.isDefined && tokens.scope.contains(ScopeToken.OpenId),
-        ).flatMap(audit.log)
+        AuditSupport.currentAuth.flatMap: auth =>
+          audit.log(
+            AuditDraft(
+              kind = AuthAuditKinds.TokenIssued,
+              outcome = AuditOutcome.success,
+              actor = Some((AuthActors.client, Some(client.id))),
+              userId = tokens.userId,
+              details = AuthAuditDetails.TokenIssued(
+                grant = grant,
+                scope = tokens.scope.toList.map(_.toString).sorted,
+                resource = tokens.audience.map(_.toString),
+                accessJti = Base64.urlEncode(tokens.accessToken),
+                refreshPrefix = auth.refreshToken,
+                previousRefreshPrefix = auth.previousRefreshToken,
+                binding = tokens.cnf match
+                  case Some(cnf) if cnf.jkt.isDefined => "dpop"
+                  case Some(_) => "mtls"
+                  case None => "none",
+                idToken = tokens.user.isDefined && tokens.scope.contains(ScopeToken.OpenId),
+                clientAuth = client.authMethod.toString,
+              ),
+            ),
+          )
       .unit
 
-    /** The draft of `token.issued`, for the two ways it is recorded: queued ([[auditIssued]]), when no row is written with the tokens,
-      * and inserted in the transaction that writes the refresh token's row (see [[issueTokens]]). */
-    private def issuedDraft(
-        grant: String,
-        client: OAuthClientRecord,
-        userId: Option[UserId],
-        scope: Set[ScopeToken],
-        audience: List[ResourceUri],
-        accessToken: AccessToken,
-        cnf: Option[Cnf],
-        idToken: Boolean,
-    ): UIO[AuditDraft] =
-      AuditSupport.currentAuth.map: auth =>
-        AuditDraft(
-          kind = AuthAuditKinds.TokenIssued,
-          outcome = AuditOutcome.success,
-          actor = Some((AuthActors.client, Some(client.id))),
-          userId = userId,
-          details = AuthAuditDetails.TokenIssued(
-            grant = grant,
-            scope = scope.toList.map(_.toString).sorted,
-            resource = audience.map(_.toString),
-            accessJti = Base64.urlEncode(accessToken),
-            refreshPrefix = auth.refreshToken,
-            previousRefreshPrefix = auth.previousRefreshToken,
-            binding = cnf match
-              case Some(cnf) if cnf.jkt.isDefined => "dpop"
-              case Some(_) => "mtls"
-              case None => "none",
-            idToken = idToken,
-            clientAuth = client.authMethod.toString,
+    /** `token.reuse_detected`: a token that was already used was presented again and its family revoked. */
+    private def auditReuse(client: OAuthClientRecord, tokenType: String, family: RefreshTokenFamilyId, userId: UserId): IO[Throwable, Unit] =
+      AuditSupport.currentAuth.flatMap: auth =>
+        audit.log(
+          AuditDraft(
+            kind = AuthAuditKinds.TokenReuseDetected,
+            outcome = AuditOutcome.denied,
+            actor = Some((AuthActors.client, Some(client.id))),
+            userId = Some(userId),
+            details = AuthAuditDetails.TokenReuseDetected(
+              tokenType = tokenType,
+              refreshPrefix = auth.previousRefreshToken,
+              familyId = family.toString,
+            ),
           ),
-        )
-
-    /** `token.reuse_detected`: a token that was already used was presented again and its family revoked. The event is inserted by the
-      * repository in the transaction of that revocation, which fills the family, the account and how many tokens were still live. */
-    private def reuseDraft(client: OAuthClientRecord, tokenType: String, userId: Option[UserId]): UIO[AuditDraft] =
-      AuditSupport.currentAuth.map: auth =>
-        AuditDraft(
-          kind = AuthAuditKinds.TokenReuseDetected,
-          outcome = AuditOutcome.denied,
-          actor = Some((AuthActors.client, Some(client.id))),
-          userId = userId,
-          details = AuthAuditDetails.TokenReuseDetected(tokenType = tokenType, refreshPrefix = auth.previousRefreshToken),
         )
 
     /** Bounds how many concurrent copies of the same idempotent refresh request
@@ -277,8 +261,8 @@ object OAuthTokenService:
                 subject = codeRecord.userId.toString,
                 expiresAt = replayedAt.plus(client.accessTokenTtl),
               )
-              draft <- reuseDraft(client, "authorization_code", Some(codeRecord.userId))
-              _ <- audit.atomically(draft)(sessionRepository.deleteByFamily(family, _))
+              _ <- sessionRepository.deleteByFamily(family)
+              _ <- auditReuse(client, "authorization_code", family, codeRecord.userId)
               _ <- ZIO.fail(TokenEndpointError.InvalidGrant.CodeReplayed)
             yield ()
 
@@ -290,7 +274,6 @@ object OAuthTokenService:
         _ <- Observability.setToken(accessToken.encoded)
 
         issuedTokens <- issueTokens(
-          grant = "authorization_code",
           accessToken = accessToken,
           client = client,
           record = RefreshTokenRecord(
@@ -323,6 +306,7 @@ object OAuthTokenService:
           case ex: Throwable => ex
           case _ => TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged // illegal state
         }
+        _ <- auditIssued("authorization_code", client, issuedTokens)
       yield issuedTokens
 
     /** Refreshes an access token using a refresh token.
@@ -368,6 +352,7 @@ object OAuthTokenService:
           idempotencyKeyMac,
           resolved,
         )
+        _ <- auditIssued("refresh_token", client, issuedTokens)
       yield issuedTokens
 
     /** Validates the resolved record and issues against it, recovering via the idempotency
@@ -449,7 +434,6 @@ object OAuthTokenService:
         _ <- Observability.setToken(accessToken.encoded)
 
         issuedTokens <- issueTokens(
-          grant = "refresh_token",
           accessToken = accessToken,
           client = client,
           record = tokenRecord.copy(
@@ -560,9 +544,7 @@ object OAuthTokenService:
       * former is worth surfacing in the request's error context.
       */
     private def detectReplay(client: OAuthClientRecord, replayed: MAC.Of[RefreshToken]): Task[Boolean] =
-      val revoked = reuseDraft(client, "refresh_token", None).flatMap: draft =>
-        audit.atomicallyWhen(draft)(sessionRepository.revokeFamily(replayed, client.id, _))(_.isDefined)
-      revoked.flatMap:
+      sessionRepository.revokeFamily(replayed, client.id).flatMap:
         case Some(family) =>
           // The access tokens the chain issued are not in hand, and are not recorded anywhere
           // either: the push names the family they all carry as their `fam` claim, which
@@ -580,6 +562,7 @@ object OAuthTokenService:
                 subject = family.userId.toString,
                 expiresAt = revokedAt.plus(client.accessTokenTtl),
               )
+            .zipRight(auditReuse(client, "refresh_token", family.familyId, family.userId))
             .as(true)
         case None =>
           ZIO.succeed(false)
@@ -708,7 +691,6 @@ object OAuthTokenService:
      * populates AMR, ACR, and user roles based on the client and user record.
      */
     private def issueTokens(
-        grant: String,
         accessToken: AccessToken,
         client: OAuthClientRecord,
         record: RefreshTokenRecord,
@@ -735,22 +717,7 @@ object OAuthTokenService:
                 token <- authPropertyGenerator.nextRefreshToken
                 _ <- Observability.setRefreshToken(Base64.urlEncode(token))
                 mac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
-                draft <- issuedDraft(
-                  grant = grant,
-                  client = client,
-                  userId = Some(record.userId),
-                  scope = record.scope,
-                  audience = accessTokenAudience,
-                  accessToken = accessToken,
-                  cnf = record.cnf,
-                  idToken = record.scope.contains(ScopeToken.OpenId),
-                )
-                // `token.issued` is inserted with the row it is about, in one transaction: the row is the grant of this token, and
-                // an event for a token that was not written, or a token with no event, cannot be. The refresh grant's event may be
-                // switched off (`audit.events.token-refresh`).
-                _ <- audit.atomicallyIf(grant != "refresh_token" || auditTiers.tokenRefresh, draft)(
-                  sessionRepository.createRefreshToken(mac, previousRefreshToken, record, idempotencyKey, _),
-                )
+                _ <- sessionRepository.createRefreshToken(mac, previousRefreshToken, record, idempotencyKey)
                   .mapError:
                     case ex: Throwable => ex
                     case _ => TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged
@@ -763,29 +730,25 @@ object OAuthTokenService:
         )
 
         roles <- userRepository.findRolesByUserAndTenant(record.userId, client.tenantId)
-        issued = IssuedTokens(
-          accessToken = accessToken,
-          clientId = record.clientId,
-          audience = accessTokenAudience,
-          authorizationDetails = accessTokenAuthorizationDetails,
-          accessTokenTtl = client.accessTokenTtl,
-          userId = Some(record.userId),
-          refreshToken = refreshToken,
-          scope = record.scope,
-          requestedClaims = record.requestedClaims,
-          uiLocales = record.uiLocales,
-          nonce = record.nonce,
-          user = user.flatten,
-          tenantId = client.tenantId,
-          roles = roles,
-          sessionId = Some(record.publicSessionId),
-          refreshTokenFamilyId = Some(record.familyId),
-          amr = record.amr,
-          authTime = Some(record.authTime),
-          acr = record.acr,
-          cnf = record.cnf,
-        )
-        // A token with no refresh row to be written with (an access token alone, or a sender-constrained grant renewed in place) has
-        // no transaction to join: its event is queued.
-        _ <- auditIssued(grant, client, issued).unless(record.scope.contains(ScopeToken.OfflineAccess) && boundRenewal.isEmpty)
-      yield issued
+      yield IssuedTokens(
+        accessToken = accessToken,
+        clientId = record.clientId,
+        audience = accessTokenAudience,
+        authorizationDetails = accessTokenAuthorizationDetails,
+        accessTokenTtl = client.accessTokenTtl,
+        userId = Some(record.userId),
+        refreshToken = refreshToken,
+        scope = record.scope,
+        requestedClaims = record.requestedClaims,
+        uiLocales = record.uiLocales,
+        nonce = record.nonce,
+        user = user.flatten,
+        tenantId = client.tenantId,
+        roles = roles,
+        sessionId = Some(record.publicSessionId),
+        refreshTokenFamilyId = Some(record.familyId),
+        amr = record.amr,
+        authTime = Some(record.authTime),
+        acr = record.acr,
+        cnf = record.cnf,
+      )

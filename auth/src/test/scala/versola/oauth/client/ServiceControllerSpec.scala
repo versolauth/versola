@@ -1,7 +1,6 @@
 package versola.oauth.client
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.audit.AuthAuditKinds
 import versola.auth.TestEnvConfig
 import versola.oauth.delivery.DeliveryChannels
 import versola.oauth.jwks.JwksService
@@ -9,7 +8,6 @@ import versola.oauth.mtls.EdgeCertificateTrust
 import versola.user.UserRepository
 import versola.user.model.UserId
 import versola.util.EnvName
-import versola.util.audit.AuditEvents
 import versola.util.http.{NoopTracing, Observability}
 import zio.*
 import zio.http.*
@@ -57,7 +55,6 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[DeliveryChannels](deliveryChannels) ++
                 ZEnvironment[EdgeCertificateTrust](EdgeCertificateTrust.none) ++
                 ZEnvironment[EnvName](env) ++
-                ZEnvironment[AuditEvents](AuditEvents.noop) ++
                 ZEnvironment(TestEnvConfig.coreConfig) ++
                 tracing,
             ),
@@ -121,11 +118,7 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         request = Request(method = Method.DELETE, url = (URL.empty / "service" / "users").addQueryParam("id", userId.toString)),
         expectedStatus = Status.NoContent,
         setup = (_, userRepository, _, _) => userRepository.delete.succeedsWith(()),
-        verify = (_, userRepository, _, _) =>
-          ZIO.succeed(assertTrue(
-            userRepository.delete.calls.map(_._1) == List(userId),
-            userRepository.delete.calls.map(_._2.kind) == List(AuthAuditKinds.AccountDeleted),
-          )),
+        verify = (_, userRepository, _, _) => ZIO.succeed(assertTrue(userRepository.delete.calls == List(userId))),
       ),
       controllerTestCase(
         description = "returns 404 Not Found in prod",

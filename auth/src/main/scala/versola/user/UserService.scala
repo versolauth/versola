@@ -44,14 +44,13 @@ object UserService:
         case Right(phone) => UserRegisteredEvent(None, Some(phone), None)
       for
         userId <- registrationSyncClient.claimRegistration(claim)
-        // Inserted in the transaction that creates the account, and only when this call created it: the account is the one named
-        // by `userId`, which central claimed for the registration.
-        user <- audit.atomically(
+        user <- userRepository.register(userId, credential, tenantId, roleIds)
+        _ <- audit.log(
           AuditDraft(
             kind = AuthAuditKinds.AccountRegistered,
             outcome = AuditOutcome.success,
-            userId = Some(userId),
+            userId = Some(user.id),
             details = AuthAuditDetails.Account(via = "registration"),
           ),
-        )(userRepository.register(userId, credential, tenantId, roleIds, _))
+        )
       yield user

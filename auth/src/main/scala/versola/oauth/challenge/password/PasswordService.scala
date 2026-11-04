@@ -16,7 +16,6 @@ import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider}
 import versola.user.UserRepository
 import versola.user.model.UserId
-import versola.util.audit.AuditEvent
 import versola.util.{CoreConfig, Email, EnvName, MAC, Phone, Salt, Secret, SecureRandom, SecurityService}
 import zio.prelude.EqualOps
 import zio.{Clock, IO, Task, UIO, ZIO, ZLayer}
@@ -29,11 +28,9 @@ trait PasswordService:
   /** Returns true if the user has at least one non-expired password on record. */
   def hasPassword(userId: UserId): Task[Boolean]
 
-  /** `audit` is the event of the change (`account.password_set`, `account.password_changed`): built by the caller, who knows how the
-    * change came about, and inserted by the repository in the transaction that writes the password. */
-  def setPassword(userId: UserId, password: Password, audit: AuditEvent): IO[Throwable | PasswordReuseError, Unit]
+  def setPassword(userId: UserId, password: Password): IO[Throwable | PasswordReuseError, Unit]
 
-  def setTemporaryPassword(userId: UserId, password: Password, expiresAt: Instant, audit: AuditEvent): Task[Unit]
+  def setTemporaryPassword(userId: UserId, password: Password, expiresAt: Instant): Task[Unit]
 
   /** Issues a temporary password and delivers it over the requested channel.
     * Returns the plaintext only for [[DeliveryChannel.show]], which is rejected
@@ -43,7 +40,6 @@ trait PasswordService:
       userId: UserId,
       expiresInSeconds: Option[Long],
       channel: Option[DeliveryChannel],
-      audit: AuditEvent,
   ): Task[Option[Password]]
 
 object PasswordService:
@@ -97,8 +93,8 @@ object PasswordService:
       securityService.hashPassword(Secret.fromString(password), record.salt, config.security.passwordsSecret)
         .map(mac => mac === MAC(record.password))
 
-    override def setPassword(userId: UserId, password: Password, audit: AuditEvent): IO[Throwable | PasswordReuseError, Unit] =
-      setPassword(userId, password, audit, attemptsLeft = SetPasswordAttempts)
+    override def setPassword(userId: UserId, password: Password): IO[Throwable | PasswordReuseError, Unit] =
+      setPassword(userId, password, attemptsLeft = SetPasswordAttempts)
 
     /** The reuse check reads the history outside the repository's transaction, because it needs the hashing
       * service. The repository refuses the insert if another change got in between ([[PasswordHistoryChanged]]),
@@ -106,7 +102,6 @@ object PasswordService:
     private def setPassword(
         userId: UserId,
         password: Password,
-        audit: AuditEvent,
         attemptsLeft: Int,
     ): IO[Throwable | PasswordReuseError, Unit] =
       for
@@ -130,27 +125,25 @@ object PasswordService:
             historySize = settings.historySize,
             numDifferent = settings.numDifferent,
             expectedHead = permanents.map(_.id).maxOption,
-            audit = audit,
           )
           .catchAll:
-            case PasswordHistoryChanged if attemptsLeft > 1 => setPassword(userId, password, audit, attemptsLeft - 1)
+            case PasswordHistoryChanged if attemptsLeft > 1 => setPassword(userId, password, attemptsLeft - 1)
             case PasswordHistoryChanged => ZIO.fail(IllegalStateException(s"The password history of $userId kept changing"))
             case error: PasswordReuseError => ZIO.fail(error)
             case error: Throwable => ZIO.fail(error)
       yield ()
 
-    override def setTemporaryPassword(userId: UserId, password: Password, expiresAt: Instant, audit: AuditEvent): Task[Unit] =
+    override def setTemporaryPassword(userId: UserId, password: Password, expiresAt: Instant): Task[Unit] =
       for
         salt <- secureRandom.nextBytes(16).map(Salt(_))
         hash <- securityService.hashPassword(Secret.fromString(password), salt, config.security.passwordsSecret)
-        _ <- passwordRepository.createTemporary(userId, Secret(hash), salt, expiresAt, audit)
+        _ <- passwordRepository.createTemporary(userId, Secret(hash), salt, expiresAt)
       yield ()
 
     override def resetPassword(
         userId: UserId,
         expiresInSeconds: Option[Long],
         channel: Option[DeliveryChannel],
-        audit: AuditEvent,
     ): Task[Option[Password]] =
       val reveal = channel.contains(DeliveryChannel.show)
       for
@@ -163,7 +156,7 @@ object PasswordService:
         plaintext <- generateTemporaryPassword(passwordRegex)
         ttlSeconds = expiresInSeconds.getOrElse(DefaultTtlSeconds)
         expiresAt <- Clock.instant.map(_.plusSeconds(ttlSeconds))
-        _ <- setTemporaryPassword(userId, plaintext, expiresAt, audit)
+        _ <- setTemporaryPassword(userId, plaintext, expiresAt)
         _ <- deliverPassword(plaintext, ttlSeconds, recipient)
           .tapError(_ => passwordRepository.deleteTemporary(userId).ignore)
           .when(env.isProd)

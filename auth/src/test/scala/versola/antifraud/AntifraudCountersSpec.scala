@@ -1,7 +1,6 @@
 package versola.antifraud
 
 import versola.util.UnitSpecBase
-import versola.util.audit.AuditEvent
 import zio.*
 import zio.test.*
 
@@ -27,7 +26,7 @@ object AntifraudCountersSpec extends UnitSpecBase:
 
   /** The log of resets, in memory. */
   private class InMemoryResets(rows: Ref[List[CounterReset]]) extends AntifraudCounterResetRepository:
-    override def record(reset: CounterReset.Resolved, requestedBy: String, at: Instant, audit: AuditEvent): Task[Long] =
+    override def record(reset: CounterReset.Resolved, requestedBy: String, at: Instant): Task[Long] =
       rows.modify: all =>
         val generation = all.size + 1L
         (generation, all :+ CounterReset(generation, reset.scope, reset.valueType, reset.valueHash, reset.destPrefix, requestedBy, at))

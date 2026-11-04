@@ -1,11 +1,8 @@
 package versola.antifraud
 
-import versola.audit.AuditSupport.*
-import versola.audit.{AuthAuditDetails, AuthAuditKinds}
 import versola.oauth.client.model.TenantId
 import versola.user.authorizeInternal
 import versola.user.model.UserId
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{Controller, Observability}
 import versola.util.{CoreConfig, PageLimit, PageOffset, Phone}
 import zio.*
@@ -27,7 +24,7 @@ import java.util.UUID
   * [[AntifraudScope]]'s to say.
   */
 object AntifraudListController extends Controller:
-  type Env = Tracing & CoreConfig & AntifraudLists & AntifraudEvents & AuditEvents
+  type Env = Tracing & CoreConfig & AntifraudLists & AntifraudEvents
 
   def routes: Routes[Env, Throwable] = Routes(createEndpoint, listEndpoint, deleteEndpoint, previewEndpoint, auditEndpoint)
 
@@ -37,14 +34,10 @@ object AntifraudListController extends Controller:
         _ <- authorizeInternal(request)
         body <- request.bodyAs[ListEntryPayload]
         lists <- ZIO.service[AntifraudLists]
-        events <- ZIO.service[AuditEvents]
         response <- guarded:
-          // The event is inserted by the transaction that writes the entry: an entry nobody witnessed is not made.
-          scoped(body).flatMap(newEntry(body, _)).flatMap(entry =>
-            events.atomically(
-              changeDraft(entry.listType.toString, entry.valueType.toString, entry.tenantId.map(_.toString), entry.shadow, entry.expiresAt),
-            )(lists.create(entry, body.userId.toString, _)),
-          ).map(entry => Response.json(entry.toJson).status(Status.Created))
+          scoped(body).flatMap(newEntry(body, _)).flatMap(lists.create(_, body.userId.toString)).map(entry =>
+            Response.json(entry.toJson).status(Status.Created),
+          )
       yield response
     }
 
@@ -96,7 +89,6 @@ object AntifraudListController extends Controller:
         id <- request.queryZIO[UUID]("id")
         callerScope <- queryScope(request)
         lists <- ZIO.service[AntifraudLists]
-        events <- ZIO.service[AuditEvents]
         response <- guarded:
           for
             scope <- callerScope
@@ -106,12 +98,7 @@ object AntifraudListController extends Controller:
             _ <- ZIO.foreachDiscard(entry)(e =>
               ZIO.fail(ScopeDenied("a tenant admin removes its own tenant's entries only")).unless(scope.mayChange(e.tenantId)),
             )
-            removed <- entry match
-              case None => ZIO.succeed(false)
-              case Some(e) =>
-                events.atomicallyWhen(
-                  changeDraft(e.listType.toString, e.valueType.toString, e.tenantId.map(_.toString), e.shadow, e.expiresAt),
-                )(lists.delete(id, userId.toString, _))(identity)
+            removed <- if entry.isEmpty then ZIO.succeed(false) else lists.delete(id, userId.toString)
             response <- if removed then ZIO.succeed(Response.status(Status.NoContent))
             else Observability.setError("list_entry_not_found").as(Response.status(Status.NotFound))
           yield response
@@ -133,25 +120,6 @@ object AntifraudListController extends Controller:
           )
       yield response
     }
-
-  private def changeDraft(
-      listType: String,
-      valueType: String,
-      tenantId: Option[String],
-      shadow: Boolean,
-      expiresAt: Option[Instant],
-  ): AuditDraft =
-    AuditDraft(
-      kind = AuthAuditKinds.AntifraudListChanged,
-      outcome = AuditOutcome.success,
-      details = AuthAuditDetails.AntifraudListChanged(
-        listType = listType,
-        valueType = valueType,
-        tenantId = tenantId,
-        shadow = Some(shadow),
-        expiresAt = expiresAt.map(_.toString),
-      ),
-    )
 
   private def guarded[R](effect: ZIO[R, Throwable, Response]): ZIO[R, Throwable, Response] =
     effect.catchSome:

@@ -55,13 +55,15 @@ object RevocationService:
       audit: AuditEvents,
   ) extends RevocationService:
 
-    private def draft(client: OAuthClientRecord, userId: Option[UUID], details: AuthAuditDetails.TokenRevoked): AuditDraft =
-      AuditDraft(
-        kind = AuthAuditKinds.TokenRevoked,
-        outcome = AuditOutcome.success,
-        actor = Some((AuthActors.client, Some(client.id))),
-        userId = userId,
-        details = details,
+    private def audited(client: OAuthClientRecord, userId: Option[UUID], details: AuthAuditDetails.TokenRevoked): IO[Throwable, Unit] =
+      audit.log(
+        AuditDraft(
+          kind = AuthAuditKinds.TokenRevoked,
+          outcome = AuditOutcome.success,
+          actor = Some((AuthActors.client, Some(client.id))),
+          userId = userId,
+          details = details,
+        ),
       )
 
     override def revokeRefreshToken(
@@ -86,10 +88,13 @@ object RevocationService:
             // the client's current `accessTokenTtl` from now: an approximation, and the only
             // one available once the tokens themselves are not being named.
             Clock.instant.flatMap: revokedAt =>
-              // The event is inserted in the transaction that revokes the token, and only when the token was live: a repeated
-              // revocation of the same token (RFC 7009 makes it a success) writes no row.
-              audit.atomically(
-                draft(
+              sessionRepository.delete(tokenMac) *>
+                accessTokenRevocationService.revokeFamily(
+                  client = client,
+                  family = record.familyId,
+                  subject = record.userId.toString,
+                  expiresAt = revokedAt.plus(client.accessTokenTtl),
+                ) *> audited(
                   client,
                   Some(record.userId),
                   AuthAuditDetails.TokenRevoked(
@@ -98,13 +103,6 @@ object RevocationService:
                     refreshPrefix = Some(Base64.urlEncode(token).take(9)),
                     cause = "rfc7009",
                   ),
-                ),
-              )(sessionRepository.delete(tokenMac, _)) *>
-                accessTokenRevocationService.revokeFamily(
-                  client = client,
-                  family = record.familyId,
-                  subject = record.userId.toString,
-                  expiresAt = revokedAt.plus(client.accessTokenTtl),
                 )
       yield ()
 
@@ -125,13 +123,10 @@ object RevocationService:
           subject = token.subject,
           expiresAt = token.expiresAt,
         )
-        // An access token is revoked by telling the edges, with nothing of auth's own to change: queued.
-        _ <- audit.log(
-          draft(
-            client,
-            Try(UUID.fromString(token.subject)).toOption,
-            AuthAuditDetails.TokenRevoked(tokenType = "access_token", jti = Some(Base64.urlEncode(token.id)), refreshPrefix = None, cause = "rfc7009"),
-          ),
+        _ <- audited(
+          client,
+          Try(UUID.fromString(token.subject)).toOption,
+          AuthAuditDetails.TokenRevoked(tokenType = "access_token", jti = Some(Base64.urlEncode(token.id)), refreshPrefix = None, cause = "rfc7009"),
         )
       yield ()
 

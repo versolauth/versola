@@ -5,8 +5,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.auth.model.PasswordRecord
 import versola.oauth.challenge.password.model.{PasswordHistoryChanged, PasswordReuseError}
 import versola.user.model.UserId
-import versola.util.audit.AuditEvent
-import versola.util.postgres.{AuditInsert, BasicCodecs}
+import versola.util.postgres.BasicCodecs
 import versola.util.{Salt, Secret}
 import zio.prelude.EqualOps
 import zio.{Clock, IO, Task, ZLayer}
@@ -42,7 +41,6 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
       historySize: Int,
       numDifferent: Int,
       expectedHead: Option[Long],
-      audit: AuditEvent,
   ): IO[Throwable | PasswordReuseError | PasswordHistoryChanged.type, Unit] =
     for
       now <- Clock.instant
@@ -93,7 +91,6 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
           if toDelete.nonEmpty then
             val ids = toDelete.map(_.id)
             sql"""DELETE FROM user_passwords WHERE id = ANY($ids)""".update.run()
-          AuditInsert.insert(audit)
           Right(())
         }
       }.absolve
@@ -104,7 +101,6 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
       passwordHash: Secret,
       salt: Salt,
       expiresAt: Instant,
-      audit: AuditEvent,
   ): Task[Unit] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("create-temporary-password") {
@@ -115,7 +111,6 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
         sql"""INSERT INTO user_passwords (user_id, password, salt, created_at, expires_at)
               VALUES ($userId, $passwordHash, $salt, $now, $expiresAt)
            """.update.run()
-        AuditInsert.insert(audit)
       }.unit
 
   override def deleteTemporary(userId: UserId): Task[Unit] =

@@ -2,7 +2,6 @@ package versola.antifraud
 
 import versola.oauth.client.model.ClientId
 import versola.util.UnitSpecBase
-import versola.util.audit.AuditEvent
 import zio.*
 import zio.json.*
 import zio.metrics.{Metric, MetricLabel}
@@ -258,7 +257,7 @@ object AntifraudShadowSpec extends UnitSpecBase:
       },
       test("the store refuses them when put, and stores nothing") {
         val store = AntifraudTuningStore.Impl(new AntifraudSettingsRepository:
-          def put(tuning: Tuning, actor: String, at: Instant, expectedVersion: Option[Long], audit: AuditEvent) = ZIO.some(1L)
+          def put(tuning: Tuning, actor: String, at: Instant, expectedVersion: Option[Long]) = ZIO.some(1L)
           def seed(tuning: Tuning, actor: String, at: Instant) = ZIO.succeed(true)
           def find = ZIO.none
           def version = ZIO.succeed(0L))

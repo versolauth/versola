@@ -302,7 +302,7 @@ object LogoutServiceSpec extends UnitSpecBase:
           ended <- env.service.invalidateSession(publicSessionId1, userId)
         yield assertTrue(
           ended,
-          env.sessionService.invalidate.calls.map(_._1) == List(Left(publicSessionId1)),
+          env.sessionService.invalidate.calls == List(Left(publicSessionId1)),
           env.outbox.submit.calls.map(_.audience.toList) == List(List(withBackChannel.id)),
         )
       },
@@ -320,9 +320,9 @@ object LogoutServiceSpec extends UnitSpecBase:
           forgotten <- env.service.forgetUserAgent(userId, testUserAgentId)
         yield assertTrue(
           forgotten,
-          env.sessionService.invalidate.calls.map(_._1) == List(Left(publicSessionId1)),
+          env.sessionService.invalidate.calls == List(Left(publicSessionId1)),
           env.outbox.submit.calls.map(_.audience.toList) == List(List(withBackChannel.id)),
-          env.sessionService.forgetUserAgent.calls.map((u, a, _) => (u, a)) == List((userId, testUserAgentId)),
+          env.sessionService.forgetUserAgent.calls == List((userId, testUserAgentId)),
         )
       },
       test("forgets a signed-out user agent without ending any session") {
@@ -334,7 +334,7 @@ object LogoutServiceSpec extends UnitSpecBase:
         yield assertTrue(
           forgotten,
           env.sessionService.invalidate.calls.isEmpty,
-          env.sessionService.forgetUserAgent.calls.map((u, a, _) => (u, a)) == List((userId, testUserAgentId)),
+          env.sessionService.forgetUserAgent.calls == List((userId, testUserAgentId)),
         )
       },
       test("refuses a user agent that is not the user's, ending and forgetting nothing") {
@@ -417,7 +417,7 @@ object LogoutServiceSpec extends UnitSpecBase:
       },
     ),
     suite("audit log (session.ended)")(
-      test("an RP logout records session.ended, handed to the repository to insert with the end of the session; the actor is the request's") {
+      test("an RP logout records session.ended with the user and how many relying parties took part; the actor is the request's") {
         val env = Env()
         for
           _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
@@ -427,11 +427,8 @@ object LogoutServiceSpec extends UnitSpecBase:
         yield assertTrue(
           drafts.map(_.kind) == List(AuthAuditKinds.SessionEnded),
           drafts.head.outcome == AuditOutcome.success,
-          // The session, whose it is and how many relying parties it had are what the transaction that ends it knows: the repository
-          // fills them into the event it was handed (the repository specs). The service gives the cause.
-          env.sessionService.invalidate.calls.map(_._2.kind) == List(AuthAuditKinds.SessionEnded),
-          drafts.head.userId == None,
-          drafts.head.details == AuthAuditDetails.SessionEnded(cause = "rp_logout", clients = 0),
+          drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
+          drafts.head.details == AuthAuditDetails.SessionEnded(cause = "rp_logout", clients = 1),
           // no actor of its own: the user of the request, or the administrator `authorizeInternal` noted
           drafts.head.actor.isEmpty,
         )
@@ -453,7 +450,7 @@ object LogoutServiceSpec extends UnitSpecBase:
           _ <- env.configuration.find.succeedsWith(None)
           ended <- env.service.invalidateSession(publicSessionId1, userId)
           drafts <- env.audit.recorded
-        yield assertTrue(ended, drafts.map(_.details) == List(AuthAuditDetails.SessionEnded(cause = "admin_revoked", clients = 0)))
+        yield assertTrue(ended, drafts.map(_.details) == List(AuthAuditDetails.SessionEnded(cause = "admin_revoked", clients = 1)))
       },
       test("a session that is not the user's is refused and records nothing") {
         val env = Env()
@@ -477,14 +474,11 @@ object LogoutServiceSpec extends UnitSpecBase:
           _ <- env.service.forgetUserAgent(userId, testUserAgentId)
           signedOut <- env.audit.recorded
         yield assertTrue(
-          live.map(_.details) == List(AuthAuditDetails.SessionEnded(cause = "user_agent_forgotten", clients = 0)),
-          // The user agent's own call gets an event too, for the sessions it ends that the live one did not cover; none counted here
-          env.sessionService.forgetUserAgent.calls.map(_._3.details) ==
-            List.fill(2)(AuthAuditDetails.SessionEnded(cause = "user_agent_forgotten", clients = 0).toJson),
+          live.map(_.details) == List(AuthAuditDetails.SessionEnded(cause = "user_agent_forgotten", clients = 1)),
           signedOut.isEmpty,
         )
       },
-      test("ending every session of a user hands one event down and counts one per session ended") {
+      test("ending every session of a user records one event per session") {
         val env = Env()
         val recordA = record1.copy(clients = List(ClientEntry(clientA.id, Instant.EPOCH)))
         val recordB = record1.copy(clients = Nil, publicId = PublicSessionId("public-session-2"))
@@ -494,18 +488,25 @@ object LogoutServiceSpec extends UnitSpecBase:
           _ <- env.service.invalidateAllSessions(userId)
           drafts <- env.audit.recorded
         yield assertTrue(
-          env.sessionService.invalidateAllByUser.calls.size == 1,
-          drafts.map(_.details) == List.fill(2)(AuthAuditDetails.SessionEnded(cause = "admin_revoked", clients = 0)),
+          drafts.map(_.details) == List(
+            AuthAuditDetails.SessionEnded(cause = "admin_revoked", clients = 1),
+            AuthAuditDetails.SessionEnded(cause = "admin_revoked", clients = 0),
+          ),
         )
       },
-      test("when the repository cannot insert the event the session is not ended: the logout fails and no relying party is told") {
+      test("ending a session fails the request when the log cannot take the event, after the session is gone") {
         val env = Env()
-        val refusal = RuntimeException("audit insert refused")
+        val refusing = LogoutService.Impl(
+          env.sessionService,
+          env.configuration,
+          TestEnvConfig.coreConfig,
+          env.outbox,
+          CapturingAuditEvents.shared(unavailable = true),
+        )
         for
-          _ <- env.sessionService.invalidate.failsWith(refusal)
-          result <- env.service.logout(Right(rawSessionId), None, None).either
-          drafts <- env.audit.recorded
-        yield assertTrue(result == Left(refusal), env.outbox.submit.calls.isEmpty, drafts.isEmpty)
+          _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
+          result <- refusing.logout(Right(rawSessionId), None, None).either
+        yield assertTrue(result == Left(AuditUnavailableException))
       },
     ),
   )

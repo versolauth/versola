@@ -1,7 +1,7 @@
 package versola.user
 
 import org.scalamock.stubs.ZIOStubs
-import versola.audit.{AuthActors, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord, Password}
 import versola.oauth.challenge.passkey.PasskeyRepository
@@ -228,8 +228,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         resp.status == Status.NoContent,
         seen == List("logout", "purge"),
         logout.invalidateAllSessions.calls == List(passkeyUserId),
-        repo.delete.calls.map(_._1) == List(passkeyUserId),
-        repo.delete.calls.map(_._2.kind) == List(AuthAuditKinds.AccountDeleted),
+        repo.delete.calls == List(passkeyUserId),
       ).label("the relying parties are told while the sessions are still there to be read")
     },
     test("DELETE /users without an id is refused before anything is purged") {
@@ -609,7 +608,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         )
       yield assertTrue(
         resp.status == Status.NoContent,
-        sessions.revokeRefreshTokensByUserAndClient.calls.map((u, c, _) => (u, c)) == List((passkeyUserId, ClientId("app"))),
+        sessions.revokeRefreshTokensByUserAndClient.calls == List((passkeyUserId, ClientId("app"))),
       )
     },
     test("DELETE /users/sessions with valid token returns 204 and invalidates all of the user's sessions") {
@@ -900,46 +899,6 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
           )
         yield assertTrue(resp.status == Status.InternalServerError, drafts.isEmpty)
       },
-      test("DELETE /users hands account.deleted down to be inserted with the removal, as an effect of central's decision: the actor is the service") {
-        val repo = stub[UserRepository]
-        for
-          _ <- repo.delete.succeedsWith(())
-          _ <- logoutService.invalidateAllSessions.succeedsWith(())
-          (resp, drafts) <- audited(
-            token =>
-              Request(method = Method.DELETE, url = (URL.empty / "users").addQueryParam("id", passkeyUserId.toString))
-                .addHeader(Header.Authorization.Bearer(token)),
-            users = repo,
-          )
-        yield assertTrue(
-          resp.status == Status.NoContent,
-          drafts.map(_.kind) == List(AuthAuditKinds.AccountDeleted),
-          drafts.head.actor == Some((AuthActors.service, None)),
-          drafts.head.userId == Some(passkeyUserId.asInstanceOf[UUID]),
-          repo.delete.calls.map(_._2.kind) == List(AuthAuditKinds.AccountDeleted),
-        )
-      },
-      test("PATCH /users/roles hands account.roles_updated down with the roles asked for, as the service's effect") {
-        val repo = stub[UserRepository]
-        for
-          _ <- repo.updateRoles.succeedsWith(())
-          (resp, drafts) <- audited(
-            json(
-              Method.PATCH,
-              List("users", "roles"),
-              s"""{"userId":"$passkeyUserId","tenantId":"t1","add":["editor","viewer"],"remove":["guest"]}""",
-              _,
-            ),
-            users = repo,
-          )
-        yield assertTrue(
-          resp.status == Status.NoContent,
-          drafts.map(_.kind) == List(AuthAuditKinds.AccountRolesUpdated),
-          drafts.head.actor == Some((AuthActors.service, None)),
-          drafts.head.details == AuthAuditDetails.RolesUpdated("t1", List("editor", "viewer"), List("guest")),
-          repo.updateRoles.calls.map(_._5.kind) == List(AuthAuditKinds.AccountRolesUpdated),
-        )
-      },
       test("a call without the service token is refused and records nothing") {
         for
           client <- ZIO.service[Client]
@@ -950,7 +909,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
           drafts <- capture.recorded
         yield assertTrue(resp.status == Status.Unauthorized, drafts.isEmpty)
       },
-      test("DELETE /users/refresh-tokens hands token.revoked down to be inserted with the revocation, which says how many were live") {
+      test("DELETE /users/refresh-tokens records token.revoked by an administrator with how many were live") {
         val sessions = stub[SessionService]
         for
           _ <- sessions.revokeRefreshTokensByUserAndClient.succeedsWith(2)
@@ -965,10 +924,8 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         yield assertTrue(
           resp.status == Status.NoContent,
           drafts.map(_.kind) == List(AuthAuditKinds.TokenRevoked),
-          // The count is the revocation's to say (the repository specs): the controller gives the cause, and the repository fills `count`.
-          drafts.head.details == AuthAuditDetails.TokenRevoked("refresh_token", None, None, "admin_revoked", None),
+          drafts.head.details == AuthAuditDetails.TokenRevoked("refresh_token", None, None, "admin_revoked", Some(2)),
           drafts.head.userId == Some(passkeyUserId.asInstanceOf[UUID]),
-          sessions.revokeRefreshTokensByUserAndClient.calls.map(_._3.kind) == List(AuthAuditKinds.TokenRevoked),
         )
       },
       test("POST /users/limits/reset records account.limits_reset, and not the address or number whose limits were cleared") {
@@ -1042,20 +999,16 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
           !drafts.head.details.toJson.toString.contains("S3cret-Pass!"),
         )
       },
-      test("limits reset (S′) is refused with 503 before anything is cleared when the log cannot take the event") {
-        val throttle = stub[ChallengeThrottleRepository]
+      test("an administrator's action is refused with 503 when the log cannot take the event, after it was done") {
+        val repo = stub[UserRepository]
         for
-          (resp, drafts) <- audited(
-            json(
-              Method.POST,
-              List("users", "limits", "reset"),
-              s"""{"userId":"$passkeyUserId","tenantId":"default"}""",
-              _,
-            ),
-            throttle = throttle,
+          _ <- repo.patchClaims.succeedsWith(())
+          (resp, _) <- audited(
+            json(Method.PATCH, List("users", "claims"), """{"id":"00000000-0000-0000-0000-000000000001","claims":{"name":"John"}}""", _),
+            users = repo,
             refusing = true,
           )
-        yield assertTrue(resp.status == Status.ServiceUnavailable, throttle.deleteAllForSubject.calls.isEmpty, drafts.isEmpty)
+        yield assertTrue(resp.status == Status.ServiceUnavailable)
       },
     ),
   ).provideSome[Scope](TestClient.layer) @@ TestAspect.silentLogging

@@ -1,11 +1,8 @@
 package versola.antifraud
 
-import versola.audit.AuditSupport.*
-import versola.audit.{AuthAuditDetails, AuthAuditKinds}
 import versola.user.authorizeInternal
 import versola.user.model.UserId
 import versola.util.CoreConfig
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{Controller, Observability}
 import zio.*
 import zio.http.{Method, Request, Response, Routes, Status, handler}
@@ -15,7 +12,7 @@ import zio.json.{EncoderOps, JsonCodec}
   * internal token, and `userId` is the admin who asked, which edge put in central's request from the verified token. It
   * is recorded with the reset. */
 object AntifraudCountersController extends Controller:
-  type Env = Tracing & CoreConfig & AntifraudCounters & AuditEvents
+  type Env = Tracing & CoreConfig & AntifraudCounters
 
   def routes: Routes[Env, Throwable] = Routes(resetEndpoint)
 
@@ -26,16 +23,7 @@ object AntifraudCountersController extends Controller:
         _ <- authorizeInternal(request)
         body <- request.bodyAs[ResetPayload]
         counters <- ZIO.service[AntifraudCounters]
-        events <- ZIO.service[AuditEvents]
-        // The reset is the row `af_counter_reset`, and its event is inserted in the transaction that writes it. The value (a phone, an
-        // address) is not in the event: its kind is.
-        response <- events.atomically(
-          AuditDraft(
-            kind = AuthAuditKinds.AntifraudCountersReset,
-            outcome = AuditOutcome.success,
-            details = AuthAuditDetails.AntifraudCountersReset(scope = body.scope.toString, valueType = body.valueType.map(_.toString)),
-          ),
-        )(counters.reset(body.scope, body.valueType, body.value, body.userId.toString, _))
+        response <- counters.reset(body.scope, body.valueType, body.value, body.userId.toString)
           .map(generation => Response.json(ResetResponse(generation).toJson).status(Status.Accepted))
           .catchSome:
             case e: InvalidCounterReset =>

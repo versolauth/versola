@@ -1,6 +1,5 @@
 package versola.antifraud
 
-import versola.util.audit.AuditEvent
 import zio.*
 
 import java.time.Instant
@@ -41,17 +40,17 @@ trait AntifraudTuningStore extends AntifraudTuning:
   /** Replaces the row and returns its new version. Fails with [[InvalidTuning]], and with [[VersionMismatch]] when
     * `expectedVersion` is given and the row is at another one (nothing is written). Without one the row is replaced whatever
     * it holds: for a caller that has the whole desired state and takes responsibility for what it overwrites. */
-  def put(tuning: Tuning, actor: String, expectedVersion: Option[Long], audit: AuditEvent): Task[Long]
+  def put(tuning: Tuning, actor: String, expectedVersion: Option[Long]): Task[Long]
 
   /** Changes the row by a [[TuningPatch]] applied to the settings as stored (everything off where there is no row), validates
     * the result as [[put]] does, and writes it on the version it was made from. Fails with
     * [[InvalidTuning]] for a result that is not valid (nothing is written), and with [[VersionMismatch]]
     * when `expectedVersion` is given and the row is at another one. Without one a change made by someone else between the read
     * and the write makes the patch be made again on what they wrote, once; if that fails too, so does the call. */
-  def patch(patch: TuningPatch, actor: String, expectedVersion: Option[Long], audit: AuditEvent): Task[StoredTuning]
+  def patch(patch: TuningPatch, actor: String, expectedVersion: Option[Long]): Task[StoredTuning]
 
   /** Puts everything off ([[Tuning.off]]), as [[put]] does: it moves the version too. */
-  def reset(actor: String, expectedVersion: Option[Long], audit: AuditEvent): Task[Long]
+  def reset(actor: String, expectedVersion: Option[Long]): Task[Long]
 
   /** What this instance holds, read from memory. */
   def status: UIO[TuningStatus]
@@ -157,29 +156,29 @@ object AntifraudTuningStore:
 
     override def stored: Task[StoredTuning] = repository.find.map(_.getOrElse(StoredTuning(Tuning.off, 0L)))
 
-    override def put(tuning: Tuning, actor: String, expectedVersion: Option[Long], audit: AuditEvent): Task[Long] =
+    override def put(tuning: Tuning, actor: String, expectedVersion: Option[Long]): Task[Long] =
       for
         _ <- ZIO.foreachDiscard(invalid(tuning))(message => ZIO.fail(InvalidTuning(message)))
         now <- Clock.instant
-        written <- repository.put(tuning, actor, now, expectedVersion, audit)
+        written <- repository.put(tuning, actor, now, expectedVersion)
         version <- written match
           case Some(version) => refresh.as(version)
           case None => stored.flatMap(row => ZIO.fail(VersionMismatch(row.version)))
       yield version
 
-    override def patch(patch: TuningPatch, actor: String, expectedVersion: Option[Long], audit: AuditEvent): Task[StoredTuning] =
+    override def patch(patch: TuningPatch, actor: String, expectedVersion: Option[Long]): Task[StoredTuning] =
       def attempt(retriesLeft: Int): Task[StoredTuning] =
         for
           current <- stored
           _ <- ZIO.fail(VersionMismatch(current.version)).when(expectedVersion.exists(_ != current.version))
           tuning = patch.applyTo(current.tuning)
           // The write is made on the version the patch was made from, so a change in between is not overwritten.
-          written <- put(tuning, actor, Some(current.version), audit).map(StoredTuning(tuning, _)).catchSome:
+          written <- put(tuning, actor, Some(current.version)).map(StoredTuning(tuning, _)).catchSome:
             case _: VersionMismatch if expectedVersion.isEmpty && retriesLeft > 0 => attempt(retriesLeft - 1)
         yield written
       attempt(retriesLeft = 1)
 
-    override def reset(actor: String, expectedVersion: Option[Long], audit: AuditEvent): Task[Long] = put(Tuning.off, actor, expectedVersion, audit)
+    override def reset(actor: String, expectedVersion: Option[Long]): Task[Long] = put(Tuning.off, actor, expectedVersion)
 
     override def status: UIO[TuningStatus] =
       ZIO.succeed(TuningStatus(available, loadedRowVersion.get, checkedAt.get, lastError.get))

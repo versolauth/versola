@@ -26,15 +26,6 @@ object AuthAuditKinds:
   val AccountPasskeyRemoved: AuditKind = AuditKind("account.passkey_removed")
   val AccountClaimsUpdated: AuditKind = AuditKind("account.claims_updated")
   val AccountLimitsReset: AuditKind = AuditKind("account.limits_reset")
-
-  /** The effects of what an administrator decided in central (central writes the decision): the account removed, its roles changed. */
-  val AccountDeleted: AuditKind = AuditKind("account.deleted")
-  val AccountRolesUpdated: AuditKind = AuditKind("account.roles_updated")
-
-  /** An administrator's change to the antifraud lists, settings or counters, as central told auth, in the transaction that made it. */
-  val AntifraudListChanged: AuditKind = AuditKind("antifraud.list_changed")
-  val AntifraudSettingsChanged: AuditKind = AuditKind("antifraud.settings_changed")
-  val AntifraudCountersReset: AuditKind = AuditKind("antifraud.counters_reset")
   val CertEnrolled: AuditKind = AuditKind("cert.enrolled")
   val CertRenewed: AuditKind = AuditKind("cert.renewed")
 
@@ -63,11 +54,6 @@ object AuthAuditKinds:
     AccountPasskeyRemoved,
     AccountClaimsUpdated,
     AccountLimitsReset,
-    AccountDeleted,
-    AccountRolesUpdated,
-    AntifraudListChanged,
-    AntifraudSettingsChanged,
-    AntifraudCountersReset,
     CertEnrolled,
     CertRenewed,
     CertRevoked,
@@ -99,11 +85,6 @@ object AuthAudit:
       AuthAuditKinds.AccountPasskeyEnrolled,
       AuthAuditKinds.AccountPasskeyRemoved,
       AuthAuditKinds.AccountClaimsUpdated,
-      AuthAuditKinds.AccountDeleted,
-      AuthAuditKinds.AccountRolesUpdated,
-      AuthAuditKinds.AntifraudListChanged,
-      AuthAuditKinds.AntifraudSettingsChanged,
-      AuthAuditKinds.AntifraudCountersReset,
     ),
   )
 

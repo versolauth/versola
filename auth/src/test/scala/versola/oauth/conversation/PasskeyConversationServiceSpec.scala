@@ -1134,6 +1134,41 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           env.webAuthnService.finishAssertion.calls.isEmpty,
         )
       },
+      test("an enrolled passkey records account.passkey_enrolled with a prefix of the credential id and its device type") {
+        val env = Env()
+        val recordWithUser = baseRecord.copy(userId = Some(userId))
+        val enrollStep = ConversationStep.PasskeyEnroll("reg-req", "{}")
+        val enrolled = PasskeyRecord(
+          id = CredentialId(Array.fill(16)(1.toByte)),
+          userId = userId,
+          publicKey = Array.empty,
+          signatureCounter = 0,
+          deviceType = CredentialDeviceType.SingleDevice,
+          backedUp = false,
+          backupEligible = false,
+          transports = Nil,
+          attestationObject = None,
+          clientDataJson = None,
+          aaguid = None,
+          name = None,
+          lastUsedAt = None,
+          createdAt = Instant.EPOCH,
+          updatedAt = Instant.EPOCH,
+        )
+        for
+          _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+          _ <- env.webAuthnService.finishRegistration.succeedsWith(enrolled)
+          _ <- env.service.finishPasskeyEnroll(authId, recordWithUser, enrollStep, "resp", PasskeyName("my-passkey"))
+          drafts <- env.audit.recorded
+        yield assertTrue(
+          drafts.map(_.kind) == List(AuthAuditKinds.AccountPasskeyEnrolled),
+          drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
+          drafts.head.details == AuthAuditDetails.Passkey(
+            credentialPrefix = Some(enrolled.id.toString.take(9)),
+            deviceType = Some("SingleDevice"),
+          ),
+        )
+      },
       test("a registration that failed records no account.passkey_enrolled") {
         val env = Env()
         val recordWithUser = baseRecord.copy(userId = Some(userId))

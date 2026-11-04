@@ -23,13 +23,10 @@ import com.yubico.webauthn.{
   StartAssertionOptions,
   StartRegistrationOptions,
 }
-import versola.audit.AuditSupport.*
-import versola.audit.{AuthAuditDetails, AuthAuditKinds}
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PasskeySettings}
 import versola.user.model.UserId
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Observability
 import zio.{IO, Runtime, Task, Unsafe, ZIO, ZLayer}
 
@@ -102,21 +99,15 @@ trait WebAuthnService:
   def finishAssertion(settings: PasskeySettings, request: String, response: String): IO[WebAuthnError, AssertionOutcome]
 
 object WebAuthnService:
-  def live: ZLayer[PasskeyRepository & OAuthConfigurationService & AuditEvents, Nothing, WebAuthnService] =
+  def live: ZLayer[PasskeyRepository & OAuthConfigurationService, Nothing, WebAuthnService] =
     ZLayer:
       for
         repository <- ZIO.service[PasskeyRepository]
         configService <- ZIO.service[OAuthConfigurationService]
-        audit <- ZIO.service[AuditEvents]
         runtime <- ZIO.runtime[Any]
-      yield Impl(repository, configService, audit, runtime)
+      yield Impl(repository, configService, runtime)
 
-  private final class Impl(
-      repository: PasskeyRepository,
-      configService: OAuthConfigurationService,
-      audit: AuditEvents,
-      runtime: Runtime[Any],
-  ) extends WebAuthnService:
+  private final class Impl(repository: PasskeyRepository, configService: OAuthConfigurationService, runtime: Runtime[Any]) extends WebAuthnService:
 
     private val mapper = JacksonCodecs.json()
 
@@ -293,16 +284,7 @@ object WebAuthnService:
             updatedAt = now,
           )
         .mapError(e => WebAuthnError.CeremonyFailed(e.getMessage))
-        // `account.passkey_enrolled` is inserted with the credential, in one transaction. What it says (the credential's prefix and
-        // kind) is known only once the ceremony has verified, hence built here and not by the caller.
-        _ <- audit.atomically(
-          AuditDraft(
-            kind = AuthAuditKinds.AccountPasskeyEnrolled,
-            outcome = AuditOutcome.success,
-            userId = Some(userId),
-            details = AuthAuditDetails.Passkey(credentialPrefix = Some(record.id.toString.take(9)), deviceType = Some(record.deviceType.toString)),
-          ),
-        )(repository.insert(record, _)).mapError(e => WebAuthnError.CeremonyFailed(e.getMessage))
+        _ <- repository.insert(record).mapError(e => WebAuthnError.CeremonyFailed(e.getMessage))
       yield record
 
     override def startAssertion(settings: PasskeySettings): IO[WebAuthnError, PasskeyCeremony] =

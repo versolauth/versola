@@ -2,11 +2,8 @@ package versola.antifraud
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.audit.AuditSupport.*
-import versola.util.audit.AuditEvent
-import versola.util.postgres.{AuditInsert, BasicCodecs}
+import versola.util.postgres.BasicCodecs
 import zio.json.JsonEncoder
-import zio.json.ast.Json
 import zio.{Duration, Task, ZLayer, durationInt}
 
 import java.time.Instant
@@ -33,7 +30,7 @@ class PostgresAntifraudSettingsRepository(xa: TransactorZIO, statementTimeout: D
     """.update.run()
     ()
 
-  override def put(tuning: Tuning, actor: String, at: Instant, expectedVersion: Option[Long], audit: AuditEvent): Task[Option[Long]] =
+  override def put(tuning: Tuning, actor: String, at: Instant, expectedVersion: Option[Long]): Task[Option[Long]] =
     xa.transactMeasured("put-antifraud-settings"):
       timed()
       val written = expectedVersion match
@@ -58,9 +55,7 @@ class PostgresAntifraudSettingsRepository(xa: TransactorZIO, statementTimeout: D
             WHERE id = 1 AND version = $expected
             RETURNING version
           """.query[Long].run().headOption
-      written.foreach: version =>
-        bumped()
-        AuditInsert.insert(audit.withDetail("version", Json.Num(version)))
+      if written.isDefined then bumped()
       written
 
   override def seed(tuning: Tuning, actor: String, at: Instant): Task[Boolean] =

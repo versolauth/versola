@@ -2,7 +2,6 @@ package versola.antifraud
 
 import versola.oauth.client.model.{ClientId, TenantId}
 import versola.util.UnitSpecBase
-import versola.util.audit.AuditEvent
 import zio.*
 import zio.test.*
 
@@ -24,7 +23,7 @@ object AntifraudListsSpec extends UnitSpecBase:
     var written: List[ListHit] = Nil
     var audits: List[AntifraudListAudit] = Nil
 
-    override def upsert(entry: AntifraudListEntry, actor: String, at: Instant, audit: AuditEvent): Task[AntifraudListEntry] =
+    override def upsert(entry: AntifraudListEntry, actor: String, at: Instant): Task[AntifraudListEntry] =
       ZIO.succeed:
         val same =
           entries.find(e => e.listType == entry.listType && e.valueType == entry.valueType && e.value == entry.value && e.tenantId == entry.tenantId)
@@ -33,7 +32,7 @@ object AntifraudListsSpec extends UnitSpecBase:
         changed()
         stored
 
-    override def delete(id: UUID, actor: String, at: Instant, audit: AuditEvent): Task[Boolean] =
+    override def delete(id: UUID, actor: String, at: Instant): Task[Boolean] =
       ZIO.succeed:
         val found = entries.exists(_.id == id)
         entries = entries.filterNot(_.id == id)

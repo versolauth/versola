@@ -2,11 +2,8 @@ package versola.antifraud
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.audit.AuditSupport.*
 import versola.oauth.client.model.TenantId
-import versola.util.audit.AuditEvent
-import versola.util.postgres.{AuditInsert, BasicCodecs}
-import zio.json.ast.Json
+import versola.util.postgres.BasicCodecs
 import zio.{Duration, Task, ZLayer, durationInt}
 
 import java.time.Instant
@@ -50,7 +47,7 @@ class PostgresAntifraudListRepository(xa: TransactorZIO, previewTimeout: Duratio
       timed()
       sql"SELECT version FROM af_list_version WHERE id = 1".query[Long].run().head
 
-  override def upsert(entry: AntifraudListEntry, actor: String, at: Instant, audit: AuditEvent): Task[AntifraudListEntry] =
+  override def upsert(entry: AntifraudListEntry, actor: String, at: Instant): Task[AntifraudListEntry] =
     xa.transactMeasured("upsert-antifraud-list-entry"):
       timed()
       // The entry as it is now, locked, to say what the update changed. A concurrent first insert of the same value that
@@ -72,19 +69,15 @@ class PostgresAntifraudListRepository(xa: TransactorZIO, previewTimeout: Duratio
               shadow = EXCLUDED.shadow
         RETURNING $EntryColumns
       """.query[EntryRow].run().head
-      val action = if existing.isDefined then AntifraudListAction.update else AntifraudListAction.create
-      audited(action, actor, at, stored, existing)
-      AuditInsert.insert(audit.withDetail("action", Json.Str(action.toString)).withDetail("entryId", Json.Str(stored.id.toString)))
+      audited(if existing.isDefined then AntifraudListAction.update else AntifraudListAction.create, actor, at, stored, existing)
       bumped()
       stored.toEntry
 
-  override def delete(id: UUID, actor: String, at: Instant, audit: AuditEvent): Task[Boolean] =
+  override def delete(id: UUID, actor: String, at: Instant): Task[Boolean] =
     xa.transactMeasured("delete-antifraud-list-entry"):
       timed()
       val removed = sql"DELETE FROM af_list_entry WHERE id = $id RETURNING $EntryColumns".query[EntryRow].run().headOption
-      removed.foreach: row =>
-        audited(AntifraudListAction.delete, actor, at, row)
-        AuditInsert.insert(audit.withDetail("action", Json.Str(AntifraudListAction.delete.toString)).withDetail("entryId", Json.Str(row.id.toString)))
+      removed.foreach(row => audited(AntifraudListAction.delete, actor, at, row))
       if removed.isDefined then bumped()
       removed.isDefined
 

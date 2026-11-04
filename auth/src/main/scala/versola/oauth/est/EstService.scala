@@ -82,6 +82,7 @@ object EstService:
           csr <- request(body)
           issued <- central.enroll(credentials.token, credentials.clientId, csr)
           result <- respond(issued)
+          _ <- auditIssued("enroll", AuthAuditKinds.CertEnrolled, credentials.clientId, issued)
         yield result
 
     override def reenroll(presented: X509Certificate, body: String): IO[EstError | Throwable, Issued] =
@@ -95,6 +96,7 @@ object EstService:
           csr <- request(body)
           issued <- central.renew(CertificateSubject.pem("CERTIFICATE", presented.getEncoded), csr)
           result <- respond(issued)
+          _ <- auditIssued("reenroll", AuthAuditKinds.CertRenewed, CertificateSubject.commonNameOf(presented.getSubjectX500Principal), issued)
         yield result
 
     /** A PKCS#10 asking for a key worth issuing for, before central is asked: what an unauthenticated caller sends costs
@@ -108,10 +110,29 @@ object EstService:
     private def respond(issued: EstCentralClient.Issued): IO[Throwable, Issued] =
       ZIO.fromTry(EstCodec.certificates(issued.certificate)).map(certificates => Issued(EstCodec.certsOnly(certificates), issued.chainEndsAt))
 
-    /** The certificate that is issued is `central`'s to record, in the transaction that stores it (`cert.enrolled`, `cert.renewed`): auth
-      * only relays it, and has no change of its own for an event to be written with.
-      *
-      * What a refused request is called and how it counts in the audit log: a caller that could not prove who it is, or may not, is
+    /** `cert.enrolled` / `cert.renewed`: the client is the actor; `serial` and `notAfter` are of the certificate central issued. */
+    private def auditIssued(
+        operation: String,
+        kind: versola.util.audit.AuditKind,
+        clientId: Option[String],
+        issued: EstCentralClient.Issued,
+    ): IO[Throwable, Unit] =
+      val leaf = EstCodec.certificates(issued.certificate).toOption.flatMap(_.headOption)
+      audit.log(
+        AuditDraft(
+          kind = kind,
+          outcome = AuditOutcome.success,
+          actor = Some((AuthActors.client, clientId)),
+          details = AuthAuditDetails.Cert(
+            operation = operation,
+            clientId = clientId,
+            serial = leaf.map(_.getSerialNumber.toString(16)),
+            notAfter = leaf.map(_.getNotAfter.toInstant.toString),
+          ),
+        ),
+      )
+
+    /** What a refused request is called and how it counts in the audit log: a caller that could not prove who it is, or may not, is
       * `denied`; a request that was throttled or malformed is `failure`. A refusal that is the server's own (central down) is not an event. */
     private def auditRefused(operation: String, clientId: Option[String], error: EstError): IO[Throwable, Unit] =
       val classified = error match

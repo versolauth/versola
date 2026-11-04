@@ -1261,9 +1261,8 @@ object ConversationService:
                 PriorSession.MigrateTokens(prior, amr, now, conversation.targetAcr)
               else
                 PriorSession.Invalidate(prior)
-            // `login.completed` is inserted with the session it is about, in one transaction: a sign-in that is not witnessed is
-            // not made, and an event of a session that was not created cannot be.
-            _ <- audit.atomically(
+            _ <- sessionRepository.create(sessionIdMac, session, sessionTtl, sessionIdleTtl, priorSession)
+            _ <- audit.log(
               AuditDraft(
                 kind = AuthAuditKinds.LoginCompleted,
                 outcome = AuditOutcome.success,
@@ -1276,7 +1275,7 @@ object ConversationService:
                   priorSession = conversation.priorSessionId.isDefined,
                 ),
               ),
-            )(sessionRepository.create(sessionIdMac, session, sessionTtl, sessionIdleTtl, priorSession, _))
+            )
             idTokenData <-
               if conversation.responseType.contains(ResponseTypeEntry.IdToken) && conversation.effectiveScope.contains(ScopeToken.OpenId) then
                 generateIdTokenData(userId, conversation, amr, now, conversation.targetAcr, publicSessionId)
@@ -1598,8 +1597,16 @@ object ConversationService:
             error =>
               ZIO.logWarning(s"Passkey enrollment failed for user $userId: ${error.getMessage}") *>
                 renderStep(authId, conversation, enrollStep.copy(enrollFailed = true)),
-            // The event is the credential's own transaction, in the WebAuthn service.
-            _ => ZIO.succeed(ConversationResult.StepPassed(conversation)),
+            record =>
+              audit.log(
+                AuditDraft(
+                  kind = AuthAuditKinds.AccountPasskeyEnrolled,
+                  outcome = AuditOutcome.success,
+                  userId = Some(userId),
+                  details =
+                    AuthAuditDetails.Passkey(credentialPrefix = Some(record.id.toString.take(9)), deviceType = Some(record.deviceType.toString)),
+                ),
+              ) *> ZIO.succeed(ConversationResult.StepPassed(conversation)),
           )
 
     override def skipPasskey(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult] =
@@ -1668,15 +1675,7 @@ object ConversationService:
             case LimitStatus.RateLimited(_) =>
               renderStep(authId, conversation, setPasswordStep.copy(rateLimitExceeded = true))
             case LimitStatus.Allowed =>
-              // `account.password_set` is inserted in the transaction that writes the password.
-              audit.build(
-                AuditDraft(
-                  kind = AuthAuditKinds.AccountPasswordSet,
-                  outcome = AuditOutcome.success,
-                  userId = Some(userId),
-                  details = AuthAuditDetails.Account(via = "login_flow"),
-                ),
-              ).flatMap(event => passwordService.setPassword(userId, newPassword, event).zipLeft(audit.committed(event))).foldZIO(
+              passwordService.setPassword(userId, newPassword).foldZIO(
                 {
                   case _: versola.oauth.challenge.password.model.PasswordReuseError =>
                     submissionLimiter.recordLimitAll(conversation.clientId, subjects, ChallengeType.PasswordSubmit).flatMap:
@@ -1703,14 +1702,22 @@ object ConversationService:
                   case ex: Throwable => ZIO.fail(ex)
                 },
                 _ =>
-                  Clock.instant.flatMap: now =>
-                    val updated = conversation.copy(
-                      amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
-                      needsPasswordChange = false,
-                    )
-                    conversationRepository.overwrite(authId, updated).flatMap:
-                      case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
-                      case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict),
+                  audit.log(
+                    AuditDraft(
+                      kind = AuthAuditKinds.AccountPasswordSet,
+                      outcome = AuditOutcome.success,
+                      userId = Some(userId),
+                      details = AuthAuditDetails.Account(via = "login_flow"),
+                    ),
+                  ) *>
+                    Clock.instant.flatMap: now =>
+                      val updated = conversation.copy(
+                        amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
+                        needsPasswordChange = false,
+                      )
+                      conversationRepository.overwrite(authId, updated).flatMap:
+                        case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                        case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict),
               )
 
     private def generateIdTokenData(

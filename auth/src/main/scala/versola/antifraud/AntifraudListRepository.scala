@@ -1,7 +1,6 @@
 package versola.antifraud
 
 import versola.oauth.client.model.TenantId
-import versola.util.audit.AuditEvent
 import zio.Task
 
 import java.time.Instant
@@ -12,13 +11,10 @@ trait AntifraudListRepository:
     * list, value type, value and tenant), and writes the audit record in the same transaction: `create` for a new
     * entry, `update` with the previous values for an existing one. Returns what is stored, which has the id of the
     * existing entry in the second case. */
-  /** `audit` (`antifraud.list_changed`) is inserted in the transaction that writes the entry and its `af_list_audit` row; the
-    * repository says in it whether the entry was created or updated. */
-  def upsert(entry: AntifraudListEntry, actor: String, at: Instant, audit: AuditEvent): Task[AntifraudListEntry]
+  def upsert(entry: AntifraudListEntry, actor: String, at: Instant): Task[AntifraudListEntry]
 
   /** Removes the entry and records it; false when there was none. */
-  /** `audit` is inserted in the transaction, only when an entry was removed. */
-  def delete(id: UUID, actor: String, at: Instant, audit: AuditEvent): Task[Boolean]
+  def delete(id: UUID, actor: String, at: Instant): Task[Boolean]
 
   def find(id: UUID): Task[Option[AntifraudListEntry]]
 

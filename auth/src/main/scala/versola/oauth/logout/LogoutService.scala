@@ -9,7 +9,7 @@ import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentId}
 import versola.user.model.UserId
 import versola.util.CoreConfig
-import versola.util.audit.{AuditDraft, AuditEvent, AuditEvents, AuditOutcome}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import zio.*
 import zio.http.URL
 import zio.json.ast.Json
@@ -61,19 +61,15 @@ object LogoutService:
 
     /** `session.ended`: who ended it is the request's context (the user of an RP's logout, the administrator behind a call from
       * central), `cause` which of the ways it was. */
-    private def endedDraft(cause: String): AuditDraft =
-      // The session, its account and how many relying parties it had are what the transaction that ends it knows: the repository
-      // inserts one event per session it ended, from this template (see `SessionRepository`).
-      AuditDraft(
-        kind = AuthAuditKinds.SessionEnded,
-        outcome = AuditOutcome.success,
-        details = AuthAuditDetails.SessionEnded(cause = cause, clients = 0),
+    private def auditEnded(cause: String, session: SessionRecord): Task[Unit] =
+      audit.log(
+        AuditDraft(
+          kind = AuthAuditKinds.SessionEnded,
+          outcome = AuditOutcome.success,
+          userId = Some(session.userId),
+          details = AuthAuditDetails.SessionEnded(cause = cause, clients = session.clients.size),
+        ),
       )
-
-    /** Counts what `endedDraft` became: one event for each session the call ended. */
-    private def endedMany[A](cause: String)(change: AuditEvent => Task[A])(ended: A => Int): Task[A] =
-      audit.build(endedDraft(cause)).flatMap: event =>
-        change(event).tap(result => ZIO.replicateZIODiscard(ended(result))(audit.committed(event)))
 
     override def logout(
         identifier: Either[PublicSessionId, SessionId],
@@ -89,7 +85,8 @@ object LogoutService:
         state: Option[String],
     ): Task[LogoutResult] =
       for
-        session <- endedMany(cause)(sessionService.invalidate(identifier, _))(_.size)
+        session <- sessionService.invalidate(identifier)
+        _ <- ZIO.foreachDiscard(session)(info => auditEnded(cause, info.record))
 
         result <- session match
           // No session means there is no client to validate the redirect against; drop it
@@ -123,11 +120,12 @@ object LogoutService:
         case None => ZIO.succeed(false)
         case Some(device) =>
           ZIO.foreachDiscard(device.session)(session => end("user_agent_forgotten", Left(session.publicId), None, None)) *>
-            endedMany("user_agent_forgotten")(sessionService.forgetUserAgent(userId, userAgentId, _))(_ => 0)
+            sessionService.forgetUserAgent(userId, userAgentId)
 
     override def invalidateAllSessions(userId: UserId): Task[Unit] =
       for
-        sessions <- endedMany("admin_revoked")(sessionService.invalidateAllByUser(userId, _))(_.size)
+        sessions <- sessionService.invalidateAllByUser(userId)
+        _ <- ZIO.foreachDiscard(sessions)(auditEnded("admin_revoked", _))
         // Stamped here, once, rather than left to each delivery: the RP bounds the
         // revocation at this instant, so a token issued after it is one the user obtained by
         // logging in again and must keep working. Deliveries are forked and sign their own

@@ -1,10 +1,8 @@
 package versola.antifraud
 
 import org.scalamock.stubs.ZIOStubs
-import versola.audit.AuthAuditKinds
 import versola.auth.TestEnvConfig
 import versola.util.JWT
-import versola.util.audit.AuditEvents
 import versola.util.http.{NoopTracing, Observability}
 import zio.*
 import zio.http.*
@@ -35,9 +33,7 @@ object AntifraudCountersControllerSpec extends ZIOSpecDefault, ZIOStubs:
       tracing <- NoopTracing.layer.build
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
-          AntifraudCountersController.routes.provideEnvironment(
-            ZEnvironment(counters) ++ ZEnvironment(config) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ tracing,
-          ),
+          AntifraudCountersController.routes.provideEnvironment(ZEnvironment(counters) ++ ZEnvironment(config) ++ tracing),
         ),
       )
       sent <-
@@ -66,10 +62,7 @@ object AntifraudCountersControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.status == Status.Accepted,
         text == """{"generation":7}""",
-        counters.reset.calls.map((scope, valueType, value, actor, _) => (scope, valueType, value, actor)) ==
-          List((CounterScope.velocity, Some(CounterValueType.phone), Some("+77011234567"), userId)),
-        // The event is built by the controller and handed down, for the repository to insert with the reset.
-        counters.reset.calls.map(_._5.kind) == List(AuthAuditKinds.AntifraudCountersReset),
+        counters.reset.calls == List((CounterScope.velocity, Some(CounterValueType.phone), Some("+77011234567"), userId)),
       )
     },
     test("the whole scope needs no value") {
@@ -77,15 +70,7 @@ object AntifraudCountersControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- counters.reset.succeedsWith(1L)
         response <- call(counters, Request.post(url, body("""{"scope":"budget"}""")))
-      yield assertTrue(
-        response.status == Status.Accepted,
-        counters.reset.calls.map((scope, valueType, value, actor, _) => (scope, valueType, value, actor)) == List((
-          CounterScope.budget,
-          None,
-          None,
-          userId,
-        )),
-      )
+      yield assertTrue(response.status == Status.Accepted, counters.reset.calls == List((CounterScope.budget, None, None, userId)))
     },
     test("a request the service refuses is 400 with its reason") {
       val counters = stub[AntifraudCounters]

@@ -6,8 +6,7 @@ import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.consent.model.ConsentRecord
 import versola.user.model.UserId
-import versola.util.audit.AuditEvent
-import versola.util.postgres.{AuditInsert, BasicCodecs}
+import versola.util.postgres.BasicCodecs
 import zio.{Task, ZLayer}
 
 import java.time.Instant
@@ -32,8 +31,8 @@ class PostgresConsentRepository(xa: TransactorZIO) extends ConsentRepository, Ba
         .run()
         .headOption
 
-  override def upsert(record: ConsentRecord, audit: AuditEvent): Task[Unit] =
-    xa.transactMeasured("upsert-user-consent"):
+  override def upsert(record: ConsentRecord): Task[Unit] =
+    xa.connectMeasured("upsert-user-consent"):
       sql"""INSERT INTO user_consents (user_id, client_id, scope, granted_at, expires_at)
             VALUES (
               ${record.userId},
@@ -47,14 +46,12 @@ class PostgresConsentRepository(xa: TransactorZIO) extends ConsentRepository, Ba
               granted_at = ${record.grantedAt},
               expires_at = ${record.expiresAt}"""
         .update.run()
-      AuditInsert.insert(audit)
     .unit
 
-  override def delete(userId: UserId, clientId: ClientId, audit: AuditEvent): Task[Unit] =
-    xa.transactMeasured("delete-user-consent"):
-      val deleted = sql"""DELETE FROM user_consents WHERE user_id = $userId AND client_id = $clientId"""
+  override def delete(userId: UserId, clientId: ClientId): Task[Unit] =
+    xa.connectMeasured("delete-user-consent"):
+      sql"""DELETE FROM user_consents WHERE user_id = $userId AND client_id = $clientId"""
         .update.run()
-      if deleted > 0 then AuditInsert.insert(audit)
     .unit
 
 object PostgresConsentRepository:

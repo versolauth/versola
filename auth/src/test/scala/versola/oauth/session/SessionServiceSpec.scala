@@ -111,7 +111,7 @@ object SessionServiceSpec extends UnitSpecBase:
           result <- env.service.invalidateForUser(publicId, userId)
         yield assertTrue(
           result,
-          env.repository.invalidateByPublicIdForUser.calls.map((p, u, _) => (p, u)) == List((publicId, userId)),
+          env.repository.invalidateByPublicIdForUser.calls == List((publicId, userId)),
         )
       },
     ),
@@ -231,7 +231,7 @@ object SessionServiceSpec extends UnitSpecBase:
         for
           _ <- env.userAgentRepository.forget.succeedsWith(true)
           forgotten <- env.service.forgetUserAgent(userId, userAgentId1)
-        yield assertTrue(forgotten, env.userAgentRepository.forget.calls.map((a, u, _) => (a, u)) == List((userAgentId1, userId)))
+        yield assertTrue(forgotten, env.userAgentRepository.forget.calls == List((userAgentId1, userId)))
       },
       test("reports false when the repository does not know the user agent as the user's") {
         val env = Env()
