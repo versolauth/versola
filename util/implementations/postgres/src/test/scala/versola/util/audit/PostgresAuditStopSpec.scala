@@ -52,6 +52,13 @@ object PostgresAuditStopSpec extends PostgresSpec:
   private val sizing =
     AuditEvents.Sizing(queueCapacity = 5000, batchSize = 1000, flushInterval = 1.second, partitionsAhead = 3, maintenanceInterval = 1.hour)
 
+  /** The events the spec queued behind the held batch carry a reason of their own, so that what the stop itself stored is counted apart
+    * from what the abandoned statement commits when it ends. */
+  private val queuedDraft = AuditDraft(kind = kind, outcome = AuditOutcome.success, reason = Some("queued"))
+
+  private def queuedStored(xa: TransactorZIO): Task[Long] =
+    table.inTransaction(xa)(sql"SELECT COUNT(*) FROM audit_event WHERE reason = 'queued'".query[Long].run().head)
+
   private def stopLines: UIO[List[String]] =
     ZTestLogger.logOutput.map(_.toList.map(_.message()).filter(_.contains("the audit queue was drained on shutdown")))
 
@@ -79,7 +86,7 @@ object PostgresAuditStopSpec extends PostgresSpec:
         _ <- table.endSessions(xa, marker)
       yield assertTrue(result.isDefined, elapsed < 9500L, lines.size == 1, lines.head.contains("events taken"))
     },
-    test("and what was queued behind the held batch is stored by the stop, though the held rows wait on the statement that is still open") {
+    test("what was queued behind the held batch is stored by the stop itself, though the held rows wait on the statement that is still open") {
       for
         xa <- ZIO.service[TransactorZIO]
         _ <- table.slowInserts(xa, millis = 10)
@@ -97,12 +104,38 @@ object PostgresAuditStopSpec extends PostgresSpec:
         _ <- ZIO.foreachDiscard(1 to 1000)(_ => events.record(AuditDraft(kind = kind, outcome = AuditOutcome.success)))
         // The writer has taken the thousand into one statement of ten seconds; these are queued behind it.
         _ <- ZIO.sleep(1.second)
-        _ <- ZIO.foreachDiscard(1 to 300)(_ => events.record(AuditDraft(kind = kind, outcome = AuditOutcome.success)))
+        _ <- ZIO.foreachDiscard(1 to 300)(_ => events.record(queuedDraft))
         closing <- ZIO.uninterruptible(scope.close(Exit.unit)).fork
         result <- closing.join.timeout(AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout).plus(4.seconds))
-        stored <- table.count(xa, "audit_event")
+        stored <- queuedStored(xa)
         _ <- table.endSessions(xa, marker)
       yield assertTrue(result.isDefined, stored >= 250L)
+    },
+    test(
+      "with inserts of three milliseconds, a thousand rows held and 1171 queued, the stop itself stores the queued rows inside its window",
+    ) {
+      for
+        xa <- ZIO.service[TransactorZIO]
+        _ <- table.slowInserts(xa, millis = 3)
+        scope <- Scope.make
+        events <- scope.extend(
+          AuditEvents
+            .liveWith(sizing)(AuditSource("svc"), "node-1", AuditCatalog.of(Set(kind)))
+            .build
+            .map(_.get[AuditEvents])
+            .provideSome[Scope](ZLayer.succeed[AuditEventRepository](CopyRepository(xa)), ZLayer.succeed(settings), tracingLayer, SecureRandom.live),
+        )
+        _ <- events.record(AuditDraft(kind = kind, outcome = AuditOutcome.success))
+        _ <- ZIO.sleep(500.millis)
+        _ <- ZIO.foreachDiscard(1 to 1000)(_ => events.record(AuditDraft(kind = kind, outcome = AuditOutcome.success)))
+        // The writer has the thousand in one statement of three seconds; the 1171 are queued behind it.
+        _ <- ZIO.sleep(1.second)
+        _ <- ZIO.foreachDiscard(1 to 1171)(_ => events.record(queuedDraft))
+        closing <- ZIO.uninterruptible(scope.close(Exit.unit)).fork
+        result <- closing.join.timeout(AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout).plus(4.seconds))
+        stored <- queuedStored(xa)
+        _ <- table.endSessions(xa, marker)
+      yield assertTrue(result.isDefined, stored >= 700L)
     },
   ).provideSomeLayer[TransactorZIO](ZTestLogger.default) @@ TestAspect.sequential @@ TestAspect.before(
     table.reset,
