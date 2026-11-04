@@ -250,9 +250,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           env.conversationRepository.overwrite.calls.size == 1,
         )
       },
-      test(
-        "an ask after the pause sends the code once, with one limiter step and one velocity record in all, the limiter and the counters never asked again",
-      ) {
+      test("an ask after the pause sends the code once, with one limiter step and one velocity record in all, the limiter and the counters never asked again") {
         val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
         for
           _ <- request(env, ProofInput.NoScript)
@@ -289,9 +287,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- request(env, ProofInput.NoScript, initialConversation.copy(step = pendingStep))
         yield assertTrue(env.antifraud.kinds == List(("pause", AntifraudOutcome.challenged), ("pause", AntifraudOutcome.challenge_passed)))
       },
-      test(
-        "a script's ask from the pending step, while a proof of work can be asked for, is given the challenge at once: no pause, nothing sent, nothing charged again",
-      ) {
+      test("a script's ask from the pending step, while a proof of work can be asked for, is given the challenge at once: no pause, nothing sent, nothing charged again") {
         val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
         for
           _ <- request(env, ProofInput.NoScript)
@@ -499,10 +495,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
         for
           _ <- request(env, answered, initialConversation.copy(challengeSolved = 2))
-        yield assertTrue(
-          env.conversationRepository.consumeChallenge.calls.map(_._2) == List(2),
-          env.conversationRepository.recordChallengeFailure.calls.isEmpty,
-        )
+        yield assertTrue(env.conversationRepository.consumeChallenge.calls.map(_._2) == List(2), env.conversationRepository.recordChallengeFailure.calls.isEmpty)
       },
       test("a solved token used a second time is not a solution: it is counted as a wrong one, charged, and sends nothing") {
         val env = Env(decision = challenging, challengeVerifier = FakeVerifier(ChallengeResult.Passed))
