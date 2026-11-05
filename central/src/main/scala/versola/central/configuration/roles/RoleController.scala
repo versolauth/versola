@@ -1,5 +1,6 @@
 package versola.central.configuration.roles
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.authorizeBasic
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.ResourceService
@@ -12,10 +13,10 @@ import zio.schema.*
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.{Cause, ZIO}
 
-object RoleController extends Controller:
+object RoleController extends AuditedController:
   type Env = Tracing & RoleService & ResourceService
 
-  def routes: Routes[Env, Throwable] = Routes(
+  def endpoints = List(
     createRoleEndpoint,
     updateRoleEndpoint,
     deleteRoleEndpoint,
@@ -23,7 +24,7 @@ object RoleController extends Controller:
   )
 
   val createRoleEndpoint =
-    Method.POST / "configuration" / "roles" -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "roles").audited(Audit.change("role", Audit.create, Audit.body("id"))) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[RoleService]
@@ -33,7 +34,7 @@ object RoleController extends Controller:
     }
 
   val updateRoleEndpoint =
-    Method.PUT / "configuration" / "roles" -> handler { (request: Request) =>
+    (Method.PUT / "configuration" / "roles").audited(Audit.change("role", Audit.update, Audit.body("id"))) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[RoleService]
@@ -43,7 +44,7 @@ object RoleController extends Controller:
     }
 
   val deleteRoleEndpoint =
-    Method.DELETE / "configuration" / "roles" -> handler { (request: Request) =>
+    (Method.DELETE / "configuration" / "roles").audited(Audit.change("role", Audit.delete, Audit.query("roleId"))) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[RoleService]
@@ -57,7 +58,7 @@ object RoleController extends Controller:
     }
 
   val getAllRolesEndpoint =
-    Method.GET / "configuration" / "roles" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "roles").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         configurationService <- ZIO.service[RoleService]

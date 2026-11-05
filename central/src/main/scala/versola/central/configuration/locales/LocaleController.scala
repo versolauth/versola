@@ -1,5 +1,6 @@
 package versola.central.configuration.locales
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
@@ -8,10 +9,10 @@ import zio.ZIO
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 
-object LocaleController extends Controller:
+object LocaleController extends AuditedController:
   type Env = Tracing & LocaleService & ResourceService & CentralConfig & EdgeService
 
-  def routes: Routes[Env, Throwable] = Routes(
+  def endpoints = List(
     getLocalesEndpoint,
     updateLocalesEndpoint,
     setDefaultLocaleEndpoint,
@@ -19,7 +20,7 @@ object LocaleController extends Controller:
   )
 
   val getLocalesEndpoint =
-    Method.GET / "configuration" / "locales" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "locales").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[LocaleService]
@@ -28,7 +29,7 @@ object LocaleController extends Controller:
     }
 
   val updateLocalesEndpoint =
-    Method.PUT / "configuration" / "locales" -> handler { (request: Request) =>
+    (Method.PUT / "configuration" / "locales").audited(Audit.change("locale", Audit.update, Audit.Nowhere)) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[LocaleService]
@@ -41,19 +42,20 @@ object LocaleController extends Controller:
     }
 
   val setDefaultLocaleEndpoint =
-    Method.PUT / "configuration" / "locales" / "default" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[LocaleService]
-        body <- request.bodyAs[SetDefaultLocaleRequest]
-        result <- service.setDefault(body.code)
-      yield result match
-        case Right(_) => Response.status(Status.NoContent)
-        case Left(error) => Response.json(error.toJson).status(Status.BadRequest)
+    (Method.PUT / "configuration" / "locales" / "default").audited(Audit.change("locale", Audit.action("default"), Audit.body("code"))) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          service <- ZIO.service[LocaleService]
+          body <- request.bodyAs[SetDefaultLocaleRequest]
+          result <- service.setDefault(body.code)
+        yield result match
+          case Right(_) => Response.status(Status.NoContent)
+          case Left(error) => Response.json(error.toJson).status(Status.BadRequest)
     }
 
   val getLocalesSyncEndpoint =
-    Method.GET / "configuration" / "locales" / "sync" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "locales" / "sync").audited(Audit.Internal) -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
         service <- ZIO.service[LocaleService]

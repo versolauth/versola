@@ -1,5 +1,6 @@
 package versola.central.configuration.permissions
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
@@ -11,10 +12,10 @@ import zio.schema.*
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.{Cause, ZIO}
 
-object PermissionController extends Controller:
+object PermissionController extends AuditedController:
   type Env = Tracing & PermissionService & ResourceService
 
-  def routes: Routes[Env, Throwable] = Routes(
+  def endpoints = List(
     getAllPermissionsEndpoint,
     createPermissionEndpoint,
     updatePermissionEndpoint,
@@ -22,7 +23,7 @@ object PermissionController extends Controller:
   )
 
   val getAllPermissionsEndpoint =
-    Method.GET / "configuration" / "permissions" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "permissions").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[PermissionService]
@@ -40,32 +41,35 @@ object PermissionController extends Controller:
     }
 
   val createPermissionEndpoint =
-    Method.POST / "configuration" / "permissions" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[PermissionService]
-        body <- request.bodyAs[CreatePermissionRequest]
-        _ <- service.createPermission(body)
-      yield Response.status(Status.Created)
+    (Method.POST / "configuration" / "permissions").audited(Audit.change("permission", Audit.create, Audit.body("permission"))) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          service <- ZIO.service[PermissionService]
+          body <- request.bodyAs[CreatePermissionRequest]
+          _ <- service.createPermission(body)
+        yield Response.status(Status.Created)
     }
 
   val updatePermissionEndpoint =
-    Method.PUT / "configuration" / "permissions" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[PermissionService]
-        body <- request.bodyAs[UpdatePermissionRequest]
-        _ <- service.updatePermission(body)
-      yield Response.status(Status.NoContent)
+    (Method.PUT / "configuration" / "permissions").audited(Audit.change("permission", Audit.update, Audit.body("permission"))) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          service <- ZIO.service[PermissionService]
+          body <- request.bodyAs[UpdatePermissionRequest]
+          _ <- service.updatePermission(body)
+        yield Response.status(Status.NoContent)
     }
 
   val deletePermissionEndpoint =
-    Method.DELETE / "configuration" / "permissions" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[PermissionService]
-        tenantId <- request.url.queryZIO[TenantId]("tenantId")
-        permission <- request.url.queryZIO[Permission]("permission")
-        _ <- service.deletePermission(tenantId, permission)
-      yield Response.status(Status.NoContent)
+    (Method.DELETE / "configuration" / "permissions").audited(Audit.change("permission", Audit.delete, Audit.query("permission"))) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          service <- ZIO.service[PermissionService]
+          tenantId <- request.url.queryZIO[TenantId]("tenantId")
+          permission <- request.url.queryZIO[Permission]("permission")
+          _ <- service.deletePermission(tenantId, permission)
+        yield Response.status(Status.NoContent)
     }

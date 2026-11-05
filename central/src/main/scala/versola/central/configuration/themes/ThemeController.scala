@@ -1,5 +1,6 @@
 package versola.central.configuration.themes
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
@@ -10,10 +11,10 @@ import zio.ZIO
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 
-object ThemeController extends Controller:
+object ThemeController extends AuditedController:
   type Env = Tracing & ThemeService & ResourceService & CentralConfig & EdgeService
 
-  def routes: Routes[Env, Throwable] = Routes(
+  def endpoints = List(
     getAllThemesEndpoint,
     getThemePresetsEndpoint,
     getThemeVariablesEndpoint,
@@ -25,7 +26,7 @@ object ThemeController extends Controller:
   )
 
   val getAllThemesEndpoint =
-    Method.GET / "configuration" / "themes" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "themes").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ThemeService]
@@ -36,7 +37,7 @@ object ThemeController extends Controller:
 
   /** The built-in themes a theme can be based on. */
   val getThemePresetsEndpoint =
-    Method.GET / "configuration" / "themes" / "presets" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "themes" / "presets").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for _ <- authorizeBasic(request)
       yield Response.json(GetThemePresetsResponse(ThemePresets.all).toJson)
     }
@@ -45,14 +46,14 @@ object ThemeController extends Controller:
     * description in each language and its default. Fixed by the build, like the presets.
     */
   val getThemeVariablesEndpoint =
-    Method.GET / "configuration" / "themes" / "variables" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "themes" / "variables").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for _ <- authorizeBasic(request)
       yield Response.json(ThemeVariables.catalog.toJson)
     }
 
   /** The stylesheet of a theme built from the given tokens; nothing is stored. */
   val renderThemeEndpoint =
-    Method.POST / "configuration" / "themes" / "css" -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "themes" / "css").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ThemeService]
@@ -62,7 +63,7 @@ object ThemeController extends Controller:
     }
 
   val syncThemesEndpoint =
-    Method.GET / "configuration" / "themes" / "sync" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "themes" / "sync").audited(Audit.Internal) -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
         service <- ZIO.service[ThemeService]
@@ -71,7 +72,7 @@ object ThemeController extends Controller:
     }
 
   val createThemeEndpoint =
-    Method.POST / "configuration" / "themes" -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "themes").audited(Audit.change("theme", Audit.create, Audit.body("id"))) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ThemeService]
@@ -81,7 +82,7 @@ object ThemeController extends Controller:
     }
 
   val updateThemeEndpoint =
-    Method.PUT / "configuration" / "themes" -> handler { (request: Request) =>
+    (Method.PUT / "configuration" / "themes").audited(Audit.change("theme", Audit.update, Audit.body("id"))) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ThemeService]
@@ -91,7 +92,7 @@ object ThemeController extends Controller:
     }
 
   val deleteThemeEndpoint =
-    Method.DELETE / "configuration" / "themes" -> handler { (request: Request) =>
+    (Method.DELETE / "configuration" / "themes").audited(Audit.change("theme", Audit.delete, Audit.query("id"))) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ThemeService]

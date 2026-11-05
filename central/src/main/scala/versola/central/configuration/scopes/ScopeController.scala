@@ -1,5 +1,6 @@
 package versola.central.configuration.scopes
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
@@ -11,10 +12,10 @@ import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.{EncoderOps, JsonCodec}
 import zio.schema.*
 
-object ScopeController extends Controller:
+object ScopeController extends AuditedController:
   type Env = Tracing & OAuthScopeService & ResourceService & CentralConfig & EdgeService
 
-  def routes: Routes[Env, Throwable] = Routes(
+  def endpoints = List(
     createScopeEndpoint,
     updateScopeEndpoint,
     deleteScopeEndpoint,
@@ -23,7 +24,7 @@ object ScopeController extends Controller:
   )
 
   val getAllScopesEndpoint =
-    Method.GET / "configuration" / "scopes" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "scopes").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         scopeService <- ZIO.service[OAuthScopeService]
@@ -45,7 +46,7 @@ object ScopeController extends Controller:
     }
 
   val getAllScopesSyncEndpoint =
-    Method.GET / "configuration" / "scopes" / "sync" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "scopes" / "sync").audited(Audit.Internal) -> handler { (request: Request) =>
       for
         scopeService <- ZIO.service[OAuthScopeService]
         _ <- authorizeInternal(request)
@@ -61,7 +62,7 @@ object ScopeController extends Controller:
     }
 
   val createScopeEndpoint =
-    Method.POST / "configuration" / "scopes" -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "scopes").audited(Audit.change("scope", Audit.create, Audit.body("id"))) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthScopeService]
@@ -71,7 +72,7 @@ object ScopeController extends Controller:
     }
 
   val updateScopeEndpoint =
-    Method.PUT / "configuration" / "scopes" -> handler { (request: Request) =>
+    (Method.PUT / "configuration" / "scopes").audited(Audit.change("scope", Audit.update, Audit.body("id"))) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthScopeService]
@@ -81,12 +82,13 @@ object ScopeController extends Controller:
     }
 
   val deleteScopeEndpoint =
-    Method.DELETE / "configuration" / "scopes" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[OAuthScopeService]
-        tenantId <- request.url.queryZIO[TenantId]("tenantId")
-        scopeId <- request.url.queryZIO[ScopeToken]("scopeId")
-        _ <- service.deleteScope(tenantId, scopeId)
-      yield Response.status(Status.NoContent)
+    (Method.DELETE / "configuration" / "scopes").audited(Audit.change("scope", Audit.delete, Audit.query("scopeId"))) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          service <- ZIO.service[OAuthScopeService]
+          tenantId <- request.url.queryZIO[TenantId]("tenantId")
+          scopeId <- request.url.queryZIO[ScopeToken]("scopeId")
+          _ <- service.deleteScope(tenantId, scopeId)
+        yield Response.status(Status.NoContent)
     }

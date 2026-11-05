@@ -1,5 +1,6 @@
 package versola.central.configuration.details
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
@@ -17,10 +18,10 @@ import zio.ZIO
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 
-object AuthorizationDetailTypeController extends Controller:
+object AuthorizationDetailTypeController extends AuditedController:
   type Env = Tracing & AuthorizationDetailTypeService & ResourceService & CentralConfig & EdgeService
 
-  def routes: Routes[Env, Throwable] = Routes(
+  def endpoints = List(
     getAllTypesEndpoint,
     getAllTypesSyncEndpoint,
     createTypeEndpoint,
@@ -29,7 +30,7 @@ object AuthorizationDetailTypeController extends Controller:
   )
 
   val getAllTypesEndpoint =
-    Method.GET / "configuration" / "authorization-detail-types" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "authorization-detail-types").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[AuthorizationDetailTypeService]
@@ -43,7 +44,7 @@ object AuthorizationDetailTypeController extends Controller:
     }
 
   val getAllTypesSyncEndpoint =
-    Method.GET / "configuration" / "authorization-detail-types" / "sync" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "authorization-detail-types" / "sync").audited(Audit.Internal) -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
         service <- ZIO.service[AuthorizationDetailTypeService]
@@ -55,7 +56,11 @@ object AuthorizationDetailTypeController extends Controller:
     }
 
   val createTypeEndpoint =
-    Method.POST / "configuration" / "authorization-detail-types" -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "authorization-detail-types").audited(Audit.change(
+      "authorization-detail-type",
+      Audit.create,
+      Audit.body("type"),
+    )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[AuthorizationDetailTypeService]
@@ -67,7 +72,11 @@ object AuthorizationDetailTypeController extends Controller:
     }
 
   val updateTypeEndpoint =
-    Method.PUT / "configuration" / "authorization-detail-types" -> handler { (request: Request) =>
+    (Method.PUT / "configuration" / "authorization-detail-types").audited(Audit.change(
+      "authorization-detail-type",
+      Audit.update,
+      Audit.body("type"),
+    )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[AuthorizationDetailTypeService]
@@ -79,7 +88,11 @@ object AuthorizationDetailTypeController extends Controller:
     }
 
   val deleteTypeEndpoint =
-    Method.DELETE / "configuration" / "authorization-detail-types" -> handler { (request: Request) =>
+    (Method.DELETE / "configuration" / "authorization-detail-types").audited(Audit.change(
+      "authorization-detail-type",
+      Audit.delete,
+      Audit.query("type"),
+    )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[AuthorizationDetailTypeService]
