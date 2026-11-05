@@ -15,6 +15,7 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
+import versola.util.audit.AuditEvents
 import versola.util.http.Observability
 import versola.util.theme.{BrandColor, Mode, Shape, ThemeOverrides}
 import versola.util.{Base64, Base64Url, JWT, Patch, RedirectUri, RsaKeyPair, Secret, SecureRandom, SecurityService, TestCertificates}
@@ -367,7 +368,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def certificates(service: OAuthClientService): ZEnvironment[ClientCertificateService] =
     ZEnvironment[ClientCertificateService](
-      ClientCertificateService.Impl(ClientCertificateIssuer.notConfigured, service, NoIssuances, Enrollments(), config),
+      ClientCertificateService.Impl(ClientCertificateIssuer.notConfigured, service, NoIssuances, Enrollments(), config, AuditEvents.noop),
     )
 
   private def controllerTestCase(

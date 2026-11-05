@@ -1,5 +1,6 @@
 package versola.central.configuration.resources
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{
@@ -14,16 +15,16 @@ import versola.central.configuration.{
   UpdateResourceRequest,
 }
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.util.http.{Controller, Observability}
+import versola.util.http.Observability
 import versola.util.{Base64Url, Secret, SecurityService}
-import zio.http.{Method, Request, Response, Routes, Status, handler}
+import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
 import zio.{RIO, Task, UIO, ZIO}
 
-object ResourceController extends Controller:
+object ResourceController extends AuditedController:
   type Env = Tracing & ResourceService & CentralConfig & EdgeService & SecurityService
 
-  def routes: Routes[Env, Throwable] = Routes(
+  def endpoints = List(
     getAllResourcesEndpoint,
     createResourceRoute,
     updateResourceRoute,
@@ -34,7 +35,7 @@ object ResourceController extends Controller:
   )
 
   val getAllResourcesEndpoint =
-    Method.GET / "configuration" / "resources" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "resources").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ResourceService]
@@ -52,11 +53,17 @@ object ResourceController extends Controller:
       case Right(_) => ZIO.unit
 
   val createResourceRoute =
-    Method.POST / "configuration" / "resources" -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "resources").audited(Audit.change(
+      "resource",
+      Audit.create,
+      revealsSecret = true,
+    )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ResourceService]
         body <- request.bodyAs[CreateResourceRequest]
+        _ <- Audit.target(body.resourceId)
+        _ <- Audit.tenant(body.tenantId)
         result <- service.createResource(body).tap(refused)
       yield result match
         case Right((resourceId, secret)) =>
@@ -65,23 +72,32 @@ object ResourceController extends Controller:
     }
 
   val updateResourceRoute =
-    Method.PUT / "configuration" / "resources" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[ResourceService]
-        body <- request.bodyAs[UpdateResourceRequest]
-        result <- service.updateResource(body).tap(refused)
-      yield result match
-        case Right(_) => Response.status(Status.NoContent)
-        case Left(error) => Response.status(Status.BadRequest)
+    (Method.PUT / "configuration" / "resources").audited(Audit.change("resource", Audit.update)) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          service <- ZIO.service[ResourceService]
+          body <- request.bodyAs[UpdateResourceRequest]
+          _ <- Audit.target(body.resourceId)
+          _ <- Audit.changed(body, "resourceId")
+          result <- service.updateResource(body).tap(refused)
+        yield result match
+          case Right(_) => Response.status(Status.NoContent)
+          case Left(error) => Response.status(Status.BadRequest)
     }
 
   val rotateSecretEndpoint =
-    Method.POST / "configuration" / "resources" / "rotate-secret" -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "resources" / "rotate-secret").audited(Audit.change(
+      "resource-secret",
+      Audit.action("rotate-secret"),
+      Some("resource"),
+      revealsSecret = true,
+    )) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ResourceService]
         resourceId <- request.url.queryZIO[ResourceId]("resourceId")
+        _ <- Audit.target(resourceId)
         newSecret <- service.rotateSecret(resourceId)
         response = RotateResourceSecretResponse(Base64Url.encode(newSecret))
       yield Response.json(response.toJson)).catchSome:
@@ -90,23 +106,30 @@ object ResourceController extends Controller:
     }
 
   val deletePreviousSecretEndpoint =
-    Method.DELETE / "configuration" / "resources" / "previous-secret" -> handler { (request: Request) =>
+    (Method.DELETE / "configuration" / "resources" / "previous-secret").audited(Audit.change(
+      "resource-secret",
+      Audit.delete,
+      Some("resource"),
+    )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ResourceService]
         resourceId <- request.url.queryZIO[ResourceId]("resourceId")
+        _ <- Audit.target(resourceId)
         _ <- service.deletePreviousSecret(resourceId)
       yield Response.status(Status.NoContent)
     }
 
   val deleteResourceRoute =
-    Method.DELETE / "configuration" / "resources" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[ResourceService]
-        resourceId <- request.url.queryZIO[ResourceId]("resourceId")
-        _ <- service.deleteResource(resourceId)
-      yield Response.status(Status.NoContent)
+    (Method.DELETE / "configuration" / "resources").audited(Audit.change("resource", Audit.delete)) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          service <- ZIO.service[ResourceService]
+          resourceId <- request.url.queryZIO[ResourceId]("resourceId")
+          _ <- Audit.target(resourceId)
+          _ <- service.deleteResource(resourceId)
+        yield Response.status(Status.NoContent)
     }
 
   /** Under the shared transport secret: only auth reads the registry. An edge is served its
@@ -127,7 +150,7 @@ object ResourceController extends Controller:
     * account settings API.
     */
   val resourcesRegistryEndpoint =
-    Method.GET / "configuration" / "resources" / "registry" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "resources" / "registry").audited(Audit.Internal) -> handler { (request: Request) =>
       for
         service <- ZIO.service[ResourceService]
         edgeId <- authorizeInternal(request)

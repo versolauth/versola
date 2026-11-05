@@ -1,6 +1,7 @@
 package versola.central.configuration.clients.est
 
 import versola.central.CentralConfig
+import versola.central.audit.CentralAudit
 import versola.central.configuration.CreateClientRequest
 import versola.central.configuration.clients.certificates.{ClientCertificateIssuer, ClientCertificateRequests}
 import versola.central.configuration.clients.{
@@ -14,6 +15,7 @@ import versola.central.configuration.clients.{
   RegisteredClient,
 }
 import versola.central.configuration.edges.EdgeCertificate
+import versola.util.audit.{ActorType, AuditEvents, AuditKind}
 import versola.util.http.Observability
 import versola.util.{Base64Url, CertificateSubject, SecureRandom}
 import zio.*
@@ -143,9 +145,9 @@ object ClientEstService:
     requests.tagged(Set(MetricLabel("operation", operation), MetricLabel("outcome", result))).increment
 
   val live: URLayer[
-    ClientEstRepository & OAuthClientService & ClientCertificateIssuer & SecureRandom & CentralConfig,
+    ClientEstRepository & OAuthClientService & ClientCertificateIssuer & SecureRandom & CentralConfig & AuditEvents,
     ClientEstService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _, _))
+  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   class Impl(
       est: ClientEstRepository,
@@ -153,7 +155,18 @@ object ClientEstService:
       issuer: ClientCertificateIssuer,
       random: SecureRandom,
       config: CentralConfig,
+      events: AuditEvents,
   ) extends ClientEstService:
+    /** A certificate event of a client, by the client itself or, where nothing of its own caused it, the system. */
+    private def certificateEvent(kind: AuditKind, actor: ActorType, clientId: ClientId): UIO[Unit] =
+      CentralAudit.certificate(
+        events,
+        kind,
+        actor,
+        Option.when(actor == CentralAudit.Actors.Client)(clientId.toString),
+        ("client", clientId.toString),
+      )
+
     private val validity: Duration =
       config.certificateBackends.map(_.validity)
         .orElse(config.clientCertificateAuthority.flatMap(_.validityDays).map(days => Duration.fromSeconds(days * 86400L)))
@@ -237,6 +250,7 @@ object ClientEstService:
           leaf <- verified(subject, chain)
           // The generation, the start of the chain and the certificate are recorded together.
           _ <- est.recordEnrollment(record(clientId, leaf, now), now)
+          _ <- certificateEvent(CentralAudit.CertEnrolled, CentralAudit.Actors.Client, clientId)
           _ <- ZIO.logInfo(issuedMessage(clientId, leaf))
         yield Issued(chain, endOf(now))
 
@@ -260,6 +274,7 @@ object ClientEstService:
           _ <- known.supersededAt match
             case Some(at) if now.isAfter(at.plus(ForkGrace)) =>
               est.revoke(client.id) *>
+                certificateEvent(CentralAudit.CertRevoked, ActorType.system, client.id) *>
                 Observability.setError("est_chain_fork_detected") *>
                 ZIO.logWarning(s"the certificate chain of client '${client.id}' was closed: a certificate that had been replaced renewed again") *>
                 ZIO.fail(Refused(
@@ -288,7 +303,8 @@ object ClientEstService:
           leaf <- verified(subject, chain)
           outcome <- est.recordRenewal(thumbprint(presented), record(client.id, leaf, now), known.generation, now, policy.maxAge, policy.autoExtend)
           begun <- outcome match
-            case RenewalRecorded.Recorded(start) => ZIO.succeed(start)
+            case RenewalRecorded.Recorded(start) =>
+              certificateEvent(CentralAudit.CertRenewed, CentralAudit.Actors.Client, client.id).as(start)
             // Revoked, or enrolled again, while the CA was answering: the certificate it signed is not recorded and cannot renew.
             case RenewalRecorded.GenerationChanged => ZIO.fail(InvalidCredentials)
             case RenewalRecorded.ChainEnded => ZIO.fail(chainLimit(client.id))

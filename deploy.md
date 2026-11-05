@@ -678,6 +678,50 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   learns the new key before anything signs with it; keep the old key published until tokens issued
   under it have expired.
 
+- **Central's audit log.** `central_audit_event` (V1034) holds what administrators did through central's API (`admin.<resource>.<operation>`,
+  a look at a user, a query of the audit report, every response that hands a secret back) and what bootstrap created
+  (`system.bootstrap`). It is partitioned by day like the antifraud event log, and the service keeps the partitions: it creates
+  14 days ahead and drops a day once the whole day is older than `audit.retention`. Dropping a partition is the retention; nothing is
+  vacuumed. A row whose day had no partition lands in `central_audit_event_default`; those rows are **never moved** into the day's partition
+  (an insert-only logical replication of the table would see them twice), a day that has rows in the default is not attached and
+  central reports it (`audit_events_in_default`), and the rows leave the default when they age out of the retention. A trigger
+  refuses `UPDATE`, `DELETE` and `TRUNCATE` unless the transaction sets `versola.audit_maintenance` to `on`, which only
+  central's own prune of the default partition does. Creating and dropping partitions needs the role central connects as to own the
+  table (or be a member of the owner); otherwise central logs that the partitions are not maintained and `audit_partition_owner_mismatch`
+  is set. Long-term keeping is the operator's logical replication of `central_audit_event` (a publication with `publish_via_partition_root = true`
+  and `publish = 'insert'`, an unpartitioned table on the subscriber; the publisher needs PostgreSQL 13 or later).
+  The `audit` block of central's `env.conf` is optional, every key has a default, and a deployment that sets none records admin actions
+  for 7 days:
+
+  ```hocon
+  audit {
+    retention     = "7 days"      # 14 days is the sensible most: the per-user report asks auth, which keeps its log as long, for the same window
+    overflow      = "drop"        # drop | block: what a full writer queue does to an event (drop does not wait, block waits up to block-timeout for room)
+    block-timeout = "2 seconds"
+    events { admin-user-viewed = true }   # whether a look at a user (GET /users) is an event: the one read that is many
+  }
+  ```
+
+  A call that reaches central without the query parameters edge adds (`actorId`, `actorTenantId`, `actorClientId`, `actorSessionId`) is
+  not refused: it is recorded as made by a `service` with no id, and counted in `audit_actor_missing_total{reason}` (an alert is in
+  `dashboards/alerts/versola-audit-central.rules.yaml`). Edge adds them to every admin route since this release, and central's
+  bootstrap brings the registrations of the existing `central` resource up to date at start (it adds those inject rules to endpoints
+  an earlier release registered, removes the header rules an earlier form of this feature registered, and leaves what an operator added
+  alone); until edge has synced them, admin actions are recorded without an actor. Edge's sync is the refresh interval (5 minutes by
+  default).
+
+  The `ip` of an `admin.*` row is empty: the address of the administrator's browser is not passed on to central yet, so an empty `ip`
+  there means "not recorded", not an unknown source. The log is the hot window of 7 days; keeping it as the record of what was done
+  needs the replication described above.
+
+  `audit:read` is not tenant-scoped, like `users:read`: a holder reads the report of any user.
+
+  Where an action is made in auth (sessions, refresh tokens, passkeys, passwords, claims, limits, the antifraud settings), central records
+  its outcome and auth records its effect; the two rows carry the same trace id. The per-user report shows both as they are. A report
+  served without auth's part is counted in `audit_report_partial_total{reason}`. A page holds at most `limit` events of the two logs together
+  (100 by default), and its `nextCursor` is the key of its last event; the changes administrators made, in the summary of the first page, are
+  bounded at 100 and `truncated: true` says when they were more.
+
 - **Antifraud configuration.** Each antifraud key has exactly one home. What is tuned during an attack (the mode,
   thresholds, weights, limits, the SMS budget's limits, the proof-of-work difficulty, shadow rules) is stored settings,
   changed through central's admin API with no restart (below). Everything else is the `antifraud` block of `auth`'s

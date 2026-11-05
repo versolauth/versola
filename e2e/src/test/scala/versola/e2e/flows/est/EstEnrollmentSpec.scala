@@ -219,7 +219,15 @@ object EstEnrollmentSpec extends ZIOSpec[Flows.Setups & CentralApi]:
           // The certificate EST issued is the one auth's handshake accepts, and the client authenticates by it.
           withFirst <- awaitServed(auth, first, id)
           withSecond <- awaitServed(auth, second, id)
+          // Central records what it issued, by the client that asked: the writer rests up to a second between batches.
+          certificateRows <- CentralDatabase.auditEvents(id)
+            .repeat(Schedule.spaced(200.millis) *> Schedule.recurUntil[List[CentralDatabase.AuditRow]](_.count(_.kind.startsWith("cert.")) >= 2))
+            .timeout(20.seconds)
+            .someOrElseZIO(CentralDatabase.auditEvents(id))
+          certificates = certificateRows.filter(_.kind.startsWith("cert."))
         yield assertTrue(
+          certificates.map(row => (row.kind, row.actorType, row.actorId)) ==
+            List(("cert.enrolled", "client", Some(id)), ("cert.renewed", "client", Some(id))),
           enrolled._1.status == Status.Ok,
           enrolled._1.rawHeader("Content-Type").exists(_.startsWith("application/pkcs7-mime")),
           enrolled._1.rawHeader("Content-Transfer-Encoding").contains("base64"),
