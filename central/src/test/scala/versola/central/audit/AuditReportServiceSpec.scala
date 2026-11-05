@@ -60,59 +60,86 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val places = Unsafe.unsafe(Semaphore.unsafe.make(AuditReportService.MaxConcurrentReports)(using _))
     val service = AuditReportService.Impl(repository, authClient, TestCentralConfig.config, places)
 
+  /** The two logs as lists, with fakes that answer as the real ones do: newest first by `(at, id)`, `to` inclusive, a limit, and a next
+    * cursor for auth when there is more. */
+  private class Logs(auth: List[AuditEvent], central: List[AuditEvent]):
+    val env = Env()
+    private val failing = Unsafe.unsafe(Ref.unsafe.make(Option.empty[Int])(using _))
+    private val authCalls = Unsafe.unsafe(Ref.unsafe.make(0)(using _))
+
+    private def desc(events: List[AuditEvent]) = events.sortBy(e => (e.at, e.id.toString))(using Ordering[(Instant, String)].reverse)
+
+    /** Both logs together, newest first. */
+    val all: List[AuditEvent] = desc(auth ++ central)
+
+    /** Auth answers its first `calls` calls and is down after that. */
+    def authDownAfter(calls: Int): UIO[Unit] = failing.set(Some(calls))
+
+    val install: UIO[Unit] =
+      for
+        _ <- env.authClient.getUserAuditEvents.returnsZIO: args =>
+          val query = args._2
+          for
+            n <- authCalls.updateAndGet(_ + 1)
+            down <- failing.get
+            _ <- ZIO.fail(AuthAuditError.Unavailable("down")).when(down.exists(n > _))
+          yield
+            val inside = desc(auth.filter(e => query.from.forall(f => !e.at.isBefore(f)) && query.to.forall(t => !e.at.isAfter(t))))
+            authPage(inside.take(query.limit), Option.when(inside.size > query.limit)("more"))
+        _ <- env.authClient.getUserAuditSummary.succeedsWith(authSummary)
+        _ <- env.repository.userEvents.returnsZIO: args =>
+          val (_, from, until, before, limit) = args
+          ZIO.succeed(
+            desc(
+              central.filter(e =>
+                !e.at.isBefore(from) && e.at.isBefore(until) &&
+                  before.forall(k => e.at.isBefore(k.at) || (e.at == k.at && e.id.toString < k.id.toString)),
+              ),
+            ).take(limit),
+          )
+        _ <- env.repository.adminActions.succeedsWith(Nil)
+      yield ()
+
+    /** The pages of a walk that follows `nextCursor` to the end, with a bound so that a cursor that goes nowhere fails the spec. */
+    def walk(pageSize: Int): ZIO[Any, Throwable, List[UserAuditReport]] =
+      def next(cursor: Option[String], pages: List[UserAuditReport]): ZIO[Any, Throwable, List[UserAuditReport]] =
+        env.service.userReport(userId, None, None, cursor.flatMap(AuditCursor.decode(_).toOption), Some(PageLimit(pageSize))).mapError(e =>
+          RuntimeException(e.toString),
+        ).flatMap: page =>
+          if pages.size > 200 then ZIO.fail(RuntimeException("the walk did not end"))
+          else page.nextCursor.fold(ZIO.succeed(pages :+ page))(c => next(Some(c), pages :+ page))
+      authCalls.set(0) *> next(None, Nil)
+
   private val clock = TestClock.setTime(now)
 
   def spec = suite("AuditReportService")(
-    test("a page is auth's page and central's rows of the span it covers, newest first, with auth's summary and the administrators' actions") {
-      val env = Env()
+    test("the first page holds auth's events and central's rows newest first, with auth's summary and the administrators' actions") {
+      val logs = Logs(auth = List(login, token), central = List(claims, reset))
       for
         _ <- clock
-        _ <- env.authClient.getUserAuditEvents.succeedsWith(authPage(List(login, token), Some("more")))
-        _ <- env.authClient.getUserAuditSummary.succeedsWith(authSummary)
-        _ <- env.repository.userEvents.succeedsWith(List(claims, reset))
-        _ <- env.repository.adminActions.succeedsWith(List(claims, reset))
-        report <- env.service.userReport(userId, None, None, None, Some(PageLimit(2)))
-      yield
-        val (from, until) = env.repository.userEvents.calls.head match
-          case (_, from, until, _, _) => (from, until)
-        assertTrue(
-          report.events.map(_.event.id) == List(login, claims, reset, token).map(_.id),
-          report.partial.isEmpty,
-          // central's rows are asked for from where auth's page ends, to the end of the window, and the next page takes up there
-          env.repository.userEvents.calls.map(c => (c._2, c._3)).contains((token.at, now.plus(1, ChronoUnit.MICROS))),
-          from == token.at,
-          until == now.plus(1, ChronoUnit.MICROS),
-          report.nextCursor.flatMap(c => AuditCursor.decode(c).toOption).contains(
-            AuditCursor(until = token.at, auth = Some("more"), key = None, centralOnly = false),
-          ),
-          report.window.to == now,
-          report.window.retentionFrom == now.minus(7, ChronoUnit.DAYS),
-          report.summary.exists(_.fields.map(_._1).toSet == Set("byKind", "sessions", "adminActions")),
-          report.summary.flatMap(_.fields.collectFirst { case ("adminActions", Json.Arr(actions)) => actions.size }).contains(2),
-        )
-    },
-    test("the last page of auth's takes central's rows down to the start of the window, and has no next page") {
-      val env = Env()
-      for
-        _ <- clock
-        _ <- env.authClient.getUserAuditEvents.succeedsWith(authPage(List(token), None))
-        _ <- env.authClient.getUserAuditSummary.succeedsWith(authSummary)
-        _ <- env.repository.userEvents.succeedsWith(List(reset))
-        _ <- env.repository.adminActions.succeedsWith(List(reset))
-        report <- env.service.userReport(userId, Some(at("08:00")), Some(at("11:00")), None, None)
+        _ <- logs.install
+        report <- logs.env.service.userReport(userId, None, None, None, Some(PageLimit(10)))
       yield assertTrue(
+        report.events.map(_.event.id) == List(login, claims, reset, token).map(_.id),
+        report.partial.isEmpty,
         report.nextCursor.isEmpty,
-        report.window.from == at("08:00"),
-        report.window.to == at("11:00"),
-        env.repository.userEvents.calls.head._2 == at("08:00"),
-        // auth is asked for the window the caller named
-        env.authClient.getUserAuditEvents.calls.head._2 == UserAuditEventsQuery(
-          Some(at("08:00")),
-          Some(at("11:00")),
-          None,
-          PageLimit.Default,
-        ),
+        report.summary.exists(s => s.fields.map(_._1).contains("sessions") && s.fields.map(_._1).contains("adminActions")),
+        // auth is asked for a few more than the page, central for one more, and neither is told a cursor
+        logs.env.authClient.getUserAuditEvents.calls.head._2 == UserAuditEventsQuery(None, None, None, 10 + AuditReportService.AuthSlack),
+        logs.env.repository.userEvents.calls.head._4.isEmpty,
+        logs.env.repository.userEvents.calls.head._5 == 11,
       )
+    },
+    test("a page is never longer than the page size asked for, whatever the two logs hold") {
+      val logs = Logs(
+        auth = (1 to 30).toList.map(n => event(n, AuditSource("auth"), at("10:00").minusSeconds(n * 2L), "token.issued")),
+        central = (1 to 30).toList.map(n => event(100 + n, CentralAudit.Source, at("10:00").minusSeconds(n * 2L + 1), "admin.user.update")),
+      )
+      for
+        _ <- clock
+        _ <- logs.install
+        pages <- logs.walk(7)
+      yield assertTrue(pages.forall(_.events.size <= 7), pages.init.forall(_.events.size == 7))
     },
     test("a window the caller did not name is auth's whole retained window: auth is not told one, and central's own retention bounds its rows") {
       val env = Env()
@@ -124,7 +151,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.adminActions.succeedsWith(Nil)
         _ <- env.service.userReport(userId, None, None, None, None)
       yield assertTrue(
-        env.authClient.getUserAuditEvents.calls.head._2 == UserAuditEventsQuery(None, None, None, PageLimit.Default),
+        env.authClient.getUserAuditEvents.calls.head._2 == UserAuditEventsQuery(None, None, None, PageLimit.Default + AuditReportService.AuthSlack),
         env.authClient.getUserAuditSummary.calls.head._2.isEmpty,
         env.repository.userEvents.calls.head._2 == now.minus(7, ChronoUnit.DAYS),
       )
@@ -145,50 +172,6 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.authClient.getUserAuditEvents.calls.head._2.to.contains(now),
       )
     },
-    test("the next page continues auth's cursor and central's rows from where the last one stopped, and carries no summary") {
-      val env = Env()
-      val cursor = AuditCursor(until = token.at, auth = Some("more"), key = None, centralOnly = false)
-      for
-        _ <- clock
-        _ <- env.authClient.getUserAuditEvents.succeedsWith(authPage(List(event(5, AuditSource("auth"), at("08:00"), "session.ended")), None))
-        _ <- env.repository.userEvents.succeedsWith(Nil)
-        _ <- env.repository.adminActions.succeedsWith(Nil)
-        report <- env.service.userReport(userId, None, None, Some(cursor), Some(PageLimit(10)))
-      yield assertTrue(
-        env.authClient.getUserAuditEvents.calls.head._2.cursor.contains("more"),
-        env.authClient.getUserAuditSummary.calls.isEmpty,
-        // exclusive at the instant the previous page ended at: its rows of that instant were on that page
-        env.repository.userEvents.calls.map(_._3) == List(token.at),
-        report.summary.isEmpty,
-      )
-    },
-    test("without auth the report is central's rows alone, flagged, in pages of their own that go on by the key of the last row") {
-      val env = Env()
-      val rows = List(claims, reset, event(6, CentralAudit.Source, at("09:00"), "admin.user.viewed"))
-      for
-        _ <- clock
-        _ <- env.authClient.getUserAuditEvents.failsWith(AuthAuditError.Unavailable("auth answered 503"))
-        _ <- env.authClient.getUserAuditSummary.failsWith(AuthAuditError.Unavailable("auth answered 503"))
-        _ <- env.repository.userEvents.succeedsWith(rows)
-        _ <- env.repository.adminActions.succeedsWith(rows)
-        first <- env.service.userReport(userId, None, None, None, Some(PageLimit(2)))
-        next = first.nextCursor.flatMap(c => AuditCursor.decode(c).toOption)
-        second <- env.service.userReport(userId, None, None, next, Some(PageLimit(2)))
-      yield assertTrue(
-        first.partial == List("auth"),
-        first.events.map(_.event) == List(claims, reset),
-        // the actions of the administrators are the summary, which is all there is of it
-        first.summary.exists(_.fields.map(_._1) == Chunk("adminActions")),
-        next.exists(c => c.centralOnly && c.key.contains(AuditCursor.Key(reset.at, reset.id)) && c.auth.isEmpty),
-        // asked one more than the page, to know there is a next
-        env.repository.userEvents.calls.head._5 == 3,
-        second.partial == List("auth"),
-        // the second page is not a first one: no summary, and auth is not asked again
-        second.summary.isEmpty,
-        env.authClient.getUserAuditEvents.calls.size == 1,
-        env.repository.userEvents.calls.last._4.contains(CentralAuditRepository.Key(reset.at, reset.id)),
-      )
-    },
     test("an answer of auth's that cannot be read leaves its part out like no answer at all") {
       val env = Env()
       for
@@ -200,28 +183,110 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         report <- env.service.userReport(userId, None, None, None, None)
       yield assertTrue(report.partial == List("auth"), report.events.map(_.event) == List(reset))
     },
-    test("central's rows above the bound of a page are cut and the report says so; at the bound it does not") {
-      def rows(n: Int) = (1 to n).toList.map(i => event(100 + i, CentralAudit.Source, at("09:30").minusSeconds(i), "admin.user.update"))
-      def report(central: List[AuditEvent]) =
-        val env = Env()
-        for
-          _ <- clock
-          _ <- env.authClient.getUserAuditEvents.succeedsWith(authPage(List(login), None))
-          _ <- env.authClient.getUserAuditSummary.succeedsWith(authSummary)
-          _ <- env.repository.userEvents.succeedsWith(central)
-          _ <- env.repository.adminActions.succeedsWith(Nil)
-          report <- env.service.userReport(userId, None, None, None, None)
-        yield (report, env.repository.userEvents.calls.head._5)
+    test("more than a page of central rows inside one span of auth's are all reached by following the cursor, in order, none twice") {
+      val logs = Logs(
+        auth = List(login, token, event(5, AuditSource("auth"), at("08:00"), "session.ended")),
+        central = (0 to 24).toList.map(n => event(100 + n, CentralAudit.Source, at("09:59").minusSeconds(n * 60L), "admin.user.update")),
+      )
       for
-        over <- report(rows(AuditReportService.MaxCentralRowsPerPage + 1))
-        at <- report(rows(AuditReportService.MaxCentralRowsPerPage))
+        _ <- clock
+        _ <- logs.install
+        pages <- logs.walk(10)
+        walked = pages.flatMap(_.events.map(_.event))
       yield assertTrue(
-        over._1.truncated,
-        over._1.events.size == 1 + AuditReportService.MaxCentralRowsPerPage,
-        // one more than the bound is asked for, to know
-        over._2 == AuditReportService.MaxCentralRowsPerPage + 1,
-        !at._1.truncated,
-        at._1.events.size == 1 + AuditReportService.MaxCentralRowsPerPage,
+        walked.map(_.id) == logs.all.map(_.id),
+        walked.map(_.id).distinct.size == walked.size,
+        pages.size == 3,
+        pages.last.nextCursor.isEmpty,
+        pages.dropRight(1).forall(_.nextCursor.isDefined),
+      )
+    },
+    test("events of the two logs interleaved across the boundary of a page come out in one order, none lost and none twice") {
+      val auth = (0 to 11).toList.map(n => event(1 + n, AuditSource("auth"), at("10:00").minusSeconds(n * 90L), "token.issued"))
+      val central = (0 to 11).toList.map(n => event(100 + n, CentralAudit.Source, at("10:00").minusSeconds(n * 90L + 45), "admin.user.update"))
+      val logs = Logs(auth, central)
+      for
+        _ <- clock
+        _ <- logs.install
+        pages <- logs.walk(5)
+        walked = pages.flatMap(_.events.map(_.event))
+      yield assertTrue(
+        walked.map(_.id) == logs.all.map(_.id),
+        walked.map(_.id).distinct.size == walked.size,
+        pages.map(_.events.size) == List(5, 5, 5, 5, 4),
+      )
+    },
+    test("events at the same microsecond are told apart by their ids across the boundary of a page") {
+      val same = at("09:00")
+      val auth =
+        List(1, 3, 5, 7).map(n => event(n, AuditSource("auth"), same, "login.step")) :+ event(9, AuditSource("auth"), at("08:00"), "token.issued")
+      val central = List(2, 4, 6, 8).map(n => event(100 + n, CentralAudit.Source, same, "admin.user.update"))
+      val logs = Logs(auth, central)
+      for
+        _ <- clock
+        _ <- logs.install
+        pages <- ZIO.foreach(List(1, 2, 3, 4))(size => logs.walk(size))
+        walked = pages.map(_.flatMap(_.events.map(_.event.id)))
+      yield assertTrue(walked.forall(_ == logs.all.map(_.id)), walked.forall(ids => ids.distinct.size == ids.size))
+    },
+    test("a page that is exactly full with nothing left has no cursor, and one with a single event more has") {
+      val ten = (0 to 9).toList.map(n => event(1 + n, AuditSource("auth"), at("10:00").minusSeconds(n * 10L), "token.issued"))
+      val eleven = ten :+ event(50, CentralAudit.Source, at("09:00"), "admin.user.update")
+      for
+        _ <- clock
+        full = Logs(ten, Nil)
+        _ <- full.install
+        exact <- full.env.service.userReport(userId, None, None, None, Some(PageLimit(10)))
+        more = Logs(eleven.filter(_.source == AuditSource("auth")), eleven.filter(_.source == CentralAudit.Source))
+        _ <- more.install
+        over <- more.env.service.userReport(userId, None, None, None, Some(PageLimit(10)))
+        rest <- more.env.service.userReport(userId, None, None, over.nextCursor.flatMap(AuditCursor.decode(_).toOption), Some(PageLimit(10)))
+      yield assertTrue(
+        exact.events.size == 10,
+        exact.nextCursor.isEmpty,
+        over.events.size == 10,
+        over.nextCursor.isDefined,
+        rest.events.map(_.event.id) == List(eleven.last.id),
+        rest.nextCursor.isEmpty,
+        rest.summary.isEmpty,
+      )
+    },
+    test("a page of the largest size, where auth cannot be asked for more than the page, still ends at the right event") {
+      val auth = (0 to 599).toList.map(n => event(1 + n, AuditSource("auth"), at("10:00").minusSeconds(n.toLong), "token.issued"))
+      val central = (0 to 4).toList.map(n => event(1000 + n, CentralAudit.Source, at("10:00").minusSeconds(n * 100L + 50), "admin.user.update"))
+      val logs = Logs(auth, central)
+      for
+        _ <- clock
+        _ <- logs.install
+        pages <- logs.walk(PageLimit.Max)
+        walked = pages.flatMap(_.events.map(_.event.id))
+      yield assertTrue(walked == logs.all.map(_.id), walked.distinct.size == walked.size, pages.forall(_.events.size <= PageLimit.Max))
+    },
+    test("when auth stops answering in the middle of a walk the rest of it is central's rows alone, flagged, without repeating or losing any") {
+      val auth = (0 to 9).toList.map(n => event(1 + n, AuditSource("auth"), at("10:00").minusSeconds(n * 60L), "token.issued"))
+      val central = (0 to 14).toList.map(n => event(100 + n, CentralAudit.Source, at("10:00").minusSeconds(n * 60L + 30), "admin.user.update"))
+      val logs = Logs(auth, central)
+      for
+        _ <- clock
+        _ <- logs.install
+        _ <- logs.authDownAfter(1)
+        pages <- logs.walk(6)
+        first = pages.head
+        rest = pages.tail
+        restIds = rest.flatMap(_.events.map(_.event.id))
+        firstKey = first.events.last.event
+        centralAfterFirst =
+          central.filter(e => e.at.isBefore(firstKey.at) || (e.at == firstKey.at && e.id.toString < firstKey.id.toString)).sortBy(_.at)(using
+            Ordering[Instant].reverse,
+          )
+      yield assertTrue(
+        first.partial.isEmpty,
+        rest.nonEmpty,
+        rest.forall(_.partial == List("auth")),
+        rest.flatMap(_.events).forall(_.event.source == CentralAudit.Source),
+        restIds == centralAfterFirst.map(_.id),
+        restIds.distinct.size == restIds.size,
+        rest.forall(_.summary.isEmpty),
       )
     },
     test("the administrators' changes in the summary are the repository's, cut at their bound, and the report says when they were more") {

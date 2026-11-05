@@ -12,6 +12,7 @@ import zio.metrics.{Metric, MetricLabel}
 
 import java.time.Instant
 import java.time.temporal.ChronoUnit
+import java.util.UUID
 
 /** The per-user report: auth's per-user events merged with central's own rows about the user (what administrators did to them).
   *
@@ -31,9 +32,8 @@ trait AuditReportService:
 
 object AuditReportService:
 
-  /** Rows of central's one page of auth's can bring with it. An administrator does not act on one user that often within a page of
-    * their sign-ins; the bound keeps a page small whatever is in the table. */
-  private[audit] val MaxCentralRowsPerPage = 500
+  /** Events auth is asked for beyond the page: those of the key's own instant that an earlier page already served come back with them. */
+  private[audit] val AuthSlack = 5
 
   /** Rows of the summary's `adminActions`. */
   private[audit] val MaxAdminActions = 100
@@ -82,85 +82,99 @@ object AuditReportService:
         upper = to.fold(now)(t => if t.isAfter(now) then now else t)
         lower = from.fold(retentionFrom)(f => if f.isBefore(retentionFrom) then retentionFrom else f)
         _ <- ZIO.fail(AuditReportError.Invalid("to is before from")).when(upper.isBefore(lower))
-        until = position.fold(upper.plus(Micro, ChronoUnit.MICROS))(_.until)
         // Auth is asked for the window the caller named, or for its whole retained window when it named none: its own limit of
         // how far back it goes is not central's to guess.
-        authFrom = from.map(_ => lower)
-        authTo = to.map(_ => upper)
-        report <- position match
-          case Some(p) if p.centralOnly => centralOnly(userId, lower, upper, until, p.key, pageSize, retentionFrom, authSummary = None, first = false)
-          case _ => merged(userId, lower, upper, until, authFrom, authTo, position.flatMap(_.auth), pageSize, retentionFrom, first = position.isEmpty)
+        window = Window(lower = lower, upper = upper, authFrom = from.map(_ => lower), authTo = to.map(_ => upper), retentionFrom = retentionFrom)
+        report <-
+          if position.exists(_.centralOnly) then centralOnly(userId, window, position, pageSize, authSummary = None)
+          else merged(userId, window, position, pageSize)
       yield report
 
-    /** Auth's page and central's rows of the span it covers. */
+    /** The span of the report, and what auth is told of it. */
+    private case class Window(lower: Instant, upper: Instant, authFrom: Option[Instant], authTo: Option[Instant], retentionFrom: Instant)
+
+    /** A page of the report: the events of auth and the rows of central, newest first, `pageSize` of them in all. Both sources order by
+      * `(at, id)` descending, and auth's `to` is inclusive, so the cursor is the key of the last event of the page: the next page asks
+      * auth for what is at or before that instant and keeps what is strictly older, and reads central's rows strictly older. */
     private def merged(
         userId: UserId,
-        lower: Instant,
-        upper: Instant,
-        until: Instant,
-        authFrom: Option[Instant],
-        authTo: Option[Instant],
-        authCursor: Option[String],
+        window: Window,
+        position: Option[AuditCursor],
         pageSize: Int,
-        retentionFrom: Instant,
-        first: Boolean,
     ): IO[AuditReportError | Throwable, UserAuditReport] =
-      val eventsCall = answered(authClient.getUserAuditEvents(userId, UserAuditEventsQuery(authFrom, authTo, authCursor, pageSize)))
+      val first = position.isEmpty
+      // Auth's `to` includes the instant of the key, so the events of that instant that were already served come back: a few more are asked for.
+      val asked = (pageSize + AuthSlack).min(PageLimit.Max)
+      val eventsCall = answered(
+        authClient.getUserAuditEvents(
+          userId,
+          UserAuditEventsQuery(window.authFrom, position.map(_.at).orElse(window.authTo), None, asked),
+        ),
+      )
       val summaryCall: IO[AuditReportError, Option[Json.Obj]] =
-        if first then answered(authClient.getUserAuditSummary(userId, authFrom, authTo)).map(_.toOption) else ZIO.none
+        if first then answered(authClient.getUserAuditSummary(userId, window.authFrom, window.authTo)).map(_.toOption) else ZIO.none
       (eventsCall <&> summaryCall).flatMap: (events, authSummary) =>
         events match
           case Left(reason) =>
-            // Auth did not answer: the report is central's rows alone, from where this page started.
+            // Auth did not answer: the rest of the report is central's rows alone.
             partialReports.tagged(Set(MetricLabel("reason", reason))).increment *>
-              centralOnly(userId, lower, upper, until, None, pageSize, retentionFrom, authSummary, first)
+              centralOnly(userId, window, position, pageSize, authSummary)
           case Right(page) =>
-            // Where this page of auth's ends is where central's rows stop: all of them down to it are on this page, and the next
-            // page takes them from there. On the last page that is the start of the window.
-            val low = page.nextCursor.flatMap(_ => page.events.lastOption.map(_.event.at)).getOrElse(lower)
             for
-              // one more than the bound, to know whether the bound cut anything
-              found <- repository.userEvents(userId, low, until, None, MaxCentralRowsPerPage + 1)
-              mine = found.take(MaxCentralRowsPerPage)
-              actions <- if first then adminActions(userId, lower, upper).asSome else ZIO.none
-            yield UserAuditReport(
-              userId = userId,
-              window = ReportWindow(from = lower, to = upper, retentionFrom = laterOf(retentionFrom, page.retentionFrom)),
-              summary = actions.map(done => withActions(authSummary, done._1)),
-              events = ordered(page.events ++ mine.map(ReportedEvent(_, None))),
-              nextCursor =
-                page.nextCursor.map(next => AuditCursor.encode(AuditCursor(until = low, auth = Some(next), key = None, centralOnly = false))),
-              partial = Nil,
-              truncated = found.size > MaxCentralRowsPerPage || actions.exists(_._2),
-            )
+              // one more than the page, to know whether central has more
+              found <- repository.userEvents(userId, window.lower, window.upper.plus(Micro, ChronoUnit.MICROS), position.map(keyOf), pageSize + 1)
+              actions <- if first then adminActions(userId, window.lower, window.upper).asSome else ZIO.none
+            yield
+              val authOlder = position.fold(page.events)(p => page.events.filter(item => isOlder(item.event.at, item.event.id, p.at, p.id)))
+              val authHasMore = page.nextCursor.isDefined
+              // What auth did not send, because of its limit, is older than the last event it sent: past that key the merge cannot say what comes next.
+              val horizon = Option.when(authHasMore)(page.events.lastOption).flatten.map(item => (item.event.at, item.event.id))
+              val candidates = ordered(authOlder ++ found.map(ReportedEvent(_, None)))
+                .filter(item => horizon.forall((at, id) => !isOlder(item.event.at, item.event.id, at, id)))
+              val taken = candidates.take(pageSize)
+              val more = candidates.size > pageSize || authHasMore || found.size > pageSize
+              UserAuditReport(
+                userId = userId,
+                window = ReportWindow(from = window.lower, to = window.upper, retentionFrom = laterOf(window.retentionFrom, page.retentionFrom)),
+                summary = actions.map(done => withActions(authSummary, done._1)),
+                events = taken,
+                nextCursor =
+                  Option.when(more)(taken.lastOption).flatten.map(last => AuditCursor.encode(cursorAfter(last.event, centralOnly = false))),
+                partial = Nil,
+                truncated = actions.exists(_._2),
+              )
 
-    /** Central's rows alone, in pages of their own: auth did not answer, or an earlier page of this report was served without it. */
+    /** Central's rows alone, in pages of their own: auth did not answer, or an earlier page of this report was served without it (the
+      * cursor says so, and the rest of the walk goes on without auth rather than with a hole in the middle). */
     private def centralOnly(
         userId: UserId,
-        lower: Instant,
-        upper: Instant,
-        until: Instant,
-        key: Option[AuditCursor.Key],
+        window: Window,
+        position: Option[AuditCursor],
         pageSize: Int,
-        retentionFrom: Instant,
         authSummary: Option[Json.Obj],
-        first: Boolean,
     ): IO[AuditReportError | Throwable, UserAuditReport] =
       for
-        rows <- repository.userEvents(userId, lower, until, key.map(k => CentralAuditRepository.Key(k.at, k.id)), pageSize + 1)
+        rows <- repository.userEvents(userId, window.lower, window.upper.plus(Micro, ChronoUnit.MICROS), position.map(keyOf), pageSize + 1)
         page = rows.take(pageSize)
-        actions <- if first then adminActions(userId, lower, upper).asSome else ZIO.none
+        actions <- if position.isEmpty then adminActions(userId, window.lower, window.upper).asSome else ZIO.none
       yield UserAuditReport(
         userId = userId,
-        window = ReportWindow(from = lower, to = upper, retentionFrom = retentionFrom),
+        window = ReportWindow(from = window.lower, to = window.upper, retentionFrom = window.retentionFrom),
         summary = actions.map(done => withActions(authSummary, done._1)),
         events = page.map(ReportedEvent(_, None)),
-        nextCursor = Option.when(rows.size > pageSize)(page.last).map(last =>
-          AuditCursor.encode(AuditCursor(until = until, auth = None, key = Some(AuditCursor.Key(last.at, last.id)), centralOnly = true)),
-        ),
+        nextCursor = Option.when(rows.size > pageSize)(page.last).map(last => AuditCursor.encode(cursorAfter(last, centralOnly = true))),
         partial = List("auth"),
         truncated = actions.exists(_._2),
       )
+
+    private def keyOf(cursor: AuditCursor): CentralAuditRepository.Key = CentralAuditRepository.Key(cursor.at, cursor.id)
+
+    private def cursorAfter(event: AuditEvent, centralOnly: Boolean): AuditCursor =
+      AuditCursor(at = event.at, id = event.id, centralOnly = centralOnly)
+
+    /** Whether the key `(at, id)` is strictly after `(than, thanId)` in the order of both logs: newest first, an id by its bytes. */
+    private def isOlder(at: Instant, id: UUID, than: Instant, thanId: UUID): Boolean =
+      at.isBefore(than) || (at == than && id.toString < thanId.toString)
 
     /** What auth answered, or why it did not (the report goes on without it, and says so); its refusal of the request is the caller's.
       * The reason is a closed set: `unavailable`, `endpoint_missing`, `unreadable`. */

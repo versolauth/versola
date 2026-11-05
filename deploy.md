@@ -714,8 +714,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 
   Where an action is made in auth (sessions, refresh tokens, passkeys, passwords, claims, limits, the antifraud settings), central records
   its outcome and auth records its effect; the two rows carry the same trace id. The per-user report shows both as they are. A report
-  served without auth's part is counted in `audit_report_partial_total{reason}`; a page whose central rows were more than the bounds has
-  `truncated: true`.
+  served without auth's part is counted in `audit_report_partial_total{reason}`. A page holds at most `limit` events of the two logs together
+  (100 by default), and its `nextCursor` is the key of its last event; the changes administrators made, in the summary of the first page, are
+  bounded at 100 and `truncated: true` says when they were more.
 
 - **Antifraud configuration.** Each antifraud key has exactly one home. What is tuned during an attack (the mode,
   thresholds, weights, limits, the SMS budget's limits, the proof-of-work difficulty, shadow rules) is stored settings,

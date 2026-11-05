@@ -3217,8 +3217,9 @@ paths:
         The window defaults to everything retained (7 days by default; the log is kept as long as `audit.retention` says, in
         central and in auth) and is clipped to it. The first page (no `cursor`) carries `summary`: auth's summary of the window
         (events by kind and outcome, by client, the addresses and user agents seen, sessions, factors changed and the
-        high-severity events) with `adminActions` added. A page is auth's page and every row of central's of the time it
-        covers, so the list is in order across pages.
+        high-severity events) with `adminActions` added. A page holds at most `limit` events of the two logs together, newest
+        first, and the list is in order across pages: the `nextCursor` of a page is the key of its last event, and the next page
+        is what is strictly older, from both.
 
         Auth may not answer (it is down, or an older release without the endpoint): the report is then central's rows alone, in
         pages of their own, and `partial` is `["auth"]` on every page of it. A window or cursor auth refuses is `400`.
@@ -3241,11 +3242,11 @@ paths:
           schema: { type: string, format: date-time }
         - name: cursor
           in: query
-          description: The `nextCursor` of the previous page, opaque. Send the same `from` and `to` with it.
+          description: The `nextCursor` of the previous page, opaque (the key of its last event). Send the same `from` and `to` with it.
           schema: { type: string }
         - name: limit
           in: query
-          description: Events of auth's per page, 1 to 500. Defaults to 100. A page also carries central's rows of the span it covers.
+          description: Events per page, of auth's and central's together, 1 to 500. Defaults to 100. A page never holds more.
           schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
       responses:
         '200':
@@ -7430,9 +7431,8 @@ components:
         truncated:
           type: boolean
           description: |
-            True when central's rows of this page, or the administrators' changes in the summary, were more than their bounds
-            (500 rows per page, 100 changes) and the oldest were left out. The cut rows are not on the next page; ask for a
-            narrower window.
+            True when the administrators' changes in the summary (first page only) were more than 100 and the oldest were left
+            out. They are not paged: ask for a narrower window. The events are never cut: follow `nextCursor`.
         partial:
           type: array
           description: "The services whose part is missing: `[\"auth\"]` when auth did not answer. Empty otherwise."

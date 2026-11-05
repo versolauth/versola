@@ -12,7 +12,9 @@ import java.time.Instant
   *
   * @param summary    auth's summary of the window as it answered it, with `adminActions` from central's own rows added; only on
   *                   the first page. Without auth's part (see `partial`) it holds `adminActions` alone.
-  * @param nextCursor opaque; absent on the last page
+  * @param nextCursor opaque, the key of the last event of the page; absent on the last page
+  * @param truncated  the administrators' changes in the summary were more than their bound and the oldest were left out; the events are
+  *                   never cut, `nextCursor` reaches all of them
   * @param partial    the services whose part is missing from the report: `["auth"]` when auth did not answer
   */
 case class UserAuditReport(

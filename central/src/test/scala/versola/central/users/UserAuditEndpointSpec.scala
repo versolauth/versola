@@ -60,7 +60,7 @@ object UserAuditEndpointSpec extends ZIOSpecDefault, ZIOStubs:
     yield response
 
   private val base = URL.empty / "users" / "audit"
-  private val cursor = AuditCursor(until = Instant.parse("2026-11-02T00:00:00Z"), auth = Some("more"), key = None, centralOnly = false)
+  private val cursor = AuditCursor(at = Instant.parse("2026-11-02T00:00:00Z"), id = userId, centralOnly = false)
   private val cursorParam = AuditCursor.encode(cursor)
 
   def spec = suite("UserController: the audit report")(
