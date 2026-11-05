@@ -1,5 +1,6 @@
 package versola.central.users
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
 import versola.util.EnvName
@@ -9,14 +10,13 @@ import zio.http.*
 import zio.json.*
 import zio.telemetry.opentelemetry.tracing.Tracing
 
-object ServiceController extends Controller:
+object ServiceController extends AuditedController:
   type Env = Tracing & UserOutboxProcessor & AuthClient & ResourceService & EnvName & UserService
 
-  def routes: Routes[Env, Throwable] =
-    Routes(flushOutboxEndpoint, syncConfigurationEndpoint, deleteUserEndpoint)
+  def endpoints = List(flushOutboxEndpoint, syncConfigurationEndpoint, deleteUserEndpoint)
 
   val flushOutboxEndpoint =
-    Method.POST / "service" / "users" / "outbox" / "flush" -> handler { (request: Request) =>
+    (Method.POST / "service" / "users" / "outbox" / "flush").audited(Audit.Internal) -> handler { (request: Request) =>
       ZIO.serviceWithZIO[EnvName]: env =>
         if env.isProd then ZIO.succeed(Response.notFound)
         else
@@ -27,7 +27,7 @@ object ServiceController extends Controller:
     }
 
   val syncConfigurationEndpoint =
-    Method.POST / "service" / "configuration" / "sync" -> handler { (request: Request) =>
+    (Method.POST / "service" / "configuration" / "sync").audited(Audit.Internal) -> handler { (request: Request) =>
       ZIO.serviceWithZIO[EnvName]: env =>
         if env.isProd then ZIO.succeed(Response.notFound)
         else
@@ -38,7 +38,7 @@ object ServiceController extends Controller:
     }
 
   val deleteUserEndpoint =
-    Method.DELETE / "service" / "users" -> handler { (request: Request) =>
+    (Method.DELETE / "service" / "users").audited(Audit.Internal) -> handler { (request: Request) =>
       ZIO.serviceWithZIO[EnvName]: env =>
         if env.isProd then ZIO.succeed(Response.notFound)
         else

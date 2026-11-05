@@ -1,6 +1,6 @@
 package versola.central.users
 
-import versola.central.audit.{AuditCursor, AuditReportError, AuditReportService}
+import versola.central.audit.{Audit, AuditCursor, AuditReportError, AuditReportService, AuditedController, audited}
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
@@ -16,10 +16,10 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.time.Instant
 
-object UserController extends Controller:
+object UserController extends AuditedController:
   type Env = Tracing & CentralConfig & EdgeService & UserService & ResourceService & EnvName & AuditReportService
 
-  def routes: Routes[Env, Throwable] = Routes(
+  def endpoints = List(
     findUsersEndpoint,
     getUserAuditEndpoint,
     getUserRolesEndpoint,
@@ -44,7 +44,7 @@ object UserController extends Controller:
   )
 
   val findUsersEndpoint =
-    Method.GET / "users" -> handler { (request: Request) =>
+    (Method.GET / "users").audited(Audit.read(Audit.UserViewed, Audit.query("id"), "user")) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
@@ -68,7 +68,7 @@ object UserController extends Controller:
     * administrators did to them. The user is named `id`, like on the other routes. Asking is itself an audit event
     * (`admin.audit.queried`), which `AuditHook` records. */
   val getUserAuditEndpoint =
-    Method.GET / "users" / "audit" -> handler { (request: Request) =>
+    (Method.GET / "users" / "audit").audited(Audit.read(Audit.AuditQueried, Audit.query("id"), "user")) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         userId <- request.queryZIO[UserId]("id")
@@ -91,7 +91,7 @@ object UserController extends Controller:
     }
 
   val getUserRolesEndpoint =
-    Method.GET / "users" / "roles" -> handler { (request: Request) =>
+    (Method.GET / "users" / "roles").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
@@ -102,7 +102,7 @@ object UserController extends Controller:
     }
 
   val getUserSessionsEndpoint =
-    Method.GET / "users" / "sessions" -> handler { (request: Request) =>
+    (Method.GET / "users" / "sessions").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
@@ -114,7 +114,7 @@ object UserController extends Controller:
   /** Every remembered device, signed in (`session`) or signed out (`session: null`). Separate from
     * [[getUserSessionsEndpoint]], whose items are always live sessions. */
   val getUserDevicesEndpoint =
-    Method.GET / "users" / "user-agents" -> handler { (request: Request) =>
+    (Method.GET / "users" / "user-agents").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
@@ -126,25 +126,26 @@ object UserController extends Controller:
   /** Forgets a device: its user agent, its session and the refresh tokens bound to it. 404 when the
     * user agent is not the user's. */
   val forgetUserAgentEndpoint =
-    Method.DELETE / "users" / "user-agents" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[UserService]
-        userId <- request.queryZIO[UserId]("id")
-        userAgentId <- request.queryZIO[String]("userAgentId")
-        _ <- Observability.setUserId(userId.toString)
-        forgotten <- service.forgetUserAgent(userId, userAgentId)
-        response <-
-          if forgotten then ZIO.succeed(Response.status(Status.NoContent))
-          else Observability.setError("user_agent_not_found").as(Response.status(Status.NotFound))
-      yield response
+    (Method.DELETE / "users" / "user-agents").audited(Audit.user("user-user-agent", Audit.delete, Audit.query("id"))) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          service <- ZIO.service[UserService]
+          userId <- request.queryZIO[UserId]("id")
+          userAgentId <- request.queryZIO[String]("userAgentId")
+          _ <- Observability.setUserId(userId.toString)
+          forgotten <- service.forgetUserAgent(userId, userAgentId)
+          response <-
+            if forgotten then ZIO.succeed(Response.status(Status.NoContent))
+            else Observability.setError("user_agent_not_found").as(Response.status(Status.NotFound))
+        yield response
     }
 
   /** Independent of getUserSessionsEndpoint: a refresh token's expiry is fixed at issuance and
     * independent of a session's, so a token routinely outlives the session it was issued
     * under and would be invisible to an admin working from the session list alone. */
   val getUserRefreshTokensEndpoint =
-    Method.GET / "users" / "refresh-tokens" -> handler { (request: Request) =>
+    (Method.GET / "users" / "refresh-tokens").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
@@ -154,7 +155,7 @@ object UserController extends Controller:
     }
 
   val createUserEndpoint =
-    Method.POST / "users" -> handler { (request: Request) =>
+    (Method.POST / "users").audited(Audit.user("user", Audit.create, Audit.Nowhere)) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
@@ -169,7 +170,7 @@ object UserController extends Controller:
     }
 
   val registeredUserEndpoint =
-    Method.POST / "users" / "registrations" -> handler { (request: Request) =>
+    (Method.POST / "users" / "registrations").audited(Audit.Internal) -> handler { (request: Request) =>
       (for
         _ <- authorizeInternal(request)
         service <- ZIO.service[UserService]
@@ -182,7 +183,7 @@ object UserController extends Controller:
     }
 
   val patchUserEndpoint =
-    Method.PATCH / "users" -> handler { (request: Request) =>
+    (Method.PATCH / "users").audited(Audit.user("user", Audit.update, Audit.body("id"))) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
@@ -199,7 +200,7 @@ object UserController extends Controller:
     * failure there leaves the user in place rather than half deleted. The request log line
     * carries the id (and nothing else about the user), which is the audit trail. */
   val deleteUserEndpoint =
-    Method.DELETE / "users" -> handler { (request: Request) =>
+    (Method.DELETE / "users").audited(Audit.user("user", Audit.delete, Audit.query("id"))) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
@@ -213,7 +214,7 @@ object UserController extends Controller:
     }
 
   val patchUserClaimsEndpoint =
-    Method.PATCH / "users" / "claims" -> handler { (request: Request) =>
+    (Method.PATCH / "users" / "claims").audited(Audit.user("user-claims", Audit.update, Audit.body("id"))) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
@@ -223,7 +224,7 @@ object UserController extends Controller:
     }
 
   val patchRolesEndpoint =
-    Method.PATCH / "users" / "roles" -> handler { (request: Request) =>
+    (Method.PATCH / "users" / "roles").audited(Audit.user("user-roles", Audit.update, Audit.body("userId"))) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
@@ -235,55 +236,58 @@ object UserController extends Controller:
   /** `userId` alone ends every session, as it always did; `id` with `sessionId` ends that
     * one session (a user agent signed out from the console), 404 when it is not the user's. */
   val invalidateSessionEndpoint =
-    Method.DELETE / "users" / "sessions" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[UserService]
-        sessionId <- request.queryZIO[Option[String]]("sessionId")
-        response <- sessionId match
-          case None =>
-            for
-              userId <- request.queryZIO[UserId]("userId")
-              _ <- service.invalidateSession(userId)
-            yield Response.status(Status.NoContent)
-          case Some(sessionId) =>
-            for
-              userId <- request.queryZIO[UserId]("id")
-              _ <- Observability.setUserId(userId.toString)
-              ended <- service.endSession(userId, sessionId)
-              response <-
-                if ended then ZIO.succeed(Response.status(Status.NoContent))
-                else Observability.setError("session_not_found").as(Response.status(Status.NotFound))
-            yield response
-      yield response
+    (Method.DELETE / "users" / "sessions").audited(Audit.user("user-session", Audit.delete, Audit.query("userId", "id"))) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          service <- ZIO.service[UserService]
+          sessionId <- request.queryZIO[Option[String]]("sessionId")
+          response <- sessionId match
+            case None =>
+              for
+                userId <- request.queryZIO[UserId]("userId")
+                _ <- service.invalidateSession(userId)
+              yield Response.status(Status.NoContent)
+            case Some(sessionId) =>
+              for
+                userId <- request.queryZIO[UserId]("id")
+                _ <- Observability.setUserId(userId.toString)
+                ended <- service.endSession(userId, sessionId)
+                response <-
+                  if ended then ZIO.succeed(Response.status(Status.NoContent))
+                  else Observability.setError("session_not_found").as(Response.status(Status.NotFound))
+              yield response
+        yield response
     }
 
   /** Revokes the offline access one client holds for the user: its refresh tokens stop
     * redeeming, the user's sessions stay. Idempotent, like the all-sessions delete. */
   val revokeRefreshTokensEndpoint =
-    Method.DELETE / "users" / "refresh-tokens" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[UserService]
-        userId <- request.queryZIO[UserId]("id")
-        clientId <- request.queryZIO[ClientId]("clientId")
-        _ <- Observability.setUserId(userId.toString)
-        _ <- service.revokeRefreshTokens(userId, clientId)
-      yield Response.status(Status.NoContent)
+    (Method.DELETE / "users" / "refresh-tokens").audited(Audit.user("user-refresh-token", Audit.delete, Audit.query("id"))) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          service <- ZIO.service[UserService]
+          userId <- request.queryZIO[UserId]("id")
+          clientId <- request.queryZIO[ClientId]("clientId")
+          _ <- Observability.setUserId(userId.toString)
+          _ <- service.revokeRefreshTokens(userId, clientId)
+        yield Response.status(Status.NoContent)
     }
 
   val resetUserLimitsEndpoint =
-    Method.POST / "users" / "limits" / "reset" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[UserService]
-        body <- request.bodyAs[ResetUserLimitsRequest]
-        _ <- service.resetLimits(body)
-      yield Response.status(Status.Accepted)
+    (Method.POST / "users" / "limits" / "reset").audited(Audit.user("user-limits", Audit.action("reset"), Audit.body("userId"))) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          service <- ZIO.service[UserService]
+          body <- request.bodyAs[ResetUserLimitsRequest]
+          _ <- service.resetLimits(body)
+        yield Response.status(Status.Accepted)
     }
 
   val listPasskeysEndpoint =
-    Method.GET / "users" / "passkeys" -> handler { (request: Request) =>
+    (Method.GET / "users" / "passkeys").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
@@ -293,7 +297,7 @@ object UserController extends Controller:
     }
 
   val renamePasskeyEndpoint =
-    Method.PATCH / "users" / "passkeys" -> handler { (request: Request) =>
+    (Method.PATCH / "users" / "passkeys").audited(Audit.user("user-passkey", Audit.update, Audit.body("userId"))) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
@@ -303,7 +307,7 @@ object UserController extends Controller:
     }
 
   val deletePasskeyEndpoint =
-    Method.DELETE / "users" / "passkeys" -> handler { (request: Request) =>
+    (Method.DELETE / "users" / "passkeys").audited(Audit.user("user-passkey", Audit.delete, Audit.query("id"))) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
@@ -314,7 +318,12 @@ object UserController extends Controller:
     }
 
   val resetPasswordEndpoint =
-    Method.POST / "users" / "password" / "reset" -> handler { (request: Request) =>
+    (Method.POST / "users" / "password" / "reset").audited(Audit.user(
+      "user-password",
+      Audit.action("reset"),
+      Audit.body("userId"),
+      revealsSecret = true,
+    )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         env <- ZIO.service[EnvName]
@@ -333,14 +342,15 @@ object UserController extends Controller:
     }
 
   val setPasswordEndpoint =
-    Method.POST / "users" / "password" / "set" -> handler { (request: Request) =>
-      ZIO.service[EnvName].flatMap: env =>
-        if env.isProd then ZIO.succeed(Response.status(Status.NotFound))
-        else
-          for
-            _ <- authorizeBasic(request)
-            service <- ZIO.service[UserService]
-            body <- request.bodyAs[SetPasswordRequest]
-            _ <- service.setPassword(body.userId, body.password)
-          yield Response.status(Status.NoContent)
+    (Method.POST / "users" / "password" / "set").audited(Audit.user("user-password", Audit.action("set"), Audit.body("userId"))) -> handler {
+      (request: Request) =>
+        ZIO.service[EnvName].flatMap: env =>
+          if env.isProd then ZIO.succeed(Response.status(Status.NotFound))
+          else
+            for
+              _ <- authorizeBasic(request)
+              service <- ZIO.service[UserService]
+              body <- request.bodyAs[SetPasswordRequest]
+              _ <- service.setPassword(body.userId, body.password)
+            yield Response.status(Status.NoContent)
     }
