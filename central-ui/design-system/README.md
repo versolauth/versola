@@ -259,8 +259,8 @@ fixed at creation sit in a card with the `Fixed` lock, each row with its reason 
 with auto-detect, input, `Search`; an empty state before the first search) and the record page loads
 its user by ID, so `?view=users&id=<id>` opens from a reload and `&edit=identifiers|roles|claims` opens a
 group editor. The page has tabs (see *Record with tabs*): **Profile** (identifiers, claims, security actions, Fixed and the
-delete card last), **Roles** (the roles in the selected tenant) and **Devices** (signed-in devices, apps with access, passkeys);
-Profile opens first, `?tab=roles|devices` opens another, and an editor replaces the whole record as before, returning to the tab it
+delete card last), **Roles** (the roles in the selected tenant) and **Devices** (signed-in devices, apps with access, passkeys) and, with `audit:read`, **Activity**;
+Profile opens first, `?tab=roles|devices|activity` opens another, and an editor replaces the whole record as before, returning to the tab it
 was opened from. There is no Sessions tab: auth stores a session as part of a device, so it would repeat Devices. The record carries the record-view groups plus two live parts that load and fail on
 their own (a part's error is inline with Retry, never a page error): *Signed-in devices*, one row per user
 agent as auth stores it (user agent → at most one SSO session → the clients entered during it; the
@@ -305,6 +305,24 @@ mono (`idAsTitle` on the record header) and a banner carries the secret that cre
 once, asking before the operator leaves without saving it. Create is a single form (the endpoints are added
 on the record, where the permissions that guard them are visible). Reference: `resources-list.ts`,
 `resource-record.ts`, `resource-endpoints-editor.ts`.
+
+**The Activity tab of a user (a long, live view in a tab).** The last tab of the user record, `?view=users&id=<id>&tab=activity`,
+in the bar only for an admin who holds `audit:read` (a link to it without the permission opens Profile; a report that answers 403
+says so inside the tab). Its view state, the interval, filters, cursors and open event, is the route's `params`, which `admin-app` writes
+to the URL as plain query parameters and takes out again when another tab is chosen, so *Copy link to this view* reproduces the view. The
+tab (`user-activity.ts`, `activity-timeline.ts`, `activity-event-panel.ts`, `activity-range.ts`) is rendered only while it is open, so
+the report is not asked for before: period pills (`segmentedStyles`, `aria-pressed`) with the window in words and the copy-link icon
+button; a custom range popover (explicit `1 Nov 2026` and 24-hour `14:30` fields read in the zone shown, inline errors tied to the
+field, focus held inside, Esc back to its button); four summary cards that are buttons and set the timeline's filters; a *Needs
+attention* list; two small tables; and the timeline card: refresh icon button with the time it was read, the Local / UTC switch
+(remembered in `localStorage['versola-time-zone']`; `utils/zone-preference.ts`, times by `utils/date-format.ts`), search, Result and Client
+selects, `versola-filter-bar` category pills, removable filter chips with *Clear all*, a `<table>` grouped by day whose rows are selectable
+(`aria-selected`, a real button in the row, focus returns to it), and a pager of Newer / Older (the API's `nextCursor`, a stack of cursors
+for Newer, no jump to a page number; a page change is announced in an `aria-live` region). A time says its zone in the column header and
+carries both zones in its `title`; a flag emoji is always followed by the country name and code (`utils/country-flag.ts`). The event opens in
+`versola-side-panel` with `overlay` (the panel covers the page instead of making room for it, because the table is wide). A scrollable table
+wrapper that has nothing focusable inside is `tabindex="0"` with a role and a name, so a keyboard user can scroll it.
+Reference: `user-activity.ts`; tests `tests/user-activity.spec.ts`.
 
 **Record that is its own editor (Forms, Themes).** A record whose whole content is an editor keeps the
 record header (ID as the title, kind, status chips) and skips the view-then-edit step: the page is the
@@ -372,7 +390,7 @@ stale copy never puts back what another admin changed.
 | Record card | `<versola-record-card .heading .subheading ?editable ?editDisabled .editLabel .fixedLabel .body @edit>` | A group of a record's settings, with Edit or a Fixed lock | Forms (use `.card` with `formStyles`) |
 | Record row | `<versola-record-row .label .fixed .value>` | A label/value line in a record card; `fixed` is the reason it cannot change; no label for an action row | Tables |
 | Danger card | `<versola-danger-card heading text actionLabel .actionAriaLabel .disabledReason @action>` | The last card of a record page or panel: delete; `disabledReason` disables the button and says why (a default role) | Anything reversible |
-| Side panel | `<versola-side-panel kind heading recordId idLabel .meta mode ?wide parentLabel subtitle @close @back @open-page>` + default slot (the groups or the editor, wrapped in `.record-compact`) + `slot="footer"` (the editor's Cancel / Save) | The record of a small entity next to its table, drawn as the login sheet (rounded free edge, `--shadow-sheet`, no line): `mode` is `view` (non-modal dialog, 560px), `edit` or `create` (modal: backdrop, focus trap, footer); `wide` (720px) when the body holds a picker; full width below 1024px, a full-screen sheet below 720px. Escape fires `close`; the heading takes focus when it opens | Clients, Resources, Users, Forms, Themes (a record page); confirmations (`confirmDestructiveAction`) |
+| Side panel | `<versola-side-panel kind heading recordId idLabel .meta mode ?wide parentLabel subtitle @close @back @open-page>` + default slot (the groups or the editor, wrapped in `.record-compact`) + `slot="footer"` (the editor's Cancel / Save) | The record of a small entity next to its table, drawn as the login sheet (rounded free edge, `--shadow-sheet`, no line): `mode` is `view` (non-modal dialog, 560px), `edit` or `create` (modal: backdrop, focus trap, footer); `wide` (720px) when the body holds a picker; `overlay` (view mode) skips the page inset so the panel covers the page (a wide table); full width below 1024px, a full-screen sheet below 720px. Escape fires `close`; the heading takes focus when it opens | Clients, Resources, Users, Forms, Themes (a record page); confirmations (`confirmDestructiveAction`) |
 | Data table | `<versola-data-table .columns .rows .rowKey .menuItems .menuLabel ?selectable .selectedKey @row-select>` + `focusRow(key)` | A section's list; card mode under 720px (explicit table roles survive the `display` change, each cell shows its column label); row menu with Open / Copy ID / Delete as a WAI-ARIA menu button: opens with the first item focused, arrows wrap, Home/End, Escape returns focus to the trigger, Tab and an outside click close, `aria-expanded` on the trigger (`tests/data-table.spec.ts`). `selectable` makes a click anywhere on a row (outside its menu) fire `row-select`; `selectedKey` draws that row selected (`aria-current`, accent fill, 3px bar); `focusRow` is where a closing panel returns focus | Editing in place; nested detail |
 | Permission picker | `<versola-permission-picker .permissions .resources .value label @change>` | Choosing permissions (D7): one bordered group per category (the text before the first `:`), `Select all` per group, a filter field from four permissions, the endpoints popover per permission; no counts in the group headers or the host's title | A single choice (use a `select`) |
 | Endpoint picker | `<versola-endpoint-picker .resources .value @change>` | A permission's endpoints (D8): add a resource, then its endpoints one by one, each a row with method badge, path and Remove; endpoint ids no resource carries any more are listed as detached | Anything that is not resource → endpoint |
@@ -390,7 +408,7 @@ stale copy never puts back what another admin changed.
 | Empty state | `<versola-empty-state heading text>` + one action in its slot | Nothing to list; nothing matches (no action) | Errors (use the error card) |
 | Error card | `<versola-error-card heading .message @retry>` | A failed load with Retry | Validation |
 | Loading cards | `<versola-loading-cards .count>` | While a list loads, same height as the rows that will replace it | Buttons (disable them instead) |
-| Status icon | `statusIcon(name)` from `status-icon.ts` | Stroke icons for state (lock, check, x, shield, alert, info, dots, copy) | Emoji, text glyphs (`✎`, `▼`) |
+| Status icon | `statusIcon(name)` from `status-icon.ts` | Stroke icons for state and small actions (lock, check, x, shield, alert, info, dots, copy, refresh, link, search) | Emoji, text glyphs (`✎`, `▼`) |
 | Theme switcher | `<versola-theme-switcher>` | The sidebar footer only | Anywhere else |
 | Tenant selector | `<tenant-selector>` | The sidebar only | |
 | Chips | `chipStyles`: `.chips`, `.chip`, `.chip.ok`, `.chip.warn`, `.chip.danger` | A kind or a state as a small outlined pill; the text carries the meaning (`danger`: an inactive role) | Interactive tags |

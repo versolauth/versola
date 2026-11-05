@@ -39,6 +39,7 @@ import './record-card';
 import './record-header';
 import './role-picker';
 import './tabs';
+import './user-activity';
 import { statusIcon } from './status-icon';
 
 export type UserEditGroup = 'identifiers' | 'roles' | 'claims';
@@ -49,6 +50,7 @@ const USER_TABS = [
   { id: 'profile', label: 'Profile' },
   { id: 'roles', label: 'Roles' },
   { id: 'devices', label: 'Devices' },
+  { id: 'activity', label: 'Activity' },
 ] as const;
 type UserTab = (typeof USER_TABS)[number]['id'];
 const EDIT_TITLES: Record<UserEditGroup, string> = { identifiers: 'Edit identifiers', roles: 'Edit roles', claims: 'Edit claims' };
@@ -99,6 +101,10 @@ export class VersolaUserRecord extends LitElement {
   @property({ type: String }) edit: string | null = null;
   /** The selected tab (`?tab=`); an absent or unknown one is Profile. */
   @property({ type: String }) tab: string | null = null;
+  /** The Activity tab's own view state (interval, filters, cursors): query parameters kept in the URL by `admin-app`. */
+  @property({ attribute: false }) tabParams: Record<string, string> = {};
+  /** Whether the admin holds `audit:read`: only then is there an Activity tab. */
+  @property({ type: Boolean }) canReadAudit = false;
 
   @state() private user: User | null = null;
   @state() private userState: 'loading' | 'ready' | 'error' | 'missing' = 'loading';
@@ -1591,18 +1597,26 @@ export class VersolaUserRecord extends LitElement {
       </div>`;
   }
 
+  /** The tabs this admin has: Activity needs `audit:read`. */
+  private get tabs() {
+    return USER_TABS.filter(candidate => candidate.id !== 'activity' || this.canReadAudit);
+  }
+
   private get activeTab(): UserTab {
-    return USER_TABS.find(candidate => candidate.id === this.tab)?.id ?? USER_TABS[0].id;
+    return this.tabs.find(candidate => candidate.id === this.tab)?.id ?? USER_TABS[0].id;
   }
 
   /** Only the selected tab's cards are rendered. Profile holds the account itself and what can be done to it (the
-   *  delete card last); Roles the roles in the selected tenant; Devices the sign-ins and the credentials tied to them. */
+   *  delete card last); Roles the roles in the selected tenant; Devices the sign-ins and the credentials tied to them; Activity the audit log. */
   private renderTab(tab: UserTab, user: User): TemplateResult {
     switch (tab) {
       case 'roles':
         return this.tenantId ? html`${this.renderRolesCard()}` : html`<div class="part-note">Select a tenant to see roles.</div>`;
       case 'devices':
         return html`${this.renderDevicesCard()}${this.renderAppsCard()}${this.renderPasskeysCard()}`;
+      case 'activity':
+        // Rendered only while the tab is open, so the report is not asked for before it is.
+        return html`<versola-user-activity .userId=${this.userId} .canReadAudit=${this.canReadAudit} .params=${this.tabParams}></versola-user-activity>`;
       default:
         return html`
           ${this.card('identifiers', 'Identifiers', 'Any one of them signs the user in.', this.editButton('identifiers'), html`
@@ -1643,7 +1657,7 @@ export class VersolaUserRecord extends LitElement {
       ${this.tenantId ? nothing : html`<div class="banner info" role="status"><div class="banner-text">Select a tenant to see roles and reset limits.</div></div>`}
 
 
-      <versola-tabs label="User sections" .tabs=${USER_TABS} .value=${this.activeTab}
+      <versola-tabs label="User sections" .tabs=${this.tabs} .value=${this.activeTab}
         @tab-change=${(event: CustomEvent<{ id: string }>) => dispatchRecordRoute(this, { tab: event.detail.id === USER_TABS[0].id ? null : event.detail.id })}>
         ${this.renderTab(this.activeTab, user)}
       </versola-tabs>

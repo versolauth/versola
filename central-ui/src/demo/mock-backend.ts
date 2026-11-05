@@ -414,6 +414,8 @@ export type MockConfigState = {
   policyConflict?: 'overload' | 'accessLog' | 'rateLimits';
   authorizationPresets: Record<string, AuthorizationPresetDto[]>; // keyed by clientId
   users: UserDto[];
+  /** What `GET /users/audit?id=` serves, keyed by user id; a user with no entry has an empty report. */
+  userAudit: Record<string, UserAuditMock>;
   forms: FormDto[];
   // The states central lists for the built-in forms; null stands for a central that has no such endpoint.
   formPreviews: FormPreviewDto[] | null;
@@ -450,6 +452,25 @@ export type MockConfigState = {
   myPermissions: MyPermissionsDto;
 };
 
+/** A user's audit report as the mock serves it: the events newest first (windowed, paged by cursor and cut to `limit` like the
+ *  API), the summary of the first page, and switches for the cases a screen has to survive. */
+export type UserAuditMock = {
+  events: Record<string, unknown>[];
+  /** Served with the first page. */
+  summary?: Record<string, unknown>;
+  partial?: string[];
+  truncated?: boolean;
+  /** The start of retention the report says; defaults to seven days back. */
+  retentionFrom?: string;
+  /** Answers every report request with this status and `body`. */
+  status?: number;
+  body?: string;
+  /** Holds every report request this long. */
+  delayMs?: number;
+  /** The server's clock, ISO; defaults to the real one. A spec that pins the page's clock pins this too. */
+  now?: string;
+};
+
 export type MockConfigHarness = {
   state: MockConfigState;
   requests: RequestLog[];
@@ -463,6 +484,7 @@ export const defaultMyPermissions: MyPermissionsDto = {
         'access:read', 'access:manage',
         'security:read', 'security:manage',
         'users:read', 'users:manage',
+        'audit:read',
         'resources:read', 'resources:manage',
         'forms:read', 'forms:manage',
         'locales:read', 'locales:manage',
@@ -504,6 +526,7 @@ const defaultState: MockConfigState = {
   edges: [],
   authorizationPresets: {},
   users: [],
+  userAudit: {},
   forms: [],
   formPreviews: [],
   formLocales: [],
@@ -549,6 +572,7 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     policyConflict: overrides.policyConflict,
     roles: clone({ ...defaultState.roles, ...overrides.roles }),
     users: clone(overrides.users ?? defaultState.users),
+    userAudit: clone(overrides.userAudit ?? defaultState.userAudit),
     forms: clone(overrides.forms ?? defaultState.forms),
     formPreviews: clone(overrides.formPreviews === undefined ? defaultState.formPreviews : overrides.formPreviews),
     formLocales: clone(overrides.formLocales ?? defaultState.formLocales),
@@ -1928,6 +1952,45 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       ...(user.login !== undefined ? { login: user.login } : {}),
       claims: user.claims ?? {},
     });
+
+    if (pathname === '/users/audit' && method === 'GET') {
+      const audit = state.userAudit[url.searchParams.get('id') ?? ''] ?? { events: [] };
+      if (audit.delayMs) await new Promise(resolve => setTimeout(resolve, audit.delayMs));
+      if (audit.status) {
+        await route.fulfill({ status: audit.status, body: audit.body ?? '' });
+        return;
+      }
+      const now = audit.now ? Date.parse(audit.now) : Date.now();
+      const retentionFrom = audit.retentionFrom ?? new Date(now - 7 * 86_400_000).toISOString();
+      const asked = (name: string) => {
+        const value = url.searchParams.get(name);
+        return value ? Date.parse(value) : null;
+      };
+      const from = Math.max(asked('from') ?? Date.parse(retentionFrom), Date.parse(retentionFrom));
+      const to = Math.min(asked('to') ?? now, now);
+      if (to < from) {
+        await route.fulfill({ status: 400, body: 'audit_window_reversed: to is before from' });
+        return;
+      }
+      const cursor = url.searchParams.get('cursor');
+      const [cursorAt, cursorId] = cursor ? atob(cursor).split('|') : [null, null];
+      const limit = Math.min(Number(url.searchParams.get('limit') ?? 100) || 100, 500);
+      const at = (event: Record<string, unknown>) => Date.parse(String(event.at));
+      const inWindow = audit.events.filter(event => at(event) >= from && at(event) <= to
+        && (cursorAt === null || at(event) < Number(cursorAt) || (at(event) === Number(cursorAt) && String(event.id) < String(cursorId))));
+      const page = inWindow.slice(0, limit);
+      const last = page[page.length - 1];
+      await route.fulfill(json({
+        userId: url.searchParams.get('id'),
+        window: { from: new Date(from).toISOString(), to: new Date(to).toISOString(), retentionFrom },
+        ...(cursor || !audit.summary ? {} : { summary: audit.summary }),
+        events: page,
+        ...(inWindow.length > limit && last ? { nextCursor: btoa(`${at(last)}|${String(last.id)}`) } : {}),
+        partial: audit.partial ?? [],
+        ...(audit.truncated ? { truncated: true } : {}),
+      }));
+      return;
+    }
 
     if (pathname === '/users') {
       if (method === 'GET') {

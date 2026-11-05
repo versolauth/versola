@@ -4,6 +4,8 @@ import { consentForm, consentPreviews } from './consent-preview-fixtures';
 import { ftPath, ftState } from './forms-themes-fixtures';
 import { loadAdminApp, sidePanel, sidePanelDialog } from './fixtures';
 import { ordersApi, shopState } from './resources-fixtures';
+import type { UserAuditMock } from './mocks';
+import { ACTIVITY_NOW, activityAudit, emptyActivityAudit, partialActivityAudit } from './user-activity-fixtures';
 import { dana, danaId, quiet, shopManager, shopSupport, shopUser, userClients, userScopes } from './users-fixtures';
 
 /**
@@ -582,5 +584,63 @@ for (const theme of themes) {
     expect(await scan()).toEqual([]);
     await page.locator('details[data-client="shop-mobile"]').getByRole('button', { name: 'Remove limit' }).click();
     expect(await scan()).toEqual([]);
+  });
+}
+
+for (const theme of themes) {
+  test.describe(`a user's Activity page in the ${theme} theme`, () => {
+    test.use({ timezoneId: 'Asia/Almaty', locale: 'en-US' });
+
+    test('has no axe violations in its states, with the event panel and the range popover open', async ({ page }) => {
+      await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+      await page.clock.install({ time: new Date(ACTIVITY_NOW) });
+      const scan = async () => (await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze())
+        .violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`);
+      const path = `/?view=users&tenant=tenant-alpha&id=${danaId}&page=activity`;
+      const withAudit = (audit: UserAuditMock) => ({ ...userState, userAudit: { [danaId]: audit } });
+
+      await loadAdminApp(page, { path, state: withAudit(activityAudit()) });
+      await expect(page.locator('tr.event-row')).toHaveCount(10);
+      expect(await scan()).toEqual([]);
+
+      // A filter with chips, and the UTC zone.
+      await page.getByRole('region', { name: 'Timeline' }).getByLabel('Result', { exact: true }).selectOption('failure');
+      await page.getByRole('region', { name: 'Timeline' }).getByRole('group', { name: 'Time zone' }).getByRole('button', { name: 'UTC' }).click();
+      await expect(page.getByRole('group', { name: 'Active filters' })).toBeVisible();
+      expect(await scan()).toEqual([]);
+      await page.getByRole('group', { name: 'Active filters' }).getByRole('button', { name: 'Clear all' }).click();
+
+      // The event panel over the page.
+      await page.locator('tr.event-row').filter({ hasText: 'Refresh token reused' }).click();
+      await expect(page.getByRole('dialog', { name: 'Refresh token reused' })).toBeVisible();
+      expect(await scan()).toEqual([]);
+      await page.keyboard.press('Escape');
+
+      // The range popover, valid and invalid.
+      await page.getByRole('button', { name: 'Custom range' }).click();
+      await expect(page.getByRole('dialog', { name: 'Custom range' })).toBeVisible();
+      expect(await scan()).toEqual([]);
+      await page.getByLabel('To date').fill('1 Oct 2026');
+      await expect(page.getByText('To must be after From.')).toBeVisible();
+      expect(await scan()).toEqual([]);
+      await page.keyboard.press('Escape');
+
+      // Loading is covered by the skeleton rows being hidden from assistive technology; the other states follow.
+      await loadAdminApp(page, { path, state: withAudit(partialActivityAudit()) });
+      await expect(page.getByText('Sign-in history is unavailable right now')).toBeVisible();
+      expect(await scan()).toEqual([]);
+
+      await loadAdminApp(page, { path: `${path}&range=24h`, state: withAudit(emptyActivityAudit()) });
+      await expect(page.getByRole('heading', { name: 'No activity in this period' })).toBeVisible();
+      expect(await scan()).toEqual([]);
+
+      await loadAdminApp(page, { path, state: withAudit({ events: [], status: 500, body: 'audit store unavailable' }) });
+      await expect(page.getByRole('alert').filter({ hasText: 'Could not load activity' })).toBeVisible();
+      expect(await scan()).toEqual([]);
+
+      await loadAdminApp(page, { path, state: { ...withAudit(activityAudit()), myPermissions: { resources: { central: { permissions: ['users:read'] } }, isProd: false } } });
+      await expect(page.getByRole('heading', { name: 'No access to Activity' })).toBeVisible();
+      expect(await scan()).toEqual([]);
+    });
   });
 }

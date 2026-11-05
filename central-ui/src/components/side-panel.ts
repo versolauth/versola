@@ -41,6 +41,9 @@ export class VersolaSidePanel extends LitElement {
   /** One line under the title in edit and create mode. */
   @property({ type: String }) subtitle = '';
   @property({ type: Boolean }) showOpenPage = true;
+  /** View mode only: the panel covers the page instead of making room for it (the page keeps its width), for a
+   *  screen whose table is too wide to give up 560px (the Activity timeline). Still non-modal. */
+  @property({ type: Boolean, reflect: true }) overlay = false;
   @state() private hasFooter = false;
   @query('.panel-title') private titleEl?: HTMLElement;
 
@@ -270,7 +273,7 @@ export class VersolaSidePanel extends LitElement {
     const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
     const width = (this.wide ? 45 : 35) * rem;
     const fits = window.innerWidth >= 1024 && window.innerWidth - VersolaSidePanel.CHROME_PX - width >= VersolaSidePanel.MIN_CONTENT_PX;
-    if (this.mode === 'view' && fits) document.documentElement.style.setProperty('--panel-inset', this.wide ? '45rem' : '35rem');
+    if (this.mode === 'view' && fits && !this.overlay) document.documentElement.style.setProperty('--panel-inset', this.wide ? '45rem' : '35rem');
     else document.documentElement.style.removeProperty('--panel-inset');
   }
 
