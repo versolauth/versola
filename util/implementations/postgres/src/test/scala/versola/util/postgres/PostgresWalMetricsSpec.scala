@@ -44,10 +44,12 @@ object PostgresWalMetricsSpec extends PostgresSpec:
           _ <- xa.connect:
             sql"CREATE TABLE $table (id INT PRIMARY KEY, payload TEXT)".update.run()
             sql"INSERT INTO $table SELECT g, repeat('x', 200) FROM generate_series(1, 5000) g".update.run()
+            // A backend keeps its statistics to itself and hands them to shared memory at most once a second, and an idle
+            // one does not catch up for a long time (a session left idle after its INSERT showed nothing for 13 s). What
+            // pg_stat_wal says is therefore not what was written until this backend is made to hand it over. The real
+            // sampler runs every minute, and the writers of a service never stay idle, so it never notices.
+            sql"SELECT pg_stat_force_next_flush()::text".query[String].run()
           .ensuring(xa.connect(sql"DROP TABLE IF EXISTS $table".update.run()).ignore)
-          // a backend hands its WAL statistics to shared memory at most about once a second; the real
-          // sampler runs every minute and never notices, a test that samples at once does
-          _ <- Live.live(ZIO.sleep(2.seconds))
           _ <- sampler.sample
           after <- counter("db_wal_bytes_total")
           recordsAfter <- counter("db_wal_records_total")
