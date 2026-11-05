@@ -1,18 +1,18 @@
 package versola.central.configuration.tenants
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.{CreateTenantRequest, GetAllTenantsResponse, TenantResponse, UpdateTenantRequest}
-import versola.util.http.Controller
-import zio.http.{Method, Request, Response, Routes, Status, handler}
+import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.{EncoderOps, JsonCodec}
 import zio.schema.*
 import zio.{Cause, ZIO}
 
-object TenantController extends Controller:
+object TenantController extends AuditedController:
   type Env = Tracing & TenantService & ResourceService
 
-  def routes: Routes[Env, Throwable] = Routes(
+  def endpoints = List(
     getAllTenantsEndpoint,
     createTenantEndpoint,
     updateTenantEndpoint,
@@ -20,7 +20,7 @@ object TenantController extends Controller:
   )
 
   val getAllTenantsEndpoint =
-    Method.GET / "configuration" / "tenants" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "tenants").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[TenantService]
@@ -37,31 +37,37 @@ object TenantController extends Controller:
     }
 
   val createTenantEndpoint =
-    Method.POST / "configuration" / "tenants" -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "tenants").audited(Audit.change("tenant", Audit.create)) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[TenantService]
         body <- request.bodyAs[CreateTenantRequest]
+        _ <- Audit.target(body.id)
         _ <- service.createTenant(body)
       yield Response.status(Status.Created)
     }
 
   val updateTenantEndpoint =
-    Method.PUT / "configuration" / "tenants" -> handler { (request: Request) =>
+    (Method.PUT / "configuration" / "tenants").audited(Audit.change("tenant", Audit.update)) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[TenantService]
         body <- request.bodyAs[UpdateTenantRequest]
+        _ <- Audit.target(body.id)
+        _ <- Audit.changed(body, "id")
         _ <- service.updateTenant(body)
       yield Response.status(Status.NoContent)
     }
 
   val deleteTenantEndpoint =
-    Method.DELETE / "configuration" / "tenants" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[TenantService]
-        tenantId <- request.url.queryZIO[TenantId]("tenantId")
-        _ <- service.deleteTenant(tenantId)
-      yield Response.status(Status.NoContent)
+    (Method.DELETE / "configuration" / "tenants").audited(Audit.change("tenant", Audit.delete)) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          service <- ZIO.service[TenantService]
+          tenantId <- request.url.queryZIO[TenantId]("tenantId")
+          _ <- Audit.target(tenantId)
+          _ <- Audit.tenant(tenantId)
+          _ <- service.deleteTenant(tenantId)
+        yield Response.status(Status.NoContent)
     }

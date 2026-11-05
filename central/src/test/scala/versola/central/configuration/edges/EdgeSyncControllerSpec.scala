@@ -47,6 +47,7 @@ import versola.central.configuration.{
   SignEdgeCertificateResponse,
 }
 import versola.central.{CentralConfig, TestCentralConfig}
+import versola.util.audit.AuditEvents
 import versola.util.http.DeclaredRateLimitBy
 import versola.util.http.GuardMode
 import versola.util.http.RateLimitScope
@@ -332,7 +333,8 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
           identity = stub[EdgeIdentityService],
           security = security,
         )
-        certificates = ClientCertificateService.Impl(ClientCertificateIssuer.notConfigured, services.clients, NoIssuances, NoEnrollments, config)
+        certificates =
+          ClientCertificateService.Impl(ClientCertificateIssuer.notConfigured, services.clients, NoIssuances, NoEnrollments, config, AuditEvents.noop)
         tracing <- tracingLayer.build
         routes =
           Observability.handleErrors(

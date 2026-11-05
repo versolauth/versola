@@ -1,22 +1,22 @@
 package versola.central.antifraud
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
-import versola.util.http.Controller
 import zio.*
-import zio.http.{Method, Request, Response, Routes, handler}
+import zio.http.{Method, Request, Response, handler}
 import zio.json.EncoderOps
 
 /** What an operator reads of the antifraud (`antifraud:read`, nothing is told of who read it): the names a rule can be
   * fired under, and what an auth instance says of whether the antifraud is on and has what it needs (see
   * [[AntifraudStatusService]]). */
-object AntifraudStatusController extends Controller:
+object AntifraudStatusController extends AuditedController:
   type Env = Tracing & ResourceService & AntifraudStatusService
 
-  def routes: Routes[Env, Throwable] = Routes(rulesEndpoint, statusEndpoint)
+  def endpoints = List(rulesEndpoint, statusEndpoint)
 
   val rulesEndpoint =
-    Method.GET / "antifraud" / "rules" -> handler { (request: Request) =>
+    (Method.GET / "antifraud" / "rules").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[AntifraudStatusService]
@@ -25,7 +25,7 @@ object AntifraudStatusController extends Controller:
     }
 
   val statusEndpoint =
-    Method.GET / "antifraud" / "status" -> handler { (request: Request) =>
+    (Method.GET / "antifraud" / "status").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[AntifraudStatusService]

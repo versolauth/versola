@@ -1,6 +1,7 @@
 package versola
 
 import versola.central.CentralConfig
+import versola.central.audit.{AuditHook, CentralAudit}
 import versola.central.configuration.challenges.{
   ChallengeSettingsRecord,
   ChallengeSettingsRepository,
@@ -63,6 +64,7 @@ import versola.central.configuration.{
 }
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
 import versola.util.SequentialLayers.*
+import versola.util.audit.{ActorType, AuditDetails, AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.theme.{ThemePresets, ThemeTokens}
 import versola.util.{EnvName, JsonWebKeySet, Patch, Phone, PrivateClientCertificate, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.json.DecoderOps
@@ -503,6 +505,18 @@ object BootstrapService:
       ),
     ),
     (
+      Permission("audit:read"),
+      localized("View the audit report of a user", "Просмотр отчёта аудита по пользователю"),
+      Set(endpointId("GET", "/users/audit")),
+    ),
+    // Reserved (#469): nothing is managed through the console yet (the log is configured in a file). Not granted by
+    // `users:manage`, nor by anything else but the administrator role.
+    (
+      Permission("audit:manage"),
+      localized("Manage the audit log", "Управление журналом аудита"),
+      Set.empty[ResourceEndpointId],
+    ),
+    (
       Permission("resources:read"),
       localized("View protected resources", "Просмотр защищенных ресурсов"),
       Set(
@@ -634,6 +648,7 @@ object BootstrapService:
           "resources:read",
           "antifraud:read",
           "antifraud:manage",
+          "audit:read",
         ).map(Permission(_)) :+ accountPermission,
       ),
       (
@@ -644,7 +659,8 @@ object BootstrapService:
       (
         RoleId("frontend-developer"),
         localized("Frontend Developer", "Фронтенд-разработчик"),
-        readOnly ++ List(Permission("forms:manage"), accountPermission),
+        // the audit report is PII of every user and what was done to them: not for a role that builds forms
+        readOnly.filter(_ != "audit:read") ++ List(Permission("forms:manage"), accountPermission),
       ),
       (
         RoleId("auditor"),
@@ -654,7 +670,7 @@ object BootstrapService:
       (
         RoleId("viewer"),
         localized("Read-only Viewer (No PII)", "Наблюдатель (без ПДн)"),
-        readOnly.filter(p => p != "users:read" && p != "antifraud:read") :+ accountPermission,
+        readOnly.filter(p => p != "users:read" && p != "antifraud:read" && p != "audit:read") :+ accountPermission,
       ),
     )
 
@@ -1042,6 +1058,7 @@ object BootstrapService:
     "POST" -> "/antifraud/counters/reset",
     "GET" -> "/antifraud/rules",
     "GET" -> "/antifraud/status",
+    "GET" -> "/users/audit",
   )
 
   /** The routes that act in the scope of a tenant, the tenant of the token (the lists' `/antifraud/lists/...`; the
@@ -1055,32 +1072,60 @@ object BootstrapService:
       "GET" -> "/antifraud/lists/audit",
     )
 
-  /** What central's antifraud endpoints are told of the admin, from the token edge has verified (not from the caller: edge
-    * overwrites a parameter or field of the same name):
-    *  - `userId` on every call that is not a `GET`: auth records it as who made the change. A read is told nobody, since
-    *    nothing records who read.
-    *  - `callerTenantId`, the tenant of the token, on the tenant routes, reads included: it is the scope central asks auth to
-    *    enforce. The operator routes carry none; their scope is the route's.
-    * As for the account endpoints ([[accountCallerInjects]]): a query parameter for a `GET`, a body field for the rest. */
+  /** Who is calling, for the audit log (#469): the `sub`, the tenant, the client and the session of the token edge has verified, as
+    * query parameters (`AuditHook`). A query parameter and not a body field: a `userId` in a body is the *target* user on the user
+    * routes (edge overwrites a field of the same name, so the administrator would reset their own password), and a call without a
+    * body or a JSON one (a `DELETE`, a rotation) has nothing to carry a field; a query parameter works on every method. Edge removes
+    * a parameter of the same name that the caller sent. The session is empty, and so not sent, for a token that has none. Every
+    * administrator's route has them, reads included: looking at a user and asking for the audit report are events. */
+  private[versola] val actorInjects: Vector[InjectRule] = Vector(
+    InjectRule(InjectTarget.query, AuditHook.ActorIdParam, "token.sub"),
+    InjectRule(InjectTarget.query, AuditHook.ActorTenantParam, "token.tenant_id"),
+    InjectRule(InjectTarget.query, AuditHook.ActorClientParam, "token.client_id"),
+    InjectRule(InjectTarget.query, AuditHook.ActorSessionParam, "has(token.sid) ? token.sid : ''"),
+  )
+
+  /** The header rules the first form of the actor injection registered; an endpoint that still has them gets them removed. */
+  private val retiredActorHeaders: Set[String] = Set("X-Versola-Actor", "X-Versola-Actor-Tenant", "X-Versola-Actor-Client")
+
+  /** What central's endpoints are told of the caller, from the token edge has verified (not from the caller: edge overwrites
+    * what the caller sent under the same name):
+    *  - the actor parameters ([[actorInjects]]) on every endpoint but the `/service` ones, which are the operator's tooling;
+    *  - the antifraud endpoints besides, which auth needs to know the caller of, as it always has:
+    *    - `userId` on every call that is not a `GET`: auth records it as who made the change. A read is told nobody, since
+    *      nothing there records who read.
+    *    - `callerTenantId`, the tenant of the token, on the tenant routes, reads included: it is the scope central asks auth to
+    *      enforce. The operator routes carry none; their scope is the route's.
+    *    As for the account endpoints ([[accountCallerInjects]]): a query parameter for a `GET`, a body field for the rest. */
   private[versola] def centralInjects(method: String, path: String): Vector[InjectRule] =
-    if !path.startsWith("/antifraud/") then Vector.empty
+    if path.startsWith("/service/") then Vector.empty
+    else if !path.startsWith("/antifraud/") then actorInjects
     else
       val target = if method == "GET" then InjectTarget.query else InjectTarget.body
       val user = Option.when(method != "GET")(InjectRule(target, "userId", "token.sub"))
       val tenant = Option.when(antifraudTenantRoutes.contains(method -> path))(InjectRule(target, "callerTenantId", "token.tenant_id"))
-      (user ++ tenant).toVector
+      (user ++ tenant).toVector ++ actorInjects
 
-  /** The antifraud endpoints a deployment registered earlier with other inject rules than the ones the code needs now, with
-    * the rules replaced and nothing else touched. Central's antifraud controllers read what edge injects (`userId`,
-    * `callerTenantId`), so an endpoint registered before a rule was added would answer `400` for ever: every other
-    * registration is an operator's to change and is left alone, as is everything but the inject rules of these. */
-  private[versola] def antifraudInjectDrift(
+  /** The endpoints a deployment registered earlier with other inject rules than the ones the code needs now, with the rules
+    * brought up to date and nothing else touched. Central's controllers read what edge injects (the antifraud ones `userId` and
+    * `callerTenantId`, which they answer `400` without for ever, the audit hook the actor parameters), so an endpoint registered before
+    * a rule was added needs it added at bootstrap. The antifraud endpoints' rules are replaced by the current ones, as they always
+    * were; any other endpoint keeps the rules an operator added and has the code's own put in place of the ones of the same
+    * target and name; the retired actor header rules are removed. Everything but the inject rules is an operator's to change and is left alone. */
+  private[versola] def injectDrift(
       existing: Vector[ResourceEndpointRecord],
       wanted: List[ResourceEndpointRecord],
   ): Vector[ResourceEndpointRecord] =
-    val byId = wanted.filter(_.path.startsWith("/antifraud/")).map(e => e.id -> e).toMap
+    val byId = wanted.map(e => e.id -> e).toMap
     existing.flatMap: endpoint =>
-      byId.get(endpoint.id).filter(_.inject.toSet != endpoint.inject.toSet).map(w => endpoint.copy(inject = w.inject))
+      byId.get(endpoint.id).flatMap: current =>
+        val inject =
+          if current.path.startsWith("/antifraud/") then current.inject
+          else
+            endpoint.inject
+              .filterNot(own => own.target == InjectTarget.header && retiredActorHeaders.contains(own.name))
+              .filterNot(own => current.inject.exists(code => code.target == own.target && code.name == own.name)) ++ current.inject
+        Option.when(inject.toSet != endpoint.inject.toSet)(endpoint.copy(inject = inject))
 
   private[versola] def centralEndpoints(envName: EnvName): List[(String, String)] =
     if envName.isProd then centralEndpointCatalog else centralEndpointCatalog ++ serviceEndpointCatalog
@@ -1134,18 +1179,18 @@ object BootstrapService:
         finally source.close()
 
   val live: ZLayer[
-    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientRepository & OAuthClientService & ClientCertificateService & ChallengeSettingsService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig & SecurityService & SecureRandom & EnvName,
+    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientRepository & OAuthClientService & ClientCertificateService & ChallengeSettingsService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig & SecurityService & SecureRandom & EnvName & AuditEvents,
     Throwable,
     BootstrapService,
   ] =
-    ZLayer.fromFunction(ClientServices(_, _)) >+>
+    ZLayer.fromFunction(Collaborators(_, _, _)) >+>
       ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >++>
       ZLayer(ZIO.serviceWithZIO[BootstrapService](_.bootstrap)) >++>
       ZLayer(refreshCachesAfterBootstrap)
 
-  /** The two services that register a client, as one dependency: `ZLayer.fromFunction` takes at
-    * most 22, which [[Impl]] would otherwise exceed. */
-  private final case class ClientServices(clients: OAuthClientService, certificates: ClientCertificateService)
+  /** The two services that register a client, and the audit log the first run is recorded in, as one dependency:
+    * `ZLayer.fromFunction` takes at most 22, which [[Impl]] would otherwise exceed. */
+  private final case class Collaborators(clients: OAuthClientService, certificates: ClientCertificateService, audit: AuditEvents)
 
   /** Reloads the two caches built before bootstrap -- it registers central-admin through
     * OAuthClientService, which reads challenge settings -- so they loaded before the seed, and
@@ -1168,7 +1213,7 @@ object BootstrapService:
       localeRepo: LocaleRepository,
       formRepo: FormRepository,
       clientRepo: OAuthClientRepository,
-      clientServices: ClientServices,
+      clientServices: Collaborators,
       presetRepo: AuthorizationPresetRepository,
       edgeRepo: EdgeRepository,
       resourceRepo: ResourceRepository,
@@ -1184,13 +1229,27 @@ object BootstrapService:
     private def clientService: OAuthClientService = clientServices.clients
     private def certificateService: ClientCertificateService = clientServices.certificates
 
+    /** The first run of a deployment, in the audit log (`system.bootstrap`): what bootstrap created that nobody asked for through
+      * the API. Recorded when bootstrap created something, so a restart that changes nothing adds nothing. */
+    private def recordCreated(step: String, id: String): UIO[Unit] =
+      clientServices.audit.recordBestEffort(
+        AuditDraft(
+          kind = CentralAudit.SystemBootstrap,
+          outcome = AuditOutcome.success,
+          actor = Some((ActorType.system, None)),
+          target = Some((step, id)),
+          details = new AuditDetails:
+            override def toJson: Json.Obj = Json.Obj("step" -> Json.Str(step)),
+        ),
+      )
+
     def bootstrap: Task[Unit] =
       ZIO.foreach(config.bootstrap) { config =>
         val tenantId = CentralConfig.defaultTenantId
         for
           tenants <- tenantRepo.getAll
           _ <- ZIO.unless(tenants.exists(_.id == tenantId)):
-            tenantRepo.createTenant(tenantId, "Default", None)
+            tenantRepo.createTenant(tenantId, "Default", None) *> recordCreated("tenant", tenantId)
           _ <- seedPermissions(tenantId)
           _ <- seedScopes(tenantId)
           _ <- seedRoles(tenantId)
@@ -1338,7 +1397,9 @@ object BootstrapService:
                 case _: UserConflict => ZIO.logInfo(s"Admin user '${config.login}' already exists in user index (conflict), skipping")
                 case t: Throwable => ZIO.fail(t)
               },
-              _ => ZIO.logInfo(s"Seeded admin user '${config.login}' with id $adminUserId in user index"),
+              _ =>
+                ZIO.logInfo(s"Seeded admin user '${config.login}' with id $adminUserId in user index") *>
+                  recordCreated("admin-user", adminUserId.toString),
             )
 
     /** RFC 8705 §6.5: `central-admin`'s certificate reaches auth through the default tenant's
@@ -1718,12 +1779,12 @@ object BootstrapService:
                 remove = existing.audience.filterNot(id => id == CentralConfig.centralClientId || utilityClientId.contains(id)).toSet,
               )
               val audienceUnchanged = audience.patch(existing.audience) == existing.audience
-              val drifted = antifraudInjectDrift(existing.endpoints, allEndpoints)
+              val drifted = injectDrift(existing.endpoints, allEndpoints)
               if missing.isEmpty && stale.isEmpty && drifted.isEmpty && audienceUnchanged then
                 ZIO.logInfo(s"Central resource '$centralResourceId' endpoints are up to date, skipping")
               else
                 ZIO.logInfo(
-                  s"Adding ${missing.size} missing and removing ${stale.size} stale endpoint(s), and updating the inject rules of ${drifted.size} antifraud endpoint(s), on central resource '$centralResourceId'",
+                  s"Adding ${missing.size} missing and removing ${stale.size} stale endpoint(s), and updating the inject rules of ${drifted.size} endpoint(s), on central resource '$centralResourceId'",
                 ) *>
                   resourceRepo.updateResource(centralResourceId, None, audience, missing.toVector ++ drifted, stale)
         yield ()

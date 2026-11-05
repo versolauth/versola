@@ -1,12 +1,13 @@
 package versola.central.antifraud
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
-import versola.util.http.{BadRequest, Controller}
+import versola.util.http.BadRequest
 import versola.util.{PageLimit, PageOffset}
 import zio.*
-import zio.http.{Method, Request, Response, Routes, Status, handler}
+import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
 
 import java.util.UUID
@@ -28,11 +29,11 @@ import java.util.UUID
   * what auth enforces; nothing in a body or a query can widen it. Adding a scope or moving a route between them is a change
   * to this object and to nothing else of central.
   */
-object AntifraudListController extends Controller:
+object AntifraudListController extends AuditedController:
   type Env = Tracing & ResourceService & AntifraudListService
 
-  def routes: Routes[Env, Throwable] =
-    Routes(
+  def endpoints =
+    List(
       createEndpoint,
       listEndpoint,
       deleteEndpoint,
@@ -51,21 +52,38 @@ object AntifraudListController extends Controller:
   private val tenantCaller: CallerOf = AntifraudCaller.tenant
   private val operatorCaller: CallerOf = _ => ZIO.succeed(AntifraudCaller.Operator)
 
-  val createEndpoint = Method.POST / "antifraud" / "lists" -> handler((request: Request) => create(request, tenantCaller))
-  val previewEndpoint = Method.POST / "antifraud" / "lists" / "preview" -> handler((request: Request) => preview(request, tenantCaller))
-  val listEndpoint = Method.GET / "antifraud" / "lists" -> handler((request: Request) => list(request, tenantCaller))
+  val createEndpoint = (Method.POST / "antifraud" / "lists").audited(Audit.change("antifraud-list", Audit.create)) -> handler((request: Request) =>
+    create(request, tenantCaller),
+  )
+  val previewEndpoint =
+    (Method.POST / "antifraud" / "lists" / "preview").audited(Audit.Unrecorded) -> handler((request: Request) => preview(request, tenantCaller))
+  val listEndpoint = (Method.GET / "antifraud" / "lists").audited(Audit.Unrecorded) -> handler((request: Request) => list(request, tenantCaller))
 
   /** The entry is named in the body, where edge puts the caller of a request that is not a `GET`. */
-  val deleteEndpoint = Method.DELETE / "antifraud" / "lists" -> handler((request: Request) => delete(request, tenantCaller))
-  val auditEndpoint = Method.GET / "antifraud" / "lists" / "audit" -> handler((request: Request) => audit(request, tenantCaller))
+  val deleteEndpoint = (Method.DELETE / "antifraud" / "lists").audited(Audit.change("antifraud-list", Audit.delete)) -> handler((request: Request) =>
+    delete(request, tenantCaller),
+  )
+  val auditEndpoint =
+    (Method.GET / "antifraud" / "lists" / "audit").audited(Audit.Unrecorded) -> handler((request: Request) => audit(request, tenantCaller))
 
-  val createGlobalEndpoint = Method.POST / "antifraud" / "global" / "lists" -> handler((request: Request) => create(request, operatorCaller))
+  val createGlobalEndpoint =
+    (Method.POST / "antifraud" / "global" / "lists").audited(Audit.change("antifraud-list", Audit.create)) -> handler((request: Request) =>
+      create(request, operatorCaller),
+    )
   val previewGlobalEndpoint =
-    Method.POST / "antifraud" / "global" / "lists" / "preview" -> handler((request: Request) => preview(request, operatorCaller))
-  val listGlobalEndpoint = Method.GET / "antifraud" / "global" / "lists" -> handler((request: Request) => list(request, operatorCaller))
-  val deleteGlobalEndpoint = Method.DELETE / "antifraud" / "global" / "lists" -> handler((request: Request) => delete(request, operatorCaller))
+    (Method.POST / "antifraud" / "global" / "lists" / "preview").audited(Audit.Unrecorded) -> handler((request: Request) =>
+      preview(request, operatorCaller),
+    )
+  val listGlobalEndpoint =
+    (Method.GET / "antifraud" / "global" / "lists").audited(Audit.Unrecorded) -> handler((request: Request) => list(request, operatorCaller))
+  val deleteGlobalEndpoint =
+    (Method.DELETE / "antifraud" / "global" / "lists").audited(Audit.change("antifraud-list", Audit.delete)) -> handler((request: Request) =>
+      delete(request, operatorCaller),
+    )
   val auditGlobalEndpoint =
-    Method.GET / "antifraud" / "global" / "lists" / "audit" -> handler((request: Request) => audit(request, operatorCaller))
+    (Method.GET / "antifraud" / "global" / "lists" / "audit").audited(Audit.Unrecorded) -> handler((request: Request) =>
+      audit(request, operatorCaller),
+    )
 
   private def create(request: Request, callerOf: CallerOf): ZIO[Env, Throwable, Response] =
     for
@@ -73,7 +91,11 @@ object AntifraudListController extends Controller:
       body <- request.bodyAs[NewListEntryRequest]
       caller <- callerOf(body.callerTenantId)
       service <- ZIO.service[AntifraudListService]
-      response <- guarded(service.create(body, caller).map(entry => Response.json(entry.toJson).status(Status.Created)))
+      response <- guarded(
+        service.create(body, caller).tap(entry => Audit.targetByText(entry.id.toString)).map(entry =>
+          Response.json(entry.toJson).status(Status.Created),
+        ),
+      )
     yield response
 
   private def preview(request: Request, callerOf: CallerOf): ZIO[Env, Throwable, Response] =
@@ -105,6 +127,7 @@ object AntifraudListController extends Controller:
     for
       _ <- authorizeBasic(request)
       body <- request.bodyAs[DeleteListEntryRequest]
+      _ <- Audit.targetByText(body.id.toString)
       caller <- callerOf(body.callerTenantId)
       service <- ZIO.service[AntifraudListService]
       response <- guarded(service.delete(body, caller).as(Response.status(Status.NoContent)))

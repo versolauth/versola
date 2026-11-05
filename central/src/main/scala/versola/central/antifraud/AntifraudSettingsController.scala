@@ -1,10 +1,11 @@
 package versola.central.antifraud
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
-import versola.util.http.{BadRequest, Controller, EntityVersion, Observability}
+import versola.util.http.{BadRequest, EntityVersion, Observability}
 import zio.*
-import zio.http.{Header, MediaType, Method, Request, Response, Routes, Status, handler}
+import zio.http.{Header, MediaType, Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
 import zio.json.ast.Json
 
@@ -25,16 +26,16 @@ import zio.json.ast.Json
   * removes a map entry. Auth applies it to the stored settings and validates the result as a whole. Edge adds `userId` to the
   * body like any other change, so it is taken out of the patch here (as is `version`, which names the version the patch is made on).
   */
-object AntifraudSettingsController extends Controller:
+object AntifraudSettingsController extends AuditedController:
   type Env = Tracing & ResourceService & AntifraudSettingsService
 
-  def routes: Routes[Env, Throwable] = Routes(getEndpoint, putEndpoint, patchEndpoint, deleteEndpoint)
+  def endpoints = List(getEndpoint, putEndpoint, patchEndpoint, deleteEndpoint)
 
   private def versioned(settings: VersionedAntifraudSettings): Response =
     Response.json(settings.toJson).addHeader(Header.Custom("ETag", EntityVersion.etag(settings.version)))
 
   val getEndpoint =
-    Method.GET / "antifraud" / "settings" -> handler { (request: Request) =>
+    (Method.GET / "antifraud" / "settings").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[AntifraudSettingsService]
@@ -43,28 +44,31 @@ object AntifraudSettingsController extends Controller:
     }
 
   val putEndpoint =
-    Method.PUT / "antifraud" / "settings" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        body <- request.bodyAs[PutAntifraudSettingsRequest]
-        expected <- expectedVersion(request, body.version)
-        service <- ZIO.service[AntifraudSettingsService]
-        response <- guarded(service.put(body.copy(version = expected)).map(versioned))
-      yield response
+    (Method.PUT / "antifraud" / "settings").audited(Audit.change("antifraud-settings", Audit.update, noTarget = true)) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          body <- request.bodyAs[PutAntifraudSettingsRequest]
+          _ <- Audit.changed(body.settings)
+          expected <- expectedVersion(request, body.version)
+          service <- ZIO.service[AntifraudSettingsService]
+          response <- guarded(service.put(body.copy(version = expected)).map(versioned))
+        yield response
     }
 
   /** Changes the settings by the merge patch in the body; answers all the settings, with their new version. */
   val patchEndpoint =
-    Method.PATCH / "antifraud" / "settings" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        response <-
-          if mergePatchType(request) then patch(request)
-          else
-            Observability.setError("unsupported_media_type", Some("a settings patch is application/merge-patch+json or application/json")).as(
-              Response.status(Status.UnsupportedMediaType),
-            )
-      yield response
+    (Method.PATCH / "antifraud" / "settings").audited(Audit.change("antifraud-settings", Audit.update, noTarget = true)) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          response <-
+            if mergePatchType(request) then patch(request)
+            else
+              Observability.setError("unsupported_media_type", Some("a settings patch is application/merge-patch+json or application/json")).as(
+                Response.status(Status.UnsupportedMediaType),
+              )
+        yield response
     }
 
   /** The body is read once as an object: `userId` and `version` are the request's own and are split off, and the rest is the
@@ -77,6 +81,7 @@ object AntifraudSettingsController extends Controller:
         BadRequest(if own.exists(_._1 == "userId") then message else s"userId is missing: edge adds it from the verified token ($message)"),
       )
       patch <- ZIO.fromEither(Json.Obj(rest).as[AntifraudSettingsPatch]).mapError(BadRequest(_))
+      _ <- Audit.changed(patch)
       expected <- expectedVersion(request, envelope.version)
       service <- ZIO.service[AntifraudSettingsService]
       response <- guarded(service.patch(PatchAntifraudSettingsRequest(patch = patch, userId = envelope.userId, version = expected)).map(versioned))
@@ -93,14 +98,15 @@ object AntifraudSettingsController extends Controller:
 
   /** Puts everything off. The caller is in the body, where edge puts it for a request that is not a `GET`. */
   val deleteEndpoint =
-    Method.DELETE / "antifraud" / "settings" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        body <- request.bodyAs[DeleteAntifraudSettingsRequest]
-        expected <- expectedVersion(request, None)
-        service <- ZIO.service[AntifraudSettingsService]
-        response <- guarded(service.reset(body, expected).as(Response.status(Status.NoContent)))
-      yield response
+    (Method.DELETE / "antifraud" / "settings").audited(Audit.change("antifraud-settings", Audit.delete, noTarget = true)) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          body <- request.bodyAs[DeleteAntifraudSettingsRequest]
+          expected <- expectedVersion(request, None)
+          service <- ZIO.service[AntifraudSettingsService]
+          response <- guarded(service.reset(body, expected).as(Response.status(Status.NoContent)))
+        yield response
     }
 
   /** The version the request names, in `If-Match` or in the body; a header that is not a version is a bad request. */

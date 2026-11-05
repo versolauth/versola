@@ -2,6 +2,7 @@ package versola.central.users
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.audit.AuditReportService
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
@@ -90,7 +91,8 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[CentralConfig](TestCentralConfig.config) ++
                 tracing ++ ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[EdgeService](edgeService) ++
-                ZEnvironment[EnvName](env),
+                ZEnvironment[EnvName](env) ++
+                ZEnvironment[AuditReportService](stub[AuditReportService]),
             ),
           ),
         )
