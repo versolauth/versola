@@ -118,7 +118,7 @@ case class RunPhase(
     scale: Option[Double],
     scaleFrom: Option[Double],
     scaleTo: Option[Double],
-    measured: Boolean,
+    measured: Boolean = true,
 ) derives JsonCodec
 
 /** The distinct `expires_in` values one client was issued over the run. */
@@ -244,17 +244,17 @@ case class CampaignReport(
     /** [[databases]] over the measured window only, the span [[latency]] is computed over. `None`
       * until the window has closed (or if its snapshots could not be taken).
       */
-    measuredDatabases: Option[List[SutStatsDelta]],
+    measuredDatabases: Option[List[SutStatsDelta]] = None,
     /** What the monitoring stack saw of the SUT's pods over the same window the quantiles cover
       * (CPU, memory, network, request rates, pool connections). `None` without an `environment`
       * block, or when the monitoring stack could not be reached at all.
       */
-    environment: Option[EnvironmentStats],
+    environment: Option[EnvironmentStats] = None,
     /** Observed `token-refresh` : `token-code` over the merged (measured) window. Outside `checks`:
       * the target is a property of the load profile, not an acceptance threshold. Absent in a report
       * written before it existed.
       */
-    refreshToCodeRatio: Option[RefreshToCodeRatio],
+    refreshToCodeRatio: Option[RefreshToCodeRatio] = None,
 ) derives JsonCodec
 
 object CampaignReport:
@@ -302,7 +302,6 @@ object CampaignReport:
         poolers = poolers,
         poolerQueue = poolerQueue,
         measuredDatabases = measuredDatabases,
-        environment = None,
         refreshToCodeRatio = Some(RefreshToCodeRatio.fromCounts(merged.view.mapValues(_.getTotalCount))),
       )
 
