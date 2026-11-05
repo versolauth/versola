@@ -8,7 +8,7 @@ import versola.central.configuration.edges.{EdgeId, EdgeService}
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.util.http.{Controller, Unauthorized}
+import versola.util.http.Unauthorized
 import versola.util.{Base64Url, Patch, Secret, SecurityService}
 import zio.*
 import zio.http.*

@@ -5,8 +5,7 @@ import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{CreatePermissionRequest, GetAllPermissionsResponse, PermissionResponse, UpdatePermissionRequest}
-import versola.util.http.Controller
-import zio.http.{Method, Request, Response, Routes, Status, handler}
+import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.{EncoderOps, JsonCodec}
 import zio.schema.*
 import zio.telemetry.opentelemetry.tracing.Tracing

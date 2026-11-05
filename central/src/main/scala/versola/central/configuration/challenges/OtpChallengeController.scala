@@ -7,9 +7,9 @@ import versola.central.configuration.roles.RoleRepository
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Patch.applyTo
-import versola.util.http.{BadRequest, Controller}
+import versola.util.http.BadRequest
 import zio.ZIO
-import zio.http.{Method, Request, Response, Routes, Status, handler}
+import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
 
 object OtpChallengeController extends AuditedController:

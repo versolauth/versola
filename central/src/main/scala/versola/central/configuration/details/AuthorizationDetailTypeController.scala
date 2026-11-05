@@ -13,9 +13,8 @@ import versola.central.configuration.{
   UpdateAuthorizationDetailTypeRequest,
 }
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.util.http.Controller
 import zio.ZIO
-import zio.http.{Method, Request, Response, Routes, Status, handler}
+import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
 
 object AuthorizationDetailTypeController extends AuditedController:

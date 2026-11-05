@@ -3,9 +3,8 @@ package versola.central.antifraud
 import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
-import versola.util.http.Controller
 import zio.*
-import zio.http.{Method, Request, Response, Routes, handler}
+import zio.http.{Method, Request, Response, handler}
 import zio.json.EncoderOps
 
 /** What an operator reads of the antifraud (`antifraud:read`, nothing is told of who read it): the names a rule can be

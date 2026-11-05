@@ -6,7 +6,7 @@ import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Base64Url
-import versola.util.http.{AccessLogPolicy, Controller, Observability, OverloadPolicy, RateLimitPolicies, Unauthorized}
+import versola.util.http.{AccessLogPolicy, Observability, OverloadPolicy, RateLimitPolicies, Unauthorized}
 import zio.http.*
 import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec, JsonEncoder}

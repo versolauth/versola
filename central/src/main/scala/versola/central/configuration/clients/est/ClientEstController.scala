@@ -5,7 +5,7 @@ import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.util.http.{Controller, Observability, Unauthorized}
+import versola.util.http.{Observability, Unauthorized}
 import zio.*
 import zio.http.*
 import zio.json.{EncoderOps, JsonCodec}

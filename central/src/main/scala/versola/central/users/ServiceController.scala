@@ -4,7 +4,7 @@ import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
 import versola.util.EnvName
-import versola.util.http.{Controller, Observability}
+import versola.util.http.Observability
 import zio.*
 import zio.http.*
 import zio.json.*

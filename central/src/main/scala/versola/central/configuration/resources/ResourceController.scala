@@ -15,9 +15,9 @@ import versola.central.configuration.{
   UpdateResourceRequest,
 }
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.util.http.{Controller, Observability}
+import versola.util.http.Observability
 import versola.util.{Base64Url, Secret, SecurityService}
-import zio.http.{Method, Request, Response, Routes, Status, handler}
+import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
 import zio.{RIO, Task, UIO, ZIO}
 

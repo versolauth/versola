@@ -5,8 +5,7 @@ import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.JWT
-import versola.util.http.Controller
-import zio.http.{Method, Request, Response, Routes, Status, handler}
+import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec}
 import zio.{Task, ZIO}

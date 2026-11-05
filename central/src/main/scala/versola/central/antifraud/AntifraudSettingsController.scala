@@ -3,9 +3,9 @@ package versola.central.antifraud
 import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
-import versola.util.http.{BadRequest, Controller, EntityVersion, Observability}
+import versola.util.http.{BadRequest, EntityVersion, Observability}
 import zio.*
-import zio.http.{Header, MediaType, Method, Request, Response, Routes, Status, handler}
+import zio.http.{Header, MediaType, Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
 import zio.json.ast.Json
 

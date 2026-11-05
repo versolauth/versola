@@ -4,10 +4,10 @@ import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
-import versola.util.http.{BadRequest, Controller}
+import versola.util.http.BadRequest
 import versola.util.{PageLimit, PageOffset}
 import zio.*
-import zio.http.{Method, Request, Response, Routes, Status, handler}
+import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
 
 import java.util.UUID

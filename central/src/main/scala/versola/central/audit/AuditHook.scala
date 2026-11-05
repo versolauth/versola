@@ -13,15 +13,15 @@ import zio.json.*
 import zio.json.ast.Json
 import zio.logging.logContext
 
-import java.nio.charset.StandardCharsets
-
-/** Records what an administrator does through central's API (#469), on every route in one place, so that an endpoint added later
-  * is recorded without anyone remembering to (and a route that [[AuditRoutes]] does not know fails its spec).
+/** Records what an administrator does through central's API (#469), on every route in one place: a controller lists only
+  * [[AuditedRoute]]s, each with its declaration, and the app wraps each with [[wrap]].
   *
   * The hook wraps a route's handler. After the handler ran it writes one event: the change's `admin.<resource>.<operation>` with
   * its outcome (2xx `success`, 401 and 403 `denied`, any other status a `failure` whose reason is the request's error code), and
   * for a response that hands a secret back, an `admin.secret.revealed` besides. A read is recorded only where it is an event of
-  * its own (a look at a user, a query of the audit log), and then only when it succeeded. The event is handed to the audit
+  * its own (a look at a user, a query of the audit log), and then only when it succeeded. What the event says it acts on, and the
+  * names of the fields an update set, are what the handler told the log with [[Audit]] once it had decoded its request; the type of
+  * the target is the route's. A request that fails before that is recorded without a target. The event is handed to the audit
   * queue after the handler has answered, in the request's own fiber, and a log that does not take it costs a counter and a log
   * line, not the response.
   *
