@@ -18,7 +18,11 @@ object AntifraudCountersController extends AuditedController:
   /** Answers `202` with the generation auth gave the reset: it is applied by every instance within the tuning refresh
     * interval, not before this returns. */
   val resetEndpoint =
-    (Method.POST / "antifraud" / "counters" / "reset").audited(Audit.change("antifraud-counters", Audit.action("reset"))) -> handler {
+    (Method.POST / "antifraud" / "counters" / "reset").audited(Audit.change(
+      "antifraud-counters",
+      Audit.action("reset"),
+      noTarget = true,
+    )) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)

@@ -69,6 +69,7 @@ object JwksController extends AuditedController:
           service <- ZIO.service[JwksService]
           algorithm <- request.url.queryZIO[JWT.Algorithm]("alg")
           response <- service.generateKey(algorithm)
+            .tap(kid => Audit.targetByText(kid))
             .map(kid => Response.json(GeneratedKey(kid, algorithm.toString).toJson).status(Status.Created))
             .catchSome { case error: JwksService.Error =>
               ZIO.succeed(Response.text(error.message).status(Status.BadRequest))

@@ -36,7 +36,7 @@ object SystemSettingsController extends AuditedController:
     }
 
   val upsertSystemSettingsEndpoint =
-    (Method.PUT / "configuration" / "system-settings").audited(Audit.change("system-settings", Audit.update)) -> handler {
+    (Method.PUT / "configuration" / "system-settings").audited(Audit.change("system-settings", Audit.update, noTarget = true)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)

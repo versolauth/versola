@@ -44,7 +44,7 @@ object AntifraudSettingsController extends AuditedController:
     }
 
   val putEndpoint =
-    (Method.PUT / "antifraud" / "settings").audited(Audit.change("antifraud-settings", Audit.update)) -> handler {
+    (Method.PUT / "antifraud" / "settings").audited(Audit.change("antifraud-settings", Audit.update, noTarget = true)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
@@ -58,7 +58,7 @@ object AntifraudSettingsController extends AuditedController:
 
   /** Changes the settings by the merge patch in the body; answers all the settings, with their new version. */
   val patchEndpoint =
-    (Method.PATCH / "antifraud" / "settings").audited(Audit.change("antifraud-settings", Audit.update)) -> handler {
+    (Method.PATCH / "antifraud" / "settings").audited(Audit.change("antifraud-settings", Audit.update, noTarget = true)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
@@ -98,7 +98,7 @@ object AntifraudSettingsController extends AuditedController:
 
   /** Puts everything off. The caller is in the body, where edge puts it for a request that is not a `GET`. */
   val deleteEndpoint =
-    (Method.DELETE / "antifraud" / "settings").audited(Audit.change("antifraud-settings", Audit.delete)) -> handler {
+    (Method.DELETE / "antifraud" / "settings").audited(Audit.change("antifraud-settings", Audit.delete, noTarget = true)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)

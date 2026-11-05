@@ -61,9 +61,13 @@ object AuditSpec extends ZIOSpecDefault:
       // the patches of required members (`redirectUris`, `scope`) are in every request, as they are in its JSON
       yield assertTrue(names == Set("redirectUris", "scope", "accessTokenTtl", "logoUri"))
     },
-    test("a name that is no field of the request is a defect: a renamed field fails loudly and not silently") {
-      for exit <- changedBy(Audit.changed(sample, "client")).exit
+    test("a name that is no field of the request is a defect where the spec asks for it: a renamed field fails the spec of its route") {
+      for exit <- Audit.strict.locally(true)(changedBy(Audit.changed(sample, "client"))).exit
       yield assertTrue(exit.isFailure)
+    },
+    test("in production a name that is no field of the request does not fail the change: the row has no changed fields") {
+      for names <- changedBy(Audit.changed(sample, "client"))
+      yield assertTrue(names.isEmpty)
     },
     test("the target is given as a typed id, and a user is also the user of the row") {
       val user = UserId(UUID.fromString("00000000-0000-0000-0000-0000000000a1"))

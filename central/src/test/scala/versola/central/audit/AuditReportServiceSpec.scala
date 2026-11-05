@@ -229,6 +229,18 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
         walked = pages.map(_.flatMap(_.events.map(_.event.id)))
       yield assertTrue(walked.forall(_ == logs.all.map(_.id)), walked.forall(ids => ids.distinct.size == ids.size))
     },
+    test("more events of auth at one instant than it is asked for are reached by asking for more, and the walk does not end early") {
+      val same = at("09:00")
+      val auth = (1 to 20).toList.map(n => event(n, AuditSource("auth"), same, "login.step"))
+      val central = List(event(100, CentralAudit.Source, at("08:00"), "admin.user.update"))
+      val logs = Logs(auth, central)
+      for
+        _ <- clock
+        _ <- logs.install
+        pages <- logs.walk(2)
+        walked = pages.flatMap(_.events.map(_.event.id))
+      yield assertTrue(walked == logs.all.map(_.id), walked.distinct.size == walked.size)
+    },
     test("a page that is exactly full with nothing left has no cursor, and one with a single event more has") {
       val ten = (0 to 9).toList.map(n => event(1 + n, AuditSource("auth"), at("10:00").minusSeconds(n * 10L), "token.issued"))
       val eleven = ten :+ event(50, CentralAudit.Source, at("09:00"), "admin.user.update")

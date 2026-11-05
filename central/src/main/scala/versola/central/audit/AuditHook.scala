@@ -27,7 +27,7 @@ import zio.logging.logContext
   *
   * ==Who is the administrator==
   * Edge says so: it adds the query parameters `actorId` (the `sub` of the verified token), `actorTenantId`, `actorClientId` and
-  * `actorSessionId` to every call (see `BootstrapService.centralInjects`), removing any a client sent. Query parameters because
+  * `actorSessionId` to every call (see `BootstrapService.actorInjects`), removing any a client sent. Query parameters because
   * they work on every method, and because a `userId` field of a body is the target user on the user routes. A call without them is
   * not refused, which would break a deployment whose edge has not yet read the new registrations and every direct caller of
   * central: it is recorded as made by a `service`, with no id, and counted in `audit_actor_missing_total`. A value that is not of the
@@ -174,7 +174,11 @@ object AuditHook:
           for
             outcome <- outcomeOf(status, interrupted)
             (result, reason) = outcome
-            _ <- events.recordBestEffort(draft(CentralAudit.admin(entry.resource, entry.operation), result, reason))
+            kind = CentralAudit.admin(entry.resource, entry.operation)
+            _ <- ZIO.when(succeeded && entry.targeted && (resolvedTarget.isEmpty || (entry.targetType == "user" && state.userId.isEmpty)))(
+              CentralAudit.targetMissing(kind),
+            )
+            _ <- events.recordBestEffort(draft(kind, result, reason))
             _ <-
               ZIO.when(succeeded && entry.revealsSecret)(events.recordBestEffort(draft(CentralAudit.AdminSecretRevealed, AuditOutcome.success, None)))
           yield ()

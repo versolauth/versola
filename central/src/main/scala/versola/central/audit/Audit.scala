@@ -5,6 +5,7 @@ import versola.central.configuration.tenants.TenantId
 import versola.central.users.UserId
 import versola.util.Patch
 import versola.util.audit.{AuditContext, AuditKind}
+import zio.metrics.Metric
 import zio.schema.{Schema, StandardType}
 import zio.{FiberRef, UIO, Unsafe, ZIO}
 
@@ -45,30 +46,48 @@ object Audit:
 
   private[audit] val tenantOfTarget: FiberRef[Option[String]] = Unsafe.unsafe(FiberRef.unsafe.make(Option.empty[String])(using _))
 
+  /** Whether a mistake in what a route reports (a request that is no record, an `except` name the record does not have) is a defect. A
+    * test makes it one, so a renamed field fails the spec of the route; in production an administrator's change is not failed for the
+    * audit's metadata: the row is recorded without `changed`, the mistake is logged once and counted. */
+  private[central] val strict: FiberRef[Boolean] = Unsafe.unsafe(FiberRef.unsafe.make(false)(using _))
+
+  private val changedUnavailable = Metric.counter("audit_changed_unavailable_total")
+
   /** The names of the fields of an update that it sets, from the request as decoded: a field that is not `None`. `except` are the fields that name what is updated (the id), by name; a name the record does not have is a
-    * defect, so a renamed field fails loudly in the route's spec instead of leaving the log without it. Never the values. */
+    * defect in a test and is counted and logged in production. Never the values. */
   def changed[A](request: A, except: String*)(using schema: Schema[A]): UIO[Unit] =
-    ZIO.suspendSucceed(AuditContext.setChanged(fieldNames(request, except, onlySet = true)))
+    report(fieldNames(request, except, onlySet = true))
 
   /** The names of the fields of a call that replaces a whole record: every field but the ones that name it, a `None` being a field set
     * to nothing. */
   def replaced[A](request: A, except: String*)(using schema: Schema[A]): UIO[Unit] =
-    ZIO.suspendSucceed(AuditContext.setChanged(fieldNames(request, except, onlySet = false)))
+    report(fieldNames(request, except, onlySet = false))
 
   /** For a request that has no `Schema` (one that holds a password and must not have an encoder): the names of its fields that are set, each
     * with whether it is. */
   def changedFields(fields: (String, Boolean)*): UIO[Unit] = AuditContext.setChanged(fields.collect { case (name, true) => name }.toSet)
 
-  private def fieldNames[A](request: A, except: Seq[String], onlySet: Boolean)(using schema: Schema[A]): Set[String] =
+  private def report(names: => Either[String, Set[String]]): UIO[Unit] =
+    ZIO.suspendSucceed:
+      names match
+        case Right(names) => AuditContext.setChanged(names)
+        case Left(problem) =>
+          strict.get.flatMap:
+            case true => ZIO.die(IllegalStateException(s"Audit.changed: $problem"))
+            case false =>
+              changedUnavailable.increment *> ZIO.logWarning(s"the audit row is recorded without the changed fields: $problem")
+
+  private def fieldNames[A](request: A, except: Seq[String], onlySet: Boolean)(using schema: Schema[A]): Either[String, Set[String]] =
     recordOf(schema, request) match
       case Some((record, value)) =>
         val names = record.fields.map(_.fieldName.toString).toSet
         val unknown = except.filterNot(names.contains)
-        if unknown.nonEmpty then throw IllegalStateException(s"Audit.changed: ${unknown.mkString(", ")} is not a field of the request")
-        record.fields.filterNot(field => except.contains(field.fieldName.toString)).collect {
-          case field if !onlySet || isSet(field.asInstanceOf[Schema.Field[Any, Any]].get(value)) => field.fieldName.toString
-        }.toSet
-      case None => throw IllegalStateException("Audit.changed: the request is not a record")
+        if unknown.nonEmpty then Left(s"${unknown.mkString(", ")} is not a field of the request")
+        else
+          Right(record.fields.filterNot(field => except.contains(field.fieldName.toString)).collect {
+            case field if !onlySet || isSet(field.asInstanceOf[Schema.Field[Any, Any]].get(value)) => field.fieldName.toString
+          }.toSet)
+      case None => Left("the request is not a record")
 
   /** The record a schema describes and the value as that record's own type: a record with many fields is a `Transform` of a generic one. */
   private def recordOf(schema: Schema[?], value: Any): Option[(Schema.Record[Any], Any)] =

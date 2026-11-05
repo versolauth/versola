@@ -710,6 +710,10 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   alone); until edge has synced them, admin actions are recorded without an actor. Edge's sync is the refresh interval (5 minutes by
   default).
 
+  The `ip` of an `admin.*` row is empty: the address of the administrator's browser is not passed on to central yet, so an empty `ip`
+  there means "not recorded", not an unknown source. The log is the hot window of 7 days; keeping it as the record of what was done
+  needs the replication described above.
+
   `audit:read` is not tenant-scoped, like `users:read`: a holder reads the report of any user.
 
   Where an action is made in auth (sessions, refresh tokens, passkeys, passwords, claims, limits, the antifraud settings), central records

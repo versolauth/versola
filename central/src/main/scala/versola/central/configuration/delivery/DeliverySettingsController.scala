@@ -56,7 +56,7 @@ object DeliverySettingsController extends AuditedController:
     }
 
   val upsertDeliverySettingsEndpoint =
-    (Method.PUT / "configuration" / "delivery-settings").audited(Audit.change("delivery-settings", Audit.update)) -> handler {
+    (Method.PUT / "configuration" / "delivery-settings").audited(Audit.change("delivery-settings", Audit.update, noTarget = true)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
@@ -78,7 +78,7 @@ object DeliverySettingsController extends AuditedController:
 
   /** Back to nothing stored: auth reads the blocks of its own `auth.conf` again, as before the first save. */
   val deleteDeliverySettingsEndpoint =
-    (Method.DELETE / "configuration" / "delivery-settings").audited(Audit.change("delivery-settings", Audit.delete)) -> handler {
+    (Method.DELETE / "configuration" / "delivery-settings").audited(Audit.change("delivery-settings", Audit.delete, noTarget = true)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)

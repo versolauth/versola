@@ -30,7 +30,7 @@ object AuditRoutesSpec extends ZIOSpecDefault:
     },
     test("a change is of a resource of the closed set and of an operation the method says, or of an action named by the route's last segment") {
       val wrong = entries.collect:
-        case ((method, path), Entry.Change(resource, operation, _, _))
+        case ((method, path), Entry.Change(resource, operation, _, _, _))
             if !CentralAudit.resources.contains(resource) ||
               !CentralAudit.isAdminOperation(operation) ||
               !CentralAudit.catalog.isKnown(CentralAudit.admin(resource, operation)) ||
@@ -58,8 +58,23 @@ object AuditRoutesSpec extends ZIOSpecDefault:
         ),
       )
     },
+    test("the changes that name no target are the ones of the deployment's one record, and are named here") {
+      val singletons = entries.collect { case ((method, path), Entry.Change(_, _, _, _, false)) => method.name -> path }.toSet
+      assertTrue(
+        singletons == Set(
+          "POST" -> "/antifraud/counters/reset",
+          "POST" -> "/configuration/server-metadata",
+          "PUT" -> "/configuration/system-settings",
+          "PUT" -> "/configuration/delivery-settings",
+          "DELETE" -> "/configuration/delivery-settings",
+          "PUT" -> "/antifraud/settings",
+          "PATCH" -> "/antifraud/settings",
+          "DELETE" -> "/antifraud/settings",
+        ),
+      )
+    },
     test("the routes that hand a secret back are the ones that record an admin.secret.revealed besides") {
-      val revealing = entries.collect { case ((method, path), Entry.Change(_, _, _, true)) => method.name -> path }.toSet
+      val revealing = entries.collect { case ((method, path), Entry.Change(_, _, _, true, _)) => method.name -> path }.toSet
       assertTrue(
         revealing == Set(
           "POST" -> "/configuration/clients/web",

@@ -91,7 +91,11 @@ object AntifraudListController extends AuditedController:
       body <- request.bodyAs[NewListEntryRequest]
       caller <- callerOf(body.callerTenantId)
       service <- ZIO.service[AntifraudListService]
-      response <- guarded(service.create(body, caller).map(entry => Response.json(entry.toJson).status(Status.Created)))
+      response <- guarded(
+        service.create(body, caller).tap(entry => Audit.targetByText(entry.id.toString)).map(entry =>
+          Response.json(entry.toJson).status(Status.Created),
+        ),
+      )
     yield response
 
   private def preview(request: Request, callerOf: CallerOf): ZIO[Env, Throwable, Response] =

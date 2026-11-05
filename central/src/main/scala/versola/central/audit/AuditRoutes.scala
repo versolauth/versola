@@ -16,8 +16,10 @@ object AuditRoutes:
   enum Entry:
     /** An administrator's change, recorded whatever its outcome. `revealsSecret`: a success hands a secret back (a new
       * client secret, a private key, a one-time token, a temporary password), which is an `admin.secret.revealed` event of
-      * its own on top of the change. */
-    case Change(resource: String, operation: String, targetType: String, revealsSecret: Boolean)
+      * its own on top of the change. `targeted`: the handler names what it acts on with `Audit.target`; a change of the deployment's one
+      * record (the delivery settings, the metadata) says `noTarget` in its declaration instead, and a targeted one whose handler named
+      * nothing is counted in `audit_event_without_target_total`. */
+    case Change(resource: String, operation: String, targetType: String, revealsSecret: Boolean, targeted: Boolean)
 
     /** A read that is an event in itself (`admin.user.viewed`, `admin.audit.queried`), recorded on success. */
     case Read(kind: AuditKind, targetType: String)
@@ -32,12 +34,19 @@ object AuditRoutes:
   val AdminUserViewed: AuditKind = CentralAudit.AdminUserViewed
   val AdminAuditQueried: AuditKind = CentralAudit.AdminAuditQueried
 
-  def change(resource: String, operation: String, targetType: Option[String] = None, revealsSecret: Boolean = false) =
+  def change(
+      resource: String,
+      operation: String,
+      targetType: Option[String] = None,
+      revealsSecret: Boolean = false,
+      noTarget: Boolean = false,
+  ) =
     Entry.Change(
       resource = resource,
       operation = operation,
       targetType = targetType.getOrElse(resource),
       revealsSecret = revealsSecret,
+      targeted = !noTarget,
     )
 
   val create = "create"

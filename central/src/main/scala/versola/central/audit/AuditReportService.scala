@@ -87,7 +87,7 @@ object AuditReportService:
         window = Window(lower = lower, upper = upper, authFrom = from.map(_ => lower), authTo = to.map(_ => upper), retentionFrom = retentionFrom)
         report <-
           if position.exists(_.centralOnly) then centralOnly(userId, window, position, pageSize, authSummary = None)
-          else merged(userId, window, position, pageSize)
+          else merged(userId, window, position, pageSize, asked = (pageSize + AuthSlack).min(PageLimit.Max))
       yield report
 
     /** The span of the report, and what auth is told of it. */
@@ -101,10 +101,9 @@ object AuditReportService:
         window: Window,
         position: Option[AuditCursor],
         pageSize: Int,
+        asked: Int,
     ): IO[AuditReportError | Throwable, UserAuditReport] =
       val first = position.isEmpty
-      // Auth's `to` includes the instant of the key, so the events of that instant that were already served come back: a few more are asked for.
-      val asked = (pageSize + AuthSlack).min(PageLimit.Max)
       val eventsCall = answered(
         authClient.getUserAuditEvents(
           userId,
@@ -120,7 +119,7 @@ object AuditReportService:
             partialReports.tagged(Set(MetricLabel("reason", reason))).increment *>
               centralOnly(userId, window, position, pageSize, authSummary)
           case Right(page) =>
-            for
+            (for
               // one more than the page, to know whether central has more
               found <- repository.userEvents(userId, window.lower, window.upper.plus(Micro, ChronoUnit.MICROS), position.map(keyOf), pageSize + 1)
               actions <- if first then adminActions(userId, window.lower, window.upper).asSome else ZIO.none
@@ -133,16 +132,27 @@ object AuditReportService:
                 .filter(item => horizon.forall((at, id) => !isOlder(item.event.at, item.event.id, at, id)))
               val taken = candidates.take(pageSize)
               val more = candidates.size > pageSize || authHasMore || found.size > pageSize
-              UserAuditReport(
-                userId = userId,
-                window = ReportWindow(from = window.lower, to = window.upper, retentionFrom = laterOf(window.retentionFrom, page.retentionFrom)),
-                summary = actions.map(done => withActions(authSummary, done._1)),
-                events = taken,
-                nextCursor =
-                  Option.when(more)(taken.lastOption).flatten.map(last => AuditCursor.encode(cursorAfter(last.event, centralOnly = false))),
-                partial = Nil,
-                truncated = actions.exists(_._2),
-              )
+              (taken, more, actions, page.retentionFrom)
+            ).flatMap: (taken, more, actions, authRetentionFrom) =>
+              // Auth has more, but everything it sent is at or before the cursor's instant and was served: a larger window of its events
+              // gets past them. A page with no events and no cursor would end the walk with events left unread.
+              if taken.isEmpty && more then
+                if asked >= PageLimit.Max then
+                  ZIO.fail(IllegalStateException("audit report: more events at one instant than a page of auth's events holds"))
+                else merged(userId, window, position, pageSize, asked = (asked * 2).min(PageLimit.Max))
+              else
+                ZIO.succeed(
+                  UserAuditReport(
+                    userId = userId,
+                    window = ReportWindow(from = window.lower, to = window.upper, retentionFrom = laterOf(window.retentionFrom, authRetentionFrom)),
+                    summary = actions.map(done => withActions(authSummary, done._1)),
+                    events = taken,
+                    nextCursor =
+                      Option.when(more)(taken.lastOption).flatten.map(last => AuditCursor.encode(cursorAfter(last.event, centralOnly = false))),
+                    partial = Nil,
+                    truncated = actions.exists(_._2),
+                  ),
+                )
 
     /** Central's rows alone, in pages of their own: auth did not answer, or an earlier page of this report was served without it (the
       * cursor says so, and the rest of the walk goes on without auth rather than with a hole in the middle). */

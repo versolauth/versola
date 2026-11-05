@@ -55,6 +55,12 @@ object CentralAudit:
   def actorMissing(reason: Option[String]): UIO[Unit] =
     ZIO.foreachDiscard(reason)(reason => actorMissing.tagged(Set(MetricLabel("reason", reason))).increment)
 
+  private val targetMissingCounter = Metric.counter("audit_event_without_target_total")
+
+  /** A change that succeeded and whose handler did not name its target (or, on a user's resource, the user): its row is not found by the
+    * target index or the per-user report. The kind is one of the closed set of kinds. */
+  def targetMissing(kind: AuditKind): UIO[Unit] = targetMissingCounter.tagged(Set(MetricLabel("kind", kind.value))).increment
+
   /** The resources an administrator's action can be on (design §4.2): what the routes of [[AuditRoutes]] map to. */
   val resources: Set[String] = Set(
     "tenant",
