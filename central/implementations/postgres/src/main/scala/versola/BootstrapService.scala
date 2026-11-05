@@ -1085,9 +1085,6 @@ object BootstrapService:
     InjectRule(InjectTarget.query, AuditHook.ActorSessionParam, "has(token.sid) ? token.sid : ''"),
   )
 
-  /** The header rules the first form of the actor injection registered; an endpoint that still has them gets them removed. */
-  private val retiredActorHeaders: Set[String] = Set("X-Versola-Actor", "X-Versola-Actor-Tenant", "X-Versola-Actor-Client")
-
   /** What central's endpoints are told of the caller, from the token edge has verified (not from the caller: edge overwrites
     * what the caller sent under the same name):
     *  - the actor parameters ([[actorInjects]]) on every endpoint but the `/service` ones, which are the operator's tooling;
@@ -1111,7 +1108,7 @@ object BootstrapService:
     * `callerTenantId`, which they answer `400` without for ever, the audit hook the actor parameters), so an endpoint registered before
     * a rule was added needs it added at bootstrap. The antifraud endpoints' rules are replaced by the current ones, as they always
     * were; any other endpoint keeps the rules an operator added and has the code's own put in place of the ones of the same
-    * target and name; the retired actor header rules are removed. Everything but the inject rules is an operator's to change and is left alone. */
+    * target and name. Everything but the inject rules is an operator's to change and is left alone. */
   private[versola] def injectDrift(
       existing: Vector[ResourceEndpointRecord],
       wanted: List[ResourceEndpointRecord],
@@ -1123,7 +1120,6 @@ object BootstrapService:
           if current.path.startsWith("/antifraud/") then current.inject
           else
             endpoint.inject
-              .filterNot(own => own.target == InjectTarget.header && retiredActorHeaders.contains(own.name))
               .filterNot(own => current.inject.exists(code => code.target == own.target && code.name == own.name)) ++ current.inject
         Option.when(inject.toSet != endpoint.inject.toSet)(endpoint.copy(inject = inject))
 
