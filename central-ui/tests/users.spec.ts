@@ -166,7 +166,7 @@ test.describe('record', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'Dana Reyes' })).toBeVisible();
     await expect(page.getByText(danaId).first()).toBeVisible();
     await expect(page.getByRole('button', { name: 'Copy user ID' })).toBeVisible();
-    await expect(page.getByRole('tablist', { name: 'User sections' }).getByRole('tab')).toHaveText(['Profile', 'Roles', 'Devices']);
+    await expect(page.getByRole('tablist', { name: 'User sections' }).getByRole('tab')).toHaveText(['Profile', 'Roles', 'Devices', 'Activity']);
 
     // Profile: the account and what can be done to it, the delete card last.
     await expect(card(page, 'Identifiers')).toContainText('dana@example.com');

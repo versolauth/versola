@@ -22,9 +22,9 @@ async function openRecord(page: Page, path = base) {
 }
 
 test.describe('the tabs of the user record', () => {
-  test('are Profile, Roles and Devices, with Profile selected and no counters', async ({ page }) => {
+  test('are Profile, Roles, Devices and Activity (with audit:read), with Profile selected and no counters', async ({ page }) => {
     await openRecord(page);
-    await expect(tabs(page)).toHaveText(['Profile', 'Roles', 'Devices']);
+    await expect(tabs(page)).toHaveText(['Profile', 'Roles', 'Devices', 'Activity']);
     await expect(tab(page, 'Profile')).toHaveAttribute('aria-selected', 'true');
     await expect(tab(page, 'Roles')).toHaveAttribute('aria-selected', 'false');
     await expect(tab(page, 'Devices')).toHaveAttribute('aria-selected', 'false');
@@ -113,13 +113,15 @@ test.describe('the keyboard on the tabs', () => {
     await page.keyboard.press('ArrowRight');
     await expect(tab(page, 'Devices')).toBeFocused();
     await page.keyboard.press('ArrowRight');
+    await expect(tab(page, 'Activity')).toBeFocused();
+    await page.keyboard.press('ArrowRight');
     await expect(tab(page, 'Profile')).toBeFocused();
     await page.keyboard.press('ArrowLeft');
-    await expect(tab(page, 'Devices')).toBeFocused();
+    await expect(tab(page, 'Activity')).toBeFocused();
     await page.keyboard.press('Home');
     await expect(tab(page, 'Profile')).toBeFocused();
     await page.keyboard.press('End');
-    await expect(tab(page, 'Devices')).toBeFocused();
+    await expect(tab(page, 'Activity')).toBeFocused();
     // Moving focus along the bar selected nothing and changed no URL.
     await expect(tab(page, 'Profile')).toHaveAttribute('aria-selected', 'true');
     expect(page.url()).not.toContain('tab=');
@@ -170,7 +172,7 @@ test.describe('the tab bar on a phone', () => {
     await openRecord(page);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(0);
-    for (const name of ['Profile', 'Roles', 'Devices']) {
+    for (const name of ['Profile', 'Roles', 'Devices', 'Activity']) {
       const box = await tab(page, name).boundingBox();
       expect(box!.height).toBeGreaterThanOrEqual(44);
     }

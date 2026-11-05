@@ -596,7 +596,7 @@ for (const theme of themes) {
       await page.clock.install({ time: new Date(ACTIVITY_NOW) });
       const scan = async () => (await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze())
         .violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`);
-      const path = `/?view=users&tenant=tenant-alpha&id=${danaId}&page=activity`;
+      const path = `/?view=users&tenant=tenant-alpha&id=${danaId}&tab=activity`;
       const withAudit = (audit: UserAuditMock) => ({ ...userState, userAudit: { [danaId]: audit } });
 
       await loadAdminApp(page, { path, state: withAudit(activityAudit()) });
@@ -639,6 +639,13 @@ for (const theme of themes) {
       expect(await scan()).toEqual([]);
 
       await loadAdminApp(page, { path, state: { ...withAudit(activityAudit()), myPermissions: { resources: { central: { permissions: ['users:read'] } }, isProd: false } } });
+      // Without audit:read there is no Activity tab, and the link opens Profile.
+      await expect(page.getByRole('tab', { name: 'Profile' })).toHaveAttribute('aria-selected', 'true');
+      await expect(page.getByRole('tab', { name: 'Activity' })).toHaveCount(0);
+      expect(await scan()).toEqual([]);
+
+      // The report answers 403: the tab says so.
+      await loadAdminApp(page, { path, state: withAudit({ events: [], status: 403, body: '' }) });
       await expect(page.getByRole('heading', { name: 'No access to Activity' })).toBeVisible();
       expect(await scan()).toEqual([]);
     });
