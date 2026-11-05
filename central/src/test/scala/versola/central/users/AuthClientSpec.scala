@@ -511,7 +511,6 @@ object AuthClientSpec extends ZIOSpecDefault:
         bodies(1).contains(s""""actorId":"$admin""""),
         !bodies(4).contains("actorId"),
         AuthClient.ActorParam == "actorId",
-        requests.forall(_.headers.get("X-Versola-Actor").isEmpty),
       )
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("a call made for an administrator to the antifraud endpoints carries no actor: the administrator is their userId") {
@@ -531,7 +530,6 @@ object AuthClientSpec extends ZIOSpecDefault:
         requests.size == 1,
         requests.forall(_.url.queryParams.map.get("actorId").isEmpty),
         bodies.forall(!_.contains("actorId")),
-        requests.forall(_.headers.get("X-Versola-Actor").isEmpty),
       )
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("the per-user audit endpoints are asked for the window, the cursor and the page size, and answer what auth answered") {

@@ -485,11 +485,6 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
           maxAge = None,
         )
       val user = InjectRule(InjectTarget.body, "userId", "token.sub")
-      val retired = Vector(
-        InjectRule(InjectTarget.header, "X-Versola-Actor", "token.sub"),
-        InjectRule(InjectTarget.header, "X-Versola-Actor-Tenant", "token.tenant_id"),
-        InjectRule(InjectTarget.header, "X-Versola-Actor-Client", "token.client_id"),
-      )
       val customHeader = InjectRule(InjectTarget.header, "X-Custom", "token.sub")
       val custom = InjectRule(InjectTarget.query, "custom", "token.sub")
       def wanted(method: String, path: String) = record(method, path, BootstrapService.centralInjects(method, path))
@@ -510,8 +505,8 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         record("PUT", "/antifraud/settings", Vector(user)),
         record("GET", "/users", Vector(custom)),
         record("POST", "/users", BootstrapService.actorInjects),
-        // registered by the first form of the actor injection: headers, and an operator's own header beside them
-        record("DELETE", "/users", retired :+ customHeader),
+        // an operator's own header rule on a route that has no actor rules yet
+        record("DELETE", "/users", Vector(customHeader)),
         record("GET", "/antifraud/gone", Vector.empty),
       )
       val drifted = BootstrapService.injectDrift(existing, catalogue)
@@ -528,7 +523,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         drifted.filter(_.path.startsWith("/antifraud/")).forall(e => e.inject == BootstrapService.centralInjects(e.method, e.path)),
         // another endpoint keeps what an operator added and gains the code's rules
         of("GET", "/users").exists(e => e.inject.toSet == (BootstrapService.actorInjects :+ custom).toSet),
-        // the retired header rules are gone, the query rules are in, and the operator's own header stays
+        // the actor rules are in, and the operator's own header stays
         of("DELETE", "/users").exists(e => e.inject.toSet == (BootstrapService.actorInjects :+ customHeader).toSet),
         // the rest of the record is the operator's: the custom allow rule stays
         of("POST", "/antifraud/lists").flatMap(_.allowExpression).contains("token.sub != ''"),

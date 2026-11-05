@@ -10,6 +10,7 @@ import type {
   UserSession,
 } from '../types';
 import { centralResourcePath, resolveBaseUrl } from './central-api';
+import { parseUserAuditReport, type UserAuditReport } from './user-audit';
 
 type UserSearchRecordDto = {
   id: string;
@@ -425,4 +426,36 @@ export async function resetUserLimits(
     const text = await response.text();
     throw new Error(text.trim() || `Reset limits failed (${response.status})`);
   }
+}
+
+/** A failed `GET /users/audit`: `status` 400 is a window or cursor the server refused, 503 a busy report. */
+export class UserAuditError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'UserAuditError';
+  }
+}
+
+export type UserAuditQuery = { from?: string; to?: string; cursor?: string; limit?: number };
+
+/** One page of the user's audit report (`audit:read`): the events of auth and of central about the user, newest
+ *  first. `from` and `to` are ISO instants and are sent unchanged with every page of a walk; the first page (no
+ *  `cursor`) also carries the summary. */
+export async function fetchUserAudit(userId: string, query: UserAuditQuery = {}, signal?: AbortSignal): Promise<UserAuditReport> {
+  const url = proxyUrl('/users/audit');
+  url.searchParams.set('id', userId);
+  if (query.from) url.searchParams.set('from', query.from);
+  if (query.to) url.searchParams.set('to', query.to);
+  if (query.cursor) url.searchParams.set('cursor', query.cursor);
+  if (query.limit) url.searchParams.set('limit', String(query.limit));
+
+  const response = await fetch(url.toString(), { headers: { Accept: 'application/json' }, credentials: 'include', signal });
+  if (!response.ok) {
+    const body = (await response.text()).trim();
+    const fallback = response.status === 403 ? 'You do not have permission to read the audit log.'
+      : response.status === 503 ? 'Too many reports are running. Try again in a moment.'
+      : `Failed to load activity (${response.status})`;
+    throw new UserAuditError(body || fallback, response.status);
+  }
+  return parseUserAuditReport(await response.json());
 }

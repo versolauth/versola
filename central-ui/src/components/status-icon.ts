@@ -13,6 +13,9 @@ const PATHS = {
   info: 'M12 11v6M12 7.5v.5M4 12a8 8 0 1 0 16 0 8 8 0 0 0-16 0',
   dots: 'M5 12h.01M12 12h.01M19 12h.01',
   copy: 'M8 8h12v12H8zM16 8V4H4v12h4',
+  refresh: 'M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5',
+  link: 'M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1',
+  search: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4',
 } as const;
 
 export type StatusIconName = keyof typeof PATHS;

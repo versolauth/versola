@@ -30,6 +30,8 @@ export class VersolaUsersList extends LitElement {
   @property({ type: Boolean }) canManage = false;
   /** Whether the generated password may be shown instead of delivered — non-prod only. */
   @property({ type: Boolean }) canRevealPassword = false;
+  /** Whether the admin holds `audit:read`: the user's Activity tab. */
+  @property({ type: Boolean }) canReadAudit = false;
   @property({ attribute: false }) route: RecordRoute = EMPTY_RECORD_ROUTE;
 
   @state() private users: User[] = [];
@@ -293,6 +295,8 @@ export class VersolaUsersList extends LitElement {
           .canRevealPassword=${this.canRevealPassword}
           .edit=${this.route.edit}
           .tab=${this.route.tab}
+          .tabParams=${this.route.params}
+          .canReadAudit=${this.canReadAudit}
           @user-deleted=${this.handleUserDeleted}
         ></versola-user-record>`;
     }
