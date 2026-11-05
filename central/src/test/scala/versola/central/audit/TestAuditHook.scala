@@ -3,8 +3,8 @@ package versola.central.audit
 import versola.central.CentralConfig
 import versola.central.antifraud.*
 import versola.central.configuration.challenges.OtpChallengeController
-import versola.central.configuration.clients.{AuthorizationPresetController, ClientController}
 import versola.central.configuration.clients.est.ClientEstController
+import versola.central.configuration.clients.{AuthorizationPresetController, ClientController}
 import versola.central.configuration.delivery.DeliverySettingsController
 import versola.central.configuration.details.AuthorizationDetailTypeController
 import versola.central.configuration.edges.EdgeController
@@ -59,5 +59,7 @@ object TestAuditHook:
       Routes.fromIterable(
         routes.routes.map: route =>
           val key = (route.routePattern.method, route.routePattern.pathCodec.render)
-          declared.get(key).fold(route)(entry => AuditHook.wrap(AuditedRoute[Env1](route.asInstanceOf[Route[Env1, Throwable]], entry)).asInstanceOf[Route[Env1, Err]]),
+          declared.get(key).fold(route)(entry =>
+            AuditHook.wrap(AuditedRoute[Env1](route.asInstanceOf[Route[Env1, Throwable]], entry)).asInstanceOf[Route[Env1, Err]],
+          ),
       )
