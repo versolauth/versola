@@ -182,27 +182,27 @@ object ClientController extends AuditedController:
   // general endpoint does -- the same checks, the same tenant security profile.
 
   val createWebClientEndpoint =
-    (Method.POST / "configuration" / "clients" / "web").audited(Audit.change("client", Audit.create, Audit.body("id"), revealsSecret = true)) ->
+    (Method.POST / "configuration" / "clients" / "web").audited(Audit.change("client", Audit.create, revealsSecret = true)) ->
       createTyped[CreateWebClientRequest](ClientKind.web)(_.toCreateClientRequest)
 
   val createNativeClientEndpoint =
-    (Method.POST / "configuration" / "clients" / "native").audited(Audit.change("client", Audit.create, Audit.body("id"), revealsSecret = true)) ->
+    (Method.POST / "configuration" / "clients" / "native").audited(Audit.change("client", Audit.create, revealsSecret = true)) ->
       createTyped[CreateNativeClientRequest](ClientKind.device)(_.toCreateClientRequest)
 
   val createServiceClientEndpoint =
-    (Method.POST / "configuration" / "clients" / "service").audited(Audit.change("client", Audit.create, Audit.body("id"), revealsSecret = true)) ->
+    (Method.POST / "configuration" / "clients" / "service").audited(Audit.change("client", Audit.create, revealsSecret = true)) ->
       createTyped[CreateServiceClientRequest](ClientKind.service)(_.toCreateClientRequest)
 
   val updateWebClientEndpoint =
-    (Method.PUT / "configuration" / "clients" / "web").audited(Audit.change("client", Audit.update, Audit.body("clientId"))) ->
+    (Method.PUT / "configuration" / "clients" / "web").audited(Audit.change("client", Audit.update)) ->
       updateTyped[UpdateWebClientRequest](ClientKind.web)(_.clientId, _.toUpdateClientRequest)
 
   val updateNativeClientEndpoint =
-    (Method.PUT / "configuration" / "clients" / "native").audited(Audit.change("client", Audit.update, Audit.body("clientId"))) ->
+    (Method.PUT / "configuration" / "clients" / "native").audited(Audit.change("client", Audit.update)) ->
       updateTyped[UpdateNativeClientRequest](ClientKind.device)(_.clientId, _.toUpdateClientRequest)
 
   val updateServiceClientEndpoint =
-    (Method.PUT / "configuration" / "clients" / "service").audited(Audit.change("client", Audit.update, Audit.body("clientId"))) ->
+    (Method.PUT / "configuration" / "clients" / "service").audited(Audit.change("client", Audit.update)) ->
       updateTyped[UpdateServiceClientRequest](ClientKind.service)(_.clientId, _.toUpdateClientRequest)
 
   private def createTyped[A: JsonDecoder](kind: ClientKind)(
@@ -215,6 +215,8 @@ object ClientController extends AuditedController:
         est <- ZIO.service[ClientEstService]
         body <- request.bodyAs[A]
         create = toRequest(body)
+        _ <- Audit.target(create.id)
+        _ <- Audit.tenant(create.tenantId)
         _ <- ZIO.when(create.frontChannelLogoutUri.isDefined && create.backChannelLogoutUri.isDefined):
           ZIO.fail(InvalidClientLogoutConfiguration(create.id))
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateKindRegistration(kind, create))(ZIO.fail(_))
@@ -224,7 +226,7 @@ object ClientController extends AuditedController:
         .catchAll(typedFailure)
     }
 
-  private def updateTyped[A: JsonDecoder](kind: ClientKind)(
+  private def updateTyped[A: {JsonDecoder, Schema}](kind: ClientKind)(
       clientIdOf: A => ClientId,
       toRequest: A => UpdateClientRequest,
   ): Handler[Env, Throwable, Request, Response] =
@@ -235,6 +237,8 @@ object ClientController extends AuditedController:
         certificates <- ZIO.service[ClientCertificateService]
         body <- request.bodyAs[A]
         update = toRequest(body)
+        _ <- Audit.target(update.clientId)
+        _ <- Audit.changed(body, "clientId")
         _ <- ZIO.when(hasInvalidLogoutConfiguration(update)):
           ZIO.fail(InvalidClientLogoutConfiguration(update.clientId))
         current <- service.findClient(clientIdOf(body))
@@ -305,12 +309,12 @@ object ClientController extends AuditedController:
     (Method.POST / "configuration" / "clients" / "edge-certificate" / "renew").audited(Audit.change(
       "client",
       Audit.action("renew"),
-      Audit.query("clientId"),
     )) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ClientCertificateService]
         clientId <- request.url.queryZIO[ClientId]("clientId")
+        _ <- Audit.target(clientId)
         renewed <- service.renew(clientId)
       yield
         if renewed then Response.status(Status.NoContent)
@@ -326,7 +330,6 @@ object ClientController extends AuditedController:
     (Method.POST / "configuration" / "clients" / "rotate-secret").audited(Audit.change(
       "client-secret",
       Audit.action("rotate-secret"),
-      Audit.query("clientId"),
       Some("client"),
       revealsSecret = true,
     )) -> handler { (request: Request) =>
@@ -334,6 +337,7 @@ object ClientController extends AuditedController:
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
         clientId <- request.url.queryZIO[ClientId]("clientId")
+        _ <- Audit.target(clientId)
         newSecret <- service.rotateClientSecret(clientId)
         response = RotateSecretResponse(Base64Url.encode(newSecret))
       yield Response.json(response.toJson))
@@ -347,13 +351,13 @@ object ClientController extends AuditedController:
     (Method.DELETE / "configuration" / "clients" / "previous-secret").audited(Audit.change(
       "client-secret",
       Audit.delete,
-      Audit.query("clientId"),
       Some("client"),
     )) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
         clientId <- request.url.queryZIO[ClientId]("clientId")
+        _ <- Audit.target(clientId)
         _ <- service.deletePreviousClientSecret(clientId)
       yield Response.status(Status.NoContent))
         .catchAll {
@@ -363,12 +367,13 @@ object ClientController extends AuditedController:
     }
 
   val deleteClientEndpoint =
-    (Method.DELETE / "configuration" / "clients").audited(Audit.change("client", Audit.delete, Audit.query("clientId"))) -> handler {
+    (Method.DELETE / "configuration" / "clients").audited(Audit.change("client", Audit.delete)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
           service <- ZIO.service[OAuthClientService]
           clientId <- request.url.queryZIO[ClientId]("clientId")
+          _ <- Audit.target(clientId)
           _ <- service.deleteClient(clientId)
         yield Response.status(Status.NoContent)
     }

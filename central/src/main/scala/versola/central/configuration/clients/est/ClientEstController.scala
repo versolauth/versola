@@ -36,13 +36,13 @@ object ClientEstController extends AuditedController:
     (Method.POST / "configuration" / "clients" / "est" / "enrollment-tokens").audited(Audit.change(
       "client-est",
       Audit.action("enrollment-tokens"),
-      Audit.query("clientId"),
       Some("client"),
       revealsSecret = true,
     )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         clientId <- request.url.queryZIO[ClientId]("clientId")
+        _ <- Audit.target(clientId)
         hours = request.url.queryParams.getAll("validityHours").headOption
         response <- hours.map(_.toLongOption) match
           case Some(None) => ZIO.succeed(Response.text("validityHours is a whole number of hours").status(Status.BadRequest))
@@ -60,12 +60,12 @@ object ClientEstController extends AuditedController:
     (Method.POST / "configuration" / "clients" / "est" / "extend").audited(Audit.change(
       "client-est",
       Audit.action("extend"),
-      Audit.query("clientId"),
       Some("client"),
     )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         clientId <- request.url.queryZIO[ClientId]("clientId")
+        _ <- Audit.target(clientId)
         response <- ZIO.serviceWithZIO[ClientEstService](_.extend(clientId)).as(Response.status(Status.NoContent))
           .catchSome:
             case error: ClientEstService.Refused => ZIO.succeed(Response.text(error.getMessage).status(Status.NotFound))
@@ -77,12 +77,12 @@ object ClientEstController extends AuditedController:
     (Method.POST / "configuration" / "clients" / "est" / "revoke").audited(Audit.change(
       "client-est",
       Audit.action("revoke"),
-      Audit.query("clientId"),
       Some("client"),
     )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         clientId <- request.url.queryZIO[ClientId]("clientId")
+        _ <- Audit.target(clientId)
         response <- ZIO.serviceWithZIO[ClientEstService](_.revoke(clientId)).as(Response.status(Status.NoContent))
           .catchSome:
             case error: ClientEstService.Refused => ZIO.succeed(Response.text(error.getMessage).status(Status.NotFound))

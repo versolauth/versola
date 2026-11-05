@@ -47,22 +47,25 @@ object FormController extends AuditedController:
     }
 
   val updateFormEndpoint =
-    (Method.PUT / "configuration" / "forms").audited(Audit.change("form", Audit.update, Audit.body("id"))) -> handler { (request: Request) =>
+    (Method.PUT / "configuration" / "forms").audited(Audit.change("form", Audit.update)) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[FormService]
         body <- request.bodyAs[UpdateFormRequest]
+        _ <- Audit.target(body.id)
+        _ <- Audit.changed(body, "id")
         _ <- service.updateForm(body.id, body.style, body.jsSource, body.jsCompiled, body.localizations, body.properties, activate = false)
       yield Response.status(Status.NoContent)).catchSome(badRequest)
     }
 
   val setActiveVersionEndpoint =
-    (Method.PUT / "configuration" / "forms" / "active").audited(Audit.change("form", Audit.action("active"), Audit.body("id"))) -> handler {
+    (Method.PUT / "configuration" / "forms" / "active").audited(Audit.change("form", Audit.action("active"))) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
           service <- ZIO.service[FormService]
           body <- request.bodyAs[SetActiveVersionRequest]
+          _ <- Audit.target(body.id)
           _ <- service.setActiveVersion(body.id, body.version)
         yield Response.status(Status.NoContent)
     }

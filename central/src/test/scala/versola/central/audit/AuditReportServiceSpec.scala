@@ -82,7 +82,7 @@ object AuditReportServiceSpec extends ZIOSpecDefault, ZIOStubs:
           for
             n <- authCalls.updateAndGet(_ + 1)
             down <- failing.get
-            _ <- ZIO.fail(AuthAuditError.Unavailable("down")).when(down.exists(n > _))
+            _ <- ZIO.fail(RuntimeException("auth answered something unreadable")).when(down.exists(n > _))
           yield
             val inside = desc(auth.filter(e => query.from.forall(f => !e.at.isBefore(f)) && query.to.forall(t => !e.at.isAfter(t))))
             authPage(inside.take(query.limit), Option.when(inside.size > query.limit)("more"))

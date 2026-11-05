@@ -61,12 +61,13 @@ object EdgeController extends AuditedController:
     }
 
   val registerEdgeEndpoint =
-    (Method.POST / "configuration" / "edges").audited(Audit.change("edge", Audit.create, Audit.body("id"), revealsSecret = true)) -> handler {
+    (Method.POST / "configuration" / "edges").audited(Audit.change("edge", Audit.create, revealsSecret = true)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
           service <- ZIO.service[EdgeService]
           body <- request.bodyAs[RegisterEdgeRequest]
+          _ <- Audit.target(body.id)
           groupId = body.groupId.getOrElse(EdgeGroup.DefaultId)
           group <- ZIO.serviceWithZIO[EdgeGroupService](_.find(groupId))
           response <- group match
@@ -81,11 +82,12 @@ object EdgeController extends AuditedController:
   /** Creates a group of edges. The kind is the operator's decision and is not changed afterwards; an existing id is
     * answered `409` and left as it was. */
   val createEdgeGroupEndpoint =
-    (Method.POST / "configuration" / "edge-groups").audited(Audit.change("edge-group", Audit.create, Audit.body("id"))) -> handler {
+    (Method.POST / "configuration" / "edge-groups").audited(Audit.change("edge-group", Audit.create)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
           body <- request.bodyAs[EdgeGroupRecord]
+          _ <- Audit.target(body.id)
           created <- ZIO.serviceWithZIO[EdgeGroupService](_.create(body))
         yield if created then Response.json(body.toJson).status(Status.Created) else Response.status(Status.Conflict)
     }
@@ -101,11 +103,12 @@ object EdgeController extends AuditedController:
   /** Starts the certificate chain of the edge over, for an operator who turned `edge-identity.auto-extend` off: the edge's
     * next renewals are not refused for age. A no-op in effect where central extends chains itself. */
   val extendEdgeEndpoint =
-    (Method.POST / "configuration" / "edges" / "extend").audited(Audit.change("edge", Audit.action("extend"), Audit.query("edgeId"))) -> handler {
+    (Method.POST / "configuration" / "edges" / "extend").audited(Audit.change("edge", Audit.action("extend"))) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
           edgeId <- request.url.queryZIO[EdgeId]("edgeId")
+          _ <- Audit.target(edgeId)
           response <- ZIO.serviceWithZIO[EdgeIdentityService](_.extend(edgeId)).as(Response.status(Status.NoContent))
             .catchSome:
               case error: EdgeIdentityService.Refused => ZIO.succeed(Response.text(error.getMessage).status(Status.NotFound))
@@ -117,12 +120,12 @@ object EdgeController extends AuditedController:
     (Method.POST / "configuration" / "edges" / "enrollment-tokens").audited(Audit.change(
       "edge",
       Audit.action("enrollment-tokens"),
-      Audit.query("edgeId"),
       revealsSecret = true,
     )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         edgeId <- request.url.queryZIO[EdgeId]("edgeId")
+        _ <- Audit.target(edgeId)
         hours <- ZIO.succeed(request.url.queryParams.getAll("validityHours").headOption.flatMap(_.toLongOption))
         validity = hours.fold(EdgeIdentityService.TokenValidity)(h => Duration.fromSeconds(h * 3600L))
         response <- ZIO.serviceWithZIO[EdgeIdentityService](_.issueEnrollmentToken(edgeId, validity)).map: issued =>
@@ -136,7 +139,6 @@ object EdgeController extends AuditedController:
     (Method.POST / "configuration" / "edges" / "rotate-key").audited(Audit.change(
       "edge-key",
       Audit.action("rotate-key"),
-      Audit.query("edgeId"),
       Some("edge"),
       revealsSecret = true,
     )) -> handler { (request: Request) =>
@@ -144,6 +146,7 @@ object EdgeController extends AuditedController:
         _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
         edgeId <- request.url.queryZIO[EdgeId]("edgeId")
+        _ <- Audit.target(edgeId)
         keyPair <- service.rotateEdgeKey(edgeId)
         response = ServiceKeyResponse(
           keyId = keyPair.keyId,
@@ -156,34 +159,36 @@ object EdgeController extends AuditedController:
     (Method.DELETE / "configuration" / "edges" / "old-key").audited(Audit.change(
       "edge-key",
       Audit.delete,
-      Audit.query("edgeId"),
       Some("edge"),
     )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
         edgeId <- request.url.queryZIO[EdgeId]("edgeId")
+        _ <- Audit.target(edgeId)
         _ <- service.deleteOldEdgeKey(edgeId)
       yield Response.status(Status.NoContent)
     }
 
   val deleteEdgeEndpoint =
-    (Method.DELETE / "configuration" / "edges").audited(Audit.change("edge", Audit.delete, Audit.query("edgeId"))) -> handler { (request: Request) =>
+    (Method.DELETE / "configuration" / "edges").audited(Audit.change("edge", Audit.delete)) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
         edgeId <- request.url.queryZIO[EdgeId]("edgeId")
+        _ <- Audit.target(edgeId)
         _ <- service.deleteEdge(edgeId)
       yield Response.status(Status.NoContent)
     }
 
   val setEdgeDpopEndpoint =
-    (Method.PUT / "configuration" / "edges" / "dpop").audited(Audit.change("edge", Audit.action("dpop"), Audit.query("edgeId"))) -> handler {
+    (Method.PUT / "configuration" / "edges" / "dpop").audited(Audit.change("edge", Audit.action("dpop"))) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
           service <- ZIO.service[EdgeService]
           edgeId <- request.url.queryZIO[EdgeId]("edgeId")
+          _ <- Audit.target(edgeId)
           body <- request.bodyAs[SetEdgeDpopRequest]
           edge <- service.find(edgeId)
           response <-
@@ -216,19 +221,23 @@ object EdgeController extends AuditedController:
     (Method.PATCH / "configuration" / "edges" / "policies").audited(Audit.change(
       "edge-policy",
       Audit.update,
-      Audit.query("edgeId"),
       Some("edge"),
     )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
         edgeId <- request.url.queryZIO[EdgeId]("edgeId")
+        _ <- Audit.target(edgeId)
         dryRun <- request.url.queryZIO[Option[String]]("dryRun").map(_.contains("true"))
         body <- request.bodyAs[Json.Obj]
         response <- EdgePoliciesPatch.parse(body) match
           case Left(error) => policyError(error)
           case Right(patch) =>
-            service.patchPolicies(edgeId, patch, dryRun).flatMap:
+            Audit.changedFields(
+              "overload" -> (patch.overload != Change.Keep),
+              "accessLog" -> (patch.accessLog != Change.Keep),
+              "rateLimits" -> (patch.rateLimits != Change.Keep),
+            ) *> service.patchPolicies(edgeId, patch, dryRun).flatMap:
               case None => ZIO.succeed(Response.status(Status.NotFound))
               case Some(Left(error)) => policyError(error)
               case Some(Right(record)) => ZIO.succeed(Response.json(EdgePoliciesResponse.of(record).toJson))

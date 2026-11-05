@@ -62,33 +62,40 @@ object ScopeController extends AuditedController:
     }
 
   val createScopeEndpoint =
-    (Method.POST / "configuration" / "scopes").audited(Audit.change("scope", Audit.create, Audit.body("id"))) -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "scopes").audited(Audit.change("scope", Audit.create)) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthScopeService]
         body <- request.bodyAs[CreateScopeRequest]
+        _ <- Audit.target(body.id)
+        _ <- Audit.tenant(body.tenantId)
         _ <- service.createScope(body)
       yield Response.status(Status.Created)
     }
 
   val updateScopeEndpoint =
-    (Method.PUT / "configuration" / "scopes").audited(Audit.change("scope", Audit.update, Audit.body("id"))) -> handler { (request: Request) =>
+    (Method.PUT / "configuration" / "scopes").audited(Audit.change("scope", Audit.update)) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthScopeService]
         body <- request.bodyAs[UpdateScopeRequest]
+        _ <- Audit.target(body.id)
+        _ <- Audit.tenant(body.tenantId)
+        _ <- Audit.changed(body, "tenantId", "id")
         _ <- service.updateScope(body)
       yield Response.status(Status.NoContent)
     }
 
   val deleteScopeEndpoint =
-    (Method.DELETE / "configuration" / "scopes").audited(Audit.change("scope", Audit.delete, Audit.query("scopeId"))) -> handler {
+    (Method.DELETE / "configuration" / "scopes").audited(Audit.change("scope", Audit.delete)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
           service <- ZIO.service[OAuthScopeService]
           tenantId <- request.url.queryZIO[TenantId]("tenantId")
+          _ <- Audit.tenant(tenantId)
           scopeId <- request.url.queryZIO[ScopeToken]("scopeId")
+          _ <- Audit.target(scopeId)
           _ <- service.deleteScope(tenantId, scopeId)
         yield Response.status(Status.NoContent)
     }

@@ -72,31 +72,36 @@ object ThemeController extends AuditedController:
     }
 
   val createThemeEndpoint =
-    (Method.POST / "configuration" / "themes").audited(Audit.change("theme", Audit.create, Audit.body("id"))) -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "themes").audited(Audit.change("theme", Audit.create)) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ThemeService]
         body <- request.bodyAs[CreateThemeRequest]
+        _ <- Audit.targetByText(body.id)
+        _ <- Audit.tenant(body.tenantId)
         _ <- service.createTheme(ThemeRecord(body.id, body.css, body.tenantId, body.tokens))
       yield Response.status(Status.Created)).catchSome(badRequest)
     }
 
   val updateThemeEndpoint =
-    (Method.PUT / "configuration" / "themes").audited(Audit.change("theme", Audit.update, Audit.body("id"))) -> handler { (request: Request) =>
+    (Method.PUT / "configuration" / "themes").audited(Audit.change("theme", Audit.update)) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ThemeService]
         body <- request.bodyAs[UpdateThemeRequest]
+        _ <- Audit.targetByText(body.id)
+        _ <- Audit.changed(body, "id")
         _ <- service.updateTheme(ThemeRecord(body.id, body.css, None, body.tokens))
       yield Response.status(Status.NoContent)).catchSome(badRequest)
     }
 
   val deleteThemeEndpoint =
-    (Method.DELETE / "configuration" / "themes").audited(Audit.change("theme", Audit.delete, Audit.query("id"))) -> handler { (request: Request) =>
+    (Method.DELETE / "configuration" / "themes").audited(Audit.change("theme", Audit.delete)) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ThemeService]
         id <- request.url.queryZIO[String]("id")
+        _ <- Audit.targetByText(id)
         _ <- service.deleteTheme(id)
       yield Response.status(Status.NoContent))
         .catchSome:

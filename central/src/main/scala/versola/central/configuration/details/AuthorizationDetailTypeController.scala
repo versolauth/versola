@@ -59,12 +59,13 @@ object AuthorizationDetailTypeController extends AuditedController:
     (Method.POST / "configuration" / "authorization-detail-types").audited(Audit.change(
       "authorization-detail-type",
       Audit.create,
-      Audit.body("type"),
     )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[AuthorizationDetailTypeService]
         body <- request.bodyAs[CreateAuthorizationDetailTypeRequest]
+        _ <- Audit.targetByText(body.`type`)
+        _ <- Audit.tenant(body.tenantId)
         result <- service.createType(body)
       yield result match
         case Right(_) => Response.status(Status.Created)
@@ -75,12 +76,14 @@ object AuthorizationDetailTypeController extends AuditedController:
     (Method.PUT / "configuration" / "authorization-detail-types").audited(Audit.change(
       "authorization-detail-type",
       Audit.update,
-      Audit.body("type"),
     )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[AuthorizationDetailTypeService]
         body <- request.bodyAs[UpdateAuthorizationDetailTypeRequest]
+        _ <- Audit.targetByText(body.`type`)
+        _ <- Audit.changed(body, "tenantId")
+        _ <- Audit.tenant(body.tenantId)
         result <- service.updateType(body)
       yield result match
         case Right(_) => Response.status(Status.NoContent)
@@ -91,13 +94,14 @@ object AuthorizationDetailTypeController extends AuditedController:
     (Method.DELETE / "configuration" / "authorization-detail-types").audited(Audit.change(
       "authorization-detail-type",
       Audit.delete,
-      Audit.query("type"),
     )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[AuthorizationDetailTypeService]
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
+        _ <- Audit.tenant(tenantId)
         `type` <- request.url.queryZIO[AuthorizationDetailType]("type")
+        _ <- Audit.targetByText(`type`.toString)
         _ <- service.deleteType(tenantId, `type`)
       yield Response.status(Status.NoContent)
     }

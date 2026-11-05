@@ -56,13 +56,14 @@ object ResourceController extends AuditedController:
     (Method.POST / "configuration" / "resources").audited(Audit.change(
       "resource",
       Audit.create,
-      Audit.body("resourceId"),
       revealsSecret = true,
     )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ResourceService]
         body <- request.bodyAs[CreateResourceRequest]
+        _ <- Audit.target(body.resourceId)
+        _ <- Audit.tenant(body.tenantId)
         result <- service.createResource(body).tap(refused)
       yield result match
         case Right((resourceId, secret)) =>
@@ -71,12 +72,14 @@ object ResourceController extends AuditedController:
     }
 
   val updateResourceRoute =
-    (Method.PUT / "configuration" / "resources").audited(Audit.change("resource", Audit.update, Audit.body("resourceId"))) -> handler {
+    (Method.PUT / "configuration" / "resources").audited(Audit.change("resource", Audit.update)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
           service <- ZIO.service[ResourceService]
           body <- request.bodyAs[UpdateResourceRequest]
+          _ <- Audit.target(body.resourceId)
+          _ <- Audit.changed(body, "resourceId")
           result <- service.updateResource(body).tap(refused)
         yield result match
           case Right(_) => Response.status(Status.NoContent)
@@ -87,7 +90,6 @@ object ResourceController extends AuditedController:
     (Method.POST / "configuration" / "resources" / "rotate-secret").audited(Audit.change(
       "resource-secret",
       Audit.action("rotate-secret"),
-      Audit.query("resourceId"),
       Some("resource"),
       revealsSecret = true,
     )) -> handler { (request: Request) =>
@@ -95,6 +97,7 @@ object ResourceController extends AuditedController:
         _ <- authorizeBasic(request)
         service <- ZIO.service[ResourceService]
         resourceId <- request.url.queryZIO[ResourceId]("resourceId")
+        _ <- Audit.target(resourceId)
         newSecret <- service.rotateSecret(resourceId)
         response = RotateResourceSecretResponse(Base64Url.encode(newSecret))
       yield Response.json(response.toJson)).catchSome:
@@ -106,24 +109,25 @@ object ResourceController extends AuditedController:
     (Method.DELETE / "configuration" / "resources" / "previous-secret").audited(Audit.change(
       "resource-secret",
       Audit.delete,
-      Audit.query("resourceId"),
       Some("resource"),
     )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ResourceService]
         resourceId <- request.url.queryZIO[ResourceId]("resourceId")
+        _ <- Audit.target(resourceId)
         _ <- service.deletePreviousSecret(resourceId)
       yield Response.status(Status.NoContent)
     }
 
   val deleteResourceRoute =
-    (Method.DELETE / "configuration" / "resources").audited(Audit.change("resource", Audit.delete, Audit.query("resourceId"))) -> handler {
+    (Method.DELETE / "configuration" / "resources").audited(Audit.change("resource", Audit.delete)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
           service <- ZIO.service[ResourceService]
           resourceId <- request.url.queryZIO[ResourceId]("resourceId")
+          _ <- Audit.target(resourceId)
           _ <- service.deleteResource(resourceId)
         yield Response.status(Status.NoContent)
     }

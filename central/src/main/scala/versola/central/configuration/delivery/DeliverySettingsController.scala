@@ -56,13 +56,19 @@ object DeliverySettingsController extends AuditedController:
     }
 
   val upsertDeliverySettingsEndpoint =
-    (Method.PUT / "configuration" / "delivery-settings").audited(Audit.change("delivery-settings", Audit.update, Audit.Nowhere)) -> handler {
+    (Method.PUT / "configuration" / "delivery-settings").audited(Audit.change("delivery-settings", Audit.update)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
           service <- ZIO.service[DeliverySettingsService]
           body <- request.bodyAs[DeliverySettingsService.Update]
             .tapError(_ => Observability.setError("invalid_delivery_settings", Some("the body is not a delivery settings update")))
+          _ <- Audit.changedFields(
+            "smtp" -> body.smtp.isDefined,
+            "smtpPassword" -> body.smtpPassword.isDefined,
+            "otpProvider" -> body.otpProvider.isDefined,
+            "otpProviderPassword" -> body.otpProviderPassword.isDefined,
+          )
           _ <- service.upsertSettings(body).flatMap {
             case Left(error) => Observability.setError("invalid_delivery_settings", Some(error.message)) *> ZIO.fail(BadRequest(error.message))
             case Right(()) => ZIO.unit
@@ -72,7 +78,7 @@ object DeliverySettingsController extends AuditedController:
 
   /** Back to nothing stored: auth reads the blocks of its own `auth.conf` again, as before the first save. */
   val deleteDeliverySettingsEndpoint =
-    (Method.DELETE / "configuration" / "delivery-settings").audited(Audit.change("delivery-settings", Audit.delete, Audit.Nowhere)) -> handler {
+    (Method.DELETE / "configuration" / "delivery-settings").audited(Audit.change("delivery-settings", Audit.delete)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)

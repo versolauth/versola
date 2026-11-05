@@ -7493,7 +7493,7 @@ components:
         targetId: { type: string }
         details:
           type: object
-          description: The kind's own payload. For an administrator's action `path`, `status`, `query` (identifiers only), `changed` and `tenantId`.
+          description: The kind's own payload. For an administrator's action `path`, `status`, `changed` (the names of the fields an update set) and `tenantId` (the tenant of the target, when it is not the actor's).
           additionalProperties: true
     AntifraudStatus:
       type: object

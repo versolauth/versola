@@ -29,11 +29,12 @@ object LocaleController extends AuditedController:
     }
 
   val updateLocalesEndpoint =
-    (Method.PUT / "configuration" / "locales").audited(Audit.change("locale", Audit.update, Audit.Nowhere)) -> handler { (request: Request) =>
+    (Method.PUT / "configuration" / "locales").audited(Audit.change("locale", Audit.update)) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[LocaleService]
         body <- request.bodyAs[UpdateLocalesRequest]
+        _ <- Audit.changed(body)
         _ <- service.update(body.add, body.delete)
       yield Response.status(Status.NoContent)).catchAll:
         case error: LocaleActivationError =>
@@ -42,12 +43,13 @@ object LocaleController extends AuditedController:
     }
 
   val setDefaultLocaleEndpoint =
-    (Method.PUT / "configuration" / "locales" / "default").audited(Audit.change("locale", Audit.action("default"), Audit.body("code"))) -> handler {
+    (Method.PUT / "configuration" / "locales" / "default").audited(Audit.change("locale", Audit.action("default"))) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
           service <- ZIO.service[LocaleService]
           body <- request.bodyAs[SetDefaultLocaleRequest]
+          _ <- Audit.targetByText(body.code)
           result <- service.setDefault(body.code)
         yield result match
           case Right(_) => Response.status(Status.NoContent)

@@ -63,7 +63,7 @@ object JwksController extends AuditedController:
     * published under. `HS256` is refused by the service -- a shared secret is not a JWKS key.
     */
   val generateKeyEndpoint =
-    (Method.POST / "configuration" / "jwks" / "generate").audited(Audit.change("jwks", Audit.action("generate"), Audit.Nowhere)) -> handler {
+    (Method.POST / "configuration" / "jwks" / "generate").audited(Audit.change("jwks", Audit.action("generate"))) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
@@ -78,33 +78,34 @@ object JwksController extends AuditedController:
     }
 
   val createJwkEndpoint =
-    (Method.POST / "configuration" / "jwks").audited(Audit.change("jwks", Audit.create, Audit.body("kid"))) -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "jwks").audited(Audit.change("jwks", Audit.create)) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[JwksService]
         response <- withValidJwk(request)((kid, jwk) =>
-          service.createKey(kid, jwk).as(Response.status(Status.Created)),
+          Audit.targetByText(kid) *> service.createKey(kid, jwk).as(Response.status(Status.Created)),
         )
       yield response
     }
 
   val updateJwkEndpoint =
-    (Method.PUT / "configuration" / "jwks").audited(Audit.change("jwks", Audit.update, Audit.body("kid"))) -> handler { (request: Request) =>
+    (Method.PUT / "configuration" / "jwks").audited(Audit.change("jwks", Audit.update)) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[JwksService]
         response <- withValidJwk(request)((kid, jwk) =>
-          service.updateKey(kid, jwk).as(Response.status(Status.NoContent)),
+          Audit.targetByText(kid) *> service.updateKey(kid, jwk).as(Response.status(Status.NoContent)),
         )
       yield response
     }
 
   val deleteJwkEndpoint =
-    (Method.DELETE / "configuration" / "jwks").audited(Audit.change("jwks", Audit.delete, Audit.query("kid"))) -> handler { (request: Request) =>
+    (Method.DELETE / "configuration" / "jwks").audited(Audit.change("jwks", Audit.delete)) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[JwksService]
         kid <- request.url.queryZIO[String]("kid")
+        _ <- Audit.targetByText(kid)
         // A key a tenant still signs with is refused, not a server error: the operator has
         // to move that tenant to another key first.
         response <- service.deleteKey(kid)

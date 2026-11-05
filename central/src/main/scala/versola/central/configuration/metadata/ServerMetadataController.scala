@@ -29,7 +29,7 @@ object ServerMetadataController extends AuditedController:
     }
 
   val upsertMetadataEndpoint =
-    (Method.POST / "configuration" / "server-metadata").audited(Audit.change("server-metadata", Audit.create, Audit.Nowhere)) -> handler {
+    (Method.POST / "configuration" / "server-metadata").audited(Audit.change("server-metadata", Audit.create)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)

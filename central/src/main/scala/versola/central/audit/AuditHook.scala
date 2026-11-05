@@ -1,7 +1,7 @@
 package versola.central.audit
 
 import versola.central.CentralConfig
-import versola.central.audit.AuditRoutes.{Entry, Target}
+import versola.central.audit.AuditRoutes.Entry
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.tenants.TenantId
 import versola.central.users.UserId
@@ -50,26 +50,6 @@ object AuditHook:
 
   /** Longest value of a header, a query parameter or a body field the log keeps. */
   private val MaxLength = 256
-
-  /** Query parameters whose values are written to `details.query`: identifiers, never anything that could be a secret. */
-  private val loggedQuery = Set(
-    "tenantId",
-    "clientId",
-    "edgeId",
-    "resourceId",
-    "roleId",
-    "scopeId",
-    "permission",
-    "type",
-    "id",
-    "userId",
-    "kid",
-    "alg",
-    "dryRun",
-    "userAgentId",
-    "sessionId",
-    "credentialId",
-  )
 
   /** The route with its record: what the route's own declaration says is written after it ran. */
   def wrap[Env](route: AuditedRoute[Env]): Route[Env & AuditEvents & CentralConfig, Throwable] =
@@ -122,14 +102,9 @@ object AuditHook:
       change: Option[Entry.Change],
       read: Option[Entry.Read],
   ): Handler[Env1, Response, Request, Response] =
-    val target = change.map(_.target).orElse(read.map(_.target)).getOrElse(Target.Nowhere)
-    // The body is read where it names the target, and where it says what an update changes (the names of its fields).
-    val readsBody = target.isInstanceOf[Target.Body] || change.exists(_.operation == CentralAudit.AdminUpdate)
     Handler.scoped[Env1]:
-      Handler.fromFunctionZIO[Request]: original =>
+      Handler.fromFunctionZIO[Request]: request =>
         for
-          prepared <- withBody(original, readsBody)
-          (request, body) = prepared
           actor <- actorOf(request)
           initial = AuditContext.State(
             tenantId = actor.tenantId.map(_.toString),
@@ -142,67 +117,57 @@ object AuditHook:
           // The handler may be interrupted (the client went away, a timeout) after its change committed: what follows it is not
           // interrupted, the record is handed over by a fiber that the interruption of this one does not reach, and the interruption
           // goes on afterwards.
-          response <- AuditContext.reset(initial):
-            ZIO.uninterruptibleMask: restore =>
-              restore(handler(request)).exit.flatMap: exit =>
-                val status = exit match
-                  case Exit.Success(response) => response.status
-                  case Exit.Failure(cause) => cause.failureOption.fold(Status.InternalServerError)(_.status)
-                val interrupted = exit.causeOption.exists(_.isInterruptedOnly)
-                val recording = AuditContext.current.flatMap(state => record(request, pattern, status, interrupted, state, actor, body, change, read))
-                // interruptible inside: a full queue under `block` is waited for up to its own timeout, which is an interruption
-                recording.interruptible.forkDaemon.flatMap(fiber => restore(fiber.join)) *> ZIO.done(exit)
+          response <- Audit.tenantOfTarget.locally(None):
+            AuditContext.reset(initial):
+              ZIO.uninterruptibleMask: restore =>
+                restore(handler(request)).exit.flatMap: exit =>
+                  val status = exit match
+                    case Exit.Success(response) => response.status
+                    case Exit.Failure(cause) => cause.failureOption.fold(Status.InternalServerError)(_.status)
+                  val interrupted = exit.causeOption.exists(_.isInterruptedOnly)
+                  val recording = AuditContext.current.flatMap(state => record(pattern, status, interrupted, state, actor, change, read))
+                  // interruptible inside: a full queue under `block` is waited for up to its own timeout, which is an interruption
+                  recording.interruptible.forkDaemon.flatMap(fiber => restore(fiber.join)) *> ZIO.done(exit)
         yield response
 
-  /** The request with its body read once and put back, where the entry names the target in the body: the handler reads it again. */
-  private def withBody(request: Request, readsBody: Boolean): UIO[(Request, Option[Json.Obj])] =
-    if readsBody && request.method != Method.GET then
-      request.body.asArray.fold(
-        _ => (request, None),
-        bytes => (request.copy(body = Body.fromArray(bytes)), String(bytes, StandardCharsets.UTF_8).fromJson[Json.Obj].toOption),
-      )
-    else ZIO.succeed((request, None))
-
   private def record(
-      request: Request,
       pattern: String,
       status: Status,
       interrupted: Boolean,
       state: AuditContext.State,
       actor: Actor,
-      body: Option[Json.Obj],
       change: Option[Entry.Change],
       read: Option[Entry.Read],
   ): URIO[AuditEvents & CentralConfig, Unit] =
+    Audit.tenantOfTarget.get.flatMap(tenantOfTarget => recordWith(pattern, status, interrupted, state, actor, change, read, tenantOfTarget))
+
+  private def recordWith(
+      pattern: String,
+      status: Status,
+      interrupted: Boolean,
+      state: AuditContext.State,
+      actor: Actor,
+      change: Option[Entry.Change],
+      read: Option[Entry.Read],
+      tenantOfTarget: Option[String],
+  ): URIO[AuditEvents & CentralConfig, Unit] =
     val succeeded = status.isSuccess || status.isRedirection
-    val entryTarget = change.map(_.target).orElse(read.map(_.target)).getOrElse(Target.Nowhere)
     val targetType = change.map(_.targetType).orElse(read.map(_.targetType))
-    val targetId = state.target.map(_._2).orElse(targetOf(request, entryTarget, body))
-    val query =
-      request.url.queryParams.map.collect { case (name, values) if loggedQuery.contains(name) && values.nonEmpty => name -> clipped(values.head) }
-    // What an update changes: what the service said, else the names of the fields the request carried (never their values), less
-    // the ones that name what is updated.
-    val changedNames =
-      if state.changed.nonEmpty then state.changed.toList.sorted
-      else if change.exists(_.operation == CentralAudit.AdminUpdate) then
-        body.fold(List.empty[String])(_.fields.map(_._1).filterNot(namesTarget).toList.sorted)
-      else Nil
+    // The handler names the target (`Audit.target`) and what an update changes (`Audit.changed`); the type of the target is the route's.
+    val changedNames = state.changed.toList.sorted
+    val resolvedTarget = for t <- targetType; id <- state.target.map(target => clipped(target._2)) yield (t, id)
     val details = AdminDetails(
       path = pattern,
       status = status.code,
-      query = Option.when(query.nonEmpty)(query),
       changed = Option.when(changedNames.nonEmpty)(changedNames),
-      tenantId = queryValue(request, "tenantId").map(clipped).orElse(body.flatMap(stringField("tenantId"))),
+      tenantId = tenantOfTarget.map(clipped),
     )
-    val resolvedTarget = state.target.orElse(for t <- targetType; id <- targetId yield (t, id))
-    // The user the action was about, when the target is one; an id that is not a UUID is not a user of ours.
-    val user = state.userId.orElse(resolvedTarget.filter(_._1 == "user").flatMap((_, id) => UserId.parse(id).toOption))
     def draft(kind: AuditKind, outcome: AuditOutcome, reason: Option[String]) = AuditDraft(
       kind = kind,
       outcome = outcome,
       reason = reason,
       actor = Some((actor.actorType, actor.id)),
-      userId = user,
+      userId = state.userId,
       target = resolvedTarget,
       details = details,
     )
@@ -232,27 +197,14 @@ object AuditHook:
         val reason = Some(code.getOrElse(s"http_${status.code}"))
         if status == Status.Unauthorized || status == Status.Forbidden then (AuditOutcome.denied, reason) else (AuditOutcome.failure, reason)
 
-  /** The members of a body that say what is updated and not what changes. */
-  private val namesTarget = Set("id", "clientId", "tenantId", "userId", "resourceId", "edgeId", "kid", "version", "code")
-
   private def queryValue(request: Request, name: String): Option[String] =
     request.url.queryParams.map.get(name).flatMap(_.headOption)
-
-  private def stringField(name: String)(body: Json.Obj): Option[String] =
-    body.fields.collectFirst { case (`name`, Json.Str(value)) => clipped(value) }
-
-  private def targetOf(request: Request, target: Target, body: Option[Json.Obj]): Option[String] =
-    target match
-      case Target.Query(params) => params.view.flatMap(queryValue(request, _)).headOption.map(clipped)
-      case Target.Body(field) => body.flatMap(stringField(field))
-      case Target.Nowhere => None
 
   /** What an administrator's action says about itself: the route (its pattern, a closed set), the status, the identifiers in the query, and the names of the fields an update
     * changed (never their values). */
   private case class AdminDetails(
       path: String,
       status: Int,
-      query: Option[Map[String, String]],
       changed: Option[List[String]],
       tenantId: Option[String],
   ) extends AuditDetails derives JsonEncoder:

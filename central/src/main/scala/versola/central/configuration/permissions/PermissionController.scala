@@ -41,35 +41,42 @@ object PermissionController extends AuditedController:
     }
 
   val createPermissionEndpoint =
-    (Method.POST / "configuration" / "permissions").audited(Audit.change("permission", Audit.create, Audit.body("permission"))) -> handler {
+    (Method.POST / "configuration" / "permissions").audited(Audit.change("permission", Audit.create)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
           service <- ZIO.service[PermissionService]
           body <- request.bodyAs[CreatePermissionRequest]
+          _ <- Audit.target(body.permission)
+          _ <- Audit.tenant(body.tenantId)
           _ <- service.createPermission(body)
         yield Response.status(Status.Created)
     }
 
   val updatePermissionEndpoint =
-    (Method.PUT / "configuration" / "permissions").audited(Audit.change("permission", Audit.update, Audit.body("permission"))) -> handler {
+    (Method.PUT / "configuration" / "permissions").audited(Audit.change("permission", Audit.update)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
           service <- ZIO.service[PermissionService]
           body <- request.bodyAs[UpdatePermissionRequest]
+          _ <- Audit.target(body.permission)
+          _ <- Audit.tenant(body.tenantId)
+          _ <- Audit.changed(body, "tenantId")
           _ <- service.updatePermission(body)
         yield Response.status(Status.NoContent)
     }
 
   val deletePermissionEndpoint =
-    (Method.DELETE / "configuration" / "permissions").audited(Audit.change("permission", Audit.delete, Audit.query("permission"))) -> handler {
+    (Method.DELETE / "configuration" / "permissions").audited(Audit.change("permission", Audit.delete)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
           service <- ZIO.service[PermissionService]
           tenantId <- request.url.queryZIO[TenantId]("tenantId")
+          _ <- Audit.tenant(tenantId)
           permission <- request.url.queryZIO[Permission]("permission")
+          _ <- Audit.target(permission)
           _ <- service.deletePermission(tenantId, permission)
         yield Response.status(Status.NoContent)
     }

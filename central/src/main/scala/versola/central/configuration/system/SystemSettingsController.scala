@@ -37,12 +37,13 @@ object SystemSettingsController extends AuditedController:
     }
 
   val upsertSystemSettingsEndpoint =
-    (Method.PUT / "configuration" / "system-settings").audited(Audit.change("system-settings", Audit.update, Audit.Nowhere)) -> handler {
+    (Method.PUT / "configuration" / "system-settings").audited(Audit.change("system-settings", Audit.update)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
           service <- ZIO.service[SystemSettingsService]
           body <- request.bodyAs[SystemSettingsRecord]
+          _ <- Audit.changed(body)
           _ <- service.upsertSettings(body)
         yield Response.status(Status.NoContent)
     }

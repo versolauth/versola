@@ -46,13 +46,13 @@ object AuthorizationPresetController extends AuditedController:
     (Method.POST / "configuration" / "auth-request-presets").audited(Audit.change(
       "auth-request-preset",
       Audit.create,
-      Audit.body("clientId"),
       Some("client"),
     )) -> handler { (req: Request) =>
       for
         _ <- authorizeBasic(req)
         service <- ZIO.service[AuthorizationPresetService]
         body <- req.bodyAs[SaveAuthorizationPresetsRequest]
+        _ <- Audit.target(body.clientId)
         result <- service.savePresets(body)
       yield result match
         case Right(_) => Response.status(Status.NoContent)

@@ -1,5 +1,8 @@
 package versola.central.audit
 
+import versola.central.configuration.clients.ClientId
+import versola.central.configuration.tenants.TenantId
+import versola.central.users.UserId
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.audit.*
 import versola.util.http.Observability
@@ -59,6 +62,12 @@ object AuditHookSpec extends ZIOSpecDefault:
       recorded <- seen.get
     yield (response, recorded))
 
+  /** A handler that knows what it acts on, as a controller's does once it has decoded its request. */
+  private def named(id: String, tenant: Option[String] = None, body: String = "") =
+    handler((_: Request) =>
+      Audit.target(ClientId(id)) *> ZIO.foreachDiscard(tenant)(t => Audit.tenant(TenantId(t))) *> ZIO.succeed(Response.text(body)),
+    )
+
   private def ok(body: String = "") = handler((_: Request) => ZIO.succeed(Response.text(body)))
   private val createClient = Method.POST / "configuration" / "clients" / "web"
   private val updateClient = Method.PUT / "configuration" / "clients" / "web"
@@ -66,7 +75,6 @@ object AuditHookSpec extends ZIOSpecDefault:
   private val deleteClient = Method.DELETE / "configuration" / "clients"
   private val findUsers = Method.GET / "users"
   private val listClients = Method.GET / "configuration" / "clients"
-  private val unknownRoute = Method.POST / "configuration" / "not-in-the-table"
 
   private def post(path: String, body: String) = Request.post(URL(Path.decode(path)), Body.fromString(body))
 
@@ -74,8 +82,8 @@ object AuditHookSpec extends ZIOSpecDefault:
     test("a change is recorded as admin.<resource>.<operation> with its actor, tenant, target and the route it came by") {
       for
         (response, recorded) <- serve(
-          Routes(createClient -> ok()),
-          asAdmin(post("/configuration/clients/web", s"""{"id":"web-app","tenantId":"acme"}""")),
+          Routes(createClient -> named("web-app", tenant = Some("acme"))),
+          asAdmin(post("/configuration/clients/web", "{}")),
         )
       yield
         val event = recorded.head
@@ -85,23 +93,25 @@ object AuditHookSpec extends ZIOSpecDefault:
           event.draft.outcome == AuditOutcome.success,
           event.draft.reason.isEmpty,
           event.draft.actor.contains((CentralAudit.Actors.Admin, Some(admin))),
+          // the type of the target is the route's, its id the handler's
           event.draft.target.contains(("client", "web-app")),
           event.draft.userId.isEmpty,
           event.context.tenantId.contains("default"),
           event.details("path") == Json.Str("/configuration/clients/web"),
           event.details("status") == Json.Num(200),
           event.details("tenantId") == Json.Str("acme"),
+          !event.details.contains("query"),
           // the second event is the same call's: who looked at the secret it handed back
           recorded(1).draft.target.contains(("client", "web-app")),
           recorded(1).draft.actor.contains((CentralAudit.Actors.Admin, Some(admin))),
         )
     },
-    test("the handler reads the body the hook read to find the target") {
+    test("the hook does not read the request body: the handler gets it as it came") {
       val echo = handler((request: Request) => request.body.asString.map(Response.text(_)).orDie)
       for
-        (response, _) <- serve(Routes(createClient -> echo), asAdmin(post("/configuration/clients/web", """{"id":"web-app"}""")))
+        (response, recorded) <- serve(Routes(createClient -> echo), asAdmin(post("/configuration/clients/web", """{"id":"web-app"}""")))
         body <- response.body.asString
-      yield assertTrue(body == """{"id":"web-app"}""")
+      yield assertTrue(body == """{"id":"web-app"}""", recorded.head.draft.target.isEmpty)
     },
     test("a change that did not happen is recorded with its outcome: 4xx and 5xx a failure with the request's error code, 401 and 403 denied") {
       def answering(status: Status, code: Option[String]) =
@@ -128,8 +138,8 @@ object AuditHookSpec extends ZIOSpecDefault:
       )
     },
     test("a response that is an error value of the handler, and one that is a defect, are recorded and still answered") {
-      val refused = handler((_: Request) => ZIO.succeed(Response.forbidden)).tapZIO(_ => ZIO.unit)
-      val failing: Handler[Any, Response, Request, Response] = handler((_: Request) => ZIO.fail(Response.forbidden))
+      val refused = handler((_: Request) => Audit.target(ClientId("c1")) *> ZIO.succeed(Response.forbidden))
+      val failing: Handler[Any, Response, Request, Response] = handler((_: Request) => Audit.target(ClientId("c1")) *> ZIO.fail(Response.forbidden))
       val request = asAdmin(Request.delete(URL(Path.decode("/configuration/clients")).addQueryParam("clientId", "c1")))
       for
         (response, recorded) <- serve(Routes(deleteClient -> refused), request)
@@ -138,7 +148,6 @@ object AuditHookSpec extends ZIOSpecDefault:
         response.status == Status.Forbidden,
         recorded.map(e => (e.kind, e.draft.outcome)) == List(("admin.client.delete", AuditOutcome.denied)),
         recorded.head.draft.target.contains(("client", "c1")),
-        recorded.head.details("query") == Json.Obj("clientId" -> Json.Str("c1")),
         failed.status == Status.Forbidden,
         failedRecorded.map(e => (e.kind, e.draft.outcome)) == List(("admin.client.delete", AuditOutcome.denied)),
       )
@@ -146,51 +155,55 @@ object AuditHookSpec extends ZIOSpecDefault:
     test("an action that reveals a secret records admin.secret.revealed only when it succeeded") {
       val request = asAdmin(Request.post(URL(Path.decode("/configuration/clients/rotate-secret")).addQueryParam("clientId", "c1"), Body.empty))
       for
-        (_, revealed) <- serve(Routes(rotateSecret -> ok("secret")), request)
-        (_, refused) <- serve(Routes(rotateSecret -> handler((_: Request) => ZIO.succeed(Response.status(Status.Conflict)))), request)
+        (_, revealed) <- serve(Routes(rotateSecret -> named("c1", body = "secret")), request)
+        (_, refused) <- serve(
+          Routes(rotateSecret -> handler((_: Request) => Audit.target(ClientId("c1")) *> ZIO.succeed(Response.status(Status.Conflict)))),
+          request,
+        )
       yield assertTrue(
         revealed.map(_.kind) == List("admin.client-secret.action:rotate-secret", "admin.secret.revealed"),
         revealed.forall(_.draft.target.contains(("client", "c1"))),
         refused.map(_.kind) == List("admin.client-secret.action:rotate-secret"),
         refused.head.draft.outcome == AuditOutcome.failure,
+        refused.forall(_.draft.target.contains(("client", "c1"))),
       )
     },
-    test("what a service puts in the audit context wins: the target, the user and the names of the fields changed") {
+    test("what a handler tells the log: the target, the user it is about and the names of the fields changed, never their values") {
       val handled = handler { (_: Request) =>
-        AuditContext.setTarget("client", "from-the-service") *> AuditContext.setChanged(Set("redirectUris", "clientName")) *>
-          AuditContext.setUser(UUID.fromString(targetUser)).as(Response.ok)
+        Audit.target(UserId(UUID.fromString(targetUser))) *> Audit.changedFields("redirectUris" -> true, "clientName" -> true, "theme" -> false) *>
+          ZIO.succeed(Response.ok)
       }
+      val roles = Method.PATCH / "users" / "roles"
+      val deleteUser = Method.DELETE / "users"
       for
-        (_, recorded) <- serve(
-          Routes(updateClient -> handled),
-          asAdmin(Request.put(URL(Path.decode("/configuration/clients/web")), Body.fromString("""{"clientId":"from-the-body"}"""))),
-        )
+        (_, recorded) <- serve(Routes(roles -> handled), asAdmin(Request.patch("/users/roles", Body.fromString(s"""{"add":["secret-role"]}"""))))
+        (_, deleted) <- serve(Routes(deleteUser -> handled), asAdmin(Request.delete(URL(Path.decode("/users")).addQueryParam("id", targetUser))))
       yield assertTrue(
-        recorded.head.draft.target.contains(("client", "from-the-service")),
+        // the type is the route's (`user`), the id the handler's, and the user is the row's user
+        recorded.head.draft.target.contains(("user", targetUser)),
         recorded.head.draft.userId.contains(UUID.fromString(targetUser)),
         recorded.head.details("changed") == Json.Arr(Json.Str("clientName"), Json.Str("redirectUris")),
+        !recorded.head.draft.details.toJson.toJson.contains("secret-role"),
+        deleted.head.kind == "admin.user.delete",
+        deleted.head.draft.userId.contains(UUID.fromString(targetUser)),
       )
     },
-    test("an update records the names of the fields its body carried, never their values, and not the ones that name what is updated") {
-      for
-        (_, recorded) <- serve(
-          Routes(updateClient -> ok()),
-          asAdmin(Request.put(
-            URL(Path.decode("/configuration/clients/web")),
-            Body.fromString(
-              """{"clientId":"c1","tenantId":"t","userId":"x","redirectUris":{"add":["https://secret.example.com"]},"clientName":{"en":"N"}}""",
-            ),
-          )),
-        )
+    test("a route whose handler fails before it knows what it acts on is recorded without a target") {
+      val early = handler((_: Request) => ZIO.succeed(Response.status(Status.BadRequest)))
+      for (_, recorded) <-
+          serve(Routes(updateClient -> early), asAdmin(Request.put(URL(Path.decode("/configuration/clients/web")), Body.fromString("not json"))))
       yield assertTrue(
-        recorded.head.details("changed") == Json.Arr(Json.Str("clientName"), Json.Str("redirectUris")),
-        !recorded.head.draft.details.toJson.toJson.contains("secret.example.com"),
+        recorded.map(_.kind) == List("admin.client.update"),
+        recorded.head.draft.target.isEmpty,
+        recorded.head.draft.outcome == AuditOutcome.failure,
       )
     },
     test("a look at a user is recorded with the user as target and as the row's user, only when it succeeded and the deployment records it") {
       val found = Request.get(URL(Path.decode("/users")).addQueryParam("id", targetUser))
+      def knowing(status: Status) =
+        handler((_: Request) => Audit.target(UserId(UUID.fromString(targetUser))) *> ZIO.succeed(Response.status(status)))
       def get(status: Status, tiers: CentralConfig) =
-        serve(Routes(findUsers -> handler((_: Request) => ZIO.succeed(Response.status(status)))), asAdmin(found), tiers).map(_._2)
+        serve(Routes(findUsers -> knowing(status)), asAdmin(found), tiers).map(_._2)
       for
         viewed <- get(Status.Ok, settings())
         missing <- get(Status.NotFound, settings())
@@ -202,24 +215,6 @@ object AuditHookSpec extends ZIOSpecDefault:
         viewed.head.draft.outcome == AuditOutcome.success,
         missing.isEmpty,
         off.isEmpty,
-      )
-    },
-    test("a user action takes the user from the query or the body, and a target that is not a UUID is no user of ours") {
-      val deleteUser = Method.DELETE / "users"
-      val roles = Method.PATCH / "users" / "roles"
-      def delete(id: String) = asAdmin(Request.delete(URL(Path.decode("/users")).addQueryParam("id", id)))
-      for
-        (_, byQuery) <- serve(Routes(deleteUser -> ok()), delete(targetUser))
-        (_, byBody) <-
-          serve(Routes(roles -> ok()), asAdmin(Request.patch("/users/roles", Body.fromString(s"""{"userId":"$targetUser","add":["r"]}"""))))
-        (_, notAUuid) <- serve(Routes(deleteUser -> ok()), delete("someone"))
-      yield assertTrue(
-        byQuery.head.kind == "admin.user.delete",
-        byQuery.head.draft.userId.contains(UUID.fromString(targetUser)),
-        byBody.head.kind == "admin.user-roles.update",
-        byBody.head.draft.userId.contains(UUID.fromString(targetUser)),
-        notAUuid.head.draft.userId.isEmpty,
-        notAUuid.head.draft.target.contains(("user", "someone")),
       )
     },
     test("a change auth makes is recorded by central with its outcome as well, success included") {
@@ -307,8 +302,8 @@ object AuditHookSpec extends ZIOSpecDefault:
       val long = "x" * 10000
       for
         (_, recorded) <- serve(
-          Routes(createClient -> ok()),
-          post("/configuration/clients/web", s"""{"id":"$long"}""")
+          Routes(createClient -> named(long)),
+          post("/configuration/clients/web", "{}")
             .updateURL(_.addQueryParam(AuditHook.ActorIdParam, long).addQueryParam(AuditHook.ActorTenantParam, long)),
         )
       yield assertTrue(
@@ -318,21 +313,17 @@ object AuditHookSpec extends ZIOSpecDefault:
         recorded.head.draft.target.exists(_._2.length <= 256),
       )
     },
-    test("reads nobody records, internal routes and routes the table does not know record nothing, and are served as before") {
+    test("reads nobody records and internal routes record nothing, and are served as before") {
       val syncRoute = Method.GET / "configuration" / "clients" / "sync"
       for
         (listed, list) <- serve(Routes(listClients -> ok("list")), asAdmin(Request.get(URL(Path.decode("/configuration/clients")))))
         (synced, sync) <- serve(Routes(syncRoute -> ok("sync")), Request.get(URL(Path.decode("/configuration/clients/sync"))))
-        (unknown, other) <- serve(Routes(unknownRoute -> ok("hi")), asAdmin(post("/configuration/not-in-the-table", "{}")))
         listedBody <- listed.body.asString
-        unknownBody <- unknown.body.asString
       yield assertTrue(
         list.isEmpty,
         sync.isEmpty,
-        other.isEmpty,
         listedBody == "list",
         synced.status == Status.Ok,
-        unknownBody == "hi",
       )
     },
   ).provide(TestClient.layer) @@ TestAspect.sequential

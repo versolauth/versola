@@ -46,12 +46,15 @@ object OtpChallengeController extends AuditedController:
     }
 
   val upsertTemplateEndpoint =
-    (Method.PUT / "configuration" / "challenges" / "otp-templates").audited(Audit.change("otp-template", Audit.update, Audit.body("id"))) -> handler {
+    (Method.PUT / "configuration" / "challenges" / "otp-templates").audited(Audit.change("otp-template", Audit.update)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
           service <- ZIO.service[OtpChallengeService]
           body <- request.bodyAs[UpsertOtpTemplateRequest]
+          _ <- Audit.targetByText(body.id)
+          _ <- Audit.tenant(body.tenantId)
+          _ <- Audit.changed(body, "id", "tenantId")
           _ <- service.upsertTemplate(OtpTemplateRecord(body.id, body.tenantId, body.localizations, body.purpose, body.channel))
         yield Response.status(Status.NoContent)
     }
@@ -60,12 +63,13 @@ object OtpChallengeController extends AuditedController:
     (Method.DELETE / "configuration" / "challenges" / "otp-templates").audited(Audit.change(
       "otp-template",
       Audit.delete,
-      Audit.body("id"),
     )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OtpChallengeService]
         body <- request.bodyAs[DeleteOtpTemplateRequest]
+        _ <- Audit.targetByText(body.id)
+        _ <- Audit.tenant(body.tenantId)
         _ <- service.deleteTemplate(body.id, body.tenantId, body.purpose, body.channel)
       yield Response.status(Status.NoContent)
     }
@@ -93,13 +97,15 @@ object OtpChallengeController extends AuditedController:
     (Method.PUT / "configuration" / "challenges" / "challenge-settings").audited(Audit.change(
       "challenge-settings",
       Audit.update,
-      Audit.body("tenantId"),
       Some("tenant"),
     )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ChallengeSettingsService]
         body <- request.bodyAs[UpsertChallengeSettingsRequest]
+        _ <- Audit.target(body.tenantId)
+        _ <- Audit.changed(body, "tenantId")
+        _ <- Audit.tenant(body.tenantId)
         existing <- service.getSettings(body.tenantId)
         mtlsCertificateHeader = body.mtlsCertificateHeader.applyTo(existing.flatMap(_.mtlsCertificateHeader))
         mtlsCertificateEncoding = body.mtlsCertificateEncoding.applyTo(existing.flatMap(_.mtlsCertificateEncoding))
@@ -171,13 +177,15 @@ object OtpChallengeController extends AuditedController:
     (Method.PATCH / "configuration" / "challenges" / "challenge-settings").audited(Audit.change(
       "challenge-settings",
       Audit.update,
-      Audit.body("tenantId"),
       Some("tenant"),
     )) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ChallengeSettingsService]
         body <- request.bodyAs[PatchChallengeSettingsRequest]
+        _ <- Audit.target(body.tenantId)
+        _ <- Audit.changed(body, "tenantId")
+        _ <- Audit.tenant(body.tenantId)
         _ <- service.patchSettings(body)
       yield Response.status(Status.NoContent))
         .catchAll:

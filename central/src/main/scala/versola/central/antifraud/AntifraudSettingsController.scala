@@ -44,11 +44,12 @@ object AntifraudSettingsController extends AuditedController:
     }
 
   val putEndpoint =
-    (Method.PUT / "antifraud" / "settings").audited(Audit.change("antifraud-settings", Audit.update, Audit.Nowhere)) -> handler {
+    (Method.PUT / "antifraud" / "settings").audited(Audit.change("antifraud-settings", Audit.update)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
           body <- request.bodyAs[PutAntifraudSettingsRequest]
+          _ <- Audit.replaced(body.settings)
           expected <- expectedVersion(request, body.version)
           service <- ZIO.service[AntifraudSettingsService]
           response <- guarded(service.put(body.copy(version = expected)).map(versioned))
@@ -57,7 +58,7 @@ object AntifraudSettingsController extends AuditedController:
 
   /** Changes the settings by the merge patch in the body; answers all the settings, with their new version. */
   val patchEndpoint =
-    (Method.PATCH / "antifraud" / "settings").audited(Audit.change("antifraud-settings", Audit.update, Audit.Nowhere)) -> handler {
+    (Method.PATCH / "antifraud" / "settings").audited(Audit.change("antifraud-settings", Audit.update)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)
@@ -80,6 +81,7 @@ object AntifraudSettingsController extends AuditedController:
         BadRequest(if own.exists(_._1 == "userId") then message else s"userId is missing: edge adds it from the verified token ($message)"),
       )
       patch <- ZIO.fromEither(Json.Obj(rest).as[AntifraudSettingsPatch]).mapError(BadRequest(_))
+      _ <- Audit.changed(patch)
       expected <- expectedVersion(request, envelope.version)
       service <- ZIO.service[AntifraudSettingsService]
       response <- guarded(service.patch(PatchAntifraudSettingsRequest(patch = patch, userId = envelope.userId, version = expected)).map(versioned))
@@ -96,7 +98,7 @@ object AntifraudSettingsController extends AuditedController:
 
   /** Puts everything off. The caller is in the body, where edge puts it for a request that is not a `GET`. */
   val deleteEndpoint =
-    (Method.DELETE / "antifraud" / "settings").audited(Audit.change("antifraud-settings", Audit.delete, Audit.Nowhere)) -> handler {
+    (Method.DELETE / "antifraud" / "settings").audited(Audit.change("antifraud-settings", Audit.delete)) -> handler {
       (request: Request) =>
         for
           _ <- authorizeBasic(request)

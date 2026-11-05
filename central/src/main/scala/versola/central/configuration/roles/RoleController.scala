@@ -24,32 +24,39 @@ object RoleController extends AuditedController:
   )
 
   val createRoleEndpoint =
-    (Method.POST / "configuration" / "roles").audited(Audit.change("role", Audit.create, Audit.body("id"))) -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "roles").audited(Audit.change("role", Audit.create)) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[RoleService]
         body <- request.bodyAs[CreateRoleRequest]
+        _ <- Audit.target(body.id)
+        _ <- Audit.tenant(body.tenantId)
         role <- service.createRole(body)
       yield Response.status(Status.Created)
     }
 
   val updateRoleEndpoint =
-    (Method.PUT / "configuration" / "roles").audited(Audit.change("role", Audit.update, Audit.body("id"))) -> handler { (request: Request) =>
+    (Method.PUT / "configuration" / "roles").audited(Audit.change("role", Audit.update)) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[RoleService]
         body <- request.bodyAs[UpdateRoleRequest]
+        _ <- Audit.target(body.id)
+        _ <- Audit.tenant(body.tenantId)
+        _ <- Audit.changed(body, "tenantId", "id")
         _ <- service.updateRole(body)
       yield Response.status(Status.NoContent)
     }
 
   val deleteRoleEndpoint =
-    (Method.DELETE / "configuration" / "roles").audited(Audit.change("role", Audit.delete, Audit.query("roleId"))) -> handler { (request: Request) =>
+    (Method.DELETE / "configuration" / "roles").audited(Audit.change("role", Audit.delete)) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[RoleService]
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
+        _ <- Audit.tenant(tenantId)
         roleId <- request.url.queryZIO[RoleId]("roleId")
+        _ <- Audit.target(roleId)
         _ <- service.deleteRole(tenantId, roleId)
       yield Response.status(Status.NoContent))
         .catchSome:
