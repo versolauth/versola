@@ -34,7 +34,10 @@ object AntifraudCountersController extends Controller:
               AuditDraft(
                 kind = AuthAuditKinds.AntifraudCountersReset,
                 outcome = AuditOutcome.success,
+                reason = None,
                 actor = Some((AuthActors.admin, Some(body.userId.toString))),
+                userId = None,
+                target = None,
                 details = AuthAuditDetails.AntifraudCountersReset(
                   scope = body.scope.toString,
                   valueType = body.valueType.map(_.toString),

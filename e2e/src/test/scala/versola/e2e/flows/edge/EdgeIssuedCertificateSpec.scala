@@ -28,19 +28,45 @@ object EdgeIssuedCertificateSpec
     resourceId = "e2e-edge-issued-certificate",
     resourceUri = UpstreamStub.uriOn(UpstreamPort),
     endpoints = List(
-      EdgeFixture.Endpoint(name = "items", method = "GET", path = "/items"),
+      EdgeFixture.Endpoint(
+        name = "items",
+        method = "GET",
+        path = "/items",
+        permitted = true,
+        fetchUserInfo = false,
+        allow = None,
+        inject = Nil,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
       // Auth answers `/userinfo` for a certificate-bound token only over a connection
       // presenting that certificate, so this endpoint has edge present it a second time.
       EdgeFixture.Endpoint(
         name = "profile",
         method = "GET",
         path = "/profile",
+        permitted = true,
         fetchUserInfo = true,
+        allow = None,
         inject = List(Fixtures.inject("header", "X-User-Sub", "user.sub")),
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
       ),
     ),
-    issuedCertificate = true,
+    scopes = Set("openid", "email", "offline_access"),
+    presetScope = Set("openid"),
+    postLogoutRedirectUri = None,
+    cookiePath = None,
     awaitProxyReady = true,
+    privateKeyJwt = false,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
+    mutualTls = false,
+    nativeApp = false,
+    issuedCertificate = true,
+    enrolledCertificate = false,
   )
 
   override val bootstrap: ZLayer[Any, Any, OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub] =

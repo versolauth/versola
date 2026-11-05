@@ -20,7 +20,7 @@ object AuditReadRepository:
 
   case class KindCount(kind: String, outcome: String, count: Long) derives JsonCodec
   case class ClientCount(clientId: String, logins: Long, tokens: Long) derives JsonCodec
-  case class IpCount(ip: String, firstSeen: Instant, lastSeen: Instant, count: Long, country: Option[String] = None) derives JsonCodec
+  case class IpCount(ip: String, firstSeen: Instant, lastSeen: Instant, count: Long, country: Option[String]) derives JsonCodec
   case class UserAgentCount(userAgent: String, firstSeen: Instant, lastSeen: Instant, count: Long) derives JsonCodec
   case class SessionCount(created: Long, ended: Long) derives JsonCodec
   case class Factor(kind: String, at: Instant) derives JsonCodec

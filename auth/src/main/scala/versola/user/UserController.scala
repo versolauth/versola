@@ -47,6 +47,7 @@ object UserController extends Controller:
         AuditDraft(
           kind = kind,
           outcome = AuditOutcome.success,
+          reason = None,
           actor = actor,
           userId = Some(userId),
           target = Some(("user", userId.toString)),
@@ -114,7 +115,7 @@ object UserController extends Controller:
         _ <- Observability.setUserId(id.toString)
         _ <- logoutService.invalidateAllSessions(id, "user_deleted")
         _ <- repo.delete(id)
-        _ <- audited(AuthAuditKinds.AccountDeleted, id, AuthAuditDetails.Account(via = "admin"), asService)
+        _ <- audited(AuthAuditKinds.AccountDeleted, id, AuthAuditDetails.Account(via = "admin", detail = None), asService)
       yield Response.status(Status.NoContent)
     }
 
@@ -364,7 +365,7 @@ object UserController extends Controller:
         tenantId = body.tenantId
         subjects = (List(body.userId.toString) ++ body.email.map(_.toString) ++ body.phone.map(_.toString)).distinct
         _ <- ZIO.foreachDiscard(subjects)(throttleRepo.deleteAllForSubject(tenantId, _))
-        _ <- audited(AuthAuditKinds.AccountLimitsReset, body.userId, AuthAuditDetails.Account(via = "admin"))
+        _ <- audited(AuthAuditKinds.AccountLimitsReset, body.userId, AuthAuditDetails.Account(via = "admin", detail = None))
       yield Response.status(Status.NoContent)
     }
 
@@ -400,7 +401,11 @@ object UserController extends Controller:
         actorId <- request.queryZIO[Option[UserId]]("actorId")
         _ <- actedBy(actorId)
         _ <- repo.deleteByUser(credentialId, userId)
-        _ <- audited(AuthAuditKinds.AccountPasskeyRemoved, userId, AuthAuditDetails.Passkey(credentialPrefix = Some(credentialId.toString.take(9))))
+        _ <- audited(
+          AuthAuditKinds.AccountPasskeyRemoved,
+          userId,
+          AuthAuditDetails.Passkey(credentialPrefix = Some(credentialId.toString.take(9)), deviceType = None),
+        )
       yield Response.status(Status.NoContent)
     }
 
@@ -433,6 +438,6 @@ object UserController extends Controller:
           .mapError:
             case PasswordReuseError(n) => RuntimeException(s"Password reuse: must differ from last $n passwords")
             case t: Throwable => t
-        _ <- audited(AuthAuditKinds.AccountPasswordSet, body.userId, AuthAuditDetails.Account(via = "admin"))
+        _ <- audited(AuthAuditKinds.AccountPasswordSet, body.userId, AuthAuditDetails.Account(via = "admin", detail = None))
       yield Response.status(Status.NoContent)
     }

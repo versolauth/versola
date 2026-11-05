@@ -109,6 +109,9 @@ object AuditHook:
           initial = AuditContext.State(
             tenantId = actor.tenantId.map(_.toString),
             actor = Some((actor.actorType, actor.id)),
+            userId = None,
+            target = None,
+            changed = Set.empty,
             userAgent = request.headers.get("User-Agent").map(clipped),
           )
           // What the request's events say of where it came from (the client and the session of the token).

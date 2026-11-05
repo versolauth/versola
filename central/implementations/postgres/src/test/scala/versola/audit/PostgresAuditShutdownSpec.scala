@@ -39,8 +39,11 @@ object PostgresAuditShutdownSpec extends PostgresSpec:
   private def draft(marker: String) = AuditDraft(
     kind = CentralAudit.admin("client", "create"),
     outcome = AuditOutcome.success,
+    reason = None,
     actor = Some((CentralAudit.Actors.Admin, Some("shutdown-check"))),
+    userId = None,
     target = Some(("client", marker)),
+    details = AuditDetails.empty,
   )
 
   /** The repository of the app, and what it was given: `insertBatch` waits `delay` first, and says when a write has started. */

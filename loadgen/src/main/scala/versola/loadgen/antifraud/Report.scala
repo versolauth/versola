@@ -27,8 +27,8 @@ case class ScenarioResult(
     smsRanges: Int,
     smsBusiestRange: Long,
     auth: AuthAntifraudMetrics,
-    challenge: Option[ChallengeSnapshot] = None,
-    fakeTiming: Option[FakeTimingResult] = None,
+    challenge: Option[ChallengeSnapshot],
+    fakeTiming: Option[FakeTimingResult],
 ) derives JsonCodec
 
 /** @param client    the kind of client that asked for the codes (`script` or `plain`)
@@ -38,8 +38,8 @@ case class AntifraudReport(
     label: String,
     startedAt: String,
     scenarios: List[ScenarioResult],
-    client: String = "script",
-    instances: List[String] = Nil,
+    client: String,
+    instances: List[String],
 ) derives JsonCodec
 
 /** One group of the `fake-timing` scenario: the requests that were made, how they ended, how many numbers were sent a code
@@ -89,7 +89,9 @@ object FakeTimingCheck:
       Option.when(fake.reachedSms > 0)(
         s"${fake.reachedSms} of the fake numbers were sent a code: the fake entry is not seeded, has not been reloaded yet (auth reads the lists every few seconds), or does not match these numbers",
       ),
-      Option.when(real.sent > 0 && real.reachedSms == 0)("no real number was sent a code: the SMS stub is not what auth sends to (env = prod, otp-provider)"),
+      Option.when(
+        real.sent > 0 && real.reachedSms == 0,
+      )("no real number was sent a code: the SMS stub is not what auth sends to (env = prod, otp-provider)"),
       Option.when(fake.sent < minSamples)(s"only ${fake.sent} fake requests were sent (at least $minSamples are needed)"),
       Option.when(real.sent < minSamples)(s"only ${real.sent} real requests were sent (at least $minSamples are needed)"),
       Option.when(math.abs(gap) > toleranceMs)(f"the medians differ by $gap%.1f ms, more than the tolerance of $toleranceMs%.1f ms"),

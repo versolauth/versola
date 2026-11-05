@@ -180,6 +180,7 @@ case class CreateNativeClientRequest(
       issueEdgeClientCertificate,
       enrollEdgeClientCertificate,
       themeOverrides,
+      estEnrollment = false,
     )
 
 /** Code calling an API on its own behalf, with no user present: no redirect URIs, sign-in flow,

@@ -121,6 +121,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     issueEdgeClientCertificate = true,
     enrollEdgeClientCertificate = false,
     themeOverrides = None,
+    estEnrollment = false,
   )
 
   private def record =

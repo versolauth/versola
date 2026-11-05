@@ -114,7 +114,7 @@ case class PermissionsClaims(
     @jsonField("client_id") clientId: Option[ClientId],
     @jsonField("tenant_id") tenantId: Option[TenantId],
     roles: Option[List[RoleId]],
-    @jsonField("sid") sid: Option[SessionId] = None,
-    @jsonField("fam") family: Option[RefreshTokenFamilyId] = None,
+    @jsonField("sid") sid: Option[SessionId],
+    @jsonField("fam") family: Option[RefreshTokenFamilyId],
     @jsonField("cnf") confirmation: Option[Confirmation],
 ) derives JsonCodec

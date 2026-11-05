@@ -155,8 +155,8 @@ case class AntifraudListFilter(
     listType: Option[AntifraudListType],
     valueType: Option[AntifraudValueType],
     tenantId: Option[Option[TenantId]],
-    visibleTo: Option[TenantId] = None,
+    visibleTo: Option[TenantId],
 )
 
 object AntifraudListFilter:
-  val all: AntifraudListFilter = AntifraudListFilter(listType = None, valueType = None, tenantId = None)
+  val all: AntifraudListFilter = AntifraudListFilter(listType = None, valueType = None, tenantId = None, visibleTo = None)

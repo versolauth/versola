@@ -248,8 +248,10 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
             subjectHash = "h1",
             destPrefix = Some("491512"),
             userAgent = Some(ua),
+            decision = None,
             score = None,
             rules = Nil,
+            wouldAction = None,
             asn = Some(24940),
             asnClass = Some("hosting"),
             country = Some("DE"),
@@ -321,8 +323,12 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
             subjectHash = "h1",
             destPrefix = Some("491512"),
             userAgent = Some("Mozilla/5.0 (tenants)"),
+            decision = None,
             score = None,
             rules = Nil,
+            wouldAction = None,
+            asn = None,
+            asnClass = None,
             country = Some("DE"),
           )
           _ <- events.insertBatch(
@@ -521,8 +527,13 @@ object AntifraudListRepositorySpec:
     subjectHash = "h",
     destPrefix = destPrefix,
     userAgent = None,
+    decision = None,
     score = None,
     rules = Nil,
+    wouldAction = None,
+    asn = None,
+    asnClass = None,
+    country = None,
   )
 
   def entry(

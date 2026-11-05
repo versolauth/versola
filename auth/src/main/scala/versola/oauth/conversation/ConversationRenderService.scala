@@ -121,7 +121,7 @@ object ConversationRenderService:
         pending: Boolean,
         resendInterval: Int,
         /** The other ways to pass this step that the page may offer now, worked out afresh for each render. */
-        alternatives: List[CodeAlternative] = Nil,
+        alternatives: List[CodeAlternative],
     ) extends StepView
 
     @jsonHint("passkey-enroll")

@@ -42,6 +42,7 @@ object ConversationControllerSpec extends UnitSpecBase:
             redirectUri = "https://example.com/callback",
             state = Some("test-state"),
             responseMode = Some(ResponseMode.Query),
+            useFragment = None,
           ),
           Duration.Zero,
           TestEnvConfig.coreConfig.security.conversationCookieSecret,

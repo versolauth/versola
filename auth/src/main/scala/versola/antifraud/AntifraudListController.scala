@@ -132,7 +132,10 @@ object AntifraudListController extends Controller:
         AuditDraft(
           kind = AuthAuditKinds.AntifraudListChanged,
           outcome = AuditOutcome.success,
+          reason = None,
           actor = Some((AuthActors.admin, Some(admin.toString))),
+          userId = None,
+          target = None,
           details = AuthAuditDetails.AntifraudListChanged(
             action = action,
             listType = entry.listType.toString,

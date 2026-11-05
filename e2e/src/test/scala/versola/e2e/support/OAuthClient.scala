@@ -175,8 +175,8 @@ object UserinfoResult:
       givenName: Option[String],
       familyName: Option[String],
       phoneNumber: Option[String],
-      emailVerified: Option[Boolean] = None,
-      phoneVerified: Option[Boolean] = None,
+      emailVerified: Option[Boolean],
+      phoneVerified: Option[Boolean],
   ) extends UserinfoResult
 
   case class Failure(response: Response, body: String) extends UserinfoResult
@@ -218,7 +218,7 @@ sealed trait IntrospectResult:
       ZIO.fail(RuntimeException(s"Expected introspect success but got: status=${resp.status} body=$body"))
 
 object IntrospectResult:
-  case class Success(response: Response, active: Boolean, cnf: Option[Json.Obj] = None) extends IntrospectResult
+  case class Success(response: Response, active: Boolean, cnf: Option[Json.Obj]) extends IntrospectResult
   case class Failure(response: Response, body: String) extends IntrospectResult
 
   private case class Raw(active: Boolean, cnf: Option[Json.Obj]) derives JsonDecoder
@@ -2020,7 +2020,7 @@ object OAuthClient:
       dpopMinRsaKeySize: Option[Int],
       edgeSigningKey: Option[zio.json.ast.Json],
       edgeClientCertificate: Option[String],
-      applicationType: Option[String] = None,
+      applicationType: Option[String],
       issueEdgeClientCertificate: Boolean,
       enrollEdgeClientCertificate: Boolean,
       estEnrollment: Boolean,

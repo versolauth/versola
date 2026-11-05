@@ -170,7 +170,7 @@ object AuthClient:
 
   private case class UserClaimsResponse(claims: Json.Obj) derives JsonCodec
 
-  private case class PatchUserClaimsPayload(id: UserId, claims: Json.Obj, actorId: Option[UserId] = None) derives JsonCodec
+  private case class PatchUserClaimsPayload(id: UserId, claims: Json.Obj, actorId: Option[UserId]) derives JsonCodec
 
   private case class UserRolesResponse(roles: List[RoleId]) derives JsonCodec
 
@@ -231,27 +231,27 @@ object AuthClient:
       tenantId: TenantId,
       email: Option[Email],
       phone: Option[Phone],
-      actorId: Option[UserId] = None,
+      actorId: Option[UserId],
   ) derives JsonCodec
 
   private case class RenamePasskeyPayload(
       userId: UserId,
       credentialId: String,
       name: Option[String],
-      actorId: Option[UserId] = None,
+      actorId: Option[UserId],
   ) derives JsonCodec
 
   private case class ResetPasswordPayload(
       userId: UserId,
       expiresInSeconds: Long,
       channel: Option[DeliveryChannel],
-      actorId: Option[UserId] = None,
+      actorId: Option[UserId],
   ) derives JsonCodec
 
   private case class SetPasswordPayload(
       userId: UserId,
       password: String,
-      actorId: Option[UserId] = None,
+      actorId: Option[UserId],
   ) derives JsonCodec
 
   class Impl(

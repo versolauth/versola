@@ -7,7 +7,13 @@ import zio.*
   * a row with `count` 1, instead of being counted for a minute. */
 final class ImmediateClientAuthFailures(audit: AuditEvents) extends ClientAuthFailures:
   override def failed(clientId: String, reason: String, method: String): UIO[Unit] =
-    refused(AuthAuditKinds.ClientAuthFailed, AuditOutcome.denied, Some(clientId), reason, AuthAuditDetails.ClientAuthFailed(method, 0))
+    refused(
+      AuthAuditKinds.ClientAuthFailed,
+      AuditOutcome.denied,
+      Some(clientId),
+      reason,
+      AuthAuditDetails.ClientAuthFailed(method, 0, assertionJti = None),
+    )
 
   override def refused(
       kind: AuditKind,
@@ -22,6 +28,8 @@ final class ImmediateClientAuthFailures(audit: AuditEvents) extends ClientAuthFa
         outcome = outcome,
         reason = Some(reason),
         actor = Some((AuthActors.client, clientId)),
+        userId = None,
+        target = None,
         details = details.counted(1),
       ),
     )

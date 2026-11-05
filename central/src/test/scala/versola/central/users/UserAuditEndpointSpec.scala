@@ -35,6 +35,7 @@ object UserAuditEndpointSpec extends ZIOSpecDefault, ZIOStubs:
     events = Nil,
     nextCursor = Some("next"),
     partial = List("auth"),
+    truncated = false,
   )
 
   private def run(request: Request, service: AuditReportService, authorized: Boolean = true) =

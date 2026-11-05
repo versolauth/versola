@@ -30,11 +30,11 @@ case class EdgeFixture(
     endpoints: Map[String, String],
     /** The key pair backing `private_key_jwt`, for a fixture configured with it. The edge
       * holds the private half; this is the same pair, so a spec can check what auth saw. */
-    signer: Option[AssertionSigner] = None,
+    signer: Option[AssertionSigner],
     /** The certificate backing RFC 8705 mutual TLS, for a fixture configured with it. The
       * edge holds the same certificate and its private key, which is what it presents at the
       * handshake edge's own SSOClient makes to auth. */
-    certificate: Option[EdgeCertificate] = None,
+    certificate: Option[EdgeCertificate],
 ):
   def endpoint(name: String): String =
     endpoints.getOrElse(name, throw java.util.NoSuchElementException(s"No endpoint registered under '$name'"))
@@ -48,15 +48,15 @@ object EdgeFixture:
     */
   case class Endpoint(
       name: String,
-      method: String = "GET",
+      method: String,
       path: String,
-      permitted: Boolean = true,
-      fetchUserInfo: Boolean = false,
-      allow: Option[String] = None,
-      inject: List[Json] = Nil,
-      stepUpCondition: Option[String] = None,
-      stepUpAcr: Option[String] = None,
-      maxAge: Option[Int] = None,
+      permitted: Boolean,
+      fetchUserInfo: Boolean,
+      allow: Option[String],
+      inject: List[Json],
+      stepUpCondition: Option[String],
+      stepUpAcr: Option[String],
+      maxAge: Option[Int],
   )
 
   /** @param resourceId       a stable id, so a run that failed before cleaning up cannot leave a
@@ -74,46 +74,46 @@ object EdgeFixture:
   case class Config(
       resourceId: String,
       resourceUri: String,
-      endpoints: List[Endpoint] = Nil,
-      scopes: Set[String] = Set("openid", "email", "offline_access"),
-      presetScope: Set[String] = Set("openid"),
-      postLogoutRedirectUri: Option[String] = None,
-      cookiePath: Option[String] = None,
-      awaitProxyReady: Boolean = false,
+      endpoints: List[Endpoint],
+      scopes: Set[String],
+      presetScope: Set[String],
+      postLogoutRedirectUri: Option[String],
+      cookiePath: Option[String],
+      awaitProxyReady: Boolean,
       /** Register the client for RFC 7523 `private_key_jwt` instead of a secret, and hand the
         * private half to the edge as its `edgeSigningKey`. The fixture generates the pair and
         * exposes it as [[EdgeFixture.signer]]. */
-      privateKeyJwt: Boolean = false,
+      privateKeyJwt: Boolean,
       /** RFC 9101 §10.5. Needs `privateKeyJwt`: a request object is verified against the
         * client's registered keys, so there is nothing to sign one with otherwise. */
-      requireSignedRequestObject: Boolean = false,
+      requireSignedRequestObject: Boolean,
       /** RFC 9126 §6.2: the edge must push the authorization request to `/par` before
         * redirecting the browser. */
-      requirePushedAuthorizationRequests: Boolean = false,
+      requirePushedAuthorizationRequests: Boolean,
       /** Register the client for RFC 8705 §2.2 self-signed mutual TLS instead of a secret,
         * and hand the certificate -- private key included -- to the edge as its
         * `edgeClientCertificate`. Mutually exclusive with `privateKeyJwt`: a client
         * authenticates one way. The fixture generates the certificate and exposes it as
         * [[EdgeFixture.certificate]]. */
-      mutualTls: Boolean = false,
+      mutualTls: Boolean,
       /** #420/#421: register the client as a native app fronted by edge -- `application_type`
         * `native`, `tls_client_auth` by a certificate issued by the CA auth's own mutual-TLS
         * listener trusts (held by edge as `edgeClientCertificate`), PAR, DPoP-bound tokens and
         * an https App Link redirect ([[EdgeFixture.nativeRedirectUri]]). No login preset is
         * registered: a native app is served by the native endpoints, never by `/login`. Mutually
         * exclusive with `privateKeyJwt` and `mutualTls`. */
-      nativeApp: Boolean = false,
+      nativeApp: Boolean,
       /** #440: central issues the certificate edge presents, from its own CA, rather than the
         * fixture supplying one -- `tls_client_auth` by the issued certificate's subject. Alone,
         * a web client edge authenticates through the TLS terminator; with `nativeApp`, the
         * native one it authenticates on auth's own listener. The fixture never sees the
         * certificate, so [[EdgeFixture.certificate]] is empty. Mutually exclusive with
         * `privateKeyJwt` and `mutualTls`. */
-      issuedCertificate: Boolean = false,
+      issuedCertificate: Boolean,
       /** #463: the edge generates its own key and enrols for the certificate, central storing
         * neither -- the same registration by subject as [[issuedCertificate]], with the certificate
         * made by the edge instead of by central. Mutually exclusive with it. */
-      enrolledCertificate: Boolean = false,
+      enrolledCertificate: Boolean,
   )
 
   def layer(config: Config): ZLayer[OAuthClient & CentralApi & EdgeApi, Throwable, EdgeFixture] =

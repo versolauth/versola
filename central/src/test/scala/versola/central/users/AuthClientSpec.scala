@@ -388,7 +388,7 @@ object AuthClientSpec extends ZIOSpecDefault:
           PatchAntifraudSettingsRequest(patch = patch, userId = userId, version = Some(3)),
         )
         patchedWithoutVersion <- client.patchAntifraudSettings(
-          PatchAntifraudSettingsRequest(patch = patch, userId = userId),
+          PatchAntifraudSettingsRequest(patch = patch, userId = userId, version = None),
         )
         _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(_ :+ r).as(Response.status(Status.NoContent))).toRoutes)
         _ <- client.deleteAntifraudSettings(DeleteAntifraudSettingsRequest(userId), None)
@@ -502,7 +502,14 @@ object AuthClientSpec extends ZIOSpecDefault:
           "a password",
         )
         // a provisioning client is not a user of auth: its calls are central's own
-        _ <- AuditContext.reset(AuditContext.State(actor = Some((CentralAudit.Actors.Client, Some("utils")))))(client.invalidateSession(userId))
+        _ <- AuditContext.reset(AuditContext.State(
+          tenantId = None,
+          actor = Some((CentralAudit.Actors.Client, Some("utils"))),
+          userId = None,
+          target = None,
+          changed = Set.empty,
+          userAgent = None,
+        ))(client.invalidateSession(userId))
         _ <- AuditContext.reset(AuditContext.State.empty)(client.invalidateSession(userId) *> client.setPassword(userId, "a password"))
         requests <- seen.get.map(_.reverse)
         bodies <- ZIO.foreach(requests)(_.body.asString)

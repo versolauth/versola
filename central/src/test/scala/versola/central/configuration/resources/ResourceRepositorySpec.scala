@@ -43,6 +43,7 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
     stepUpCondition = None,
     stepUpAcr = None,
     maxAge = None,
+    rateLimit = None,
   )
 
   def resourceRecord(
@@ -61,6 +62,7 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
       endpoints = endpoints,
       secret = secret,
       previousSecret = previousSecret,
+      audienceRateLimits = Nil,
     )
 
   override def testCases(env: ResourceRepositorySpec.Env) =

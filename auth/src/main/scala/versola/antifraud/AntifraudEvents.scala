@@ -369,6 +369,7 @@ object AntifraudEvents:
         outcome = None,
         challenge = None,
         challengeLevel = None,
+        wouldAction = None,
         asn = None,
         asnClass = None,
         country = None,

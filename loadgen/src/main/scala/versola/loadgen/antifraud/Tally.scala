@@ -30,9 +30,9 @@ case class OtpOutcomes(
     rejected: Long,
     failed: Long,
     notEntered: Long,
-    challenged: Long = 0L,
-    solved: Long = 0L,
-    paidByWaiting: Long = 0L,
+    challenged: Long,
+    solved: Long,
+    paidByWaiting: Long,
 ) derives JsonCodec
 
 final class Tally:

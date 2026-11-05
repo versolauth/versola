@@ -483,6 +483,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
           stepUpCondition = None,
           stepUpAcr = None,
           maxAge = None,
+          rateLimit = None,
         )
       val user = InjectRule(InjectTarget.body, "userId", "token.sub")
       val retired = Vector(

@@ -50,6 +50,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
     resources = Nil,
     authorizationDetails = None,
     dpopJkt = None,
+    ip = None,
   )
 
   case class Services(
@@ -230,6 +231,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
               prompt = List("login"),
               acrValues = Nil,
               par = false,
+              count = None,
             ),
           ),
       ),

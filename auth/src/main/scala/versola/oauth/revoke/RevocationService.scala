@@ -60,8 +60,10 @@ object RevocationService:
         AuditDraft(
           kind = AuthAuditKinds.TokenRevoked,
           outcome = AuditOutcome.success,
+          reason = None,
           actor = Some((AuthActors.client, Some(client.id))),
           userId = userId,
+          target = None,
           details = details,
         ),
       )
@@ -102,6 +104,7 @@ object RevocationService:
                     jti = None,
                     refreshPrefix = Some(Base64.urlEncode(token).take(9)),
                     cause = "rfc7009",
+                    count = None,
                   ),
                 )
       yield ()
@@ -126,7 +129,13 @@ object RevocationService:
         _ <- audited(
           client,
           Try(UUID.fromString(token.subject)).toOption,
-          AuthAuditDetails.TokenRevoked(tokenType = "access_token", jti = Some(Base64.urlEncode(token.id)), refreshPrefix = None, cause = "rfc7009"),
+          AuthAuditDetails.TokenRevoked(
+            tokenType = "access_token",
+            jti = Some(Base64.urlEncode(token.id)),
+            refreshPrefix = None,
+            cause = "rfc7009",
+            count = None,
+          ),
         )
       yield ()
 

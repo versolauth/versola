@@ -13,7 +13,7 @@ object CreateClientRequestJsonSpec extends ZIOSpecDefault:
       |"accessTokenTtl":300,"theme":"d","otpTemplateId":"d","frontChannelLogoutSessionRequired":false,
       |"dpopBoundAccessTokens":false,"dpopSigningAlgs":[],"authMethod":"none","certificateBoundAccessTokens":false,
       |"requireSignedRequestObject":false,"requirePushedAuthorizationRequests":false,
-      |"issueEdgeClientCertificate":false,"enrollEdgeClientCertificate":false}""".stripMargin
+      |"issueEdgeClientCertificate":false,"enrollEdgeClientCertificate":false,"estEnrollment":false}""".stripMargin
 
   private def without(member: String): String =
     complete.replace(s""","$member":false""", "").replace(s""""$member":false,""", "")

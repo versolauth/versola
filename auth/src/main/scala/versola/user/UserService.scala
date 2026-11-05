@@ -49,8 +49,11 @@ object UserService:
           AuditDraft(
             kind = AuthAuditKinds.AccountRegistered,
             outcome = AuditOutcome.success,
+            reason = None,
+            actor = None,
             userId = Some(user.id),
-            details = AuthAuditDetails.Account(via = "registration"),
+            target = None,
+            details = AuthAuditDetails.Account(via = "registration", detail = None),
           ),
         )
       yield user

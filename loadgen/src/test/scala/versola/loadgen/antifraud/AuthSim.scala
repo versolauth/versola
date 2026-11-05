@@ -70,13 +70,13 @@ final class AuthSim(
         for
           id <- conversations.modify: all =>
             val id = s"conversation-${all.size}"
-            (id, all + (id -> Conversation(host(request), "credential", None, 0)))
+            (id, all + (id -> Conversation(host(request), "credential", None, 0, phone = "")))
           _ <- calls.update(_ :+ Call(host(request), "GET", "/authorize", id, Map.empty))
         yield toChallenge.addCookie(Cookie.Response("SSO_CONVERSATION", id)),
       Method.GET / "challenge" -> handler: (request: Request) =>
         for
           id = cookie(request).getOrElse("")
-          conversation <- conversations.get.map(_.getOrElse(id, Conversation("?", "credential", None, 0)))
+          conversation <- conversations.get.map(_.getOrElse(id, Conversation("?", "credential", None, 0, phone = "")))
           _ <- calls.update(_ :+ Call(host(request), "GET", "/challenge", id, Map.empty))
         yield Response.text(page(conversation)),
       Method.POST / "challenge" / "phone" -> handler: (request: Request) =>
@@ -84,7 +84,7 @@ final class AuthSim(
           form <- request.body.asString.map(parseForm).orDie
           id = cookie(request).getOrElse("")
           _ <- calls.update(_ :+ Call(host(request), "POST", "/challenge/phone", id, form))
-          conversation <- conversations.get.map(_.getOrElse(id, Conversation("?", "credential", None, 0)))
+          conversation <- conversations.get.map(_.getOrElse(id, Conversation("?", "credential", None, 0, phone = "")))
           phone = form.getOrElse("phone", "")
           inline = form.contains("proof_inline")
           response <- difficulty.filterNot(_ => isFake(phone)) match
@@ -96,7 +96,9 @@ final class AuthSim(
                 case _ =>
                   val token = s"token-$id-${conversation.asks}"
                   update(id)(c => c.copy(token = Some(token), asks = c.asks + 1)).as(
-                    Response.json(s"""{"challenge":{"kind":"$kind","token":"$token","params":{"seed":"seed-$id","difficulty":"$bits"}},"otp":false}"""),
+                    Response.json(
+                      s"""{"challenge":{"kind":"$kind","token":"$token","params":{"seed":"seed-$id","difficulty":"$bits"}},"otp":false}""",
+                    ),
                   )
             case Some(_) => update(id)(_.copy(step = "pending", asks = 0, phone = phone)).as(toChallenge)
         yield response,
@@ -115,13 +117,19 @@ final class AuthSim(
           _ <- ZIO.when(honoured)(send(phone))
         yield toChallenge,
       Method.GET / "metrics" -> handler: (request: Request) =>
-        calls.update(_ :+ Call(host(request), "GET", "/metrics", "", Map.empty)).as(Response.text("antifraud_events_enqueued_total 1.0\nantifraud_event_queue_size 2.0\n")),
+        calls.update(_ :+ Call(
+          host(request),
+          "GET",
+          "/metrics",
+          "",
+          Map.empty,
+        )).as(Response.text("antifraud_events_enqueued_total 1.0\nantifraud_event_queue_size 2.0\n")),
     )
 
 object AuthSim:
   /** @param step `credential`, `pending` (challenged, no code sent) or `sent`
     * @param asks challenges issued, or asks made while pending */
-  case class Conversation(host: String, step: String, token: Option[String], asks: Int, phone: String = "")
+  case class Conversation(host: String, step: String, token: Option[String], asks: Int, phone: String)
 
   case class Call(host: String, method: String, path: String, conversation: String, form: Map[String, String])
 

@@ -218,9 +218,10 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     resourceId = ResourceId(id),
     resource = ResourceUri(s"https://$id.example.com"),
     audience = List(clientA.id),
-    endpoints = Vector(ResourceEndpointRecord(endpointId, "/users", "GET", true, None, Vector.empty, None, None, None)),
+    endpoints = Vector(ResourceEndpointRecord(endpointId, "/users", "GET", true, None, Vector.empty, None, None, None, rateLimit = None)),
     secret = Some(resourceSecret),
     previousSecret = None,
+    audienceRateLimits = Nil,
   )
 
   private val declaredLimit = DeclaredRateLimit(

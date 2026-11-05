@@ -59,7 +59,7 @@ case class AntifraudSettings(
 /** `userId` is the admin, which edge puts in from the verified token (see [[AntifraudSettingsController]]); auth records it
   * as who made the change. `version` is the version the settings were read at, for a client that cannot send `If-Match`
   * (which is preferred); the same body goes to auth, with the version the request named in either. */
-case class PutAntifraudSettingsRequest(settings: AntifraudSettings, userId: UserId, version: Option[Long] = None)
+case class PutAntifraudSettingsRequest(settings: AntifraudSettings, userId: UserId, version: Option[Long])
   derives JsonCodec, Schema
 
 case class DeleteAntifraudSettingsRequest(userId: UserId) derives JsonCodec, Schema
@@ -153,7 +153,7 @@ case class PatchEnvelope(userId: UserId, version: Option[Long]) derives JsonCode
 
 /** The patch to auth, with who asks and the version it is made on (`If-Match` or the body's, see
   * [[AntifraudSettingsController]]); it is sent in the shape of a [[PutAntifraudSettingsRequest]]. */
-case class PatchAntifraudSettingsRequest(patch: AntifraudSettingsPatch, userId: UserId, version: Option[Long] = None)
+case class PatchAntifraudSettingsRequest(patch: AntifraudSettingsPatch, userId: UserId, version: Option[Long])
   derives JsonCodec, Schema
 
 /** The settings and the version of the row they are stored in (0 where there is none): what a read answers (the settings

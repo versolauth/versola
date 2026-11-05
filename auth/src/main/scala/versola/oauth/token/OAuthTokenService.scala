@@ -115,8 +115,10 @@ object OAuthTokenService:
             AuditDraft(
               kind = AuthAuditKinds.TokenIssued,
               outcome = AuditOutcome.success,
+              reason = None,
               actor = Some((AuthActors.client, Some(client.id))),
               userId = tokens.userId,
+              target = None,
               details = AuthAuditDetails.TokenIssued(
                 grant = grant,
                 scope = tokens.scope.toList.map(_.toString).sorted,
@@ -142,8 +144,10 @@ object OAuthTokenService:
           AuditDraft(
             kind = AuthAuditKinds.TokenReuseDetected,
             outcome = AuditOutcome.denied,
+            reason = None,
             actor = Some((AuthActors.client, Some(client.id))),
             userId = Some(userId),
+            target = None,
             details = AuthAuditDetails.TokenReuseDetected(
               tokenType = tokenType,
               refreshPrefix = auth.previousRefreshToken,

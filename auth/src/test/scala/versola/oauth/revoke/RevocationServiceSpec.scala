@@ -177,7 +177,13 @@ object RevocationServiceSpec extends UnitSpecBase:
           drafts.head.outcome == AuditOutcome.success,
           drafts.head.actor == Some((AuthActors.client, Some(clientId1: String))),
           drafts.head.userId == Some(userId1),
-          drafts.head.details == AuthAuditDetails.TokenRevoked("refresh_token", None, Some(Base64.urlEncode(refreshToken1).take(9)), "rfc7009"),
+          drafts.head.details == AuthAuditDetails.TokenRevoked(
+            "refresh_token",
+            None,
+            Some(Base64.urlEncode(refreshToken1).take(9)),
+            "rfc7009",
+            count = None,
+          ),
         )).provide(env.layer)
       },
       test("fail with InvalidClient when client authentication fails") {
@@ -245,7 +251,7 @@ object RevocationServiceSpec extends UnitSpecBase:
             List((testClient, NonEmptyChunk(accessToken1), userId1.toString, payload.expiresAt)),
           drafts.map(_.kind) == List(AuthAuditKinds.TokenRevoked),
           drafts.head.userId == Some(userId1.asInstanceOf[java.util.UUID]),
-          drafts.head.details == AuthAuditDetails.TokenRevoked("access_token", Some(Base64.urlEncode(accessToken1)), None, "rfc7009"),
+          drafts.head.details == AuthAuditDetails.TokenRevoked("access_token", Some(Base64.urlEncode(accessToken1)), None, "rfc7009", count = None),
         )).provide(env.layer)
       },
       test("fail with InvalidClient when client authentication fails") {

@@ -79,7 +79,10 @@ object AccountSettingsController extends Controller:
                 AuditDraft(
                   kind = AuthAuditKinds.SessionEnded,
                   outcome = AuditOutcome.success,
+                  reason = None,
+                  actor = None,
                   userId = Some(body.userId),
+                  target = None,
                   details = AuthAuditDetails.SessionEnded(cause = "user_revoked", clients = 0),
                 ),
               ),
@@ -125,8 +128,11 @@ object AccountSettingsController extends Controller:
             AuditDraft(
               kind = AuthAuditKinds.AccountPasskeyRemoved,
               outcome = AuditOutcome.success,
+              reason = None,
+              actor = None,
               userId = Some(body.userId),
-              details = AuthAuditDetails.Passkey(credentialPrefix = Some(body.credentialId.toString.take(9))),
+              target = None,
+              details = AuthAuditDetails.Passkey(credentialPrefix = Some(body.credentialId.toString.take(9)), deviceType = None),
             ),
           ),
         )
@@ -170,7 +176,10 @@ object AccountSettingsController extends Controller:
             AuditDraft(
               kind = AuthAuditKinds.AccountPasskeyEnrolled,
               outcome = AuditOutcome.success,
+              reason = None,
+              actor = None,
               userId = Some(body.userId),
+              target = None,
               details = AuthAuditDetails.Passkey(credentialPrefix = Some(record.id.toString.take(9)), deviceType = Some(record.deviceType.toString)),
             ),
           ),

@@ -24,7 +24,7 @@ case class UserAuditReport(
     events: List[ReportedEvent],
     nextCursor: Option[String],
     partial: List[String],
-    truncated: Boolean = false,
+    truncated: Boolean,
 ) derives JsonCodec
 
 /** The time the report covers, and how far back the log reaches at all. */

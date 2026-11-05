@@ -59,7 +59,15 @@ object PostgresAuditStopSpec extends PostgresSpec:
   private val sizing =
     AuditEvents.Sizing(queueCapacity = 5000, batchSize = 1000, flushInterval = 1.second, partitionsAhead = 3, maintenanceInterval = 1.hour)
 
-  private def draftWith(reason: String) = AuditDraft(kind = kind, outcome = AuditOutcome.success, reason = Some(reason))
+  private def draftWith(reason: String) = AuditDraft(
+    kind = kind,
+    outcome = AuditOutcome.success,
+    reason = Some(reason),
+    actor = None,
+    userId = None,
+    target = None,
+    details = AuditDetails.empty,
+  )
 
   private def countReason(xa: TransactorZIO, reason: String): Task[Long] =
     table.inTransaction(xa)(sql"SELECT COUNT(*) FROM ${SqlLiteral(Table)} WHERE reason = $reason".query[Long].run().head)

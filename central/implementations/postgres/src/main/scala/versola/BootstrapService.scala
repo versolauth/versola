@@ -345,6 +345,7 @@ object BootstrapService:
       stepUpCondition = Option.when(stepUp)("true"),
       stepUpAcr = Option.when(stepUp)(sensitiveAcr),
       maxAge = Option.when(stepUp)(accountStepUpMaxAgeSeconds),
+      rateLimit = None,
     )
 
   private[versola] val permissionCatalog: List[(Permission, Map[String, String], Set[ResourceEndpointId])] = List(
@@ -1236,7 +1237,9 @@ object BootstrapService:
         AuditDraft(
           kind = CentralAudit.SystemBootstrap,
           outcome = AuditOutcome.success,
+          reason = None,
           actor = Some((ActorType.system, None)),
+          userId = None,
           target = Some((step, id)),
           details = new AuditDetails:
             override def toJson: Json.Obj = Json.Obj("step" -> Json.Str(step)),
@@ -1480,6 +1483,7 @@ object BootstrapService:
         issueEdgeClientCertificate = credential.issueEdgeClientCertificate,
         enrollEdgeClientCertificate = false,
         themeOverrides = None,
+        estEnrollment = false,
       )
       // Issued by central: `register` takes the profile enforcement as it is, which for the one
       // credential that issues (tls_client_auth) is the enforcement `conformant` asks for anyway.
@@ -1596,6 +1600,7 @@ object BootstrapService:
         issueEdgeClientCertificate = false,
         enrollEdgeClientCertificate = false,
         themeOverrides = None,
+        estEnrollment = false,
       )
       // #353: a `client_secret` service client, which the default tenant's FAPI 2.0 profile
       // does not admit, is still seeded for a deployment that configured no key for it.
@@ -1749,6 +1754,7 @@ object BootstrapService:
             stepUpCondition = None,
             stepUpAcr = None,
             maxAge = None,
+            rateLimit = None,
           )
         for
           resources <- resourceRepo.getAll

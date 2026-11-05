@@ -48,8 +48,13 @@ object AntifraudEventsSpec extends UnitSpecBase:
     subjectHash = "h",
     destPrefix = None,
     userAgent = None,
+    decision = None,
     score = None,
     rules = Nil,
+    wouldAction = None,
+    asn = None,
+    asnClass = None,
+    country = None,
   )
 
   /** The service's role owns the table. */
@@ -862,6 +867,9 @@ object AntifraudEventsSpec extends UnitSpecBase:
                 None,
                 None,
                 Some("Block"),
+                asn = None,
+                asnClass = None,
+                country = None,
               ),
             ),
           )
@@ -879,7 +887,20 @@ object AntifraudEventsSpec extends UnitSpecBase:
             details <- logContext.get.map(_.get(Observability.antifraud))
           yield assertTrue(
             decision == Decision.allow,
-            details == Some(Observability.AntifraudDetails("otp_request", "Allow", 0, Nil, Some("491512"), Some("sent"), None, None)),
+            details == Some(Observability.AntifraudDetails(
+              "otp_request",
+              "Allow",
+              0,
+              Nil,
+              Some("491512"),
+              Some("sent"),
+              None,
+              None,
+              wouldAction = None,
+              asn = None,
+              asnClass = None,
+              country = None,
+            )),
           )
       },
       test("a challenge step puts the decision, the kind and the level of the challenge on the log context, and its outcome in the event log") {
@@ -905,6 +926,9 @@ object AntifraudEventsSpec extends UnitSpecBase:
               Some("pow"),
               Some(17),
               Some("Challenge"),
+              asn = None,
+              asnClass = None,
+              country = None,
             )),
             written.map(_.outcome) == List(AntifraudOutcome.challenged),
             written.map(_.action) == List(AntifraudAction.otp_request),

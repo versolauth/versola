@@ -47,7 +47,7 @@ object AuditEventsSpec extends UnitSpecBase:
     )
 
   private def draft(kind: AuditKind = Issued, outcome: AuditOutcome = AuditOutcome.success) =
-    AuditDraft(kind = kind, outcome = outcome)
+    AuditDraft(kind = kind, outcome = outcome, reason = None, actor = None, userId = None, target = None, details = AuditDetails.empty)
 
   /** A repository whose first `insertBatch` waits for `gate`, so that the writer is held with one batch in hand while the queue is
     * filled; every batch it was given, in order, is in `written`. `failures` is how many of the first calls fail. */
@@ -246,7 +246,15 @@ object AuditEventsSpec extends UnitSpecBase:
             _ <- Observability.setUserId(userId.toString) *> Observability.setIp("203.0.113.7") *> Observability.setClientId("client-a")
             _ <- AuditContext.setTenant("tenant-a") *> AuditContext.setUserAgent("Firefox 130 / macOS")
             _ <- AuditContext.setTarget("client", "client-a") *> AuditContext.setChanged(Set("redirect_uris", "name"))
-            _ <- events.record(AuditDraft(kind = Refused, outcome = AuditOutcome.failure, reason = Some("invalid_grant")))
+            _ <- events.record(AuditDraft(
+              kind = Refused,
+              outcome = AuditOutcome.failure,
+              reason = Some("invalid_grant"),
+              actor = None,
+              userId = None,
+              target = None,
+              details = AuditDetails.empty,
+            ))
             written <- until(f, 1)
           yield
             val event = written.flatten.head
@@ -285,9 +293,11 @@ object AuditEventsSpec extends UnitSpecBase:
               AuditDraft(
                 kind = Changed,
                 outcome = AuditOutcome.success,
+                reason = None,
                 actor = Some((admin, Some("admin-1"))),
                 userId = Some(userId),
                 target = Some(("client", "from-draft")),
+                details = AuditDetails.empty,
               ),
             )
             written <- until(f, 2).map(_.flatten)

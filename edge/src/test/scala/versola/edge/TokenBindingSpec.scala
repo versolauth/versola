@@ -35,7 +35,7 @@ object TokenBindingSpec extends ZIOSpecDefault:
       )
     },
     test("a key-bound token is not helped by a certificate: a Bearer presentation is a downgrade") {
-      val key = Some(Confirmation(jkt = Some("jkt-1")))
+      val key = Some(Confirmation(jkt = Some("jkt-1"), certificateThumbprint = None))
       assertTrue(TokenBinding.check(key, over) == BindingCheck.Downgrade)
     },
     test("a token bound to both is refused over the certificate it names") {

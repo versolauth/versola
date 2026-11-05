@@ -1233,7 +1233,7 @@ object ConversationRouterSpec extends UnitSpecBase:
           // the person said no: consent.denied, with what they were asked for
           drafts.map(_.kind) == List(AuthAuditKinds.ConsentDenied),
           drafts.head.outcome == AuditOutcome.denied,
-          drafts.head.details == AuthAuditDetails.Consent(scope = List("openid")),
+          drafts.head.details == AuthAuditDetails.Consent(scope = List("openid"), authorizationDetailTypes = Nil, expiresAt = None),
         )
       },
       test("a stale consent submission (the conversation is on another step) records no consent event") {

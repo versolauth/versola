@@ -32,7 +32,7 @@ final case class SessionPlan(
     paymentAction: Option[Int],
     extraRefresh: Boolean,
     logout: Boolean,
-    refreshesBefore: Vector[Int] = Vector.empty,
+    refreshesBefore: Vector[Int],
 )
 
 object SessionPlan:

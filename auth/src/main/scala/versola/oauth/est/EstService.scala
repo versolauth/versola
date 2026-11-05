@@ -124,7 +124,9 @@ object EstService:
             outcome = outcome,
             reason = Some(reason),
             actor = Some((AuthActors.client, clientId)),
-            details = AuthAuditDetails.Cert(operation = operation, clientId = clientId),
+            userId = None,
+            target = None,
+            details = AuthAuditDetails.Cert(operation = operation, clientId = clientId, serial = None, notAfter = None, csrCn = None),
           ),
         )
 

@@ -51,8 +51,10 @@ object AccountSettingsService:
           kind = AuthAuditKinds.AccountPasswordChanged,
           outcome = outcome,
           reason = reason,
+          actor = None,
           userId = Some(userId),
-          details = AuthAuditDetails.Account(via = "account_settings"),
+          target = None,
+          details = AuthAuditDetails.Account(via = "account_settings", detail = None),
         ),
       )
 

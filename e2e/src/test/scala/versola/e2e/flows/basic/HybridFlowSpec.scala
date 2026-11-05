@@ -44,9 +44,9 @@ object HybridFlowSpec extends E2ESpec:
       sub: String,
       aud: String,
       exp: Long,
-      nonce: Option[String] = None,
-      c_hash: Option[String] = None,
-      s_hash: Option[String] = None,
+      nonce: Option[String],
+      c_hash: Option[String],
+      s_hash: Option[String],
   ) derives JsonDecoder
 
   def spec = suite("Hybrid Flow (response_type=code id_token)")(

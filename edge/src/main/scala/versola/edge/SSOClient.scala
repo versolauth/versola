@@ -171,7 +171,7 @@ object SSOClient:
 
   private case class ErrorResponse(
       error: String,
-      @jsonField("error_description") errorDescription: Option[String] = None,
+      @jsonField("error_description") errorDescription: Option[String],
   ) derives JsonCodec
 
   val live: URLayer[Client & EdgeConfig & ClientCertificateFiles & EdgeIdentity, SSOClient] =
@@ -378,6 +378,7 @@ object SSOClient:
           ZIO.succeed(Authenticated(
             form,
             Headers(Header.Authorization.Basic(clientId, Base64.urlEncode(secret))),
+            ssl = None,
           ))
 
         case ClientCredential.PrivateKeyJwt(signing) =>
@@ -403,6 +404,7 @@ object SSOClient:
                 .append(FormField.simpleField("client_assertion_type", ClientAssertion.Type))
                 .append(FormField.simpleField("client_assertion", assertion)),
               Headers.empty,
+              ssl = None,
             )
 
         case ClientCredential.MutualTls(certificate) =>
@@ -456,7 +458,7 @@ object SSOClient:
     /** @param ssl how the connection this is sent over authenticates, for the one method that
       *            authenticates there rather than in the request. `None` leaves the client's
       *            own configuration alone -- every other call this edge makes shares it. */
-    private case class Authenticated(form: Form, headers: Headers, ssl: Option[ClientSSLConfig] = None):
+    private case class Authenticated(form: Form, headers: Headers, ssl: Option[ClientSSLConfig]):
       def over(client: Client): Client = ssl.fold(client)(client.ssl)
 
     override def warmUp(client: OAuthClient): Task[Unit] =

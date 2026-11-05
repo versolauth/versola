@@ -231,6 +231,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
           listType = Some(AntifraudListType.deny),
           valueType = Some(AntifraudValueType.prefix),
           tenantId = Some(Some(tenant)),
+          visibleTo = None,
         ),
         limit == 10,
         offset == 20,

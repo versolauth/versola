@@ -16,6 +16,12 @@ These are the idioms the existing code follows. Copy a neighbouring file of the 
   needs and `def routes`. Business logic does not live in the controller.
 - Module direction: `util` <- `auth` / `central` / `edge` <- `*-postgres-impl`. A service module
   never depends on its Postgres implementation, and `util` never depends on a service.
+- No default parameter values on a case class: every field is passed at every construction, so a
+  new field is a compile error at each place that builds the class, not a silent `None`. A request
+  or response of the HTTP API, a record, an event and a test fixture alike. The exceptions are
+  configuration classes (`*Config`, settings read from a config file, where a default is the
+  documented value of an optional key), a stored row that older builds wrote without a field, and
+  a field the standard defines as optional (`RequestedClaims`).
 
 ## Effects and errors
 

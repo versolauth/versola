@@ -55,7 +55,14 @@ object ClientAuthFailures:
 
   /** What a key too many is counted under. */
   private val Overflow =
-    Key(AuthAuditKinds.ClientAuthFailed, AuditOutcome.denied, clientId = "", ip = None, reason = "overflow", AuthAuditDetails.ClientAuthFailed("", 0))
+    Key(
+      AuthAuditKinds.ClientAuthFailed,
+      AuditOutcome.denied,
+      clientId = "",
+      ip = None,
+      reason = "overflow",
+      AuthAuditDetails.ClientAuthFailed("", 0, assertionJti = None),
+    )
 
   val MaxKeys = 10000
   val FlushInterval: Duration = 1.minute
@@ -77,7 +84,13 @@ object ClientAuthFailures:
 
   private class Impl(counts: Ref[Map[Key, Int]], maxKeys: Int) extends ClientAuthFailures:
     override def failed(clientId: String, reason: String, method: String): UIO[Unit] =
-      refused(AuthAuditKinds.ClientAuthFailed, AuditOutcome.denied, Some(clientId), reason, AuthAuditDetails.ClientAuthFailed(method, 0))
+      refused(
+        AuthAuditKinds.ClientAuthFailed,
+        AuditOutcome.denied,
+        Some(clientId),
+        reason,
+        AuthAuditDetails.ClientAuthFailed(method, 0, assertionJti = None),
+      )
 
     override def refused(
         kind: AuditKind,
@@ -106,6 +119,8 @@ object ClientAuthFailures:
                 outcome = key.outcome,
                 reason = Some(key.reason),
                 actor = Some((AuthActors.client, Option.when(key.clientId.nonEmpty)(key.clientId))),
+                userId = None,
+                target = None,
                 details = key.details.counted(count),
               ),
             ),
