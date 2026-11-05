@@ -5,9 +5,9 @@ import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.tenants.TenantId
 import versola.util.Secret
 import versola.util.audit.AuditEvents
-import zio.Duration
 import zio.http.URL
 import zio.json.ast.Json
+import zio.{Config, Duration}
 
 import javax.crypto.SecretKey
 
@@ -292,8 +292,12 @@ object CentralConfig:
   /** How long the audit log is kept and what a full writer queue does: `overflow = block` makes an event wait for room up to
     * `blockTimeout`, `drop` does not wait.
     *
-    * @param retention    a day's partition is dropped once the whole day is older than this; 14 days is the sensible most (the
-    *                     per-user report asks auth, whose log is kept as long, for the same window)
+    * @param retention    a day's partition is dropped once the whole day is older than this; from 1 to 14 days, 7 by default (the
+    *                     table is partitioned 14 days ahead, and the per-user report asks auth, whose log is kept as long, for the
+    *                     same window). What it stores: about 430 bytes an event on disk, the one index included, so at 1 000 events
+    *                     a second about 37 GB a day, about 260 GB for 7 days and about 520 GB for 14 days; at 100 events a second a
+    *                     tenth of that. Events a second equal requests a second only if every request records an event; `events`
+    *                     is what changes it. A design estimate, to be replaced with the figure measured under load.
     * @param events       the kinds a deployment may leave out
     */
   case class AuditConfig(
@@ -307,6 +311,17 @@ object CentralConfig:
       AuditEvents.Settings(retention = retention, overflow = overflow, blockTimeout = blockTimeout)
 
   object AuditConfig:
+    val MinRetentionDays = 1
+    val MaxRetentionDays = 14
+
+    /** A retention the partitions cannot keep stops the start, naming the key. */
+    def validated(config: AuditConfig): Either[Config.Error, AuditConfig] =
+      Either.cond(
+        config.retention.toDays >= MinRetentionDays && config.retention.toDays <= MaxRetentionDays,
+        config,
+        Config.Error.InvalidData(message = s"audit.retention must be between $MinRetentionDays and $MaxRetentionDays days"),
+      )
+
     /** @param adminUserViewed whether a look at a user (`GET /users`) is an event: it is the one read that is many */
     case class Events(adminUserViewed: Boolean = true)
 

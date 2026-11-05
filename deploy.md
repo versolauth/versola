@@ -695,12 +695,18 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 
   ```hocon
   audit {
-    retention     = "7 days"      # 14 days is the sensible most: the per-user report asks auth, which keeps its log as long, for the same window
+    retention     = "7 days"      # 1 to 14 days, any other value stops the start; about 37 GB a day per 1 000 events a second (see below)
     overflow      = "drop"        # drop | block: what a full writer queue does to an event (drop does not wait, block waits up to block-timeout for room)
     block-timeout = "2 seconds"
     events { admin-user-viewed = true }   # whether a look at a user (GET /users) is an event: the one read that is many
   }
   ```
+
+  **Disk.** `audit.retention` is from 1 to 14 days, and central refuses to start with another value. A row is about 430 bytes on disk,
+  indexes included, so at 1 000 events a second the log takes about 37 GB a day: about 260 GB for 7 days and about 520 GB for 14 days;
+  at 100 events a second a tenth of that. Events a second equal requests a second only if every request records an event, and
+  `audit.events.admin-user-viewed` changes that. The per-user report asks auth, which keeps its log as long, for the same window. This is a
+  design estimate, to be replaced with the figure measured under load.
 
   A call that reaches central without the query parameters edge adds (`actorId`, `actorTenantId`, `actorClientId`, `actorSessionId`) is
   not refused: it is recorded as made by a `service` with no id, and counted in `audit_actor_missing_total{reason}` (an alert is in
@@ -988,7 +994,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 
   ```hocon
   audit {
-    retention     = "7 days"      # the hot window; 14 days is the sensible maximum, the long-term copy is the replication below
+    retention     = "7 days"      # the hot window, 1 to 14 days, any other value stops the start; the long-term copy is the replication below
     overflow      = "drop"        # drop: an event that finds no room in the writer's queue is counted in audit_events_dropped_total
                                   #   and the request goes on;
                                   # block: the event waits up to block-timeout for room first, then it is counted as dropped
@@ -1009,6 +1015,12 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   below is insert-only and a move is a delete and an insert): the gauge `audit_events_in_default` counts such days,
   the day gets no partition while they are there, and they leave with the retention. The owner of the table must be
   the service's role, as for `af_event` (`audit_partition_owner_mismatch`).
+
+  **Disk.** A row is about 430 bytes on disk, indexes included, so at 1 000 events a second `auth_audit_event` takes about 37 GB a day:
+  about 260 GB for the 7 days of the default and about 520 GB for the 14 days that are the most `audit.retention` takes; at 100 events a
+  second a tenth of that. Events a second equal requests a second only if every request writes an event: `audit.events.token-refresh`
+  (off by default), `authorize-success` and `par-success` are what changes it. This is a design estimate, to be replaced with the figure
+  measured under load.
 
   **Facts to plan for.** The hot window is 7 days (`audit.retention`) unless you change it. A replication slot that is
   not read keeps the WAL it has not sent on the primary's disk until the slot is read or dropped; the alert

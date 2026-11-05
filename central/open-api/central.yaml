@@ -61,7 +61,7 @@ info:
     ## Audit
 
     Every change an administrator makes through this API is written to central's audit log
-    (`central_audit_event`, kept for the `audit.retention` of the configuration, 7 days by default), as is a
+    (`central_audit_event`, kept for the `audit.retention` of the configuration, from 1 to 14 days, 7 by default), as is a
     look at a user (`GET /users`, unless `audit.events.admin-user-viewed` is off), a query of the audit
     report and every response that hands a secret back. A row says who did what to what, when, and how it
     ended: `admin.<resource>.<operation>` (`admin.client.create`, `admin.client-secret.action:rotate-secret`),
@@ -3214,7 +3214,7 @@ paths:
         to them, who looked at them, who asked for this report). Needs `audit:read`, which is not tenant-scoped, like `users:read`;
         an unknown user returns an empty report.
 
-        The window defaults to everything retained (7 days by default; the log is kept as long as `audit.retention` says, in
+        The window defaults to everything retained (7 days by default, at most 14; the log is kept as long as `audit.retention` says, in
         central and in auth) and is clipped to it. The first page (no `cursor`) carries `summary`: auth's summary of the window
         (events by kind and outcome, by client, the addresses and user agents seen, sessions, factors changed and the
         high-severity events) with `adminActions` added. A page holds at most `limit` events of the two logs together, newest
