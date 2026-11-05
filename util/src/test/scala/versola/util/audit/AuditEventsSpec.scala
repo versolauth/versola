@@ -221,6 +221,12 @@ object AuditEventsSpec extends UnitSpecBase:
     * and a count of yields says nothing of when; a test that waits for a positive state waits on that state. */
   private def eventually[A](read: UIO[A])(holds: A => Boolean): UIO[A] = (ZIO.yieldNow *> read).repeatUntil(holds)
 
+  /** The result of `fiber` once it has one, looked for over many yields and no clock move: a fiber that never finishes is a failed
+    * check, not a hung spec. */
+  private def finished[E, A](fiber: Fiber[E, A]): UIO[Option[Exit[E, A]]] =
+    ZIO.foldLeft(1 to 20000)(Option.empty[Exit[E, A]]): (found, _) =>
+      if found.isDefined then ZIO.succeed(found) else ZIO.yieldNow *> fiber.poll
+
   /** Lets the fibers the test forked run: under the test clock a sleep ends only when the clock moves. */
   private def settle = ZIO.yieldNow.repeatN(20)
 
@@ -403,6 +409,94 @@ object AuditEventsSpec extends UnitSpecBase:
             result <- waiting.join
             unavailableAfter <- counter("audit_events_unavailable_total", central)
           yield assertTrue(early.isEmpty, result == Exit.fail(AuditUnavailable), unavailableAfter - unavailableBefore == 1.0)
+      },
+      test(
+        "a record made inside an uninterruptible region, as central's hook makes it, fails with AuditUnavailable after blockTimeout, and counts it",
+      ) {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = true)
+            events <- build(f, block, source = central)
+            unavailableBefore <- counter("audit_events_unavailable_total", central)
+            _ <- events.record(draft())
+            _ <- f.started.take
+            _ <- events.record(draft()) *> events.record(draft())
+            waiting <- ZIO.uninterruptible(events.record(draft()).exit).fork
+            _ <- settle
+            early <- TestClock.adjust(1.second) *> waiting.poll
+            _ <- TestClock.adjust(1.second)
+            result <- finished(waiting)
+            unavailableAfter <- counter("audit_events_unavailable_total", central)
+            // A wait that the region keeps from ending is told to stop here, so that a failing spec does not leave it behind.
+            _ <- waiting.interrupt.fork
+          yield assertTrue(early.isEmpty, result == Some(Exit.succeed(Exit.fail(AuditUnavailable))), unavailableAfter - unavailableBefore == 1.0)
+      },
+      test("a best-effort record inside an uninterruptible region drops the event after blockTimeout and counts it") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = true)
+            events <- build(f, block, source = central)
+            droppedBefore <- counter("audit_events_dropped_total", central)
+            _ <- events.record(draft())
+            _ <- f.started.take
+            _ <- events.record(draft()) *> events.record(draft())
+            waiting <- ZIO.uninterruptible(events.recordBestEffort(draft())).fork
+            _ <- settle
+            early <- TestClock.adjust(1.second) *> waiting.poll
+            _ <- TestClock.adjust(1.second)
+            result <- finished(waiting)
+            droppedAfter <- counter("audit_events_dropped_total", central)
+            _ <- waiting.interrupt.fork
+          yield assertTrue(early.isEmpty, result.exists(_.isSuccess), droppedAfter - droppedBefore == 1.0)
+      },
+      test("the same on the real clock: an uninterruptible record against a full queue returns inside its timeout, as the app runs it") {
+        val liveBlock = block.copy(blockTimeout = 300.millis)
+        ZIO.scoped:
+          for
+            f <- fixture(gated = true)
+            events <- build(f, liveBlock, source = central)
+            _ <- events.record(draft())
+            _ <- f.started.take
+            _ <- events.record(draft()) *> events.record(draft())
+            started <- Clock.nanoTime
+            result <- ZIO.uninterruptible(events.record(draft()).exit).timeout(5.seconds)
+            elapsed <- Clock.nanoTime.map(now => (now - started) / 1000000)
+          yield assertTrue(result == Some(Exit.fail(AuditUnavailable)), elapsed >= 250L, elapsed < 3000L)
+      } @@ TestAspect.withLiveClock,
+      test("a caller interrupted while it waits for room, outside an uninterruptible region, leaves nothing in the queue") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = true)
+            events <- build(f, block, source = central)
+            _ <- events.record(draft())
+            _ <- f.started.take
+            _ <- events.record(draft()) *> events.record(draft())
+            waiting <- events.record(draft()).fork
+            _ <- settle
+            _ <- waiting.interrupt
+            _ <- f.gate.succeed(())
+            written <- until(f, 2).map(_.flatten)
+          yield assertTrue(written.size == 3)
+      },
+      test(
+        "an interruption of a caller that waits inside an uninterruptible region does not lose its event: the wait goes on and the event is queued",
+      ) {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = true)
+            events <- build(f, block, source = central)
+            _ <- events.record(draft())
+            _ <- f.started.take
+            _ <- events.record(draft()) *> events.record(draft())
+            waiting <- ZIO.uninterruptible(events.record(draft())).fork
+            _ <- settle
+            _ <- waiting.interrupt.fork
+            _ <- f.gate.succeed(())
+            _ <- settle
+            _ <- TestClock.adjust(1.second)
+            _ <- ZIO.foreachDiscard(1 to 5)(_ => settle *> TestClock.adjust(1.second))
+            written <- f.written.get.map(_.flatten)
+          yield assertTrue(written.size == 4)
       },
       test("recordBestEffort does not fail when the queue stays full: the event is dropped and counted") {
         ZIO.scoped:
