@@ -88,7 +88,7 @@ jobs:
           force-download: true
           distribution: 'temurin'
           cache: 'sbt'
-      - uses: sbt/setup-sbt@ecad189dd245444b9ae0a0cd5922fd938b88906f # v1
+      - uses: sbt/setup-sbt@b113b960ba361e87e08ce02a390d51871b7ee459 # v1
       - name: Set up Scala CLI
         if: github.event_name != 'release'
         uses: VirtusLab/scala-cli-setup@3f5bf11a33bb88343238780c18257c8fa43789e1 # v1
@@ -355,7 +355,7 @@ jobs:
           force-download: true
           distribution: 'temurin'
           cache: 'sbt'
-      - uses: sbt/setup-sbt@ecad189dd245444b9ae0a0cd5922fd938b88906f # v1
+      - uses: sbt/setup-sbt@b113b960ba361e87e08ce02a390d51871b7ee459 # v1
       - name: Set up Scala CLI
         if: github.event_name != 'release'
         uses: VirtusLab/scala-cli-setup@3f5bf11a33bb88343238780c18257c8fa43789e1 # v1
