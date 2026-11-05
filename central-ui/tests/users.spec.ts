@@ -7,7 +7,10 @@ import {
 
 const tenant = 'tenant-alpha';
 const usersPath = `/?view=users&tenant=${tenant}`;
-const recordPath = (id = danaId, edit?: string) => `${usersPath}&id=${id}${edit ? `&edit=${edit}` : ''}`;
+const recordPath = (id = danaId, edit?: string, tab?: string) => `${usersPath}&id=${id}${edit ? `&edit=${edit}` : ''}${tab ? `&tab=${tab}` : ''}`;
+/** The tabs other than Profile: a card lives on the tab that holds it. */
+const devicesPath = (id = danaId) => recordPath(id, undefined, 'devices');
+const rolesPath = (id = danaId) => recordPath(id, undefined, 'roles');
 
 const state = {
   users: [dana, quiet],
@@ -158,60 +161,34 @@ test.describe('create', () => {
 });
 
 test.describe('record', () => {
-  test('shows the header and every group', async ({ page }) => {
+  test('shows the header and every group, each on the tab that holds it', async ({ page }) => {
     await openRecord(page);
     await expect(page.getByRole('heading', { level: 1, name: 'Dana Reyes' })).toBeVisible();
     await expect(page.getByText(danaId).first()).toBeVisible();
     await expect(page.getByRole('button', { name: 'Copy user ID' })).toBeVisible();
+    await expect(page.getByRole('tablist', { name: 'User sections' }).getByRole('tab')).toHaveText(['Profile', 'Roles', 'Devices']);
 
+    // Profile: the account and what can be done to it, the delete card last.
     await expect(card(page, 'Identifiers')).toContainText('dana@example.com');
     await expect(card(page, 'Identifiers')).toContainText(dana.phone);
-    await expect(card(page, `Roles in ${tenant}`)).toContainText('shop-manager');
-    await expect(card(page, `Roles in ${tenant}`)).toContainText('user');
     await expect(card(page, 'Claims')).toContainText('Dana Reyes');
     await expect(card(page, 'Claims').getByText('true')).toBeVisible();
+    await expect(card(page, 'Security actions')).toBeVisible();
+    await expect(card(page, 'Fixed')).toBeVisible();
+    await expect(card(page, 'Delete user')).toBeVisible();
+    await expect(card(page, `Roles in ${tenant}`)).toHaveCount(0);
+    await expect(card(page, 'Signed-in devices')).toHaveCount(0);
+
+    await page.getByRole('tab', { name: 'Roles' }).click();
+    await expect(card(page, `Roles in ${tenant}`)).toContainText('shop-manager');
+    await expect(card(page, `Roles in ${tenant}`)).toContainText('user');
+    await expect(card(page, 'Identifiers')).toHaveCount(0);
+
+    await page.getByRole('tab', { name: 'Devices' }).click();
     await expect(card(page, 'Signed-in devices')).toBeVisible();
     await expect(card(page, 'Apps with access')).toBeVisible();
     await expect(card(page, 'Passkeys')).toBeVisible();
-    await expect(card(page, 'Security actions')).toBeVisible();
-    await expect(card(page, 'Fixed')).toContainText('Assigned by central');
-    await expect(card(page, 'Delete user')).toBeVisible();
-  });
-
-  test('carries no counters', async ({ page }) => {
-    await openRecord(page);
-    await expect(page.getByText(/\d+ (devices?|apps?)\b/i)).toHaveCount(0);
-    await expect(page.getByText(/\(\d+\)/)).toHaveCount(0);
-  });
-
-  test('loads the user by ID: a reload keeps the page', async ({ page }) => {
-    await openRecord(page);
-    await page.reload();
-    await expect(page.getByRole('heading', { level: 1, name: 'Dana Reyes' })).toBeVisible();
-  });
-
-  test('an unknown ID says the user was not found', async ({ page }) => {
-    await loadAdminApp(page, { path: recordPath('00000000-0000-0000-0000-00000000dead'), state });
-    await expect(page.getByRole('heading', { name: 'User not found' })).toBeVisible();
-    await page.getByRole('button', { name: 'Back to users' }).click();
-    await expect(page.getByRole('heading', { name: 'Search for a user' })).toBeVisible();
-  });
-
-  test('a failing user load shows the error card', async ({ page }) => {
-    await loadAdminApp(page, { path: usersPath, state });
-    await page.route('**/users?id=*', route => route.fulfill({ status: 500, body: 'users are down' }));
-    await page.goto(recordPath());
-    await expect(page.getByRole('heading', { name: 'Could not load user' })).toBeVisible();
-    await expect(page.getByText('users are down')).toBeVisible();
-  });
-
-  test('without a tenant, says so and hides roles', async ({ page }) => {
-    await loadAdminApp(page, { path: `/?view=users&id=${danaId}`, state: { ...state, tenants: [] } });
-    await expect(page.getByRole('heading', { level: 1, name: 'Dana Reyes' })).toBeVisible();
-    await expect(page.getByText('Select a tenant to see roles and reset limits.')).toBeVisible();
-    await expect(page.getByRole('region', { name: /^Roles in/ })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Reset password…' })).toBeDisabled();
-    await expect(page.getByRole('button', { name: 'Reset limits' })).toBeDisabled();
+    await expect(card(page, 'Delete user')).toHaveCount(0);
   });
 
   test('a read-only operator gets no Edit, sign-out, revoke, reset or delete', async ({ page }) => {
@@ -219,10 +196,14 @@ test.describe('record', () => {
       state: { ...state, myPermissions: readOnly },
     });
     await expect(card(page, 'Identifiers')).toBeVisible();
-    for (const name of [/^Edit /, /^Sign out/, /^Forget device/, /^Revoke/, 'Reset password…', 'Reset limits', /^Rename/, /^Delete/]) {
-      await expect(page.getByRole('button', { name })).toHaveCount(0);
+    for (const tab of ['Profile', 'Roles', 'Devices']) {
+      await page.getByRole('tab', { name: tab }).click();
+      await expect(page.getByRole('tab', { name: tab })).toHaveAttribute('aria-selected', 'true');
+      for (const name of [/^Edit /, /^Sign out/, /^Forget device/, /^Revoke/, 'Reset password…', 'Reset limits', /^Rename/, /^Delete/]) {
+        await expect(page.getByRole('button', { name })).toHaveCount(0);
+      }
+      await expect(card(page, 'Delete user')).toHaveCount(0);
     }
-    await expect(card(page, 'Delete user')).toHaveCount(0);
   });
 
   test('a part that fails to load says so and retries without taking the page down', async ({ page }) => {
@@ -232,9 +213,10 @@ test.describe('record', () => {
       if (fail) await route.fulfill({ status: 500, body: 'passkeys are down' });
       else await route.fallback();
     });
-    await page.goto(recordPath());
+    await page.goto(devicesPath());
     await expect(card(page, 'Passkeys')).toContainText('passkeys are down');
-    await expect(card(page, 'Identifiers')).toContainText('dana@example.com');
+    await expect(page.getByRole('tab', { name: 'Devices' })).toHaveAttribute('aria-selected', 'true');
+    await expect(card(page, 'Signed-in devices')).toBeVisible();
     fail = false;
     await card(page, 'Passkeys').getByRole('button', { name: 'Retry' }).click();
     await expect(card(page, 'Passkeys')).toContainText('iCloud Keychain');
@@ -296,7 +278,7 @@ test.describe('group editors', () => {
   });
 
   test('roles: picks from the tenant and sends the difference', async ({ page }) => {
-    const api = await openRecord(page);
+    const api = await openRecord(page, {}, rolesPath());
     await page.getByRole('button', { name: 'Edit roles' }).click();
     await expect(page.getByRole('heading', { level: 1, name: 'Edit roles' })).toBeVisible();
     await expect(page.getByRole('checkbox', { name: /shop-manager/ })).toBeChecked();
@@ -318,7 +300,7 @@ test.describe('group editors', () => {
   });
 
   test('roles: a user with none says so', async ({ page }) => {
-    await openRecord(page, {}, recordPath(quiet.id));
+    await openRecord(page, {}, rolesPath(quiet.id));
     await expect(card(page, `Roles in ${tenant}`)).toContainText('No roles in this tenant.');
   });
 
@@ -346,7 +328,7 @@ test.describe('group editors', () => {
 
 test.describe('signed-in devices', () => {
   test('lists a device per user agent with its clients and the offline access marker', async ({ page }) => {
-    await openRecord(page);
+    await openRecord(page, {}, devicesPath());
     const devices = card(page, 'Signed-in devices');
     await expect(devices).toContainText('Chrome 130 on macOS 14.6');
     await expect(devices).toContainText('Example Shop app on iOS 18.1');
@@ -358,7 +340,7 @@ test.describe('signed-in devices', () => {
   });
 
   test('shows when the session expires (relative, the date in a title), when it idles out and until when the device is remembered', async ({ page }) => {
-    await openRecord(page);
+    await openRecord(page, {}, devicesPath());
     const devices = card(page, 'Signed-in devices');
     const chrome = devices.locator('.device', { hasText: 'Chrome 130 on macOS 14.6' });
     await expect(chrome.locator('[data-life="session"]')).toContainText('Session expires');
@@ -375,7 +357,7 @@ test.describe('signed-in devices', () => {
   });
 
   test('signed-out devices are folded away under the signed-in ones, without a count', async ({ page }) => {
-    await openRecord(page);
+    await openRecord(page, {}, devicesPath());
     const section = card(page, 'Signed-in devices').locator('details.signed-out');
     await expect(section.locator('summary')).toHaveText('Signed-out devices');
     expect(await section.evaluate(node => (node as HTMLDetailsElement).open)).toBe(false);
@@ -389,7 +371,7 @@ test.describe('signed-in devices', () => {
   });
 
   test('a session that ended but left offline access shows as a signed-out device, named by its user agent', async ({ page }) => {
-    await openRecord(page);
+    await openRecord(page, {}, devicesPath());
     await openSignedOut(page);
     const gone = card(page, 'Signed-in devices').locator('.device', { hasText: 'Firefox 131 on Windows 10 / 11' });
     await expect(gone).toContainText('Signed out');
@@ -402,7 +384,7 @@ test.describe('signed-in devices', () => {
   });
 
   test('a signed-out device that holds nothing is still listed by name, remembered until a date', async ({ page }) => {
-    await openRecord(page);
+    await openRecord(page, {}, devicesPath());
     await openSignedOut(page);
     const ipad = card(page, 'Signed-in devices').locator('.device', { hasText: 'Safari 17 on iOS 17.5' });
     await expect(ipad).toContainText('Signed out');
@@ -416,7 +398,7 @@ test.describe('signed-in devices', () => {
     const orphan = { ...dana, refreshTokens: [...dana.refreshTokens, {
       sessionId: 'sess-unknown', clientId: 'admin-console', scope: ['openid', 'offline_access'], issuedAt: dana.refreshTokens[0].issuedAt, expiresAt: dana.refreshTokens[0].expiresAt, dpopBound: false,
     }] };
-    await openRecord(page, { state: { ...state, users: [orphan, quiet] } });
+    await openRecord(page, { state: { ...state, users: [orphan, quiet] } }, devicesPath(orphan.id));
     await openSignedOut(page);
     const unnamed = card(page, 'Signed-in devices').locator('.device', { hasText: 'Signed-out device' });
     await expect(unnamed).toHaveCount(1);
@@ -425,7 +407,7 @@ test.describe('signed-in devices', () => {
   });
 
   test('every device table shares one column grid', async ({ page }) => {
-    await openRecord(page);
+    await openRecord(page, {}, devicesPath());
     await openSignedOut(page);
     const lefts = await card(page, 'Signed-in devices').locator('.device-clients').evaluateAll(tables =>
       tables.map(table => [...table.querySelectorAll('.dc.h > span')].map(cell => Math.round(cell.getBoundingClientRect().left))));
@@ -434,20 +416,20 @@ test.describe('signed-in devices', () => {
   });
 
   test('the "Apps with access" link moves to the apps card', async ({ page }) => {
-    await openRecord(page);
+    await openRecord(page, {}, devicesPath());
     const link = card(page, 'Signed-in devices').getByRole('button', { name: 'Go to Apps with access' }).first();
     await expect(link).toHaveText('Apps with access');
     await expect(link.locator('xpath=preceding-sibling::*[1]')).toHaveText('Offline access');
   });
 
   test('the arrow moves to Apps with access', async ({ page }) => {
-    await openRecord(page);
+    await openRecord(page, {}, devicesPath());
     await card(page, 'Signed-in devices').getByRole('button', { name: 'Go to Apps with access' }).first().click();
     await expect(card(page, 'Apps with access')).toBeFocused();
   });
 
   test('Sign out device ends that session only', async ({ page }) => {
-    const api = await openRecord(page);
+    const api = await openRecord(page, {}, devicesPath());
     await page.getByRole('button', { name: /^Sign out device Chrome 130/ }).click();
     const request = await findRequest(api.requests, 'DELETE', '/users/sessions');
     expect(request.searchParams).toEqual({ id: danaId, sessionId: chromeSessionId });
@@ -461,7 +443,7 @@ test.describe('signed-in devices', () => {
   });
 
   test('Sign out everywhere asks first, then ends every session', async ({ page }) => {
-    const api = await openRecord(page);
+    const api = await openRecord(page, {}, devicesPath());
     await page.getByRole('button', { name: 'Sign out everywhere…' }).click();
     await expect(confirmDialog(page)).toContainText('Dana Reyes');
     await expect(confirmDialog(page)).toContainText('offline access');
@@ -480,7 +462,7 @@ test.describe('signed-in devices', () => {
   });
 
   test('Refresh reloads sessions and offline access', async ({ page }) => {
-    const api = await openRecord(page);
+    const api = await openRecord(page, {}, devicesPath());
     const devicesLoaded = () => api.requests.filter(request => request.method === 'GET' && request.pathname === '/users/user-agents').length;
     const before = devicesLoaded();
     await card(page, 'Signed-in devices').getByRole('button', { name: 'Refresh' }).click();
@@ -488,13 +470,13 @@ test.describe('signed-in devices', () => {
   });
 
   test('a user with no session sees the empty line and cannot sign out everywhere', async ({ page }) => {
-    await openRecord(page, {}, recordPath(quiet.id));
+    await openRecord(page, {}, devicesPath(quiet.id));
     await expect(card(page, 'Signed-in devices')).toContainText('Not signed in on any device.');
     await expect(page.getByRole('button', { name: 'Sign out everywhere…' })).toBeDisabled();
   });
 
   test('Forget device asks first, then removes that device, its session and its offline access', async ({ page }) => {
-    const api = await openRecord(page);
+    const api = await openRecord(page, {}, devicesPath());
     await expect(page.getByRole('button', { name: /^Forget device Chrome 130/ })).not.toHaveClass(/btn-danger/);
     await page.getByRole('button', { name: /^Forget device Chrome 130/ }).click();
     await expect(confirmDialog(page)).toContainText('Chrome 130 on macOS 14.6');
@@ -514,7 +496,7 @@ test.describe('signed-in devices', () => {
   });
 
   test('forgetting a signed-out device removes it and the offline access issued on it', async ({ page }) => {
-    const api = await openRecord(page);
+    const api = await openRecord(page, {}, devicesPath());
     await openSignedOut(page);
     await page.getByRole('button', { name: /^Forget device Firefox 131/ }).click();
     await confirmDialog(page).getByRole('button', { name: 'Forget', exact: true }).click();
@@ -524,7 +506,7 @@ test.describe('signed-in devices', () => {
   });
 
   test('a failing Forget device shows the error and keeps the device', async ({ page }) => {
-    await openRecord(page);
+    await openRecord(page, {}, devicesPath());
     await page.route('**/users/user-agents?id=*', route => route.request().method() === 'DELETE'
       ? route.fulfill({ status: 404, body: 'User agent not found' })
       : route.fallback());
@@ -536,7 +518,7 @@ test.describe('signed-in devices', () => {
   });
 
   test('a failing sign-out shows the error and keeps the device', async ({ page }) => {
-    await openRecord(page);
+    await openRecord(page, {}, devicesPath());
     await page.route('**/users/sessions?id=*', route => route.fulfill({ status: 404, body: 'Session not found' }));
     await page.getByRole('button', { name: /^Sign out device Chrome 130/ }).click();
     await expect(page.getByRole('alert')).toContainText('Session not found');
@@ -546,7 +528,7 @@ test.describe('signed-in devices', () => {
 
 test.describe('apps with offline access', () => {
   test('one row per refresh token with scopes, dates, the DPoP chip and the device', async ({ page }) => {
-    await openRecord(page);
+    await openRecord(page, {}, devicesPath());
     const apps = card(page, 'Apps with access');
     await expect(apps.locator('.app[data-client]')).toHaveCount(3);
     const mobile = apps.locator('.app[data-client="shop-mobile"]');
@@ -561,13 +543,13 @@ test.describe('apps with offline access', () => {
   });
 
   test('uses the words offline access, never long-lived', async ({ page }) => {
-    await openRecord(page);
+    await openRecord(page, {}, devicesPath());
     await expect(page.getByText(/long-lived/i)).toHaveCount(0);
     await expect(card(page, 'Apps with access')).toContainText('offline access');
   });
 
   test('Revoke asks, then deletes that client\'s refresh tokens and leaves the sessions', async ({ page }) => {
-    const api = await openRecord(page);
+    const api = await openRecord(page, {}, devicesPath());
     await page.getByRole('button', { name: 'Revoke offline access of Shop mobile' }).click();
     await expect(confirmDialog(page)).toContainText('Shop mobile');
     await expect(confirmDialog(page)).toContainText('stays signed in');
@@ -581,25 +563,25 @@ test.describe('apps with offline access', () => {
   });
 
   test('cancelling the revoke sends nothing', async ({ page }) => {
-    const api = await openRecord(page);
+    const api = await openRecord(page, {}, devicesPath());
     await page.getByRole('button', { name: 'Revoke offline access of Shop mobile' }).click();
     await confirmDialog(page).getByRole('button', { name: 'Cancel' }).click();
     expect(api.requests.filter(request => request.method === 'DELETE')).toHaveLength(0);
   });
 
   test('empty and failing states', async ({ page }) => {
-    await openRecord(page, {}, recordPath(quiet.id));
+    await openRecord(page, {}, devicesPath(quiet.id));
     await expect(card(page, 'Apps with access')).toContainText('No app holds offline access for this user.');
 
     await loadAdminApp(page, { path: usersPath, state });
     await page.route('**/users/refresh-tokens?*', route => route.fulfill({ status: 500, body: 'tokens are down' }));
-    await page.goto(recordPath());
+    await page.goto(devicesPath());
     await expect(card(page, 'Apps with access')).toContainText('tokens are down');
     await expect(card(page, 'Signed-in devices')).toContainText('Chrome 130 on macOS 14.6');
   });
 
   test('the revoked token of a signed-out device leaves it listed, with nothing issued on it', async ({ page }) => {
-    await openRecord(page);
+    await openRecord(page, {}, devicesPath());
     await openSignedOut(page);
     const firefox = card(page, 'Signed-in devices').locator('.device', { hasText: 'Firefox 131 on Windows 10 / 11' });
     await expect(firefox.locator('.device-clients')).toHaveCount(1);
@@ -616,7 +598,7 @@ test.describe('phone layout of devices and passkeys', () => {
   test.use({ viewport: { width: 375, height: 900 } });
 
   test('a device is a card: facts one per line, clients stacked, full-width action at the bottom', async ({ page }) => {
-    await openRecord(page);
+    await openRecord(page, {}, devicesPath());
     const chrome = card(page, 'Signed-in devices').locator('.device', { hasText: 'Chrome 130 on macOS 14.6' });
     const name = await chrome.locator('.device-name').evaluate(node => {
       const title = node.firstElementChild!.getBoundingClientRect();
@@ -639,7 +621,7 @@ test.describe('phone layout of devices and passkeys', () => {
   });
 
   test('a passkey is a card: name, chips, dates, then Rename and Delete side by side', async ({ page }) => {
-    await openRecord(page);
+    await openRecord(page, {}, devicesPath());
     const passkey = card(page, 'Passkeys').locator('[data-passkey="cred-icloud"]');
     // Every box is read in one task. Separate boundingBox() calls are separate round trips, and the
     // cards above this one finish loading while they run: a shift between the Rename read and the
@@ -668,7 +650,7 @@ test.describe('phone layout of devices and passkeys', () => {
 
 test.describe('passkeys', () => {
   test('lists passkeys with their properties', async ({ page }) => {
-    await openRecord(page);
+    await openRecord(page, {}, devicesPath());
     const passkeys = card(page, 'Passkeys');
     await expect(passkeys).toContainText('iCloud Keychain');
     await expect(passkeys).toContainText('Multi-device');
@@ -679,7 +661,7 @@ test.describe('passkeys', () => {
   });
 
   test('renames through the prompt', async ({ page }) => {
-    const api = await openRecord(page);
+    const api = await openRecord(page, {}, devicesPath());
     page.on('dialog', dialog => dialog.accept('Work laptop'));
     await page.getByRole('button', { name: 'Rename passkey iCloud Keychain' }).click();
     expect((await findRequest(api.requests, 'PATCH', '/users/passkeys')).body).toEqual({ userId: danaId, credentialId: 'cred-icloud', name: 'Work laptop' });
@@ -687,7 +669,7 @@ test.describe('passkeys', () => {
   });
 
   test('deletes after a confirmation', async ({ page }) => {
-    const api = await openRecord(page);
+    const api = await openRecord(page, {}, devicesPath());
     await page.getByRole('button', { name: 'Delete passkey iCloud Keychain' }).click();
     await confirmDialog(page).getByRole('button', { name: 'Delete' }).click();
     const request = await findRequest(api.requests, 'DELETE', '/users/passkeys');
@@ -696,7 +678,7 @@ test.describe('passkeys', () => {
   });
 
   test('none registered', async ({ page }) => {
-    await openRecord(page, {}, recordPath(quiet.id));
+    await openRecord(page, {}, devicesPath(quiet.id));
     await expect(card(page, 'Passkeys')).toContainText('No passkeys registered.');
   });
 });

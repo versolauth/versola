@@ -299,6 +299,12 @@
     .track::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--toggle-knob-off); transition: transform .15s; }
     .toggle[aria-checked='true'] .track { background: var(--accent); } .toggle[aria-checked='true'] .track::after { transform: translateX(16px); background: var(--on-accent); }
     .toggle.is-focus .track { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+    /* tabs of a record page (versola-tabs): a tablist above one tabpanel; the selected tab is accent text on a 3px accent bar */
+    .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border-default); overflow-x: auto; margin-bottom: 16px; }
+    .tabs button { flex: none; min-height: 44px; margin-bottom: -1px; padding: 0 16px; border: 0; border-bottom: 3px solid transparent; background: none; color: var(--text-secondary); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+    .tabs button:hover { color: var(--text-primary); }
+    .tabs button[aria-selected='true'] { color: var(--accent); border-bottom-color: var(--accent); }
+    .tabs button.is-focus { outline: 2px solid var(--focus-ring); outline-offset: -2px; border-radius: var(--radius-sm); }
     /* alerts */
     .alert { display: flex; gap: 12px; padding: 12px 16px; border-radius: var(--radius-inner); border: 1px solid; margin-bottom: 12px; }
     .alert strong { display: block; }
@@ -365,6 +371,13 @@
     <div class="alert alert-success"><div><strong>Saved</strong> Client secret rotated. The old secret stops working in 24 hours.</div></div>
     <div class="alert alert-warning"><div><strong>Warning</strong> PAR is off for a client with redirect URIs. FAPI 2.0 requires it.</div></div>
     <div class="alert alert-danger"><div><strong>Error</strong> Could not reach central: the request timed out after 10 s.</div></div>
+
+    <div class="tabs" role="tablist" aria-label="User sections">
+      <button role="tab" id="tab-profile" aria-selected="true" aria-controls="tabs-panel" tabindex="0">Profile</button>
+      <button role="tab" id="tab-roles" aria-selected="false" aria-controls="tabs-panel" tabindex="-1">Roles</button>
+      <button role="tab" id="tab-devices" aria-selected="false" aria-controls="tabs-panel" tabindex="-1" class="is-focus">Devices (focused)</button>
+    </div>
+    <div id="tabs-panel" role="tabpanel" aria-labelledby="tab-profile" style="display:none"></div>
 
     <div class="grid">
       <section class="card span">

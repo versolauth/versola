@@ -579,7 +579,15 @@ const userClientsState = (): MockState => ({
     accessTokenTtl: 3600,
   })) as MockConfigState['clients'][string] },
 });
+// Profile, the first tab: the account and what can be done to it.
 const userLoaded: Act = async page => {
+  await expect(page.getByRole('heading', { level: 1, name: 'Dana Reyes' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Identifiers' })).toContainText('dana@example.com');
+  await expect(page.getByRole('region', { name: 'Delete user' })).toBeVisible();
+};
+const userDevicesPath = `${userPath}&tab=devices`;
+// Devices: signed-in devices, apps with access and passkeys.
+const userDevicesLoaded: Act = async page => {
   await expect(page.getByRole('heading', { level: 1, name: 'Dana Reyes' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Apps with access' }).locator('.app[data-client]')).toHaveCount(3);
   // Four devices: two signed in (one with an idle timeout), a signed-out one that still holds offline
@@ -1151,17 +1159,17 @@ const consoleShots: DocsShot[] = [
   },
   { name: 'entities/users-list', kind: 'frame', path: `/?view=users&tenant=${tenant}`, state: alpha, before: searchUser('dana', 'Dana Reyes') },
   {
-    name: 'entities/user-devices', kind: 'crop', path: userPath, state: userClientsState, before: userLoaded,
+    name: 'entities/user-devices', kind: 'crop', path: userDevicesPath, state: userClientsState, before: userDevicesLoaded,
     section: page => page.getByRole('region', { name: 'Signed-in devices' }),
   },
   {
-    name: 'entities/user-offline-access', kind: 'crop', path: userPath, state: userClientsState, before: userLoaded,
+    name: 'entities/user-offline-access', kind: 'crop', path: userDevicesPath, state: userClientsState, before: userDevicesLoaded,
     section: page => page.getByRole('region', { name: 'Apps with access' }),
   },
   {
-    name: 'entities/user-forget-device-confirm', kind: 'frame', path: userPath, state: userClientsState,
+    name: 'entities/user-forget-device-confirm', kind: 'frame', path: userDevicesPath, state: userClientsState,
     before: async page => {
-      await userLoaded(page);
+      await userDevicesLoaded(page);
       await page.getByRole('region', { name: 'Signed-in devices' }).locator('details.signed-out summary').click();
       await page.getByRole('button', { name: /^Forget device Firefox 140/ }).click();
       await expect(page.getByRole('dialog')).toContainText('Auth no longer remembers it');

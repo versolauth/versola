@@ -58,13 +58,24 @@ for (const theme of themes) {
       .violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`);
     const base = `/?view=users&tenant=tenant-alpha&id=${danaId}`;
 
+    // Every tab of the record, the tab bar included.
     await loadAdminApp(page, { path: base, state: userState });
+    await expect(page.getByRole('region', { name: 'Identifiers' })).toBeVisible();
+    expect(await scan()).toEqual([]);
+    await page.getByRole('tab', { name: 'Roles' }).click();
+    await expect(page.getByRole('region', { name: 'Roles in tenant-alpha' })).toBeVisible();
+    expect(await scan()).toEqual([]);
+    await page.getByRole('tab', { name: 'Devices' }).click();
     await expect(page.getByRole('region', { name: 'Apps with access' }).locator('.app[data-client]')).toHaveCount(3);
     await expect(page.getByRole('region', { name: 'Signed-in devices' }).locator('.device')).toHaveCount(4);
     expect(await scan()).toEqual([]);
+    // A tab in the focus ring while moving along the bar.
+    await page.getByRole('tab', { name: 'Devices' }).focus();
+    await page.keyboard.press('ArrowLeft');
+    expect(await scan()).toEqual([]);
 
     // The record with nothing to show: no devices, no offline access, no passkeys.
-    await page.goto(`/?view=users&tenant=tenant-alpha&id=${quiet.id}`);
+    await page.goto(`/?view=users&tenant=tenant-alpha&id=${quiet.id}&tab=devices`);
     await expect(page.getByRole('region', { name: 'Passkeys' })).toContainText('No passkeys registered.');
     expect(await scan()).toEqual([]);
 

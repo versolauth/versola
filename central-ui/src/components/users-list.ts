@@ -292,6 +292,7 @@ export class VersolaUsersList extends LitElement {
           .canManage=${this.canManage}
           .canRevealPassword=${this.canRevealPassword}
           .edit=${this.route.edit}
+          .tab=${this.route.tab}
           @user-deleted=${this.handleUserDeleted}
         ></versola-user-record>`;
     }
