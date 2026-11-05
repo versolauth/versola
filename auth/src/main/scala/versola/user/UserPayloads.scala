@@ -31,7 +31,7 @@ case class UpdateUserRolesPayload(
     tenantId: TenantId,
     add: Set[RoleId],
     remove: Set[RoleId],
-    actorId: Option[UserId] = None,
+    actorId: Option[UserId],
 ) derives JsonCodec, Schema
 
 case class ResetUserLimitsPayload(
@@ -39,12 +39,12 @@ case class ResetUserLimitsPayload(
     tenantId: TenantId,
     email: Option[Email],
     phone: Option[Phone],
-    actorId: Option[UserId] = None,
+    actorId: Option[UserId],
 ) derives JsonCodec, Schema
 
 case class UserClaimsResponse(claims: Json.Obj) derives JsonCodec, Schema
 
-case class PatchUserClaimsPayload(id: UserId, claims: Json.Obj, actorId: Option[UserId] = None) derives JsonCodec, Schema
+case class PatchUserClaimsPayload(id: UserId, claims: Json.Obj, actorId: Option[UserId]) derives JsonCodec, Schema
 
 case class UserRolesResponse(roles: List[RoleId]) derives JsonCodec, Schema
 
@@ -76,7 +76,7 @@ case class ResetPasswordPayload(
     userId: UserId,
     expiresInSeconds: Option[Long],
     channel: Option[DeliveryChannel],
-    actorId: Option[UserId] = None,
+    actorId: Option[UserId],
 ) derives JsonCodec
 
 /** Returned only for [[DeliveryChannel.show]] resets, which are non-prod only. */
@@ -87,7 +87,7 @@ case class ResetPasswordResponse(
 case class SetPasswordPayload(
     userId: UserId,
     password: String,
-    actorId: Option[UserId] = None,
+    actorId: Option[UserId],
 ) derives JsonCodec
 
 case class ClientEntryResponse(

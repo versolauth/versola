@@ -23,7 +23,7 @@ case class ResourceRecord(
     previousSecret: Option[Secret],
     /** The limits the resource sets for clients of its audience, at most one per client and only for clients that are in it. Last
       * and defaulted: a resource stored before the column has none. */
-    audienceRateLimits: List[AudienceRateLimit] = Nil,
+    audienceRateLimits: List[AudienceRateLimit],
 ):
   /** A resource with a secret is internal (edge authenticates to it with the
     * secret); one without is public (edge forwards the caller's own token). */
@@ -41,5 +41,5 @@ case class ResourceEndpointRecord(
     maxAge: Option[Int],
     /** A limit on how often this endpoint is called, checked at the edge together with the edge's own policies (the
       * smaller wins). `None` limits nothing; stored in the endpoint's JSON, so an endpoint written before it reads as `None`. */
-    rateLimit: Option[DeclaredRateLimit] = None,
+    rateLimit: Option[DeclaredRateLimit],
 ) derives CanEqual

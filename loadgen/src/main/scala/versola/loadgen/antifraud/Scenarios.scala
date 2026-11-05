@@ -121,7 +121,7 @@ final class Scenarios(
         .run(rate = settings.rate, duration = settings.duration, maxInFlight = config.maxInFlight)(legitDraw(0.0, None))(draw =>
           legitSession(run, run.main, draw),
         )
-        .map(Outcome(_, None, None))
+        .map(Outcome(_, None, None, fakeTiming = None))
 
   /** Many codes to numbers of one range from one source, none verified. The range is drawn once per run, so that a
     * run made after another does not meet a range the first one closed (the budget remembers an hour). */
@@ -133,7 +133,7 @@ final class Scenarios(
         .run(rate = config.prefixAttack.rate, duration = config.prefixAttack.duration, maxInFlight = config.maxInFlight)(
           ZIO.succeed(numbers.in(range)),
         )(phone => run.flows(run.main, source = source).requestOtp(phone).ignore)
-        .map(Outcome(_, None, None))
+        .map(Outcome(_, None, None, fakeTiming = None))
 
   /** One source asking for codes to numbers all over, none verified. */
   private def deviceAttack: Task[ScenarioResult] =
@@ -143,7 +143,7 @@ final class Scenarios(
         .run(rate = config.deviceAttack.rate, duration = config.deviceAttack.duration, maxInFlight = config.maxInFlight)(
           ZIO.succeed(numbers.any()),
         )(phone => run.flows(run.main, source = source).requestOtp(phone).ignore)
-        .map(Outcome(_, None, None))
+        .map(Outcome(_, None, None, fakeTiming = None))
 
   /** The prefix attack spread over `sources.distributed` addresses: each request from one of them, so that no
     * source is seen often. What is left to stop it is the range, and the numbers. */
@@ -155,7 +155,7 @@ final class Scenarios(
         .run(rate = config.distributedAttack.rate, duration = config.distributedAttack.duration, maxInFlight = config.maxInFlight)(
           ZIO.succeed((numbers.in(range), fromPool(pool))),
         )((phone, source) => run.flows(run.main, source = source).requestOtp(phone).ignore)
-        .map(Outcome(_, None, None))
+        .map(Outcome(_, None, None, fakeTiming = None))
 
   /** Legitimate users, `legit-in-range-share` of them with a number inside the range that is being attacked, at the
     * same time as the attack. The attack's own outcomes are the scenario's; the legitimate users' are kept apart, in
@@ -174,7 +174,7 @@ final class Scenarios(
         legitDraw(settings.legitInRangeShare, Some(range)),
       )(draw => if draw.inRange then legitSession(run, inRange, draw) else legitSession(run, elsewhere, draw))
       attack.zipPar(legit).map((a, l) =>
-        Outcome(ArrivalSummary(arrivals = a.arrivals + l.arrivals, waited = a.waited + l.waited), Some(inRange), Some(elsewhere)),
+        Outcome(ArrivalSummary(arrivals = a.arrivals + l.arrivals, waited = a.waited + l.waited), Some(inRange), Some(elsewhere), fakeTiming = None),
       )
 
   /** An attack on one range whose sender enters the code of `verify-share` of the numbers, so that the range keeps
@@ -193,7 +193,7 @@ final class Scenarios(
             case sent: OtpFlows.Requested.Sent if verifies => flows.verify(sent, phone).unit
             case _ => ZIO.unit
           }.ignore
-        .map(Outcome(_, None, None))
+        .map(Outcome(_, None, None, fakeTiming = None))
 
   /** One number asked for codes again and again. */
   private def targetedPhone: Task[ScenarioResult] =
@@ -204,7 +204,7 @@ final class Scenarios(
         .run(rate = config.targeted.rate, duration = config.targeted.duration, maxInFlight = config.maxInFlight)(ZIO.succeed(phone))(number =>
           run.flows(run.main, source = source).requestOtp(number).ignore,
         )
-        .map(Outcome(_, None, None))
+        .map(Outcome(_, None, None, fakeTiming = None))
 
   /** A code requested for a new number and then `attempts` random codes entered. A guess that is taken counts as
     * `verified`. */
@@ -222,7 +222,7 @@ final class Scenarios(
             case sent: OtpFlows.Requested.Sent => ZIO.foreachDiscard(guesses)(guess => flows.enter(sent, guess))
             case _ => ZIO.unit
           }.ignore
-        .map(Outcome(_, None, None))
+        .map(Outcome(_, None, None, fakeTiming = None))
 
   /** `/token` and refresh alone: sessions are made first (only their code exchange is measured), then refreshed at
     * a fixed rate. A session is refreshed by one fiber at a time, since a token used twice is a reuse, and by the
@@ -242,7 +242,7 @@ final class Scenarios(
         _ <- ZIO.fail(ControlSetupFailed(settings.sessions, run.main.failures)).when(made == 0)
         summary <- Arrivals.run(rate = settings.rate, duration = settings.duration, maxInFlight = config.maxInFlight)(pool.take): (tokens, flows) =>
           flows.refresh(tokens).flatMap(refreshed => pool.offer((refreshed, flows))).ignore
-      yield Outcome(summary, None, None)
+      yield Outcome(summary, None, None, fakeTiming = None)
 
   /** `requests` requests for a code to numbers of a `fake` list entry and as many to real ones, alternating in a random
     * order and each from a source of its own (so that no limit on a source touches them), timed on the call that makes
@@ -266,7 +266,8 @@ final class Scenarios(
     measured(AntifraudScenario.FakeTiming): run =>
       val samples = Map(true -> Measurements(), false -> Measurements())
       val tallies = Map(true -> Tally(), false -> Tally())
-      val sentPhones = Map(true -> java.util.concurrent.ConcurrentLinkedQueue[String](), false -> java.util.concurrent.ConcurrentLinkedQueue[String]())
+      val sentPhones =
+        Map(true -> java.util.concurrent.ConcurrentLinkedQueue[String](), false -> java.util.concurrent.ConcurrentLinkedQueue[String]())
       val probes: Vector[(Boolean, String, Option[String])] = Vector.tabulate(settings.requests): index =>
         val pair = Vector((true, fakeNumber(index), ownSource()), (false, realNumber(), ownSource()))
         if random.nextBoolean() then pair.reverse else pair
@@ -308,7 +309,17 @@ final class Scenarios(
             maxMs = timing.max("request"),
           )
         _ = List(true, false).foreach(fake => run.main.absorb(tallies(fake)))
-      yield Outcome(summary, None, None, Some(FakeTimingCheck.judge(fake = group(true), real = group(false), toleranceMs = settings.tolerance.toMillis.toDouble, minSamples = FakeTimingCheck.MinSamples)))
+      yield Outcome(
+        summary,
+        None,
+        None,
+        Some(FakeTimingCheck.judge(
+          fake = group(true),
+          real = group(false),
+          toleranceMs = settings.tolerance.toMillis.toDouble,
+          minSamples = FakeTimingCheck.MinSamples,
+        )),
+      )
 
   /** What a scenario's body is given: the measurements it records into, the tally of its own requests, and a way to
     * make flows that count into another tally. A session's flows are made where it starts: that picks its instance. */
@@ -320,7 +331,7 @@ final class Scenarios(
       summary: ArrivalSummary,
       legitInRange: Option[Tally],
       legitElsewhere: Option[Tally],
-      fakeTiming: Option[FakeTimingResult] = None,
+      fakeTiming: Option[FakeTimingResult],
   )
 
   private def measured(scenario: AntifraudScenario)(body: Run => Task[Outcome]): Task[ScenarioResult] =

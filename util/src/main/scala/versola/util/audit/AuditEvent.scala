@@ -39,11 +39,11 @@ case class AuditEvent(
 case class AuditDraft(
     kind: AuditKind,
     outcome: AuditOutcome,
-    reason: Option[String] = None,
-    actor: Option[(ActorType, Option[String])] = None,
-    userId: Option[UUID] = None,
-    target: Option[(String, String)] = None,
-    details: AuditDetails = AuditDetails.empty,
+    reason: Option[String],
+    actor: Option[(ActorType, Option[String])],
+    userId: Option[UUID],
+    target: Option[(String, String)],
+    details: AuditDetails,
 )
 
 /** A kind's payload: one case class per kind in the service that emits it, which `derives JsonEncoder` and renders itself with

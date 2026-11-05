@@ -80,6 +80,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     resources = Nil,
     authorizationDetails = None,
     dpopJkt = None,
+    ip = None,
   )
 
   private val credentials = ClientIdWithSecret(clientId, Some(clientSecret))

@@ -64,6 +64,9 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
       Set.empty,
       accessTokenTtl,
       applicationType = ApplicationType.web,
+      requireSignedRequestObject = false,
+      requirePushedAuthorizationRequests = false,
+      redirectUris = Set.empty,
     )
 
   /** Only [[EdgeConfig.revocation]] matters here; the rest is what the case class demands. */

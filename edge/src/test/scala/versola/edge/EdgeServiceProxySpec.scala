@@ -87,14 +87,20 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))),
     permissions = Set.empty,
     accessTokenTtl = 15.minutes,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
     applicationType = ApplicationType.web,
+    redirectUris = Set.empty,
   )
   private val svcClient = OAuthClient(
     id = ClientId("svc-1"),
     credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(3.toByte))),
     permissions = Set.empty,
     accessTokenTtl = 15.minutes,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
     applicationType = ApplicationType.web,
+    redirectUris = Set.empty,
   )
 
   /** A client that authenticates by certificate (RFC 8705 §2), which is what makes the tokens
@@ -419,6 +425,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = stepUpCondition,
       stepUpAcr = stepUpAcr,
       maxAge = maxAge,
+      rateLimit = None,
     )
 
   private def userByIdEndpoint(allow: Option[String] = None, inject: Vector[InjectRule] = Vector.empty) =
@@ -432,6 +439,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = None,
       stepUpAcr = None,
       maxAge = None,
+      rateLimit = None,
     )
 
   private def currentUserEndpoint(inject: Vector[InjectRule] = Vector.empty) =
@@ -445,6 +453,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = None,
       stepUpAcr = None,
       maxAge = None,
+      rateLimit = None,
     )
 
   private def tenantOrderEndpoint(allow: Option[String] = None, inject: Vector[InjectRule] = Vector.empty) =
@@ -458,6 +467,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = None,
       stepUpAcr = None,
       maxAge = None,
+      rateLimit = None,
     )
 
   private def createUserEndpoint(
@@ -476,6 +486,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = stepUpCondition,
       stepUpAcr = stepUpAcr,
       maxAge = None,
+      rateLimit = None,
     )
 
   private def usersResource(endpoints: ResourceEndpoint*): Resource = usersResourceNamed(ResourceId("users-api"), endpoints*)
@@ -494,6 +505,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = None,
       stepUpAcr = None,
       maxAge = None,
+      rateLimit = None,
     )
 
   private val centralResourceSecret = Secret(Array.fill(48)(2.toByte))
@@ -524,6 +536,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = None,
       stepUpAcr = None,
       maxAge = None,
+      rateLimit = None,
     )
 
   /** The "auth" alias proxies Account Settings to auth's additional listener. Like "central" it is
@@ -2783,7 +2796,10 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
         permissions = Set.empty,
         accessTokenTtl = 15.minutes,
+        requireSignedRequestObject = false,
+        requirePushedAuthorizationRequests = false,
         applicationType = ApplicationType.web,
+        redirectUris = Set.empty,
       )
       for
         _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
@@ -2819,7 +2835,10 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
         permissions = Set.empty,
         accessTokenTtl = 15.minutes,
+        requireSignedRequestObject = false,
+        requirePushedAuthorizationRequests = false,
         applicationType = ApplicationType.web,
+        redirectUris = Set.empty,
       )
       for
         _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
@@ -2855,7 +2874,10 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
         permissions = Set.empty,
         accessTokenTtl = 15.minutes,
+        requireSignedRequestObject = false,
+        requirePushedAuthorizationRequests = false,
         applicationType = ApplicationType.web,
+        redirectUris = Set.empty,
       )
       for
         _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)

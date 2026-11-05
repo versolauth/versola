@@ -25,8 +25,30 @@ object EdgeRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
   private val config = EdgeFixture.Config(
     resourceId = "e2e-edge-rate-limit",
     resourceUri = UpstreamStub.uriOn(UpstreamPort),
-    endpoints = List(EdgeFixture.Endpoint(name = "list", method = "GET", path = "/items")),
+    endpoints = List(EdgeFixture.Endpoint(
+      name = "list",
+      method = "GET",
+      path = "/items",
+      permitted = true,
+      fetchUserInfo = false,
+      allow = None,
+      inject = Nil,
+      stepUpCondition = None,
+      stepUpAcr = None,
+      maxAge = None,
+    )),
+    scopes = Set("openid", "email", "offline_access"),
+    presetScope = Set("openid"),
+    postLogoutRedirectUri = None,
+    cookiePath = None,
     awaitProxyReady = true,
+    privateKeyJwt = false,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
+    mutualTls = false,
+    nativeApp = false,
+    issuedCertificate = false,
+    enrolledCertificate = false,
   )
 
   /** The edge `gen-env.scala` stages (`edge-default`): its policies are the ones the running edge applies. */

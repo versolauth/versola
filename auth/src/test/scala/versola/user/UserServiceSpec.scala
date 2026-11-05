@@ -38,7 +38,7 @@ object UserServiceSpec extends UnitSpecBase:
         // account.registered: about the new user, by registration, and the address they registered with is not in it
         drafts.map(_.kind) == List(AuthAuditKinds.AccountRegistered),
         drafts.head.userId == Some(user.id.asInstanceOf[java.util.UUID]),
-        drafts.head.details == AuthAuditDetails.Account(via = "registration"),
+        drafts.head.details == AuthAuditDetails.Account(via = "registration", detail = None),
         !drafts.head.details.toJson.toString.contains(email),
         result == user,
         registerCalls.map(_._1) == List(user.id),

@@ -282,7 +282,7 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
           assertTrue(
             drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuthAuditKinds.ParRequest, AuditOutcome.success, None)),
             drafts.head.actor == Some((AuthActors.client, Some(clientId: String))),
-            drafts.head.details == AuthAuditDetails.ParRequest(scope = List("openid"), requestObject = false),
+            drafts.head.details == AuthAuditDetails.ParRequest(scope = List("openid"), requestObject = false, count = None),
           ),
       ),
       controllerTestCase(

@@ -45,22 +45,59 @@ object EdgeMutualTlsSpec
     resourceId = "e2e-edge-mutual-tls",
     resourceUri = UpstreamStub.uriOn(UpstreamPort),
     endpoints = List(
-      EdgeFixture.Endpoint(name = "items", method = "GET", path = "/items"),
+      EdgeFixture.Endpoint(
+        name = "items",
+        method = "GET",
+        path = "/items",
+        permitted = true,
+        fetchUserInfo = false,
+        allow = None,
+        inject = Nil,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
       // Only the dual-binding test calls this one, so the upstream seeing it at all is that
       // test's request getting through -- the tests above run alongside and share the stub.
-      EdgeFixture.Endpoint(name = "dual-bound", method = "GET", path = "/dual-bound"),
+      EdgeFixture.Endpoint(
+        name = "dual-bound",
+        method = "GET",
+        path = "/dual-bound",
+        permitted = true,
+        fetchUserInfo = false,
+        allow = None,
+        inject = Nil,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
       // The endpoint that makes edge call `/userinfo` with the token it was issued, and the
       // injected header that proves the call came back with claims rather than a refusal.
       EdgeFixture.Endpoint(
         name = "profile",
         method = "GET",
         path = "/profile",
+        permitted = true,
         fetchUserInfo = true,
+        allow = None,
         inject = List(Fixtures.inject("header", "X-User-Sub", "user.sub")),
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
       ),
     ),
-    mutualTls = true,
+    scopes = Set("openid", "email", "offline_access"),
+    presetScope = Set("openid"),
+    postLogoutRedirectUri = None,
+    cookiePath = None,
     awaitProxyReady = true,
+    privateKeyJwt = false,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
+    mutualTls = true,
+    nativeApp = false,
+    issuedCertificate = false,
+    enrolledCertificate = false,
   )
 
   override val bootstrap: ZLayer[Any, Any, OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub] =

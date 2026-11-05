@@ -85,7 +85,15 @@ object AuthorizeEndpointController extends Controller:
           outcome = AuditOutcome.failure,
           clientId = clientId,
           reason = reason,
-          details = AuthAuditDetails.AuthorizeRequest(responseType = Nil, scope = Nil, resource = Nil, prompt = Nil, acrValues = Nil, par = false),
+          details = AuthAuditDetails.AuthorizeRequest(
+            responseType = Nil,
+            scope = Nil,
+            resource = Nil,
+            prompt = Nil,
+            acrValues = Nil,
+            par = false,
+            count = None,
+          ),
         ),
       )
 
@@ -98,7 +106,10 @@ object AuthorizeEndpointController extends Controller:
           AuditDraft(
             kind = AuthAuditKinds.AuthorizeRequest,
             outcome = AuditOutcome.success,
+            reason = None,
             actor = Some((AuthActors.client, Some(request.clientId))),
+            userId = None,
+            target = None,
             details = AuthAuditDetails.AuthorizeRequest(
               responseType = request.responseType.toList.map(_.toString).sorted,
               scope = request.scope.toList.map(_.toString).sorted,
@@ -106,6 +117,7 @@ object AuthorizeEndpointController extends Controller:
               prompt = request.prompt.toList.map(_.toString).sorted,
               acrValues = request.acrValues.toList.flatMap(_.toList).map(_.toString),
               par = par,
+              count = None,
             ),
           ),
         ),
@@ -138,6 +150,7 @@ object AuthorizeEndpointController extends Controller:
                     redirectUri = request.redirectUri.encode,
                     state = request.state,
                     responseMode = Some(request.responseMode),
+                    useFragment = None,
                   ),
                   authConversationTtl,
                   config.security.conversationCookieSecret,

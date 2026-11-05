@@ -48,9 +48,9 @@ object ClientAuthFailuresSpec extends UnitSpecBase:
 
   def spec = suite("ClientAuthFailures")(
     test("a flood of refusals is one event a key whatever the kind: 20 100 requests are three rows, written when the minute is up") {
-      val token = AuthAuditDetails.TokenRefused(grant = Some("authorization_code"), clientAuth = Some("none"), detail = None)
-      val authorize = AuthAuditDetails.AuthorizeRequest(Nil, Nil, Nil, Nil, Nil, par = false)
-      val par = AuthAuditDetails.ParRequest(scope = Nil, requestObject = false)
+      val token = AuthAuditDetails.TokenRefused(grant = Some("authorization_code"), clientAuth = Some("none"), detail = None, count = None)
+      val authorize = AuthAuditDetails.AuthorizeRequest(Nil, Nil, Nil, Nil, Nil, par = false, count = None)
+      val par = AuthAuditDetails.ParRequest(scope = Nil, requestObject = false, count = None)
       for
         events <- probe
         failures <- failuresOf(events)
@@ -79,7 +79,7 @@ object ClientAuthFailuresSpec extends UnitSpecBase:
       )
     },
     test("the same refusal for another reason, address or grant is another row") {
-      val code = AuthAuditDetails.TokenRefused(grant = Some("authorization_code"), clientAuth = None, detail = None)
+      val code = AuthAuditDetails.TokenRefused(grant = Some("authorization_code"), clientAuth = None, detail = None, count = None)
       val refresh = code.copy(grant = Some("refresh_token"))
       for
         events <- probe
@@ -93,7 +93,7 @@ object ClientAuthFailuresSpec extends UnitSpecBase:
       yield assertTrue(seen.size == 4, seen.forall(s => s.draft.details == code.counted(1) || s.draft.details == refresh.counted(1)))
     },
     test("refusals of the other kinds are counted under the same bound on keys") {
-      val token = AuthAuditDetails.TokenRefused(grant = None, clientAuth = None, detail = None)
+      val token = AuthAuditDetails.TokenRefused(grant = None, clientAuth = None, detail = None, count = None)
       for
         events <- probe
         failures <- failuresOf(events, maxKeys = 2)
@@ -119,7 +119,7 @@ object ClientAuthFailuresSpec extends UnitSpecBase:
         after.head.draft.outcome == AuditOutcome.denied,
         after.head.draft.reason == Some("invalid_credentials"),
         after.head.draft.actor == Some((AuthActors.client, Some("app"))),
-        after.head.draft.details == AuthAuditDetails.ClientAuthFailed(method = "client_secret", count = 5),
+        after.head.draft.details == AuthAuditDetails.ClientAuthFailed(method = "client_secret", count = 5, assertionJti = None),
         // the address and client are the failures', put in the context the event is filled in from
         after.head.ip == Some("203.0.113.7"),
         after.head.clientId == Some("app"),
@@ -135,7 +135,10 @@ object ClientAuthFailuresSpec extends UnitSpecBase:
         _ <- failedFrom(failures, "203.0.113.7", "app", "method_mismatch")
         _ <- TestClock.adjust(1.minute)
         seen <- events.all
-      yield assertTrue(seen.size == 4, seen.map(_.draft.details).forall(_ == AuthAuditDetails.ClientAuthFailed("client_secret", 1)))
+      yield assertTrue(
+        seen.size == 4,
+        seen.map(_.draft.details).forall(_ == AuthAuditDetails.ClientAuthFailed("client_secret", 1, assertionJti = None)),
+      )
     },
     test("nothing is written for a minute with no failure, and the counts start over after each flush") {
       for
@@ -152,8 +155,8 @@ object ClientAuthFailuresSpec extends UnitSpecBase:
       yield assertTrue(
         quiet.isEmpty,
         seen.map(_.draft.details) == List(
-          AuthAuditDetails.ClientAuthFailed("client_secret", 1),
-          AuthAuditDetails.ClientAuthFailed("client_secret", 2),
+          AuthAuditDetails.ClientAuthFailed("client_secret", 1, assertionJti = None),
+          AuthAuditDetails.ClientAuthFailed("client_secret", 2, assertionJti = None),
         ),
       )
     },
@@ -172,7 +175,11 @@ object ClientAuthFailuresSpec extends UnitSpecBase:
       yield assertTrue(
         seen.size == 3,
         seen.count(_.draft.reason == Some("overflow")) == 1,
-        seen.collectFirst { case s if s.draft.reason == Some("overflow") => s.draft.details }.contains(AuthAuditDetails.ClientAuthFailed("", 50)),
+        seen.collectFirst { case s if s.draft.reason == Some("overflow") => s.draft.details }.contains(AuthAuditDetails.ClientAuthFailed(
+          "",
+          50,
+          assertionJti = None,
+        )),
         seen.flatMap(_.clientId).toSet == Set("a", "b"),
       )
     },
@@ -185,7 +192,7 @@ object ClientAuthFailuresSpec extends UnitSpecBase:
             _ <- failedFrom(failures, "203.0.113.7", "app", "invalid_credentials")
           yield ()
         seen <- events.all
-      yield assertTrue(seen.map(_.draft.details) == List(AuthAuditDetails.ClientAuthFailed("client_secret", 1)))
+      yield assertTrue(seen.map(_.draft.details) == List(AuthAuditDetails.ClientAuthFailed("client_secret", 1, assertionJti = None)))
     },
     test("a failure with no address in the request is counted under no address, not dropped") {
       for

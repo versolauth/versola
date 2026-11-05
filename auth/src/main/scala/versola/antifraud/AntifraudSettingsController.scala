@@ -46,7 +46,10 @@ object AntifraudSettingsController extends Controller:
         AuditDraft(
           kind = AuthAuditKinds.AntifraudSettingsChanged,
           outcome = AuditOutcome.success,
+          reason = None,
           actor = Some((AuthActors.admin, Some(admin.toString))),
+          userId = None,
+          target = None,
           details = AuthAuditDetails.AntifraudSettingsChanged(action = action, version = Some(version)),
         ),
       ),
@@ -123,8 +126,8 @@ object AntifraudSettingsController extends Controller:
         )
 
   /** `version` is the version the settings were read at, for a client that does not send `If-Match`. */
-  case class SettingsPayload(settings: Tuning, userId: UserId, version: Option[Long] = None) derives JsonCodec
+  case class SettingsPayload(settings: Tuning, userId: UserId, version: Option[Long]) derives JsonCodec
 
   /** `patch` is the typed settings patch ([[TuningPatch]], a JSON merge patch whose members are fixed, so an unknown one is a
     * 400): central takes it from its own request body, without `userId` and `version`. */
-  case class PatchAntifraudSettingsPayload(patch: TuningPatch, userId: UserId, version: Option[Long] = None) derives JsonCodec
+  case class PatchAntifraudSettingsPayload(patch: TuningPatch, userId: UserId, version: Option[Long]) derives JsonCodec

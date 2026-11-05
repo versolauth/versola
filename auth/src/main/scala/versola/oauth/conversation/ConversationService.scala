@@ -333,7 +333,9 @@ object ConversationService:
             kind = AuthAuditKinds.LoginStep,
             outcome = outcome,
             reason = reason,
+            actor = None,
             userId = subject,
+            target = None,
             details = AuthAuditDetails.LoginStep(
               step = step,
               conversationId = authId.toString,
@@ -1266,7 +1268,10 @@ object ConversationService:
               AuditDraft(
                 kind = AuthAuditKinds.LoginCompleted,
                 outcome = AuditOutcome.success,
+                reason = None,
+                actor = None,
                 userId = Some(userId),
+                target = None,
                 details = AuthAuditDetails.LoginCompleted(
                   kind = AuthMetrics.conversationKind(conversation),
                   conversationId = authId.toString,
@@ -1602,7 +1607,10 @@ object ConversationService:
                 AuditDraft(
                   kind = AuthAuditKinds.AccountPasskeyEnrolled,
                   outcome = AuditOutcome.success,
+                  reason = None,
+                  actor = None,
                   userId = Some(userId),
+                  target = None,
                   details =
                     AuthAuditDetails.Passkey(credentialPrefix = Some(record.id.toString.take(9)), deviceType = Some(record.deviceType.toString)),
                 ),
@@ -1706,8 +1714,11 @@ object ConversationService:
                     AuditDraft(
                       kind = AuthAuditKinds.AccountPasswordSet,
                       outcome = AuditOutcome.success,
+                      reason = None,
+                      actor = None,
                       userId = Some(userId),
-                      details = AuthAuditDetails.Account(via = "login_flow"),
+                      target = None,
+                      details = AuthAuditDetails.Account(via = "login_flow", detail = None),
                     ),
                   ) *>
                     Clock.instant.flatMap: now =>

@@ -21,6 +21,9 @@ object PostgresAuditShutdownSpec extends PostgresSpec:
     kind = AuthAuditKinds.LoginStep,
     outcome = AuditOutcome.failure,
     reason = Some("shutdown_spec"),
+    actor = None,
+    userId = None,
+    target = None,
     details = AuditDetails.empty,
   )
 

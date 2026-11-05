@@ -23,21 +23,21 @@ object ObservabilitySpec extends ZIOSpecDefault:
   @jsonMemberNames(SnakeCase)
   private case class LoggedRequest(
       path: String,
-      cookies: List[String] = Nil,
-      baseUri: String = "http://",
-      queryParams: List[String] = Nil,
-      headers: List[String] = Nil,
-      body: Option[String] = None,
+      cookies: List[String],
+      baseUri: String,
+      queryParams: List[String],
+      headers: List[String],
+      body: Option[String],
   ) derives JsonDecoder
-  private case class LoggedResponse(code: Int, body: Option[String] = None, headers: List[String] = Nil) derives JsonDecoder
+  private case class LoggedResponse(code: Int, body: Option[String], headers: List[String]) derives JsonDecoder
   private case class LoggedHttp(request: LoggedRequest, response: LoggedResponse) derives JsonDecoder
   private case class LoggedError(code: String, description: Option[String]) derives JsonDecoder
   private case class LoggedEntry(
       level: String,
       message: String,
       http: LoggedHttp,
-      stack_trace: Option[String] = None,
-      error: Option[LoggedError] = None,
+      stack_trace: Option[String],
+      error: Option[LoggedError],
   ) derives JsonDecoder
 
   @jsonMemberNames(SnakeCase)
@@ -46,7 +46,7 @@ object ObservabilitySpec extends ZIOSpecDefault:
       queryParams: List[String],
       headers: List[String],
       body: Option[String],
-      baseUri: String = "",
+      baseUri: String,
   ) derives JsonDecoder
   private case class ClientLoggedHttp(
       request: ClientLoggedRequest,
@@ -74,8 +74,8 @@ object ObservabilitySpec extends ZIOSpecDefault:
       logAnnotation(Observability.sendHttp),
     ).reduce(_ |-| _)
 
-  private case class LoggedAuth(id: Option[String] = None) derives JsonDecoder
-  private case class AuthLoggedEntry(message: String, auth: Option[LoggedAuth] = None) derives JsonDecoder
+  private case class LoggedAuth(id: Option[String]) derives JsonDecoder
+  private case class AuthLoggedEntry(message: String, auth: Option[LoggedAuth]) derives JsonDecoder
 
   private val authLogFormat =
     List(
@@ -85,19 +85,19 @@ object ObservabilitySpec extends ZIOSpecDefault:
 
   @jsonMemberNames(SnakeCase)
   private case class FullLoggedAuth(
-      id: Option[String] = None,
-      priorSessionId: Option[String] = None,
-      sessionId: Option[String] = None,
-      clientId: Option[String] = None,
-      step: Option[String] = None,
-      userId: Option[String] = None,
-      userAgentId: Option[String] = None,
-      ip: Option[String] = None,
-      token: Option[String] = None,
-      refreshToken: Option[String] = None,
-      previousRefreshToken: Option[String] = None,
+      id: Option[String],
+      priorSessionId: Option[String],
+      sessionId: Option[String],
+      clientId: Option[String],
+      step: Option[String],
+      userId: Option[String],
+      userAgentId: Option[String],
+      ip: Option[String],
+      token: Option[String],
+      refreshToken: Option[String],
+      previousRefreshToken: Option[String],
   ) derives JsonDecoder
-  private case class FullAuthLoggedEntry(message: String, auth: Option[FullLoggedAuth] = None) derives JsonDecoder
+  private case class FullAuthLoggedEntry(message: String, auth: Option[FullLoggedAuth]) derives JsonDecoder
   private val fullAuthLogFormat =
     List(
       label("message", quoted(line)),
@@ -145,7 +145,20 @@ object ObservabilitySpec extends ZIOSpecDefault:
             Observability.setError("invalid_request", Some("Invalid request")).as(Response.badRequest)
           },
           Method.GET / "antifraud" -> Handler.fromFunctionZIO[Request] { _ =>
-            Observability.updateAntifraud(Observability.AntifraudDetails("otp_request", "Allow", 0, Nil, None, None, None, None))(
+            Observability.updateAntifraud(Observability.AntifraudDetails(
+              "otp_request",
+              "Allow",
+              0,
+              Nil,
+              None,
+              None,
+              None,
+              None,
+              wouldAction = None,
+              asn = None,
+              asnClass = None,
+              country = None,
+            ))(
               _.copy(
                 decision = "Block",
                 score = 12,
@@ -248,8 +261,12 @@ object ObservabilitySpec extends ZIOSpecDefault:
         rendered == LoggedEntry(
           level = "INFO",
           message = "receive-http",
-          http = LoggedHttp(LoggedRequest("ok"), LoggedResponse(200)),
+          http = LoggedHttp(
+            LoggedRequest("ok", cookies = Nil, baseUri = "http://", queryParams = Nil, headers = Nil, body = None),
+            LoggedResponse(200, body = None, headers = Nil),
+          ),
           stack_trace = None,
+          error = None,
         ),
       )
     }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
@@ -304,7 +321,10 @@ object ObservabilitySpec extends ZIOSpecDefault:
         receiveLogs.length == 1,
         rendered.level == "ERROR",
         rendered.message == "receive-http",
-        rendered.http == LoggedHttp(LoggedRequest("boom"), LoggedResponse(500)),
+        rendered.http == LoggedHttp(
+          LoggedRequest("boom", cookies = Nil, baseUri = "http://", queryParams = Nil, headers = Nil, body = None),
+          LoggedResponse(500, body = None, headers = Nil),
+        ),
         rendered.stack_trace.exists(_.contains("RuntimeException: boom")),
       )
     }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
@@ -348,7 +368,20 @@ object ObservabilitySpec extends ZIOSpecDefault:
       )
     }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
     test("the antifraud check says nothing of an ASN or a country when there is none, and carries no address") {
-      val json = Observability.AntifraudDetails("otp_request", "Allow", 0, Nil, None, None, None, None).toJson
+      val json = Observability.AntifraudDetails(
+        "otp_request",
+        "Allow",
+        0,
+        Nil,
+        None,
+        None,
+        None,
+        None,
+        wouldAction = None,
+        asn = None,
+        asnClass = None,
+        country = None,
+      ).toJson
       assertTrue(!json.contains("asn"), !json.contains("country"), !json.contains("\"ip\""))
     },
     // Closes the ErrorDetails.description default-None gap (line 530): every other error test
@@ -471,7 +504,7 @@ object ObservabilitySpec extends ZIOSpecDefault:
     // explicit `description` (even when it's its own `None` default), so `ErrorDetails`'s own
     // default is only reachable by constructing it directly with a single argument.
     test("ErrorDetails defaults to no description when constructed without one") {
-      assertTrue(Observability.ErrorDetails("some_code") == Observability.ErrorDetails("some_code", None))
+      assertTrue(Observability.ErrorDetails("some_code", description = None) == Observability.ErrorDetails("some_code", None))
     },
     // Closes the auth-detail setters that no test previously exercised (lines 50-81): only
     // setAuthId, setError and setRouteLabel/setRoutePath were reached via existing routes.

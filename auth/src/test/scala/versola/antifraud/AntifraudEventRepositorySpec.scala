@@ -334,6 +334,11 @@ object AntifraudEventRepositorySpec:
     subjectHash = "hash-1",
     destPrefix = Some("491512"),
     userAgent = Some("Mozilla/5.0"),
+    decision = None,
     score = None,
     rules = Nil,
+    wouldAction = None,
+    asn = None,
+    asnClass = None,
+    country = None,
   )

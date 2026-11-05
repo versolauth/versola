@@ -125,11 +125,12 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       resource = createRequestBody.resource,
       audience = audience,
       endpoints = Vector(
-        ResourceEndpointRecord(usersCreateEndpointId, "/users/me", "POST", false, denyAware, Vector.empty, None, None, None),
-        ResourceEndpointRecord(usersListEndpointId, "/users", "GET", true, allow, inject, None, None, None),
+        ResourceEndpointRecord(usersCreateEndpointId, "/users/me", "POST", false, denyAware, Vector.empty, None, None, None, rateLimit = None),
+        ResourceEndpointRecord(usersListEndpointId, "/users", "GET", true, allow, inject, None, None, None, rateLimit = None),
       ),
       secret = None,
       previousSecret = None,
+      audienceRateLimits = Nil,
     ),
   )
   private val limit = DeclaredRateLimit(

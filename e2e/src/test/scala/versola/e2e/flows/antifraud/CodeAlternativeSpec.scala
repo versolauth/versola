@@ -141,7 +141,14 @@ object CodeAlternativeSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client
       _ <- AntifraudFixture.seedThroughApi(
         central,
         // An hour is as long as these cases need, and an entry that expires is not left on the lists of the stack.
-        entries.toList.map(_.copy(expiresAt = Some(until))) :+ ListEntry("deny", "cidr", s"$network.0/24", expiresAt = Some(until)),
+        entries.toList.map(_.copy(expiresAt = Some(until))) :+ ListEntry(
+          "deny",
+          "cidr",
+          s"$network.0/24",
+          expiresAt = Some(until),
+          shadow = false,
+          phone = None,
+        ),
       )
       // Each poll comes from another address of the network (so that the limit on an address does not refuse the polls
       // before the entry is there to), and reads the line of its own request.
@@ -233,7 +240,7 @@ object CodeAlternativeSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client
         f <- ZIO.service[AntifraudFixture]
         user <- f.nextPasskeyUser
         probe <- f.nextSetup
-        _ <- seededThroughApi(f.a, probe)(ListEntry("fake", "phone_hash", "", phone = user.setup.phone))
+        _ <- seededThroughApi(f.a, probe)(ListEntry("fake", "phone_hash", "", phone = user.setup.phone, expiresAt = None, shadow = false))
         ip = randomIp()
         on <- enterNumber(f.a, user.setup, ip)
         decision <- decisionOf(f.a, ip)
@@ -258,9 +265,9 @@ object CodeAlternativeSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client
         noPasskeyFlow <- f.nextSetup
         probe <- f.nextSetup
         _ <- seededThroughApi(f.a, probe)(
-          ListEntry("deny", "phone_hash", "", phone = user.setup.phone),
-          ListEntry("deny", "phone_hash", "", phone = without.phone),
-          ListEntry("deny", "phone_hash", "", phone = noPasskeyFlow.phone),
+          ListEntry("deny", "phone_hash", "", phone = user.setup.phone, expiresAt = None, shadow = false),
+          ListEntry("deny", "phone_hash", "", phone = without.phone, expiresAt = None, shadow = false),
+          ListEntry("deny", "phone_hash", "", phone = noPasskeyFlow.phone, expiresAt = None, shadow = false),
         )
         before <- outcomesOf(user.setup.clientId)
         withIp = randomIp()

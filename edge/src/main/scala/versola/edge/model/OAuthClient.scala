@@ -11,14 +11,14 @@ case class OAuthClient(
     accessTokenTtl: Duration,
     /** RFC 9101 §10.5: the authorization request must arrive as a signed request object, so
       * edge signs one instead of sending plain query parameters. */
-    requireSignedRequestObject: Boolean = false,
+    requireSignedRequestObject: Boolean,
     /** RFC 9126 §6.2: the authorization request must be pushed to `/par` first, so edge
       * redirects the browser to a `request_uri` rather than to the request itself. */
-    requirePushedAuthorizationRequests: Boolean = false,
+    requirePushedAuthorizationRequests: Boolean,
     /** OIDC Registration §2 `application_type`. */
     applicationType: ApplicationType,
     /** The redirect URIs the client registered, which a native start may choose among. */
-    redirectUris: Set[String] = Set.empty,
+    redirectUris: Set[String],
 ):
   /** A native app whose client authentication this edge does (#420): a `native` client edge
     * holds a certificate for. Central only allows a native client that certificate with

@@ -63,6 +63,7 @@ object NativeServiceSpec extends ZIOSpecDefault:
     credential = ClientCredential.MutualTls(certificate),
     permissions = Set.empty,
     accessTokenTtl = 1.hour,
+    requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = true,
     applicationType = ApplicationType.native,
     redirectUris = Set(RedirectUri),

@@ -119,6 +119,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     resources = Nil,
     authorizationDetails = None,
     dpopJkt = None,
+    ip = None,
   )
 
   val rawSessionId = SessionId(Array.fill(32)(5.toByte))

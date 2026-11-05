@@ -70,7 +70,7 @@ object AccountSettingsServiceSpec extends UnitSpecBase:
             drafts.map(_.kind) == List(AuthAuditKinds.AccountPasswordChanged),
             drafts.head.outcome == AuditOutcome.success,
             drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
-            drafts.head.details == AuthAuditDetails.Account(via = "account_settings"),
+            drafts.head.details == AuthAuditDetails.Account(via = "account_settings", detail = None),
             !drafts.head.details.toJson.toString.contains("OldPass1"),
             !drafts.head.details.toJson.toString.contains("NewPass1"),
           ),

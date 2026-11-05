@@ -312,10 +312,10 @@ case class EdgeResponse(
     accessLogPolicy: Option[AccessLogPolicy],
     rateLimitPolicies: Option[RateLimitPolicies],
     /** The revision of each policy section that has ever changed, for the compare-and-set of `PATCH /configuration/edges/policies`. */
-    policyRevisions: Map[String, Int] = Map.empty,
+    policyRevisions: Map[String, Int],
     groupId: EdgeGroupId,
     /** When the certificate chain of this edge ends, if it does: only where `edge-identity.auto-extend` is off. */
-    identityChainEndsAt: Option[Instant] = None,
+    identityChainEndsAt: Option[Instant],
 ) derives Schema, JsonCodec
 
 case class SetEdgeDpopRequest(

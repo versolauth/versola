@@ -276,6 +276,8 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               accessLogPolicy = None,
               rateLimitPolicies = None,
               groupId = EdgeGroup.DefaultId,
+              policyRevisions = Map.empty,
+              identityChainEndsAt = None,
             ),
             EdgeResponse(
               EdgeId("edge-2"),
@@ -285,6 +287,8 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               accessLogPolicy = None,
               rateLimitPolicies = None,
               groupId = EdgeGroup.DefaultId,
+              policyRevisions = Map.empty,
+              identityChainEndsAt = None,
             ),
           ),
         ),

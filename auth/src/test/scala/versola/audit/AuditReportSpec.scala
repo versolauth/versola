@@ -182,7 +182,7 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
       test("with no country database the report is as it was: no country anywhere, and no countries") {
         val repository = stub[AuditReadRepository]
         val shown = event(start.minusSeconds(10)).copy(ip = Some("203.0.113.7"))
-        val ip = AuditReadRepository.IpCount("203.0.113.7", start, start, 3)
+        val ip = AuditReadRepository.IpCount("203.0.113.7", start, start, 3, country = None)
         for
           _ <- repository.userEvents.succeedsWith(List(shown))
           _ <- repository.userSummary.succeedsWith(Summary(Nil, Nil, List(ip), Nil, SessionCount(0, 0), Nil, List(shown)))
@@ -198,10 +198,10 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
       test("the summary names the country of each address and of the high events, and groups the addresses by country, most used first") {
         val repository = stub[AuditReadRepository]
         val ips = List(
-          AuditReadRepository.IpCount("203.0.113.7", start.minusSeconds(100), start.minusSeconds(10), 5),
-          AuditReadRepository.IpCount("198.51.100.9", start.minusSeconds(300), start.minusSeconds(200), 4),
-          AuditReadRepository.IpCount("203.0.113.8", start.minusSeconds(50), start.minusSeconds(5), 3),
-          AuditReadRepository.IpCount("10.0.0.1", start, start, 9),
+          AuditReadRepository.IpCount("203.0.113.7", start.minusSeconds(100), start.minusSeconds(10), 5, country = None),
+          AuditReadRepository.IpCount("198.51.100.9", start.minusSeconds(300), start.minusSeconds(200), 4, country = None),
+          AuditReadRepository.IpCount("203.0.113.8", start.minusSeconds(50), start.minusSeconds(5), 3, country = None),
+          AuditReadRepository.IpCount("10.0.0.1", start, start, 9, country = None),
         )
         val high = event(start.minusSeconds(10)).copy(ip = Some("198.51.100.9"))
         val known = geo("203.0.113.7" -> "DE", "203.0.113.8" -> "DE", "198.51.100.9" -> "FR")
@@ -260,7 +260,7 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
         val summary = Summary(
           byKind = List(KindCount("login.completed", "success", 3)),
           byClient = List(ClientCount("app", 3, 2)),
-          ips = List(IpCount("203.0.113.7", start, start, 3)),
+          ips = List(IpCount("203.0.113.7", start, start, 3, country = None)),
           userAgents = List(UserAgentCount("Chrome 130 / macOS", start, start, 3)),
           sessions = SessionCount(3, 1),
           factors = List(Factor("account.password_changed", start)),

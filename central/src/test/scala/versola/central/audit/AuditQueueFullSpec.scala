@@ -101,7 +101,15 @@ object AuditQueueFullSpec extends ZIOSpecDefault:
           )
           blocking <- fullQueue(AuditEvents.Overflow.block)
           _ <- ZIO.foreachDiscard(1 to 5)(_ =>
-            blocking.recordBestEffort(AuditDraft(kind = CentralAudit.SystemBootstrap, outcome = AuditOutcome.success)),
+            blocking.recordBestEffort(AuditDraft(
+              kind = CentralAudit.SystemBootstrap,
+              outcome = AuditOutcome.success,
+              reason = None,
+              actor = None,
+              userId = None,
+              target = None,
+              details = AuditDetails.empty,
+            )),
           )
         yield assertTrue(true)
     },

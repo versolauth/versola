@@ -34,7 +34,19 @@ object AntifraudSpec extends ZIOSpecDefault:
       arrivals = 1,
       waited = 0,
       latencies = calls.map((call, p99) => call -> quantiles(p99)).toMap,
-      otp = OtpOutcomes(requested = 0, sent = 0, refused = 0, other = 0, verified = 0, rejected = 0, failed = 0, notEntered = 0),
+      otp = OtpOutcomes(
+        requested = 0,
+        sent = 0,
+        refused = 0,
+        other = 0,
+        verified = 0,
+        rejected = 0,
+        failed = 0,
+        notEntered = 0,
+        challenged = 0L,
+        solved = 0L,
+        paidByWaiting = 0L,
+      ),
       legitInRange = None,
       legitElsewhere = None,
       failures = Map.empty,
@@ -42,6 +54,8 @@ object AntifraudSpec extends ZIOSpecDefault:
       smsRanges = 0,
       smsBusiestRange = 0,
       auth = AuthAntifraudMetrics.empty,
+      challenge = None,
+      fakeTiming = None,
     )
 
   private def group(p50: Double, reached: Long, sent: Long): TimingGroup = TimingGroup(sent, sent, 0, 0, reached, p50, p50 + 5, p50 + 10, p50 + 12)
@@ -126,11 +140,15 @@ object AntifraudSpec extends ZIOSpecDefault:
             label = "off",
             startedAt = "t",
             scenarios = List(result("normal", "otp-request" -> 20.0, "otp-verify" -> 30.0, "token" -> 15.0, "refresh" -> 10.0)),
+            client = "script",
+            instances = Nil,
           )
         val run = AntifraudReport(
           label = "on",
           startedAt = "t",
           scenarios = List(result("normal", "otp-request" -> 29.0, "otp-verify" -> 41.0, "token" -> 18.0, "refresh" -> 17.0)),
+          client = "script",
+          instances = Nil,
         )
         val comparisons = Comparison.compare(report = run, baseline = Some(baseline), ceilingMs = 10.0, toleranceMs = 5.0)
         assertTrue(
@@ -141,30 +159,62 @@ object AntifraudSpec extends ZIOSpecDefault:
         )
       },
       test("an untouched call that got faster is within the noise, not a failure") {
-        val baseline = AntifraudReport(label = "off", startedAt = "t", scenarios = List(result("normal", "token" -> 15.0)))
-        val run = AntifraudReport(label = "on", startedAt = "t", scenarios = List(result("normal", "token" -> 12.0)))
+        val baseline =
+          AntifraudReport(label = "off", startedAt = "t", scenarios = List(result("normal", "token" -> 15.0)), client = "script", instances = Nil)
+        val run =
+          AntifraudReport(label = "on", startedAt = "t", scenarios = List(result("normal", "token" -> 12.0)), client = "script", instances = Nil)
         assertTrue(verdictOf(
           Comparison.compare(report = run, baseline = Some(baseline), ceilingMs = 10.0, toleranceMs = 5.0),
           "token",
         ) == Verdict.Pass)
       },
       test("without a baseline there is nothing to pass or fail") {
-        val run = AntifraudReport(label = "off", startedAt = "t", scenarios = List(result("normal", "otp-request" -> 20.0)))
+        val run = AntifraudReport(
+          label = "off",
+          startedAt = "t",
+          scenarios = List(result("normal", "otp-request" -> 20.0)),
+          client = "script",
+          instances = Nil,
+        )
         assertTrue(Comparison.compare(report = run, baseline = None, ceilingMs = 10.0, toleranceMs = 5.0).map(_.verdict) == List(Verdict.NoBaseline))
       },
     ),
     suite("Checks")(
       test("an attack that gets most of its codes sent fails, one that is stopped passes") {
         val open = result("device-attack").copy(
-          otp = OtpOutcomes(requested = 100, sent = 100, refused = 0, other = 0, verified = 0, rejected = 0, failed = 0, notEntered = 0),
+          otp = OtpOutcomes(
+            requested = 100,
+            sent = 100,
+            refused = 0,
+            other = 0,
+            verified = 0,
+            rejected = 0,
+            failed = 0,
+            notEntered = 0,
+            challenged = 0L,
+            solved = 0L,
+            paidByWaiting = 0L,
+          ),
           smsSent = 99L,
         )
         val stopped = result("prefix-attack").copy(
-          otp = OtpOutcomes(requested = 100, sent = 5, refused = 95, other = 0, verified = 0, rejected = 0, failed = 0, notEntered = 0),
+          otp = OtpOutcomes(
+            requested = 100,
+            sent = 5,
+            refused = 95,
+            other = 0,
+            verified = 0,
+            rejected = 0,
+            failed = 0,
+            notEntered = 0,
+            challenged = 0L,
+            solved = 0L,
+            paidByWaiting = 0L,
+          ),
           smsSent = 5L,
         )
         val checks = Checks.of(
-          AntifraudReport(label = "on", startedAt = "t", scenarios = List(open, stopped)),
+          AntifraudReport(label = "on", startedAt = "t", scenarios = List(open, stopped), client = "script", instances = Nil),
           attackSmsCeiling = 0.1,
           legitRefusalCeiling = 0.01,
         )
@@ -172,19 +222,63 @@ object AntifraudSpec extends ZIOSpecDefault:
       },
       test("the distributed attack is judged on its codes sent like the other attacks") {
         val spread = result("distributed-attack").copy(
-          otp = OtpOutcomes(requested = 100, sent = 50, refused = 50, other = 0, verified = 0, rejected = 0, failed = 0, notEntered = 0),
+          otp = OtpOutcomes(
+            requested = 100,
+            sent = 50,
+            refused = 50,
+            other = 0,
+            verified = 0,
+            rejected = 0,
+            failed = 0,
+            notEntered = 0,
+            challenged = 0L,
+            solved = 0L,
+            paidByWaiting = 0L,
+          ),
           smsSent = 50L,
         )
         val checks =
-          Checks.of(AntifraudReport(label = "on", startedAt = "t", scenarios = List(spread)), attackSmsCeiling = 0.1, legitRefusalCeiling = 0.01)
+          Checks.of(
+            AntifraudReport(label = "on", startedAt = "t", scenarios = List(spread), client = "script", instances = Nil),
+            attackSmsCeiling = 0.1,
+            legitRefusalCeiling = 0.01,
+          )
         assertTrue(checks.map(c => (c.name, c.value, c.verdict)) == List(("attack: share of codes sent", 0.5, Verdict.Fail)))
       },
       test("legitimate users refused in the attacked range fail the false-positive check, those elsewhere pass") {
-        val refused = OtpOutcomes(requested = 50, sent = 10, refused = 40, other = 0, verified = 8, rejected = 0, failed = 0, notEntered = 0)
-        val served = OtpOutcomes(requested = 450, sent = 450, refused = 0, other = 0, verified = 380, rejected = 0, failed = 0, notEntered = 0)
+        val refused = OtpOutcomes(
+          requested = 50,
+          sent = 10,
+          refused = 40,
+          other = 0,
+          verified = 8,
+          rejected = 0,
+          failed = 0,
+          notEntered = 0,
+          challenged = 0L,
+          solved = 0L,
+          paidByWaiting = 0L,
+        )
+        val served = OtpOutcomes(
+          requested = 450,
+          sent = 450,
+          refused = 0,
+          other = 0,
+          verified = 380,
+          rejected = 0,
+          failed = 0,
+          notEntered = 0,
+          challenged = 0L,
+          solved = 0L,
+          paidByWaiting = 0L,
+        )
         val mixed = result("mixed-attack").copy(legitInRange = Some(refused), legitElsewhere = Some(served))
         val checks =
-          Checks.of(AntifraudReport(label = "on", startedAt = "t", scenarios = List(mixed)), attackSmsCeiling = 0.1, legitRefusalCeiling = 0.01)
+          Checks.of(
+            AntifraudReport(label = "on", startedAt = "t", scenarios = List(mixed), client = "script", instances = Nil),
+            attackSmsCeiling = 0.1,
+            legitRefusalCeiling = 0.01,
+          )
         assertTrue(
           checks.find(_.name.contains("attacked range")).get.verdict == Verdict.Fail,
           checks.find(_.name.contains("elsewhere")).get.verdict == Verdict.Pass,
@@ -192,13 +286,37 @@ object AntifraudSpec extends ZIOSpecDefault:
       },
       test("a guess that is taken fails, none taken passes") {
         val taken = result("verify-guessing").copy(otp =
-          OtpOutcomes(requested = 10, sent = 10, refused = 0, other = 0, verified = 1, rejected = 49, failed = 0, notEntered = 0),
+          OtpOutcomes(
+            requested = 10,
+            sent = 10,
+            refused = 0,
+            other = 0,
+            verified = 1,
+            rejected = 49,
+            failed = 0,
+            notEntered = 0,
+            challenged = 0L,
+            solved = 0L,
+            paidByWaiting = 0L,
+          ),
         )
         val none = result("verify-guessing").copy(otp =
-          OtpOutcomes(requested = 10, sent = 10, refused = 0, other = 0, verified = 0, rejected = 50, failed = 0, notEntered = 0),
+          OtpOutcomes(
+            requested = 10,
+            sent = 10,
+            refused = 0,
+            other = 0,
+            verified = 0,
+            rejected = 50,
+            failed = 0,
+            notEntered = 0,
+            challenged = 0L,
+            solved = 0L,
+            paidByWaiting = 0L,
+          ),
         )
         def verdict(r: ScenarioResult) = Checks.of(
-          AntifraudReport(label = "x", startedAt = "t", scenarios = List(r)),
+          AntifraudReport(label = "x", startedAt = "t", scenarios = List(r), client = "script", instances = Nil),
           attackSmsCeiling = 0.1,
           legitRefusalCeiling = 0.01,
         ).head.verdict
@@ -352,7 +470,14 @@ object AntifraudSpec extends ZIOSpecDefault:
         yield assertTrue(
           config.metricsUrls.size == 2,
           config.otp.client == OtpClient.Plain,
-          config.challenge == ChallengeClientConfig(maxRounds = 2, maxDifficulty = 20, pause = 5.seconds, pauseSlack = 500.millis, maxAsks = 4, solverThreads = 2),
+          config.challenge == ChallengeClientConfig(
+            maxRounds = 2,
+            maxDifficulty = 20,
+            pause = 5.seconds,
+            pauseSlack = 500.millis,
+            maxAsks = 4,
+            solverThreads = 2,
+          ),
           config.fakeTiming == FakeTimingConfig(requests = 50, rate = 10.0, tolerance = 30.millis, warmup = 5, fakePrefix = Some("491599")),
           shipped.otp.client == OtpClient.Script,
           shipped.challenge == ChallengeClientConfig(),
@@ -372,7 +497,9 @@ object AntifraudSpec extends ZIOSpecDefault:
         val base = """auth-url = "http://a", edge-url = "e", mock-url = "m", origin = "o""""
         for
           one <- TypesafeConfigProvider.fromHoconString(base).kebabCase.load(deriveConfig[versola.loadgen.config.TargetsConfig])
-          two <- TypesafeConfigProvider.fromHoconString(base + """, auth-urls = ["http://a", "http://b"]""").kebabCase.load(deriveConfig[versola.loadgen.config.TargetsConfig])
+          two <- TypesafeConfigProvider.fromHoconString(
+            base + """, auth-urls = ["http://a", "http://b"]""",
+          ).kebabCase.load(deriveConfig[versola.loadgen.config.TargetsConfig])
         yield assertTrue(one.allAuthUrls == List("http://a"), two.allAuthUrls == List("http://a", "http://b"))
       },
     ),
@@ -404,7 +531,19 @@ object AntifraudSpec extends ZIOSpecDefault:
         assertTrue(report.toJson.fromJson[AntifraudReport] == Right(report))
       },
       test("the text names the client and the instances, and keeps challenged, solved and refused apart") {
-        val o = OtpOutcomes(requested = 10, sent = 8, refused = 1, other = 1, verified = 0, rejected = 0, failed = 0, notEntered = 0, challenged = 6, solved = 5, paidByWaiting = 0)
+        val o = OtpOutcomes(
+          requested = 10,
+          sent = 8,
+          refused = 1,
+          other = 1,
+          verified = 0,
+          rejected = 0,
+          failed = 0,
+          notEntered = 0,
+          challenged = 6,
+          solved = 5,
+          paidByWaiting = 0,
+        )
         val scenario = result("normal", "otp-request" -> 5.0).copy(otp = o)
         val report = AntifraudReport("challenge", "now", List(scenario), client = "script", instances = List("http://a", "http://b"))
         val text = ReportText.render(report, Comparison.compare(report, None, 10.0, 5.0), Checks.of(report, 0.1, 0.01), 10.0, 5.0)
@@ -416,36 +555,38 @@ object AntifraudSpec extends ZIOSpecDefault:
       },
     ),
     suite("FakeTimingCheck")(
-        test("a fake that answers as a real one does, and is never sent, passes") {
-          val result = FakeTimingCheck.judge(group(82.0, 0, 30), group(80.0, 30, 30), 25.0, 20)
-          assertTrue(result.passed, result.problems.isEmpty, result.medianGapMs == 2.0, result.p99GapMs == 2.0)
-        },
-        test("a fake that is 60 ms faster than a real send fails on the medians") {
-          val result = FakeTimingCheck.judge(group(20.0, 0, 30), group(80.0, 30, 30), 25.0, 20)
-          assertTrue(!result.passed, result.medianGapMs == -60.0, result.problems.exists(_.contains("medians differ")))
-        },
-        test("a fake number that was sent a code means the entry did not apply, whatever the timing says") {
-          val result = FakeTimingCheck.judge(group(80.0, 12, 30), group(80.0, 30, 30), 25.0, 20)
-          assertTrue(!result.passed, result.problems.exists(_.contains("12 of the fake numbers were sent a code")))
-        },
-        test("no real number reaching the stub, or too few requests, fail it: nothing was compared") {
-          val unwired = FakeTimingCheck.judge(group(80.0, 0, 30), group(80.0, 0, 30), 25.0, 20)
-          val few = FakeTimingCheck.judge(group(80.0, 0, 5), group(80.0, 5, 30), 25.0, 20)
-          assertTrue(
-            !unwired.passed, unwired.setupProblems.size == 1,
-            !few.passed, few.setupProblems.exists(_.contains("only 5 fake")),
-          )
-        },
-        test("the checks of a report carry the gap and the fake numbers sent") {
-          val timing = FakeTimingCheck.judge(group(20.0, 3, 30), group(80.0, 30, 30), 25.0, 20)
-          val report = AntifraudReport("x", "now", List(result("fake-timing").copy(fakeTiming = Some(timing))))
-          val checks = Checks.of(report, 0.1, 0.01).filter(_.scenario == "fake-timing")
-          assertTrue(
-            checks.size == 3,
-            checks.find(_.name.startsWith("fake vs real")).exists(c => c.value == 60.0 && c.verdict == Verdict.Fail),
-            checks.find(_.name == "fake numbers sent a code").exists(c => c.value == 3.0 && c.verdict == Verdict.Fail),
-          )
-        },
+      test("a fake that answers as a real one does, and is never sent, passes") {
+        val result = FakeTimingCheck.judge(group(82.0, 0, 30), group(80.0, 30, 30), 25.0, 20)
+        assertTrue(result.passed, result.problems.isEmpty, result.medianGapMs == 2.0, result.p99GapMs == 2.0)
+      },
+      test("a fake that is 60 ms faster than a real send fails on the medians") {
+        val result = FakeTimingCheck.judge(group(20.0, 0, 30), group(80.0, 30, 30), 25.0, 20)
+        assertTrue(!result.passed, result.medianGapMs == -60.0, result.problems.exists(_.contains("medians differ")))
+      },
+      test("a fake number that was sent a code means the entry did not apply, whatever the timing says") {
+        val result = FakeTimingCheck.judge(group(80.0, 12, 30), group(80.0, 30, 30), 25.0, 20)
+        assertTrue(!result.passed, result.problems.exists(_.contains("12 of the fake numbers were sent a code")))
+      },
+      test("no real number reaching the stub, or too few requests, fail it: nothing was compared") {
+        val unwired = FakeTimingCheck.judge(group(80.0, 0, 30), group(80.0, 0, 30), 25.0, 20)
+        val few = FakeTimingCheck.judge(group(80.0, 0, 5), group(80.0, 5, 30), 25.0, 20)
+        assertTrue(
+          !unwired.passed,
+          unwired.setupProblems.size == 1,
+          !few.passed,
+          few.setupProblems.exists(_.contains("only 5 fake")),
+        )
+      },
+      test("the checks of a report carry the gap and the fake numbers sent") {
+        val timing = FakeTimingCheck.judge(group(20.0, 3, 30), group(80.0, 30, 30), 25.0, 20)
+        val report = AntifraudReport("x", "now", List(result("fake-timing").copy(fakeTiming = Some(timing))), client = "script", instances = Nil)
+        val checks = Checks.of(report, 0.1, 0.01).filter(_.scenario == "fake-timing")
+        assertTrue(
+          checks.size == 3,
+          checks.find(_.name.startsWith("fake vs real")).exists(c => c.value == 60.0 && c.verdict == Verdict.Fail),
+          checks.find(_.name == "fake numbers sent a code").exists(c => c.value == 3.0 && c.verdict == Verdict.Fail),
+        )
+      },
     ),
     suite("metrics of several instances")(
       test("the counters and the queues of the instances are added") {
@@ -462,8 +603,8 @@ object AntifraudSpec extends ZIOSpecDefault:
     ),
     suite("Comparison of the resend")(
       test("the ask of a plain client for its code is a protected call, held to the ceiling and not the noise") {
-        val base = AntifraudReport("off", "t", List(result("normal", "otp-resend" -> 20.0)))
-        val run = AntifraudReport("x", "t", List(result("normal", "otp-resend" -> 28.0)))
+        val base = AntifraudReport("off", "t", List(result("normal", "otp-resend" -> 20.0)), client = "script", instances = Nil)
+        val run = AntifraudReport("x", "t", List(result("normal", "otp-resend" -> 28.0)), client = "script", instances = Nil)
         val comparisons = Comparison.compare(run, Some(base), ceilingMs = 10.0, toleranceMs = 5.0)
         assertTrue(verdictOf(comparisons, "otp-resend") == Verdict.Pass)
       },

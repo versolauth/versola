@@ -144,7 +144,7 @@ object TokenEndpointController extends Controller:
               outcome = AuditOutcome.failure,
               clientId = auth.clientId,
               reason = error.error,
-              details = AuthAuditDetails.TokenRefused(grant = grant, clientAuth = client.map(_.authMethod.toString), detail = None),
+              details = AuthAuditDetails.TokenRefused(grant = grant, clientAuth = client.map(_.authMethod.toString), detail = None, count = None),
             ),
           )
         yield ()

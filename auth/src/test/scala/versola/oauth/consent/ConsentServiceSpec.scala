@@ -318,7 +318,7 @@ object ConsentServiceSpec extends UnitSpecBase:
           drafts.map(_.kind) == List(AuthAuditKinds.ConsentGranted),
           drafts.head.outcome == AuditOutcome.success,
           drafts.head.userId == Some(userId.asInstanceOf[UUID]),
-          drafts.head.details == AuthAuditDetails.Consent(scope = List("openid", "profile"), expiresAt = None),
+          drafts.head.details == AuthAuditDetails.Consent(scope = List("openid", "profile"), authorizationDetailTypes = Nil, expiresAt = None),
         )
       },
       test("expire the grant after the client's remember duration") {
@@ -331,7 +331,11 @@ object ConsentServiceSpec extends UnitSpecBase:
           env.consentRepository.upsert.calls == List(
             ConsentRecord(userId, clientId, Set(openid), grantedAt = now, expiresAt = Some(now.plusSeconds(30 * 86400))),
           ),
-          drafts.map(_.details) == List(AuthAuditDetails.Consent(scope = List("openid"), expiresAt = Some(now.plusSeconds(30 * 86400).toString))),
+          drafts.map(_.details) == List(AuthAuditDetails.Consent(
+            scope = List("openid"),
+            authorizationDetailTypes = Nil,
+            expiresAt = Some(now.plusSeconds(30 * 86400).toString),
+          )),
         )
       },
     ) @@ atNow,

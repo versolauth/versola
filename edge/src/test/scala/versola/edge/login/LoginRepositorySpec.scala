@@ -17,7 +17,7 @@ trait LoginRepositorySpec extends DatabaseSpecBase[LoginRepositorySpec.Env]:
   private val state2 = State("state-2")
 
   private def record(state: State, codeVerifier: String, preset: String) =
-    LoginRecord(codeVerifier = CodeVerifier(codeVerifier), presetId = PresetId(preset), state = state)
+    LoginRecord(codeVerifier = CodeVerifier(codeVerifier), presetId = PresetId(preset), state = state, returnTo = None, browserBindingHash = None)
 
   override def testCases(env: LoginRepositorySpec.Env) =
     List(

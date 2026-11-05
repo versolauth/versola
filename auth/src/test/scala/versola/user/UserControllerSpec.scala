@@ -1032,7 +1032,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         yield assertTrue(
           resp.status == Status.NoContent,
           drafts.map(_.kind) == List(AuthAuditKinds.AccountLimitsReset),
-          drafts.head.details == AuthAuditDetails.Account(via = "admin"),
+          drafts.head.details == AuthAuditDetails.Account(via = "admin", detail = None),
           !drafts.head.details.toJson.toString.contains("john@doe.com"),
           !drafts.head.details.toJson.toString.contains("+1234567890"),
         )
@@ -1083,7 +1083,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         yield assertTrue(
           resp.status == Status.NoContent,
           drafts.map(_.kind) == List(AuthAuditKinds.AccountPasswordSet),
-          drafts.head.details == AuthAuditDetails.Account(via = "admin"),
+          drafts.head.details == AuthAuditDetails.Account(via = "admin", detail = None),
           !drafts.head.details.toJson.toString.contains("S3cret-Pass!"),
         )
       },

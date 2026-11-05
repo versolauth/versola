@@ -124,8 +124,15 @@ object ConsentService:
           AuditDraft(
             kind = AuthAuditKinds.ConsentGranted,
             outcome = AuditOutcome.success,
+            reason = None,
+            actor = None,
             userId = Some(userId),
-            details = AuthAuditDetails.Consent(scope = scope.toList.map(_.toString).sorted, expiresAt = expiresAt.map(_.toString)),
+            target = None,
+            details = AuthAuditDetails.Consent(
+              scope = scope.toList.map(_.toString).sorted,
+              authorizationDetailTypes = Nil,
+              expiresAt = expiresAt.map(_.toString),
+            ),
           ),
         )
 
@@ -134,7 +141,10 @@ object ConsentService:
         AuditDraft(
           kind = AuthAuditKinds.ConsentRevoked,
           outcome = AuditOutcome.success,
+          reason = None,
+          actor = None,
           userId = Some(userId),
-          details = AuthAuditDetails.Consent(scope = Nil),
+          target = None,
+          details = AuthAuditDetails.Consent(scope = Nil, authorizationDetailTypes = Nil, expiresAt = None),
         ),
       )

@@ -1098,7 +1098,13 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
         yield assertTrue(
           drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuthAuditKinds.LoginStep, AuditOutcome.success, None)),
           drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
-          drafts.head.details == AuthAuditDetails.LoginStep(step = "passkey", conversationId = authId.toString, kind = "login"),
+          drafts.head.details == AuthAuditDetails.LoginStep(
+            step = "passkey",
+            conversationId = authId.toString,
+            kind = "login",
+            subjectHash = None,
+            afDecision = None,
+          ),
         )
       },
       test("an assertion that did not verify records login.step failure invalid_assertion, and no user") {

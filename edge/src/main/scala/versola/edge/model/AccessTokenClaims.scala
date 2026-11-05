@@ -14,10 +14,10 @@ case class AccessTokenClaims(
     roles: List[RoleId],
     acr: Option[String],
     @jsonField("auth_time") authTime: Option[Long],
-    @jsonField("sid") sid: Option[SessionId] = None,
+    @jsonField("sid") sid: Option[SessionId],
     /** The refresh-token family this token was issued from, absent when none stands behind it
       * (a `client_credentials` token). Revoking that family revokes this token. */
-    @jsonField("fam") family: Option[RefreshTokenFamilyId] = None,
+    @jsonField("fam") family: Option[RefreshTokenFamilyId],
     /** Present only on a sender-constrained token, naming what its holder has to prove. */
     @jsonField("cnf") confirmation: Option[Confirmation],
 ) derives JsonCodec
@@ -34,5 +34,5 @@ case class AccessTokenClaims(
   */
 case class Confirmation(
     jkt: Option[String],
-    @jsonField("x5t#S256") certificateThumbprint: Option[String] = None,
+    @jsonField("x5t#S256") certificateThumbprint: Option[String],
 ) derives JsonCodec

@@ -83,7 +83,7 @@ object PushedAuthorizationError:
       errorUri: Option[String],
       /** Set where the response body is the same for every cause, so the check that actually
         * failed is readable in the log and nowhere else. */
-      reason: Option[String] = None,
+      reason: Option[String],
   ) extends PushedAuthorizationError:
     val status = Status.BadRequest
     override def logDescription: Option[String] = reason.orElse(errorDescription)
@@ -94,7 +94,7 @@ object PushedAuthorizationError:
   def from(error: Error): PushedAuthorizationError =
     error match
       case Error.BadRequest =>
-        Validation(ErrorCode.InvalidRequest, Some(Error.BadRequest.description), None)
+        Validation(ErrorCode.InvalidRequest, Some(Error.BadRequest.description), None, reason = None)
       case error: Error.InvalidRequestObject =>
         Validation(
           Error.InvalidRequestObject.error,
@@ -103,7 +103,7 @@ object PushedAuthorizationError:
           reason = error.logDescription,
         )
       case error: Error.RedirectError =>
-        Validation(error.error, Some(error.errorDescription), error.errorUri)
+        Validation(error.error, Some(error.errorDescription), error.errorUri, reason = None)
 
 case class PushedAuthorizationErrorResponse(
     error: String,

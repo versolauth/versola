@@ -81,7 +81,7 @@ object PushedAuthorizationController extends Controller:
           outcome = outcome,
           clientId = auth.clientId,
           reason = reason.getOrElse("refused"),
-          details = AuthAuditDetails.ParRequest(scope = Nil, requestObject = false),
+          details = AuthAuditDetails.ParRequest(scope = Nil, requestObject = false, count = None),
         ),
       ).when(outcome != AuditOutcome.success)
       _ <- ZIO.serviceWithZIO[AuditEvents](
@@ -91,9 +91,12 @@ object PushedAuthorizationController extends Controller:
             outcome = outcome,
             reason = reason,
             actor = Some((AuthActors.client, auth.clientId)),
+            userId = None,
+            target = None,
             details = AuthAuditDetails.ParRequest(
               scope = params.get("scope").flatMap(_.headOption).toList.flatMap(_.split(' ').toList.filter(_.nonEmpty)).sorted,
               requestObject = params.contains("request"),
+              count = None,
             ),
           ),
         ),
@@ -129,6 +132,7 @@ object PushedAuthorizationController extends Controller:
           error = "invalid_request",
           errorDescription = Some("The pushed authorization request body could not be read"),
           errorUri = None,
+          reason = None,
         ))
       _ <- ZIO.fail(PushedAuthorizationError.RequestTooLarge).when(body.length > maxRequestSize)
       form <- ZIO.fromEither(Form.fromURLEncoded(String(body.toArray, Charsets.Utf8), Charsets.Utf8))
@@ -136,6 +140,7 @@ object PushedAuthorizationController extends Controller:
           error = "invalid_request",
           errorDescription = Some("The pushed authorization request body is not a valid form"),
           errorUri = None,
+          reason = None,
         ))
     yield form
 

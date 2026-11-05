@@ -1620,7 +1620,13 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         yield assertTrue(
           a.map(d => (d.kind, d.outcome, d.reason)) == List((AuthAuditKinds.LoginStep, AuditOutcome.success, None)),
           a.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
-          a.head.details == AuthAuditDetails.LoginStep(step = "otp", conversationId = authId.toString, kind = "login"),
+          a.head.details == AuthAuditDetails.LoginStep(
+            step = "otp",
+            conversationId = authId.toString,
+            kind = "login",
+            subjectHash = None,
+            afDecision = None,
+          ),
           b.map(d => (d.outcome, d.reason)) == List((AuditOutcome.failure, Some("wrong_code"))),
           !a.head.details.toJson.toString.contains(otpCode),
         )

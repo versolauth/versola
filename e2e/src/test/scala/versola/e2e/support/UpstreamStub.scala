@@ -42,7 +42,7 @@ final class UpstreamStub(
   /** Forgets the recorded traffic and restores the default reply. Tests share one upstream,
     * so a spec that does not clear it would assert on its predecessor's requests.
     */
-  def reset: UIO[Unit] = received.set(Chunk.empty) *> scripted.set(UpstreamStub.Reply())
+  def reset: UIO[Unit] = received.set(Chunk.empty) *> scripted.set(UpstreamStub.Reply(status = Status.Ok, body = """{"ok":true}""", headers = Nil))
 
   /** Makes the upstream answer the next requests this way. */
   def replyWith(
@@ -72,9 +72,9 @@ final class UpstreamStub(
 object UpstreamStub:
 
   case class Reply(
-      status: Status = Status.Ok,
-      body: String = """{"ok":true}""",
-      headers: List[(String, String)] = Nil,
+      status: Status,
+      body: String,
+      headers: List[(String, String)],
   )
 
   /** The origin the proxy specs register as their resource, and therefore the port the stub
@@ -99,7 +99,7 @@ object UpstreamStub:
     Server.defaultWithPort(port) >>> ZLayer.scoped[Server] {
       for
         received <- Ref.make(Chunk.empty[UpstreamRequest])
-        scripted <- Ref.make(Reply())
+        scripted <- Ref.make(Reply(status = Status.Ok, body = """{"ok":true}""", headers = Nil))
         stub = UpstreamStub(port, received, scripted)
         routes = Routes(
           Method.ANY / trailing -> handler { (path: Path, request: Request) => stub.record(path, request) },

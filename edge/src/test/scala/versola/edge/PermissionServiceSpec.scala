@@ -143,7 +143,10 @@ object PermissionServiceSpec extends ZIOSpecDefault:
             credential = ClientCredential.ClientSecret(Secret(Array.fill(8)(1.toByte))),
             permissions = Set(writePerm),
             accessTokenTtl = 15.minutes,
+            requireSignedRequestObject = false,
+            requirePushedAuthorizationRequests = false,
             applicationType = ApplicationType.web,
+            redirectUris = Set.empty,
           )
         val service = buildService(clients = Map(serviceClient -> client))
         for endpoints <- service.getAllowedEndpointsForClient(serviceClient)
@@ -160,7 +163,10 @@ object PermissionServiceSpec extends ZIOSpecDefault:
           credential = ClientCredential.ClientSecret(Secret(Array.fill(8)(1.toByte))),
           permissions = Set.empty,
           accessTokenTtl = 15.minutes,
+          requireSignedRequestObject = false,
+          requirePushedAuthorizationRequests = false,
           applicationType = ApplicationType.web,
+          redirectUris = Set.empty,
         )
         val service = buildService(clients = Map(serviceClient -> client))
         for endpoints <- service.getAllowedEndpointsForClient(serviceClient)
@@ -172,7 +178,10 @@ object PermissionServiceSpec extends ZIOSpecDefault:
           credential = ClientCredential.ClientSecret(Secret(Array.fill(8)(1.toByte))),
           permissions = Set(PermissionId("unmapped")),
           accessTokenTtl = 15.minutes,
+          requireSignedRequestObject = false,
+          requirePushedAuthorizationRequests = false,
           applicationType = ApplicationType.web,
+          redirectUris = Set.empty,
         )
         val service = buildService(clients = Map(serviceClient -> client))
         for endpoints <- service.getAllowedEndpointsForClient(serviceClient)
@@ -244,7 +253,10 @@ object PermissionServiceSpec extends ZIOSpecDefault:
           credential = ClientCredential.ClientSecret(Secret(Array.fill(8)(1.toByte))),
           permissions = Set(writePerm),
           accessTokenTtl = 15.minutes,
+          requireSignedRequestObject = false,
+          requirePushedAuthorizationRequests = false,
           applicationType = ApplicationType.web,
+          redirectUris = Set.empty,
         )
       val service = buildService(
         roles = Map.empty,

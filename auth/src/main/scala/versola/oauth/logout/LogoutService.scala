@@ -66,7 +66,10 @@ object LogoutService:
         AuditDraft(
           kind = AuthAuditKinds.SessionEnded,
           outcome = AuditOutcome.success,
+          reason = None,
+          actor = None,
           userId = Some(session.userId),
+          target = None,
           details = AuthAuditDetails.SessionEnded(cause = cause, clients = session.clients.size),
         ),
       )

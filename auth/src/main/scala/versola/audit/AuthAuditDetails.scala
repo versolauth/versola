@@ -17,8 +17,8 @@ object AuthAuditDetails:
       step: String,
       conversationId: String,
       kind: String,
-      subjectHash: Option[String] = None,
-      afDecision: Option[String] = None,
+      subjectHash: Option[String],
+      afDecision: Option[String],
   ) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
@@ -47,20 +47,20 @@ object AuthAuditDetails:
       prompt: List[String],
       acrValues: List[String],
       par: Boolean,
-      count: Option[Int] = None,
+      count: Option[Int],
   ) extends Coalesced derives JsonEncoder:
     def toJson = AuditDetails.render(this)
     override def counted(count: Int): AuditDetails = copy(count = Some(count))
 
-  case class ParRequest(scope: List[String], requestObject: Boolean, count: Option[Int] = None) extends Coalesced derives JsonEncoder:
+  case class ParRequest(scope: List[String], requestObject: Boolean, count: Option[Int]) extends Coalesced derives JsonEncoder:
     def toJson = AuditDetails.render(this)
     override def counted(count: Int): AuditDetails = copy(count = Some(count))
 
   /** `consent.granted`, `consent.denied` and `consent.revoked`. */
   case class Consent(
       scope: List[String],
-      authorizationDetailTypes: List[String] = Nil,
-      expiresAt: Option[String] = None,
+      authorizationDetailTypes: List[String],
+      expiresAt: Option[String],
   ) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
@@ -79,7 +79,7 @@ object AuthAuditDetails:
     def toJson = AuditDetails.render(this)
 
   /** `token.refused`: `reason` of the event is the OAuth error, `detail` the sub-code `setError` carries. */
-  case class TokenRefused(grant: Option[String], clientAuth: Option[String], detail: Option[String], count: Option[Int] = None)
+  case class TokenRefused(grant: Option[String], clientAuth: Option[String], detail: Option[String], count: Option[Int])
     extends Coalesced derives JsonEncoder:
     def toJson = AuditDetails.render(this)
     override def counted(count: Int): AuditDetails = copy(count = Some(count))
@@ -90,12 +90,12 @@ object AuthAuditDetails:
     derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
-  case class TokenRevoked(tokenType: String, jti: Option[String], refreshPrefix: Option[String], cause: String, count: Option[Int] = None)
+  case class TokenRevoked(tokenType: String, jti: Option[String], refreshPrefix: Option[String], cause: String, count: Option[Int])
     extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
   /** `client.auth_failed`, coalesced per (client, address, reason) and minute: `count` failures in the minute. */
-  case class ClientAuthFailed(method: String, count: Int, assertionJti: Option[String] = None) extends Coalesced derives JsonEncoder:
+  case class ClientAuthFailed(method: String, count: Int, assertionJti: Option[String]) extends Coalesced derives JsonEncoder:
     def toJson = AuditDetails.render(this)
     override def counted(count: Int): AuditDetails = copy(count = count)
 
@@ -105,11 +105,11 @@ object AuthAuditDetails:
     def toJson = AuditDetails.render(this)
 
   /** The `account.*` kinds that carry nothing but how they came about. */
-  case class Account(via: String, detail: Option[String] = None) extends AuditDetails derives JsonEncoder:
+  case class Account(via: String, detail: Option[String]) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
   /** `account.passkey_enrolled` and `account.passkey_removed`: the credential by an id prefix, never the credential. */
-  case class Passkey(credentialPrefix: Option[String], deviceType: Option[String] = None) extends AuditDetails derives JsonEncoder:
+  case class Passkey(credentialPrefix: Option[String], deviceType: Option[String]) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
   /** `antifraud.list_changed`: `action` is `upsert` or `delete`. The value of the entry is not here: it can be a phone's hash or an
@@ -119,14 +119,14 @@ object AuthAuditDetails:
       listType: String,
       valueType: String,
       tenantId: Option[String],
-      entryId: Option[String] = None,
-      shadow: Option[Boolean] = None,
-      expiresAt: Option[String] = None,
+      entryId: Option[String],
+      shadow: Option[Boolean],
+      expiresAt: Option[String],
   ) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
   /** `antifraud.settings_changed`: `action` is `put`, `patch` or `reset`, `version` the one the row became. */
-  case class AntifraudSettingsChanged(action: String, version: Option[Long] = None) extends AuditDetails derives JsonEncoder:
+  case class AntifraudSettingsChanged(action: String, version: Option[Long]) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
   /** `antifraud.counters_reset`: `generation` is the one the reset took. */
@@ -149,8 +149,8 @@ object AuthAuditDetails:
   case class Cert(
       operation: String,
       clientId: Option[String],
-      serial: Option[String] = None,
-      notAfter: Option[String] = None,
-      csrCn: Option[String] = None,
+      serial: Option[String],
+      notAfter: Option[String],
+      csrCn: Option[String],
   ) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)

@@ -41,7 +41,7 @@ private[authorize] case class AuthorizeRequest(
       * code against. `None` when the parameter was absent, which leaves redemption open to
       * any key (or none). */
     dpopJkt: Option[String],
-    ip: Option[String] = None,
+    ip: Option[String],
 ):
   def promptNone: Boolean = prompt.contains(Prompt.none)
   def promptLogin: Boolean = prompt.contains(Prompt.login)

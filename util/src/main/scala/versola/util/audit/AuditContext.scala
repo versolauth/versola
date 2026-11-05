@@ -9,16 +9,16 @@ import java.util.UUID
   * request by `Observability.middleware`, which also notes the request's `User-Agent`, so nothing leaks into the next request. */
 object AuditContext:
   case class State(
-      tenantId: Option[String] = None,
-      actor: Option[(ActorType, Option[String])] = None,
-      userId: Option[UUID] = None,
-      target: Option[(String, String)] = None,
-      changed: Set[String] = Set.empty,
-      userAgent: Option[String] = None,
+      tenantId: Option[String],
+      actor: Option[(ActorType, Option[String])],
+      userId: Option[UUID],
+      target: Option[(String, String)],
+      changed: Set[String],
+      userAgent: Option[String],
   )
 
   object State:
-    val empty: State = State()
+    val empty: State = State(tenantId = None, actor = None, userId = None, target = None, changed = Set.empty, userAgent = None)
 
   val ref: FiberRef[State] = Unsafe.unsafe { case given Unsafe =>
     FiberRef.unsafe.make(State.empty)

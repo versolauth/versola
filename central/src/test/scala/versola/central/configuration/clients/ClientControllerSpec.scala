@@ -93,6 +93,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     issueEdgeClientCertificate = false,
     enrollEdgeClientCertificate = false,
     themeOverrides = None,
+    estEnrollment = false,
   )
 
   /** What the web endpoint registers the general request as: its kind recorded. */

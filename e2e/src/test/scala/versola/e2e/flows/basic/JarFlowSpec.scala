@@ -29,7 +29,7 @@ object JarFlowSpec extends E2ESpec:
     )
 
   /** Only what this suite asserts on: a `nonce` the client never signed must not be there. */
-  private case class IdTokenClaims(sub: String, nonce: Option[String] = None) derives JsonDecoder
+  private case class IdTokenClaims(sub: String, nonce: Option[String]) derives JsonDecoder
 
   private def uid: UIO[String] =
     ZIO.succeed(UUID.randomUUID().toString.replace("-", "").take(8))

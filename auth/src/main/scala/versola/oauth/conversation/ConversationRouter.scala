@@ -233,8 +233,15 @@ object ConversationRouter:
             AuditDraft(
               kind = AuthAuditKinds.ConsentDenied,
               outcome = AuditOutcome.denied,
+              reason = None,
+              actor = None,
               userId = conversation.userId,
-              details = AuthAuditDetails.Consent(scope = consentStep.requestedScope.toList.map(_.toString).sorted),
+              target = None,
+              details = AuthAuditDetails.Consent(
+                scope = consentStep.requestedScope.toList.map(_.toString).sorted,
+                authorizationDetailTypes = Nil,
+                expiresAt = None,
+              ),
             ),
           ) *> conversationService.accessDenied(authId, conversation).zipLeft(AuthMetrics.stepFailed("consent"))
 

@@ -103,7 +103,8 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     val service = serviceWith(audit)
 
   /** The details every `login.step` of this conversation carries: the step, the conversation and what kind of sign-in it is. */
-  private def step(name: String = "password") = AuthAuditDetails.LoginStep(step = name, conversationId = authId.toString, kind = "login")
+  private def step(name: String = "password") =
+    AuthAuditDetails.LoginStep(step = name, conversationId = authId.toString, kind = "login", subjectHash = None, afDecision = None)
 
   val baseRecord = ConversationRecord(
     clientId = clientId,
@@ -813,7 +814,10 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           _ <- env.service.setNewPassword(passwordRecord.copy(needsPasswordChange = true), setPasswordStep, password, authId)
           reused <- env.audit.recorded
         yield assertTrue(
-          accepted.map(d => (d.kind, d.details)) == List((AuthAuditKinds.AccountPasswordSet, AuthAuditDetails.Account(via = "login_flow"))),
+          accepted.map(d => (d.kind, d.details)) == List((
+            AuthAuditKinds.AccountPasswordSet,
+            AuthAuditDetails.Account(via = "login_flow", detail = None),
+          )),
           reused.isEmpty,
         )
       },

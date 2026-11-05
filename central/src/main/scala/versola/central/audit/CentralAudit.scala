@@ -1,6 +1,6 @@
 package versola.central.audit
 
-import versola.util.audit.{ActorType, AuditCatalog, AuditDraft, AuditEvents, AuditKind, AuditOutcome, AuditSource}
+import versola.util.audit.{ActorType, AuditCatalog, AuditDetails, AuditDraft, AuditEvents, AuditKind, AuditOutcome, AuditSource}
 import zio.metrics.{Metric, MetricLabel}
 import zio.{UIO, ZIO}
 
@@ -45,7 +45,15 @@ object CentralAudit:
     * edge) or the system, and its target is the client or the edge the certificate is of. */
   def certificate(events: AuditEvents, kind: AuditKind, actor: ActorType, actorId: Option[String], target: (String, String)): UIO[Unit] =
     events.recordBestEffort(
-      AuditDraft(kind = kind, outcome = AuditOutcome.success, actor = Some((actor, actorId)), target = Some(target)),
+      AuditDraft(
+        kind = kind,
+        outcome = AuditOutcome.success,
+        reason = None,
+        actor = Some((actor, actorId)),
+        userId = None,
+        target = Some(target),
+        details = AuditDetails.empty,
+      ),
     )
 
   private val actorMissing = Metric.counter("audit_actor_missing_total")
