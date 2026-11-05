@@ -49,7 +49,7 @@ object AntifraudSettingsController extends AuditedController:
         for
           _ <- authorizeBasic(request)
           body <- request.bodyAs[PutAntifraudSettingsRequest]
-          _ <- Audit.replaced(body.settings)
+          _ <- Audit.changed(body.settings)
           expected <- expectedVersion(request, body.version)
           service <- ZIO.service[AntifraudSettingsService]
           response <- guarded(service.put(body.copy(version = expected)).map(versioned))

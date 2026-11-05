@@ -53,7 +53,7 @@ object FormController extends AuditedController:
         service <- ZIO.service[FormService]
         body <- request.bodyAs[UpdateFormRequest]
         _ <- Audit.target(body.id)
-        _ <- Audit.changed(body, "id")
+        _ <- Audit.replaced(body, "id")
         _ <- service.updateForm(body.id, body.style, body.jsSource, body.jsCompiled, body.localizations, body.properties, activate = false)
       yield Response.status(Status.NoContent)).catchSome(badRequest)
     }

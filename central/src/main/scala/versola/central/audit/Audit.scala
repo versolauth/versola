@@ -45,8 +45,7 @@ object Audit:
 
   private[audit] val tenantOfTarget: FiberRef[Option[String]] = Unsafe.unsafe(FiberRef.unsafe.make(Option.empty[String])(using _))
 
-  /** The names of the fields of an update that it sets, from the request as decoded: a field that is not `None`, and not a patch that adds
-    * and removes nothing. `except` are the fields that name what is updated (the id), by name; a name the record does not have is a
+  /** The names of the fields of an update that it sets, from the request as decoded: a field that is not `None`. `except` are the fields that name what is updated (the id), by name; a name the record does not have is a
     * defect, so a renamed field fails loudly in the route's spec instead of leaving the log without it. Never the values. */
   def changed[A](request: A, except: String*)(using schema: Schema[A]): UIO[Unit] =
     ZIO.suspendSucceed(AuditContext.setChanged(fieldNames(request, except, onlySet = true)))
@@ -80,13 +79,10 @@ object Audit:
       case lazySchema: Schema.Lazy[?] => recordOf(lazySchema.schema, value)
       case _ => None
 
+  /** A field is set unless it is an `Option` that is `None`: a patch of a required member (`PatchClientScope`) is in every request, and a
+    * `Some(Patch.Deleted)` is a field cleared. */
   private def isSet(value: Any): Boolean = value match
     case None => false
-    case product: Product if product.productPrefix.startsWith("Patch") =>
-      product.productIterator.exists:
-        case collection: Iterable[?] => collection.nonEmpty
-        case None => false
-        case _ => true
     case _ => true
 
 /** A typed value that identifies what a call acts on, as the log writes it: the id of a client, a tenant, a user. A bare `String` is not

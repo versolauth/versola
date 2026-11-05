@@ -49,6 +49,7 @@ object UserController extends AuditedController:
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         id <- request.queryZIO[Option[UserId]]("id")
+        _ <- ZIO.foreachDiscard(id)(Audit.target(_))
         email <- request.queryZIO[Option[Email]]("email")
         phone <- request.queryZIO[Option[Phone]]("phone")
         login <- request.queryZIO[Option[Login]]("login")
@@ -72,6 +73,7 @@ object UserController extends AuditedController:
       for
         _ <- authorizeBasic(request)
         userId <- request.queryZIO[UserId]("id")
+        _ <- Audit.target(userId)
         from <- request.queryZIO[Option[Instant]]("from")
         to <- request.queryZIO[Option[Instant]]("to")
         cursor <- request.queryZIO[Option[AuditCursor]]("cursor")

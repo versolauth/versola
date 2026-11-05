@@ -34,7 +34,7 @@ object LocaleController extends AuditedController:
         _ <- authorizeBasic(request)
         service <- ZIO.service[LocaleService]
         body <- request.bodyAs[UpdateLocalesRequest]
-        _ <- Audit.changed(body)
+        _ <- Audit.replaced(body)
         _ <- service.update(body.add, body.delete)
       yield Response.status(Status.NoContent)).catchAll:
         case error: LocaleActivationError =>

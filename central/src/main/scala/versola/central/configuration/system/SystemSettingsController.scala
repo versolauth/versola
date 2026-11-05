@@ -43,7 +43,7 @@ object SystemSettingsController extends AuditedController:
           _ <- authorizeBasic(request)
           service <- ZIO.service[SystemSettingsService]
           body <- request.bodyAs[SystemSettingsRecord]
-          _ <- Audit.changed(body)
+          _ <- Audit.replaced(body)
           _ <- service.upsertSettings(body)
         yield Response.status(Status.NoContent)
     }

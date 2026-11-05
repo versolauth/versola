@@ -42,7 +42,7 @@ object AuditSpec extends ZIOSpecDefault:
       for names <- changedBy(Audit.changed(sample, "clientId", "tenantId"))
       yield assertTrue(names == Set("accessTokenTtl", "theme", "note"), !names.exists(_.contains("must not")))
     },
-    test("a patch that deletes is a field set, and one left out is not") {
+    test("a patch that deletes is a field set, and an optional one that is left out is not") {
       for
         deleted <- changedBy(Audit.changed(sample.copy(accessTokenTtl = None, note = "n"), "clientId", "tenantId", "note"))
         none <- changedBy(Audit.changed(sample.copy(accessTokenTtl = None, theme = None), "clientId", "tenantId", "note"))
@@ -53,9 +53,13 @@ object AuditSpec extends ZIOSpecDefault:
       yield assertTrue(names == Set("clientName", "accessTokenTtl", "theme", "note"))
     },
     test("a request with many fields (a Transform of a generic record) is read the same way") {
-      val update = """{"clientId":"c1","redirectUris":{"add":[],"remove":[]},"scope":{"add":[],"remove":[]},"accessTokenTtl":600,"logoUri":null}""".fromJson[UpdateWebClientRequest]
+      val update =
+        """{"clientId":"c1","redirectUris":{"add":[],"remove":[]},"scope":{"add":[],"remove":[]},"accessTokenTtl":600,"logoUri":null}""".fromJson[
+          UpdateWebClientRequest,
+        ]
       for names <- changedBy(ZIO.fromEither(update).mapError(RuntimeException(_)).orDie.flatMap(Audit.changed(_, "clientId")))
-      yield assertTrue(names == Set("accessTokenTtl", "logoUri"))
+      // the patches of required members (`redirectUris`, `scope`) are in every request, as they are in its JSON
+      yield assertTrue(names == Set("redirectUris", "scope", "accessTokenTtl", "logoUri"))
     },
     test("a name that is no field of the request is a defect: a renamed field fails loudly and not silently") {
       for exit <- changedBy(Audit.changed(sample, "client")).exit
