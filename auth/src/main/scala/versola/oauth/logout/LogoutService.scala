@@ -1,11 +1,15 @@
 package versola.oauth.logout
 
+import versola.audit.AuditSupport.*
+import versola.audit.AuthAuditDetails
+import versola.audit.AuthAuditKinds
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, TenantId}
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentId}
 import versola.user.model.UserId
 import versola.util.CoreConfig
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import zio.*
 import zio.http.URL
 import zio.json.ast.Json
@@ -22,7 +26,7 @@ trait LogoutService:
   /** Admin-panel force-logout: invalidates every active session of a user and notifies,
     * via back-channel logout, every client that participated in each one. There is no
     * browser to redirect here, so unlike [[logout]] this produces no front-channel URIs. */
-  def invalidateAllSessions(userId: UserId): Task[Unit]
+  def invalidateAllSessions(userId: UserId, cause: String): Task[Unit]
 
   /** Ends one of the user's sessions (admin-panel action) the way [[logout]] would, relying
     * parties included. `false` when the session is not the user's or no longer live: knowing
@@ -45,16 +49,37 @@ object LogoutService:
 
   private val BackChannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
 
-  val live = ZLayer.fromFunction(Impl(_, _, _, _))
+  val live = ZLayer.fromFunction(Impl(_, _, _, _, _))
 
   class Impl(
       sessionService: SessionService,
       configuration: OAuthConfigurationService,
       config: CoreConfig,
       outbox: BackChannelOutbox,
+      audit: AuditEvents,
   ) extends LogoutService:
 
+    /** `session.ended`: who ended it is the request's context (the user of an RP's logout, the administrator behind a call from
+      * central), `cause` which of the ways it was. */
+    private def auditEnded(cause: String, session: SessionRecord): Task[Unit] =
+      audit.log(
+        AuditDraft(
+          kind = AuthAuditKinds.SessionEnded,
+          outcome = AuditOutcome.success,
+          userId = Some(session.userId),
+          details = AuthAuditDetails.SessionEnded(cause = cause, clients = session.clients.size),
+        ),
+      )
+
     override def logout(
+        identifier: Either[PublicSessionId, SessionId],
+        postLogoutRedirectUri: Option[URL],
+        state: Option[String],
+    ): Task[LogoutResult] =
+      end("rp_logout", identifier, postLogoutRedirectUri, state)
+
+    private def end(
+        cause: String,
         identifier: Either[PublicSessionId, SessionId],
         postLogoutRedirectUri: Option[URL],
         state: Option[String],
@@ -76,6 +101,8 @@ object LogoutService:
                 case Some(uri) => ZIO.succeed(uri).whenZIO(allowedRedirect(sessionParticipants, uri))
               _ <- sendBackChannelLogouts(sessionParticipants, session.record)
             yield LogoutResult(logoutUris, redirect, state, session.record.clients.headOption.map(_.clientId))
+        // After the session is gone and the relying parties are told: the event is queued, and a full queue does not undo any of it.
+        _ <- ZIO.foreachDiscard(session)(info => auditEnded(cause, info.record))
       yield result
 
     /** Ending every session a user has is one event per endpoint rather than one per session:
@@ -87,16 +114,16 @@ object LogoutService:
     override def invalidateSession(publicId: PublicSessionId, userId: UserId): Task[Boolean] =
       sessionService.listByUser(userId).map(_.exists(_.publicId == publicId)).flatMap:
         case false => ZIO.succeed(false)
-        case true => logout(Left(publicId), None, None).as(true)
+        case true => end("admin_revoked", Left(publicId), None, None).as(true)
 
     override def forgetUserAgent(userId: UserId, userAgentId: UserAgentId): Task[Boolean] =
       sessionService.listDevicesByUser(userId).map(_.find(_.userAgent.exists(_.id == userAgentId))).flatMap:
         case None => ZIO.succeed(false)
         case Some(device) =>
-          ZIO.foreachDiscard(device.session)(session => logout(Left(session.publicId), None, None)) *>
+          ZIO.foreachDiscard(device.session)(session => end("user_agent_forgotten", Left(session.publicId), None, None)) *>
             sessionService.forgetUserAgent(userId, userAgentId)
 
-    override def invalidateAllSessions(userId: UserId): Task[Unit] =
+    override def invalidateAllSessions(userId: UserId, cause: String): Task[Unit] =
       for
         sessions <- sessionService.invalidateAllByUser(userId)
         // Stamped here, once, rather than left to each delivery: the RP bounds the
@@ -109,6 +136,8 @@ object LogoutService:
         participants <- sessionClients(sessions.flatMap(_.clients.map(_.clientId)).distinct)
         _ <- ZIO.foreachDiscard(byEndpoint(participants)):
           case (uri, tenantId, audience) => sendUserLogout(uri, tenantId, audience, userId, occurredAt)
+        // Queued once the sessions are gone and the relying parties are told: a full queue undoes none of it.
+        _ <- ZIO.foreachDiscard(sessions)(auditEnded(cause, _))
       yield ()
 
     /** Resolves the RPs that actually participated in this SSO session (tracked via

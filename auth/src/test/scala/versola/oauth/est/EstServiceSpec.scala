@@ -1,7 +1,9 @@
 package versola.oauth.est
 
 import org.scalamock.stubs.ZIOStubs
+import versola.audit.{AuthActors, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
+import versola.util.audit.AuditOutcome
 import versola.util.{CoreConfig, TestCertificates}
 import zio.*
 import zio.test.*
@@ -29,8 +31,10 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private def limiter(limit: Int) =
     AttemptLimiter(limit, 1.minute, Unsafe.unsafe(Ref.unsafe.make(Map.empty[String, (Instant, Int)])(using _)))
 
+  private val audit = CapturingAuditEvents.shared()
+
   private def service(central: EstCentralClient, enabled: Boolean = true, attempts: Int = 1000) =
-    EstService.Impl(Option.when(enabled)(ca.get), central, limiter(attempts))
+    EstService.Impl(Option.when(enabled)(ca.get), central, limiter(attempts), audit)
 
   private def csrWith(algorithm: String, init: java.security.KeyPairGenerator => Unit): String =
     val generator = java.security.KeyPairGenerator.getInstance(algorithm)
@@ -44,6 +48,11 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   /** Valid in real time, so the service's clock is set to it. */
   private val realTime: UIO[Unit] = Clock.ClockLive.instant.flatMap(now => TestClock.setTime(now))
+
+  /** An EST whose audit log is its own, so that cases running side by side do not read each other's events. */
+  private def audited(central: EstCentralClient, attempts: Int = 1000) =
+    val recording = CapturingAuditEvents.shared()
+    (recording, EstService.Impl(Option.when(true)(ca.get), central, limiter(attempts), recording))
 
   def spec = suite("EstService")(
     suite("enroll")(
@@ -177,7 +186,11 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
       test("an enabled EST with no CA to hand out does not start: the CA is named, never inferred from the trust anchors") {
         val config = TestEnvConfig.coreConfig.copy(est = Some(CoreConfig.EstConfig(enabled = true)))
         for failure <-
-            ZIO.scoped(EstService.live.build).provide(ZLayer.succeed(config), ZLayer.succeed(stub[EstCentralClient]: EstCentralClient)).flip
+            ZIO.scoped(EstService.live.build).provide(
+              ZLayer.succeed(config),
+              ZLayer.succeed(stub[EstCentralClient]: EstCentralClient),
+              ZLayer.succeed[versola.util.audit.AuditEvents](audit),
+            ).flip
         yield assertTrue(failure.getMessage.contains("est.ca-certificates"))
       },
       test("a disabled EST needs nothing") {
@@ -185,7 +198,11 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
         (for
           service <- ZIO.scoped(EstService.live.build.map(_.get))
           failure <- service.caCertificates.flip
-        yield assertTrue(failure == EstError.Disabled)).provide(ZLayer.succeed(config), ZLayer.succeed(stub[EstCentralClient]: EstCentralClient))
+        yield assertTrue(failure == EstError.Disabled)).provide(
+          ZLayer.succeed(config),
+          ZLayer.succeed(stub[EstCentralClient]: EstCentralClient),
+          ZLayer.succeed[versola.util.audit.AuditEvents](audit),
+        )
       },
     ),
     suite("caCertificates")(
@@ -195,6 +212,64 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           on <- service(central).caCertificates
           off <- service(central, enabled = false).caCertificates.flip
         yield assertTrue(on.nonEmpty, off == EstError.Disabled)
+      },
+    ),
+    suite("audit log (cert.*)")(
+      test("a certificate that is issued records nothing here: central records it") {
+        val central = stub[EstCentralClient]
+        val (recording, est) = audited(central)
+        val presented = TestCertificates.generate(subject = "CN=bank-a,OU=tenant-a,O=Versola")
+        for
+          _ <- realTime
+          _ <- central.enroll.succeedsWith(EstCentralClient.Issued(issuedChain, Some(endsAt)))
+          _ <- central.renew.succeedsWith(EstCentralClient.Issued(issuedChain, None))
+          _ <- est.enroll(credentials, csrBody)
+          _ <- est.reenroll(presented.certificate, csrBody)
+          drafts <- recording.recorded
+        yield assertTrue(drafts.isEmpty)
+      },
+      test("what central refuses is recorded by what it says about the caller: denied for who, failure for what was asked") {
+        val central = stub[EstCentralClient]
+        val (recording, est) = audited(central)
+        for
+          _ <- central.enroll.failsWith(EstError.Unauthorized)
+          _ <- est.enroll(credentials, csrBody).flip
+          _ <- central.enroll.failsWith(EstError.Forbidden("chain limit"))
+          _ <- est.enroll(credentials, csrBody).flip
+          _ <- central.enroll.failsWith(EstError.BadRequest("wrong subject"))
+          _ <- est.enroll(credentials, csrBody).flip
+          drafts <- recording.recorded
+        yield assertTrue(
+          drafts.map(d => (d.kind, d.outcome, d.reason)) == List(
+            (AuthAuditKinds.CertEnrolled, AuditOutcome.denied, Some("est_unauthorized")),
+            (AuthAuditKinds.CertEnrolled, AuditOutcome.denied, Some("est_forbidden")),
+            (AuthAuditKinds.CertEnrolled, AuditOutcome.failure, Some("est_bad_request")),
+          ),
+          // the reason central gave is not repeated: it describes the request, and may quote it
+          !drafts.exists(_.details.toJson.toString.contains("wrong subject")),
+        )
+      },
+      test("a client that exceeds its attempts is recorded as a failure, rate limited") {
+        val central = stub[EstCentralClient]
+        val (recording, est) = audited(central, attempts = 1)
+        for
+          _ <- central.enroll.failsWith(EstError.Unauthorized)
+          _ <- est.enroll(credentials, csrBody).flip
+          limited <- est.enroll(credentials, csrBody).flip
+          drafts <- recording.recorded
+        yield assertTrue(limited == EstError.TooManyRequests, drafts.map(_.reason).last == Some("est_rate_limited"))
+      },
+      test("a disabled EST and a failure of central itself record nothing") {
+        val central = stub[EstCentralClient]
+        val disabled = CapturingAuditEvents.shared()
+        val down = CapturingAuditEvents.shared()
+        for
+          _ <- EstService.Impl(None, central, limiter(1000), disabled).enroll(credentials, csrBody).flip
+          _ <- central.enroll.failsWith(RuntimeException("central unavailable"))
+          _ <- EstService.Impl(ca, central, limiter(1000), down).enroll(credentials, csrBody).exit
+          a <- disabled.recorded
+          b <- down.recorded
+        yield assertTrue(a.isEmpty, b.isEmpty)
       },
     ),
   ) @@ TestAspect.sequential

@@ -1,5 +1,6 @@
 package versola.oauth.authorize
 
+import versola.audit.ClientAuthFailures
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, PushedAuthorizationError, ResponseMode, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
@@ -102,7 +103,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     // subject; an unregistered one falls through to the secret it presented.
     configuration.find.returnsWith(ZIO.none)
     val clientAssertionService = stub[ClientAssertionService]
-    val clientAuthentication = ClientAuthentication.Impl(configuration, clientAssertionService, TestEnvConfig.coreConfig)
+    val clientAuthentication = ClientAuthentication.Impl(configuration, clientAssertionService, TestEnvConfig.coreConfig, ClientAuthFailures.noop)
 
     val requestObjectService = RequestObjectService.Impl(config, configuration, versola.oauth.clientauth.InMemoryClientAssertionRepository.make)
 

@@ -5,6 +5,7 @@ import com.nimbusds.jose.crypto.RSASSAVerifier
 import com.nimbusds.jose.jwk.{KeyUse, RSAKey}
 import com.nimbusds.jwt.SignedJWT
 import org.scalamock.stubs.Stub
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures, ImmediateClientAuthFailures}
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ApplicationType
@@ -32,6 +33,8 @@ import versola.oauth.userinfo.UserInfoService
 import versola.oauth.userinfo.model.UserInfoResponse
 import versola.user.model.{UserId, UserRecord}
 import versola.util.Dpop
+import versola.util.audit.AuditEvents
+import versola.util.audit.AuditOutcome
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
 import versola.util.{Base64, CoreConfig, JWT, Secret, TestCertificates, UnitSpecBase}
 import zio.*
@@ -178,6 +181,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
   def tokenEndpointRoutes(
       config: CoreConfig = TestEnvConfig.coreConfig,
       requireDpopNonce: Boolean = false,
+      audit: AuditEvents = AuditEvents.noop,
   ): ZIO[Scope, Throwable, (Routes[Any, Nothing], Services)] =
     for
       tokenService = stub[OAuthTokenService]
@@ -185,7 +189,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       // The controller looks the client up only to decide whether reading a client
       // certificate could matter to it; an unknown client never needs one.
       _ = clientService.find.returnsWith(ZIO.none)
-      clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], config)
+      clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], config, ClientAuthFailures.noop)
       userInfoService = stub[UserInfoService]
       jwksService = TestEnvConfig.jwksService
       dpopService = stub[DpopService]
@@ -205,7 +209,9 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         TokenEndpointController.routes
           .provideEnvironment(ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(
             userInfoService,
-          ) ++ ZEnvironment(jwksService) ++ ZEnvironment(config) ++ ZEnvironment(dpopService) ++ tracing),
+          ) ++ ZEnvironment(jwksService) ++ ZEnvironment(config) ++ ZEnvironment(dpopService) ++ ZEnvironment[AuditEvents](
+            audit,
+          ) ++ ZEnvironment[ClientAuthFailures](ImmediateClientAuthFailures(audit)) ++ tracing),
       )
     yield (routes, services)
 
@@ -214,10 +220,11 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
   def withTokenEndpoint[A](
       config: CoreConfig = TestEnvConfig.coreConfig,
       requireDpopNonce: Boolean = false,
+      audit: AuditEvents = AuditEvents.noop,
   )(use: (Client, Services) => ZIO[Scope, Throwable, A]): ZIO[Client & TestClient & Scope, Throwable, A] =
     for
       client <- ZIO.service[Client]
-      (routes, services) <- tokenEndpointRoutes(config, requireDpopNonce)
+      (routes, services) <- tokenEndpointRoutes(config, requireDpopNonce, audit)
       _ <- TestClient.addRoutes(routes)
       result <- use(client, services)
     yield result
@@ -1021,7 +1028,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           tokenService = stub[OAuthTokenService]
           clientService = stub[OAuthConfigurationService]
           _ = clientService.find.returnsWith(ZIO.none)
-          clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig)
+          clientAuthentication =
+            ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig, ClientAuthFailures.noop)
           userInfoService = stub[UserInfoService]
           tracing <- NoopTracing.layer.build
           _ <- tokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens)
@@ -1030,7 +1038,9 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
               TokenEndpointController.routes
                 .provideEnvironment(
                   ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(userInfoService) ++
-                    ZEnvironment(driftedJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(stub[DpopService]) ++ tracing,
+                    ZEnvironment(driftedJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(
+                      stub[DpopService],
+                    ) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ ZEnvironment[ClientAuthFailures](ClientAuthFailures.noop) ++ tracing,
                 ),
             ),
           )
@@ -1075,7 +1085,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           tokenService = stub[OAuthTokenService]
           clientService = stub[OAuthConfigurationService]
           _ = clientService.find.returnsWith(ZIO.none)
-          clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig)
+          clientAuthentication =
+            ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig, ClientAuthFailures.noop)
           userInfoService = stub[UserInfoService]
           tracing <- NoopTracing.layer.build
           _ <- tokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens)
@@ -1084,7 +1095,9 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
               TokenEndpointController.routes
                 .provideEnvironment(
                   ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(userInfoService) ++
-                    ZEnvironment(noSigningKeyJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(stub[DpopService]) ++ tracing,
+                    ZEnvironment(noSigningKeyJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(
+                      stub[DpopService],
+                    ) ++ ZEnvironment[AuditEvents](AuditEvents.noop) ++ ZEnvironment[ClientAuthFailures](ClientAuthFailures.noop) ++ tracing,
                 ),
             ),
           )
@@ -1479,5 +1492,56 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           for body <- response.body.asString
           yield assertTrue(body.contains("invalid_client")),
       ),
+    ),
+    suite("audit log (token.refused)")(
+      /** A request that got as far as naming a grant and was refused is recorded, with the OAuth error as the reason. */
+      test("a refused code exchange records token.refused: failure, reason invalid_grant, the grant and the sub-code") {
+        val audit = CapturingAuditEvents.shared()
+        withTokenEndpoint(audit = audit): (client, services) =>
+          for
+            _ <- services.oauthTokenService.exchangeAuthorizationCode.failsWith(TokenEndpointError.InvalidGrant.CodeNotFound)
+            response <- client.batched(codeExchangeRequest)
+            drafts <- audit.recorded
+          yield assertTrue(
+            response.status == Status.BadRequest,
+            drafts.map(_.kind) == List(AuthAuditKinds.TokenRefused),
+            drafts.head.outcome == AuditOutcome.failure,
+            drafts.head.reason == Some("invalid_grant"),
+            drafts.head.details == AuthAuditDetails.TokenRefused(
+              grant = Some("authorization_code"),
+              clientAuth = None,
+              // counted, and the sub-code stays in the request log
+              detail = None,
+              count = Some(1),
+            ),
+          )
+      }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+      test("invalid_client is not recorded here: it is client.auth_failed, coalesced") {
+        val audit = CapturingAuditEvents.shared()
+        withTokenEndpoint(audit = audit): (client, services) =>
+          for
+            _ <- services.oauthTokenService.exchangeAuthorizationCode.failsWith(TokenEndpointError.InvalidClient)
+            response <- client.batched(codeExchangeRequest)
+            drafts <- audit.recorded
+          yield assertTrue(response.status == Status.Unauthorized, drafts.isEmpty)
+      }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+      test("a DPoP nonce challenge is a handshake, not a refusal: nothing is recorded") {
+        val audit = CapturingAuditEvents.shared()
+        withTokenEndpoint(audit = audit): (client, services) =>
+          for
+            _ <- services.dpopService.verify.failsWith(DpopService.Error.NonceRequired("fresh-nonce"))
+            response <- client.batched(dpopCodeExchangeRequest)
+            drafts <- audit.recorded
+          yield assertTrue(response.status == Status.BadRequest, drafts.isEmpty)
+      }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+      test("a refusal is answered as it would be whatever the state of the audit queue: 400, and the full queue is not told") {
+        val audit = CapturingAuditEvents.shared(unavailable = true)
+        withTokenEndpoint(audit = audit): (client, services) =>
+          for
+            _ <- services.oauthTokenService.exchangeAuthorizationCode.failsWith(TokenEndpointError.InvalidGrant.CodeNotFound)
+            response <- client.batched(codeExchangeRequest)
+            drafts <- audit.recorded
+          yield assertTrue(response.status == Status.BadRequest, drafts.isEmpty)
+      }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     ),
   )

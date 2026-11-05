@@ -1,5 +1,6 @@
 package versola.oauth.conversation
 
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.client.OAuthConfigurationService
@@ -30,6 +31,7 @@ import versola.oauth.session.model.{SessionId, UserAgentDetails, UserAgentId}
 import versola.role.model.RoleId
 import versola.user.UserRepository
 import versola.user.model.{Login, UserId, UserRecord}
+import versola.util.audit.AuditOutcome
 import versola.util.{Email, Phone, SecureRandom, UnitSpecBase}
 import zio.http.URL
 import zio.json.ast.Json
@@ -203,12 +205,14 @@ object ConversationRouterSpec extends UnitSpecBase:
     configService.registrationFor.returnsWith(ZIO.succeed(None))
     val secureRandom = stub[SecureRandom]
     val userRepository = stub[UserRepository]
+    val audit = CapturingAuditEvents.shared()
     val router = ConversationRouter.Impl(
       conversationRepository,
       otpConversationService,
       configService,
       secureRandom,
       userRepository,
+      audit,
     )
 
   private val passkeyOnlyAcr = Acr("passkey-level")
@@ -1222,7 +1226,23 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.otpConversationService.accessDenied.succeedsWith(accessDeniedResult)
           (result, _) <- env.router.submit(authId, ConsentDenySubmission("test-csrf"), None, None)
           allowTimes = env.otpConversationService.allowConsent.times
-        yield assertTrue(result == accessDeniedResult, allowTimes == 0)
+          drafts <- env.audit.recorded
+        yield assertTrue(
+          result == accessDeniedResult,
+          allowTimes == 0,
+          // the person said no: consent.denied, with what they were asked for
+          drafts.map(_.kind) == List(AuthAuditKinds.ConsentDenied),
+          drafts.head.outcome == AuditOutcome.denied,
+          drafts.head.details == AuthAuditDetails.Consent(scope = List("openid")),
+        )
+      },
+      test("a stale consent submission (the conversation is on another step) records no consent event") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(otpRecord))
+          _ <- env.router.submit(authId, ConsentDenySubmission("test-csrf"), None, None)
+          drafts <- env.audit.recorded
+        yield assertTrue(drafts.isEmpty)
       },
       test("rejects a consent submission when the conversation is on another step") {
         val env = Env()

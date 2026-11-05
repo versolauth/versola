@@ -1,8 +1,11 @@
 package versola.oauth.authorize
 
+import versola.audit.AuditSupport.*
+import versola.audit.{AuditSupport, AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, ClientAuthFailures}
 import versola.oauth.authorize.model.{PushedAuthorizationError, PushedAuthorizationErrorResponse}
 import versola.oauth.clientauth.{CertificateRelevance, ClientAuthentication}
 import versola.util.CoreConfig
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{Controller, Observability, extractCredentials}
 import zio.*
 import zio.http.*
@@ -17,7 +20,7 @@ object PushedAuthorizationController extends Controller:
   private val DpopHeader = "DPoP"
   private val DpopNonceHeader = "DPoP-Nonce"
 
-  type Env = Tracing & PushedAuthorizationService & ClientAuthentication & CoreConfig
+  type Env = Tracing & PushedAuthorizationService & ClientAuthentication & CoreConfig & AuditEvents & AuthAudit.Tiers & ClientAuthFailures
 
   def routes: Routes[Env, Throwable] = Routes(
     parEndpoint,
@@ -46,16 +49,56 @@ object PushedAuthorizationController extends Controller:
         // tells whether it is acceptable -- it alone knows which client the proof is for.
         dpopProofs = request.headers.toList.filter(_.headerName.equalsIgnoreCase(DpopHeader)).map(_.renderedValue)
 
-        response <- service.push(AuthorizeRequestParser.paramsFromForm(form), credentials, certificate, request, dpopProofs)
+        params = AuthorizeRequestParser.paramsFromForm(form)
+        response <- service.push(params, credentials, certificate, request, dpopProofs)
+        _ <- audit(AuditOutcome.success, None, params)
       yield Response.json(response.toJson)
         .status(Status.Created)
         .addHeader(Header.CacheControl.NoStore))
         .catchAll {
           case error: PushedAuthorizationError =>
-            Observability.setError(error.error, error.logDescription).as(errorResponse(error))
+            Observability.setError(error.error, error.logDescription) *>
+              // Not `invalid_client`: that is `client.auth_failed`, coalesced, so a flood of guesses is one row a minute.
+              audit(AuditOutcome.failure, Some(error.error), Map.empty).unless(error == PushedAuthorizationError.InvalidClient)
+                .as(errorResponse(error))
           case error: Throwable => ZIO.fail(error)
         }
     }
+
+  /** `par.request`: a successful push may be left out (`audit.events.par-success`); a refusal is counted per client, address and reason and
+    * written once a minute with `count` (see `ClientAuthFailures`). */
+  private def audit(
+      outcome: AuditOutcome,
+      reason: Option[String],
+      params: Map[String, Chunk[String]],
+  ): ZIO[AuditEvents & AuthAudit.Tiers & ClientAuthFailures, Throwable, Unit] =
+    for
+      tiers <- ZIO.service[AuthAudit.Tiers]
+      auth <- AuditSupport.currentAuth
+      _ <- ZIO.serviceWithZIO[ClientAuthFailures](
+        _.refused(
+          kind = AuthAuditKinds.ParRequest,
+          outcome = outcome,
+          clientId = auth.clientId,
+          reason = reason.getOrElse("refused"),
+          details = AuthAuditDetails.ParRequest(scope = Nil, requestObject = false),
+        ),
+      ).when(outcome != AuditOutcome.success)
+      _ <- ZIO.serviceWithZIO[AuditEvents](
+        _.log(
+          AuditDraft(
+            kind = AuthAuditKinds.ParRequest,
+            outcome = outcome,
+            reason = reason,
+            actor = Some((AuthActors.client, auth.clientId)),
+            details = AuthAuditDetails.ParRequest(
+              scope = params.get("scope").flatMap(_.headOption).toList.flatMap(_.split(' ').toList.filter(_.nonEmpty)).sorted,
+              requestObject = params.contains("request"),
+            ),
+          ),
+        ),
+      ).when(outcome == AuditOutcome.success && tiers.parSuccess)
+    yield ()
 
   /** RFC 9126 §2.3: anything but POST is answered with 405 rather than the router's 404. */
   val parMethodNotAllowed =

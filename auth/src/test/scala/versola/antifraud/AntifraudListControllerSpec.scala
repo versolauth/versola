@@ -1,9 +1,11 @@
 package versola.antifraud
 
 import org.scalamock.stubs.ZIOStubs
+import versola.audit.{AuthActors, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
 import versola.oauth.client.model.TenantId
 import versola.util.JWT
+import versola.util.audit.AuditEvents
 import versola.util.http.{NoopTracing, Observability}
 import zio.*
 import zio.http.*
@@ -19,6 +21,7 @@ import javax.crypto.spec.SecretKeySpec
 object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val config = TestEnvConfig.coreConfig
+  private val audit = CapturingAuditEvents.shared()
   private val wrongKey = SecretKeySpec(Array.fill(32)(99.toByte), "AES")
   private val tenant = TenantId("tenant-a")
   private val userId = "00000000-0000-0000-0000-0000000000f1"
@@ -56,6 +59,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       lists: AntifraudLists,
       request: Request,
       key: SecretKey = config.central.secretKey,
+      events: AuditEvents = audit,
   ): ZIO[Client & TestClient & Scope, Throwable, Response] =
     for
       client <- ZIO.service[Client]
@@ -63,7 +67,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
           AntifraudListController.routes.provideEnvironment(
-            ZEnvironment(lists) ++ ZEnvironment(config) ++ ZEnvironment(RecordingAntifraudEvents()) ++ tracing,
+            ZEnvironment(lists) ++ ZEnvironment(config) ++ ZEnvironment(RecordingAntifraudEvents()) ++ ZEnvironment[AuditEvents](events) ++ tracing,
           ),
         ),
       )
@@ -98,7 +102,7 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             AntifraudListController.routes.provideEnvironment(
-              ZEnvironment(lists) ++ ZEnvironment(config) ++ ZEnvironment(RecordingAntifraudEvents()) ++ tracing,
+              ZEnvironment(lists) ++ ZEnvironment(config) ++ ZEnvironment(RecordingAntifraudEvents()) ++ ZEnvironment[AuditEvents](audit) ++ tracing,
             ),
           ),
         )
@@ -120,6 +124,26 @@ object AntifraudListControllerSpec extends ZIOSpecDefault, ZIOStubs:
         sent.valueType == AntifraudValueType.prefix,
         sent.source == "manual",
         !sent.shadow,
+      )
+    },
+    test("creating and removing an entry record antifraud.list_changed with the administrator, and not the value of the entry") {
+      val lists = stub[AntifraudLists]
+      val audit = CapturingAuditEvents.shared()
+      for
+        _ <- lists.create.succeedsWith(stored)
+        _ <- call(lists, Request.post(base, entryBody(prefixEntry)), events = audit)
+        created <- audit.recorded
+        _ <- audit.clear
+        _ <- lists.find.succeedsWith(Some(stored))
+        _ <- lists.delete.succeedsWith(true)
+        _ <- call(lists, Request.delete(withParams("id" -> entryId.toString, "userId" -> userId)), events = audit)
+        removed <- audit.recorded
+      yield assertTrue(
+        created.map(_.kind) == List(AuthAuditKinds.AntifraudListChanged),
+        created.head.actor == Some((AuthActors.admin, Some(userId))),
+        created.head.details.toJson.toString.contains("\"action\":\"upsert\""),
+        removed.map(_.details.toJson.toString.contains("\"action\":\"delete\"")) == List(true),
+        !created.head.details.toJson.toString.contains("4915"),
       )
     },
     test("the source is the server's: a body that names one is stored as manual all the same") {

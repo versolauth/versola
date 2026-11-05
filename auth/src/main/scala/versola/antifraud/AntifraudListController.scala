@@ -1,8 +1,11 @@
 package versola.antifraud
 
+import versola.audit.AuditSupport.*
+import versola.audit.{AuthActors, AuthAuditDetails, AuthAuditKinds}
 import versola.oauth.client.model.TenantId
 import versola.user.authorizeInternal
 import versola.user.model.UserId
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{Controller, Observability}
 import versola.util.{CoreConfig, PageLimit, PageOffset, Phone}
 import zio.*
@@ -24,7 +27,7 @@ import java.util.UUID
   * [[AntifraudScope]]'s to say.
   */
 object AntifraudListController extends Controller:
-  type Env = Tracing & CoreConfig & AntifraudLists & AntifraudEvents
+  type Env = Tracing & CoreConfig & AntifraudLists & AntifraudEvents & AuditEvents
 
   def routes: Routes[Env, Throwable] = Routes(createEndpoint, listEndpoint, deleteEndpoint, previewEndpoint, auditEndpoint)
 
@@ -35,9 +38,9 @@ object AntifraudListController extends Controller:
         body <- request.bodyAs[ListEntryPayload]
         lists <- ZIO.service[AntifraudLists]
         response <- guarded:
-          scoped(body).flatMap(newEntry(body, _)).flatMap(lists.create(_, body.userId.toString)).map(entry =>
-            Response.json(entry.toJson).status(Status.Created),
-          )
+          scoped(body).flatMap(newEntry(body, _)).flatMap(lists.create(_, body.userId.toString)).tap(entry =>
+            changed("upsert", body.userId, entry),
+          ).map(entry => Response.json(entry.toJson).status(Status.Created))
       yield response
     }
 
@@ -99,6 +102,7 @@ object AntifraudListController extends Controller:
               ZIO.fail(ScopeDenied("a tenant admin removes its own tenant's entries only")).unless(scope.mayChange(e.tenantId)),
             )
             removed <- if entry.isEmpty then ZIO.succeed(false) else lists.delete(id, userId.toString)
+            _ <- ZIO.foreachDiscard(entry.filter(_ => removed))(changed("delete", userId, _))
             response <- if removed then ZIO.succeed(Response.status(Status.NoContent))
             else Observability.setError("list_entry_not_found").as(Response.status(Status.NotFound))
           yield response
@@ -120,6 +124,27 @@ object AntifraudListController extends Controller:
           )
       yield response
     }
+
+  /** `antifraud.list_changed`, once the change is made: the administrator is the `userId` the call carries. */
+  private def changed(action: String, admin: UserId, entry: AntifraudListEntry): ZIO[AuditEvents, Throwable, Unit] =
+    ZIO.serviceWithZIO[AuditEvents](
+      _.log(
+        AuditDraft(
+          kind = AuthAuditKinds.AntifraudListChanged,
+          outcome = AuditOutcome.success,
+          actor = Some((AuthActors.admin, Some(admin.toString))),
+          details = AuthAuditDetails.AntifraudListChanged(
+            action = action,
+            listType = entry.listType.toString,
+            valueType = entry.valueType.toString,
+            tenantId = entry.tenantId.map(_.toString),
+            entryId = Some(entry.id.toString),
+            shadow = Some(entry.shadow),
+            expiresAt = entry.expiresAt.map(_.toString),
+          ),
+        ),
+      ),
+    )
 
   private def guarded[R](effect: ZIO[R, Throwable, Response]): ZIO[R, Throwable, Response] =
     effect.catchSome:

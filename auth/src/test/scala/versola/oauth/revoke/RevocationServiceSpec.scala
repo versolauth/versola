@@ -1,6 +1,7 @@
 package versola.oauth.revoke
 
 import org.scalamock.stubs.ZIOStubs
+import versola.audit.{AuthActors, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures}
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ApplicationType
@@ -23,6 +24,9 @@ import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId, RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
+import versola.util.Base64
+import versola.util.audit.AuditEvents
+import versola.util.audit.AuditOutcome
 import versola.util.{CoreConfig, MAC, Secret, SecurityService, UnitSpecBase}
 import zio.*
 import zio.http.URL
@@ -130,7 +134,9 @@ object RevocationServiceSpec extends UnitSpecBase:
     // Authentication looks the client up first to see whether it registered an mTLS
     // subject; an unregistered one falls through to the secret it presented.
     oauthClientService.find.returnsWith(ZIO.none)
-    val clientAuthentication = ClientAuthentication.Impl(oauthClientService, stub[ClientAssertionService], TestEnvConfig.coreConfig)
+    val clientAuthentication =
+      ClientAuthentication.Impl(oauthClientService, stub[ClientAssertionService], TestEnvConfig.coreConfig, ClientAuthFailures.noop)
+    val audit = CapturingAuditEvents.shared()
     val tokenRepository = stub[SessionRepository]
     val accessTokenRevocationService = stub[AccessTokenRevocationService]
     val securityService = stub[SecurityService]
@@ -140,7 +146,8 @@ object RevocationServiceSpec extends UnitSpecBase:
       ZLayer.succeed(tokenRepository) ++
       ZLayer.succeed(accessTokenRevocationService) ++
       ZLayer.succeed(securityService) ++
-      ZLayer.succeed(config) >>> RevocationService.live
+      ZLayer.succeed(config) ++
+      ZLayer.succeed[AuditEvents](audit) >>> RevocationService.live
 
   val spec = suite("RevocationService")(
     suite("revokeRefreshToken")(
@@ -158,12 +165,19 @@ object RevocationServiceSpec extends UnitSpecBase:
 
           service <- ZIO.service[RevocationService]
           result <- service.revokeRefreshToken(refreshToken1, credentials, None)
+          drafts <- env.audit.recorded
         yield assertTrue(
           result == (),
           // No access token was presented and none is recorded against the chain, so the push
           // names the family and bounds it by the client's own TTL from now.
           env.accessTokenRevocationService.revokeFamily.calls ==
             List((testClient, familyId1, userId1.toString, now.plus(testClient.accessTokenTtl))),
+          // RFC 7009: the client revoked it, and the log keeps who it was about and the prefix of the token, not the token.
+          drafts.map(_.kind) == List(AuthAuditKinds.TokenRevoked),
+          drafts.head.outcome == AuditOutcome.success,
+          drafts.head.actor == Some((AuthActors.client, Some(clientId1: String))),
+          drafts.head.userId == Some(userId1),
+          drafts.head.details == AuthAuditDetails.TokenRevoked("refresh_token", None, Some(Base64.urlEncode(refreshToken1).take(9)), "rfc7009"),
         )).provide(env.layer)
       },
       test("fail with InvalidClient when client authentication fails") {
@@ -190,7 +204,8 @@ object RevocationServiceSpec extends UnitSpecBase:
 
           service <- ZIO.service[RevocationService]
           result <- service.revokeRefreshToken(refreshToken1, credentials, None).either
-        yield assertTrue(result == Left(RevocationError.InvalidClient))).provide(env.layer)
+          drafts <- env.audit.recorded
+        yield assertTrue(result == Left(RevocationError.InvalidClient), drafts.isEmpty)).provide(env.layer)
       },
       test("succeed when token not found (idempotent)") {
         val env = Env()
@@ -204,7 +219,9 @@ object RevocationServiceSpec extends UnitSpecBase:
 
           service <- ZIO.service[RevocationService]
           result <- service.revokeRefreshToken(refreshToken1, credentials, None)
-        yield assertTrue(result == ())).provide(env.layer)
+          drafts <- env.audit.recorded
+        // nothing was revoked, so nothing is said to have been
+        yield assertTrue(result == (), drafts.isEmpty)).provide(env.layer)
       },
     ),
     suite("revokeAccessToken")(
@@ -220,11 +237,15 @@ object RevocationServiceSpec extends UnitSpecBase:
 
           service <- ZIO.service[RevocationService]
           result <- service.revokeAccessToken(payload, credentials, None)
+          drafts <- env.audit.recorded
         yield assertTrue(
           result == (),
           // The token was parsed here, so its own `exp` is used rather than an upper bound.
           env.accessTokenRevocationService.revoke.calls ==
             List((testClient, NonEmptyChunk(accessToken1), userId1.toString, payload.expiresAt)),
+          drafts.map(_.kind) == List(AuthAuditKinds.TokenRevoked),
+          drafts.head.userId == Some(userId1.asInstanceOf[java.util.UUID]),
+          drafts.head.details == AuthAuditDetails.TokenRevoked("access_token", Some(Base64.urlEncode(accessToken1)), None, "rfc7009"),
         )).provide(env.layer)
       },
       test("fail with InvalidClient when client authentication fails") {

@@ -9,7 +9,14 @@ case class UserAgentDetails(
     os: Option[String],
     browser: Option[String],
     version: Option[String],
-) derives JsonCodec
+) derives JsonCodec:
+  /** The short form the audit log stores, `browser version / os`: what a person reads to tell their own browser from another. `None`
+    * when the header names neither. */
+  def summary: Option[String] =
+    val browserPart = browser.map(name => (name :: version.toList).mkString(" "))
+    (browserPart.toList ++ os.toList) match
+      case Nil => None
+      case parts => Some(parts.mkString(" / "))
 
 object UserAgentDetails:
   private val unknown = UserAgentDetails(None, None, None, None)
