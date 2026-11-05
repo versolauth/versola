@@ -114,9 +114,8 @@ object AuditHook:
           // What the request's events say of where it came from (the client and the session of the token).
           _ <- ZIO.foreachDiscard(actor.clientId)(client => Observability.setClientId(client.toString))
           _ <- ZIO.foreachDiscard(actor.sessionId)(Observability.setSessionId)
-          // The handler may be interrupted (the client went away, a timeout) after its change committed: what follows it is not
-          // interrupted, the record is handed over by a fiber that the interruption of this one does not reach, and the interruption
-          // goes on afterwards.
+          // The handler may be interrupted (the client went away, a timeout) after its change committed: the record that follows it
+          // is not interrupted, and the interruption goes on afterwards.
           response <- Audit.tenantOfTarget.locally(None):
             AuditContext.reset(initial):
               ZIO.uninterruptibleMask: restore =>
@@ -125,9 +124,7 @@ object AuditHook:
                     case Exit.Success(response) => response.status
                     case Exit.Failure(cause) => cause.failureOption.fold(Status.InternalServerError)(_.status)
                   val interrupted = exit.causeOption.exists(_.isInterruptedOnly)
-                  val recording = AuditContext.current.flatMap(state => record(pattern, status, interrupted, state, actor, change, read))
-                  // interruptible inside: a full queue under `block` is waited for up to its own timeout, which is an interruption
-                  recording.interruptible.forkDaemon.flatMap(fiber => restore(fiber.join)) *> ZIO.done(exit)
+                  AuditContext.current.flatMap(state => record(pattern, status, interrupted, state, actor, change, read)) *> ZIO.done(exit)
         yield response
 
   private def record(
