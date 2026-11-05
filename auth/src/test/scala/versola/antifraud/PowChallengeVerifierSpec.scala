@@ -58,6 +58,16 @@ object PowChallengeVerifierSpec extends UnitSpecBase:
       PowChallengeVerifier.leadingZeroBits(MessageDigest.getInstance("SHA-256").digest(s"$seed:$nonce".getBytes(StandardCharsets.UTF_8))) < difficulty
     .get
 
+  /** A nonce that solves `solved` and does not solve `other`. A solution is a hash with enough zero bits, so a nonce found for one
+    * seed solves another seed's challenge too, by chance, one time in 2^difficulty: a test that sends one challenge's solution to
+    * another has to pick the nonce so that this chance is out of it. */
+  private def nonceOnlyFor(solved: Challenge, other: Challenge): String =
+    def solves(challenge: Challenge, nonce: String): Boolean =
+      PowChallengeVerifier.leadingZeroBits(
+        MessageDigest.getInstance("SHA-256").digest(s"${challenge.params("seed")}:$nonce".getBytes(StandardCharsets.UTF_8)),
+      ) >= challenge.params("difficulty").toInt
+    Iterator.from(0).map(_.toString).find(nonce => solves(solved, nonce) && !solves(other, nonce)).get
+
   def spec = suite("PowChallengeVerifier")(
     suite("difficulty")(
       test("starts at the minimum for a request that only just reached the threshold, and grows a bit per step of score") {
@@ -121,7 +131,14 @@ object PowChallengeVerifierSpec extends UnitSpecBase:
             otherGeneration <- v.verify(subject.copy(generation = 1L), challenge.token, nonce)
             // The conversation has solved a challenge since: this token is spent.
             spent <- v.verify(subject.copy(solved = 1), challenge.token, nonce)
-          yield assertTrue(List(otherConversation, otherSubject, otherClient, otherTenant, otherGeneration, spent).forall(_ == ChallengeResult.Failed(1)))
+          yield assertTrue(List(
+            otherConversation,
+            otherSubject,
+            otherClient,
+            otherTenant,
+            otherGeneration,
+            spent,
+          ).forall(_ == ChallengeResult.Failed(1)))
       },
       test("cannot be made easier: a token whose difficulty is edited, or whose signature is another's, is refused") {
         ZIO.scoped:
@@ -178,8 +195,15 @@ object PowChallengeVerifierSpec extends UnitSpecBase:
             v <- verifier()
             first <- v.issue(subject, score = 60).map(_.get)
             second <- v.issue(subject, score = 60).map(_.get)
-            crossed <- v.verify(subject, second.token, solve(first))
-          yield assertTrue(first.params("seed") != second.params("seed"), first.token != second.token, crossed == ChallengeResult.Failed(1))
+            nonce = nonceOnlyFor(solved = first, other = second)
+            own <- v.verify(subject, first.token, nonce)
+            crossed <- v.verify(subject, second.token, nonce)
+          yield assertTrue(
+            first.params("seed") != second.params("seed"),
+            first.token != second.token,
+            own == ChallengeResult.Passed,
+            crossed == ChallengeResult.Failed(1),
+          )
       },
     ),
     suite("when switched off")(

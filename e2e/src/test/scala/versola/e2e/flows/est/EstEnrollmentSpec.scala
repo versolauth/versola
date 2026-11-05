@@ -9,7 +9,6 @@ import zio.test.*
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
 import java.util.{Base64, UUID}
-import scala.sys.process.{Process, ProcessLogger}
 
 /** RFC 7030 EST: a bank's `tls_client_auth` client obtains its mTLS certificate from auth with a one-time token,
   * authenticates with it at `/token` on auth's mutual-TLS listener, and renews it there with the certificate it has --
@@ -40,13 +39,23 @@ object EstEnrollmentSpec extends ZIOSpec[Flows.Setups & CentralApi]:
 
   // ── the client's side, with openssl ────────────────────────────────────────────────────────────
 
-  private def openssl(args: String*): Task[Array[Byte]] =
+  /** What `openssl` wrote to its standard output. The output is read to its end before the exit status is asked for: with
+    * `scala.sys.process`'s `#>` into a buffer, `exitValue()` can return before the copying of the output has finished,
+    * and a request that was made came back empty about once in a thousand runs ("the request is empty" from auth). */
+  private def openssl(args: String*): Task[Array[Byte]] = opensslWith(None, args*)
+
+  private def opensslWith(stdin: Option[Array[Byte]], args: String*): Task[Array[Byte]] =
     ZIO.attemptBlocking:
-      val out = java.io.ByteArrayOutputStream()
-      val err = StringBuilder()
-      val code = (Process("openssl" +: args) #> out).run(ProcessLogger(_ => (), line => err.append(line).append('\n'))).exitValue()
+      val process = ProcessBuilder(("openssl" +: args)*).start()
+      val input = process.getOutputStream
+      try stdin.foreach(input.write)
+      finally input.close()
+      val out = process.getInputStream.readAllBytes()
+      // what openssl says on its standard error is a few lines; reading it after the output cannot fill its pipe
+      val err = String(process.getErrorStream.readAllBytes(), StandardCharsets.UTF_8)
+      val code = process.waitFor()
       if code != 0 then throw RuntimeException(s"openssl ${args.mkString(" ")} failed: $err")
-      out.toByteArray
+      out
 
   /** A key the client generated: its own file, and the PKCS#8 form a TLS stack reads back. */
   private case class Key(dir: Path, ec: Path, pkcs8: Path)
@@ -80,18 +89,12 @@ object EstEnrollmentSpec extends ZIOSpec[Flows.Setups & CentralApi]:
     yield "(?s)-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----".r.findAllIn(text).toList
 
   private def subjectOf(certificate: String): Task[String] =
-    ZIO.attemptBlocking:
-      val in = java.io.ByteArrayInputStream(certificate.getBytes(StandardCharsets.UTF_8))
-      val out = java.io.ByteArrayOutputStream()
-      (Process(Seq("openssl", "x509", "-noout", "-subject", "-nameopt", "RFC2253")) #< in #> out).!
-      String(out.toByteArray, StandardCharsets.UTF_8).trim.stripPrefix("subject=").trim
+    opensslWith(Some(certificate.getBytes(StandardCharsets.UTF_8)), "x509", "-noout", "-subject", "-nameopt", "RFC2253")
+      .map(out => String(out, StandardCharsets.UTF_8).trim.stripPrefix("subject=").trim)
 
   private def serialOf(certificate: String): Task[String] =
-    ZIO.attemptBlocking:
-      val in = java.io.ByteArrayInputStream(certificate.getBytes(StandardCharsets.UTF_8))
-      val out = java.io.ByteArrayOutputStream()
-      (Process(Seq("openssl", "x509", "-noout", "-serial")) #< in #> out).!
-      String(out.toByteArray, StandardCharsets.UTF_8).trim
+    opensslWith(Some(certificate.getBytes(StandardCharsets.UTF_8)), "x509", "-noout", "-serial")
+      .map(out => String(out, StandardCharsets.UTF_8).trim)
 
   /** The client's identity: the certificate EST gave it and the key it generated for it. */
   private case class Identity(certificate: String, key: Key):
