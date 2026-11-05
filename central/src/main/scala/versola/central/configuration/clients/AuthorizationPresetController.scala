@@ -1,5 +1,6 @@
 package versola.central.configuration.clients
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.authorizeBasic
 import versola.central.configuration.*
 import versola.central.configuration.resources.ResourceService
@@ -8,16 +9,16 @@ import zio.*
 import zio.http.*
 import zio.json.*
 
-object AuthorizationPresetController extends Controller:
+object AuthorizationPresetController extends AuditedController:
   type Env = Tracing & AuthorizationPresetService & ResourceService
 
-  def routes: Routes[Env, Throwable] = Routes(
+  def endpoints = List(
     getPresetsEndpoint,
     savePresetsEndpoint,
   )
 
   val getPresetsEndpoint =
-    Method.GET / "configuration" / "auth-request-presets" -> handler { (req: Request) =>
+    (Method.GET / "configuration" / "auth-request-presets").audited(Audit.Unrecorded) -> handler { (req: Request) =>
       for
         _ <- authorizeBasic(req)
         clientId <- req.url.queryZIO[ClientId]("clientId")
@@ -42,7 +43,12 @@ object AuthorizationPresetController extends Controller:
     }
 
   val savePresetsEndpoint =
-    Method.POST / "configuration" / "auth-request-presets" -> handler { (req: Request) =>
+    (Method.POST / "configuration" / "auth-request-presets").audited(Audit.change(
+      "auth-request-preset",
+      Audit.create,
+      Audit.body("clientId"),
+      Some("client"),
+    )) -> handler { (req: Request) =>
       for
         _ <- authorizeBasic(req)
         service <- ZIO.service[AuthorizationPresetService]

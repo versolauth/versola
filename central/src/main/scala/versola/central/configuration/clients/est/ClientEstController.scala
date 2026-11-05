@@ -1,5 +1,6 @@
 package versola.central.configuration.clients.est
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
@@ -19,10 +20,10 @@ import java.time.Instant
   * The internal endpoints are for auth's token alone: an edge's is refused, and they are not served on the mutual-TLS
   * listener banks reach.
   */
-object ClientEstController extends Controller:
+object ClientEstController extends AuditedController:
   type Env = Tracing & ClientEstService & ResourceService & CentralConfig & EdgeService
 
-  def routes: Routes[Env, Throwable] = Routes(
+  def endpoints = List(
     createEnrollmentTokenEndpoint,
     extendEndpoint,
     revokeEndpoint,
@@ -32,7 +33,13 @@ object ClientEstController extends Controller:
 
   /** A one-time token for the named client to trade for its first certificate, shown once. */
   val createEnrollmentTokenEndpoint =
-    Method.POST / "configuration" / "clients" / "est" / "enrollment-tokens" -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "clients" / "est" / "enrollment-tokens").audited(Audit.change(
+      "client-est",
+      Audit.action("enrollment-tokens"),
+      Audit.query("clientId"),
+      Some("client"),
+      revealsSecret = true,
+    )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         clientId <- request.url.queryZIO[ClientId]("clientId")
@@ -50,7 +57,12 @@ object ClientEstController extends Controller:
 
   /** Starts the client's chain over, for an operator who left `client-identity.auto-extend` off. */
   val extendEndpoint =
-    Method.POST / "configuration" / "clients" / "est" / "extend" -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "clients" / "est" / "extend").audited(Audit.change(
+      "client-est",
+      Audit.action("extend"),
+      Audit.query("clientId"),
+      Some("client"),
+    )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         clientId <- request.url.queryZIO[ClientId]("clientId")
@@ -62,7 +74,12 @@ object ClientEstController extends Controller:
 
   /** Ends the right of the client's certificates to renew, for an operator who suspects the key is out. */
   val revokeEndpoint =
-    Method.POST / "configuration" / "clients" / "est" / "revoke" -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "clients" / "est" / "revoke").audited(Audit.change(
+      "client-est",
+      Audit.action("revoke"),
+      Audit.query("clientId"),
+      Some("client"),
+    )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         clientId <- request.url.queryZIO[ClientId]("clientId")
@@ -74,7 +91,7 @@ object ClientEstController extends Controller:
 
   /** Internal, for auth: the first certificate, for a token. */
   val enrollEndpoint =
-    Method.POST / "est" / "enroll" -> handler { (request: Request) =>
+    (Method.POST / "est" / "enroll").audited(Audit.Internal) -> handler { (request: Request) =>
       (for
         _ <- authorizeAuth(request)
         body <- request.bodyAs[EstEnrollRequest]
@@ -85,7 +102,7 @@ object ClientEstController extends Controller:
 
   /** Internal, for auth: a new certificate, for the certificate the client presented on the mutual-TLS listener. */
   val renewEndpoint =
-    Method.POST / "est" / "renew" -> handler { (request: Request) =>
+    (Method.POST / "est" / "renew").audited(Audit.Internal) -> handler { (request: Request) =>
       (for
         _ <- authorizeAuth(request)
         body <- request.bodyAs[EstRenewRequest]

@@ -1,5 +1,6 @@
 package versola.central.configuration.tenants
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.{CreateTenantRequest, GetAllTenantsResponse, TenantResponse, UpdateTenantRequest}
@@ -9,10 +10,10 @@ import zio.json.{EncoderOps, JsonCodec}
 import zio.schema.*
 import zio.{Cause, ZIO}
 
-object TenantController extends Controller:
+object TenantController extends AuditedController:
   type Env = Tracing & TenantService & ResourceService
 
-  def routes: Routes[Env, Throwable] = Routes(
+  def endpoints = List(
     getAllTenantsEndpoint,
     createTenantEndpoint,
     updateTenantEndpoint,
@@ -20,7 +21,7 @@ object TenantController extends Controller:
   )
 
   val getAllTenantsEndpoint =
-    Method.GET / "configuration" / "tenants" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "tenants").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[TenantService]
@@ -37,7 +38,7 @@ object TenantController extends Controller:
     }
 
   val createTenantEndpoint =
-    Method.POST / "configuration" / "tenants" -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "tenants").audited(Audit.change("tenant", Audit.create, Audit.body("id"))) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[TenantService]
@@ -47,7 +48,7 @@ object TenantController extends Controller:
     }
 
   val updateTenantEndpoint =
-    Method.PUT / "configuration" / "tenants" -> handler { (request: Request) =>
+    (Method.PUT / "configuration" / "tenants").audited(Audit.change("tenant", Audit.update, Audit.body("id"))) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[TenantService]
@@ -57,11 +58,12 @@ object TenantController extends Controller:
     }
 
   val deleteTenantEndpoint =
-    Method.DELETE / "configuration" / "tenants" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[TenantService]
-        tenantId <- request.url.queryZIO[TenantId]("tenantId")
-        _ <- service.deleteTenant(tenantId)
-      yield Response.status(Status.NoContent)
+    (Method.DELETE / "configuration" / "tenants").audited(Audit.change("tenant", Audit.delete, Audit.query("tenantId"))) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          service <- ZIO.service[TenantService]
+          tenantId <- request.url.queryZIO[TenantId]("tenantId")
+          _ <- service.deleteTenant(tenantId)
+        yield Response.status(Status.NoContent)
     }
