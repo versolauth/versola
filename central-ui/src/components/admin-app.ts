@@ -490,7 +490,10 @@ export class VersolaAdmin extends LitElement {
   /** A section opened, edited, created or closed a record: the URL follows. A field the event
     * leaves out keeps its value, so a section can set `edit` without repeating `id`. */
   private handleRecordRoute = (e: CustomEvent<Partial<RecordRoute>>) => {
-    this.recordRoute = { ...this.recordRoute, ...e.detail };
+    const next = { ...this.recordRoute, ...e.detail };
+    // Another record (or none) does not keep the tab of the one before it.
+    if (e.detail.id !== undefined && e.detail.id !== this.recordRoute.id && !('tab' in e.detail)) next.tab = null;
+    this.recordRoute = next;
   };
 
   private applyApiConfig() {
@@ -528,6 +531,7 @@ export class VersolaAdmin extends LitElement {
       edit: params.get('edit'),
       create: params.get('new') === '1',
       layout: params.get('layout') === 'page' ? 'page' : null,
+      tab: params.get('tab'),
     };
   }
 
@@ -545,7 +549,7 @@ export class VersolaAdmin extends LitElement {
     url.searchParams.delete('expandEdge');
 
     const route = this.recordRoute;
-    for (const [key, value] of [['id', route.id], ['edit', route.edit], ['new', route.create ? '1' : null], ['layout', route.layout]] as const) {
+    for (const [key, value] of [['id', route.id], ['edit', route.edit], ['new', route.create ? '1' : null], ['layout', route.layout], ['tab', route.tab]] as const) {
       if (value) url.searchParams.set(key, value);
       else url.searchParams.delete(key);
     }
