@@ -68,7 +68,7 @@ object AuditQueueFullSpec extends ZIOSpecDefault:
       ran <- Ref.make(0)
       client <- ZIO.service[Client]
       routes = Routes(createClient -> handler((_: Request) => ran.update(_ + 1).as(Response.text("ok"))))
-      _ <- TestClient.addRoutes((routes @@ AuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig](
+      _ <- TestClient.addRoutes((routes @@ TestAuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig](
         events,
         TestCentralConfig.config,
       )))

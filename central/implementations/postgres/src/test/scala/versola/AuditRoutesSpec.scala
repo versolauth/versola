@@ -1,32 +1,32 @@
 package versola
 
 import versola.central.audit.AuditRoutes.Entry
-import versola.central.audit.{AuditRoutes, CentralAudit}
+import versola.central.audit.CentralAudit
 import zio.http.Method
 import zio.test.*
 
-/** The audit log of administrators' actions is only complete if every route central serves is classified (#469): this walks the
-  * routes of the app itself, so an endpoint added to a controller without a line in [[AuditRoutes]] fails here and is never
-  * recorded as `unknown`. */
+/** The audit log of administrators' actions is only complete if every route central serves says what it means to the log (#469): a
+  * controller lists only [[versola.central.audit.AuditedRoute]]s, and the app serves exactly what they build. This walks the routes
+  * of the app itself and the declarations they were built from, and checks what the declarations say. */
 object AuditRoutesSpec extends ZIOSpecDefault:
 
   private val served: List[(Method, String)] =
     PostgresCentralApp.routes.routes.map(route => (route.routePattern.method, route.routePattern.pathCodec.render)).toList
 
-  private def entries = AuditRoutes.table.toList
+  private val declared: List[((Method, String), Entry)] =
+    PostgresCentralApp.adminEndpoints.map(e => (e.route.routePattern.method, e.route.routePattern.pathCodec.render) -> e.entry)
 
-  def spec = suite("AuditRoutes")(
-    test("every route central serves on its main listener is classified, and none is classified twice") {
-      val missing = served.filterNot(route => AuditRoutes.table.contains(route))
+  private def entries = declared
+
+  def spec = suite("AuditedRoute declarations")(
+    test("every route central serves on its main listener carries a declaration, none is declared twice, and none is declared without being served") {
+      val declaredRoutes = declared.map(_._1)
       assertTrue(
         served.nonEmpty,
-        missing.isEmpty,
+        served.toSet == declaredRoutes.toSet,
+        declaredRoutes.distinct.size == declaredRoutes.size,
         served.distinct.size == served.size,
       )
-    },
-    test("no line classifies a route that is not served: a renamed or removed endpoint leaves no stale line behind") {
-      val unserved = AuditRoutes.table.keys.filterNot(served.toSet.contains).toList
-      assertTrue(unserved.isEmpty)
     },
     test("a change is of a resource of the closed set and of an operation the method says, or of an action named by the route's last segment") {
       val wrong = entries.collect:

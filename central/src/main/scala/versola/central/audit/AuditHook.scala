@@ -71,18 +71,18 @@ object AuditHook:
     "credentialId",
   )
 
-  val middleware: Middleware[AuditEvents & CentralConfig] = new Middleware[AuditEvents & CentralConfig]:
-    def apply[Env1 <: AuditEvents & CentralConfig, Err](routes: Routes[Env1, Err]): Routes[Env1, Err] =
-      Routes.fromIterable(routes.routes.map(route => route.transform[Env1](audited(route.routePattern.method, route.routePattern.pathCodec.render))))
+  /** The route with its record: what the route's own declaration says is written after it ran. */
+  def wrap[Env](route: AuditedRoute[Env]): Route[Env & AuditEvents & CentralConfig, Throwable] =
+    val pattern = route.route.routePattern.pathCodec.render
+    route.route.transform[Env & AuditEvents & CentralConfig](handler => audited(route.entry, pattern)(handler))
 
-  private def audited[Env1 <: AuditEvents & CentralConfig](method: Method, pattern: String)(
+  private def audited[Env1 <: AuditEvents & CentralConfig](entry: Entry, pattern: String)(
       handler: Handler[Env1, Response, Request, Response],
   ): Handler[Env1, Response, Request, Response] =
-    AuditRoutes.of(method, pattern) match
-      case Some(entry: Entry.Change) => recording(handler, pattern, Some(entry), None)
-      case Some(entry: Entry.Read) => recording(handler, pattern, None, Some(entry))
-      // Unrecorded and internal routes record nothing. A route the table does not know does not either (the spec that walks the
-      // routes is what keeps that from happening); refusing it here would take a working endpoint down for a gap in the log.
+    entry match
+      case entry: Entry.Change => recording(handler, pattern, Some(entry), None)
+      case entry: Entry.Read => recording(handler, pattern, None, Some(entry))
+      // Unrecorded and internal routes record nothing.
       case _ => handler
 
   /** Who made the call, from what edge put in it. */

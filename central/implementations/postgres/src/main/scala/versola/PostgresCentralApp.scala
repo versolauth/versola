@@ -194,34 +194,39 @@ object PostgresCentralApp extends VersolaApp("central"):
     // and nothing else. Every other
     // controller is auth's or the admin console's and refuses an edge token here, as a group,
     // so a controller added to this list is auth-only without doing anything about it.
-    val admin = List(
-      TenantController.routes,
-      PermissionController.routes,
-      ResourceController.routes,
-      ClientController.routes,
-      ClientEstController.routes,
-      AuthorizationPresetController.routes,
-      ScopeController.routes,
-      AuthorizationDetailTypeController.routes,
-      RoleController.routes,
-      EdgeController.routes,
-      FormController.routes,
-      LocaleController.routes,
-      ThemeController.routes,
-      OtpChallengeController.routes,
-      SystemSettingsController.routes,
-      DeliverySettingsController.routes,
-      UserController.routes,
-      AntifraudListController.routes,
-      AntifraudSettingsController.routes,
-      AntifraudCountersController.routes,
-      AntifraudStatusController.routes,
-      JwksController.routes,
-      ServerMetadataController.routes,
-    ).reduce(_ ++ _)
-    // #469: what an administrator does is recorded on every one of these routes, by one hook (`AuditRoutes` says what each
-    // route means). The service surface is the operator's tooling and is not.
-    (admin @@ AuditHook.middleware ++ ServiceController.routes) @@ refuseEdgeCallers
+    // #469: what an administrator does is recorded on every one of these routes by one hook, which takes what each route means from
+    // the route's own declaration. The service surface is declared internal: the operator's tooling is not recorded.
+    Routes.fromIterable(adminEndpoints.map(AuditHook.wrap)) @@ refuseEdgeCallers
+
+  /** Every route of the main listener, each with the declaration the audit log takes its meaning from: a controller lists only
+    * [[AuditedRoute]]s, so there is none without one. */
+  val adminEndpoints =
+    List(
+      TenantController.endpoints,
+      PermissionController.endpoints,
+      ResourceController.endpoints,
+      ClientController.endpoints,
+      ClientEstController.endpoints,
+      AuthorizationPresetController.endpoints,
+      ScopeController.endpoints,
+      AuthorizationDetailTypeController.endpoints,
+      RoleController.endpoints,
+      EdgeController.endpoints,
+      FormController.endpoints,
+      LocaleController.endpoints,
+      ThemeController.endpoints,
+      OtpChallengeController.endpoints,
+      SystemSettingsController.endpoints,
+      DeliverySettingsController.endpoints,
+      UserController.endpoints,
+      AntifraudListController.endpoints,
+      AntifraudSettingsController.endpoints,
+      AntifraudCountersController.endpoints,
+      AntifraudStatusController.endpoints,
+      JwksController.endpoints,
+      ServerMetadataController.endpoints,
+      ServiceController.endpoints,
+    ).flatten
 
   /** The one route an edge reaches before it has a certificate (`POST /edge/enroll`), on the additional listener
     * (`APORT`): plain HTTP meant to sit behind the TLS terminator of the public name for central, which makes it the

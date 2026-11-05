@@ -51,7 +51,7 @@ object AuditHookSpec extends ZIOSpecDefault:
     logContext.locallyWith(identity)(for
       seen <- Ref.make(List.empty[Recorded])
       client <- ZIO.service[Client]
-      _ <- TestClient.addRoutes((routes @@ AuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig](
+      _ <- TestClient.addRoutes((routes @@ TestAuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig](
         Capture(seen),
         tiers,
       )))
@@ -289,7 +289,7 @@ object AuditHookSpec extends ZIOSpecDefault:
         client <- ZIO.service[Client]
         // the change has happened; the handler then waits, as a response that is still being written would
         routes = Routes(createClient -> handler((_: Request) => started.succeed(()) *> ZIO.never))
-        _ <- TestClient.addRoutes((routes @@ AuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig](
+        _ <- TestClient.addRoutes((routes @@ TestAuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig](
           Capture(seen),
           settings(),
         )))
