@@ -1765,6 +1765,12 @@ The access log has no variables: auth and central always log every request, and 
 Everything else — secrets, keys, database credentials, bootstrap data — is in the HOCON file and
 OpenBao, not in environment variables.
 
+**`env`** in the HOCON file names the environment. `prod`, and any name ending in it (`eu-prod`, what
+`versola configure vps` writes from `ENV_NAME`, default `prod`), is production. **Any other name is a test
+environment**: one-time codes are fixed and not delivered, an admin's password reset can show the password,
+`/service/` is served and Postgres TLS need not verify. Nothing warns about the name, so a deployment that
+serves users is named for what it is, never `qa`, `k8s` or a misspelling.
+
 <a id="run_migrations"></a>
 **`RUN_MIGRATIONS`**: unset → migrations do not run; the service *validates* the schema and fails to
 start if migrations are missing (applying them is the separate `versola migrate` step). `true` /
@@ -1806,6 +1812,16 @@ notification and refuses to start, naming this setting, if it cannot.
     or an address that is not valid) fails the sync. A running `auth` keeps what it has and logs a warning; an `auth` that
     starts while such a block is saved fails to start, also on a deployment that sends through `auth.conf` only. Correct or
     remove the record in the console (or `DELETE /configuration/delivery-settings`) and start it again.
+  - An SMTP block with `startTls` on now **requires** the upgrade and verifies the server's certificate against
+    `host`: a server that does not offer STARTTLS, or whose certificate is not for its name or not signed by a CA
+    the JVM trusts, is refused and nothing is sent in clear. Before, the session quietly went on without TLS.
+  - Every HTTPS call the services make themselves (the SMS provider, a relying party's back-channel logout URI, the
+    ASN/geo range databases) now trusts the JVM's trust store, as any HTTPS client does; before, any certificate was
+    accepted. The CAs the image ships cover a public certificate. A private CA goes into the trust store:
+    mount it and pass `JAVA_TOOL_OPTIONS=-Djavax.net.ssl.trustStore=/path/truststore.p12 -Djavax.net.ssl.trustStorePassword=…`
+    to the service, or bake it into the image with `keytool -importcert -cacerts`. A refused peer shows as
+    `PKIX path building failed` in the `send-http` line. Edge's calls to auth and central pin a certificate and are
+    not affected.
 - **`central` has one replica.** `auth` and `edge` can run several (`versola replica add`), and
   `versola rollout` moves all three without an outage when the release is compatible (see
   [Without stopping](#without-stopping-versola-rollout)); an incompatible release still means the short

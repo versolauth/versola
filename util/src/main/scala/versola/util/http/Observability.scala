@@ -489,8 +489,17 @@ object Observability:
     case ConnectionPoolConfig.Fixed(size) => size
     case _ => defaultClientPoolSize
 
+  /** The trust every HTTPS call of the shared client starts from. zio-http's own default (`ClientSSLConfig.Default`) is
+    * Netty's `InsecureTrustManagerFactory`, which accepts any server certificate: whoever answered on the route could pose
+    * as the message provider, a relying party's back-channel logout URI or the range database's host. The JVM's trust store
+    * (the CAs the image ships, plus whatever `javax.net.ssl.trustStore` adds) is what every other HTTPS client on the
+    * machine trusts, and Netty checks the certificate's name against the host the connection was opened to. A caller that
+    * pins a certificate instead (edge towards auth and central) overrides this per request with `client.ssl(...)`.
+    */
+  val clientTrust: ClientSSLConfig = ClientSSLConfig.FromSystemTrustStore
+
   def clientConfig(pool: ConnectionPoolConfig): ZClient.Config =
-    ZClient.Config.default.copy(connectionPool = pool)
+    ZClient.Config.default.copy(connectionPool = pool, ssl = Some(clientTrust))
 
   def clientConfig(poolSize: Int): ZClient.Config = clientConfig(ConnectionPoolConfig.Fixed(poolSize))
 

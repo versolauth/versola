@@ -513,7 +513,4 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   given DeriveConfig[PrivateKey] = DeriveConfig[String]
     .mapOrFail(SecretConfig.signingPrivateKey)
 
-  given DeriveConfig[EnvName] = DeriveConfig[String]
-    .map:
-      case "prod" => EnvName.Prod
-      case value => EnvName.Test(value)
+  given DeriveConfig[EnvName] = DeriveConfig[String].map(EnvName.parse)

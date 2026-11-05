@@ -8,7 +8,7 @@ import { confirmDiscardDraft } from '../utils/draft-guard';
 import { checkLocalizations, effectiveTexts, formatLocalizations, isBuiltInForm, localeGaps, namesWithOverflow, sampleTexts, type LocalizationProblem, type Localizations } from '../utils/form-texts';
 import { exclusiveAnyOfValues, humanizeLabel, toggleAnyOf } from '../utils/helpers';
 import { dispatchRecordRoute } from '../utils/record-route';
-import { buildPreviewSrcdoc, localeNamesOf, previewStylesheets } from '../utils/preview';
+import { buildPreviewSrcdoc, localeNamesOf, PREVIEW_SANDBOX, previewStylesheets } from '../utils/preview';
 import { pickScenario, renderScenarioControl } from './preview-scenarios';
 import { statusIcon } from './status-icon';
 import { valueChips } from './value-chips';
@@ -80,6 +80,9 @@ export class VersolaFormRecord extends LitElement {
   private docTimer: ReturnType<typeof setTimeout> | undefined;
 
   private readonly handleIframeMessage = (e: MessageEvent) => {
+    // Only the preview's own window: the sandbox gives it an opaque origin, so the source is the one thing that names it.
+    const preview = this.renderRoot.querySelector<HTMLIFrameElement>('iframe.preview-iframe');
+    if (!preview || e.source !== preview.contentWindow) return;
     if (e.data?.type === 'versola:locale-change' && typeof e.data.locale === 'string') this.locale = e.data.locale;
   };
 
@@ -1021,7 +1024,7 @@ export class VersolaFormRecord extends LitElement {
         </section>
         <versola-preview-pane heading="Preview" .logicalWidth=${this.previewWidth} .logicalHeight=${this.previewWidth > 500 ? 720 : 600}>
           ${this.renderPreviewToolbar()}
-          <iframe class="preview-iframe" title="Form preview" .srcdoc=${this.frameDoc} sandbox="allow-same-origin allow-scripts"></iframe>
+          <iframe class="preview-iframe" title="Form preview" .srcdoc=${this.frameDoc} sandbox=${PREVIEW_SANDBOX}></iframe>
           <div slot="note">Follows the texts as you type them, in the language chosen above.${this.locale === this.reference ? nothing : ` A key that ${this.locale} lacks shows in ${this.usableLocales.find(l => l.code === this.reference)?.name ?? this.reference}.`}</div>
         </versola-preview-pane>
       </div>
