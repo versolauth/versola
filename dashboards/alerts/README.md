@@ -52,6 +52,29 @@ The rules select by metric name and sum by `namespace`; they do not assume a `jo
 
 The file passes `promtool check rules` (15 rules, run by the reviewer of the PR that added it).
 
+## `versola-audit.rules.yaml`
+
+The audit log of `auth` and `central` (#469): the same format, loaded the same way. Every rule groups by `source`
+(`auth`, `central`) as well as `namespace`, since both services write their own table (`auth_audit_event`, `central_audit_event`) with the same
+writer and the same metric names.
+
+| Alert | Fires when | For | Severity |
+| --- | --- | --- | --- |
+| `AuditEventsDropped` | `audit_events_dropped_total` increases: `overflow = drop` dropped events, or a best-effort insert failed | 5m | critical |
+| `AuditEventsRejected` | `audit_events_rejected_total` increases: the database refused events one by one and they are not stored | none | critical |
+| `AuditEventsFailed` | `audit_events_failed_total` increases: a batch the writer could not write, or a write that was interrupted | none | critical |
+| `AuditEventsUnavailable` | `audit_events_unavailable_total` increases: requests were answered `503 audit_unavailable` | 5m | critical |
+| `AuditQueueHigh` | `audit_queue_size` above 25000 (the queue holds 50000) | 5m | warning |
+| `AuditEventsBlocked` | `audit_events_blocked_total` increases: requests waited for room in the queue (`overflow = block`) | 5m | warning |
+| `AuditPartitionsRunningOut` | `audit_partitions_ahead` below 3 | 5m | critical |
+| `AuditEventsInDefault` | `audit_events_in_default` above 0: a day's events sit in the default partition and are never moved | 30m | warning |
+| `AuditPartitionOwnerMismatch` | `audit_partition_owner_mismatch` is 1: the service's role does not own its audit table | 10m | warning |
+| `AuditReplicationSlotRetainsWal` | `db_replication_slot_retained_bytes` of a slot above 10 GiB: a slot (the audit log's replication is one) is not read and the primary keeps its WAL | 15m | warning |
+
+The file passes `promtool check rules` (10 rules); the tool is not in the repository, so a reviewer runs it.
+
+The last rule reads the gauges the services publish about the database's replication slots (`db_replication_slot_retained_bytes{slot}`, `db_replication_slot_active{slot}`); there is no metric of whether a subscription to an audit table exists at all, so a replication that was never set up, or whose slot was dropped, raises no alert.
+
 Counters appear with their first increment, so `increase()` does not see the very first failure of a new pod; a failure
 that repeats is seen. The two stale-age rules read gauges the service sets after each successful refresh, so they stay
 silent while lists are off (the default), and they catch a refresh that hangs, which moves no failure counter.

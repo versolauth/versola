@@ -1,6 +1,7 @@
 package versola.user
 
 import org.scalamock.stubs.ZIOStubs
+import versola.audit.{AuditReportService, AuthActors, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord, Password}
 import versola.oauth.challenge.passkey.PasskeyRepository
@@ -12,8 +13,9 @@ import versola.oauth.session.SessionService
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionUnderUserAgent, UserAgentId, UserAgentRecord, UserDevice}
 import versola.role.model.RoleId
 import versola.user.model.*
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{NoopTracing, Observability}
-import versola.util.{Base64, JWT, Patch}
+import versola.util.{Base64, Email, JWT, Patch, Phone}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -65,6 +67,8 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     updatedAt = Instant.parse("2024-01-01T00:00:00Z"),
   )
 
+  private val audit: AuditEvents = AuditEvents.noop
+
   private def routes(
       tracing: ZEnvironment[zio.telemetry.opentelemetry.tracing.Tracing],
       users: UserRepository = userRepo,
@@ -72,15 +76,43 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       throttle: ChallengeThrottleRepository = noopThrottle,
       passkey: PasskeyRepository = noopPasskeyRepo,
       sessionsService: SessionService = sessionService,
+      password: PasswordService = noopPasswordSvc,
+      audit: AuditEvents = audit,
   ) =
     Observability.handleErrors(
       UserController.routes
         .provideEnvironment(
           ZEnvironment(users) ++ ZEnvironment(config) ++
             ZEnvironment(logout) ++ ZEnvironment(sessionsService) ++ ZEnvironment(throttle) ++ ZEnvironment(passkey) ++
-            ZEnvironment(noopPasswordSvc) ++ tracing,
+            ZEnvironment(password) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](stub[AuditReportService]) ++ tracing,
         ),
     )
+
+  /** One call of an administrator, with an audit log of its own, so that cases running side by side do not read each other's events. */
+  private def audited(
+      build: String => Request,
+      users: UserRepository = userRepo,
+      sessions: SessionService = sessionService,
+      throttle: ChallengeThrottleRepository = noopThrottle,
+      passkey: PasskeyRepository = noopPasskeyRepo,
+      password: PasswordService = noopPasswordSvc,
+      refusing: Boolean = false,
+      events: Option[CapturingAuditEvents] = None,
+  ): ZIO[Client & TestClient & Scope, Throwable, (Response, List[AuditDraft])] =
+    for
+      client <- ZIO.service[Client]
+      tracing <- NoopTracing.layer.build
+      token <- validToken(secretKey)
+      capture = events.getOrElse(CapturingAuditEvents.shared(unavailable = refusing))
+      _ <- TestClient.addRoutes(routes(tracing, users, logoutService, throttle, passkey, sessions, password, capture))
+      response <- client.batched(build(token))
+      drafts <- capture.recorded
+    yield (response, drafts)
+
+  private def json(method: Method, path: List[String], body: String, token: String): Request =
+    Request(method = method, url = path.foldLeft(URL.empty)(_ / _), body = Body.fromString(body))
+      .addHeader(Header.Authorization.Bearer(token))
+      .addHeader(Header.ContentType(MediaType.application.json))
 
   private val agentId = UserAgentId(UUID.fromString("00000000-0000-0000-0000-0000000000a1"))
 
@@ -138,6 +170,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         tracing <- NoopTracing.layer.build
         token <- validToken(secretKey)
         _ <- userRepo.upsert.succeedsWith(())
+        _ <- userRepo.find.succeedsWith(None)
         _ <- TestClient.addRoutes(routes(tracing))
         body =
           """{"id":"00000000-0000-0000-0000-000000000001","version":"00000000-0000-0000-0000-000000000001","email":null,"phone":null,"login":null}"""
@@ -185,7 +218,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token <- validToken(secretKey)
-        _ <- logout.invalidateAllSessions.returnsZIO(_ => order.update(_ :+ "logout"))
+        _ <- logout.invalidateAllSessions.returnsZIO((_, _) => order.update(_ :+ "logout"))
         _ <- repo.delete.returnsZIO(_ => order.update(_ :+ "purge"))
         _ <- TestClient.addRoutes(routes(tracing, users = repo, logout = logout))
         resp <- client.batched(
@@ -196,7 +229,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         resp.status == Status.NoContent,
         seen == List("logout", "purge"),
-        logout.invalidateAllSessions.calls == List(passkeyUserId),
+        logout.invalidateAllSessions.calls == List((passkeyUserId, "user_deleted")),
         repo.delete.calls == List(passkeyUserId),
       ).label("the relying parties are told while the sessions are still there to be read")
     },
@@ -594,7 +627,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
             url = (URL.empty / "users" / "sessions").addQueryParam("userId", testUserId.toString),
           ).addHeader(Header.Authorization.Bearer(token)),
         )
-        invalidatedSessions = logoutService.invalidateAllSessions.calls.toSet
+        invalidatedSessions = logoutService.invalidateAllSessions.calls.map(_._1).toSet
       yield assertTrue(
         resp.status == Status.NoContent,
         invalidatedSessions == Set(testUserId),
@@ -744,7 +777,9 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ZEnvironment(logoutService) ++
                   ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
                   ZEnvironment(sessionService) ++
-                  ZEnvironment(passwordSvc) ++ tracing,
+                  ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](
+                    stub[AuditReportService],
+                  ) ++ tracing,
               ),
           ),
         )
@@ -779,7 +814,9 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ZEnvironment(logoutService) ++
                   ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
                   ZEnvironment(sessionService) ++
-                  ZEnvironment(passwordSvc) ++ tracing,
+                  ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](
+                    stub[AuditReportService],
+                  ) ++ tracing,
               ),
           ),
         )
@@ -813,7 +850,9 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ZEnvironment(logoutService) ++
                   ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
                   ZEnvironment(sessionService) ++
-                  ZEnvironment(passwordSvc) ++ tracing,
+                  ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](
+                    stub[AuditReportService],
+                  ) ++ tracing,
               ),
           ),
         )
@@ -831,4 +870,275 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
           .contains(versola.oauth.challenge.password.model.DeliveryChannel.show),
       )
     },
+    suite("audit log")(
+      test("PATCH /users/claims records account.claims_updated with the names of the claims and never their values") {
+        val repo = stub[UserRepository]
+        for
+          _ <- repo.patchClaims.succeedsWith(())
+          (resp, drafts) <- audited(
+            json(
+              Method.PATCH,
+              List("users", "claims"),
+              """{"id":"00000000-0000-0000-0000-000000000001","claims":{"name":"John","email":"john@doe.com"}}""",
+              _,
+            ),
+            users = repo,
+          )
+        yield assertTrue(
+          resp.status == Status.NoContent,
+          drafts.map(_.kind) == List(AuthAuditKinds.AccountClaimsUpdated),
+          drafts.head.outcome == AuditOutcome.success,
+          drafts.head.userId == Some(passkeyUserId.asInstanceOf[UUID]),
+          drafts.head.target == Some(("user", passkeyUserId.toString)),
+          // actor: None here: it is the administrator `authorizeInternal` noted in the request's context
+          drafts.head.actor.isEmpty,
+          drafts.head.details == AuthAuditDetails.ClaimsUpdated(List("email", "name")),
+          !drafts.head.details.toJson.toString.contains("John"),
+          !drafts.head.details.toJson.toString.contains("john@doe.com"),
+        )
+      },
+      test("a claims patch that failed records nothing") {
+        val repo = stub[UserRepository]
+        for
+          _ <- repo.patchClaims.failsWith(RuntimeException("db down"))
+          (resp, drafts) <- audited(
+            json(Method.PATCH, List("users", "claims"), """{"id":"00000000-0000-0000-0000-000000000001","claims":{"name":"John"}}""", _),
+            users = repo,
+          )
+        yield assertTrue(resp.status == Status.InternalServerError, drafts.isEmpty)
+      },
+      test("DELETE /users records account.deleted as the effect of central's decision: the actor is the service") {
+        val repo = stub[UserRepository]
+        for
+          _ <- repo.delete.succeedsWith(())
+          _ <- logoutService.invalidateAllSessions.succeedsWith(())
+          (resp, drafts) <- audited(
+            token =>
+              Request(method = Method.DELETE, url = (URL.empty / "users").addQueryParam("id", passkeyUserId.toString))
+                .addHeader(Header.Authorization.Bearer(token)),
+            users = repo,
+          )
+        yield assertTrue(
+          resp.status == Status.NoContent,
+          drafts.map(_.kind) == List(AuthAuditKinds.AccountDeleted),
+          drafts.head.actor == Some((AuthActors.service, Some("central"))),
+          drafts.head.userId == Some(passkeyUserId.asInstanceOf[UUID]),
+        )
+      },
+      test("PATCH /users/roles records account.roles_updated with the roles asked for, as the service's effect") {
+        val repo = stub[UserRepository]
+        for
+          _ <- repo.updateRoles.succeedsWith(())
+          (resp, drafts) <- audited(
+            json(
+              Method.PATCH,
+              List("users", "roles"),
+              s"""{"userId":"$passkeyUserId","tenantId":"t1","add":["editor","viewer"],"remove":["guest"]}""",
+              _,
+            ),
+            users = repo,
+          )
+        yield assertTrue(
+          resp.status == Status.NoContent,
+          drafts.map(_.kind) == List(AuthAuditKinds.AccountRolesUpdated),
+          drafts.head.actor == Some((AuthActors.service, Some("central"))),
+          drafts.head.details == AuthAuditDetails.RolesUpdated("t1", List("editor", "viewer"), List("guest")),
+        )
+      },
+      test(
+        "an administrator is named by actorId, in the body of a POST or PATCH and in the query of a DELETE; without it the actor is the central service",
+      ) {
+        val repo = stub[UserRepository]
+        val sessions = stub[SessionService]
+        val admin = "0192b3c0-0000-7000-8000-0000000000aa"
+        val withBody = CapturingAuditEvents.shared()
+        val withQuery = CapturingAuditEvents.shared()
+        val without = CapturingAuditEvents.shared()
+        for
+          _ <- repo.patchClaims.succeedsWith(())
+          _ <- sessions.revokeRefreshTokensByUserAndClient.succeedsWith(1)
+          claims = (actor: String) =>
+            json(
+              Method.PATCH,
+              List("users", "claims"),
+              s"""{"id":"$passkeyUserId","claims":{"name":"John"}$actor}""",
+              _,
+            )
+          _ <- audited(claims(s""","actorId":"$admin""""), users = repo, events = Some(withBody))
+          _ <- audited(claims(""), users = repo, events = Some(without))
+          _ <- audited(
+            token =>
+              Request(
+                method = Method.DELETE,
+                url = (URL.empty / "users" / "refresh-tokens")
+                  .addQueryParam("userId", passkeyUserId.toString)
+                  .addQueryParam("clientId", "app")
+                  .addQueryParam("actorId", admin),
+              ).addHeader(Header.Authorization.Bearer(token)),
+            sessions = sessions,
+            events = Some(withQuery),
+          )
+          body <- withBody.actorsOfContext
+          query <- withQuery.actorsOfContext
+          none <- without.actorsOfContext
+        yield assertTrue(
+          body == List(Some((AuthActors.admin, Some(admin)))),
+          query == List(Some((AuthActors.admin, Some(admin)))),
+          none == List(Some((AuthActors.service, Some("central")))),
+        )
+      },
+      test("a call without the service token is refused and records nothing") {
+        for
+          client <- ZIO.service[Client]
+          tracing <- NoopTracing.layer.build
+          capture = CapturingAuditEvents.shared()
+          _ <- TestClient.addRoutes(routes(tracing, audit = capture))
+          resp <- client.batched(Request(method = Method.PATCH, url = URL.empty / "users" / "claims", body = Body.fromString("{}")))
+          drafts <- capture.recorded
+        yield assertTrue(resp.status == Status.Unauthorized, drafts.isEmpty)
+      },
+      test("DELETE /users/refresh-tokens records token.revoked by an administrator with how many were live") {
+        val sessions = stub[SessionService]
+        for
+          _ <- sessions.revokeRefreshTokensByUserAndClient.succeedsWith(2)
+          (resp, drafts) <- audited(
+            token =>
+              Request(
+                method = Method.DELETE,
+                url = (URL.empty / "users" / "refresh-tokens").addQueryParam("userId", passkeyUserId.toString).addQueryParam("clientId", "app"),
+              ).addHeader(Header.Authorization.Bearer(token)),
+            sessions = sessions,
+          )
+        yield assertTrue(
+          resp.status == Status.NoContent,
+          drafts.map(_.kind) == List(AuthAuditKinds.TokenRevoked),
+          drafts.head.details == AuthAuditDetails.TokenRevoked("refresh_token", None, None, "admin_revoked", Some(2)),
+          drafts.head.userId == Some(passkeyUserId.asInstanceOf[UUID]),
+        )
+      },
+      test("POST /users/limits/reset records account.limits_reset, and not the address or number whose limits were cleared") {
+        val throttle = stub[ChallengeThrottleRepository]
+        for
+          _ <- throttle.deleteAllForSubject.succeedsWith(())
+          (resp, drafts) <- audited(
+            json(
+              Method.POST,
+              List("users", "limits", "reset"),
+              """{"userId":"00000000-0000-0000-0000-000000000001","tenantId":"t1","email":"john@doe.com","phone":"+1234567890"}""",
+              _,
+            ),
+            throttle = throttle,
+          )
+        yield assertTrue(
+          resp.status == Status.NoContent,
+          drafts.map(_.kind) == List(AuthAuditKinds.AccountLimitsReset),
+          drafts.head.details == AuthAuditDetails.Account(via = "admin"),
+          !drafts.head.details.toJson.toString.contains("john@doe.com"),
+          !drafts.head.details.toJson.toString.contains("+1234567890"),
+        )
+      },
+      test("DELETE /users/passkeys records account.passkey_removed with a prefix of the credential id") {
+        val repo = stub[PasskeyRepository]
+        for
+          _ <- repo.deleteByUser.succeedsWith(())
+          (resp, drafts) <- audited(
+            token =>
+              Request(
+                method = Method.DELETE,
+                url = (URL.empty / "users" / "passkeys")
+                  .addQueryParam("id", passkeyUserId.toString)
+                  .addQueryParam("credentialId", Base64.urlEncode(credentialId)),
+              ).addHeader(Header.Authorization.Bearer(token)),
+            passkey = repo,
+          )
+        yield assertTrue(
+          resp.status == Status.NoContent,
+          drafts.map(_.kind) == List(AuthAuditKinds.AccountPasskeyRemoved),
+          drafts.head.details.toJson.toString.contains("credentialPrefix"),
+          !drafts.head.details.toJson.toString.contains(Base64.urlEncode(credentialId)),
+        )
+      },
+      test("POST /users/password/reset records account.password_reset with the channel and never the password") {
+        val passwordSvc = stub[PasswordService]
+        for
+          _ <- passwordSvc.resetPassword.succeedsWith(Some(Password("Temp1234!")))
+          (resp, drafts) <- audited(
+            json(Method.POST, List("users", "password", "reset"), s"""{"userId":"$passkeyUserId","expiresInSeconds":null,"channel":"show"}""", _),
+            password = passwordSvc,
+          )
+        yield assertTrue(
+          drafts.map(_.kind) == List(AuthAuditKinds.AccountPasswordReset),
+          drafts.head.details == AuthAuditDetails.Account(via = "admin", detail = Some("show")),
+          !drafts.head.details.toJson.toString.contains("Temp1234!"),
+        )
+      },
+      test("POST /users/password/set records account.password_set and never the password") {
+        val passwordSvc = stub[PasswordService]
+        for
+          _ <- passwordSvc.setPassword.succeedsWith(())
+          (resp, drafts) <- audited(
+            json(Method.POST, List("users", "password", "set"), s"""{"userId":"$passkeyUserId","password":"S3cret-Pass!"}""", _),
+            password = passwordSvc,
+          )
+        yield assertTrue(
+          resp.status == Status.NoContent,
+          drafts.map(_.kind) == List(AuthAuditKinds.AccountPasswordSet),
+          drafts.head.details == AuthAuditDetails.Account(via = "admin"),
+          !drafts.head.details.toJson.toString.contains("S3cret-Pass!"),
+        )
+      },
+      test("a full audit queue does not undo an administrator's action: the claims are patched and the answer is the normal one") {
+        val repo = stub[UserRepository]
+        for
+          _ <- repo.patchClaims.succeedsWith(())
+          (resp, drafts) <- audited(
+            json(Method.PATCH, List("users", "claims"), """{"id":"00000000-0000-0000-0000-000000000001","claims":{"name":"John"}}""", _),
+            users = repo,
+            refusing = true,
+          )
+        yield assertTrue(resp.status == Status.NoContent, repo.patchClaims.calls.size == 1, drafts.isEmpty)
+      },
+      test("a full audit queue does not take the temporary password from the administrator who reset it") {
+        val passwordSvc = stub[PasswordService]
+        for
+          _ <- passwordSvc.resetPassword.succeedsWith(Some(Password("Temp1234!")))
+          (resp, drafts) <- audited(
+            json(Method.POST, List("users", "password", "reset"), s"""{"userId":"$passkeyUserId","expiresInSeconds":null,"channel":"show"}""", _),
+            password = passwordSvc,
+            refusing = true,
+          )
+          text <- resp.body.asString
+        yield assertTrue(resp.status == Status.Ok, text.contains("Temp1234!"), drafts.isEmpty)
+      },
+      test("PUT /users records account.updated with the names of the identifiers that changed, never their values, and only when something changed") {
+        val changing = stub[UserRepository]
+        val same = stub[UserRepository]
+        val before =
+          UserRecord(UserId(passkeyUserId), Some(Email("old@example.com")), Some(Phone("+12025550001")), Some(Login("ada")), Json.Obj(), None)
+        val after = before.copy(email = Some(Email("new@example.com")), login = None)
+        def put(token: String) =
+          json(
+            Method.PUT,
+            List("users"),
+            s"""{"id":"$passkeyUserId","version":"00000000-0000-0000-0000-000000000009","email":"new@example.com","phone":"+12025550001","login":null}""",
+            token,
+          )
+        for
+          reads <- Ref.make(0)
+          _ <- changing.upsert.succeedsWith(())
+          _ <- changing.find.returnsZIO(_ => reads.updateAndGet(_ + 1).map(n => Some(if n == 1 then before else after)))
+          _ <- same.upsert.succeedsWith(())
+          _ <- same.find.succeedsWith(Some(before))
+          (resp, changed) <- audited(put, users = changing)
+          (_, unchanged) <- audited(put, users = same)
+        yield assertTrue(
+          resp.status == Status.NoContent,
+          changed.map(_.kind) == List(AuthAuditKinds.AccountUpdated),
+          changed.head.details == AuthAuditDetails.AccountUpdated(List("email", "login")),
+          changed.head.actor == Some((AuthActors.service, Some("central"))),
+          !changed.head.details.toJson.toString.contains("example.com"),
+          unchanged.isEmpty,
+        )
+      },
+    ),
   ).provideSome[Scope](TestClient.layer) @@ TestAspect.silentLogging

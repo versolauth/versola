@@ -3,6 +3,7 @@ package versola.oauth.clientauth
 import versola.util.http.{ClientIpSource, GuardMode, Observability}
 import zio.*
 import zio.http.*
+import zio.logging.logContext
 import zio.test.*
 
 import java.net.InetAddress
@@ -90,6 +91,34 @@ object ClientAuthThrottleSpec extends ZIOSpecDefault:
           ok <- Ref.make(false)
           calls <- ZIO.foreach(1 to 20)(_ => run(throttle, ok)(request(Method.GET, "/jwks", "192.0.2.4")))
         yield assertTrue(calls.forall(_.status == Status.Ok))
+      },
+      test("every route, limited or not, and the address-only wrapper put the caller's address into auth.ip") {
+        // The stand-ins answer with what `auth.ip` holds when the handler runs, so what is proven is the context, not the response.
+        val echo: Routes[ClientAuthThrottle, Nothing] = Routes(
+          Method.POST / "token" -> handler((_: Request) => Observability.currentIp.map(ip => Response.text(ip.getOrElse("none")))),
+          Method.GET / "jwks" -> handler((_: Request) => Observability.currentIp.map(ip => Response.text(ip.getOrElse("none")))),
+        )
+        def ipOf(throttle: ClientAuthThrottle, routes: Routes[ClientAuthThrottle, Nothing], request: Request) =
+          // the real middleware restores the log context per request; the stand-in has to, or one call's address shows in the next
+          logContext.locallyWith(identity)(ZIO.scoped(routes.runZIO(request))).provideEnvironment(ZEnvironment(throttle)).flatMap(_.body.asString)
+        for
+          socket <- ClientAuthThrottle.make(small)
+          forwarded <- ClientAuthThrottle.make(small.copy(clientIp = ClientIpSource.Forwarded))
+          limited <- ipOf(socket, ClientAuthThrottle(echo), request(Method.POST, "/token", "203.0.113.7"))
+          // an IPv6 peer is the address, not the /64 bucket the limits count it in (`v6/...` is no address)
+          v6 <- ipOf(socket, ClientAuthThrottle(echo), request(Method.GET, "/jwks", "2001:db8:1:2:3:4:5:6"))
+          plain <- ipOf(socket, ClientAuthThrottle(echo), request(Method.GET, "/jwks", "203.0.113.8").addHeader("X-Real-IP", "198.51.100.1"))
+          header <- ipOf(forwarded, ClientAuthThrottle(echo), request(Method.GET, "/jwks", "172.16.0.5").addHeader("X-Real-IP", "198.51.100.1"))
+          mtls <- ipOf(socket, ClientAuthThrottle.withAddress(echo), request(Method.POST, "/token", "203.0.113.9"))
+          none <- ipOf(socket, ClientAuthThrottle.withAddress(echo), Request(method = Method.GET, url = URL.decode("/jwks").toOption.get))
+        yield assertTrue(
+          limited == "203.0.113.7",
+          v6 == "2001:db8:1:2:3:4:5:6",
+          plain == "203.0.113.8",
+          header == "198.51.100.1",
+          mtls == "203.0.113.9",
+          none == "none",
+        )
       },
       test("off and shadow refuse nothing; shadow counts what enforce would refuse") {
         for

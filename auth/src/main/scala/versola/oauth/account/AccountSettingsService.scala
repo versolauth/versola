@@ -1,5 +1,8 @@
 package versola.oauth.account
 
+import versola.audit.AuditSupport.*
+import versola.audit.AuthAuditDetails
+import versola.audit.AuthAuditKinds
 import versola.auth.model.Password
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
@@ -7,6 +10,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.user.model.UserId
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import zio.{IO, ZIO, ZLayer}
 
 import scala.util.Try
@@ -30,14 +34,45 @@ trait AccountSettingsService:
   ): IO[Throwable | ChangePasswordError, Unit]
 
 object AccountSettingsService:
-  def live = ZLayer.fromFunction(Impl(_, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
       passwordService: PasswordService,
       submissionLimiter: SubmissionLimiter,
       configuration: OAuthConfigurationService,
+      audit: AuditEvents,
   ) extends AccountSettingsService:
+
+    /** `account.password_changed`: a change that went through, and the two refusals that are about the person and not the form, a
+      * wrong current password and a budget that is used up. The user is the actor and the subject. */
+    private def auditPasswordChange(userId: UserId, outcome: AuditOutcome, reason: Option[String]): IO[Throwable, Unit] =
+      audit.log(
+        AuditDraft(
+          kind = AuthAuditKinds.AccountPasswordChanged,
+          outcome = outcome,
+          reason = reason,
+          userId = Some(userId),
+          details = AuthAuditDetails.Account(via = "account_settings"),
+        ),
+      )
+
     override def changePassword(
+        userId: UserId,
+        clientId: ClientId,
+        currentPassword: String,
+        newPassword: String,
+    ): IO[Throwable | ChangePasswordError, Unit] =
+      changePasswordUnaudited(userId, clientId, currentPassword, newPassword).foldZIO(
+        {
+          case error: ChangePasswordError.TooManyAttempts => auditPasswordChange(userId, AuditOutcome.denied, Some(error.code)) *> ZIO.fail(error)
+          case ChangePasswordError.IncorrectCurrentPassword =>
+            auditPasswordChange(userId, AuditOutcome.failure, Some(ChangePasswordError.IncorrectCurrentPassword.code)) *>
+              ZIO.fail(ChangePasswordError.IncorrectCurrentPassword)
+          case error => ZIO.fail(error)
+        },
+        _ => auditPasswordChange(userId, AuditOutcome.success, None),
+      )
+    private def changePasswordUnaudited(
         userId: UserId,
         clientId: ClientId,
         currentPassword: String,
