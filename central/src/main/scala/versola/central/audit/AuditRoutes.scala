@@ -41,7 +41,7 @@ object AuditRoutes:
   val AdminUserViewed: AuditKind = CentralAudit.AdminUserViewed
   val AdminAuditQueried: AuditKind = CentralAudit.AdminAuditQueried
 
-  private def change(resource: String, operation: String, target: Target, targetType: Option[String] = None, revealsSecret: Boolean = false) =
+  def change(resource: String, operation: String, target: Target, targetType: Option[String] = None, revealsSecret: Boolean = false) =
     Entry.Change(
       resource = resource,
       operation = operation,
@@ -50,16 +50,16 @@ object AuditRoutes:
       revealsSecret = revealsSecret,
     )
 
-  private val create = "create"
-  private val update = "update"
-  private val delete = "delete"
-  private def action(segment: String) = s"action:$segment"
+  val create = "create"
+  val update = "update"
+  val delete = "delete"
+  def action(segment: String) = s"action:$segment"
 
-  private def query(params: String*) = Target.Query(params.toList)
-  private val body = Target.Body(_)
+  def query(params: String*) = Target.Query(params.toList)
+  val body = Target.Body(_)
 
   /** A `user*` resource acts on the user a request names: in the query of a `DELETE`, in the body of the rest. */
-  private def user(resource: String, operation: String, target: Target, revealsSecret: Boolean = false) =
+  def user(resource: String, operation: String, target: Target, revealsSecret: Boolean = false) =
     change(resource = resource, operation = operation, target = target, targetType = Some("user"), revealsSecret = revealsSecret)
 
   val table: Map[(Method, String), Entry] = Map(
