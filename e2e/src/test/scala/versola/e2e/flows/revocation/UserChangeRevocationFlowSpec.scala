@@ -244,4 +244,4 @@ object UserChangeRevocationFlowSpec extends E2ESpec:
         yield result
       },
     ),
-  ) @@ TestAspect.sequential @@ TestAspect.timeout(240.seconds)
+  ) @@ TestAspect.sequential @@ TestAspect.withLiveClock @@ TestAspect.timeout(240.seconds)

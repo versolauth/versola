@@ -1167,7 +1167,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
     * returns it. Refuses the user's earlier access tokens like [[setUserPassword]], and the caller waits
     * out the second of the change for the same reason. */
   def resetUserPassword(userId: java.util.UUID): Task[String] =
-    val body = Body.fromString(Json.Obj("userId" -> Json.Str(userId.toString), "channel" -> Json.Str("show")).toJson)
+    val body =
+      Body.fromString(Json.Obj("userId" -> Json.Str(userId.toString), "expiresInSeconds" -> Json.Num(3600), "channel" -> Json.Str("show")).toJson)
     val req = Request.post(s"${config.centralUrl}/users/password/reset", body)
       .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
