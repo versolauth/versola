@@ -23,9 +23,12 @@ class PostgresEdgeRevocationRepository(xa: TransactorZIO)
     * firing the notification, which is exactly the case the paragraph above says must not be
     * swallowed.
     *
-    * `issued_before` is null exactly for the kinds that have no issuance bound (`jti:`,
-    * `fam:`, `sid:`), and that is a property of the key rather than of the write, so the two
-    * sides of a conflict always agree on whether it is set.
+    * `issued_before` follows the cache's widest-wins rule: no bound covers every token the key
+    * names, so it beats any instant, and between two instants the later one rejects more. Plain
+    * `GREATEST` ignores a null and would narrow an unbounded entry to the bound of a later write
+    * of the same key; the rule is written out so that a key written both ways cannot be narrowed
+    * whichever order the two writes arrive in. Today the key kind decides whether a bound is set,
+    * so the two sides of a conflict agree and nothing changes in practice.
     *
     * `revoked_at` comes from Postgres's own `NOW()` rather than this replica's `Clock`. It
     * is compared, elsewhere, against other replicas' cursors, and a cursor only rewinds by a
@@ -47,9 +50,13 @@ class PostgresEdgeRevocationRepository(xa: TransactorZIO)
             ON CONFLICT (revoked_key) DO UPDATE
             SET revoked_at    = EXCLUDED.revoked_at,
                 expires_at    = GREATEST(revocations.expires_at, EXCLUDED.expires_at),
-                issued_before = GREATEST(revocations.issued_before, EXCLUDED.issued_before)
+                issued_before = CASE
+                                  WHEN revocations.issued_before IS NULL OR EXCLUDED.issued_before IS NULL THEN NULL
+                                  ELSE GREATEST(revocations.issued_before, EXCLUDED.issued_before)
+                                END
             WHERE revocations.expires_at < EXCLUDED.expires_at
-               OR revocations.issued_before < EXCLUDED.issued_before
+               OR (revocations.issued_before IS NOT NULL
+                   AND (EXCLUDED.issued_before IS NULL OR revocations.issued_before < EXCLUDED.issued_before))
           """.update
 
 object PostgresEdgeRevocationRepository:

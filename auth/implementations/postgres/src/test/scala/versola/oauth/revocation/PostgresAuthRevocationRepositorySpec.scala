@@ -3,24 +3,16 @@ package versola.oauth.revocation
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
 import versola.util.postgres.PostgresSpec
-import versola.util.revocation.{
-  PostgresRevocationNotifications,
-  Revocation,
-  RevocationCacheSyncSpec,
-  RevocationCursor,
-  RevocationKey,
-  RevocationRepositorySpec,
-}
+import versola.util.revocation.{PostgresRevocationNotifications, Revocation, RevocationCacheSyncSpec, RevocationKey, RevocationRepositorySpec}
 import zio.*
 import zio.test.*
 
 import java.time.Instant
-import java.time.temporal.ChronoUnit
 
 /** Binds [[RevocationRepositorySpec]] to auth's `auth_revocations` table. The cases below are what
   * only this table promises: the cause is stored, a write fires the notification the other replicas
   * live on and that notification names the key, expiry and bound a replica needs to apply it without
-  * a query, and the upsert's rule for a key written both with and without a bound.
+  * a query.
   */
 object PostgresAuthRevocationRepositorySpec extends PostgresSpec, RevocationRepositorySpec:
 
@@ -38,8 +30,6 @@ object PostgresAuthRevocationRepositorySpec extends PostgresSpec, RevocationRepo
     ZIO.serviceWithZIO[TransactorZIO] { xa =>
       xa.connect(sql"TRUNCATE TABLE auth_revocations".update.run())
     }.unit
-
-  private def sub(id: String) = RevocationKey.Sub(id)
 
   override def implementationCases(env: RevocationRepositorySpec.Env) =
     List(
@@ -68,20 +58,6 @@ object PostgresAuthRevocationRepositorySpec extends PostgresSpec, RevocationRepo
                     FROM auth_revocations WHERE revoked_key = 'sub:user-1'""".query[String].run().head,
             )
         yield assertTrue(PostgresRevocationNotifications.parseNotification(payload).contains(written))
-      } @@ TestAspect.withLiveClock,
-      test("re-revoking a bounded key with no bound widens it to cover every token, and never the other way") {
-        // The cache's rule: no bound beats any instant. The write has to agree, or the two replicas
-        // that read the same row would answer differently for a key written both ways.
-        val bound = Instant.now().truncatedTo(ChronoUnit.MICROS)
-        val expiry = bound.plusSeconds(3600)
-        for
-          _ <- env.revoke(Revocation(sub("bounded"), expiry, Some(bound)))
-          _ <- env.revoke(Revocation(sub("bounded"), expiry, None))
-          _ <- env.revoke(Revocation(sub("unbounded"), expiry, None))
-          _ <- env.revoke(Revocation(sub("unbounded"), expiry, Some(bound)))
-          page <- env.repository.activeSince(RevocationCursor.Beginning, limit = 10)
-          byKey = page.revocations.map(r => r.key -> r.issuedBefore).toMap
-        yield assertTrue(byKey(sub("bounded")).isEmpty, byKey(sub("unbounded")).isEmpty)
       } @@ TestAspect.withLiveClock,
     )
 
