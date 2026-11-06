@@ -56,8 +56,10 @@ object PostgresUserPurgeSpec extends PostgresSpec:
       sql"""INSERT INTO passkeys (id, user_id, public_key, signature_counter, device_type, backed_up, backup_eligible, created_at, updated_at)
             VALUES ($bytes, $id, $bytes, 0, 'MultiDevice', TRUE, TRUE, NOW(), NOW())""".update.run()
       sql"""INSERT INTO user_passwords (user_id, password, salt, created_at) VALUES ($id, $bytes, $bytes, NOW())""".update.run()
-      sql"""INSERT INTO first_login_tokens (user_id, token_hash, created_at, expires_at)
-            VALUES ($id, $bytes, NOW(), NOW() + INTERVAL '1 hour')""".update.run()
+      // Every purpose goes with the user, not only the bootstrap link.
+      sql"""INSERT INTO one_time_links (user_id, purpose, token_hash, created_at, expires_at)
+            VALUES ($id, 'first_login', $bytes, NOW(), NOW() + INTERVAL '1 hour'),
+                   ($id, 'another_purpose', decode(md5(random()::text), 'hex'), NOW(), NOW() + INTERVAL '1 hour')""".update.run()
       // Throttling knows the user as whichever identifier the challenge went to, or as the id.
       sql"""INSERT INTO challenge_throttle (subject, tenant_id, challenge_type, attempts, expires_at)
             VALUES (${id.toString}, 'default', 'otp', '[]'::jsonb, NOW() + INTERVAL '1 hour'),
@@ -82,7 +84,7 @@ object PostgresUserPurgeSpec extends PostgresSpec:
           sql"SELECT count(*) FROM auth_conversations WHERE user_id = $id OR prior_session_user_id = $id".query[Long].run().head,
         "passkeys" -> sql"SELECT count(*) FROM passkeys WHERE user_id = $id".query[Long].run().head,
         "user_passwords" -> sql"SELECT count(*) FROM user_passwords WHERE user_id = $id".query[Long].run().head,
-        "first_login_tokens" -> sql"SELECT count(*) FROM first_login_tokens WHERE user_id = $id".query[Long].run().head,
+        "one_time_links" -> sql"SELECT count(*) FROM one_time_links WHERE user_id = $id".query[Long].run().head,
         "challenge_throttle" ->
           sql"SELECT count(*) FROM challenge_throttle WHERE subject IN (${id.toString}, $email, $phone)".query[Long].run().head,
       )
@@ -98,7 +100,7 @@ object PostgresUserPurgeSpec extends PostgresSpec:
     "auth_conversations" -> 2L,
     "passkeys" -> 1L,
     "user_passwords" -> 1L,
-    "first_login_tokens" -> 1L,
+    "one_time_links" -> 2L,
     "challenge_throttle" -> 3L,
   )
 
@@ -109,7 +111,7 @@ object PostgresUserPurgeSpec extends PostgresSpec:
           xa <- ZIO.service[TransactorZIO]
           _ <- xa.connect:
             sql"""TRUNCATE TABLE users, user_agents, sso_sessions, refresh_tokens, authorization_codes, auth_conversations,
-                  passkeys, user_passwords, first_login_tokens, challenge_throttle CASCADE""".update.run()
+                  passkeys, user_passwords, one_time_links, challenge_throttle CASCADE""".update.run()
           _ <- seed(xa, one)
           _ <- seed(xa, two)
           before <- rowsOf(xa, one)

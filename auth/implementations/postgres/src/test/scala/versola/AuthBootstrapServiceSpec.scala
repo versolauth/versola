@@ -2,7 +2,7 @@ package versola
 
 import versola.antifraud.AntifraudSettingsRepository
 import versola.auth.TestEnvConfig
-import versola.oauth.challenge.password.{FirstLoginToken, PasswordRepository}
+import versola.oauth.challenge.password.{OneTimeLink, PasswordRepository}
 import versola.user.UserRepository
 import versola.user.model.UserRecord
 import versola.util.{CoreConfig, EnvName, MAC, Phone, SecureRandom, SecurityService, UnitSpecBase}
@@ -16,7 +16,7 @@ object AuthBootstrapServiceSpec extends UnitSpecBase:
   private val adminId = UUID.fromString("00000000-0000-7000-8000-000000000001")
   private val linkBase = "https://versola.example.com/login/central-admin"
 
-  private val linkPrefix = s"first-login link for admin: $linkBase?${FirstLoginToken.ParamName}="
+  private val linkPrefix = s"first-login link for admin: $linkBase?${OneTimeLink.ParamName}="
 
   /** The stubs of one bootstrap run. `credentialCreated` is what the repository answers: `true` for the
     * replica that won the per-user lock, `false` for one that found a usable credential already there.
@@ -81,7 +81,7 @@ object AuthBootstrapServiceSpec extends UnitSpecBase:
           linkLines.size == 1,
           linkLines.head.startsWith(linkPrefix),
           token.exists(_.length >= 43), // 32 random bytes in base64url: 256 bits
-          storedHash.exists(hash => token.exists(t => Arrays.equals(hash, FirstLoginToken.hash(t)))),
+          storedHash.exists(hash => token.exists(t => Arrays.equals(hash, OneTimeLink.hash(t)))),
           // nothing else that is logged contains the token
           lines.filterNot(_.startsWith("first-login link for admin:")).forall(line => token.forall(t => !line.contains(t))),
         )

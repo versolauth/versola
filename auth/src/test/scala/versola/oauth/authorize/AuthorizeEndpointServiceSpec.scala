@@ -5,7 +5,7 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseMode, ResponseTypeEntry}
-import versola.oauth.challenge.password.{FirstLoginToken, PasswordRepository}
+import versola.oauth.challenge.password.{ConsumedLink, OneTimeLink, OneTimeLinkPurpose, PasswordRepository}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.{
@@ -280,13 +280,13 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
           _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
-          _ <- env.passwordRepository.consumeFirstLoginToken.succeedsWith(Some(adminId))
+          _ <- env.passwordRepository.consumeLink.succeedsWith(Some(ConsumedLink(adminId, OneTimeLinkPurpose.FirstLogin)))
           _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(adminId)))
           _ <- env.conversationRepository.create.succeedsWith(())
           _ <- env.conversationRouter.advance.succeedsWith(())
-          result <- env.service.authorize(baseRequest.copy(firstLoginToken = Some("the-token")))
+          result <- env.service.authorize(baseRequest.copy(linkToken = Some("the-token")))
           conversation = env.conversationRepository.create.calls.head._2
-          spent = env.passwordRepository.consumeFirstLoginToken.calls.head
+          spent = env.passwordRepository.consumeLink.calls.head
           advanceTimes = env.conversationRouter.advance.times
         yield assertTrue(
           result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
@@ -294,7 +294,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           conversation.amr.keySet == Set(PassedAuthFactor.password),
           conversation.needsPasswordChange,
           // only the hash is looked up, never the token itself
-          Arrays.equals(spent, FirstLoginToken.hash("the-token")),
+          Arrays.equals(spent, OneTimeLink.hash("the-token")),
           advanceTimes == 1,
         )
       },
@@ -304,10 +304,10 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         for
           _ <- env.configurationService.find.succeedsWith(Some(clientWithPasswordFlow))
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
-          _ <- env.passwordRepository.consumeFirstLoginToken.succeedsWith(Some(adminId))
+          _ <- env.passwordRepository.consumeLink.succeedsWith(Some(ConsumedLink(adminId, OneTimeLinkPurpose.FirstLogin)))
           _ <- env.userRepository.find.succeedsWith(None)
           _ <- env.conversationRepository.create.succeedsWith(())
-          result <- env.service.authorize(baseRequest.copy(firstLoginToken = Some("the-token"))).flip
+          result <- env.service.authorize(baseRequest.copy(linkToken = Some("the-token"))).flip
           created = env.conversationRepository.create.times
         yield assertTrue(
           result == Error.AccessDenied(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query),
@@ -322,9 +322,9 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
           _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
-          _ <- env.passwordRepository.consumeFirstLoginToken.succeedsWith(None)
+          _ <- env.passwordRepository.consumeLink.succeedsWith(None)
           _ <- env.conversationRepository.create.succeedsWith(())
-          result <- env.service.authorize(baseRequest.copy(firstLoginToken = Some("unknown")))
+          result <- env.service.authorize(baseRequest.copy(linkToken = Some("unknown")))
           conversation = env.conversationRepository.create.calls.head._2
           advanceTimes = env.conversationRouter.advance.times
         yield assertTrue(
@@ -342,8 +342,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
           _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
           _ <- silentAuthorizeStubs(env)
-          _ <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), firstLoginToken = Some("t")))
-          spentTimes = env.passwordRepository.consumeFirstLoginToken.times
+          _ <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), linkToken = Some("t")))
+          spentTimes = env.passwordRepository.consumeLink.times
         yield assertTrue(spentTimes == 0)
       },
       test("an id_token_hint that does not verify fails the request before any token is read") {
@@ -352,16 +352,16 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         // reads the token; that ordering is not pinned by a test here.
         for
           _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
-          result <- env.service.authorize(baseRequest.copy(idTokenHint = Some("not-a-jwt"), firstLoginToken = Some("t"))).exit
-          spentTimes = env.passwordRepository.consumeFirstLoginToken.times
+          result <- env.service.authorize(baseRequest.copy(idTokenHint = Some("not-a-jwt"), linkToken = Some("t"))).exit
+          spentTimes = env.passwordRepository.consumeLink.times
         yield assertTrue(result.isFailure, spentTimes == 0)
       },
       test("prompt=none never spends the token") {
         val env = Env()
         for
           _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
-          result <- env.service.authorize(baseRequest.copy(prompt = Set(Prompt.none), firstLoginToken = Some("t"))).exit
-          spentTimes = env.passwordRepository.consumeFirstLoginToken.times
+          result <- env.service.authorize(baseRequest.copy(prompt = Set(Prompt.none), linkToken = Some("t"))).exit
+          spentTimes = env.passwordRepository.consumeLink.times
         yield assertTrue(result.isFailure, spentTimes == 0)
       },
     ),

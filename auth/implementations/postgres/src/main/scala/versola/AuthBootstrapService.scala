@@ -1,7 +1,7 @@
 package versola
 
 import versola.antifraud.{AntifraudSettingsRepository, Tuning}
-import versola.oauth.challenge.password.{FirstLoginToken, PasswordRepository}
+import versola.oauth.challenge.password.{OneTimeLink, PasswordRepository}
 import versola.oauth.client.model.TenantId
 import versola.role.model.RoleId
 import versola.user.UserRepository
@@ -98,20 +98,20 @@ object AuthBootstrapService:
               salt <- secureRandom.nextBytes(16).map(Salt(_))
               hash <- securityService.hashPassword(Secret.fromString(cfg.password), salt, config.security.passwordsSecret)
               expiresAt = now.plusSeconds(BootstrapPasswordTtlSeconds)
-              link <- ZIO.foreach(cfg.firstLoginUrl)(url => FirstLoginToken.generate(secureRandom).map(url -> _))
+              link <- ZIO.foreach(cfg.firstLoginUrl)(url => OneTimeLink.generate(secureRandom).map(url -> _))
               created <- passwordRepo.createBootstrapCredential(
                 userId = userId,
                 passwordHash = Secret(hash),
                 salt = salt,
                 expiresAt = expiresAt,
-                firstLoginTokenHash = link.map((_, token) => FirstLoginToken.hash(token)),
+                linkTokenHash = link.map((_, token) => OneTimeLink.hash(token)),
               )
               _ <- ZIO.when(created):
                 ZIO.logInfo(s"Set temporary bootstrap password for admin user '${cfg.login}'") *>
                   // The only place the token appears: whoever deploys (versola-cli, #82) reads this line. It is a secret for up to
                   // 24 hours, single use, and bound to a password change; it is never written to a file.
                   ZIO.foreachDiscard(link): (url, token) =>
-                    ZIO.logInfo(s"first-login link for admin: $url?${FirstLoginToken.ParamName}=$token")
+                    ZIO.logInfo(s"first-login link for admin: $url?${OneTimeLink.ParamName}=$token")
             yield ()
         yield ()
 

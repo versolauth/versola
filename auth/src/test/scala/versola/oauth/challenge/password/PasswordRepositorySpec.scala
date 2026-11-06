@@ -146,8 +146,8 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
           first <- bootstrap(env, userId1, token(1))
           second <- bootstrap(env, userId1, token(2))
           rows <- env.repository.list(userId1)
-          viaFirst <- env.repository.consumeFirstLoginToken(token(1))
-          viaSecond <- env.repository.consumeFirstLoginToken(token(2))
+          viaFirst <- consume(env, token(1))
+          viaSecond <- consume(env, token(2))
         yield assertTrue(first, !second, rows.size == 1, viaFirst == Some(userId1), viaSecond.isEmpty)
       },
       test("of several replicas bootstrapping at once exactly one issues the credential and the link") {
@@ -161,23 +161,23 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
         for
           _ <- TestClock.setTime(baseInstant)
           _ <- bootstrap(env, userId1, token(1))
-          first <- env.repository.consumeFirstLoginToken(token(1))
-          again <- env.repository.consumeFirstLoginToken(token(1))
+          first <- consume(env, token(1))
+          again <- consume(env, token(1))
         yield assertTrue(first == Some(userId1), again.isEmpty)
       },
       test("two concurrent uses of one token: only one wins") {
         for
           _ <- TestClock.setTime(baseInstant)
           _ <- bootstrap(env, userId1, token(1))
-          results <- ZIO.collectAllPar(List.fill(4)(env.repository.consumeFirstLoginToken(token(1))))
+          results <- ZIO.collectAllPar(List.fill(4)(consume(env, token(1))))
         yield assertTrue(results.count(_.isDefined) == 1)
       },
       test("an unknown token spends nothing") {
         for
           _ <- TestClock.setTime(baseInstant)
           _ <- bootstrap(env, userId1, token(1))
-          unknown <- env.repository.consumeFirstLoginToken(token(9))
-          stillThere <- env.repository.consumeFirstLoginToken(token(1))
+          unknown <- consume(env, token(9))
+          stillThere <- consume(env, token(1))
         yield assertTrue(unknown.isEmpty, stillThere == Some(userId1))
       },
       test("an expired token is refused") {
@@ -185,7 +185,7 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
           _ <- TestClock.setTime(baseInstant)
           _ <- bootstrap(env, userId1, token(1))
           _ <- TestClock.adjust(25.hours)
-          expired <- env.repository.consumeFirstLoginToken(token(1))
+          expired <- consume(env, token(1))
         yield assertTrue(expired.isEmpty)
       },
       test("an expired temporary password is replaced, together with its token, on the next bootstrap") {
@@ -195,8 +195,8 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
           _ <- TestClock.adjust(25.hours)
           again <- bootstrap(env, userId1, token(2))
           rows <- env.repository.list(userId1)
-          old <- env.repository.consumeFirstLoginToken(token(1))
-          fresh <- env.repository.consumeFirstLoginToken(token(2))
+          old <- consume(env, token(1))
+          fresh <- consume(env, token(2))
         yield assertTrue(again, rows.size == 1, old.isEmpty, fresh == Some(userId1))
       },
       test("setting a permanent password kills the token") {
@@ -204,7 +204,7 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
           _ <- TestClock.setTime(baseInstant)
           _ <- bootstrap(env, userId1, token(1))
           _ <- createChecked(env, userId1, pass(1), salt(1), 5, 1)
-          afterSet <- env.repository.consumeFirstLoginToken(token(1))
+          afterSet <- consume(env, token(1))
         yield assertTrue(afterSet.isEmpty)
       },
       test("a bootstrap is not issued for a user who has a permanent password") {
@@ -212,7 +212,7 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
           _ <- TestClock.setTime(baseInstant)
           _ <- createChecked(env, userId1, pass(1), salt(1), 5, 1)
           created <- bootstrap(env, userId1, token(1))
-          viaToken <- env.repository.consumeFirstLoginToken(token(1))
+          viaToken <- consume(env, token(1))
         yield assertTrue(!created, viaToken.isEmpty)
       },
       test("reset drops the unused temporary credential and its token; the next bootstrap issues new ones") {
@@ -221,9 +221,9 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
           _ <- bootstrap(env, userId1, token(1))
           reset <- env.repository.resetBootstrapCredential(userId1)
           rowsAfterReset <- env.repository.list(userId1)
-          oldToken <- env.repository.consumeFirstLoginToken(token(1))
+          oldToken <- consume(env, token(1))
           again <- bootstrap(env, userId1, token(2))
-          newToken <- env.repository.consumeFirstLoginToken(token(2))
+          newToken <- consume(env, token(2))
         yield assertTrue(reset, rowsAfterReset.isEmpty, oldToken.isEmpty, again, newToken == Some(userId1))
       },
       test("reset is refused once a permanent password exists and deletes nothing") {
@@ -239,23 +239,34 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
           _ <- TestClock.setTime(baseInstant)
           _ <- bootstrap(env, userId1, token(1))
           _ <- env.repository.createTemporary(userId1, pass(2), salt(2), baseInstant.plusSeconds(3600))
-          afterReplace <- env.repository.consumeFirstLoginToken(token(1))
+          afterReplace <- consume(env, token(1))
           _ <- bootstrap(env, userId2, token(2))
           _ <- env.repository.deleteTemporary(userId2)
-          afterDelete <- env.repository.consumeFirstLoginToken(token(2))
+          afterDelete <- consume(env, token(2))
         yield assertTrue(afterReplace.isEmpty, afterDelete.isEmpty)
+      },
+      test("a spent link says what it was for") {
+        for
+          _ <- TestClock.setTime(baseInstant)
+          _ <- bootstrap(env, userId1, token(1))
+          spent <- env.repository.consumeLink(token(1))
+        yield assertTrue(spent == Some(ConsumedLink(userId1, OneTimeLinkPurpose.FirstLogin)))
       },
       test("a token is bound to its user: another user's reset leaves it alone") {
         for
           _ <- TestClock.setTime(baseInstant)
           _ <- bootstrap(env, userId1, token(1))
           _ <- env.repository.resetBootstrapCredential(userId2)
-          stillThere <- env.repository.consumeFirstLoginToken(token(1))
+          stillThere <- consume(env, token(1))
         yield assertTrue(stillThere == Some(userId1))
       },
     )
 
   def token(n: Int): Array[Byte] = Array.fill(32)(n.toByte)
+
+  /** Whose link was spent, leaving out what it was for (the purpose has its own test). */
+  def consume(env: PasswordRepositorySpec.Env, tokenHash: Array[Byte]) =
+    env.repository.consumeLink(tokenHash).map(_.map(_.userId))
 
   /** What auth's bootstrap does on start: a temporary password good for 24 hours and a token valid as long. */
   def bootstrap(env: PasswordRepositorySpec.Env, userId: UserId, tokenHash: Array[Byte]) =
@@ -265,7 +276,7 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
         passwordHash = pass(7),
         salt = salt(7),
         expiresAt = now.plusSeconds(24 * 3600),
-        firstLoginTokenHash = Some(tokenHash),
+        linkTokenHash = Some(tokenHash),
       )
 
 object PasswordRepositorySpec:

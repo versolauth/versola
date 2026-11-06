@@ -2,7 +2,7 @@ package versola.oauth.authorize
 
 import versola.oauth.AuthMetrics
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
-import versola.oauth.challenge.password.{FirstLoginToken, PasswordRepository}
+import versola.oauth.challenge.password.{ConsumedLink, OneTimeLink, OneTimeLinkPurpose, PasswordRepository}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.consent.{ConsentDecision, ConsentService}
@@ -142,18 +142,20 @@ object AuthorizeEndpointService:
             // ACR is voluntary (OIDC Core §3.1.2.1): without a known user we cannot verify
             // achievability, so we proceed with normal auth and omit the acr claim.
             val ordinaryLogin = createConversation(authId, request, flow, registrationAvailable, uiLocales, Map.empty)
-            request.firstLoginToken match
+            request.linkToken match
               case None => ordinaryLogin
               case Some(token) =>
-                // The first-login link of the bootstrap admin (issue #824). The token is spent here, once, and
-                // the conversation records only that the password step is passed and a permanent password is
-                // owed. A token that is unknown, expired or already spent is not an error: the request goes on
-                // as an ordinary login, so the answer does not tell a guesser whether a token ever existed.
-                // Only reached with no session and no id_token_hint: a browser that is already signed in, or
-                // one that names a user, is never turned into the admin by a query parameter.
-                passwordRepository.consumeFirstLoginToken(FirstLoginToken.hash(token)).flatMap:
+                // A one-time link (issue #824). The token is spent here, once, and what happens next is decided by
+                // the purpose stored with it. For the bootstrap admin's first-login link the conversation records
+                // only that the password step is passed and a permanent password is owed. A token that is unknown,
+                // expired or already spent is not an error: the request goes on as an ordinary login, so the answer
+                // does not tell a guesser whether a token ever existed. Only reached with no session and no
+                // id_token_hint: a browser that is already signed in, or one that names a user, is never turned
+                // into someone else by a query parameter.
+                passwordRepository.consumeLink(OneTimeLink.hash(token)).flatMap:
                   case None => ordinaryLogin
-                  case Some(userId) =>
+                  // A new purpose is a new case here.
+                  case Some(ConsumedLink(userId, OneTimeLinkPurpose.FirstLogin)) =>
                     createConversation(
                       authId,
                       request,

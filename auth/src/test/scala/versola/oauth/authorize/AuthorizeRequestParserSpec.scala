@@ -913,14 +913,14 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         yield assertTrue(result.ip.isEmpty)
       },
     ),
-    suite("first_login_token")(
+    suite("link_token")(
       test("carries the token of the first-login link") {
         val env = Env()
-        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("first_login_token" -> "abc")))
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("link_token" -> "abc")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request)
-        yield assertTrue(result.firstLoginToken == Some("abc"))
+        yield assertTrue(result.linkToken == Some("abc"))
       },
       test("has none when the parameter is absent") {
         val env = Env()
@@ -928,15 +928,15 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request)
-        yield assertTrue(result.firstLoginToken.isEmpty)
+        yield assertTrue(result.linkToken.isEmpty)
       },
       test("a repeated parameter is no token and no error: the request goes on as an ordinary login") {
         val env = Env()
-        val request = Request.get(URL.root.addQueryParams(validParams).addQueryParams("first_login_token", Chunk("a", "b")))
+        val request = Request.get(URL.root.addQueryParams(validParams).addQueryParams("link_token", Chunk("a", "b")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result.map(_.firstLoginToken) == Right(None))
+        yield assertTrue(result.map(_.linkToken) == Right(None))
       },
     ),
     suite("login_hint")(

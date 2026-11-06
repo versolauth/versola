@@ -1021,12 +1021,19 @@ new path does not clear.
 password, `ADMIN_BOOTSTRAP_PASSWORD`, generated once and kept in OpenBao. It is valid **24 hours**
 and forces a set-password step.
 
+The first-login link is the first use of a general mechanism, **one-time links**: a random token that
+someone is sent and that the first request carrying it spends, with a stored *purpose* that decides
+what opening it does (`first_login` today; an invitation or a password reset sent by email would be
+new purposes). They live in the `one_time_links` table, one row per user and purpose, and travel as
+the `link_token` query parameter. Delivering a link (the log line below, later an email) is separate
+from the link itself.
+
 When `auth.conf` has `bootstrap.first-login-url` (`versola-tools` writes it on vps:
-`<edge-url>/login/central-admin`), bootstrap also issues a **one-time first-login token** together
-with the temporary password and logs one line, once, by the replica that created it:
+`<edge-url>/login/central-admin`), bootstrap also issues a **one-time link of purpose `first_login`**
+together with the temporary password and logs one line, once, by the replica that created it:
 
 ```
-first-login link for admin: <edge-url>/login/central-admin?first_login_token=<token>
+first-login link for admin: <edge-url>/login/central-admin?link_token=<token>
 ```
 
 Opening it starts the console login (edge passes the token on to `auth`'s `/authorize`) with the
@@ -1042,7 +1049,7 @@ records query parameters only if listed in `logQuery`. Auth does not keep the ra
 holds its hash. The one exception is a client that requires **PAR** or a signed request object (JAR):
 there the token travels inside the pushed or signed request, and `pushed_authorization_requests`
 holds it until the request is consumed or expires. Without `first-login-url` no token is issued. The
-migration `V0031` adds the `first_login_tokens` table; the `cleanup.tables` entry for it is written by
+migration `V0031` adds the `one_time_links` table; the `cleanup.tables` entry for it is written by
 `gen-env` into a newly generated `auth.conf`, an existing one needs it added by hand (without it an
 expired row just stays until the next bootstrap, a password change or a purge replaces it).
 

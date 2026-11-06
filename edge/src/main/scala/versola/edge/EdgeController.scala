@@ -47,7 +47,7 @@ object EdgeController extends Controller:
     "ui_locales",
     // The one-time first-login token of the bootstrap admin (issue #824), carried on the link auth prints.
     // Edge only passes it on to `/authorize`, where auth spends it; it is neither stored nor logged here.
-    "first_login_token",
+    "link_token",
   )
 
   val loginEndpoint =

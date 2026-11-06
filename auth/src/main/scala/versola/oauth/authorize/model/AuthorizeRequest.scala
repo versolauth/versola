@@ -47,7 +47,7 @@ private[authorize] case class AuthorizeRequest(
       * not on the conversation. Absent, malformed or repeated, it is simply `None`: an unknown token must
       * look like no token at all.
       */
-    firstLoginToken: Option[String] = None,
+    linkToken: Option[String] = None,
 ):
   def promptNone: Boolean = prompt.contains(Prompt.none)
   def promptLogin: Boolean = prompt.contains(Prompt.login)

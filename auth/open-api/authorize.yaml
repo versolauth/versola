@@ -46,7 +46,7 @@ paths:
         - $ref: '#/components/parameters/UiLocales'
         - $ref: '#/components/parameters/Claims'
         - $ref: '#/components/parameters/LoginHint'
-        - $ref: '#/components/parameters/FirstLoginToken'
+        - $ref: '#/components/parameters/OneTimeLink'
         - $ref: '#/components/parameters/IdTokenHint'
         - $ref: '#/components/parameters/Resource'
         - $ref: '#/components/parameters/AuthorizationDetails'
@@ -301,17 +301,19 @@ components:
         type: string
       example: user@example.com
 
-    FirstLoginToken:
-      name: first_login_token
+    OneTimeLink:
+      name: link_token
       in: query
       required: false
       description: |
-        The one-time token of the bootstrap admin's first-login link (a Versola extension, not an
-        OIDC parameter). Auth prints the link once, when it creates the admin's temporary password;
-        the token is 256 random bits, stored only as a hash, valid for the same 24 hours and spent by
-        the first request that presents it. With a valid token, and only when the request carries no
-        session and no `id_token_hint`, the login starts for that user with the password step already
-        passed and goes on to the remaining factors and the "set a permanent password" step.
+        The token of a one-time link (a Versola extension, not an OIDC parameter). The token is 256
+        random bits, stored only as a hash, and spent by the first request that presents it; the
+        purpose stored with it decides what happens. The only purpose today is `first_login`, the
+        bootstrap admin's link: auth prints it once, when it creates the admin's temporary password,
+        and it is valid for the same 24 hours. With a valid `first_login` token, and only when the
+        request carries no session and no `id_token_hint`, the login starts for that user with the
+        password step already passed and goes on to the remaining factors and the "set a permanent
+        password" step.
         A token that is unknown, expired, already spent or repeated is ignored: the request is an
         ordinary login and nothing in the response says that a token was presented. The token is
         never stored on the conversation (a client that pushes the request through PAR or signs it

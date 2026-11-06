@@ -11,8 +11,8 @@ import java.sql.{DriverManager, Timestamp}
 import java.time.Instant
 import java.util.Base64
 
-/** #824: the first-login link of the bootstrap admin, end to end -- edge's `/login/{preset}?first_login_token=`
-  * reaches auth's `/authorize` (through PAR, which `central-admin` requires), the real `first_login_tokens` table is
+/** #824: the first-login link of the bootstrap admin, end to end -- edge's `/login/{preset}?link_token=`
+  * reaches auth's `/authorize` (through PAR, which `central-admin` requires), the real `one_time_links` table is
   * consulted, and the conversation that starts is the "set a permanent password" step.
   *
   * The token is written the way auth stores it, as its SHA-256, so the spec holds a token it knows without reading
@@ -69,9 +69,9 @@ object FirstLoginLinkSpec extends ZIOSpec[EdgeApi & OAuthClient]:
     val store = database { connection =>
       val now = Instant.now()
       val statement = connection.prepareStatement(
-        """INSERT INTO first_login_tokens (user_id, token_hash, created_at, expires_at)
-          |SELECT id, ?, ?, ? FROM users WHERE login = ?
-          |ON CONFLICT (user_id) DO UPDATE
+        """INSERT INTO one_time_links (user_id, purpose, token_hash, created_at, expires_at)
+          |SELECT id, 'first_login', ?, ?, ? FROM users WHERE login = ?
+          |ON CONFLICT (user_id, purpose) DO UPDATE
           |  SET token_hash = EXCLUDED.token_hash, created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at""".stripMargin,
       ).nn
       try
@@ -89,7 +89,7 @@ object FirstLoginLinkSpec extends ZIOSpec[EdgeApi & OAuthClient]:
 
   private def remove(hash: Array[Byte]): Task[Int] =
     database: connection =>
-      val statement = connection.prepareStatement("DELETE FROM first_login_tokens WHERE token_hash = ?").nn
+      val statement = connection.prepareStatement("DELETE FROM one_time_links WHERE token_hash = ?").nn
       try
         statement.setBytes(1, hash)
         statement.executeUpdate()
@@ -99,7 +99,7 @@ object FirstLoginLinkSpec extends ZIOSpec[EdgeApi & OAuthClient]:
     test("an unknown token behaves exactly like no token: an ordinary login, no error") {
       for
         plain <- stepAfterLogin()
-        unknown <- stepAfterLogin("first_login_token" -> "not-a-token-auth-ever-issued")
+        unknown <- stepAfterLogin("link_token" -> "not-a-token-auth-ever-issued")
       yield assertTrue(unknown == plain, unknown != ConversationStep.SetPassword, unknown != ConversationStep.AccessDenied)
     },
     // What follows the passed password step depends on the stack's `central-admin` flow: the set-password step on
@@ -113,8 +113,8 @@ object FirstLoginLinkSpec extends ZIOSpec[EdgeApi & OAuthClient]:
         result <- ZIO.scoped:
           for
             _ <- issued(login, token)
-            first <- stepAfterLogin("first_login_token" -> token)
-            second <- stepAfterLogin("first_login_token" -> token)
+            first <- stepAfterLogin("link_token" -> token)
+            second <- stepAfterLogin("link_token" -> token)
           yield (first, second)
       yield assertTrue(
         result._1 != plain,
