@@ -476,8 +476,7 @@ version added stay in OpenBao either way.
 #### Behaviour change: the SMTP server and SMS provider saved in the console may not point at loopback, link-local or, by default, private addresses
 
 `auth` connects to the SMTP server and the SMS provider saved on **Delivery** (`PUT /configuration/delivery-settings`) from inside
-the deployment's network, and an administrator types both addresses. Without a limit they are a way to make `auth` call the cloud
-metadata service or an internal admin port, and to send one-time codes to a host of the administrator's choosing. Now:
+the deployment's network, and an administrator types both addresses. Where they may point is now limited:
 
 - **Always refused**, nothing sets this aside: loopback (`localhost`, `127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`, which holds
   the cloud metadata address, and `fe80::/10`), unspecified (`0.0.0.0`, `::`) and multicast addresses.
