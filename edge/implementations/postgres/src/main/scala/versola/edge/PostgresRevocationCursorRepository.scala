@@ -11,8 +11,8 @@ class PostgresRevocationCursorRepository(xa: TransactorZIO) extends RevocationCu
   override def seed(source: String): Task[Unit] =
     xa.connectMeasured("seed-revocation-cursor"):
       sql"""
-        INSERT INTO revocation_cursors (source, cursor, lease_until, leased_by, updated_at)
-        VALUES ($source, '', to_timestamp(0), NULL, NOW())
+        INSERT INTO revocation_cursors (source, cursor, lease_until, leased_by, updated_at, last_read_at)
+        VALUES ($source, '', to_timestamp(0), NULL, NOW(), NOW())
         ON CONFLICT (source) DO NOTHING
       """.update.run()
     .unit
@@ -56,6 +56,20 @@ class PostgresRevocationCursorRepository(xa: TransactorZIO) extends RevocationCu
         WHERE source = $source AND leased_by = $holder
       """.update.run()
     .unit
+
+  override def completed(source: String, holder: String): Task[Unit] =
+    xa.connectMeasured("complete-revocation-cursor"):
+      sql"""
+        UPDATE revocation_cursors SET lease_until = to_timestamp(0), last_read_at = NOW()
+        WHERE source = $source AND leased_by = $holder
+      """.update.run()
+    .unit
+
+  override def lagSeconds(source: String): Task[Option[Long]] =
+    xa.connectMeasured("revocation-feed-lag"):
+      sql"""
+        SELECT floor(extract(epoch FROM (NOW() - last_read_at)))::bigint FROM revocation_cursors WHERE source = $source
+      """.query[Long].run().headOption
 
   private def seconds0(lease: Duration): Double = lease.toMillis / 1000.0
 

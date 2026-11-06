@@ -29,9 +29,12 @@ info:
     `auth_revocation` channel: `jti:<id>`, `fam:<id>`, `sid:<id>`, `sub:<id>`; a consumer skips a prefix it
     does not know.
 
-    **Reading it.** The cursor is the position `(revoked_at, key)` of the last row read, base64url, and is handed back
-    as received; it is the encoding of `RevocationCursor` in `util`, which the edge decodes only to start a read a
-    little behind it (below). A page shorter than the limit asked for is the end of what there is now. Rows are written when their transaction commits,
+    **Reading it.** The cursor is the position `(revoked_at, key)` of the last row read, base64url: the encoding of
+    `RevocationCursor` in `util`, which is a contract between `auth` and an `edge` of the same release line and not an
+    opaque token. An `edge` hands it back as received, and decodes it only to start a read a little behind it (below);
+    one that cannot decode a stored cursor reads from the beginning. `more` says whether the page filled the limit and
+    another follows; an `auth` that did not send it (an older one) leaves the reader to take a page shorter than the
+    limit it asked for as the end. Rows are written when their transaction commits,
     which can be after a row with a later `revoked_at`, so a reader starts a little behind its cursor and
     applies the overlap idempotently (the edge rewinds by `revocation.overlap`, 30 s by default, and rereads
     everything every `revocation.reload-interval`).
@@ -81,6 +84,7 @@ paths:
                     exp: 1793983600
                     before: 1793980000
                 cursor: "MjAyNi0xMS0wNlQxMDowMDowMC4xMjM0NTZafHN1YjoxYzJmLi4u"
+                more: false
         "400":
           description: '`after` is not a cursor this endpoint issued, or `limit` is not a positive integer.'
           content:
@@ -98,7 +102,7 @@ components:
   schemas:
     RevocationPage:
       type: object
-      required: [revocations, cursor]
+      required: [revocations, cursor, more]
       properties:
         revocations:
           type: array
@@ -106,7 +110,10 @@ components:
             $ref: "#/components/schemas/Revocation"
         cursor:
           type: string
-          description: Where the next read resumes. Opaque. Empty only while nothing has been read.
+          description: Where the next read resumes, in the encoding described above. Empty only while nothing has been read.
+        more:
+          type: boolean
+          description: Whether the page filled the limit, so another one follows. Counts rows `auth` skipped because their kind is unknown to it, which the length of `revocations` does not.
     Revocation:
       type: object
       required: [key, exp]

@@ -33,6 +33,10 @@ object RevocationFeedPullerSpec extends UnitSpecBase:
 
   private def at(seconds: Long, key: String = "") = RevocationCursor(Instant.ofEpochSecond(seconds), key)
 
+  /** A page as an auth that does not say whether there is another sends it, unless the case says. */
+  private def page(revocations: List[Revocation], cursor: String, more: Option[Boolean] = None): Page =
+    Page(revocations = revocations, cursor = cursor, more = more)
+
   private def sid(id: String) = RevocationKey.Sid(id)
   private def revocation(id: String) = Revocation(key = sid(id), expiresAt = Instant.ofEpochSecond(100_000), issuedBefore = None)
 
@@ -52,13 +56,15 @@ object RevocationFeedPullerSpec extends UnitSpecBase:
         cursors.advance.returnsZIO((_, _, cursor, _) => record(s"advance:$cursor").as(true)) *>
         cursors.renew.returnsZIO((_, _, _) => record("renew").as(true)) *>
         cursors.release.returnsZIO((_, _) => record("release")) *>
+        cursors.completed.returnsZIO((_, _) => record("complete")) *>
+        cursors.lagSeconds.succeedsWith(Some(0L)) *>
         revocations.revokeAll.returnsZIO(list => record(s"upsert:${list.map(_.key.encoded).mkString(",")}"))
 
     def puller: UIO[RevocationFeedPuller.Impl] =
       RevocationFeedPuller.make(source, pod, feed, cache, cursors, client, revocations)
 
   private def pages(byAfter: Map[String, Page]): ((String, Int)) => Task[Page] =
-    (after, _) => ZIO.succeed(byAfter.getOrElse(after, Page(Nil, after)))
+    (after, _) => ZIO.succeed(byAfter.getOrElse(after, page(Nil, after)))
 
   val spec = suite("RevocationFeedPuller")(
     suite("tick")(
@@ -66,6 +72,7 @@ object RevocationFeedPullerSpec extends UnitSpecBase:
         val env = new Env
         for
           _ <- env.cursors.acquire.succeedsWith(None)
+          _ <- env.cursors.lagSeconds.succeedsWith(Some(7L))
           puller <- env.puller
           _ <- puller.tick
         yield assertTrue(
@@ -74,6 +81,55 @@ object RevocationFeedPullerSpec extends UnitSpecBase:
           env.cursors.release.calls.isEmpty,
         )
       },
+      test("a pod that does not hold the lease reports the lag of the cursor row, not one of its own") {
+        val env = new Env
+        for
+          _ <- env.cursors.acquire.succeedsWith(None)
+          _ <- env.cursors.lagSeconds.succeedsWith(Some(3L))
+          puller <- env.puller
+          // this pod has not read anything for ten minutes of its own
+          _ <- TestClock.adjust(10.minutes)
+          _ <- puller.tick
+          reported <- RevocationFeedMetrics.currentLag
+        yield assertTrue(env.cursors.lagSeconds.calls.size == 1, reported == 3.0)
+      },
+      test("a cycle that read to the end is recorded as such, and one that failed is not") {
+        val env = new Env
+        for
+          _ <- env.holding(at(1000, "sid:a").encoded)
+          _ <- env.client.fetch.returnsZIO(pages(Map.empty))
+          puller <- env.puller
+          _ <- puller.tick
+          _ <- env.client.fetch.failsWith(RevocationFeedClient.Refused(404))
+          _ <- puller.tick
+        yield assertTrue(env.cursors.completed.calls.size == 1, env.cursors.release.calls.size == 1)
+      },
+      test("reads on while auth says there is another page, even when the page is shorter than the limit") {
+        val env = new Env
+        val first = at(1010, "sid:a")
+        val second = at(1020, "sid:b")
+        for
+          _ <- env.holding(at(1000, "sid:a").encoded)
+          // a page of one row asked as two: the rows of an unknown kind were dropped before it was sent
+          _ <- env.client.fetch.returnsZIO(pages(Map(
+            at(970).encoded -> page(List(revocation("a")), first.encoded, more = Some(true)),
+            first.encoded -> page(List(revocation("b")), second.encoded, more = Some(false)),
+          )))
+          puller <- env.puller
+          _ <- puller.tick
+        yield assertTrue(env.client.fetch.calls.map(_._1) == List(at(970).encoded, first.encoded))
+      },
+      test("stops when auth says there is no other page, even when the page is as long as the limit") {
+        val env = new Env
+        for
+          _ <- env.holding(at(1000, "sid:a").encoded)
+          _ <- env.client.fetch.returnsZIO(pages(Map(
+            at(970).encoded -> page(List(revocation("a"), revocation("b")), at(1010, "sid:b").encoded, more = Some(false)),
+          )))
+          puller <- env.puller
+          _ <- puller.tick
+        yield assertTrue(env.client.fetch.calls.size == 1)
+      },
       test("drains pages until a short one, writing each before moving the cursor past it") {
         val env = new Env
         val first = at(1010, "sid:b")
@@ -81,8 +137,8 @@ object RevocationFeedPullerSpec extends UnitSpecBase:
         for
           _ <- env.holding(at(1000, "sid:a").encoded)
           _ <- env.client.fetch.returnsZIO(pages(Map(
-            at(970).encoded -> Page(List(revocation("a"), revocation("b")), first.encoded),
-            first.encoded -> Page(List(revocation("c")), second.encoded),
+            at(970).encoded -> page(List(revocation("a"), revocation("b")), first.encoded),
+            first.encoded -> page(List(revocation("c")), second.encoded),
           )))
           puller <- env.puller
           _ <- puller.tick
@@ -95,7 +151,7 @@ object RevocationFeedPullerSpec extends UnitSpecBase:
             s"advance:${first.encoded}",
             "upsert:sid:c",
             s"advance:${second.encoded}",
-            "release",
+            "complete",
           ),
         )
       },
@@ -109,18 +165,18 @@ object RevocationFeedPullerSpec extends UnitSpecBase:
           puller <- env.puller
           _ <- puller.tick
           log <- env.log.get
-        yield assertTrue(log == List("upsert:", "renew", "release"))
+        yield assertTrue(log == List("upsert:", "renew", "complete"))
       },
       test("a page that ends behind the stored cursor does not move it back") {
         val env = new Env
         val stored = at(1000, "sid:z")
         for
           _ <- env.holding(stored.encoded)
-          _ <- env.client.fetch.returnsZIO(pages(Map(at(970).encoded -> Page(List(revocation("a")), at(990, "sid:a").encoded))))
+          _ <- env.client.fetch.returnsZIO(pages(Map(at(970).encoded -> page(List(revocation("a")), at(990, "sid:a").encoded))))
           puller <- env.puller
           _ <- puller.tick
           log <- env.log.get
-        yield assertTrue(log == List("upsert:sid:a", "renew", "release"), env.cursors.advance.calls.isEmpty)
+        yield assertTrue(log == List("upsert:sid:a", "renew", "complete"), env.cursors.advance.calls.isEmpty)
       },
       test("starts from the beginning for a new edge") {
         val env = new Env
@@ -155,7 +211,7 @@ object RevocationFeedPullerSpec extends UnitSpecBase:
         for
           _ <- env.holding(at(1000, "sid:a").encoded)
           _ <- env.revocations.revokeAll.failsWith(new RuntimeException("database is down"))
-          _ <- env.client.fetch.returnsZIO(pages(Map(at(970).encoded -> Page(List(revocation("a")), at(1010, "sid:a").encoded))))
+          _ <- env.client.fetch.returnsZIO(pages(Map(at(970).encoded -> page(List(revocation("a")), at(1010, "sid:a").encoded))))
           puller <- env.puller
           _ <- puller.tick
           log <- env.log.get
@@ -165,6 +221,7 @@ object RevocationFeedPullerSpec extends UnitSpecBase:
         val env = new Env
         for
           _ <- env.cursors.acquire.failsWith(new RuntimeException("database is down"))
+          _ <- env.cursors.lagSeconds.failsWith(new RuntimeException("database is down"))
           puller <- env.puller
           _ <- puller.tick
         yield assertTrue(env.client.fetch.calls.isEmpty)
@@ -176,8 +233,9 @@ object RevocationFeedPullerSpec extends UnitSpecBase:
           _ <- env.cursors.acquire.succeedsWith(Some(at(1000, "sid:a").encoded))
           _ <- env.cursors.advance.returnsZIO((_, _, cursor, _) => env.record(s"advance:$cursor").as(false))
           _ <- env.cursors.release.returnsZIO((_, _) => env.record("release"))
+          _ <- env.cursors.lagSeconds.succeedsWith(Some(0L))
           _ <- env.revocations.revokeAll.returnsZIO(list => env.record(s"upsert:${list.size}"))
-          _ <- env.client.fetch.returnsZIO(pages(Map(at(970).encoded -> Page(List(revocation("a"), revocation("b")), first.encoded))))
+          _ <- env.client.fetch.returnsZIO(pages(Map(at(970).encoded -> page(List(revocation("a"), revocation("b")), first.encoded))))
           puller <- env.puller
           _ <- puller.tick
           log <- env.log.get
@@ -187,7 +245,7 @@ object RevocationFeedPullerSpec extends UnitSpecBase:
         val env = new Env
         for
           _ <- env.holding(at(1000, "sid:a").encoded)
-          _ <- env.client.fetch.returnsZIO((after, _) => ZIO.succeed(Page(List(revocation("a"), revocation("b")), after)))
+          _ <- env.client.fetch.returnsZIO((after, _) => ZIO.succeed(page(List(revocation("a"), revocation("b")), after)))
           puller <- env.puller
           _ <- puller.tick
         yield assertTrue(env.client.fetch.calls.size == 1)
@@ -247,6 +305,7 @@ object RevocationFeedPullerSpec extends UnitSpecBase:
         for
           _ <- env.cursors.seed.succeedsWith(())
           _ <- env.cursors.acquire.succeedsWith(None)
+          _ <- env.cursors.lagSeconds.succeedsWith(None)
           _ <- start(env, configWith(feed, native = Some(native)))
           _ <- ZIO.foreachDiscard(1 to 5)(_ => TestClock.adjust(1.second) *> ZIO.yieldNow)
         yield assertTrue(env.cursors.seed.calls == List(native.authMutualTlsUrl.encode), env.cursors.acquire.calls.nonEmpty)
@@ -267,7 +326,7 @@ object RevocationFeedPullerSpec extends UnitSpecBase:
         yield assertTrue(early == 1, late == 2)
       },
     ),
-  )
+  ) @@ TestAspect.sequential // the lag gauge is one for the process
 
   private val keyPair =
     val generator = KeyPairGenerator.getInstance("RSA").nn

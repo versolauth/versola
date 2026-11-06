@@ -107,6 +107,41 @@ trait RevocationCursorRepositorySpec extends DatabaseSpecBase[RevocationCursorRe
           taken <- env.repository.acquire(source, "pod-b", lease)
         yield assertTrue(taken.contains("cursor-1"))
       },
+      test("a cycle that read to the end restarts the lag, the same figure for any pod asking, and gives the lease back") {
+        for
+          _ <- env.repository.seed(source)
+          _ <- env.fixtures.ageLastRead(source, 120.seconds)
+          before <- env.repository.lagSeconds(source)
+          _ <- env.repository.acquire(source, "pod-a", lease)
+          _ <- env.repository.completed(source, "pod-a")
+          after <- env.repository.lagSeconds(source)
+          taken <- env.repository.acquire(source, "pod-b", lease)
+        yield assertTrue(before.exists(_ >= 120), after.exists(_ < 5), taken.isDefined)
+      },
+      test("a cycle that did not finish leaves the lag rising, and moving the cursor is not a finished cycle") {
+        for
+          _ <- env.repository.seed(source)
+          _ <- env.fixtures.ageLastRead(source, 120.seconds)
+          _ <- env.repository.acquire(source, "pod-a", lease)
+          _ <- env.repository.advance(source, "pod-a", "cursor-1", lease)
+          _ <- env.repository.release(source, "pod-a")
+          lag <- env.repository.lagSeconds(source)
+        yield assertTrue(lag.exists(_ >= 120))
+      },
+      test("only the holder can record a finished cycle") {
+        for
+          _ <- env.repository.seed(source)
+          _ <- env.fixtures.ageLastRead(source, 120.seconds)
+          _ <- env.repository.acquire(source, "pod-a", lease)
+          _ <- env.repository.completed(source, "pod-b")
+          lag <- env.repository.lagSeconds(source)
+          stillHeld <- env.repository.acquire(source, "pod-c", lease)
+        yield assertTrue(lag.exists(_ >= 120), stillHeld.isEmpty)
+      },
+      test("the lag of a source with no row is unknown") {
+        for lag <- env.repository.lagSeconds("https://unknown.example.com")
+        yield assertTrue(lag.isEmpty)
+      },
       test("sources are independent of each other") {
         val other = "https://auth-2-mtls.example.com"
         for
@@ -123,6 +158,9 @@ object RevocationCursorRepositorySpec:
     * waiting for it, and reading a row back. */
   trait Fixtures:
     def expireLease(source: String): Task[Unit]
+
+    /** Moves the record of the last full read back by `by`, as time would have. */
+    def ageLastRead(source: String, by: Duration): Task[Unit]
     def cursorOf(source: String): Task[Option[String]]
 
     /** Time left on the lease by the database's own clock, negative once it has passed. */

@@ -17,6 +17,12 @@ object PostgresRevocationCursorRepositorySpec extends PostgresSpec, RevocationCu
           override def expireLease(source: String) =
             xa.connect(sql"UPDATE revocation_cursors SET lease_until = NOW() - interval '1 second' WHERE source = $source".update.run()).unit
 
+          override def ageLastRead(source: String, by: Duration) =
+            val seconds = by.toMillis / 1000.0
+            xa.connect(
+              sql"UPDATE revocation_cursors SET last_read_at = NOW() - make_interval(secs => $seconds) WHERE source = $source".update.run(),
+            ).unit
+
           override def cursorOf(source: String) =
             xa.connect(sql"SELECT cursor FROM revocation_cursors WHERE source = $source".query[String].run().headOption)
 

@@ -37,7 +37,7 @@ object RevocationFeedClientHandshakeSpec extends ZIOSpecDefault:
       |{"key":"jti:token-1","exp":2000000000},
       |{"key":"sub:user-1","exp":2000000100,"before":1999999000},
       |{"key":"tenant:default","exp":2000000000}],
-      |"cursor":"opaque-cursor"}""".stripMargin
+      |"cursor":"opaque-cursor","more":true}""".stripMargin
 
   private def material(generated: TestCertificates.Generated): PrivateClientCertificate.Material =
     PrivateClientCertificate(generated.bundle).material.toOption.get
@@ -159,6 +159,7 @@ object RevocationFeedClientHandshakeSpec extends ZIOSpecDefault:
         seen.map(_._2.url.queryParams.getAll("after")).contains(Chunk("cursor-in")),
         seen.map(_._2.url.queryParams.getAll("limit")).contains(Chunk("5000")),
         page.cursor == "opaque-cursor",
+        page.more.contains(true),
         // a key of a kind this version does not know is skipped, the rest is read
         page.revocations == List(
           Revocation(key = RevocationKey.Jti("token-1"), expiresAt = Instant.ofEpochSecond(2_000_000_000L), issuedBefore = None),
@@ -222,6 +223,15 @@ object RevocationFeedClientHandshakeSpec extends ZIOSpecDefault:
         notFound == Left(RevocationFeedClient.Refused(404)),
         forbidden == Left(RevocationFeedClient.Refused(403)),
       )
+    },
+    test("a page from an auth that does not say whether there is another has no `more`") {
+      for
+        pem <- ZIO.service[Pem]
+        listening <- ZIO.service[Listener]
+        _ <- listening.answer.set(Response.json("""{"revocations":[],"cursor":"c"}"""))
+        page <- fetch(edgeConfig(listening.port, Set(pem.serverTrust)))
+        _ <- listening.answer.set(Response.json(pageJson))
+      yield assertTrue(page.more.isEmpty, page.cursor == "c")
     },
     test("an answer that is not a page is a failure, not an empty page") {
       for

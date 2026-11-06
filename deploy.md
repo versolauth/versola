@@ -580,9 +580,10 @@ before, an old `edge` against this `auth` and this `edge` against an old `auth` 
   reads from the beginning of the list, a restarted one from its cursor. Every `revocation.reload-interval` (600 seconds) one pod
   rereads the whole list, which bounds a revocation missed through a very late commit to minutes. The first deployment of the switch
   reads everything unexpired once: a page of 5000 rows per request.
-- **What to watch.** `revocation_feed_lag_seconds` (seconds since the last cycle that read the feed to its end started; per pod, so alert
-  on the lowest across pods), `revocation_feed_cycles_total{outcome="ok|error|lease_not_acquired"}`, `revocation_feed_pages_total`,
-  `revocation_feed_rows_total`, `revocation_feed_lease_held`. A feed that stays down is logged as a warning, then at most once in five
+- **What to watch.** `revocation_feed_lag_seconds` (seconds, by the database's clock, since a pod last read the feed to its end; read from
+  the cursor row, so every pod of the `edge` reports the same figure), `revocation_feed_cycles_total{outcome="ok|error|lease_not_acquired"}`, `revocation_feed_pages_total`,
+  `revocation_feed_rows_total`, `revocation_feed_lease_held`. `revocation_cursors` is updated about twice a second by the pod that
+  reads (taking and giving back the lease); the columns carry no index, so the updates are HOT. A feed that stays down is logged as a warning, then at most once in five
   minutes; it never fails readiness, and the `edge` carries on with the events.
 - **`edge` behaviour fix.** An expired cookie token that was revoked is no longer refreshed: the old token's `jti`, family, session and
   user are checked first, and a revoked one sends the caller to log in with the cookie cleared, without presenting the refresh token to `auth`.
@@ -753,7 +754,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `(revoked_at, revoked_key)` is the cursor every replica resumes its reconciliation from. Rows are collected by the cleanup
   manager once `expires_at` has passed. `tenant_id` (`V0033`, nullable) says which tenant a key belongs to, for the feed edges pull.
 - **Revocation cursors** (`edge`, `revocation_cursors`, `V2009`). One row per source (auth's mutual-TLS URL): the position the `edge` has
-  read the feed up to, and the lease that lets one pod at a time read it. Compared on the database's clock; nothing is held open across
+  read the feed up to, when a pod last read it to the end (`last_read_at`), and the lease that lets one pod at a time read it. Compared on the database's clock; nothing is held open across
   the call to `auth`.
 - **Configuration snapshots.** `auth` and `edge` keep the last configuration sync from `central`
   (signed with a key the node already holds) and start from it when `central` is unreachable or

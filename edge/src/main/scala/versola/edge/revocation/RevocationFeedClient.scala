@@ -16,8 +16,11 @@ trait RevocationFeedClient:
   def fetch(after: String, limit: Int): Task[RevocationFeedClient.Page]
 
 object RevocationFeedClient:
-  /** @param cursor where the next read resumes, as auth gave it; handed back unchanged. */
-  case class Page(revocations: List[Revocation], cursor: String)
+  /** @param cursor where the next read resumes, as auth gave it; handed back unchanged.
+    * @param more whether auth says there is another page; `None` from an auth that does not say, when the length of
+    *             the page against the limit asked for is all there is to go on.
+    */
+  case class Page(revocations: List[Revocation], cursor: String, more: Option[Boolean])
 
   /** Auth answered, and not with a page: `404` from a version that has no feed, `403` where it does not take this
     * edge's certificate for an edge's. Told apart from a failure to reach auth, because the remedy is not a retry.
@@ -32,7 +35,7 @@ object RevocationFeedClient:
 
   private case class Entry(key: String, exp: Long, before: Option[Long]) derives JsonDecoder
 
-  private case class Body(revocations: List[Entry], cursor: String) derives JsonDecoder
+  private case class Body(revocations: List[Entry], cursor: String, more: Option[Boolean]) derives JsonDecoder
 
   val live: ZLayer[Client & EdgeConfig & ClientCertificateFiles & EdgeIdentity, Nothing, RevocationFeedClient] =
     ZLayer.fromFunction((client: Client, config: EdgeConfig, files: ClientCertificateFiles, identity: EdgeIdentity) =>
@@ -73,4 +76,5 @@ object RevocationFeedClient:
           ),
         ),
         cursor = page.cursor,
+        more = page.more,
       )

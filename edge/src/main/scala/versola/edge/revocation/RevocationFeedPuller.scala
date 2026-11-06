@@ -88,9 +88,8 @@ object RevocationFeedPuller:
       // A pod starts with its list as the database holds it, loaded by RevocationCache, so its first full read
       // is one `reload-interval` away; a brand new edge reads the whole list anyway, from the empty cursor.
       lastFullRead <- Ref.make(now)
-      lastSuccess <- Ref.make(now)
       lastWarning <- Ref.make(Option.empty[Instant])
-    yield Impl(source, podId, feed, cache, cursors, client, revocations, lastFullRead, lastSuccess, lastWarning)
+    yield Impl(source, podId, feed, cache, cursors, client, revocations, lastFullRead, lastWarning)
 
   class Impl(
       source: String,
@@ -101,7 +100,6 @@ object RevocationFeedPuller:
       client: RevocationFeedClient,
       revocations: EdgeRevocationRepository,
       lastFullRead: Ref[Instant],
-      lastSuccess: Ref[Instant],
       lastWarning: Ref[Option[Instant]],
   ):
 
@@ -114,23 +112,23 @@ object RevocationFeedPuller:
       (cursors.acquire(source, podId, feed.lease).flatMap:
         case None => RevocationFeedMetrics.cycle(Outcome.LeaseNotAcquired)
         case Some(stored) =>
-          // Released however the cycle ends -- including interrupted at shutdown -- so that the next pod does not
-          // wait out a lease whose holder is gone.
-          ZIO.acquireReleaseWith(RevocationFeedMetrics.lease(held = true))(_ =>
-            cursors.release(source, podId).ignore *> RevocationFeedMetrics.lease(held = false),
+          // Given back however the cycle ends -- including interrupted at shutdown -- so that the next pod does not
+          // wait out a lease whose holder is gone. A cycle that read to the end says so, which is what the lag is
+          // measured from; any other leaves it where it was.
+          ZIO.acquireReleaseExitWith(RevocationFeedMetrics.lease(held = true))((_, exit: Exit[Throwable, Boolean]) =>
+            (if exit.exists(identity) then cursors.completed(source, podId) else cursors.release(source, podId)).ignore *>
+              RevocationFeedMetrics.lease(held = false),
           )(_ =>
-            cycle(stored).flatMap:
+            cycle(stored).tap:
               case true => RevocationFeedMetrics.cycle(Outcome.Ok) *> recovered
               case false => RevocationFeedMetrics.cycle(Outcome.LeaseNotAcquired),
-          )
-      ).catchAllCause(failed) *> staleness
+          ).unit
+      ).catchAllCause(failed) *> lag
 
-    private def staleness: UIO[Unit] =
-      for
-        now <- Clock.instant
-        last <- lastSuccess.get
-        _ <- RevocationFeedMetrics.lagging(math.max(0L, now.getEpochSecond - last.getEpochSecond))
-      yield ()
+    /** Read from the cursor row, so every pod reports the figure of the pod that reads, not only its own. A failure to
+      * read it leaves the gauge as it was: the database being down is reported by everything else. */
+    private def lag: UIO[Unit] =
+      cursors.lagSeconds(source).flatMap(_.fold(ZIO.unit)(RevocationFeedMetrics.lagging)).ignore
 
     /** `false` when the lease was lost half-way (it ran out and another pod took it): this pod stops, having
       * written what it read, and leaves the cursor to the pod that holds the lease now. */
@@ -144,7 +142,7 @@ object RevocationFeedPuller:
         known = RevocationCursor.decode(stored).getOrElse(RevocationCursor.Beginning)
         from = if full then RevocationCursor.Beginning else known.rewound(cache.overlap)
         completed <- drain(from, highWater = known)
-        _ <- ZIO.when(completed)(lastSuccess.set(started) *> ZIO.when(full)(lastFullRead.set(started)))
+        _ <- ZIO.when(completed && full)(lastFullRead.set(started))
       yield completed
 
     /** @param highWater how far the stored cursor already is. A page moves it only when it ends beyond it: a read
@@ -161,9 +159,9 @@ object RevocationFeedPuller:
           holding <-
             if Ordering[RevocationCursor].gt(next, highWater) then cursors.advance(source, podId, page.cursor, feed.lease)
             else cursors.renew(source, podId, feed.lease)
-          // A short page is the end of what there is now. A full one that did not move the position would be read
-          // again for ever, so it ends the read too.
-          more = page.revocations.sizeIs >= feed.pageSize && Ordering[RevocationCursor].gt(next, after)
+          // Auth says whether there is another page (an older one does not, and then a page shorter than the limit
+          // is the end). One that did not move the position would be read again for ever, so it ends the read too.
+          more = page.more.getOrElse(page.revocations.sizeIs >= feed.pageSize) && Ordering[RevocationCursor].gt(next, after)
           result <-
             if !holding then ZIO.succeed(false)
             else if more then drain(next, Ordering[RevocationCursor].max(highWater, next))

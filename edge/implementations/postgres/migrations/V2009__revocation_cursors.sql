@@ -11,11 +11,16 @@
 -- `cursor` is what the feed handed out last, as received; the empty string is the beginning of the list, which
 -- is where a new edge, or one that lost its row, reads from. `lease_until` is NOT NULL: a row nobody holds
 -- carries a past instant (the epoch for a row just seeded), so taking the row is one comparison.
+--
+-- `last_read_at` is when a pod last read the feed to its end and gave the lease back: the same figure for every pod
+-- of the edge, which is what `revocation_feed_lag_seconds` is measured from. A row just seeded carries its creation
+-- time, so a feed that never reads reports a lag that rises from there. `updated_at` is when the cursor last moved.
 -- No DEFAULT: the writer names every column.
 CREATE TABLE revocation_cursors (
     source      TEXT PRIMARY KEY,
     cursor      TEXT NOT NULL,
     lease_until TIMESTAMP WITH TIME ZONE NOT NULL,
     leased_by   TEXT,
-    updated_at  TIMESTAMP WITH TIME ZONE NOT NULL
+    updated_at  TIMESTAMP WITH TIME ZONE NOT NULL,
+    last_read_at TIMESTAMP WITH TIME ZONE NOT NULL
 );

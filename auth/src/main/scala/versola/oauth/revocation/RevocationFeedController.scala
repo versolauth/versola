@@ -37,7 +37,10 @@ object RevocationFeedController extends Controller:
 
   case class Entry(key: String, exp: Long, before: Option[Long]) derives JsonCodec
 
-  case class Page(revocations: List[Entry], cursor: String) derives JsonCodec
+  /** @param more whether the page filled the limit, which is the only evidence there is another one. Said here because
+    *             the page holds only the rows this version decodes, so its length alone does not tell the reader.
+    */
+  case class Page(revocations: List[Entry], cursor: String, more: Boolean) derives JsonCodec
 
   val feedEndpoint =
     Method.GET / "revocations" -> handler { (request: Request) =>
@@ -50,7 +53,7 @@ object RevocationFeedController extends Controller:
         // An empty page hands back the cursor it was given, as received: the caller is already at the end
         // of what it may read, and the only position that cannot be wrong is the one it holds.
         cursor = page.last.map(_.encoded).getOrElse(request.queryParam("after").getOrElse(""))
-      yield Response.json(Page(page.revocations.map(entry), cursor).toJson))
+      yield Response.json(Page(revocations = page.revocations.map(entry), cursor = cursor, more = page.hasMore).toJson))
         .catchAll:
           case Refusal.Forbidden =>
             Observability.setError(

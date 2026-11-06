@@ -31,7 +31,18 @@ trait RevocationCursorRepository:
     */
   def advance(source: String, holder: String, cursor: String, lease: Duration): Task[Boolean]
 
-  /** Gives the lease back, so the next poll of any pod may take it without waiting for it to run out. A no-op when
-    * `holder` does not hold it.
+  /** Gives the lease back after a cycle that failed or stopped half-way, so the next poll of any pod may take it
+    * without waiting for it to run out. A no-op when `holder` does not hold it.
     */
   def release(source: String, holder: String): Task[Unit]
+
+  /** Gives the lease back after a cycle that read the feed to its end, and records when: the lag every pod reports
+    * is measured from it. A no-op when `holder` does not hold the lease.
+    */
+  def completed(source: String, holder: String): Task[Unit]
+
+  /** Seconds, by the database's clock, since a pod last read the feed to its end; `None` for a source with no row.
+    * The same answer whichever pod asks, so a pod that is not the one holding the lease does not report a lag that
+    * is only its own.
+    */
+  def lagSeconds(source: String): Task[Option[Long]]

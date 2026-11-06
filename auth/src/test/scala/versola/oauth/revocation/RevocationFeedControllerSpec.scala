@@ -84,6 +84,17 @@ object RevocationFeedControllerSpec extends UnitSpecBase:
         repository.feedSince.calls == List((RevocationCursor.Beginning, RevocationFeedController.DefaultLimit, Set(tenantA))),
       )
     },
+    test("says whether the page filled the limit, which the rows alone do not tell when some kinds are skipped") {
+      for
+        (full, _) <- dispatch(
+          get("", Some(edgeCertificate)),
+          page = RevocationPage(revocations = List(sidRevocation), last = Some(lastRowAt), hasMore = true),
+        )
+        (end, _) <- dispatch(get("", Some(edgeCertificate)))
+        fullPage <- full.body.asString.map(_.fromJson[Page].toOption.get)
+        endPage <- end.body.asString.map(_.fromJson[Page].toOption.get)
+      yield assertTrue(fullPage.more, !endPage.more)
+    },
     test("asks for the calling edge's tenants only, whatever the request says") {
       for
         (_, repository) <- dispatch(get("?tenant=tenant-b", Some(edgeCertificate)))
