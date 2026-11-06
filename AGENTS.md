@@ -12,7 +12,9 @@ formats, config keys, database schema, CLI flags, stored data. `readme.md` promi
 1.0.0, but a breaking change is made only when explicitly requested. Otherwise keep the old
 behaviour working (add alongside, default to the old value, deprecate before removing) and, if
 compatibility cannot be kept, stop and ask. State any break, and how existing deployments migrate,
-in the PR and in `deploy.md`.
+in the PR description (the release notes are written from it). `deploy.md` is the standing
+procedure, not a changelog: do not add a section to it for each change, it only makes pull requests
+conflict.
 
 Read before non-trivial work: `readme.md` (architecture), `develop.md` (running locally,
 config generation), `deploy.md` (topology, migrations, secrets), `SECURITY.md`.
@@ -41,7 +43,7 @@ reporting the change as finished.
 1. `sbt compile` and `sbt test` pass. `sbt test` is run before every commit.
 2. Tests exist at the right level (see Test Coverage Rules below).
 3. Specs, docs and config that describe the changed behaviour are updated in the same change
-   (OpenAPI under `*/open-api/`, `develop.md`/`deploy.md` when run or deploy steps change). The
+   (OpenAPI under `*/open-api/`, `develop.md`/`deploy.md` when a command or step of the run or deploy procedure itself changes). The
    product documentation lives in `versolauth/versola-website`: a change to an admin console
    screen needs retaken screenshots, a change to behaviour a standard defines needs its `rfc/`
    page updated or created. The `versola-website` pull request is opened together with the code
