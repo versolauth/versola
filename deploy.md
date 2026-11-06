@@ -491,6 +491,17 @@ the secret, in `pending_logins.browser_binding_hash` (migration `V2008`, nullabl
   (a script, a load generator without a cookie jar), now gets `400` on `/complete`.
 - The native flow (`/native/*`) never used the pending login and is unaffected.
 
+#### Behaviour change: a one-time code is good for 10 minutes after it was sent
+
+A code used to be accepted for as long as its sign-in lived (`authConversationTtlSeconds` of the tenant, 15 minutes by default, more where
+raised), however long ago it was sent. It is now accepted for 10 minutes from the moment it was sent (a resend starts a new count), and
+the sign-in's own expiry still applies. After that the right code is answered like a wrong one and the user asks for a new one. The comparison
+no longer stops at the first digit that differs. The 10 minutes is fixed, not a setting.
+
+- **Migration.** None: no schema or setting; the code is still kept in the sign-in as before. A sign-in in progress at the upgrade whose code
+  was sent more than 10 minutes ago needs a new code.
+- **What to check.** A tenant whose conversation TTL is below 10 minutes is unaffected; one above it now has the shorter limit for codes.
+
 #### Breaking change (2026-10-25): the access log is set per edge in central, not by environment
 
 `HTTP_ACCESS_LOG`, `HTTP_ACCESS_LOG_SLOW_MS` and `HTTP_ACCESS_LOG_SAMPLE_RATE` are no longer read by any service; a value left
