@@ -587,7 +587,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // bounded by the client's access token TTL.
           env.accessTokenRevocationService.announceFamily.calls ==
             List((testClient, familyId1, userId1.toString, now.plus(testClient.accessTokenTtl))),
-          env.tokenRepo.deleteByFamily.calls == List((familyId1, RevocationTerms(RevocationCause.CodeReplay, testClient.accessTokenTtl))),
+          env.tokenRepo.deleteByFamily.calls == List((familyId1, RevocationTerms(RevocationCause.CodeReplay, testClient.accessTokenTtl, Map.empty))),
           env.tokenRepo.createRefreshToken.calls.isEmpty,
         )
       },
@@ -879,7 +879,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
           // Recorded in the repository call that expires the family, with the reuse as its cause.
           env.tokenRepo.revokeFamily.calls ==
-            List((refreshTokenMac1, clientId1, RevocationTerms(RevocationCause.RefreshReuse, testClient.accessTokenTtl))),
+            List((refreshTokenMac1, clientId1, RevocationTerms(RevocationCause.RefreshReuse, testClient.accessTokenTtl, Map.empty))),
           // Every access token the family issued goes, not just the tip's, and they are named
           // collectively: one push carrying the family, bounded by the client's current TTL,
           // since no token of the chain is in hand to read an expiry off.
@@ -1164,7 +1164,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
           // Recorded in the repository call that expires the family, with the reuse as its cause.
           env.tokenRepo.revokeFamily.calls ==
-            List((refreshTokenMac1, clientId1, RevocationTerms(RevocationCause.RefreshReuse, testClient.accessTokenTtl))),
+            List((refreshTokenMac1, clientId1, RevocationTerms(RevocationCause.RefreshReuse, testClient.accessTokenTtl, Map.empty))),
           env.accessTokenRevocationService.announceFamily.calls ==
             List((testClient, familyId1, userId1.toString, now.plus(testClient.accessTokenTtl))),
         )

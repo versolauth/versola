@@ -258,11 +258,14 @@ class PostgresSessionRepository(xa: TransactorZIO)
         """.query[RefreshTokenRecord].run().toList
 
   /** The `sid` claim of an access token is the session's public id, which is what the row names. */
-  private def revokeSession(publicId: PublicSessionId, now: Instant, revocation: RevocationTerms)(using DbCon): Unit =
+  private def revokeSession(publicId: PublicSessionId, clients: List[ClientEntry], now: Instant, revocation: RevocationTerms)(using
+      DbCon,
+  ): Unit =
     PostgresRevocationRepository.upsert(
       Revocation(
         key = RevocationKey.Sid(publicId),
-        expiresAt = now.plus(revocation.ttl),
+        // The clients the session served bound its tokens, not the longest-lived client there is.
+        expiresAt = now.plus(revocation.ttlOfSession(clients.map(_.clientId))),
         issuedBefore = None,
       ),
       revocation.cause,
@@ -283,7 +286,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
         sql"""
           UPDATE refresh_tokens SET expires_at = $now WHERE session_id = $id
         """.update.run()
-        session.foreach(record => revokeSession(record.publicId, now, revocation))
+        session.foreach(record => revokeSession(record.publicId, record.clients, now, revocation))
         session
 
   override def invalidateByPublicId(
@@ -300,7 +303,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
         """.query[(MAC, SessionRecord)].run().headOption
         session.foreach { case (id, record) =>
           sql"""UPDATE refresh_tokens SET expires_at = $now WHERE session_id = $id""".update.run()
-          revokeSession(record.publicId, now, revocation)
+          revokeSession(record.publicId, record.clients, now, revocation)
         }
         session
 
@@ -311,11 +314,11 @@ class PostgresSessionRepository(xa: TransactorZIO)
           UPDATE sso_sessions
           SET expires_at = $now
           WHERE public_id = $publicId AND user_id = $userId
-          RETURNING id
-        """.query[MAC].run().headOption
-        sessionId.foreach: id =>
+          RETURNING id, clients
+        """.query[(MAC, List[ClientEntry])].run().headOption
+        sessionId.foreach: (id, clients) =>
           sql"""UPDATE refresh_tokens SET expires_at = $now WHERE session_id = $id""".update.run()
-          revokeSession(publicId, now, revocation)
+          revokeSession(publicId, clients, now, revocation)
         sessionId.isDefined
 
   // ── refresh token methods ─────────────────────────────────────────────────

@@ -75,10 +75,11 @@ object PostgresRevocationRepository:
     * then skip the write entirely, leaving `issued_before` where it was and never firing the
     * notification.
     *
-    * `issued_before` is null exactly for the kinds that have no issuance bound (`jti:`, `fam:`,
-    * `sid:`), and that is a property of the key rather than of the write, so the two sides of a
-    * conflict always agree on whether it is set. `cause` follows the latest write that changed
-    * the row.
+    * `issued_before` follows the cache's widest-wins rule: no bound covers every token the key
+    * names, so it beats any instant, and between two instants the later one rejects more. Today
+    * the key kind decides whether a bound is set, so the two sides of a conflict agree; the rule
+    * is written out so that a writer of a kind that can be written both ways cannot narrow an
+    * entry. `cause` follows the latest write that changed the row.
     *
     * `revoked_at` comes from Postgres's own `NOW()` rather than the replica's `Clock`. It is
     * compared against other replicas' cursors, and a cursor only rewinds by a fixed overlap to
@@ -93,8 +94,12 @@ object PostgresRevocationRepository:
       ON CONFLICT (revoked_key) DO UPDATE
       SET revoked_at    = EXCLUDED.revoked_at,
           expires_at    = GREATEST(auth_revocations.expires_at, EXCLUDED.expires_at),
-          issued_before = GREATEST(auth_revocations.issued_before, EXCLUDED.issued_before),
+          issued_before = CASE
+                            WHEN auth_revocations.issued_before IS NULL OR EXCLUDED.issued_before IS NULL THEN NULL
+                            ELSE GREATEST(auth_revocations.issued_before, EXCLUDED.issued_before)
+                          END,
           cause         = EXCLUDED.cause
       WHERE auth_revocations.expires_at < EXCLUDED.expires_at
-         OR auth_revocations.issued_before < EXCLUDED.issued_before
+         OR (auth_revocations.issued_before IS NOT NULL
+             AND (EXCLUDED.issued_before IS NULL OR auth_revocations.issued_before < EXCLUDED.issued_before))
     """.update.run()

@@ -129,11 +129,22 @@ enum RevocationCause(val code: String):
   *
   * @param ttl how long after the revocation a token it covers can still be valid: the client's
   *            `accessTokenTtl` for a family, the widest `accessTokenTtl` of any client for a
-  *            session or a user, whose tokens are not known.
+  *            user, whose tokens are not known, and for a session the fallback when the clients
+  *            it served are not all known (see [[ttlOfSession]]).
+  * @param ttlByClient every client's `accessTokenTtl`, which a session's entry is bounded by the
+  *                    clients that session served with, instead of by the longest-lived client
+  *                    of the deployment. Empty where the key is not a session's.
   */
-case class RevocationTerms(cause: RevocationCause, ttl: Duration)
+case class RevocationTerms(cause: RevocationCause, ttl: Duration, ttlByClient: Map[ClientId, Duration]):
+  /** A session's tokens were issued to the clients it served and to no others, so the longest of
+    * their TTLs bounds them. A client this deployment no longer knows could have had any TTL, so
+    * one unknown client puts the whole bound back at [[ttl]]: over-retained, never under-retained.
+    */
+  def ttlOfSession(clients: List[ClientId]): Duration =
+    val known = clients.flatMap(ttlByClient.get)
+    if clients.nonEmpty && known.sizeIs == clients.size then known.max else ttl
 
 object RevocationTerms:
   /** A refresh family: every token it issued was issued to this client, so its own TTL bounds them. */
   def forFamily(client: OAuthClientRecord, cause: RevocationCause): RevocationTerms =
-    RevocationTerms(cause, client.accessTokenTtl)
+    RevocationTerms(cause, client.accessTokenTtl, Map.empty)

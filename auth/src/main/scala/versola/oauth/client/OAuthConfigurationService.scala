@@ -78,6 +78,10 @@ trait OAuthConfigurationService:
     */
   def widestAccessTokenTtl: UIO[Duration]
 
+  /** Every client's `accessTokenTtl`, so that a session's revocation can be bounded by the clients
+    * the session served rather than by [[widestAccessTokenTtl]]. */
+  def accessTokenTtls: UIO[Map[ClientId, Duration]]
+
   def verifySecret(
       id: ClientId,
       providedSecret: Option[Secret],
@@ -366,6 +370,9 @@ object OAuthConfigurationService:
     // than tuned: getting it wrong only makes an entry outlive its usefulness.
     override def widestAccessTokenTtl: UIO[Duration] =
       clientCache.get.map(_.values.map(_.accessTokenTtl).maxOption.getOrElse(1.hour))
+
+    override def accessTokenTtls: UIO[Map[ClientId, Duration]] =
+      clientCache.get.map(_.view.mapValues(_.accessTokenTtl).toMap)
 
     private def verifyOneSecret(
         secret: Secret,

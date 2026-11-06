@@ -62,14 +62,16 @@ object SessionServiceSpec extends UnitSpecBase:
     )
 
   /** What the longest-lived client's access tokens last, which bounds the ones issued under a session. */
+  private val clientTtls = Map(ClientId("short") -> 5.minutes, ClientId("long") -> 15.minutes)
   private val widestTtl = 15.minutes
+  private def termsOf(cause: RevocationCause) = RevocationTerms(cause, widestTtl, clientTtls)
 
   class Env:
     val repository = stub[SessionRepository]
     val security = stub[SecurityService]
     val userAgentRepository = stub[UserAgentRepository]
     val configuration = stub[OAuthConfigurationService]
-    configuration.widestAccessTokenTtl.returnsWith(ZIO.succeed(widestTtl))
+    configuration.accessTokenTtls.returnsWith(ZIO.succeed(clientTtls))
     val service: SessionService = SessionService.Impl(repository, security, TestEnvConfig.coreConfig, userAgentRepository, configuration)
 
   def spec = suite("SessionService")(
@@ -93,8 +95,8 @@ object SessionServiceSpec extends UnitSpecBase:
         yield assertTrue(
           // Which clients the session's tokens went to is not looked up: a token of the
           // longest-lived one is the longest a revocation has to outlive.
-          env.repository.invalidate.calls == List((mac, RevocationTerms(RevocationCause.Logout, widestTtl))),
-          env.repository.invalidateByPublicId.calls == List((publicId, RevocationTerms(RevocationCause.AdminRevoked, widestTtl))),
+          env.repository.invalidate.calls == List((mac, termsOf(RevocationCause.Logout))),
+          env.repository.invalidateByPublicId.calls == List((publicId, termsOf(RevocationCause.AdminRevoked))),
         )
       },
       test("ends every session of a user with the cause it was given") {
@@ -104,7 +106,7 @@ object SessionServiceSpec extends UnitSpecBase:
           result <- env.service.invalidateAllByUser(userId, RevocationCause.UserDeleted)
         yield assertTrue(
           result == List(record),
-          env.repository.invalidateByUserId.calls == List((userId, RevocationTerms(RevocationCause.UserDeleted, widestTtl))),
+          env.repository.invalidateByUserId.calls == List((userId, termsOf(RevocationCause.UserDeleted))),
         )
       },
       test("Right(rawId) returns None when the repository finds nothing") {
@@ -143,7 +145,7 @@ object SessionServiceSpec extends UnitSpecBase:
           result <- env.service.invalidateForUser(publicId, userId, RevocationCause.UserRevoked)
         yield assertTrue(
           result,
-          env.repository.invalidateByPublicIdForUser.calls == List((publicId, userId, RevocationTerms(RevocationCause.UserRevoked, widestTtl))),
+          env.repository.invalidateByPublicIdForUser.calls == List((publicId, userId, termsOf(RevocationCause.UserRevoked))),
         )
       },
     ),

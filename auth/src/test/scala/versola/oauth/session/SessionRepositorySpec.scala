@@ -46,7 +46,11 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
   val ttl = 5.minutes
 
   /** What the methods that end a session are told about the revocation they record. */
-  val terms = RevocationTerms(RevocationCause.Logout, 10.minutes)
+  val terms = RevocationTerms(
+    RevocationCause.Logout,
+    ttl = 10.minutes,
+    ttlByClient = Map(clientId1 -> 5.minutes, clientId2 -> 30.minutes),
+  )
 
   /** What the repository has recorded as revoked, by key: the whole list is small in a test. */
   def recorded(env: SessionRepositorySpec.Env): Task[Map[RevocationKey, Revocation]] =
@@ -466,8 +470,42 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           // The `sid` claim of an access token is the session's public id, and the entry ends
           // nothing the user's other sessions hold: `sid`, no issuance bound.
           entries.keySet == Set(RevocationKey.Sid(publicId1)),
-          entries.get(RevocationKey.Sid(publicId1)).exists(_.expiresAt == now.plus(terms.ttl)),
+          entries.get(RevocationKey.Sid(publicId1)).exists(_.expiresAt == now.plus(5.minutes)),
           entries.get(RevocationKey.Sid(publicId1)).exists(_.issuedBefore.isEmpty),
+        )
+      },
+      test("a session's revocation lasts as long as the longest-lived client the session served") {
+        for
+          now <- Clock.instant
+          _ <- env.repository.create(
+            sessionId1,
+            session1.copy(clients = List(ClientEntry(clientId1, Instant.EPOCH), ClientEntry(clientId2, Instant.EPOCH))),
+            ttl,
+            None,
+            None,
+          )
+          _ <- env.repository.invalidate(sessionId1, terms)
+          entries <- recorded(env)
+        yield assertTrue(
+          // The client with the 30 minute TTL bounds it, not the 10 minute default and not the 5 minute client.
+          entries.get(RevocationKey.Sid(publicId1)).exists(_.expiresAt == now.plus(30.minutes)),
+        )
+      },
+      test("a session that served a client this deployment no longer knows is held for the widest TTL") {
+        for
+          now <- Clock.instant
+          _ <- env.repository.create(
+            sessionId1,
+            session1.copy(clients = List(ClientEntry(clientId1, Instant.EPOCH), ClientEntry(ClientId("removed"), Instant.EPOCH))),
+            ttl,
+            None,
+            None,
+          )
+          _ <- env.repository.invalidate(sessionId1, terms)
+          entries <- recorded(env)
+        yield assertTrue(
+          // A client that is gone could have had any TTL, so the bound goes back to the deployment-wide one: over-retained.
+          entries.get(RevocationKey.Sid(publicId1)).exists(_.expiresAt == now.plus(terms.ttl)),
         )
       },
       test("invalidate records nothing for a session that is unknown or already over") {
@@ -490,7 +528,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
         yield assertTrue(
           none.isEmpty,
           entries.keySet == Set(RevocationKey.Sid(publicId1)),
-          entries.get(RevocationKey.Sid(publicId1)).exists(_.expiresAt == now.plus(terms.ttl)),
+          entries.get(RevocationKey.Sid(publicId1)).exists(_.expiresAt == now.plus(5.minutes)),
         )
       },
       test("invalidateByPublicIdForUser records the session of its owner, and nothing for another user's") {

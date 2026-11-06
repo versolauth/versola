@@ -17,7 +17,7 @@ import versola.oauth.session.model.{
 }
 import versola.user.model.UserId
 import versola.util.{CoreConfig, MAC, Secret, SecurityService}
-import zio.{Duration, Task, UIO, ZLayer}
+import zio.{Duration, Task, UIO, ZLayer, durationInt}
 
 trait SessionService:
   def find(rawId: SessionId): Task[Option[SessionInfo]]
@@ -80,11 +80,12 @@ object SessionService:
       configuration: OAuthConfigurationService,
   ) extends SessionService:
 
-    /** How long a token issued under a session can outlive the session's end is that of the
-      * longest-lived client's, since which clients the session's tokens went to is not looked up
-      * (see [[OAuthConfigurationService.widestAccessTokenTtl]]). */
+    /** A session entry is bounded by the longest TTL of the clients the session served, which the
+      * repository reads off the session it ends; a user entry, whose clients are not known, by the
+      * widest of every client (see [[RevocationTerms.ttlOfSession]]). */
     private def sessionTerms(cause: RevocationCause): UIO[RevocationTerms] =
-      configuration.widestAccessTokenTtl.map(RevocationTerms(cause, _))
+      configuration.accessTokenTtls.map: ttls =>
+        RevocationTerms(cause, ttls.values.maxOption.getOrElse(1.hour), ttls)
 
     override def find(rawId: SessionId): Task[Option[SessionInfo]] =
       for

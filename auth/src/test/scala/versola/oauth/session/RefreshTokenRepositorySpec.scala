@@ -51,7 +51,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
   val idempotencyKey2 = MAC(Array.fill(32)(41.toByte))
 
   /** What the family methods are told about the revocation they record. */
-  val terms = RevocationTerms(RevocationCause.RefreshReuse, 10.minutes)
+  val terms = RevocationTerms(RevocationCause.RefreshReuse, 10.minutes, Map.empty)
 
   /** What the repository has recorded as revoked, by key: the whole list is small in a test. */
   def recorded(env: RefreshTokenRepositorySpec.Env): Task[Map[RevocationKey, Revocation]] =
