@@ -1954,8 +1954,12 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |# long-term copy is the operator's logical replication), what recording an event does when the writer's queue is full
        |# (`drop`: the event is not queued and is counted in audit_events_dropped_total; `block`: it waits up to `block-timeout` for
        |# room and then is not queued and is counted), and the high-volume kinds that may be switched off. All keys are required.
+       |# `retention` is from 1 to 14 days; any other value stops the start. What it stores: about 430 bytes an event on disk, indexes
+       |# included, so at 1 000 events a second about 37 GB a day, about 260 GB for 7 days and about 520 GB for 14 days; at 100 events a
+       |# second a tenth of that. Events a second equal requests a second only if every request records an event: `events` (`token-refresh`
+       |# is off by default) is what changes it. A design estimate, to be replaced with the figure measured under load.
        |audit {
-       |  retention     = "7 days"
+       |  retention     = "7 days"      # 1 to 14 days
        |  overflow      = "drop"           # drop | block
        |  block-timeout = "2 seconds"
        |  events {

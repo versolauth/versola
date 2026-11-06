@@ -52,6 +52,20 @@ object PostgresCentralAuditConfigSpec extends ZIOSpecDefault:
         config.audit.events.adminUserViewed,
       )
     },
+    test("a retention the partitions cannot keep stops the start: under a day, or over the 14 days the table is kept ahead for") {
+      for
+        zero <- load("""audit { retention = "0 days" }""").either
+        long <- load("""audit { retention = "15 days" }""").either
+        one <- load("""audit { retention = "1 day" }""")
+        max <- load("""audit { retention = "14 days" }""")
+      yield assertTrue(
+        zero.left.exists(_.toString.contains("audit.retention must be between 1 and 14 days")),
+        long.left.exists(_.toString.contains("audit.retention must be between 1 and 14 days")),
+        one.audit.retention == 1.day,
+        max.audit.retention == 14.days,
+        AuditEvents.Sizing().partitionsAhead >= CentralConfig.AuditConfig.MaxRetentionDays,
+      )
+    },
     test("an overflow that is neither block nor drop stops the start and names the key") {
       for refused <- load("""audit { overflow = "wait" }""").either
       yield assertTrue(refused.left.exists(_.toString.contains("audit.overflow is 'block' or 'drop', not 'wait'")))

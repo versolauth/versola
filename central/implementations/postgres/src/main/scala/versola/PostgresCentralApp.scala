@@ -374,6 +374,9 @@ object PostgresCentralApp extends VersolaApp("central"):
         .toRight(zio.Config.Error.InvalidData(message = s"audit.overflow is 'block' or 'drop', not '$name'")),
     )
 
+  given DeriveConfig[CentralConfig.AuditConfig] =
+    DeriveConfig.derived[CentralConfig.AuditConfig].mapOrFail(CentralConfig.AuditConfig.validated)
+
   given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
     .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))
 
