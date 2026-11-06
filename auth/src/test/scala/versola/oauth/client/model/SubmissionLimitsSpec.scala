@@ -25,7 +25,8 @@ object SubmissionLimitsSpec extends UnitSpecBase:
 
   val spec = suite("SubmissionLimits")(
     test("decodes the payload of a tenant that predates step-up limits, with no step-up section") {
-      val json = """{"otpRequest":[{"maxAttempts":2,"windowSeconds":60}],"otpSubmit":[],"passwordSubmit":[],"passkeyAssertion":[],"banDurationSeconds":1800}"""
+      val json =
+        """{"otpRequest":[{"maxAttempts":2,"windowSeconds":60}],"otpSubmit":[],"passwordSubmit":[],"passkeyAssertion":[],"banDurationSeconds":1800}"""
       assertTrue(json.fromJson[SubmissionLimits].map(_.stepUp) == Right(None))
     },
     test("round-trips a configured step-up section") {

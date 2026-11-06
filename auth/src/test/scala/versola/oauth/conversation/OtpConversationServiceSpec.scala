@@ -18,6 +18,7 @@ import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PrimaryCredential, ScopeToken}
 import versola.oauth.client.model.{
   AuthFlow,
   AuthMethodRef,
@@ -29,7 +30,6 @@ import versola.oauth.client.model.{
   RegistrationFlow,
   ScopeToken,
 }
-import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PrimaryCredential, ScopeToken}
 import versola.oauth.conversation.CodeAlternativeFixtures as Alt
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, CodeAlternative, ConversationRecord, ConversationStep}
@@ -177,6 +177,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
 
   private def stepUp(record: ConversationRecord) =
     record.copy(priorSessionId = Some(MAC(Array.fill(32)(2.toByte))), targetAcr = Some(Acr("mfa")))
+
   /** Issues one challenge whatever the score (unless `issues` is false, as when it fails), and answers every solution with `verdict`. */
   class FakeVerifier(verdict: ChallengeResult, limit: Int = 3, issues: Boolean = true) extends ChallengeVerifier:
     override def pause: zio.Duration = 20.seconds
