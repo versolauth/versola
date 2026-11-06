@@ -26,6 +26,12 @@ final class SmtpEmailSender(settings: SmtpSettings) extends EmailSender:
     props.put("mail.smtp.port", settings.port.toString)
     props.put("mail.smtp.auth", settings.password.isDefined.toString)
     props.put("mail.smtp.starttls.enable", settings.startTls.toString)
+    // STARTTLS that is merely enabled is an offer: a server that does not make it, or a peer on the route that strips it
+    // from the greeting, gets the password and the message in clear. Required, the session fails instead. The server's
+    // certificate is checked against its host name as any TLS client does; Jakarta Mail leaves both off by default.
+    props.put("mail.smtp.starttls.required", settings.startTls.toString)
+    props.put("mail.smtp.ssl.checkserveridentity", "true")
+    props.put("mail.smtp.ssl.protocols", "TLSv1.2 TLSv1.3")
     props.put("mail.smtp.connectiontimeout", SmtpEmailSender.TimeoutMillis)
     props.put("mail.smtp.timeout", SmtpEmailSender.TimeoutMillis)
     props.put("mail.smtp.writetimeout", SmtpEmailSender.TimeoutMillis)

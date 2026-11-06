@@ -1173,8 +1173,8 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   // versolauth/versola#176: "vps is not an env ... if you need
   // customization, you need a separate param").
   //
-  // VersolaApp.envName (see util/http/VersolaApp.scala) treats exactly
-  // one string, "prod", as EnvName.Prod; every other value becomes
+  // EnvName.parse (see util/EnvName.scala) treats "prod" and every name
+  // ending in it as EnvName.Prod; every other value becomes
   // EnvName.Test(value), which gates test-only behavior (e.g.
   // deterministic OTP codes instead of real delivery, per
   // BootstrapService.adminAuthFactors/adminPhone) that must never run
@@ -1185,14 +1185,24 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   // ENV_NAME instead of hardcoding "prod": entrypoint.sh's caller
   // (versola-cli, non-interactively) sets that explicitly, so it's a
   // param this script is handed, not one it guesses from target -- see
-  // versola-cli's pullAndRunTools for where that's set. Everything else
-  // (isLocal, and real interactive deployments where a human just types
-  // the name at the prompt above) keeps using target verbatim, same as
-  // always -- typing "prod" here still works exactly like it did before
-  // vps existed as a non-interactive target.
+  // versola-cli's pullAndRunTools for where that's set. k8s is a target
+  // too, not an environment (the chart deploys a production as readily as
+  // a campaign stand), so it asks, defaulting to production: writing the
+  // target's name here used to turn every k8s deployment into a test
+  // environment with fixed one-time codes. Everything else (isLocal, and
+  // real interactive deployments where a human just types the name at the
+  // prompt above) keeps using target verbatim, same as always -- typing
+  // "prod" here still works exactly like it did before vps existed as a
+  // non-interactive target.
   val env =
     if isDockerLocal then "docker-local"
     else if isVps then sys.env.getOrElse("ENV_NAME", "prod")
+    else if isKubernetes then
+      prompt(
+        "  Environment name (a name ending in \"prod\" is production, anything else a test environment with fixed one-time codes) [prod]: ",
+        "prod",
+        flag = "env",
+      )
     else target
   // Every secret field this script generates becomes a `${VAR}` HOCON
   // placeholder (resolved via OpenBao by versola-cli) in both
