@@ -997,6 +997,18 @@ final class OAuthClient(client: Client, config: E2EConfig):
       response <- Client.batched(Request.get(url)).provide(ZLayer.succeed(client))
     yield response
 
+  /** GET /logout?id_token_hint=… with the browser's `SSO_SESSION` cookie, as an RP sends a logout request on behalf of a user
+    * whose browser holds a session. The hint may name a session other than the cookie's (an ID token issued before a later
+    * sign-in), which auth has to ask the user about rather than act on.
+    */
+  def logoutWithSessionAndHint(sessionCookie: String, idToken: String): Task[Response] =
+    for
+      base <- ZIO.fromEither(URL.decode(s"${config.authUrl}/logout")).mapError(RuntimeException(_))
+      request = Request.get(base.addQueryParam("id_token_hint", idToken))
+        .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_SESSION", sessionCookie))))
+      response <- Client.batched(request).provide(ZLayer.succeed(client))
+    yield response
+
   /** GET /permissions/me on the edge — an edge endpoint that authenticates the caller's
     * access token, so it answers 401 for a token the edge has been told to reject.
     */
