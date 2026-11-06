@@ -515,8 +515,9 @@ causes it: a client's `/revoke` (of an access token: `jti`; of a refresh token: 
 authorization code or refresh token replayed (the family), a logout, an administrator ending a session or forgetting
 a device, the user ending one of their sessions (the session), a user deleted or signed out everywhere (the user,
 bounded at that instant, so a login afterwards works). A row lives for one access token lifetime of the longest-lived
-client, then the cleanup manager removes it (`auth_revocations`, hourly, in the generated `cleanup` block). Password change,
-role change and `DELETE /users/refresh-tokens` do not write one yet.
+client, then the cleanup manager removes it (`auth_revocations`, hourly, in the generated `cleanup` block). A password set
+or reset by an administrator, a role removed and `DELETE /users/refresh-tokens` write one too, see
+[the next entry](#behaviour-change-more-changes-revoke-access-tokens-and-a-password-change-can-sign-the-user-out-elsewhere).
 
 - **Migration.** Additive (one new table, an index pair, a trigger), so the previous release keeps serving on the new
   schema and a rollback works; the old release ignores the table. Everything it creates at database level is
@@ -539,6 +540,45 @@ role change and `DELETE /users/refresh-tokens` do not write one yet.
   Revoking a refresh token now ends its whole family, not only the presented row.
 - Components that verify a JWT on its signature alone (a resource server without `edge`, without introspection and
   without the event) still accept a revoked token until `exp`.
+
+#### Behaviour change: more changes revoke access tokens, and a password change can sign the user out elsewhere
+
+Four more causes now write the revocation record of the entry above, in the same transaction as the change (the table and
+the migration are the same: **no new migration**, nothing to run). Access tokens are refused at `/userinfo` and
+`/introspect` in each case; a resource server that verifies a JWT on its signature alone still accepts one until `exp`.
+
+| Change | What is refused | What is not touched |
+|---|---|---|
+| An administrator **sets or resets a user's password** (`POST /users/password/set`, `/users/password/reset` through central; console: the user's page) | Every access token of the user issued **before** the change, for every client | Refresh tokens and sessions: the user refreshes, or signs in again, and gets a token that works |
+| An administrator **revokes a client's offline access** (`DELETE /users/refresh-tokens`; console: "Apps with access" → Revoke) | The access tokens issued by the refresh-token families that were ended (one record per family) | The user's sessions, and every other client's tokens and grants |
+| A **role is removed** from a user (`PATCH /users/roles` with `remove`, applied by `auth`; console: the user's roles) | Every access token of the user issued **before** the removal, for every client of every tenant: roles are per tenant but the record names the user | Refresh tokens and sessions: refreshing is how the user gets a token with the roles held now. **Adding** a role revokes nothing |
+| The user **changes their own password** with `revokeOtherSessions: true` (new, optional; the Security page has a checkbox, unchecked) | Every other session of the user, its refresh tokens, and the access tokens issued under those sessions; the relying parties of those sessions get a back-channel logout | The session the change is made from. Without the field, or with `false`, nothing changes: this is the behaviour before |
+
+What changes for a deployment that upgrades:
+
+- **Before, none of the first three revoked anything.** A token issued before an administrator reset the password, or before a role was
+  removed, kept working until `exp`; now it is refused. An app that treated that as a given (a long-running job holding a token across a
+  reset) gets `401` and has to refresh. A refresh token keeps working, and a token minted by `/token` after the change is accepted.
+  A token minted in the **same second** as a user-wide revocation (a password set/reset, a role removal) counts as issued before it,
+  because `iat` has whole-second resolution, so a client that refreshes at once may have to refresh once more. Scripts that set a
+  password and sign the user in within the same second and then call `/userinfo` see this: wait for the next second.
+- **Removing a role is the one change that revokes for a product reason:** a role in a token is a right, not a hint. The cost is one
+  `/token` per app of the user after a role change, which a bulk edit of many users' roles makes visible in `/token` traffic. The record
+  is written only when a role was actually removed (not for one the user did not hold, nor one the same call adds back).
+- **The record is the whole of it in `auth`; `edge` learns of the user-wide ones later.** The `sub` records (password, role) are not
+  pushed to `back_channel_logout_uri`: that event ends sessions, which these changes do not. An `edge` refuses such a token when it
+  next reads the revocation list from `auth`, not at once; until that feed is in the release, an edge accepts it until `exp` unless the
+  token is refreshed. The offline-access record is pushed to the client's `back_channel_logout_uri` as the existing
+  `versola:event:access-token-revocation` event, by family.
+- **`revokeOtherSessions` needs edge to tell `auth` which session is the caller's.** Central's bootstrap now adds a body inject rule,
+  `sessionId` = `has(token.sid) ? token.sid : ''`, to the `PATCH /settings/password` endpoint of the `auth` resource. Bootstrap
+  converges the catalog of that resource on every start, so it reaches an existing deployment when `central` is restarted;
+  operator-set step-up and rate limits are kept as before. `auth` refuses `revokeOtherSessions: true` with `400
+  current_session_unknown`, changing nothing, when the request carries no session id (an old `central` that has not converged
+  yet, or a token without `sid`): upgrade `central` first, or in any order and accept that the option is refused until it restarts.
+  The old request, without the field, works with every combination of versions.
+- **API shape.** `PATCH /settings/password` is the self-service API behind edge, not a public endpoint, and has no OpenAPI file; the
+  request gains the optional `revokeOtherSessions` (boolean, absent means `false`) and the edge-injected `sessionId`.
 
 #### Behaviour change: edge syncs through `/edge/sync/*`, on central's mutual-TLS port
 

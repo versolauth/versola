@@ -4,6 +4,7 @@ import versola.auth.model.{Password, PasswordRecord}
 import versola.oauth.challenge.password.model.{
   CheckPassword,
   DeliveryChannel,
+  PasswordChangeEffect,
   PasswordDeliveryUnavailable,
   PasswordHistoryChanged,
   PasswordReuseError,
@@ -14,6 +15,8 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.OtpTemplateChannel
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider}
+import versola.oauth.revocation.{RevocationCause, RevocationTerms}
+import versola.oauth.session.model.SessionRecord
 import versola.user.UserRepository
 import versola.user.model.UserId
 import versola.util.{CoreConfig, Email, EnvName, MAC, Phone, Salt, Secret, SecureRandom, SecurityService}
@@ -28,13 +31,19 @@ trait PasswordService:
   /** Returns true if the user has at least one non-expired password on record. */
   def hasPassword(userId: UserId): Task[Boolean]
 
-  def setPassword(userId: UserId, password: Password): IO[Throwable | PasswordReuseError, Unit]
+  /** Stores `password` as the user's current one, and applies `change` in the same transaction. Returns the
+    * sessions it ended, which is none unless `change` is [[PasswordChangeEffect.EndOtherSessions]]. */
+  def setPassword(userId: UserId, password: Password, change: PasswordChangeEffect): IO[Throwable | PasswordReuseError, List[SessionRecord]]
 
-  def setTemporaryPassword(userId: UserId, password: Password, expiresAt: Instant): Task[Unit]
+  /** `refuseEarlierTokens` as in [[PasswordRepository.createTemporary]]. */
+  def setTemporaryPassword(userId: UserId, password: Password, expiresAt: Instant, refuseEarlierTokens: Option[RevocationTerms]): Task[Unit]
 
   /** Issues a temporary password and delivers it over the requested channel.
     * Returns the plaintext only for [[DeliveryChannel.show]], which is rejected
     * with [[PasswordRevealForbidden]] in production.
+    *
+    * The access tokens the user holds from before the reset stop being accepted, recorded with the password
+    * (cause `password_changed`); their sessions and refresh tokens are left alone.
     */
   def resetPassword(
       userId: UserId,
@@ -93,8 +102,12 @@ object PasswordService:
       securityService.hashPassword(Secret.fromString(password), record.salt, config.security.passwordsSecret)
         .map(mac => mac === MAC(record.password))
 
-    override def setPassword(userId: UserId, password: Password): IO[Throwable | PasswordReuseError, Unit] =
-      setPassword(userId, password, attemptsLeft = SetPasswordAttempts)
+    override def setPassword(
+        userId: UserId,
+        password: Password,
+        change: PasswordChangeEffect,
+    ): IO[Throwable | PasswordReuseError, List[SessionRecord]] =
+      setPassword(userId, password, change, attemptsLeft = SetPasswordAttempts)
 
     /** The reuse check reads the history outside the repository's transaction, because it needs the hashing
       * service. The repository refuses the insert if another change got in between ([[PasswordHistoryChanged]]),
@@ -102,8 +115,9 @@ object PasswordService:
     private def setPassword(
         userId: UserId,
         password: Password,
+        change: PasswordChangeEffect,
         attemptsLeft: Int,
-    ): IO[Throwable | PasswordReuseError, Unit] =
+    ): IO[Throwable | PasswordReuseError, List[SessionRecord]] =
       for
         settings <- configuration.getPasswordHistorySettings
         permanents <- passwordRepository.list(userId).map(_.filter(_.expiresAt.isEmpty))
@@ -117,7 +131,7 @@ object PasswordService:
         }.mapError(identity[Throwable | PasswordReuseError])
         salt <- secureRandom.nextBytes(16).map(Salt(_))
         hash <- securityService.hashPassword(Secret.fromString(password), salt, config.security.passwordsSecret)
-        _ <- passwordRepository
+        ended <- passwordRepository
           .create(
             userId = userId,
             passwordHash = Secret(hash),
@@ -125,19 +139,25 @@ object PasswordService:
             historySize = settings.historySize,
             numDifferent = settings.numDifferent,
             expectedHead = permanents.map(_.id).maxOption,
+            change = change,
           )
           .catchAll:
-            case PasswordHistoryChanged if attemptsLeft > 1 => setPassword(userId, password, attemptsLeft - 1)
+            case PasswordHistoryChanged if attemptsLeft > 1 => setPassword(userId, password, change, attemptsLeft - 1)
             case PasswordHistoryChanged => ZIO.fail(IllegalStateException(s"The password history of $userId kept changing"))
             case error: PasswordReuseError => ZIO.fail(error)
             case error: Throwable => ZIO.fail(error)
-      yield ()
+      yield ended
 
-    override def setTemporaryPassword(userId: UserId, password: Password, expiresAt: Instant): Task[Unit] =
+    override def setTemporaryPassword(
+        userId: UserId,
+        password: Password,
+        expiresAt: Instant,
+        refuseEarlierTokens: Option[RevocationTerms],
+    ): Task[Unit] =
       for
         salt <- secureRandom.nextBytes(16).map(Salt(_))
         hash <- securityService.hashPassword(Secret.fromString(password), salt, config.security.passwordsSecret)
-        _ <- passwordRepository.createTemporary(userId, Secret(hash), salt, expiresAt)
+        _ <- passwordRepository.createTemporary(userId, Secret(hash), salt, expiresAt, refuseEarlierTokens)
       yield ()
 
     override def resetPassword(
@@ -156,7 +176,8 @@ object PasswordService:
         plaintext <- generateTemporaryPassword(passwordRegex)
         ttlSeconds = expiresInSeconds.getOrElse(DefaultTtlSeconds)
         expiresAt <- Clock.instant.map(_.plusSeconds(ttlSeconds))
-        _ <- setTemporaryPassword(userId, plaintext, expiresAt)
+        terms <- configuration.accessTokenTtls.map(RevocationTerms.widest(RevocationCause.PasswordChanged, _))
+        _ <- setTemporaryPassword(userId, plaintext, expiresAt, Some(terms))
         _ <- deliverPassword(plaintext, ttlSeconds, recipient)
           .tapError(_ => passwordRepository.deleteTemporary(userId).ignore)
           .when(env.isProd)

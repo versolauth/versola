@@ -466,6 +466,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserInfoService.live >++>
       SubmissionLimiter.live >++>
       ClientAuthThrottle.live >++>
+      LogoutService.live >++>
       AccountSettingsService.live >++>
       AcrResolutionService.live >++>
       UserRegistrationSyncClient.live >++>
@@ -495,8 +496,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConversationRouter.live >++>
       AuthorizationResponseService.live >++>
       AuthorizeEndpointService.live >++>
-      ConversationRenderService.live >++>
-      LogoutService.live
+      ConversationRenderService.live
 
   given DeriveConfig[Secret.Bytes16] = DeriveConfig[String]
     .mapOrFail(SecretConfig.fixedLength(Secret.Bytes16))

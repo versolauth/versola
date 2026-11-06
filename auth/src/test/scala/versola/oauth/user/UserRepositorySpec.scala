@@ -2,9 +2,11 @@ package versola.oauth.user
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.TenantId
+import versola.oauth.revocation.{RevocationCause, RevocationTerms}
 import versola.role.model.RoleId
 import versola.user.UserRepository
 import versola.user.model.*
+import versola.util.revocation.{RevocationCursor, RevocationKey, RevocationRepository}
 import versola.util.{DatabaseSpecBase, Email, Phone}
 import zio.*
 import zio.json.ast.Json
@@ -32,6 +34,13 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
   val phone2 = Phone("+12025555678")
 
   private val now = Instant.now().truncatedTo(ChronoUnit.MICROS)
+
+  /** What a role removal is told about the revocation it records: the widest TTL, in the one place the
+    * cases agree on. */
+  private val terms = RevocationTerms(RevocationCause.RolesChanged, 1.hour, Map.empty)
+
+  private def recorded(env: UserRepositorySpec.Env) =
+    env.revocations.activeSince(RevocationCursor.Beginning, 100).map(_.revocations.map(r => r.key -> r).toMap)
 
   val baseUser = UserRecord.empty(id = userId1)
     .copy(email = Some(email1))
@@ -108,47 +117,47 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
       test("add roles to user") {
         for
           _ <- seed(env, userId1)
-          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a"), RoleId("role-b")), Set.empty)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a"), RoleId("role-b")), Set.empty, terms)
           roles <- env.userRepository.findRolesByUserAndTenant(userId1, TenantId("tenant-1"))
         yield assertTrue(roles.toSet == Set(RoleId("role-a"), RoleId("role-b")))
       },
       test("remove roles from user") {
         for
           _ <- seed(env, userId1)
-          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a"), RoleId("role-b")), Set.empty)
-          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set.empty, Set(RoleId("role-a")))
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a"), RoleId("role-b")), Set.empty, terms)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set.empty, Set(RoleId("role-a")), terms)
           roles <- env.userRepository.findRolesByUserAndTenant(userId1, TenantId("tenant-1"))
         yield assertTrue(roles == List(RoleId("role-b")))
       },
       test("add and remove roles in one call") {
         for
           _ <- seed(env, userId1)
-          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a"), RoleId("role-b")), Set.empty)
-          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-c")), Set(RoleId("role-a")))
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a"), RoleId("role-b")), Set.empty, terms)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-c")), Set(RoleId("role-a")), terms)
           roles <- env.userRepository.findRolesByUserAndTenant(userId1, TenantId("tenant-1"))
         yield assertTrue(roles.toSet == Set(RoleId("role-b"), RoleId("role-c")))
       },
       test("empty add and remove is a no-op") {
         for
           _ <- seed(env, userId1)
-          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a")), Set.empty)
-          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set.empty, Set.empty)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a")), Set.empty, terms)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set.empty, Set.empty, terms)
           roles <- env.userRepository.findRolesByUserAndTenant(userId1, TenantId("tenant-1"))
         yield assertTrue(roles == List(RoleId("role-a")))
       },
       test("insert is idempotent via ON CONFLICT DO NOTHING") {
         for
           _ <- seed(env, userId1)
-          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a")), Set.empty)
-          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a")), Set.empty)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a")), Set.empty, terms)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a")), Set.empty, terms)
           roles <- env.userRepository.findRolesByUserAndTenant(userId1, TenantId("tenant-1"))
         yield assertTrue(roles == List(RoleId("role-a")))
       },
       test("remove non-existing role is a no-op") {
         for
           _ <- seed(env, userId1)
-          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a")), Set.empty)
-          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set.empty, Set(RoleId("role-b")))
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a")), Set.empty, terms)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set.empty, Set(RoleId("role-b")), terms)
           roles <- env.userRepository.findRolesByUserAndTenant(userId1, TenantId("tenant-1"))
         yield assertTrue(roles == List(RoleId("role-a")))
       },
@@ -219,11 +228,47 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
           roles <- env.userRepository.findRolesByUserAndTenant(userId1, TenantId("tenant-1"))
         yield assertTrue(roles == List(RoleId("role-a")))
       },
+      test("removing a role records the user, bounded at the removal, and adding one records nothing") {
+        for
+          _ <- seed(env, userId1)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a"), RoleId("role-b")), Set.empty, terms)
+          afterAdd <- recorded(env)
+          now <- Clock.instant
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set.empty, Set(RoleId("role-a")), terms)
+          afterRemove <- recorded(env)
+          entry = afterRemove.get(RevocationKey.Sub(userId1.toString))
+        yield assertTrue(
+          afterAdd.isEmpty,
+          // `sub`, bounded at the removal: a token the user gets by refreshing afterwards is issued after it and works.
+          afterRemove.keySet == Set(RevocationKey.Sub(userId1.toString)),
+          entry.exists(_.issuedBefore.contains(now)),
+          entry.exists(_.expiresAt == now.plus(terms.ttl)),
+        )
+      },
+      test("removing a role the user does not hold, or one the same call adds back, records nothing") {
+        for
+          _ <- seed(env, userId1)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a")), Set.empty, terms)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set.empty, Set(RoleId("role-b")), terms)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-2"), Set.empty, Set(RoleId("role-a")), terms)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a")), Set(RoleId("role-a")), terms)
+          entries <- recorded(env)
+          roles <- env.userRepository.findRolesByUserAndTenant(userId1, TenantId("tenant-1"))
+        yield assertTrue(entries.isEmpty, roles == List(RoleId("role-a")))
+      },
+      test("a call that adds one role and removes another records the user") {
+        for
+          _ <- seed(env, userId1)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a")), Set.empty, terms)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-c")), Set(RoleId("role-a")), terms)
+          entries <- recorded(env)
+        yield assertTrue(entries.keySet == Set(RevocationKey.Sub(userId1.toString)))
+      },
       test("findRolesByUser groups the roles by tenant") {
         for
           _ <- seed(env, userId1)
-          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a"), RoleId("role-b")), Set.empty)
-          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-2"), Set(RoleId("role-c")), Set.empty)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a"), RoleId("role-b")), Set.empty, terms)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-2"), Set(RoleId("role-c")), Set.empty, terms)
           roles <- env.userRepository.findRolesByUser(userId1)
         yield assertTrue(
           roles.keySet == Set(TenantId("tenant-1"), TenantId("tenant-2")),
@@ -398,4 +443,4 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
 end UserRepositorySpec
 
 object UserRepositorySpec:
-  case class Env(userRepository: UserRepository)
+  case class Env(userRepository: UserRepository, revocations: RevocationRepository)

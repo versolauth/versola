@@ -708,7 +708,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
-          _ <- env.passwordService.setPassword.succeedsWith(())
+          _ <- env.passwordService.setPassword.succeedsWith(Nil)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.setNewPassword(
             passwordRecord.copy(needsPasswordChange = true),
@@ -727,7 +727,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
-          _ <- env.passwordService.setPassword.succeedsWith(())
+          _ <- env.passwordService.setPassword.succeedsWith(Nil)
           _ <- env.conversationRepository.overwrite.succeedsWith(false)
           result <- env.service.setNewPassword(passwordRecord, setPasswordStep, password, authId)
         yield assertTrue(result == ConversationResult.WriteConflict)
@@ -868,7 +868,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          _ <- env.passwordService.setPassword.succeedsWith(())
+          _ <- env.passwordService.setPassword.succeedsWith(Nil)
           _ <- env.service.setNewPassword(passwordRecord.copy(needsPasswordChange = true), setPasswordStep, password, authId)
           accepted <- env.audit.recorded
           _ <- env.audit.clear

@@ -5,9 +5,10 @@ import versola.auth.TestEnvConfig
 import versola.auth.model.{Password, PasswordRecord}
 import versola.oauth.challenge.password.model.*
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{OtpTemplateChannel, PasswordHistorySettings, TenantId}
+import versola.oauth.client.model.{ClientId, OtpTemplateChannel, PasswordHistorySettings, TenantId}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider}
+import versola.oauth.revocation.{RevocationCause, RevocationTerms}
 import versola.user.UserRepository
 import versola.user.model.{UserId, UserRecord}
 import versola.util.*
@@ -30,6 +31,8 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val testHash = MAC("hash".getBytes)
   private val differentHash = MAC("diff".getBytes)
   private val coreConfig = TestEnvConfig.coreConfig
+  private val ttls = Map(ClientId("fast") -> 5.minutes, ClientId("slow") -> 45.minutes)
+  private val adminTerms = RevocationTerms(RevocationCause.PasswordChanged, 45.minutes, ttls)
 
   private val userRecord =
     UserRecord.empty(userId).copy(email = Some(email), phone = Some(phone))
@@ -148,8 +151,8 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
           _ <- env.passwordRepo.list.succeedsWith(Vector.empty)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
-          _ <- env.passwordRepo.create.succeedsWith(())
-          _ <- env.service.setPassword(userId, password)
+          _ <- env.passwordRepo.create.succeedsWith(Nil)
+          _ <- env.service.setPassword(userId, password, PasswordChangeEffect.Untouched)
           createCalls = env.passwordRepo.create.calls
         yield assertTrue(
           createCalls.length == 1,
@@ -167,7 +170,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.passwordRepo.list.succeedsWith(Vector.empty)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.create.failsWith(PasswordReuseError(3))
-          result <- env.service.setPassword(userId, password).exit
+          result <- env.service.setPassword(userId, password, PasswordChangeEffect.Untouched).exit
         yield assert(result)(fails(equalTo(PasswordReuseError(3))))
       },
       test("rejects password reuse when new password matches a recent permanent record") {
@@ -177,7 +180,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
           _ <- env.passwordRepo.list.succeedsWith(Vector(permRecord(testHash)))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
-          result <- env.service.setPassword(userId, password).exit
+          result <- env.service.setPassword(userId, password, PasswordChangeEffect.Untouched).exit
         yield assert(result)(fails(equalTo(PasswordReuseError(3))))
       },
       test("passes the newest permanent password it checked against to the repository") {
@@ -187,8 +190,8 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
           _ <- env.passwordRepo.list.succeedsWith(Vector(permRecord(differentHash).copy(id = 7), permRecord(differentHash).copy(id = 4)))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
-          _ <- env.passwordRepo.create.succeedsWith(())
-          _ <- env.service.setPassword(userId, password)
+          _ <- env.passwordRepo.create.succeedsWith(Nil)
+          _ <- env.service.setPassword(userId, password, PasswordChangeEffect.Untouched)
         yield assertTrue(env.passwordRepo.create.calls.map(_._6) == List(Some(7L)))
       },
       test("checks reuse again against the new history when another change got in first") {
@@ -201,7 +204,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
             case _ => ZIO.succeed(Vector(permRecord(testHash).copy(id = 1)))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.create.failsWith(PasswordHistoryChanged)
-          result <- env.service.setPassword(userId, password).exit
+          result <- env.service.setPassword(userId, password, PasswordChangeEffect.Untouched).exit
         yield assert(result)(fails(equalTo(PasswordReuseError(3))))
       },
       test("gives up when the history keeps changing under it") {
@@ -212,8 +215,44 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.passwordRepo.list.succeedsWith(Vector.empty)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.create.failsWith(PasswordHistoryChanged)
-          result <- env.service.setPassword(userId, password).exit
+          result <- env.service.setPassword(userId, password, PasswordChangeEffect.Untouched).exit
         yield assertTrue(result.isFailure, env.passwordRepo.create.calls.size == 3)
+      },
+      test("hands the repository what the change does besides storing the password, and returns the sessions it ended") {
+        val effect = PasswordChangeEffect.RefuseEarlierTokens(adminTerms)
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom)
+          _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
+          _ <- env.passwordRepo.list.succeedsWith(Vector.empty)
+          _ <- env.securityService.hashPassword.succeedsWith(testHash)
+          _ <- env.passwordRepo.create.succeedsWith(Nil)
+          ended <- env.service.setPassword(userId, password, effect)
+        yield assertTrue(env.passwordRepo.create.calls.map(_._7) == List(effect), ended.isEmpty)
+      },
+      test("keeps the instruction when it has to check again because the history moved on") {
+        val effect = PasswordChangeEffect.RefuseEarlierTokens(adminTerms)
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom)
+          _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
+          _ <- env.passwordRepo.list.succeedsWith(Vector.empty)
+          _ <- env.securityService.hashPassword.succeedsWith(testHash)
+          _ <- env.passwordRepo.create.returnsZIO:
+            case _ if env.passwordRepo.create.calls.size == 1 => ZIO.fail(PasswordHistoryChanged)
+            case _ => ZIO.succeed(Nil)
+          _ <- env.service.setPassword(userId, password, effect)
+        yield assertTrue(env.passwordRepo.create.calls.map(_._7) == List(effect, effect))
+      },
+      test("records nothing for a password the reuse check refused") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom)
+          _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
+          _ <- env.passwordRepo.list.succeedsWith(Vector(permRecord(testHash)))
+          _ <- env.securityService.hashPassword.succeedsWith(testHash)
+          result <- env.service.setPassword(userId, password, PasswordChangeEffect.RefuseEarlierTokens(adminTerms)).exit
+        yield assert(result)(fails(equalTo(PasswordReuseError(3)))) && assertTrue(env.passwordRepo.create.calls.isEmpty)
       },
       test("allows password change when new password does not match any recent permanent record") {
         for
@@ -222,8 +261,8 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
           _ <- env.passwordRepo.list.succeedsWith(Vector(permRecord(differentHash)))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
-          _ <- env.passwordRepo.create.succeedsWith(())
-          _ <- env.service.setPassword(userId, password)
+          _ <- env.passwordRepo.create.succeedsWith(Nil)
+          _ <- env.service.setPassword(userId, password, PasswordChangeEffect.Untouched)
           createCalls = env.passwordRepo.create.calls
         yield assertTrue(createCalls.length == 1)
       },
@@ -235,6 +274,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           env = Env(secureRandom, EnvName.Prod)
           now <- Clock.instant
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.createTemporary.succeedsWith(())
           _ <- env.service.resetPassword(userId, None, None)
@@ -243,6 +283,8 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           createCalls.length == 1,
           createCalls.head._1 == userId,
           !createCalls.head._4.isBefore(now.plusSeconds(11 * 60 * 60)),
+          // The tokens the user holds from before the reset stop being accepted, recorded with the reset.
+          createCalls.head._5 == Some(adminTerms),
           env.emailProvider.send.calls.isEmpty,
           env.smsProvider.send.calls.isEmpty,
         )
@@ -252,6 +294,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom, EnvName.Test("docker-local"))
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.createTemporary.succeedsWith(())
           revealed <- env.service.resetPassword(userId, None, Some(DeliveryChannel.show))
@@ -267,6 +310,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom, EnvName.Prod)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.configuration.getPasswordTemplate.succeedsWith(OtpTemplate("Pass: {{password}}, hours: {{expiresHours}}"))
           _ <- env.userRepo.find.succeedsWith(Some(userRecord))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
@@ -287,6 +331,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom, EnvName.Prod)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.configuration.getPasswordTemplate.succeedsWith(OtpTemplate("Pass: {{password}}"))
           _ <- env.userRepo.find.succeedsWith(Some(userRecord))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
@@ -306,6 +351,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom, EnvName.Prod)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.createTemporary.succeedsWith(())
           _ <- env.service.resetPassword(userId, None, None)
@@ -319,6 +365,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.createTemporary.succeedsWith(())
           _ <- env.service.resetPassword(userId, Some(3600L), Some(DeliveryChannel.email))
@@ -333,6 +380,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.createTemporary.succeedsWith(())
           result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.show))
@@ -349,6 +397,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.createTemporary.succeedsWith(())
           result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.email))
@@ -369,6 +418,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom, EnvName.Prod)
           _ <- env.configuration.getPasswordRegex.succeedsWith(regex)
+          _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.configuration.getPasswordTemplate.succeedsWith(OtpTemplate("{{password}}"))
           _ <- env.userRepo.find.succeedsWith(Some(userRecord))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
@@ -384,6 +434,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom, EnvName.Prod)
           _ <- env.configuration.getPasswordRegex.succeedsWith(impossibleRegex)
+          _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.passwordRepo.createTemporary.succeedsWith(())
           result <- env.service.resetPassword(userId, None, None).exit
         yield assert(result)(fails(isSubtype[TemporaryPasswordGenerationFailed](anything))) &&
@@ -394,6 +445,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom, EnvName.Prod)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.userRepo.find.succeedsWith(Some(UserRecord.empty(userId).copy(phone = Some(phone))))
           _ <- env.passwordRepo.createTemporary.succeedsWith(())
           result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.email)).exit
@@ -408,6 +460,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom, EnvName.Prod)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.userRepo.find.succeedsWith(Some(UserRecord.empty(userId).copy(email = Some(email))))
           _ <- env.passwordRepo.createTemporary.succeedsWith(())
           result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.sms)).exit
@@ -422,6 +475,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom, EnvName.Prod)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.userRepo.find.succeedsWith(None)
           _ <- env.passwordRepo.createTemporary.succeedsWith(())
           result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.email)).exit
@@ -433,6 +487,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom, EnvName.Prod)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.configuration.getPasswordTemplate.succeedsWith(OtpTemplate("Pass: {{password}}"))
           _ <- env.userRepo.find.succeedsWith(Some(userRecord))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)

@@ -217,14 +217,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
       xa.transactMeasured("invalidate-sessions-by-user"):
         // Bounded at this call's own `now`, the instant the sessions end: a token the user obtains by
         // logging in again afterwards is issued after it and keeps working.
-        PostgresAuthRevocationRepository.upsert(
-          Revocation(
-            key = RevocationKey.Sub(userId.toString),
-            expiresAt = now.plus(revocation.ttl),
-            issuedBefore = Some(now),
-          ),
-          revocation.cause,
-        )
+        PostgresAuthRevocationRepository.upsertUser(userId, now, revocation)
         sql"""
           WITH expired AS (
             UPDATE sso_sessions
@@ -239,11 +232,62 @@ class PostgresSessionRepository(xa: TransactorZIO)
           SELECT user_id, clients, user_agent_id, created_at, amr, public_id, expires_at FROM expired
         """.query[SessionRecord].run().toList
 
-  override def revokeRefreshTokensByUserAndClient(userId: UserId, clientId: ClientId): Task[Int] =
+  override def revokeRefreshTokensByUserAndClient(
+      userId: UserId,
+      clientId: ClientId,
+      revocation: RevocationTerms,
+  ): Task[List[RefreshTokenFamilyId]] =
     Clock.instant.flatMap: now =>
-      xa.connectMeasured("revoke-refresh-tokens-by-user-and-client"):
-        sql"""UPDATE refresh_tokens SET expires_at = $now
-              WHERE user_id = $userId AND client_id = $clientId AND expires_at > $now AND rotated_at IS NULL""".update.run()
+      xa.transactMeasured("revoke-refresh-tokens-by-user-and-client"):
+        // Every family is locked before the update, in a fixed order so two of these cannot wait on each
+        // other: a rotation in flight either commits first, and has its successor expired below, or waits and
+        // finds its token dead. Without it the family could end up refused at `/userinfo` through `fam:` and
+        // still refreshable, which is the state the lock exists to rule out (see `deleteByFamily`).
+        val live = sql"""
+          SELECT DISTINCT family_id FROM refresh_tokens
+          WHERE user_id = $userId AND client_id = $clientId AND expires_at > $now AND rotated_at IS NULL
+        """.query[RefreshTokenFamilyId].run().toList.sortBy(identity[String])
+        live.foreach(lockFamilyById)
+        val families = sql"""
+          UPDATE refresh_tokens SET expires_at = $now
+          WHERE user_id = $userId AND client_id = $clientId AND expires_at > $now AND rotated_at IS NULL
+          RETURNING family_id
+        """.query[RefreshTokenFamilyId].run().toList.distinct
+        families.foreach(revokeFamilyTokens(_, now, revocation))
+        families
+
+  /** What a user's own password change does when they ask to be signed out elsewhere: ends every session of
+    * the user but `keep` and every refresh token not held under it, and records `sid:` for each session ended.
+    * Runs in the caller's transaction, the password's, so a password is never changed without its sessions
+    * ending or the reverse. The refresh tokens are reached by `user_id` rather than through the sessions, as
+    * force-logout reaches them: one routinely outlives its session, and the one an intruder kept after their
+    * session expired is the one that has to go.
+    *
+    * Returns the sessions ended, for the caller to tell their relying parties. */
+  private[versola] def endOtherSessions(
+      userId: UserId,
+      keep: PublicSessionId,
+      now: Instant,
+      revocation: RevocationTerms,
+  )(using DbCon): List[SessionRecord] =
+    val ended = sql"""
+      UPDATE sso_sessions
+      SET expires_at = $now
+      WHERE user_id = $userId AND public_id <> $keep AND expires_at > $now
+      RETURNING user_id, clients, user_agent_id, created_at, amr, public_id, expires_at
+    """.query[SessionRecord].run().toList
+    // Locked first, as in `revokeRefreshTokensByUserAndClient`: this is the intruder's own refresh being
+    // raced, and a rotation that commits after the update's snapshot would leave its successor live.
+    sql"""
+      SELECT DISTINCT family_id FROM refresh_tokens
+      WHERE user_id = $userId AND public_session_id <> $keep AND expires_at > $now
+    """.query[RefreshTokenFamilyId].run().toList.sortBy(identity[String]).foreach(lockFamilyById)
+    sql"""
+      UPDATE refresh_tokens SET expires_at = $now
+      WHERE user_id = $userId AND public_session_id <> $keep AND expires_at > $now
+    """.update.run()
+    ended.foreach(record => revokeSession(record.publicId, record.clients, now, revocation))
+    ended
 
   override def findRefreshTokensByUserId(userId: UserId): Task[List[RefreshTokenRecord]] =
     Clock.instant.flatMap: now =>

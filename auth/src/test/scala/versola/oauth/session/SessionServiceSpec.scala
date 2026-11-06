@@ -8,6 +8,7 @@ import versola.oauth.session.model.{
   ClientEntry,
   EndedSession,
   PublicSessionId,
+  RefreshTokenFamilyId,
   SessionId,
   SessionInfo,
   SessionRecord,
@@ -146,6 +147,30 @@ object SessionServiceSpec extends UnitSpecBase:
         yield assertTrue(
           result,
           env.repository.invalidateByPublicIdForUser.calls == List((publicId, userId, termsOf(RevocationCause.UserRevoked))),
+        )
+      },
+    ),
+    suite("revokeRefreshTokensByUserAndClient")(
+      test("records the families under the client's own TTL, with the cause offline_access_revoked") {
+        val env = Env()
+        for
+          _ <- env.repository.revokeRefreshTokensByUserAndClient.succeedsWith(List(RefreshTokenFamilyId("family-1")))
+          families <- env.service.revokeRefreshTokensByUserAndClient(userId, ClientId("short"))
+        yield assertTrue(
+          families == List(RefreshTokenFamilyId("family-1")),
+          // The short-lived client's grants issued nothing that outlives its own TTL: not the widest's.
+          env.repository.revokeRefreshTokensByUserAndClient.calls ==
+            List((userId, ClientId("short"), RevocationTerms(RevocationCause.OfflineAccessRevoked, 5.minutes, Map.empty))),
+        )
+      },
+      test("falls back to the widest TTL for a client the deployment no longer knows, never to a shorter one") {
+        val env = Env()
+        for
+          _ <- env.repository.revokeRefreshTokensByUserAndClient.succeedsWith(Nil)
+          _ <- env.service.revokeRefreshTokensByUserAndClient(userId, ClientId("removed"))
+        yield assertTrue(
+          env.repository.revokeRefreshTokensByUserAndClient.calls ==
+            List((userId, ClientId("removed"), termsOf(RevocationCause.OfflineAccessRevoked))),
         )
       },
     ),

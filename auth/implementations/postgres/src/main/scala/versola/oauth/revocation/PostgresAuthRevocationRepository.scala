@@ -2,8 +2,11 @@ package versola.oauth.revocation
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.util.revocation.{PostgresRevocationRepository, Revocation, RevocationRepository, RevocationTable}
+import versola.user.model.UserId
+import versola.util.revocation.{PostgresRevocationRepository, Revocation, RevocationKey, RevocationRepository, RevocationTable}
 import zio.{Task, ZEnvironment, ZIO, ZLayer}
+
+import java.time.Instant
 
 class PostgresAuthRevocationRepository(xa: TransactorZIO)
   extends PostgresRevocationRepository(xa, PostgresAuthRevocationRepository.Table),
@@ -23,6 +26,16 @@ object PostgresAuthRevocationRepository:
       ZIO.serviceWith[TransactorZIO]: xa =>
         val repository = PostgresAuthRevocationRepository(xa)
         ZEnvironment[AuthRevocationRepository, RevocationRepository](repository, repository)
+
+  /** `sub:<user>`, bounded at `now`: every token the user holds that was issued before this instant is refused,
+    * and one issued after it, which the user obtained by signing in or refreshing again, is not. Written by
+    * whatever changes the user in a way their old tokens no longer reflect, in the same transaction as the
+    * change. */
+  def upsertUser(userId: UserId, now: Instant, terms: RevocationTerms)(using DbCon): Int =
+    upsert(
+      Revocation(key = RevocationKey.Sub(userId.toString), expiresAt = now.plus(terms.ttl), issuedBefore = Some(now)),
+      terms.cause,
+    )
 
   /** Writes a revocation on the caller's connection, so that a repository method which ends a
     * session or a refresh family records it in the same transaction as the ending: the two commit

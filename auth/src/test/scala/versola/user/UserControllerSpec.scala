@@ -6,12 +6,23 @@ import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord, Password}
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
-import versola.oauth.client.model.{ClientId, TenantId}
+import versola.oauth.challenge.password.model.PasswordChangeEffect
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.{ApplicationType, AuthMethod, ClientId, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import versola.oauth.logout.LogoutService
-import versola.oauth.revocation.RevocationCause
+import versola.oauth.revocation.{RevocationCause, RevocationTerms}
+import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionService
-import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionUnderUserAgent, UserAgentId, UserAgentRecord, UserDevice}
+import versola.oauth.session.model.{
+  ClientEntry,
+  PublicSessionId,
+  RefreshTokenFamilyId,
+  SessionUnderUserAgent,
+  UserAgentId,
+  UserAgentRecord,
+  UserDevice,
+}
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
@@ -39,6 +50,53 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val noopThrottle = stub[ChallengeThrottleRepository]
   private val noopPasskeyRepo = stub[PasskeyRepository]
   private val noopPasswordSvc = stub[PasswordService]
+  private val noopConfiguration = stub[OAuthConfigurationService]
+  private val noopRevocation = stub[AccessTokenRevocationService]
+
+  /** The access token TTLs of the clients, which is all a revocation the controller asks for is bounded by. */
+  private val ttls = Map(ClientId("app") -> 5.minutes, ClientId("slow") -> 40.minutes)
+  private val widest = 40.minutes
+
+  private val appClient = OAuthClientRecord(
+    id = ClientId("app"),
+    tenantId = TenantId("default"),
+    clientName = Map("en" -> "App"),
+    redirectUris = Set("https://example.com/callback"),
+    scope = Set(ScopeToken("read")),
+    secret = None,
+    previousSecret = None,
+    accessTokenTtl = 5.minutes,
+    refreshTokenTtl = 7776000.seconds,
+    theme = "default",
+    authFlow = None,
+    otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
+    dpopBoundAccessTokens = false,
+    dpopSigningAlgs = Set.empty,
+    dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.client_secret,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
+    jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
+    applicationType = ApplicationType.web,
+  )
+
+  /** A configuration that knows the TTLs, and the client `find` is asked for, if any. */
+  private def configured(client: Option[OAuthClientRecord] = None): UIO[OAuthConfigurationService] =
+    for
+      configuration <- ZIO.succeed(stub[OAuthConfigurationService])
+      _ <- configuration.accessTokenTtls.succeedsWith(ttls)
+      _ <- configuration.find.succeedsWith(client)
+    yield configuration
 
   private def validToken(key: javax.crypto.SecretKey): Task[String] =
     JWT.serialize(
@@ -79,13 +137,16 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       sessionsService: SessionService = sessionService,
       password: PasswordService = noopPasswordSvc,
       audit: AuditEvents = audit,
+      configuration: OAuthConfigurationService = noopConfiguration,
+      revocation: AccessTokenRevocationService = noopRevocation,
   ) =
     Observability.handleErrors(
       UserController.routes
         .provideEnvironment(
           ZEnvironment(users) ++ ZEnvironment(config) ++
             ZEnvironment(logout) ++ ZEnvironment(sessionsService) ++ ZEnvironment(throttle) ++ ZEnvironment(passkey) ++
-            ZEnvironment(password) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](stub[AuditReportService]) ++ tracing,
+            ZEnvironment(password) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](stub[AuditReportService]) ++
+            ZEnvironment(configuration) ++ ZEnvironment(revocation) ++ tracing,
         ),
     )
 
@@ -99,13 +160,15 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       password: PasswordService = noopPasswordSvc,
       refusing: Boolean = false,
       events: Option[CapturingAuditEvents] = None,
+      configuration: OAuthConfigurationService = noopConfiguration,
+      revocation: AccessTokenRevocationService = noopRevocation,
   ): ZIO[Client & TestClient & Scope, Throwable, (Response, List[AuditDraft])] =
     for
       client <- ZIO.service[Client]
       tracing <- NoopTracing.layer.build
       token <- validToken(secretKey)
       capture = events.getOrElse(CapturingAuditEvents.shared(unavailable = refusing))
-      _ <- TestClient.addRoutes(routes(tracing, users, logoutService, throttle, passkey, sessions, password, capture))
+      _ <- TestClient.addRoutes(routes(tracing, users, logoutService, throttle, passkey, sessions, password, capture, configuration, revocation))
       response <- client.batched(build(token))
       drafts <- capture.recorded
     yield (response, drafts)
@@ -259,8 +322,10 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token <- validToken(secretKey)
-        _ <- userRepo.updateRoles.succeedsWith(())
-        _ <- TestClient.addRoutes(routes(tracing))
+        repo = stub[UserRepository]
+        configuration <- configured()
+        _ <- repo.updateRoles.succeedsWith(())
+        _ <- TestClient.addRoutes(routes(tracing, users = repo, configuration = configuration))
         body = """{"userId":"00000000-0000-0000-0000-000000000001","tenantId":"t1","add":["r1"],"remove":[]}"""
         resp <- client.batched(
           Request(method = Method.PATCH, url = URL.empty / "users" / "roles", body = Body.fromString(body))
@@ -268,6 +333,49 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
             .addHeader(Header.ContentType(MediaType.application.json)),
         )
       yield assertTrue(resp.status == Status.NoContent)
+    },
+    test("PATCH /users/roles asks the repository to record a removal as roles_changed, bounded by the widest client TTL") {
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        repo = stub[UserRepository]
+        configuration <- configured()
+        _ <- repo.updateRoles.succeedsWith(())
+        _ <- TestClient.addRoutes(routes(tracing, users = repo, configuration = configuration))
+        body = """{"userId":"00000000-0000-0000-0000-000000000001","tenantId":"t1","add":["r2"],"remove":["r1"]}"""
+        resp <- client.batched(
+          Request(method = Method.PATCH, url = URL.empty / "users" / "roles", body = Body.fromString(body))
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json)),
+        )
+      yield assertTrue(
+        resp.status == Status.NoContent,
+        repo.updateRoles.calls == List(
+          (
+            UserId(UUID.fromString("00000000-0000-0000-0000-000000000001")),
+            TenantId("t1"),
+            Set(RoleId("r2")),
+            Set(RoleId("r1")),
+            RevocationTerms(RevocationCause.RolesChanged, widest, ttls),
+          ),
+        ),
+      )
+    },
+    test("PATCH /users/roles with a wrong token changes no role and records nothing") {
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(wrongKey)
+        repo = stub[UserRepository]
+        _ <- TestClient.addRoutes(routes(tracing, users = repo))
+        body = """{"userId":"00000000-0000-0000-0000-000000000001","tenantId":"t1","add":[],"remove":["r1"]}"""
+        resp <- client.batched(
+          Request(method = Method.PATCH, url = URL.empty / "users" / "roles", body = Body.fromString(body))
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json)),
+        )
+      yield assertTrue(resp.status == Status.Unauthorized, repo.updateRoles.calls.isEmpty)
     },
     test("PATCH /users/claims without Authorization returns 401") {
       for
@@ -601,8 +709,12 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token <- validToken(secretKey)
-        _ <- sessions.revokeRefreshTokensByUserAndClient.succeedsWith(2)
-        _ <- TestClient.addRoutes(routes(tracing, sessionsService = sessions))
+        _ <- sessions.revokeRefreshTokensByUserAndClient.succeedsWith(List(RefreshTokenFamilyId("fam-1"), RefreshTokenFamilyId("fam-2")))
+        configuration <- configured(Some(appClient))
+        revocation = stub[AccessTokenRevocationService]
+        _ <- revocation.announceFamily.succeedsWith(())
+        now <- Clock.instant
+        _ <- TestClient.addRoutes(routes(tracing, sessionsService = sessions, configuration = configuration, revocation = revocation))
         resp <- client.batched(
           Request(
             method = Method.DELETE,
@@ -612,6 +724,51 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         resp.status == Status.NoContent,
         sessions.revokeRefreshTokensByUserAndClient.calls == List((passkeyUserId, ClientId("app"))),
+        // Every family that was ended is announced to the client's back channel, bounded by that client's own TTL.
+        revocation.announceFamily.calls.map(call => (call._1.id, call._2, call._3, call._4)) == List(
+          (ClientId("app"), RefreshTokenFamilyId("fam-1"), passkeyUserId.toString, now.plus(appClient.accessTokenTtl)),
+          (ClientId("app"), RefreshTokenFamilyId("fam-2"), passkeyUserId.toString, now.plus(appClient.accessTokenTtl)),
+        ),
+      )
+    },
+    test("DELETE /users/refresh-tokens announces nothing when the client held no live token for the user") {
+      val sessions = stub[SessionService]
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- sessions.revokeRefreshTokensByUserAndClient.succeedsWith(Nil)
+        configuration <- configured(Some(appClient))
+        revocation = stub[AccessTokenRevocationService]
+        _ <- TestClient.addRoutes(routes(tracing, sessionsService = sessions, configuration = configuration, revocation = revocation))
+        resp <- client.batched(
+          Request(
+            method = Method.DELETE,
+            url = (URL.empty / "users" / "refresh-tokens").addQueryParam("userId", passkeyUserId.toString).addQueryParam("clientId", "app"),
+          ).addHeader(Header.Authorization.Bearer(token)),
+        )
+      yield assertTrue(resp.status == Status.NoContent, revocation.announceFamily.calls.isEmpty)
+    },
+    test("DELETE /users/refresh-tokens ends the grants of a client the deployment no longer knows, and has no back channel to tell") {
+      val sessions = stub[SessionService]
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- sessions.revokeRefreshTokensByUserAndClient.succeedsWith(List(RefreshTokenFamilyId("fam-1")))
+        configuration <- configured(None)
+        revocation = stub[AccessTokenRevocationService]
+        _ <- TestClient.addRoutes(routes(tracing, sessionsService = sessions, configuration = configuration, revocation = revocation))
+        resp <- client.batched(
+          Request(
+            method = Method.DELETE,
+            url = (URL.empty / "users" / "refresh-tokens").addQueryParam("userId", passkeyUserId.toString).addQueryParam("clientId", "gone"),
+          ).addHeader(Header.Authorization.Bearer(token)),
+        )
+      yield assertTrue(
+        resp.status == Status.NoContent,
+        sessions.revokeRefreshTokensByUserAndClient.calls.size == 1,
+        revocation.announceFamily.calls.isEmpty,
       )
     },
     test("DELETE /users/sessions with valid token returns 204 and invalidates all of the user's sessions") {
@@ -780,7 +937,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ZEnvironment(sessionService) ++
                   ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](
                     stub[AuditReportService],
-                  ) ++ tracing,
+                  ) ++ ZEnvironment(noopConfiguration) ++ ZEnvironment(noopRevocation) ++ tracing,
               ),
           ),
         )
@@ -817,7 +974,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ZEnvironment(sessionService) ++
                   ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](
                     stub[AuditReportService],
-                  ) ++ tracing,
+                  ) ++ ZEnvironment(noopConfiguration) ++ ZEnvironment(noopRevocation) ++ tracing,
               ),
           ),
         )
@@ -853,7 +1010,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ZEnvironment(sessionService) ++
                   ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](
                     stub[AuditReportService],
-                  ) ++ tracing,
+                  ) ++ ZEnvironment(noopConfiguration) ++ ZEnvironment(noopRevocation) ++ tracing,
               ),
           ),
         )
@@ -930,6 +1087,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         val repo = stub[UserRepository]
         for
           _ <- repo.updateRoles.succeedsWith(())
+          configuration <- configured()
           (resp, drafts) <- audited(
             json(
               Method.PATCH,
@@ -938,6 +1096,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
               _,
             ),
             users = repo,
+            configuration = configuration,
           )
         yield assertTrue(
           resp.status == Status.NoContent,
@@ -957,7 +1116,8 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         val without = CapturingAuditEvents.shared()
         for
           _ <- repo.patchClaims.succeedsWith(())
-          _ <- sessions.revokeRefreshTokensByUserAndClient.succeedsWith(1)
+          _ <- sessions.revokeRefreshTokensByUserAndClient.succeedsWith(List(RefreshTokenFamilyId("fam-1")))
+          configuration <- configured()
           claims = (actor: String) =>
             json(
               Method.PATCH,
@@ -978,6 +1138,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
               ).addHeader(Header.Authorization.Bearer(token)),
             sessions = sessions,
             events = Some(withQuery),
+            configuration = configuration,
           )
           body <- withBody.actorsOfContext
           query <- withQuery.actorsOfContext
@@ -1001,7 +1162,8 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       test("DELETE /users/refresh-tokens records token.revoked by an administrator with how many were live") {
         val sessions = stub[SessionService]
         for
-          _ <- sessions.revokeRefreshTokensByUserAndClient.succeedsWith(2)
+          _ <- sessions.revokeRefreshTokensByUserAndClient.succeedsWith(List(RefreshTokenFamilyId("fam-1"), RefreshTokenFamilyId("fam-2")))
+          configuration <- configured()
           (resp, drafts) <- audited(
             token =>
               Request(
@@ -1009,6 +1171,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 url = (URL.empty / "users" / "refresh-tokens").addQueryParam("userId", passkeyUserId.toString).addQueryParam("clientId", "app"),
               ).addHeader(Header.Authorization.Bearer(token)),
             sessions = sessions,
+            configuration = configuration,
           )
         yield assertTrue(
           resp.status == Status.NoContent,
@@ -1076,13 +1239,23 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       test("POST /users/password/set records account.password_set and never the password") {
         val passwordSvc = stub[PasswordService]
         for
-          _ <- passwordSvc.setPassword.succeedsWith(())
+          _ <- passwordSvc.setPassword.succeedsWith(Nil)
+          configuration <- configured()
           (resp, drafts) <- audited(
             json(Method.POST, List("users", "password", "set"), s"""{"userId":"$passkeyUserId","password":"S3cret-Pass!"}""", _),
             password = passwordSvc,
+            configuration = configuration,
           )
         yield assertTrue(
           resp.status == Status.NoContent,
+          // The tokens issued before the change are refused, bounded by the widest client TTL; sessions are not ended.
+          passwordSvc.setPassword.calls == List(
+            (
+              passkeyUserId,
+              Password("S3cret-Pass!"),
+              PasswordChangeEffect.RefuseEarlierTokens(RevocationTerms(RevocationCause.PasswordChanged, widest, ttls)),
+            ),
+          ),
           drafts.map(_.kind) == List(AuthAuditKinds.AccountPasswordSet),
           drafts.head.details == AuthAuditDetails.Account(via = "admin", detail = None),
           !drafts.head.details.toJson.toString.contains("S3cret-Pass!"),
