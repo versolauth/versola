@@ -57,6 +57,8 @@ const LIMIT_ACTIONS: Array<{ id: keyof Omit<StepUpLimits, 'banDurationSeconds'>;
   { id: 'passwordSubmit', label: 'Password submit' },
   { id: 'passkeyAssertion', label: 'Passkey assertion' },
 ];
+/** "Step-up passkey assertion", "Step-up OTP request": the action's label after a prefix, its first word lower-cased unless it is an acronym. */
+const afterPrefix = (label: string) => label.startsWith('OTP') ? label : label.charAt(0).toLowerCase() + label.slice(1);
 const ACR_FACTORS = ['otp', 'password', 'passkey'] as const;
 
 /** What a tenant that has never saved settings gets: the values central applies on its own. */
@@ -960,7 +962,7 @@ export class VersolaSecuritySettings extends LitElement {
         ${this.row('Ban duration', limits.banDurationSeconds > 0 ? this.duration(limits.banDurationSeconds) : html`<span class="muted">No ban</span>`)}
         ${limits.stepUp
           ? html`
-            ${LIMIT_ACTIONS.map(action => this.row(`Step-up ${action.label.toLowerCase()}`, limits.stepUp![action.id].length
+            ${LIMIT_ACTIONS.map(action => this.row(`Step-up ${afterPrefix(action.label)}`, limits.stepUp![action.id].length
               ? limits.stepUp![action.id].map((limit, index) => html`${index ? ', ' : ''}${limit.maxAttempts} per ${formatDurationShort(limit.windowSeconds)}`)
               : html`<span class="muted">No limit</span>`))}
             ${this.row('Step-up ban duration', limits.stepUp.banDurationSeconds > 0 ? this.duration(limits.stepUp.banDurationSeconds) : html`<span class="muted">No ban</span>`)}`
@@ -1386,7 +1388,7 @@ export class VersolaSecuritySettings extends LitElement {
   /** The windows of one scope: the sign-in ones, or the step-up ones when they are separate. */
   private renderLimitWindows(scope: 'signIn' | 'stepUp') {
     const prefix = scope === 'stepUp' ? 'stepUp-' : '';
-    const title = (label: string) => scope === 'stepUp' ? `Step-up ${label.toLowerCase()}` : label;
+    const title = (label: string) => scope === 'stepUp' ? `Step-up ${afterPrefix(label)}` : label;
     const limits = (scope === 'stepUp' ? this.draft!.submissionLimits.stepUp! : this.draft!.submissionLimits) as StepUpLimits;
     const setLimits = (changes: Partial<StepUpLimits>) => this.patch({
       submissionLimits: scope === 'stepUp'

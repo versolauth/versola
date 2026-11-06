@@ -536,13 +536,13 @@ const withStepUp = () => state({
 test('submission limits: a tenant without step-up limits is read as following sign-in', async ({ page }) => {
   await loadAdminApp(page, { path: base, state: state() });
   await expect(card(page, 'Submission limits')).toContainText('Follow the limits above, counted apart');
-  await expect(card(page, 'Submission limits')).not.toContainText('Step-up otp request');
+  await expect(card(page, 'Submission limits')).not.toContainText('Step-up OTP request');
 });
 
 test('submission limits: reads the step-up windows and ban of a tenant that has them', async ({ page }) => {
   await loadAdminApp(page, { path: base, state: withStepUp() });
   const limits = card(page, 'Submission limits');
-  await expect(limits).toContainText('Step-up otp request');
+  await expect(limits).toContainText('Step-up OTP request');
   await expect(limits).toContainText('2 per 1m');
   await expect(limits).toContainText('Step-up passkey assertion');
   await expect(limits).toContainText('No limit');
@@ -552,9 +552,9 @@ test('submission limits: reads the step-up windows and ban of a tenant that has 
 test('submission limits: separate step-up limits start from the sign-in values, are edited alone and saved beside them', async ({ page }) => {
   const api = await loadAdminApp(page, { path: `${base}&edit=limits`, state: state() });
 
-  await expect(page.getByLabel('Step-up otp request max attempts', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Step-up OTP request max attempts', { exact: true })).toHaveCount(0);
   await page.getByLabel('Step-up limits', { exact: true }).check();
-  const attempts = page.getByLabel('Step-up otp request max attempts', { exact: true });
+  const attempts = page.getByLabel('Step-up OTP request max attempts', { exact: true });
   await expect(attempts).toHaveValue('5');
   await attempts.fill('2');
   await page.getByLabel('Ban duration', { exact: true }).last().fill('30');
