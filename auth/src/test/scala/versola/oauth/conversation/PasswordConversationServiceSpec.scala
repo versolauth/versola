@@ -8,8 +8,8 @@ import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthFlow, ClientId, PassedAuthFactor, PrimaryCredential, ScopeToken}
-import versola.oauth.conversation.limit.{LimitStatus, SubmissionLimiter}
+import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PassedAuthFactor, PrimaryCredential, ScopeToken}
+import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
@@ -19,7 +19,7 @@ import versola.oauth.userinfo.UserInfoService
 import versola.user.model.{Login, UserId, UserRecord}
 import versola.user.{UserRepository, UserService}
 import versola.util.audit.AuditOutcome
-import versola.util.{AuthPropertyGenerator, Email, Phone, SecureRandom, SecurityService, UnitSpecBase}
+import versola.util.{AuthPropertyGenerator, Email, MAC, Phone, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
 import zio.json.ast
 import zio.test.*
@@ -160,6 +160,9 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     None,
   )
 
+  private def stepUp(record: ConversationRecord) =
+    record.copy(priorSessionId = Some(MAC(Array.fill(32)(2.toByte))), targetAcr = Some(Acr("mfa")))
+
   val spec = suite("PasswordConversationService")(
     suite("prepareInitialPassword")(
       test("create password step when user exists and allowed") {
@@ -196,6 +199,14 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.prepareInitialPassword(authId, baseRecord.copy(userId = Some(userId)), Left(email), factorIndex = 0)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+      },
+      test("check the step-up ban under StepUpPasswordSubmit, not the sign-in one") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.prepareInitialPassword(authId, stepUp(baseRecord.copy(userId = Some(userId))), Left(email), factorIndex = 0)
+        yield assertTrue(env.submissionLimiter.statusForSubjects.calls.map(_._3) == List(ChallengeType.StepUpPasswordSubmit))
       },
       test("return AccessDenied when rate limited") {
         val env = Env()
@@ -464,6 +475,36 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           failureSubjects == Set(userId.toString, email.toString),
         )
       },
+      test("throttle a regular sign-in under the PasswordSubmit challenge type") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
+        yield assertTrue(
+          env.submissionLimiter.statusForSubjects.calls.map(_._3) == List(ChallengeType.PasswordSubmit),
+          env.submissionLimiter.recordLimitAll.calls.map(_._3) == List(ChallengeType.PasswordSubmit),
+        )
+      },
+      test("throttle a step-up under StepUpPasswordSubmit, apart from the regular sign-in budget") {
+        val env = Env()
+        val stepUpRecord = passwordRecord.copy(
+          priorSessionId = Some(MAC(Array.fill(32)(2.toByte))),
+          targetAcr = Some(Acr("mfa")),
+        )
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.checkPassword(stepUpRecord, passwordStep, password, authId)
+        yield assertTrue(
+          env.submissionLimiter.statusForSubjects.calls.map(_._3) == List(ChallengeType.StepUpPasswordSubmit),
+          env.submissionLimiter.recordLimitAll.calls.map(_._3) == List(ChallengeType.StepUpPasswordSubmit),
+        )
+      },
     ),
     suite("checkLoginPassword")(
       test("return BadRequest when step is not Credential") {
@@ -534,6 +575,20 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.overwrite.succeedsWith(false)
           result <- env.service.checkLoginPassword(authId, baseRecord, login, password)
         yield assertTrue(result == ConversationResult.WriteConflict)
+      },
+      test("throttle a step-up login under StepUpPasswordSubmit") {
+        val env = Env()
+        for
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.checkLoginPassword(authId, stepUp(baseRecord), login, password)
+        yield assertTrue(
+          env.submissionLimiter.statusForSubjects.calls.map(_._3) == List(ChallengeType.StepUpPasswordSubmit),
+          env.submissionLimiter.recordLimitAll.calls.map(_._3) == List(ChallengeType.StepUpPasswordSubmit),
+        )
       },
       test("deny access when either subject is banned, checking both subjects in one query") {
         val env = Env()
@@ -622,6 +677,14 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.setNewPassword(baseRecord, setPasswordStep, password, authId)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+      },
+      test("throttles a step-up under StepUpPasswordSubmit when setting a new password") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Banned)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.setNewPassword(stepUp(passwordRecord), setPasswordStep, password, authId)
+        yield assertTrue(env.submissionLimiter.statusForSubjects.calls.map(_._3) == List(ChallengeType.StepUpPasswordSubmit))
       },
       test("denies access when the subject is banned") {
         val env = Env()
