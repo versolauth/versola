@@ -375,6 +375,9 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
               scope.addFinalizer(warmupFiber.interrupt.unit)
             }
           }
+          // Registered last, so it runs first: the shutdown begins by telling the balancer, and by starting the clock that
+          // every drain after it shares (ShutdownBudget). `setReady` is after it so that a failed start never leaves it behind.
+          _ <- scope.addFinalizer(readinessService.setNotReady *> ShutdownBudget.begin)
           _ <- readinessService.setReady
           _ <- ZIO.never
         yield ()

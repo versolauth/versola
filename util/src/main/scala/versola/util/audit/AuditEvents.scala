@@ -3,6 +3,7 @@ package versola.util.audit
 import versola.util.SecureRandom
 import versola.util.http.Observability
 import versola.util.http.Observability.AuthDetails
+import versola.util.http.ShutdownBudget
 import zio.*
 import zio.json.ast.Json
 import zio.logging.logContext
@@ -425,7 +426,8 @@ object AuditEvents:
         held <- inHand.getAndSet(Nil)
         pending <- Ref.make(held)
         taken <- Ref.make(held.size)
-        finished <- within(DrainTimeout)(drainRound(pending, taken))
+        drainFor <- ShutdownBudget.allowed(DrainTimeout)
+        finished <- within(drainFor)(drainRound(pending, taken))
         rest <- queue.takeAll
         left <- pending.get.map(_ ++ rest)
         count <- taken.get.map(_ + rest.size)
