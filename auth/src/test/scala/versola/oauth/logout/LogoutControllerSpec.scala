@@ -291,18 +291,59 @@ object LogoutControllerSpec extends UnitSpecBase:
         )),
     ),
     controllerTestCase(
-      description = "GET /logout with a session cookie and a mismatched id_token_hint does not log out immediately",
+      description =
+        "GET /logout with a session cookie and an id_token_hint of another session asks for confirmation: the session stays and no signed-out page is shown",
       request = Request.get((URL.root / "logout").addQueryParam("id_token_hint", idTokenHint(sid = "other-sid")))
         .addHeader(sessionCookieHeader()),
       expectedStatus = Status.Ok,
       setup = (_, renderService, sessionService) =>
         sessionService.find.succeedsWith(Some(sessionInfo)) *>
-          renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
+          renderService.renderLogoutConfirm.succeedsWith(Response.text("<html>confirm</html>")),
       verify = (response, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls === List((Nil, None, None, None, None)),
+          renderService.renderLogout.calls.isEmpty,
+          renderService.renderLogoutConfirm.calls == List((sessionInfo, csrfToken(rawSessionId), None, None, None)),
           response.headers.get(Header.SetCookie).isEmpty,
+        )),
+    ),
+    controllerTestCase(
+      description = "GET /logout with a stale id_token_hint keeps the post_logout_redirect_uri and state on the confirmation, signed to the session",
+      request = Request.get(
+        (URL.root / "logout")
+          .addQueryParam("id_token_hint", idTokenHint(sid = "other-sid"))
+          .addQueryParam("post_logout_redirect_uri", redirectUri.encode)
+          .addQueryParam("state", "st-9"),
+      ).addHeader(sessionCookieHeader()),
+      expectedStatus = Status.Ok,
+      setup = (_, renderService, sessionService) =>
+        sessionService.find.succeedsWith(Some(sessionInfo)) *>
+          renderService.renderLogoutConfirm.succeedsWith(Response.text("<html>confirm</html>")),
+      verify = (_, logoutService, renderService, _) =>
+        ZIO.succeed(assertTrue(
+          logoutService.logout.calls.isEmpty,
+          renderService.renderLogoutConfirm.calls == List((
+            sessionInfo,
+            csrfToken(rawSessionId, Some(redirectUri.encode), Some("st-9")),
+            Some(redirectUri.encode),
+            Some("st-9"),
+            None,
+          )),
+        )),
+    ),
+    controllerTestCase(
+      description = "GET /logout with an id_token_hint of another session, when the cookie's own session is gone, renders the signed-out page",
+      request = Request.get((URL.root / "logout").addQueryParam("id_token_hint", idTokenHint(sid = "other-sid")))
+        .addHeader(sessionCookieHeader()),
+      expectedStatus = Status.Ok,
+      setup = (_, renderService, sessionService) =>
+        sessionService.find.succeedsWith(None) *>
+          renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
+      verify = (_, logoutService, renderService, _) =>
+        ZIO.succeed(assertTrue(
+          logoutService.logout.calls.isEmpty,
+          renderService.renderLogoutConfirm.calls.isEmpty,
+          renderService.renderLogout.calls === List((Nil, None, None, None, None)),
         )),
     ),
     controllerTestCase(
@@ -477,17 +518,19 @@ object LogoutControllerSpec extends UnitSpecBase:
         )),
     ),
     controllerTestCase(
-      description = "POST /logout with a session cookie and a mismatched id_token_hint does not log out immediately",
+      description =
+        "POST /logout with a session cookie and an id_token_hint of another session asks for confirmation: the session stays and no signed-out page is shown",
       request = Request.post((URL.root / "logout").addQueryParam("id_token_hint", idTokenHint(sid = "other-sid")), Body.empty)
         .addHeader(sessionCookieHeader()),
       expectedStatus = Status.Ok,
       setup = (_, renderService, sessionService) =>
         sessionService.find.succeedsWith(Some(sessionInfo)) *>
-          renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
+          renderService.renderLogoutConfirm.succeedsWith(Response.text("<html>confirm</html>")),
       verify = (response, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls === List((Nil, None, None, None, None)),
+          renderService.renderLogout.calls.isEmpty,
+          renderService.renderLogoutConfirm.calls == List((sessionInfo, csrfToken(rawSessionId), None, None, None)),
           response.headers.get(Header.SetCookie).isEmpty,
         )),
     ),
