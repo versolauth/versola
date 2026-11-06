@@ -157,6 +157,26 @@ services:
     # The app's own graceful shutdown is bounded at 15s; Compose's default 10s
     # would SIGKILL a JVM still finishing requests.
     stop_grace_period: 20s
+    # Hardening (deploy.md, "Containers run as an unprivileged user"). The image's own user is the
+    # unprivileged 10001, but the volumes and files of a bundle made before it (the mutual-TLS keys,
+    # step-ca's output, the diagnostics volumes) belong to root, so a bundle keeps running the service as
+    # root until that ownership is changed; everything below holds either way. No capability except
+    # DAC_OVERRIDE, which root needs to read and write what a volume or bind mount gives it under another
+    # owner (a new /diagnostics volume is created with the image's owner, 10001; an old one is root's); no
+    # privilege gain through a setuid binary; a read-only root filesystem (it writes /diagnostics, a volume,
+    # and /tmp); and a bound on processes and threads. /tmp is `exec` because the JVM maps the crypto
+    # provider's native library from it, and a tmpfs mounts `noexec` unless told otherwise.
+    user: "0:0"
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:exec,mode=1777,size=67108864
+    pids_limit: 1024
     depends_on:
       postgres:
         condition: service_healthy
@@ -215,6 +235,18 @@ services:
     # The app's own graceful shutdown is bounded at 15s; Compose's default 10s
     # would SIGKILL a JVM still finishing requests.
     stop_grace_period: 20s
+    # Hardening, as central's above (the reasons are there): user, capabilities, privilege gain, read-only root, process bound.
+    user: "0:0"
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:exec,mode=1777,size=67108864
+    pids_limit: 1024
     # central has no healthcheck (no curl in eclipse-temurin:21-jre), so
     # this depends_on can only wait for "container started", not "actually
     # ready". If auth starts before central is really up, its startup
@@ -261,6 +293,18 @@ services:
     # The app's own graceful shutdown is bounded at 15s; Compose's default 10s
     # would SIGKILL a JVM still finishing requests.
     stop_grace_period: 20s
+    # Hardening, as central's above (the reasons are there): user, capabilities, privilege gain, read-only root, process bound.
+    user: "0:0"
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:exec,mode=1777,size=67108864
+    pids_limit: 1024
     depends_on:
       central:
         condition: service_started

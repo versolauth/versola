@@ -98,9 +98,16 @@ EXPOSE 8080 9345
 # the file makes every OOM overwrite the same one.
 ENV JAVA_OPTS="-XX:+UseG1GC -Xms512m -Xmx512m -XX:MaxDirectMemorySize=96m -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=64m -Xss512k -XX:NativeMemoryTracking=summary -XX:+UseCompactObjectHeaders -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/diagnostics/heap.hprof -XX:+ExitOnOutOfMemoryError -Xlog:gc*:file=/diagnostics/gc.log:time,uptime,level,tags:filecount=5,filesize=20M --enable-native-access=ALL-UNNAMED"
 
-# See Dockerfile.auth.
-RUN mkdir -p /diagnostics
+# See Dockerfile.auth, including why the user is 10001 and what stays root-owned. /var/lib/versola-edge is
+# where an enrolled edge keeps its identity (`versola edge bootstrap` and the Helm chart mount a volume
+# there): a new volume inherits this owner, so the first enrollment can write into it.
+RUN groupadd --system --gid 10001 versola \
+ && useradd --system --uid 10001 --gid versola --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin versola \
+ && mkdir -p /diagnostics /var/lib/versola-edge \
+ && chown 10001:10001 /diagnostics /var/lib/versola-edge
 ENV CONFIG_PATH="/app/config/env.conf"
+
+USER 10001:10001
 
 # Run the application with config path. See Dockerfile.auth's comment on why
 # JAVA_OPTS is not repeated on the command line, and why it is `exec`.

@@ -25,6 +25,33 @@ global:
   imageRepository: versolauth
   imagePullPolicy: IfNotPresent
   imagePullSecrets: []
+  # Hardening of every pod this chart renders (versolauth/versola, the container-hardening change). The
+  # images run as the unprivileged uid/gid 10001 (docker/Dockerfile.*); these state it to the kubelet too,
+  # so a pod fails to start rather than quietly running as root if an image ever regresses.
+  #   runAsNonRoot + runAsUser/Group  -- never uid 0, and the one uid whose files the images own
+  #   fsGroup 10001                   -- makes a freshly provisioned PVC / emptyDir writable by that uid.
+  #                                      OnRootMismatch skips the recursive chown on a volume already right.
+  #   seccompProfile RuntimeDefault   -- the container runtime's default syscall filter
+  # A volume that an earlier release (which ran as root) created keeps its root-owned files: see deploy.md,
+  # "Containers run as an unprivileged user", for the one-off chown.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+
+  # allowPrivilegeEscalation false (no setuid gain), no Linux capabilities, a read-only root filesystem: what
+  # the process writes lives on the volumes mounted at /tmp and /diagnostics. A cluster whose admission policy
+  # sets these itself can set both blocks to {}.
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+
   # Pod placement, applied to every pod this chart renders. A component's own
   # `nodeSelector` / `tolerations` / `affinity`, when non-empty, REPLACES the
   # value here -- it is not merged with it, key by key or entry by entry. An
@@ -96,6 +123,9 @@ terminationGracePeriodSeconds: 30
 # about -Xmx (512m today) and the GC log is capped at 5 x 20M, so 1Gi holds a
 # dump and its logs. Per-service override: services.<name>.diagnosticsSizeLimit.
 diagnosticsSizeLimit: 1Gi
+# Size of the /tmp volume each service gets (the root filesystem is read-only): the JVM's perf-data file and
+# extracted native libraries, a few MB.
+tmpSizeLimit: 64Mi
 
 # Secret values auth/central/edge's env.conf files reference as `${VAR}`
 # placeholders (see scripts/gen-env.scala's secretField/useOpenBao) -- e.g.
@@ -641,6 +671,17 @@ console:
   tolerations: []
   affinity: {}
   port: 2821
+  # nginx's own unprivileged user (uid/gid 101 in the official images), not the services' 10001: the
+  # image's files are owned by it. Replaces `global.podSecurityContext` for this pod. The listener is above
+  # 1024, so no capability is needed to bind it.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 101
+    runAsGroup: 101
+    fsGroup: 101
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
   # Where the console answers on its host. "/" suits a dedicated hostname
   # (console.example.com); the image bakes dist/ at /central/admin/, but
   # vite.config.ts's BASE_PATH is relative, so the same files resolve
