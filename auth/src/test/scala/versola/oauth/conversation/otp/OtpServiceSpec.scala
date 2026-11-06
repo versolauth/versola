@@ -28,7 +28,8 @@ object OtpServiceSpec extends UnitSpecBase:
     factorIndex = 0,
     rateLimitExceeded = false,
     lockedSeconds = 0,
-    lastSentAt = None,
+    // The test clock starts at the epoch: the code was sent just now.
+    lastSentAt = Some(java.time.Instant.EPOCH),
   )
 
   class Env:
@@ -56,7 +57,7 @@ object OtpServiceSpec extends UnitSpecBase:
           _ <- env.otpGenerationService.generateOtpCode.succeedsWith(otpCode)
           result <- env.service.prepareOtp(None, None, clientId, isRegistering = false)
         yield assertTrue(
-          result == realOtp.copy(timesRequested = 0),
+          result == realOtp.copy(timesRequested = 0, lastSentAt = None),
         )
       },
       test("generate fake OTP when decision service indicates") {
@@ -136,6 +137,42 @@ object OtpServiceSpec extends UnitSpecBase:
         for
           result <- env.service.checkOtp(otp, otpCode)
         yield assertTrue(result == SubmitOtpResult.Failure)
+      },
+      test("return Success up to the end of the code's lifetime") {
+        val env = Env()
+        for
+          _ <- TestClock.adjust(OtpService.Lifetime)
+          result <- env.service.checkOtp(realOtp, otpCode)
+        yield assertTrue(result == SubmitOtpResult.Success)
+      },
+      test("return Failure for the right code once its lifetime is over, although the conversation is still alive") {
+        val env = Env()
+        for
+          _ <- TestClock.adjust(OtpService.Lifetime.plusSeconds(1))
+          result <- env.service.checkOtp(realOtp, otpCode)
+        yield assertTrue(result == SubmitOtpResult.Failure)
+      },
+      test("count the lifetime from the last send: a resent code starts a new one") {
+        val env = Env()
+        for
+          _ <- TestClock.adjust(OtpService.Lifetime.plusSeconds(30))
+          now <- Clock.instant
+          resent = realOtp.copy(lastSentAt = Some(now.minusSeconds(5)))
+          result <- env.service.checkOtp(resent, otpCode)
+        yield assertTrue(result == SubmitOtpResult.Success)
+      },
+      test("return Failure for a code that has no send time: it was never sent") {
+        val env = Env()
+        for
+          result <- env.service.checkOtp(realOtp.copy(lastSentAt = None), otpCode)
+        yield assertTrue(result == SubmitOtpResult.Failure)
+      },
+      test("return Failure for a code of another length, or with a matching prefix") {
+        val env = Env()
+        for
+          shorter <- env.service.checkOtp(realOtp, OtpCode("12345"))
+          longer <- env.service.checkOtp(realOtp, OtpCode("1234567"))
+        yield assertTrue(shorter == SubmitOtpResult.Failure, longer == SubmitOtpResult.Failure)
       },
       test("return Failure for fake OTP even with predictable non-prod code") {
         val env = Env()
