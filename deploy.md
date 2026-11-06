@@ -473,6 +473,14 @@ dump and the rollback is lost. With extra replicas of `auth` or `edge`, remove t
 unfinished `versola rollout` is undone with `versola rollout --abort` instead; secrets the new
 version added stay in OpenBao either way.
 
+#### Behaviour change: the temporary password of an admin reset has a lifetime of 1 hour to 7 days
+
+`POST /users/password/reset` (central) now answers `400` for an `expiresInSeconds` below 3600 or above 604800, where
+before any number was accepted (a negative or very large one failed with `500`). The admin console sends 12 hours and
+is unaffected. `auth` repeats the check on its internal endpoint and answers `400` too; an omitted value there still
+means 12 hours. A script or tool that reset passwords with a lifetime outside the range has to send one inside it.
+No schema change; an upgrade in any order is safe, since only a value outside the range changes.
+
 #### Behaviour change: edge binds a login to the browser that began it (login CSRF on `/complete`)
 
 `/login/{presetId}` now sets an `EDGE_LOGIN_<state>` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`, `Path` =

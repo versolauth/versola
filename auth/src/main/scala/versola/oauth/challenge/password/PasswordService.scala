@@ -16,7 +16,7 @@ import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider}
 import versola.user.UserRepository
 import versola.user.model.UserId
-import versola.util.{CoreConfig, Email, EnvName, MAC, Phone, Salt, Secret, SecureRandom, SecurityService}
+import versola.util.{CoreConfig, Email, EnvName, MAC, Phone, Salt, Secret, SecureRandom, SecurityService, TemporaryPasswordTtl}
 import zio.prelude.EqualOps
 import zio.{Clock, IO, Task, UIO, ZIO, ZLayer}
 
@@ -239,7 +239,7 @@ object PasswordService:
     private val TempAllChars = TempUpperAlpha + TempLowerAlpha + TempDigits + TempSpecials
     private val TempPasswordLen = 16
     private val MaxGenerationAttempts = 20
-    private val DefaultTtlSeconds = 12L * 60 * 60 // 12 hours
+    private val DefaultTtlSeconds = TemporaryPasswordTtl.DefaultSeconds
 
     /** How often a password change re-checks reuse after another change got in between. */
     private val SetPasswordAttempts = 3

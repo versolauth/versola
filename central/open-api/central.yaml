@@ -1539,6 +1539,9 @@ paths:
           description: The password was delivered over `email` or `sms`.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '400':
+          description: |
+            `expiresInSeconds` is outside the allowed range of 3600 to 604800 seconds. Nothing is reset.
         '404':
           description: The `show` channel was requested in production.
 
@@ -5517,6 +5520,11 @@ components:
         expiresInSeconds:
           type: integer
           format: int64
+          minimum: 3600
+          maximum: 604800
+          description: |
+            How long the temporary password stays valid, from one hour to seven days. A value outside
+            the range is answered with `400`. The admin console sends 43200 (12 hours).
         channel:
           description: |
             When omitted, no password is delivered and none is returned, but the temporary
