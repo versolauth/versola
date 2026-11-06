@@ -129,16 +129,19 @@ final class EdgeApi(client: Client, config: E2EConfig):
       body: Option[Json] = scala.None,
       query: List[(String, String)] = Nil,
       headers: List[(String, String)] = Nil,
+      rawJson: Option[String] = scala.None,
   ): Task[ApiResult] =
     for
       url <- ZIO.fromEither(URL.decode(s"${config.edgeUrl}/resources/$resourceId$path"))
         .mapError(RuntimeException(_))
+      // `rawJson` is sent as written: a `Json` value cannot say what a parser would make of a name that occurs twice
+      text = rawJson.orElse(body.map(json => zio.json.EncoderOps(json).toJson))
       base = Request(
         method = method,
         url = url.addQueryParams(query),
-        body = body.fold(Body.empty)(json => Body.fromString(zio.json.EncoderOps(json).toJson)),
+        body = text.fold(Body.empty)(Body.fromString(_)),
       )
-      withType = body.fold(base)(_ => base.addHeader(Header.ContentType(MediaType.application.json)))
+      withType = text.fold(base)(_ => base.addHeader(Header.ContentType(MediaType.application.json)))
       withHeaders = headers.foldLeft(withType)((request, header) => request.addHeader(header._1, header._2))
       response <- Client.batched(authenticate(withHeaders, auth)).provide(ZLayer.succeed(client))
       result <- ApiResult.of(response)

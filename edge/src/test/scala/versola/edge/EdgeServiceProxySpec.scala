@@ -1650,6 +1650,154 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
       yield assertTrue(response.status == Status.Forbidden)
     },
+    // A rule reads one value, the resource may read another: where a name occurs more than once, the rule's view is not a guess.
+    test("request.query is absent for a parameter that occurs twice, so a rule that reads it is unsatisfied") {
+      val env = new Env
+      val endpoint = usersEndpoint(allow = Some("request.query['tenant'] == 'acme'"))
+      def call(url: URL) =
+        for
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          token <- env.signToken()
+          request = Request.get(url).addCookie(sessionCookie(token))
+          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        yield response
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        _ <- env.withResources(usersResource(endpoint))
+        once <- call((URL.empty / "users").addQueryParam("tenant", "acme"))
+        twiceFirstAllowed <- call((URL.empty / "users").addQueryParam("tenant", "acme").addQueryParam("tenant", "other"))
+        twiceLastAllowed <- call((URL.empty / "users").addQueryParam("tenant", "other").addQueryParam("tenant", "acme"))
+        upstream <- capture.get
+      yield assertTrue(
+        once.status == Status.Ok,
+        twiceFirstAllowed.status == Status.Forbidden,
+        twiceLastAllowed.status == Status.Forbidden,
+        upstream.exists(_.url.queryParams.map.get("tenant").exists(_.toList == List("acme"))),
+      )
+    },
+    test("request.queryAll keeps every value of a parameter that occurs twice") {
+      val env = new Env
+      val endpoint = usersEndpoint(allow = Some("request.queryAll['tenant'].all(t, t == 'acme')"))
+      def call(url: URL) =
+        for
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          token <- env.signToken()
+          request = Request.get(url).addCookie(sessionCookie(token))
+          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        yield response
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        _ <- env.withResources(usersResource(endpoint))
+        same <- call((URL.empty / "users").addQueryParam("tenant", "acme").addQueryParam("tenant", "acme"))
+        mixed <- call((URL.empty / "users").addQueryParam("tenant", "acme").addQueryParam("tenant", "other"))
+      yield assertTrue(same.status == Status.Ok, mixed.status == Status.Forbidden)
+    },
+    test("request.headers is keyed by lower-case name, whatever case the caller wrote") {
+      val env = new Env
+      val endpoint = usersEndpoint(allow = Some("request.headers['x-tenant'] == 'acme' && !('X-Tenant' in request.headers)"))
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token)).addHeader("X-TENANT", "acme")
+        response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(response.status == Status.Ok)
+    },
+    test("request.headers joins the lines of a field that is sent twice, in order, as the resource reads them") {
+      val env = new Env
+      val endpoint = usersEndpoint(allow = Some("request.headers['x-scope'] == 'read, admin'"))
+      def call(lines: String*) =
+        for
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          token <- env.signToken()
+          request = lines.foldLeft(Request.get(URL.empty / "users").addCookie(sessionCookie(token)))((r, line) => r.addHeader("X-Scope", line))
+          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        yield response
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        _ <- env.withResources(usersResource(endpoint))
+        joined <- call("read", "admin")
+        reversed <- call("admin", "read")
+        first <- call("read")
+        last <- call("admin")
+      yield assertTrue(
+        joined.status == Status.Ok,
+        reversed.status == Status.Forbidden,
+        first.status == Status.Forbidden,
+        last.status == Status.Forbidden,
+      )
+    },
+    test("refuses a JSON body in which a name occurs twice in one object, at any depth, and sends nothing") {
+      val env = new Env
+      val endpoint = createUserEndpoint(allow = Some("request.body.role == 'user'"))
+      def call(body: String) =
+        for
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          token <- env.signToken()
+          request = Request.post(URL.empty / "users", Body.fromString(body))
+            .addHeader(Header.ContentType(MediaType.application.json))
+            .addCookie(sessionCookie(token))
+          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        yield response
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        _ <- env.withResources(usersResource(endpoint))
+        responses <- ZIO.foreach(
+          List(
+            """{"role":"user","role":"admin"}""",
+            """{"role":"admin","role":"user"}""",
+            """{"role":"user","\u0072ole":"admin"}""",
+            """{"role":"user","profile":{"id":1,"id":2}}""",
+            """{"role":"user","items":[{"a":1},{"b":1,"b":2}]}""",
+          ),
+        )(call)
+        upstream <- capture.get
+      yield assertTrue(responses.forall(_.status == Status.BadRequest), upstream.isEmpty)
+    },
+    test("refuses a body that claims to be JSON and is not, with 400") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(createUserEndpoint()))
+        token <- env.signToken()
+        request = Request.post(URL.empty / "users", Body.fromString("""{"role":"""))
+          .addHeader(Header.ContentType(MediaType.application.json))
+          .addCookie(sessionCookie(token))
+        response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.BadRequest, upstream.isEmpty)
+    },
+    test("forwards a JSON body whose names are all distinct, and the same name in two different objects") {
+      val env = new Env
+      val endpoint = createUserEndpoint(allow = Some("request.body.role == 'user'"))
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken()
+        request = Request.post(URL.empty / "users", Body.fromString("""{"role":"user","a":{"id":1},"b":{"id":2},"c":[{"id":3},{"id":4}]}"""))
+          .addHeader(Header.ContentType(MediaType.application.json))
+          .addCookie(sessionCookie(token))
+        response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.Ok, upstream.isDefined)
+    },
     test("accepts Authorization: Bearer header when EDGE_SESSION cookie is absent") {
       val env = new Env
       for

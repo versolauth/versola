@@ -473,6 +473,22 @@ dump and the rollback is lost. With extra replicas of `auth` or `edge`, remove t
 unfinished `versola rollout` is undone with `versola rollout --abort` instead; secrets the new
 version added stay in OpenBao either way.
 
+#### Behaviour change: what `request.query`, `request.headers` and a JSON body mean to a rule when a name occurs more than once
+
+A rule reads one value and the resource may read another, so where a name occurs more than once the rule no longer guesses:
+
+- **`request.query['x']`** is the value only when the parameter occurs exactly once. A parameter that occurs twice is absent there, and a
+  rule that reads it is unsatisfied (`403`, like any rule that reads missing data). Before, it was the first value, while some resources read
+  the last. `request.queryAll['x']` is unchanged and has every value; a rule that needs repeated parameters reads that.
+- **`request.headers['x']`** joins the lines of a field that was sent more than once with `, ` in the order they came (RFC 9110 §5.3), which is
+  how a resource reads them. Before, a repeated field showed one of its lines. Names are lower case, as before. `request.headersAll` is unchanged.
+- **A JSON body** in which a name occurs twice in one object (at any depth), or that claims `application/json` and is not JSON, is answered
+  `400` with no body and is not sent on. Before, the rules read the last of the two values and the body was forwarded with both; an unreadable
+  body was a `500`.
+
+- **Who can notice.** A rule that reads `request.query` of a parameter clients repeat, and a client that sends duplicate names in a JSON body.
+- **No setting, no migration.**
+
 #### Behaviour change: edge binds a login to the browser that began it (login CSRF on `/complete`)
 
 `/login/{presetId}` now sets an `EDGE_LOGIN_<state>` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`, `Path` =
