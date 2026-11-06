@@ -4,6 +4,7 @@ import versola.central.audit.{Audit, AuditCursor, AuditReportError, AuditReportS
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
+import versola.central.configuration.roles.{RoleGrantGuard, RoleService}
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.http.Observability
@@ -16,7 +17,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import java.time.Instant
 
 object UserController extends AuditedController:
-  type Env = Tracing & CentralConfig & EdgeService & UserService & ResourceService & EnvName & AuditReportService
+  type Env = Tracing & CentralConfig & EdgeService & UserService & ResourceService & EnvName & AuditReportService & RoleService
 
   def endpoints = List(
     findUsersEndpoint,
@@ -232,15 +233,17 @@ object UserController extends AuditedController:
 
   val patchRolesEndpoint =
     (Method.PATCH / "users" / "roles").audited(Audit.user("user-roles", Audit.update)) -> handler { (request: Request) =>
-      for
+      (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         body <- request.bodyAs[UpdateUserRolesRequest]
         _ <- Audit.target(body.userId)
         _ <- Audit.tenant(body.tenantId)
         _ <- Audit.changed(body, "userId", "tenantId")
+        _ <- RoleGrantGuard.enforce(request)(RoleGrantGuard.checkAssignment(_, body))
         _ <- service.updateRoles(body)
-      yield Response.status(Status.Accepted)
+      yield Response.status(Status.Accepted))
+        .catchSome { case denied: RoleGrantGuard.Denied => RoleGrantGuard.refusal(denied) }
     }
 
   /** `userId` alone ends every session, as it always did; `id` with `sessionId` ends that

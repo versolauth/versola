@@ -6,6 +6,7 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{CreateRoleRequest, GetAllRolesResponse, RoleResponse, UpdateRoleRequest}
+import versola.central.users.UserService
 import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.{EncoderOps, JsonCodec}
 import zio.schema.*
@@ -13,7 +14,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.{Cause, ZIO}
 
 object RoleController extends AuditedController:
-  type Env = Tracing & RoleService & ResourceService
+  type Env = Tracing & RoleService & ResourceService & UserService
 
   def endpoints = List(
     createRoleEndpoint,
@@ -24,27 +25,31 @@ object RoleController extends AuditedController:
 
   val createRoleEndpoint =
     (Method.POST / "configuration" / "roles").audited(Audit.change("role", Audit.create)) -> handler { (request: Request) =>
-      for
+      (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[RoleService]
         body <- request.bodyAs[CreateRoleRequest]
         _ <- Audit.target(body.id)
         _ <- Audit.tenant(body.tenantId)
+        _ <- RoleGrantGuard.enforce(request)(RoleGrantGuard.checkCreate(_, body.permissions))
         role <- service.createRole(body)
-      yield Response.status(Status.Created)
+      yield Response.status(Status.Created))
+        .catchSome { case denied: RoleGrantGuard.Denied => RoleGrantGuard.refusal(denied) }
     }
 
   val updateRoleEndpoint =
     (Method.PUT / "configuration" / "roles").audited(Audit.change("role", Audit.update)) -> handler { (request: Request) =>
-      for
+      (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[RoleService]
         body <- request.bodyAs[UpdateRoleRequest]
         _ <- Audit.target(body.id)
         _ <- Audit.tenant(body.tenantId)
         _ <- Audit.changed(body, "tenantId", "id")
+        _ <- RoleGrantGuard.enforce(request)(RoleGrantGuard.checkUpdate(_, body.tenantId, body.id, body.permissions))
         _ <- service.updateRole(body)
-      yield Response.status(Status.NoContent)
+      yield Response.status(Status.NoContent))
+        .catchSome { case denied: RoleGrantGuard.Denied => RoleGrantGuard.refusal(denied) }
     }
 
   val deleteRoleEndpoint =
@@ -56,9 +61,11 @@ object RoleController extends AuditedController:
         _ <- Audit.tenant(tenantId)
         roleId <- request.url.queryZIO[RoleId]("roleId")
         _ <- Audit.target(roleId)
+        _ <- RoleGrantGuard.enforce(request)(RoleGrantGuard.checkDelete(_, tenantId, roleId))
         _ <- service.deleteRole(tenantId, roleId)
       yield Response.status(Status.NoContent))
         .catchSome:
+          case denied: RoleGrantGuard.Denied => RoleGrantGuard.refusal(denied)
           case error: RoleService.RoleInUseError =>
             ZIO.succeed(Response.json(s"""{"message":"${error.getMessage}"}""").status(Status.Conflict))
     }

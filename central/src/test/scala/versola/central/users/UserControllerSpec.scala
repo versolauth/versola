@@ -7,6 +7,7 @@ import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.roles.RoleId
+import versola.central.configuration.roles.RoleService
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.http.Observability
@@ -91,6 +92,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[CentralConfig](TestCentralConfig.config) ++
                 tracing ++ ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[EdgeService](edgeService) ++
+                ZEnvironment[RoleService](stub[RoleService]) ++
                 ZEnvironment[EnvName](env) ++
                 ZEnvironment[AuditReportService](stub[AuditReportService]),
             ),

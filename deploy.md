@@ -473,6 +473,30 @@ dump and the rollback is lost. With extra replicas of `auth` or `edge`, remove t
 unfinished `versola rollout` is undone with `versola rollout --abort` instead; secrets the new
 version added stay in OpenBao either way.
 
+#### Behaviour change: an administrator cannot give, or give themselves, a role that grants more than they hold
+
+Central now refuses (`403`, with the roles and permissions that are beyond the caller) a change of roles by an administrator
+who is a user (the `actorId` and `actorTenantId` edge adds to each call from the verified token) when:
+
+- `PATCH /users/roles` gives or takes away a role that grants a permission the administrator does not hold, or changes the
+  administrator's own roles;
+- `POST /configuration/roles` creates a role with a permission the administrator does not hold; `PUT` changes, or `DELETE` removes,
+  a role that holds one, or adds one.
+
+What the administrator holds is the permissions of their **active** roles in the tenant of their token. Before, `users:manage`
+alone was enough to assign the role that holds everything, and `access:manage` to add any permission to a role.
+
+- **Who is not checked.** A call that names no administrator (direct callers of central: the load emulator, scripts, an edge that
+  has not yet read the new inject rules) and a client credentials token (its `actorId` is its client) behave as before. The shared
+  secret they present remains the whole of their authority.
+- **What changes for people.** With the default roles, `oauth-admin` (holds every permission) can still do everything, except
+  change its own roles; `security` can still assign `support`, `viewer` and the like, no longer `oauth-admin`; `support` holds
+  `users:manage` but no role-editing permission and cannot give roles that hold more than it has. A deployment where a
+  delegated administrator edited roles beyond their own permissions has to give that work to one who holds them. Nobody can
+  change their own roles: another administrator does it.
+- **Not covered here:** other places that decide who gets a role, such as a tenant's default roles for new registrations
+  (challenge settings), are unchanged.
+
 #### Behaviour change: edge binds a login to the browser that began it (login CSRF on `/complete`)
 
 `/login/{presetId}` now sets an `EDGE_LOGIN_<state>` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`, `Path` =

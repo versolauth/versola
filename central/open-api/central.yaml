@@ -932,6 +932,8 @@ paths:
       responses:
         '201':
           description: Role created.
+        '403':
+          $ref: '#/components/responses/RoleGrantRefused'
         '401':
           $ref: '#/components/responses/Unauthorized'
     put:
@@ -947,6 +949,8 @@ paths:
       responses:
         '204':
           description: Role updated.
+        '403':
+          $ref: '#/components/responses/RoleGrantRefused'
         '401':
           $ref: '#/components/responses/Unauthorized'
     delete:
@@ -963,6 +967,8 @@ paths:
       responses:
         '204':
           description: Role deleted.
+        '403':
+          $ref: '#/components/responses/RoleGrantRefused'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -1207,6 +1213,8 @@ paths:
       responses:
         '202':
           description: Patch accepted.
+        '403':
+          $ref: '#/components/responses/RoleGrantRefused'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -3328,6 +3336,19 @@ components:
   responses:
     Unauthorized:
       description: The credentials are missing, malformed or not accepted.
+    RoleGrantRefused:
+      description: |
+        The administrator behind the call may not make this change: nobody grants what they do not hold.
+        The text names the roles and permissions that are beyond them. Nothing is changed. A role can be
+        given or taken away from a user, created, changed or deleted only if it holds no permission the
+        administrator lacks (the permissions of their active roles in the tenant of their token), and a
+        user's own roles are not theirs to change. The administrator is the `actorId` and `actorTenantId` that
+        edge adds to every call from the verified token; a call without them, or one whose `actorId` is its
+        own client (a client credentials token), is not checked.
+      content:
+        text/plain:
+          schema:
+            type: string
 
   parameters:
     TenantIdQuery:

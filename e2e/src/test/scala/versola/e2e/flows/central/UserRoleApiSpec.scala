@@ -336,6 +336,53 @@ object UserRoleApiSpec extends CentralApiSpec:
         (rejected, held) = outcome
       yield assertTrue(rejected.status == Status.Unauthorized) && assertTrue(held.isEmpty)
     },
+    test("an administrator named by edge cannot give a role that grants more than they hold, nor change their own roles") {
+      // Edge puts `actorId` and `actorTenantId` on every call from the verified token; this call stands in for it.
+      def asActor(central: CentralApi, actor: String, userId: String, add: Set[String]) =
+        central.patch(
+          roles,
+          Json.Obj(
+            "userId" -> Json.Str(userId),
+            "tenantId" -> Json.Str(Fixtures.suiteTenant),
+            "add" -> Json.Arr(Chunk.fromIterable(add.map(Json.Str(_)))),
+            "remove" -> Json.Arr(),
+          ),
+          "actorId" -> actor,
+          "actorTenantId" -> Fixtures.suiteTenant,
+        )
+      for
+        central <- api
+        held <- CentralApi.permission("held")
+        beyond <- CentralApi.permission("beyond")
+        lower <- CentralApi.id("e2e-role")
+        higher <- CentralApi.id("e2e-role")
+        _ <- central.post("/configuration/permissions", Fixtures.permission(held))
+        _ <- central.post("/configuration/permissions", Fixtures.permission(beyond))
+        _ <- central.post("/configuration/roles", Fixtures.role(lower, permissions = Set(held)))
+        _ <- central.post("/configuration/roles", Fixtures.role(higher, permissions = Set(held, beyond)))
+        administrator <- user(central)
+        target <- user(central)
+        _ <- patch(central, administrator, add = Set(lower))
+        _ <- eventuallyAssigned(central, administrator)(_.contains(lower))
+        tooMuch <- asActor(central, administrator, target, Set(higher))
+        covered <- asActor(central, administrator, target, Set(lower))
+        ownRoles <- asActor(central, administrator, administrator, Set(higher))
+        landed <- eventuallyAssigned(central, target)(_.contains(lower))
+        stillHeld <- assigned(central, administrator)
+        _ <- ZIO.foreachDiscard(List(lower, higher))(id =>
+          central.delete("/configuration/roles", "tenantId" -> Fixtures.suiteTenant, "roleId" -> id).ignore,
+        )
+        _ <- ZIO.foreachDiscard(List(held, beyond))(id =>
+          central.delete("/configuration/permissions", "tenantId" -> Fixtures.suiteTenant, "permission" -> id).ignore,
+        )
+      yield assertTrue(
+        tooMuch.status == Status.Forbidden,
+        covered.status == Status.Accepted,
+        ownRoles.status == Status.Forbidden,
+        landed == Set(lower),
+        stillHeld == Set(lower),
+      ).label("what an administrator holds is the ceiling of what they may give, and their own account is not theirs to change")
+    },
     test("an anonymous caller cannot invalidate a user's sessions") {
       for
         central <- api
