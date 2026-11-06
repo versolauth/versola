@@ -1,7 +1,7 @@
 package versola.central.configuration.delivery
 
 import versola.central.TestCentralConfig
-import versola.util.{Secret, SecureRandom, SecurityService, UnitSpecBase}
+import versola.util.{EnvName, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.test.*
 
@@ -48,6 +48,7 @@ object DeliverySettingsServiceSpec extends UnitSpecBase:
         ZLayer.succeed[DeliverySettingsRepository](repository),
         securityLayer,
         ZLayer.succeed(config),
+        ZLayer.succeed[EnvName](EnvName.Test("test")),
         DeliverySettingsService.live,
       )
 
@@ -160,6 +161,23 @@ object DeliverySettingsServiceSpec extends UnitSpecBase:
           results <- ZIO.foreach(invalid)(service.upsertSettings)
         yield assertTrue(
           results.map(_.left.map(_.message.takeWhile(_ != ' '))) == List(Left("smtp.from"), Left("otpProvider.url")),
+          env.repository.upsert.calls.isEmpty,
+        )
+      },
+      test("refuses a target on loopback or the metadata address and writes nothing") {
+        val env = Env()
+        val invalid = List(
+          update(smtp = Some(smtp.copy(host = "localhost"))),
+          update(otpProvider = Some(otpProvider.copy(url = "https://169.254.169.254/latest/meta-data"))),
+          update(otpProvider = Some(otpProvider.copy(url = "https://10.0.0.5/send"))),
+        )
+        for
+          _ <- env.repository.getAll.succeedsWith(None)
+          _ <- env.repository.upsert.succeedsWith(())
+          (service, _) <- env.service
+          results <- ZIO.foreach(invalid)(service.upsertSettings)
+        yield assertTrue(
+          results.map(_.left.map(_.message.takeWhile(_ != ' '))) == List(Left("smtp.host"), Left("otpProvider.url"), Left("otpProvider.url")),
           env.repository.upsert.calls.isEmpty,
         )
       },

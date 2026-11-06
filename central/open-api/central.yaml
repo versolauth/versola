@@ -2251,6 +2251,17 @@ paths:
         is switched off sends nothing, and a block that is not saved here is read from the
         matching block of `auth.conf`. A record with both blocks left out therefore holds nothing
         and changes nothing; delete the record to make that explicit.
+
+        Where the blocks may point is limited, because `auth` connects to them from inside the
+        deployment. `smtp.host` and `otpProvider.url` must not be loopback (`localhost`,
+        `127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`, `fe80::/10`, which holds the cloud
+        metadata address), unspecified or multicast, whatever is configured, and not a private
+        network address (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`,
+        `fc00::/7`) unless the operator sets `allow-private-delivery-targets` in `central.conf` and
+        `auth.conf`. In production `otpProvider.url` must be `https` and `smtp.port` one of 25,
+        465, 587 and 2525. A host name is judged here only by what it says; `auth` checks the
+        addresses it resolves to each time it connects, and a message to a host that resolves to a
+        refused address is not sent.
       operationId: upsertDeliverySettings
       requestBody:
         required: true
@@ -2267,8 +2278,10 @@ paths:
             of range, a value carries a control character, `otpProvider.url` is not an absolute
             HTTP(S) URL or carries credentials (`https://user:secret@host`; use `username` and the
             password field instead), or `otpProvider.method` is not one of `GET`, `POST`, `PUT`,
-            `PATCH`; or the body is not a delivery settings update at all. The text names the field
-            and the rule, never the value. Nothing is stored then.
+            `PATCH`; the target is one that is not allowed (see above), a production `otpProvider.url`
+            is not `https`, or a production `smtp.port` is not a mail port; or the body is not a
+            delivery settings update at all. The text names the field and the rule, never the value.
+            Nothing is stored then.
           content:
             text/plain:
               schema:

@@ -3,10 +3,11 @@ package versola.oauth.delivery
 import versola.auth.TestEnvConfig
 import versola.oauth.delivery.DeliveryChannels.Origin
 import versola.oauth.delivery.DeliverySettingsSyncClient.{EndpointMissing, Fetched, Saved}
-import versola.util.delivery.{SmsProviderSettings, SmtpSettings}
+import versola.util.Phone
+import versola.util.delivery.{FakeSmtpServer, SmsProviderSettings, SmtpSettings}
 import versola.util.{CacheSource, CoreConfig, Email}
 import zio.*
-import zio.http.{Client, Method, TestClient, URL}
+import zio.http.{Client, Handler, Method, Request, Response, TestClient, URL}
 import zio.test.*
 import zio.test.TestAspect.silentLogging
 
@@ -35,7 +36,15 @@ object DeliveryChannelsSpec extends ZIOSpecDefault:
   )
 
   private def resolved(config: CoreConfig, fetched: Fetched): ZIO[Client, Nothing, DeliveryChannels.Resolved] =
-    ZIO.serviceWith[Client](client => DeliveryChannels.resolve(config = config, client = client, central = fetched))
+    ZIO.serviceWith[Client](client => DeliveryChannels.resolve(config = config, client = client, centralClient = client, central = fetched))
+
+  /** A client that counts the requests it gets, to see which of two a sender was built on. */
+  private def counting: ZIO[Scope, Nothing, (Client, Ref[Int])] =
+    for
+      env <- TestClient.layer.build
+      hits <- Ref.make(0)
+      _ <- env.get[TestClient].addRoutes(Handler.fromFunctionZIO[Request](_ => hits.update(_ + 1).as(Response.ok)).toRoutes)
+    yield (env.get[Client], hits)
 
   def spec = suite("DeliveryChannels")(
     suite("resolve")(
@@ -90,13 +99,45 @@ object DeliveryChannelsSpec extends ZIOSpecDefault:
         yield assertTrue(r.emailOrigin == Origin.Off, r.email.isEmpty, r.smsOrigin == Origin.Config, r.sms.isDefined)
       },
     ).provide(TestClient.layer),
+    suite("the target policy")(
+      test("the provider saved in central is called through the policy's client, the one of auth.conf through the shared one") {
+        for
+          (shared, sharedHits) <- counting
+          (guarded, guardedHits) <- counting
+          fromCentral = DeliveryChannels.resolve(
+            config = withNeither,
+            client = shared,
+            centralClient = guarded,
+            central = Fetched(None, Some(Saved(centralSms, enabled = true))),
+          )
+          fromConfig = DeliveryChannels.resolve(config = withBoth, client = shared, centralClient = guarded, central = Fetched.empty)
+          _ <- ZIO.foreachDiscard(fromCentral.sms)(_.send(Phone("+12025551234"), "code"))
+          afterCentral <- sharedHits.get.zip(guardedHits.get)
+          _ <- ZIO.foreachDiscard(fromConfig.sms)(_.send(Phone("+12025551234"), "code"))
+          afterConfig <- sharedHits.get.zip(guardedHits.get)
+        yield assertTrue(afterCentral == (0, 1), afterConfig == (1, 1))
+      },
+      test("the SMTP server saved in central is refused on loopback, the one of auth.conf is not held to the policy") {
+        for
+          smtp <- ZIO.acquireRelease(ZIO.succeed(FakeSmtpServer.start()))(server => ZIO.succeed(server.close()))
+          local = centralSmtp.copy(host = "localhost", port = smtp.port, startTls = false, password = None)
+          fromCentral <- resolved(withNeither, Fetched(Some(Saved(local, enabled = true)), None))
+          fromConfig <- resolved(
+            withBoth.copy(smtp = withBoth.smtp.map(_.copy(host = "localhost", port = smtp.port, startTls = false, password = ""))),
+            Fetched.empty,
+          )
+          refused <- ZIO.foreach(fromCentral.email)(_.send(Email("user@example.com"), "hello").either)
+          sent <- ZIO.foreach(fromConfig.email)(_.send(Email("user@example.com"), "hello").either)
+        yield assertTrue(refused.exists(_.isLeft), sent.exists(_.isRight), smtp.messages.size == 1)
+      }.provide(TestClient.layer, Scope.default),
+    ),
     suite("a missing endpoint")(
       test("as the first answer means nothing is saved, so auth.conf is read") {
         for
           client <- ZIO.service[Client]
           sync = new CacheSource[Fetched]:
             override def getAll: Task[Fetched] = ZIO.fail(EndpointMissing())
-          source <- DeliveryChannels.resolvedSource(config = withBoth, client = client, sync = sync)
+          source <- DeliveryChannels.resolvedSource(config = withBoth, client = client, centralClient = client, sync = sync)
           r <- source.getAll
         yield assertTrue(r.emailOrigin == Origin.Config, r.smsOrigin == Origin.Config)
       },
@@ -109,7 +150,7 @@ object DeliveryChannelsSpec extends ZIOSpecDefault:
           ))
           sync = new CacheSource[Fetched]:
             override def getAll: Task[Fetched] = answers.modify(list => list.head -> list.tail).flatten
-          source <- DeliveryChannels.resolvedSource(config = withBoth, client = client, sync = sync)
+          source <- DeliveryChannels.resolvedSource(config = withBoth, client = client, centralClient = client, sync = sync)
           first <- source.getAll
           second <- source.getAll.either
         yield assertTrue(first.emailOrigin == Origin.Off, second.left.exists(_.isInstanceOf[EndpointMissing]))
@@ -123,7 +164,7 @@ object DeliveryChannelsSpec extends ZIOSpecDefault:
           ))
           sync = new CacheSource[Fetched]:
             override def getAll: Task[Fetched] = answers.modify(list => list.head -> list.tail).flatten
-          source <- DeliveryChannels.resolvedSource(config = withBoth, client = client, sync = sync)
+          source <- DeliveryChannels.resolvedSource(config = withBoth, client = client, centralClient = client, sync = sync)
           channels <- DeliveryChannels.make(source, 1.hour)
           _ <- channels.refresh
           email <- channels.email
@@ -137,7 +178,7 @@ object DeliveryChannelsSpec extends ZIOSpecDefault:
           current <- Ref.make(Fetched.empty)
           source = new CacheSource[DeliveryChannels.Resolved]:
             override def getAll: Task[DeliveryChannels.Resolved] =
-              current.get.map(fetched => DeliveryChannels.resolve(config = withNeither, client = client, central = fetched))
+              current.get.map(fetched => DeliveryChannels.resolve(config = withNeither, client = client, centralClient = client, central = fetched))
           channels <- DeliveryChannels.make(source, 1.hour)
           before <- channels.email
           _ <- current.set(Fetched(Some(Saved(centralSmtp, enabled = true)), None))
@@ -156,7 +197,8 @@ object DeliveryChannelsSpec extends ZIOSpecDefault:
             override def getAll: Task[DeliveryChannels.Resolved] =
               failing.get.flatMap:
                 case true => ZIO.fail(RuntimeException("central is unreachable"))
-                case false => ZIO.succeed(DeliveryChannels.resolve(config = withBoth, client = client, central = Fetched.empty))
+                case false =>
+                  ZIO.succeed(DeliveryChannels.resolve(config = withBoth, client = client, centralClient = client, central = Fetched.empty))
           channels <- DeliveryChannels.make(source, 1.hour)
           _ <- failing.set(true)
           _ <- channels.refresh

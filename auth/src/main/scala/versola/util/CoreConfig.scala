@@ -23,6 +23,10 @@ case class CoreConfig(
     limits: Option[versola.oauth.clientauth.ClientAuthThrottle.Settings] = None,
     // The in-memory list of revoked access tokens (#729); absent, the defaults of [[CoreConfig.RevocationConfig]] apply.
     revocation: Option[CoreConfig.RevocationConfig] = None,
+    // The SMTP server and the SMS provider saved in central are an administrator's input, so auth refuses to connect to a
+    // loopback, link-local (cloud metadata) or private address for them. A provider inside the cluster or the VPC needs
+    // this set; loopback and link-local stay refused either way. The blocks of this file are not held to it.
+    allowPrivateDeliveryTargets: Boolean = false,
 ):
   def parOrDefault: CoreConfig.ParConfig = par.getOrElse(CoreConfig.ParConfig.default)
 

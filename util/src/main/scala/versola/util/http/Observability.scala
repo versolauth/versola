@@ -504,8 +504,12 @@ object Observability:
   def clientConfig(poolSize: Int): ZClient.Config = clientConfig(ConnectionPoolConfig.Fixed(poolSize))
 
   /** `Client.default` with the given pool per target instead of zio-http's `Fixed(10)`. */
-  def pooledClient(pool: ConnectionPoolConfig): ZLayer[Any, Throwable, Client] =
-    (ZLayer.succeed(clientConfig(pool)) ++ ZLayer.succeed(NettyConfig.defaultWithFastShutdown) ++ DnsResolver.default) >>> ZClient.live
+  def pooledClient(pool: ConnectionPoolConfig): ZLayer[Any, Throwable, Client] = pooledClient(pool, DnsResolver.default)
+
+  /** The same client resolving names through `dns`: what a caller that must refuse some addresses passes, so that the
+    * refusal is made on the answer the connection is going to use. */
+  def pooledClient(pool: ConnectionPoolConfig, dns: ZLayer[Any, Nothing, DnsResolver]): ZLayer[Any, Throwable, Client] =
+    (ZLayer.succeed(clientConfig(pool)) ++ ZLayer.succeed(NettyConfig.defaultWithFastShutdown) ++ dns) >>> ZClient.live
 
   def pooledClient(poolSize: Int): ZLayer[Any, Throwable, Client] = pooledClient(ConnectionPoolConfig.Fixed(poolSize))
 

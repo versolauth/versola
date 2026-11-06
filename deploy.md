@@ -473,6 +473,30 @@ dump and the rollback is lost. With extra replicas of `auth` or `edge`, remove t
 unfinished `versola rollout` is undone with `versola rollout --abort` instead; secrets the new
 version added stay in OpenBao either way.
 
+#### Behaviour change: the SMTP server and SMS provider saved in the console may not point at loopback, link-local or, by default, private addresses
+
+`auth` connects to the SMTP server and the SMS provider saved on **Delivery** (`PUT /configuration/delivery-settings`) from inside
+the deployment's network, and an administrator types both addresses. Without a limit they are a way to make `auth` call the cloud
+metadata service or an internal admin port, and to send one-time codes to a host of the administrator's choosing. Now:
+
+- **Always refused**, nothing sets this aside: loopback (`localhost`, `127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`, which holds
+  the cloud metadata address, and `fe80::/10`), unspecified (`0.0.0.0`, `::`) and multicast addresses.
+- **Refused unless allowed:** private addresses (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, `fc00::/7`).
+  **If your SMS provider or mail relay is inside the cluster or the VPC, set `allow-private-delivery-targets = true`** at the top level of
+  `central.conf` (the form check) **and** `auth.conf` (the check at connection time) before upgrading. Default `false`.
+- **In production** a provider URL must be `https` (so the one-time codes and the Basic credentials do not travel in clear), and the
+  SMTP port one of 25, 465, 587, 2525. A test environment keeps `http` and any port.
+- A write is checked on what it says (an address literal, `localhost`). The check that holds is made by `auth` on each connection, on the
+  address the connection goes to: a host name that resolves to a refused address is not connected to, and the message is not sent.
+- The blocks of `auth.conf` (`smtp`, `otp-provider`) are the operator's own and are **not** held to this.
+
+**What breaks on upgrade.** Nothing is rewritten, but a block already saved in the console that points at a refused address stops
+delivering from the first configuration refresh after `auth` is upgraded (its send fails and is logged; one-time codes and temporary
+passwords for it are not delivered), and the console refuses to save it again unchanged. Check `GET /configuration/delivery-settings` (or the
+Delivery page) before upgrading; either move the block to a public address or set `allow-private-delivery-targets` in both files. A
+provider saved with `http` in production keeps working until it is next saved, which `https` is then required for. A mail server
+reached by a loopback name, which a few dev setups use, can only be configured in `auth.conf`.
+
 #### Behaviour change: edge binds a login to the browser that began it (login CSRF on `/complete`)
 
 `/login/{presetId}` now sets an `EDGE_LOGIN_<state>` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`, `Path` =

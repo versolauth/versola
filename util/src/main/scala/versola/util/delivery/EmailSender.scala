@@ -12,14 +12,17 @@ trait EmailSender:
   def send(to: Email, message: String): Task[Unit]
 
 object EmailSender:
-  def smtp(settings: SmtpSettings): EmailSender = SmtpEmailSender(settings)
+  def smtp(settings: SmtpSettings): EmailSender = SmtpEmailSender(settings, None)
+
+  /** The server comes from the admin API, so each connection is checked against `policy` ([[DeliveryTargetPolicy]]). */
+  def smtp(settings: SmtpSettings, policy: DeliveryTargetPolicy): EmailSender = SmtpEmailSender(settings, Some(policy))
 
 /** Delivery through an SMTP server. The session is built once, so a sender is made when its settings change, not per message.
   *
   * The three timeouts bound a server that accepts the connection and then says nothing: without them the blocked call
   * never returns and holds its thread.
   */
-final class SmtpEmailSender(settings: SmtpSettings) extends EmailSender:
+final class SmtpEmailSender(settings: SmtpSettings, policy: Option[DeliveryTargetPolicy]) extends EmailSender:
   private val session =
     val props = Properties()
     props.put("mail.smtp.host", settings.host)
@@ -35,6 +38,11 @@ final class SmtpEmailSender(settings: SmtpSettings) extends EmailSender:
     props.put("mail.smtp.connectiontimeout", SmtpEmailSender.TimeoutMillis)
     props.put("mail.smtp.timeout", SmtpEmailSender.TimeoutMillis)
     props.put("mail.smtp.writetimeout", SmtpEmailSender.TimeoutMillis)
+    // Checked where the connection is made, on the address it goes to, not on a lookup made beforehand.
+    // Without `fallback=false` a refused connection is retried on a plain socket, which is the check undone.
+    policy.foreach: rules =>
+      props.put("mail.smtp.socketFactory", GuardedSocketFactory(rules))
+      props.put("mail.smtp.socketFactory.fallback", "false")
     Session.getInstance(
       props,
       new Authenticator:
