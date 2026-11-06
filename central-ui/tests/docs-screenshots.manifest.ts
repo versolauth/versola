@@ -1052,13 +1052,6 @@ const consoleShots: DocsShot[] = [
     name: `console/security-edit-${group}`, kind: 'frame', fullPage: true, path: `/?view=security&tenant=${tenant}&edit=${group}`, state: alpha,
     before: async page => { await expect(page.getByRole('button', { name: /^Save / })).toBeVisible(); },
   })),
-  {
-    name: 'console/security-edit-limits-stepup', kind: 'frame', fullPage: true, path: `/?view=security&tenant=${tenant}&edit=limits`, state: alpha,
-    before: async page => {
-      await page.getByLabel('Step-up limits', { exact: true }).check();
-      await expect(page.getByLabel('Step-up OTP request max attempts', { exact: true })).toBeVisible();
-    },
-  },
 
   // OTP templates
   {

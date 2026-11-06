@@ -508,12 +508,12 @@ test('logout: adds and removes redirect URIs and refuses a malformed one', async
 test('submission limits: edits a window, adds one and the ban duration', async ({ page }) => {
   const api = await loadAdminApp(page, { path: `${base}&edit=limits`, state: state() });
 
-  await page.getByLabel('OTP request max attempts').fill('3');
+  await page.getByLabel('OTP request max attempts', { exact: true }).fill('3');
   await page.getByRole('button', { name: '+ Add window' }).first().click();
-  await page.getByLabel('OTP request max attempts').last().fill('20');
-  await page.getByLabel('OTP request window in seconds').last().fill('3600');
-  await page.getByLabel('Ban duration', { exact: true }).fill('2');
-  await page.getByLabel('Ban duration unit').selectOption('hours');
+  await page.getByLabel('OTP request max attempts', { exact: true }).last().fill('20');
+  await page.getByLabel('OTP request window in seconds', { exact: true }).last().fill('3600');
+  await page.getByLabel('Ban duration', { exact: true }).first().fill('2');
+  await page.getByLabel('Ban duration unit').first().selectOption('hours');
   await page.getByRole('button', { name: 'Save submission limits' }).click();
 
   const limits = (await lastSaved(api.requests)).submissionLimits as typeof settings.submissionLimits;
@@ -533,10 +533,12 @@ const withStepUp = () => state({
   challengeSettings: { [tenant]: { ...settings, submissionLimits: { ...settings.submissionLimits, stepUp } } } as MockConfigState['challengeSettings'],
 });
 
-test('submission limits: a tenant without step-up limits is read as following sign-in', async ({ page }) => {
+test('submission limits: a tenant without step-up limits is read with its sign-in values in the step-up rows', async ({ page }) => {
   await loadAdminApp(page, { path: base, state: state() });
-  await expect(card(page, 'Submission limits')).toContainText('Follow the limits above, counted apart');
-  await expect(card(page, 'Submission limits')).not.toContainText('Step-up OTP request');
+  const limits = card(page, 'Submission limits');
+  await expect(limits).toContainText('Step-up OTP request');
+  await expect(limits).toContainText('Step-up ban duration');
+  await expect(limits).toContainText('5 per 10m');
 });
 
 test('submission limits: reads the step-up windows and ban of a tenant that has them', async ({ page }) => {
@@ -546,14 +548,11 @@ test('submission limits: reads the step-up windows and ban of a tenant that has 
   await expect(limits).toContainText('2 per 1m');
   await expect(limits).toContainText('Step-up passkey assertion');
   await expect(limits).toContainText('No limit');
-  await expect(limits).toContainText('Step-up ban duration');
 });
 
-test('submission limits: separate step-up limits start from the sign-in values, are edited alone and saved beside them', async ({ page }) => {
+test('submission limits: the step-up limits start from the sign-in values, are edited alone and are always saved beside them', async ({ page }) => {
   const api = await loadAdminApp(page, { path: `${base}&edit=limits`, state: state() });
 
-  await expect(page.getByLabel('Step-up OTP request max attempts', { exact: true })).toHaveCount(0);
-  await page.getByLabel('Step-up limits', { exact: true }).check();
   const attempts = page.getByLabel('Step-up OTP request max attempts', { exact: true });
   await expect(attempts).toHaveValue('5');
   await attempts.fill('2');
@@ -567,16 +566,26 @@ test('submission limits: separate step-up limits start from the sign-in values, 
   expect(limits.stepUp.passwordSubmit).toEqual(settings.submissionLimits.passwordSubmit);
 });
 
-test('submission limits: switching the separate step-up limits off saves the record without them', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: `${base}&edit=limits`, state: withStepUp() });
+test('submission limits: a save that edits only sign-in still sends the step-up limits, a copy of them for a tenant that had none', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: `${base}&edit=limits`, state: state() });
 
-  await expect(page.getByLabel('Step-up limits', { exact: true })).toBeChecked();
-  await page.getByLabel('Step-up limits', { exact: true }).uncheck();
+  await page.getByLabel('OTP request max attempts', { exact: true }).fill('3');
   await page.getByRole('button', { name: 'Save submission limits' }).click();
 
-  const limits = (await lastSaved(api.requests)).submissionLimits as Record<string, unknown>;
-  expect(limits).not.toHaveProperty('stepUp');
-  expect(limits.otpRequest).toEqual(settings.submissionLimits.otpRequest);
+  const limits = (await lastSaved(api.requests)).submissionLimits as typeof settings.submissionLimits & { stepUp: typeof stepUp };
+  expect(limits.otpRequest).toEqual([{ maxAttempts: 3, windowSeconds: 600 }]);
+  expect(limits.stepUp.otpRequest).toEqual(settings.submissionLimits.otpRequest);
+  expect(limits.stepUp.banDurationSeconds).toBe(3600);
+});
+
+test('submission limits: a tenant that has step-up limits keeps them when sign-in is edited', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: `${base}&edit=limits`, state: withStepUp() });
+
+  await page.getByLabel('OTP request max attempts', { exact: true }).fill('3');
+  await page.getByRole('button', { name: 'Save submission limits' }).click();
+
+  const limits = (await lastSaved(api.requests)).submissionLimits as typeof settings.submissionLimits & { stepUp: typeof stepUp };
+  expect(limits.stepUp).toEqual(stepUp);
 });
 
 test('branding: saves a logo pair, previews each on its own scheme, refuses a single file and clears both as nulls', async ({ page }) => {

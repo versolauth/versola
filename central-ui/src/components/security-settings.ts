@@ -143,8 +143,6 @@ export class VersolaSecuritySettings extends LitElement {
   @state() private acrRows: AcrRow[] = [];
   @state() private mtlsEnabled = false;
   @state() private idleEnabled = false;
-  /** Whether step-up attempts have limits of their own; off, they follow the sign-in ones and the record carries no `stepUp`. */
-  @state() private stepUpEnabled = false;
   @state() private durations: Record<string, Duration> = {};
   @state() private fieldErrors: Record<string, string> = {};
   @state() private formError = '';
@@ -644,7 +642,7 @@ export class VersolaSecuritySettings extends LitElement {
   }
 
   private get draftSnapshot(): string {
-    return JSON.stringify([this.draft, this.regions, this.domainsText, this.origins, this.uris, this.acrRows, this.mtlsEnabled, this.idleEnabled, this.stepUpEnabled, this.durations]);
+    return JSON.stringify([this.draft, this.regions, this.domainsText, this.origins, this.uris, this.acrRows, this.mtlsEnabled, this.idleEnabled, this.durations]);
   }
 
   private resetDraft() {
@@ -660,7 +658,8 @@ export class VersolaSecuritySettings extends LitElement {
     this.acrRows = Object.entries(draft.acrVocabulary ?? {}).map(([acr, factors]) => ({ key: ++this.entryKey, acr, factors: [...factors] }));
     this.mtlsEnabled = draft.mtlsCertificateHeader != null;
     this.idleEnabled = draft.sessionIdleTtlSeconds != null;
-    this.stepUpEnabled = draft.submissionLimits.stepUp != null;
+    // Step-up has limits of its own, always. A tenant that never set them follows sign-in until now, so the editor starts from its values.
+    draft.submissionLimits.stepUp ??= this.stepUpFrom(draft.submissionLimits);
     this.durations = {
       otpResendAfter: splitDuration(draft.otpResendAfter),
       authConversationTtlSeconds: splitDuration(draft.authConversationTtlSeconds),
@@ -810,7 +809,7 @@ export class VersolaSecuritySettings extends LitElement {
         };
         invalid(signIn, '');
         const submissionLimits: SubmissionLimits = { ...signIn, banDurationSeconds: this.seconds('banDurationSeconds') };
-        if (this.stepUpEnabled && stepUp) {
+        if (stepUp) {
           invalid(stepUp, 'stepUp-');
           submissionLimits.stepUp = { ...stepUp, banDurationSeconds: this.seconds('stepUpBanDurationSeconds') };
         }
@@ -889,6 +888,8 @@ export class VersolaSecuritySettings extends LitElement {
     const signupRegions = settings.phoneRegions.filter(region => region.registration).map(region => region.region);
     const signingKey = settings.signingKeyId ? this.keys.find(key => key.kid === settings.signingKeyId) : null;
     const limits = settings.submissionLimits;
+    // A tenant that never set step-up limits is throttled by its sign-in ones, so that is what the card reads.
+    const stepUp = limits.stepUp ?? limits;
     return html`
       ${this.card('methods', 'Which identifiers a user may sign in with on this tenant.', html`
         ${this.row('Phone numbers', settings.phoneRegions.length ? html`
@@ -960,13 +961,10 @@ export class VersolaSecuritySettings extends LitElement {
           ? limits[action.id].map((limit, index) => html`${index ? ', ' : ''}${limit.maxAttempts} per ${formatDurationShort(limit.windowSeconds)}`)
           : html`<span class="muted">No limit</span>`))}
         ${this.row('Ban duration', limits.banDurationSeconds > 0 ? this.duration(limits.banDurationSeconds) : html`<span class="muted">No ban</span>`)}
-        ${limits.stepUp
-          ? html`
-            ${LIMIT_ACTIONS.map(action => this.row(`Step-up ${afterPrefix(action.label)}`, limits.stepUp![action.id].length
-              ? limits.stepUp![action.id].map((limit, index) => html`${index ? ', ' : ''}${limit.maxAttempts} per ${formatDurationShort(limit.windowSeconds)}`)
-              : html`<span class="muted">No limit</span>`))}
-            ${this.row('Step-up ban duration', limits.stepUp.banDurationSeconds > 0 ? this.duration(limits.stepUp.banDurationSeconds) : html`<span class="muted">No ban</span>`)}`
-          : this.row('Step-up attempts', html`<span class="muted">Follow the limits above, counted apart</span>`)}
+        ${LIMIT_ACTIONS.map(action => this.row(`Step-up ${afterPrefix(action.label)}`, stepUp[action.id].length
+          ? stepUp[action.id].map((limit, index) => html`${index ? ', ' : ''}${limit.maxAttempts} per ${formatDurationShort(limit.windowSeconds)}`)
+          : html`<span class="muted">No limit</span>`))}
+        ${this.row('Step-up ban duration', stepUp.banDurationSeconds > 0 ? this.duration(stepUp.banDurationSeconds) : html`<span class="muted">No ban</span>`)}
       `)}
 
       <versola-record-card id="profile" heading="Security profile" fixedLabel="Fixed" .body=${html`
@@ -1419,14 +1417,8 @@ export class VersolaSecuritySettings extends LitElement {
     `;
   }
 
-  /** Switching the separate step-up limits on starts them from a copy of the sign-in values, which the admin then edits. */
-  private setStepUpEnabled(enabled: boolean) {
-    this.stepUpEnabled = enabled;
-    const limits = this.draft!.submissionLimits;
-    if (!enabled || limits.stepUp) return;
-    const { otpRequest, otpSubmit, passwordSubmit, passkeyAssertion } = limits;
-    this.patch({ submissionLimits: { ...limits, stepUp: structuredClone({ otpRequest, otpSubmit, passwordSubmit, passkeyAssertion, banDurationSeconds: this.seconds('banDurationSeconds') }) } });
-    this.setDuration('stepUpBanDurationSeconds', { ...this.durations.banDurationSeconds });
+  private stepUpFrom({ otpRequest, otpSubmit, passwordSubmit, passkeyAssertion, banDurationSeconds }: StepUpLimits): StepUpLimits {
+    return structuredClone({ otpRequest, otpSubmit, passwordSubmit, passkeyAssertion, banDurationSeconds });
   }
 
   private renderLimitsEditor() {
@@ -1434,13 +1426,9 @@ export class VersolaSecuritySettings extends LitElement {
       ${this.renderLimitWindows('signIn')}
       <div class="editor-box">
         <h3>Step-up</h3>
-        <p class="editor-sub">A step-up asks a signed-in user to prove a stronger factor. Its attempts are always counted apart from sign-in, so a ban on one never bans the other.</p>
-        <div class="form-group">
-          <label id="step-up-limits-label">Step-up limits</label>
-          <label class="check-row"><input type="checkbox" aria-labelledby="step-up-limits-label" .checked=${this.stepUpEnabled} @change=${(e: Event) => this.setStepUpEnabled((e.target as HTMLInputElement).checked)} /> Use limits of their own for step-up</label>
-        </div>
+        <p class="editor-sub">A step-up asks a signed-in user to prove a stronger factor. Its attempts are counted apart from sign-in and use the limits below, so a ban on one never bans the other.</p>
       </div>
-      ${this.stepUpEnabled && this.draft!.submissionLimits.stepUp ? this.renderLimitWindows('stepUp') : ''}
+      ${this.renderLimitWindows('stepUp')}
     `;
   }
 
