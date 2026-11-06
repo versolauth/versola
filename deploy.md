@@ -473,6 +473,18 @@ dump and the rollback is lost. With extra replicas of `auth` or `edge`, remove t
 unfinished `versola rollout` is undone with `versola rollout --abort` instead; secrets the new
 version added stay in OpenBao either way.
 
+#### Behaviour change: `POST`/`PUT /configuration/jwks` accept a public key only
+
+Central now refuses (`400`, naming the rule, never a value) a JWK that carries a private or secret member (`d`, `p`, `q`, `dp`,
+`dq`, `qi`, `oth`, `k`), a `kty` other than `RSA` or `EC` (EC only on `P-256`), a missing required member (`n`, `e` / `crv`, `x`, `y`), a point not on
+the curve, or an `alg` other than `RS256`, `PS256`, `ES256` (or one that does not fit the key type). A key without `alg` is still
+accepted. Before, any JSON object with a `kid` was stored. Generated keys and `bootstrap.jwks` are unaffected.
+
+What central returns on `GET /configuration/jwks` and hands to auth and edge is now built from the public members only (`kty`,
+`kid`, `use`, `alg`, `key_ops`, `n`, `e`, `crv`, `x`, `y`, `x5c`, `x5t`, `x5t#S256`, `x5u`), so a row stored earlier with more is
+no longer served. The row itself is not rewritten: if a full key (private members included) was ever imported, replace it with
+`PUT` of its public half, or delete it, and rotate the key. No schema change; any upgrade order is safe.
+
 #### Behaviour change: edge binds a login to the browser that began it (login CSRF on `/complete`)
 
 `/login/{presetId}` now sets an `EDGE_LOGIN_<state>` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`, `Path` =
