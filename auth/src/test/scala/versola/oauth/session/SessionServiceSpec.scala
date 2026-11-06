@@ -4,13 +4,16 @@ import versola.auth.TestEnvConfig
 import versola.oauth.client.model.ClientId
 import versola.oauth.session.model.{
   ClientEntry,
+  EndedSession,
   PublicSessionId,
   SessionId,
   SessionInfo,
   SessionRecord,
   SessionUnderUserAgent,
+  StoredSession,
   UserAgentDetails,
   UserAgentId,
+  UserAgentRecord,
 }
 import versola.user.model.UserId
 import versola.util.{MAC, SecurityService, UnitSpecBase}
@@ -39,6 +42,22 @@ object SessionServiceSpec extends UnitSpecBase:
     publicId = publicId,
     expiresAt = Instant.EPOCH,
   )
+
+  private val userAgentId1 = UserAgentId(UUID.fromString("00000000-0000-0000-0000-0000000000a1"))
+  private val userAgentId2 = UserAgentId(UUID.fromString("00000000-0000-0000-0000-0000000000a2"))
+  private val userAgentId3 = UserAgentId(UUID.fromString("00000000-0000-0000-0000-0000000000a3"))
+
+  private def userAgent(id: UserAgentId, details: UserAgentDetails) =
+    UserAgentRecord(
+      id = id,
+      userAgent = Some(s"raw-$id"),
+      platform = details.platform,
+      os = details.os,
+      browser = details.browser,
+      version = details.version,
+      createdAt = Instant.EPOCH,
+      expiresAt = Instant.ofEpochSecond(2000),
+    )
 
   class Env:
     val repository = stub[SessionRepository]
@@ -97,65 +116,129 @@ object SessionServiceSpec extends UnitSpecBase:
       },
     ),
     suite("listByUser")(
-      test("produces one entry per session, enriched with its user agent's details") {
+      test("produces one entry per session, enriched with its user agent's record and its expiries") {
         val env = Env()
-        val userAgentId1 = UserAgentId(UUID.fromString("00000000-0000-0000-0000-0000000000a1"))
-        val userAgentId2 = UserAgentId(UUID.fromString("00000000-0000-0000-0000-0000000000a2"))
-        val details1 = UserAgentDetails(Some("desktop"), Some("macOS 14"), Some("Chrome"), Some("120"))
-        val details2 = UserAgentDetails(Some("ios"), Some("iOS 17"), Some("Safari"), Some("17"))
-        val session1 = record.copy(userAgentId = userAgentId1, publicId = PublicSessionId("s1"))
+        val agent1 = userAgent(userAgentId1, UserAgentDetails(Some("desktop"), Some("macOS 14"), Some("Chrome"), Some("120")))
+        val agent2 = userAgent(userAgentId2, UserAgentDetails(Some("ios"), Some("iOS 17"), Some("Safari"), Some("17")))
+        val session1 = record.copy(userAgentId = userAgentId1, publicId = PublicSessionId("s1"), expiresAt = Instant.ofEpochSecond(1000))
         val session2 = record.copy(userAgentId = userAgentId2, publicId = PublicSessionId("s2"))
+        val idle = Instant.ofEpochSecond(500)
         for
-          _ <- env.repository.findByUserId.succeedsWith(List(session1, session2))
-          _ <- env.userAgentRepository.findMany.succeedsWith(Map(userAgentId1 -> details1, userAgentId2 -> details2))
+          _ <- env.repository.findByUserId.succeedsWith(List(StoredSession(session1, Some(idle)), StoredSession(session2, None)))
+          _ <- env.userAgentRepository.findByUserId.succeedsWith(List(agent1, agent2))
           result <- env.service.listByUser(userId)
         yield assertTrue(
           result == List(
             SessionUnderUserAgent(
-              session1.publicId,
-              session1.clients,
-              session1.createdAt,
-              details1.platform,
-              details1.os,
-              details1.browser,
-              details1.version,
-              session1.expiresAt,
+              publicId = session1.publicId,
+              clients = session1.clients,
+              createdAt = session1.createdAt,
+              platform = agent1.platform,
+              os = agent1.os,
+              browser = agent1.browser,
+              version = agent1.version,
+              expiresAt = Instant.ofEpochSecond(1000),
+              idleExpiresAt = Some(idle),
+              userAgent = Some(agent1),
             ),
             SessionUnderUserAgent(
-              session2.publicId,
-              session2.clients,
-              session2.createdAt,
-              details2.platform,
-              details2.os,
-              details2.browser,
-              details2.version,
-              session2.expiresAt,
+              publicId = session2.publicId,
+              clients = session2.clients,
+              createdAt = session2.createdAt,
+              platform = agent2.platform,
+              os = agent2.os,
+              browser = agent2.browser,
+              version = agent2.version,
+              expiresAt = session2.expiresAt,
+              idleExpiresAt = None,
+              userAgent = Some(agent2),
             ),
           ),
-          env.userAgentRepository.findMany.calls == List(List(userAgentId1, userAgentId2)),
+          env.userAgentRepository.findByUserId.calls == List(userId),
         )
       },
-      test("falls back to unknown details when the user agent has expired") {
+      test("falls back to unknown details and no user agent record when the user agent has expired") {
         val env = Env()
-        val userAgentId = UserAgentId(UUID.fromString("00000000-0000-0000-0000-0000000000a1"))
-        val session = record.copy(userAgentId = userAgentId)
+        val session = record.copy(userAgentId = userAgentId1)
         val unknown = UserAgentDetails.parse(None)
         for
-          _ <- env.repository.findByUserId.succeedsWith(List(session))
-          _ <- env.userAgentRepository.findMany.succeedsWith(Map.empty)
+          _ <- env.repository.findByUserId.succeedsWith(List(StoredSession(session, None)))
+          _ <- env.userAgentRepository.findByUserId.succeedsWith(Nil)
           result <- env.service.listByUser(userId)
         yield assertTrue(
           result == List(SessionUnderUserAgent(
-            session.publicId,
-            session.clients,
-            session.createdAt,
-            unknown.platform,
-            unknown.os,
-            unknown.browser,
-            unknown.version,
-            session.expiresAt,
+            publicId = session.publicId,
+            clients = session.clients,
+            createdAt = session.createdAt,
+            platform = unknown.platform,
+            os = unknown.os,
+            browser = unknown.browser,
+            version = unknown.version,
+            expiresAt = session.expiresAt,
+            idleExpiresAt = None,
+            userAgent = None,
           )),
         )
+      },
+    ),
+    suite("listDevicesByUser")(
+      test("pairs a signed-in user agent with its session and lists the others as signed out with their ended sessions") {
+        val env = Env()
+        val signedIn = userAgent(userAgentId1, UserAgentDetails(Some("desktop"), Some("macOS 14"), Some("Chrome"), Some("120")))
+        val signedOut = userAgent(userAgentId2, UserAgentDetails(Some("ios"), Some("iOS 17"), Some("Safari"), Some("17")))
+        val neverSignedIn = userAgent(userAgentId3, UserAgentDetails(None, None, None, None))
+        val live = record.copy(userAgentId = userAgentId1, publicId = PublicSessionId("live"))
+        val ended = List(
+          EndedSession(PublicSessionId("old-1"), userAgentId2),
+          EndedSession(PublicSessionId("old-2"), userAgentId2),
+          EndedSession(PublicSessionId("old-of-signed-in"), userAgentId1),
+        )
+        for
+          _ <- env.repository.findByUserId.succeedsWith(List(StoredSession(live, None)))
+          _ <- env.userAgentRepository.findByUserId.succeedsWith(List(signedIn, signedOut, neverSignedIn))
+          _ <- env.repository.findEndedByUserId.succeedsWith(ended)
+          devices <- env.service.listDevicesByUser(userId)
+        yield assertTrue(
+          devices.map(_.userAgent.map(_.id)) == List(Some(userAgentId1), Some(userAgentId2), Some(userAgentId3)),
+          devices.map(_.session.map(_.publicId)) == List(Some(live.publicId), None, None),
+          devices.map(_.endedSessionIds) == List(Nil, List(PublicSessionId("old-1"), PublicSessionId("old-2")), Nil),
+          devices.head.session.flatMap(_.userAgent).contains(signedIn),
+        )
+      },
+      test("lists a live session whose user agent row is gone with no user agent") {
+        val env = Env()
+        val live = record.copy(userAgentId = userAgentId1)
+        for
+          _ <- env.repository.findByUserId.succeedsWith(List(StoredSession(live, None)))
+          _ <- env.userAgentRepository.findByUserId.succeedsWith(Nil)
+          _ <- env.repository.findEndedByUserId.succeedsWith(Nil)
+          devices <- env.service.listDevicesByUser(userId)
+        yield assertTrue(devices.map(d => (d.userAgent, d.session.map(_.publicId))) == List((None, Some(live.publicId))))
+      },
+      test("lists nothing for a user with no user agents and no sessions") {
+        val env = Env()
+        for
+          _ <- env.repository.findByUserId.succeedsWith(Nil)
+          _ <- env.userAgentRepository.findByUserId.succeedsWith(Nil)
+          _ <- env.repository.findEndedByUserId.succeedsWith(Nil)
+          devices <- env.service.listDevicesByUser(userId)
+        yield assertTrue(devices.isEmpty)
+      },
+    ),
+    suite("forgetUserAgent")(
+      test("delegates to the user agent repository with the user it must belong to") {
+        val env = Env()
+        for
+          _ <- env.userAgentRepository.forget.succeedsWith(true)
+          forgotten <- env.service.forgetUserAgent(userId, userAgentId1)
+        yield assertTrue(forgotten, env.userAgentRepository.forget.calls == List((userAgentId1, userId)))
+      },
+      test("reports false when the repository does not know the user agent as the user's") {
+        val env = Env()
+        for
+          _ <- env.userAgentRepository.forget.succeedsWith(false)
+          forgotten <- env.service.forgetUserAgent(userId, userAgentId1)
+        yield assertTrue(!forgotten)
       },
     ),
   )

@@ -1,30 +1,48 @@
 {
   "en": {
     "page_title": "Sign In",
+    "scheme_label": "Colour scheme",
+    "scheme_auto": "Auto",
+    "scheme_light": "Light",
+    "scheme_dark": "Dark",
     "title": "Enter Code",
     "description": "We sent a verification code to {destination}",
     "code_placeholder": "Enter verification code",
     "verify_button": "Verify",
     "divider": "or",
-    "resend_button": "Resend Code",
+    "resend_prompt": "Didn't get the code?",
+    "resend_link": "Resend",
     "resend_in": "Resend available in {seconds}s",
     "otp_wrong": "Invalid verification code. Please try again.",
     "rate_limit_exceeded": "Too many attempts. Please wait before trying again.",
     "locked_for": "Too many attempts. Try again in {seconds}s.",
-    "service_unavailable": "Service temporarily unavailable. Please try again later"
+    "service_unavailable": "Service temporarily unavailable. Please try again later",
+    "passkey_button": "Use a passkey",
+    "passkey_error_title": "Passkey sign-in",
+    "close": "Close",
+    "passkey_failed": "Passkey sign-in failed. Please try again or enter the code"
   },
   "ru": {
     "page_title": "Вход",
+    "scheme_label": "Цветовая схема",
+    "scheme_auto": "Авто",
+    "scheme_light": "Светлая",
+    "scheme_dark": "Темная",
     "title": "Введите код",
     "description": "Мы отправили код подтверждения на {destination}",
     "code_placeholder": "Введите код подтверждения",
     "verify_button": "Подтвердить",
     "divider": "или",
-    "resend_button": "Отправить код повторно",
+    "resend_prompt": "Не пришел код?",
+    "resend_link": "Отправить еще раз",
     "resend_in": "Повторная отправка через {seconds} с",
-    "otp_wrong": "Неверный код подтверждения. Попробуйте ещё раз.",
+    "otp_wrong": "Неверный код подтверждения. Попробуйте еще раз.",
     "rate_limit_exceeded": "Превышено количество попыток. Пожалуйста, подождите перед следующей попыткой.",
     "locked_for": "Слишком много попыток. Попробуйте через {seconds} с.",
-    "service_unavailable": "Сервис временно недоступен. Попробуйте позже"
+    "service_unavailable": "Сервис временно недоступен. Попробуйте позже",
+    "passkey_button": "Войти по ключу доступа",
+    "passkey_error_title": "Вход по ключу доступа",
+    "close": "Закрыть",
+    "passkey_failed": "Не удалось войти по ключу доступа. Повторите попытку или введите код"
   }
 }

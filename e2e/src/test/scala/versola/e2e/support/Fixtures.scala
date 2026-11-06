@@ -68,7 +68,6 @@ object Fixtures:
       theme: String = "default",
       otpTemplateId: String = "default",
       authFlow: Option[Json] = None,
-      registrationFlow: Option[Json] = None,
       consentFlow: Option[Json] = None,
       frontChannelLogoutUri: Option[String] = None,
       frontChannelLogoutSessionRequired: Boolean = false,
@@ -111,11 +110,11 @@ object Fixtures:
         // their own certificate or none, never one central issues.
         "issueEdgeClientCertificate" -> Json.Bool(false),
         "enrollEdgeClientCertificate" -> Json.Bool(false),
+        "estEnrollment" -> Json.Bool(false),
       ) ++ Chunk.fromIterable(
         List(
           refreshTokenTtl.map(value => "refreshTokenTtl" -> Json.Num(value)),
           authFlow.map("authFlow" -> _),
-          registrationFlow.map("registrationFlow" -> _),
           consentFlow.map("consentFlow" -> _),
           frontChannelLogoutUri.map(value => "frontChannelLogoutUri" -> Json.Str(value)),
           backChannelLogoutUri.map(value => "backChannelLogoutUri" -> Json.Str(value)),
@@ -363,6 +362,7 @@ object Fixtures:
       stepUpCondition: Option[String] = None,
       stepUpAcr: Option[String] = None,
       maxAge: Option[Int] = None,
+      rateLimit: Option[Json] = None,
   ): Json.Obj =
     Json.Obj(
       Chunk[(String, Json)](
@@ -377,6 +377,7 @@ object Fixtures:
           stepUpCondition.map(value => "stepUpCondition" -> Json.Str(value)),
           stepUpAcr.map(value => "stepUpAcr" -> Json.Str(value)),
           maxAge.map(value => "maxAge" -> Json.Num(value)),
+          rateLimit.map(value => "rateLimit" -> value),
         ).flatten,
       ),
     )
@@ -403,6 +404,7 @@ object Fixtures:
       "audience" -> strings(audience),
       "endpoints" -> Json.Arr(Chunk.fromIterable(endpoints)),
       "internal" -> Json.Bool(internal),
+      "audienceRateLimits" -> Json.Arr(),
     )
 
   /** The audience is a patch, not a replacement: `addAudience`/`removeAudience` name the two
@@ -416,6 +418,8 @@ object Fixtures:
       removeAudience: Set[String] = Set.empty,
       deleteEndpoints: Set[String] = Set.empty,
       createEndpoints: List[Json] = Nil,
+      /** Replaces the limits the resource sets for its audience clients; absent leaves them. */
+      audienceRateLimits: Option[List[Json]] = None,
   ): Json.Obj =
     Json.Obj(
       Chunk[(String, Json)](
@@ -423,7 +427,8 @@ object Fixtures:
         "audience" -> Json.Obj("add" -> strings(addAudience), "remove" -> strings(removeAudience)),
         "deleteEndpoints" -> strings(deleteEndpoints),
         "createEndpoints" -> Json.Arr(Chunk.fromIterable(createEndpoints)),
-      ) ++ Chunk.fromIterable(resource.map(value => "resource" -> Json.Str(value)).toList),
+      ) ++ Chunk.fromIterable(resource.map(value => "resource" -> Json.Str(value)).toList) ++
+        Chunk.fromIterable(audienceRateLimits.map(limits => "audienceRateLimits" -> Json.Arr(Chunk.fromIterable(limits))).toList),
     )
 
   def claim(id: String, description: String = "e2e claim"): Json.Obj =
@@ -619,7 +624,7 @@ object Fixtures:
 
   def challengeSettings(
       tenantId: String,
-      allowedPrefixes: Set[String] = Set.empty,
+      phoneRegions: List[Json] = Nil,
       submissionLimits: Json = submissionLimits(),
       otpLength: Int = 6,
       otpResendAfter: Int = 60,
@@ -630,7 +635,7 @@ object Fixtures:
     Json.Obj(
       Chunk[(String, Json)](
         "tenantId" -> Json.Str(tenantId),
-        "allowedPrefixes" -> strings(allowedPrefixes),
+        "phoneRegions" -> Json.Arr(Chunk.fromIterable(phoneRegions)),
         "submissionLimits" -> submissionLimits,
         "otpLength" -> Json.Num(otpLength),
         "otpResendAfter" -> Json.Num(otpResendAfter),
@@ -682,12 +687,11 @@ object Fixtures:
       passwordRegex: String = ".{8,}",
       passwordHistorySize: Int = 3,
       passwordNumDifferent: Int = 1,
-      identityProviderLogo: Option[String] = None,
   ): Json.Obj =
     Json.Obj(
       Chunk[(String, Json)](
         "passwordRegex" -> Json.Str(passwordRegex),
         "passwordHistorySize" -> Json.Num(passwordHistorySize),
         "passwordNumDifferent" -> Json.Num(passwordNumDifferent),
-      ) ++ Chunk.fromIterable(identityProviderLogo.map(value => "identityProviderLogo" -> Json.Str(value))),
+      ),
     )

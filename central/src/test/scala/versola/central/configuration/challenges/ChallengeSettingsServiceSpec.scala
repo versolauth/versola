@@ -1,10 +1,10 @@
 package versola.central.configuration.challenges
 
 import versola.central.configuration.jwks.{JwksRecord, JwksRepository}
+import versola.central.configuration.roles.{RoleRecord, RoleRepository}
 import versola.central.configuration.sync.SyncEvent
 import versola.central.configuration.tenants.TenantId
-import versola.util.Secret
-import versola.util.{ReloadingCache, UnitSpecBase}
+import versola.util.{Patch, ReloadingCache, Secret, UnitSpecBase}
 import zio.*
 import zio.json.ast.Json
 import zio.test.*
@@ -15,7 +15,9 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
   private val otherTenantId = TenantId("tenant-b")
   private val settings = ChallengeSettingsRecord(
     tenantId = tenantId,
-    allowedPrefixes = List.empty,
+    phoneRegions = List.empty,
+    emailRegistration = EmailRegistration.Closed,
+    defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
     submissionLimits = SubmissionLimits.empty,
     otpLength = 6,
     otpResendAfter = 60,
@@ -33,7 +35,38 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
     signingKeyId = None,
     clientAssertionMaxLifetimeSeconds = 300,
     securityProfile = SecurityProfile.fapi2,
+    logoLight = None,
+    logoDark = None,
   )
+
+  private val noChange = PatchChallengeSettingsRequest(
+    tenantId = tenantId,
+    phoneRegions = None,
+    emailRegistration = None,
+    defaultRoles = None,
+    submissionLimits = None,
+    otpLength = None,
+    otpResendAfter = None,
+    passkeySettings = None,
+    authConversationTtlSeconds = None,
+    sessionTtlSeconds = None,
+    sessionIdleTtlSeconds = None,
+    userAgentTtlSeconds = None,
+    ipHeader = None,
+    acrVocabulary = None,
+    postLogoutRedirectUris = None,
+    requireDpopNonce = None,
+    mtlsCertificateHeader = None,
+    mtlsCertificateEncoding = None,
+    signingKeyId = None,
+    clientAssertionMaxLifetimeSeconds = None,
+    securityProfile = None,
+    logoLight = None,
+    logoDark = None,
+  )
+
+  private val userRole = RoleRecord(ChallengeSettingsRecord.DefaultRoleId, tenantId, Map("en" -> "User"), Set.empty, active = true)
+  private val open = EmailRegistration(EmailRegistrationMode.open, Nil, blockSubaddress = false)
 
   /** A key as central stores one it generated: published with an `alg`, private half kept. */
   private def signableKey(kid: String, alg: String) = JwksRecord(
@@ -46,7 +79,8 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initial)))
     val repository = stub[ChallengeSettingsRepository]
     val jwksRepository = stub[JwksRepository]
-    val service = ChallengeSettingsService.Impl(cache, repository, jwksRepository)
+    val roleRepository = stub[RoleRepository]
+    val service = ChallengeSettingsService.Impl(cache, repository, jwksRepository, roleRepository)
 
   def spec = suite("ChallengeSettingsService")(
     test("getSettings returns None when cache is empty and the repository has no row either") {
@@ -217,6 +251,136 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
           _ <- env.repository.upsert.succeedsWith(true)
           _ <- env.service.upsertSettings(settings.copy(signingKeyId = None))
         yield assertTrue(env.jwksRepository.find.calls.isEmpty)
+      },
+    ),
+    suite("patchSettings")(
+      test("writes the merge of the patch into the stored row, through the repository's locked transaction") {
+        val env = Env()
+        val patch = noChange.copy(otpLength = Some(Patch.Modified(8)))
+        for
+          _ <- env.repository.findByTenant.succeedsWith(Some(settings))
+          _ <- env.repository.patch.succeedsWith(ChallengeSettingsPatchResult.Patched(settings.copy(otpLength = 8)))
+          _ <- env.service.patchSettings(patch)
+        yield assertTrue(
+          // the repository gets the patch itself, to merge into the row it has locked, not a snapshot of the row read here
+          env.repository.patch.calls == List((tenantId, patch)),
+          env.repository.upsert.calls.isEmpty,
+        )
+      },
+      test("fails with SettingsNotFound for a tenant with no settings, without writing") {
+        val env = Env()
+        for
+          _ <- env.repository.findByTenant.succeedsWith(None)
+          result <- env.service.patchSettings(noChange).either
+        yield assertTrue(
+          result == Left(ChallengeSettingsService.SettingsNotFound(tenantId)),
+          env.repository.patch.calls.isEmpty,
+        )
+      },
+      test("fails with SettingsNotFound when the row is gone by the time it is locked") {
+        val env = Env()
+        for
+          _ <- env.repository.findByTenant.succeedsWith(Some(settings))
+          _ <- env.repository.patch.succeedsWith(ChallengeSettingsPatchResult.NotFound)
+          result <- env.service.patchSettings(noChange).either
+        yield assertTrue(result == Left(ChallengeSettingsService.SettingsNotFound(tenantId)))
+      },
+      test("refuses a patch whose resulting record is invalid, without writing") {
+        val env = Env()
+        val patch = noChange.copy(clientAssertionMaxLifetimeSeconds = Some(Patch.Modified(5)))
+        for
+          _ <- env.repository.findByTenant.succeedsWith(Some(settings))
+          result <- env.service.patchSettings(patch).either
+        yield assertTrue(
+          result == Left(ChallengeSettingsService.ValidationError.Invalid("clientAssertionMaxLifetimeSeconds must be between 30 and 900")),
+          env.repository.patch.calls.isEmpty,
+        )
+      },
+      test("refuses clearing a member that is not optional, without writing") {
+        val env = Env()
+        for
+          _ <- env.repository.findByTenant.succeedsWith(Some(settings))
+          result <- env.service.patchSettings(noChange.copy(ipHeader = Some(Patch.Deleted))).either
+        yield assertTrue(
+          result == Left(ChallengeSettingsService.ValidationError.Invalid("ipHeader cannot be cleared: it is not optional")),
+          env.repository.patch.calls.isEmpty,
+        )
+      },
+      test("refuses a security profile other than the stored one, without writing") {
+        val env = Env()
+        val patch = noChange.copy(securityProfile = Some(Patch.Modified(SecurityProfile.standard)))
+        for
+          _ <- env.repository.findByTenant.succeedsWith(Some(settings))
+          result <- env.service.patchSettings(patch).either
+        yield assertTrue(result.isLeft, env.repository.patch.calls.isEmpty)
+      },
+      test("reports the rule the locked row breaks, when the repository's pure check refuses") {
+        val env = Env()
+        for
+          _ <- env.repository.findByTenant.succeedsWith(Some(settings))
+          _ <- env.repository.patch.succeedsWith(ChallengeSettingsPatchResult.Invalid("logoLight and logoDark must be set or cleared together"))
+          result <- env.service.patchSettings(noChange).either
+        yield assertTrue(
+          result == Left(ChallengeSettingsService.ValidationError.Invalid("logoLight and logoDark must be set or cleared together")),
+        )
+      },
+      test("refuses a signing key nothing can sign with, without writing") {
+        val env = Env()
+        for
+          _ <- env.repository.findByTenant.succeedsWith(Some(settings))
+          _ <- env.jwksRepository.find.succeedsWith(None)
+          result <- env.service.patchSettings(noChange.copy(signingKeyId = Some(Patch.Modified("missing")))).either
+        yield assertTrue(
+          result == Left(ChallengeSettingsService.ValidationError.UnknownSigningKey("missing")),
+          env.repository.patch.calls.isEmpty,
+        )
+      },
+      test("refuses an RS256 key for a fapi2 tenant, without writing") {
+        val env = Env()
+        for
+          _ <- env.repository.findByTenant.succeedsWith(Some(settings))
+          _ <- env.jwksRepository.find.succeedsWith(Some(signableKey("rs-kid", "RS256")))
+          result <- env.service.patchSettings(noChange.copy(signingKeyId = Some(Patch.Modified("rs-kid")))).either
+        yield assertTrue(
+          result == Left(ChallengeSettingsService.ValidationError.Rs256SigningKey("rs-kid")),
+          env.repository.patch.calls.isEmpty,
+        )
+      },
+      test("clearing the signing key validates no key") {
+        val env = Env()
+        for
+          _ <- env.repository.findByTenant.succeedsWith(Some(settings.copy(signingKeyId = Some("ps-kid"))))
+          _ <- env.repository.patch.succeedsWith(ChallengeSettingsPatchResult.Patched(settings))
+          _ <- env.service.patchSettings(noChange.copy(signingKeyId = Some(Patch.Deleted)))
+        yield assertTrue(env.jwksRepository.find.calls.isEmpty, env.repository.patch.calls.size == 1)
+      },
+      test("refuses default roles that do not exist once some credential can register, without writing") {
+        val env = Env()
+        for
+          _ <- env.repository.findByTenant.succeedsWith(Some(settings))
+          _ <- env.roleRepository.findRole.succeedsWith(None)
+          result <- env.service.patchSettings(noChange.copy(emailRegistration = Some(Patch.Modified(open)))).either
+        yield assertTrue(
+          result == Left(ChallengeSettingsService.ValidationError.UnknownDefaultRole("user", tenantId.toString)),
+          env.repository.patch.calls.isEmpty,
+        )
+      },
+      test("looks the default roles up when registration is possible and they exist") {
+        val env = Env()
+        for
+          _ <- env.repository.findByTenant.succeedsWith(Some(settings))
+          _ <- env.roleRepository.findRole.succeedsWith(Some(userRole))
+          _ <- env.repository.patch.succeedsWith(ChallengeSettingsPatchResult.Patched(settings.copy(emailRegistration = open)))
+          _ <- env.service.patchSettings(noChange.copy(emailRegistration = Some(Patch.Modified(open))))
+        yield assertTrue(env.roleRepository.findRole.calls == List((tenantId, ChallengeSettingsRecord.DefaultRoleId)))
+      },
+      test("looks no role up while nobody can register") {
+        val env = Env()
+        for
+          _ <- env.repository.findByTenant.succeedsWith(Some(settings))
+          _ <- env.repository.patch.succeedsWith(ChallengeSettingsPatchResult.Patched(settings.copy(otpLength = 8)))
+          _ <- env.service.patchSettings(noChange.copy(otpLength = Some(Patch.Modified(8))))
+        yield assertTrue(env.roleRepository.findRole.calls.isEmpty)
       },
     ),
     test("refreshNow replaces the cache with the repository's settings") {

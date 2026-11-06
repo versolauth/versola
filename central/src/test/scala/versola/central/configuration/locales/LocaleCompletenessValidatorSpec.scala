@@ -29,7 +29,6 @@ object LocaleCompletenessValidatorSpec extends ZIOSpecDefault, ZIOStubs:
     permissions = Set.empty,
     theme = "",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -51,6 +50,8 @@ object LocaleCompletenessValidatorSpec extends ZIOSpecDefault, ZIOStubs:
     edgeClientCertificate = None,
     template = None,
     createdAt = Instant.EPOCH,
+    themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
   private val scope = ScopeRecord(
     tenantId,

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Generates the single Grafana board in this directory: versola.json, covering auth, central and edge.
+"""Generates the Grafana boards in this directory: versola.json (auth, central, edge), versola-db.json (the database as the
+services see it), versola-ingress.json (the ingress controller in full), versola-antifraud.json (the antifraud module of auth) and loadgen.json.
 
     python3 dashboards/grafana/generate.py
 
@@ -15,7 +16,15 @@ One board, so nobody switches between dashboards to follow a request across serv
 
 The board is generated, not hand-edited: edit this script, re-run it, commit the JSON.
 
-A second board, loadgen.json, covers the load generator itself (the campaign's rates, the refresh:code ratio,
+Selectors: Env (the deployment's name, `global.environment` in the chart: prod, stage, qa), Namespace, Tail quantile (p99, p99.9, p99.99, p99.999: the quantile of the tiles and of the graphs
+that split by a dimension), and Service on the database board. Graphs that answer "how is latency?" for a whole service,
+the ingress or the database draw p50, p95 and p99 plus the tail quantiles up to the selected one; see QUANTILES.
+
+versola-db.json holds everything about the database: pool, queries, WAL, table sizes, expired-row cleanup. The system board keeps
+only the pool tile of each service. The ingress's key tiles (rate, 5xx, latency, upstream latency) sit at the top of the system
+board; versola-ingress.json has the rest.
+
+A fourth board, loadgen.json, covers the load generator itself (the campaign's rates, the refresh:code ratio,
 instrument health, the mock backend). It is kept apart on purpose: versola.json describes the system under test and
 must read the same with or without a campaign running.
 
@@ -36,16 +45,42 @@ DS = {"type": "prometheus", "uid": "${datasource}"}
 
 GREEN, YELLOW, RED = "green", "#EAB839", "red"
 
+# Percentile policy. A graph that is the answer to "how is latency?" for a whole service (or ingress, or the
+# database) draws p50, p95 and p99, plus the tail quantiles up to the one selected at the top (nothing extra
+# while the selector is on p99, p99.9 on p99.9, p99.9 and p99.99 on p99.99): the far tail is opt-in, because it is
+# noise on a quiet service and makes the graph hard to read. A tile, or a graph split by a dimension (endpoint, query, peer, grant) with a
+# series per value, follows the Tail quantile selector alone: a fan per value would be unreadable. p99.99 and
+# p99.999 need ~10^4 / ~10^5 requests in the rate window to mean anything and are limited by the histogram's
+# bucket edges.
+QUANTILES = [(0.5, "p50"), (0.95, "p95"), (0.99, "p99")]
+# Drawn only while the Tail quantile selector is at or beyond them: p99.99 selected draws p99.9 and p99.99.
+TAIL_QUANTILES = [(0.999, "p99.9"), (0.9999, "p99.99"), (0.99999, "p99.999")]
+TAIL_OPTIONS = (("p99", "0.99"), ("p99.9", "0.999"), ("p99.99", "0.9999"), ("p99.999", "0.99999"))
+# Edge's own overhead: not the requests that waited on auth. A missing label (an edge build before it was added)
+# matches too, so the tile keeps working across an upgrade.
+OWN = ', auth_call!~"userinfo|refresh"'
+TAIL_NOTE = " p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge."
+
+
+def fan(expr_for) -> list[tuple[str, str]]:
+    """p50, p95, p99 and every tail quantile up to the selected one; `expr_for(q)` builds the query for quantile q.
+
+    A tail series is empty while the selector is below it (the epsilon keeps the float comparison exact)."""
+    tails = [(f"({expr_for(q)}) and on() (vector($tail) > {q - 1e-7:.7f})", name) for q, name in TAIL_QUANTILES]
+    return [(expr_for(q), name) for q, name in QUANTILES] + tails
+
 
 def steps(*pairs: tuple[float | None, str]) -> dict:
     return {"mode": "absolute", "steps": [{"color": c, "value": v} for v, c in pairs]}
 
 
 class Board:
-    def __init__(self, uid: str, title: str, description: str, namespace_query: str | None = None, tags: list[str] | None = None):
+    def __init__(self, uid: str, title: str, description: str, namespace_query: str | None = None, tags: list[str] | None = None,
+                 with_tail: bool = True, extra_vars: list[dict] | None = None):
         self.uid, self.title, self.description = uid, title, description
-        self.namespace_query = namespace_query or 'label_values(up{app_kubernetes_io_component=~"auth|central|edge"}, namespace)'
+        self.namespace_query = namespace_query or 'label_values(up{app_kubernetes_io_component=~"auth|central|edge", environment=~"$env"}, namespace)'
         self.tags = tags or ["versola", "versola-service"]
+        self.with_tail, self.extra_vars = with_tail, extra_vars or []
         self.panels: list[dict] = []
         self._id = 1
         self._x = 0
@@ -188,11 +223,26 @@ class Board:
             "links": [{"type": "dashboards", "title": "Services", "tags": ["versola-service"], "asDropdown": False, "includeVars": True, "keepTime": True, "icon": "external link"}],
             "templating": {"list": [
                 {"name": "datasource", "label": "Data source", "type": "datasource", "query": "prometheus", "current": {}, "hide": 0},
+                # The deployment's name (prod, stage, qa), from `global.environment` in the chart. A release without
+                # the label still works: it matches ".*" through "All".
+                *([{
+                    "name": "env", "label": "Env", "type": "query", "datasource": DS,
+                    "query": 'label_values(up{app_kubernetes_io_component=~"auth|central|edge"}, environment)',
+                    "refresh": 1, "multi": False, "includeAll": True, "allValue": ".*", "hide": 0,
+                }] if self.uid != "versola-loadgen" else []),
                 {
-                    "name": "namespace", "label": "Environment", "type": "query", "datasource": DS,
+                    "name": "namespace", "label": "Namespace", "type": "query", "datasource": DS,
                     "query": self.namespace_query,
                     "refresh": 1, "multi": False, "includeAll": False, "hide": 0,
                 },
+                *([{
+                    "name": "tail", "label": "Tail quantile", "type": "custom",
+                    "query": ", ".join(f"{t} : {v}" for t, v in TAIL_OPTIONS),
+                    "current": {"text": "p99", "value": "0.99", "selected": True},
+                    "options": [{"text": t, "value": v, "selected": v == "0.99"} for t, v in TAIL_OPTIONS],
+                    "multi": False, "includeAll": False, "hide": 0,
+                }] if self.with_tail else []),
+                *self.extra_vars,
             ]},
             "panels": self.panels,
         }
@@ -217,7 +267,7 @@ def overview(b: Board, specific: list[tuple]) -> None:
     b.stat("Server errors", b.ratio(b.req_rate(', status_class="5xx"'), b.req_rate()), unit="percentunit", decimals=2,
            desc="Share of requests answered 5xx -- the service failing, not the caller erring. Yellow from 0.1%, red from 1%.",
            thresholds=steps((None, GREEN), (0.001, YELLOW), (0.01, RED)))
-    b.stat("Latency p99", f"{b.quantile(0.99)}", unit="s", desc="99 of 100 requests are faster than this, over every endpoint of the service.")
+    b.stat("Latency ${tail:text}", f"{b.quantile('$tail')}", unit="s", desc="Tail latency over every endpoint of the service, at the quantile chosen in the Tail quantile selector at the top (p99 by default: 99 of 100 requests are faster).")
     for args in specific:
         b.stat(args[0], args[1], **args[2])
     b.stat("DB pool", POOL_PCT.format(sel=b.sel), unit="percentunit", decimals=0,
@@ -238,9 +288,9 @@ def traffic(b: Board, latency_line: dict | None = None, title: str = "Traffic, e
          desc="Where the traffic goes. `/token?grant_type=…` is split by grant type." + where)
     b.ts("Server errors (5xx) / s by endpoint", [(f'sum by (method, route) ({b.req_rate(extra + ", status_class=\"5xx\"")})', "{{method}} {{route}}")], unit="reqps", stack=True,
          desc="Empty is healthy. Every series here is a bug or an outage of a dependency; the endpoint says where to start.")
-    b.ts("Latency", [(b.quantile(0.5, extra), "p50"), (b.quantile(0.95, extra), "p95"), (b.quantile(0.99, extra), "p99")], unit="s", line=latency_line,
-         desc="Typical (p50), slow (p95) and worst-case (p99) request. Watch p99 -- averages hide the users who are suffering.")
-    b.ts("Slowest endpoints (p99)", [(f"topk(5, {b.quantile(0.99, extra, by='method, route')})", "{{method}} {{route}}")], unit="s",
+    b.ts("Latency", fan(lambda q: b.quantile(q, extra)), unit="s", line=latency_line,
+         desc="Typical (p50), slow (p95) and slow-tail (p99, and the tail quantiles up to the selected one) request." + TAIL_NOTE + " Watch the tail -- averages hide the users who are suffering.")
+    b.ts("Slowest endpoints (${tail:text})", [(f"topk(5, {b.quantile('$tail', extra, by='method, route')})", "{{method}} {{route}}")], unit="s",
          desc="The five endpoints with the highest p99. If overall latency rose, this says which endpoint to blame.")
     b.ts("Client errors (4xx) / s by endpoint", [(f'sum by (method, route, status) ({b.req_rate(extra + ", status_class=\"4xx\"")})', "{{method}} {{route}} {{status}}")], unit="reqps", stack=True,
          desc="Callers sending bad or unauthorized requests. Not an outage, but a sudden jump is a broken client, an expired credential or probing.")
@@ -390,50 +440,150 @@ def argon2(b: Board) -> None:
         (f"sum by (pod) (argon2_hashes_in_flight{{{s}}}) / clamp_min(max by (pod) (argon2_max_concurrent{{{s}}}), 1)", "{{pod}}"),
     ], unit="percentunit", minimum=0, maximum=1, line=steps((None, GREEN), (0.9, RED)),
          desc="Hashes being computed over the permits the pod has. At 100% CPU no longer follows demand and the queue on the left starts to grow.")
-    b.ts("Hash wait and hash time (p99)", [
-        (f"histogram_quantile(0.99, sum by (le) (rate(argon2_hash_wait_seconds_bucket{{{s}}}[$__rate_interval])))", "waiting for a permit"),
-        (f"histogram_quantile(0.99, sum by (le) (rate(argon2_hash_duration_seconds_bucket{{{s}}}[$__rate_interval])))", "hashing"),
+    b.ts("Hash wait and hash time (${tail:text})", [
+        (f"histogram_quantile($tail, sum by (le) (rate(argon2_hash_wait_seconds_bucket{{{s}}}[$__rate_interval])))", "waiting for a permit"),
+        (f"histogram_quantile($tail, sum by (le) (rate(argon2_hash_duration_seconds_bucket{{{s}}}[$__rate_interval])))", "hashing"),
     ], unit="s", minimum=0,
          desc="The wait is the part of a login's latency that more replicas remove; the hash itself is the cost of the parameters.")
     b.ts("Hashes / s", [(f"sum(rate(argon2_hash_duration_seconds_count{{{s}}}[$__rate_interval]))", "hashes")], unit="ops", minimum=0,
          desc="Password hashes and verifications completed.")
 
 
-def dependencies(b: Board) -> None:
-    b.row(f"{b.component} — Database and dependencies", collapsed=True)
+def db_pool(b: Board, collapsed: bool = False) -> None:
+    b.row(f"{b.component} — Connection pool", collapsed=collapsed)
     sel = b.sel
     b.ts("DB pool in use", [(f'sum by (pool_name) (db_client_connection_count{{{sel}, state="used"}}) / clamp_min(sum by (pool_name) (db_client_connection_max{{{sel}}}), 1)', "{{pool_name}}")],
          unit="percentunit", minimum=0, maximum=1, line=steps((None, GREEN), (0.9, RED)),
          desc="Checked-out connections / pool size, per pool. Pinned at 100% means the pool is the bottleneck, not the database." + NO_POOL_DATA)
     b.ts("Waiting for a DB connection", [
-        (f"histogram_quantile(0.99, sum by (le) (rate(db_client_connection_wait_time_seconds_bucket{{{sel}}}[$__rate_interval])))", "wait p99"),
+        (f"histogram_quantile($tail, sum by (le) (rate(db_client_connection_wait_time_seconds_bucket{{{sel}}}[$__rate_interval])))", "wait ${tail:text}"),
         (f"sum(db_client_connection_pending_requests{{{sel}}})", "threads waiting"),
     ], unit="s", desc="Time a request spends queued before it even reaches the database (seconds), and how many are queued. Should be ~0; anything visible is added straight to user latency.")
     b.ts("DB connection timeouts / s", [(f"sum by (pool_name) (rate(db_client_connection_timeouts_total{{{sel}}}[$__rate_interval]))", "{{pool_name}}")], unit="ops", minimum=0,
          desc="Requests that gave up waiting for a database connection (connection-timeout). Empty is healthy; any value is a request that failed because the pool was exhausted for the whole timeout." + NO_POOL_DATA)
-    b.ts("Slowest queries (p99)", [(f"topk(5, histogram_quantile(0.99, sum by (le, repository, operation) (rate(db_client_operation_duration_seconds_bucket{{{sel}}}[$__rate_interval]))))", "{{repository}}.{{operation}}")], unit="s",
+
+
+def db_queries(b: Board) -> None:
+    """Latency of the service's own database operations as the service measures them (client side: pool wait is a separate panel)."""
+    b.row(f"{b.component} — Queries")
+    sel = b.sel
+    b.ts("Query latency", fan(lambda q: f"histogram_quantile({q}, sum by (le) (rate(db_client_operation_duration_seconds_bucket{{{sel}}}[$__rate_interval])))"), unit="s",
+         desc="How long database operations take, every repository and method together: p50, p95, p99 and the tail quantiles up to the selected one." + TAIL_NOTE + " Client side: it includes the network and, for a pooler, the pooler's wait.")
+    b.ts("Queries / s by operation", [(f"topk(8, sum by (repository, operation) (rate(db_client_operation_duration_seconds_count{{{sel}}}[$__rate_interval])))", "{{repository}}.{{operation}}")], unit="ops", minimum=0,
+         desc="The eight busiest database operations. Pair with the slowest-queries panel: a slow query that runs rarely matters less than a medium one that runs constantly.")
+    b.ts("Slowest queries (${tail:text})", [(f"topk(5, histogram_quantile($tail, sum by (le, repository, operation) (rate(db_client_operation_duration_seconds_bucket{{{sel}}}[$__rate_interval]))))", "{{repository}}.{{operation}}")], unit="s",
          desc="The five slowest database operations by repository and method. First place to look when latency rises but the pool is fine.")
     b.ts("Failed queries / s", [(f'sum by (repository, operation) (rate(db_client_operation_duration_seconds_count{{{sel}, outcome!="success"}}[$__rate_interval]))', "{{repository}}.{{operation}}")], unit="ops",
          desc="Database operations that did not succeed. Empty is healthy.")
-    b.ts("Calls to other services — latency p99", [(f"histogram_quantile(0.99, sum by (le, peer) (rate(http_client_request_duration_seconds_bucket{{{sel}}}[$__rate_interval])))", "{{peer}}")], unit="s",
+
+
+def outbound(b: Board) -> None:
+    b.row(f"{b.component} — Calls to other services", collapsed=True)
+    sel = b.sel
+    b.ts("Calls to other services — latency ${tail:text}", [(f"histogram_quantile($tail, sum by (le, peer) (rate(http_client_request_duration_seconds_bucket{{{sel}}}[$__rate_interval])))", "{{peer}}")], unit="s",
          desc="How long this service waits for each service it calls. Part of our own latency.")
     b.ts("Calls to other services — in flight", [(f"sum by (peer) (http_client_active_requests{{{sel}}})", "{{peer}}")], unit="short", minimum=0,
          desc="Outbound requests in flight per target, including those queued for a pooled connection (the outbound pool). Where the pool is too small this climbs long before CPU or latency averages move; a line pinned at the pool size is the outbound pool being the limit.")
     b.ts("Calls to other services — failures / s", [(f'sum by (peer) (rate(http_client_requests_total{{{sel}, status_class=~"error|5xx"}}[$__rate_interval]))', "{{peer}}")], unit="reqps",
          desc="Calls that failed: connection errors or a 5xx from the other side. Empty is healthy.")
+    b.ts("Outbound guard — in flight against the limit", [
+        (f"max by (peer) (http_client_guard_in_flight{{{sel}}})", "{{peer}} in flight"),
+        (f"max by (peer) (http_client_guard_limit{{{sel}}})", "{{peer}} limit"),
+    ], unit="short", minimum=0,
+         desc="Calls the guard has let through per peer, and the most it allows at once. In flight pinned at the limit means the peer is where this service waits: read the queue and the refusals next. Empty until the outbound guard is on for this service.")
+    b.ts("Outbound guard — queued calls and wait ${tail:text}", [
+        (f"max by (peer) (http_client_guard_waiting{{{sel}}})", "{{peer}} queued"),
+        (f"histogram_quantile($tail, sum by (le, peer) (rate(http_client_guard_wait_seconds_bucket{{{sel}}}[$__rate_interval])))", "{{peer}} wait"),
+    ], unit="short", minimum=0,
+         desc="Calls waiting for a place to a peer, and how long they waited (seconds, at the selected quantile). A queue that keeps growing is a peer slower than the traffic sent to it; the wait is time added to every call behind it.")
+    b.ts("Outbound guard — refused / s", [(f"sum by (peer, reason, mode) (rate(http_client_guard_rejected_total{{{sel}}}[$__rate_interval]))", "{{peer}} {{reason}} ({{mode}})")], unit="reqps", minimum=0,
+         desc="Calls the guard refused: `queue_full`, `queue_timeout`, `circuit_open`, `request_timeout`. `mode` shadow means the call was still made and only counted: what enforcing would refuse. Read shadow for a week before switching a peer to enforce.")
+    b.ts("Outbound guard — circuit breaker", [(f"max by (peer) (http_client_guard_breaker_state{{{sel}}})", "{{peer}}")], minimum=0, maximum=2,
+         line=steps((None, GREEN), (1, YELLOW), (2, RED)),
+         desc="Per peer: 0 closed (calls pass), 1 half-open (probing), 2 open (calls are refused without being made). Open means the peer is failing more than the policy tolerates; it reopens by itself after the open time.")
+    b.ts("Outbound guard — retries denied / s", [(f"sum by (peer, mode) (rate(http_client_retry_budget_denied_total{{{sel}}}[$__rate_interval]))", "{{peer}} ({{mode}})")], unit="reqps", minimum=0,
+         desc="Retries the retry budget refused, so a failing peer is not hit with a second wave. Non-zero is the budget working; sustained means the peer is failing most calls.")
+
+
+def overload(b: Board) -> None:
+    """Inbound admission (the overload policy): the limit, the load against it, who was refused, and the signals the adaptive limit follows."""
+    b.row(f"{b.component} — Overload protection", collapsed=True)
+    sel = b.sel
+    b.ts("Requests in flight against the limit", [
+        (f"max by (pod) (http_admission_in_flight{{{sel}}})", "{{pod}} in flight"),
+        (f"max by (pod) (http_admission_in_flight_peak{{{sel}}})", "{{pod}} peak"),
+        (f"max by (pod) (http_admission_limit{{{sel}}})", "{{pod}} limit"),
+    ], unit="short", minimum=0,
+         desc="Requests this pod is serving, the busiest second, and the most it admits at once (the adaptive limit when adaptive is on). Peak near the limit means the pod is close to refusing; a limit that falls while in flight does not is the pod slowing down. Empty while the overload policy is off.")
+    b.ts("Refused by overload protection / s", [(f"sum by (tier, mode) (rate(http_admission_refused_total{{{sel}}}[$__rate_interval]))", "{{tier}} ({{mode}})")], unit="reqps", minimum=0,
+         desc="Requests turned away because the pod was full. `mode` enforce answered 503 with Retry-After; shadow served the request and only counted it, so the number is what enforcing would have refused. Tiers: `start` (new sign-ins) go first, `continuation` next, `critical` last. Sustained shadow refusals: raise the limit or add pods before enforcing; any enforce refusals: the pod is saturated now.")
+    b.ts("Adaptive limit — share of its ceiling", [(f"min by (pod) (http_admission_adaptive_limit_ratio{{{sel}}})", "{{pod}}")], unit="percentunit", minimum=0, maximum=1,
+         line=steps((None, RED), (0.5, YELLOW), (0.8, GREEN)),
+         desc="How much of `maxLimit` the adaptive limit currently allows. Near 100% the pod keeps up; low means round-trip times grew and the limit backed off to protect it. Stays flat when adaptive is off.")
+    b.ts("Round trip by tier and event-loop lag", [
+        (f"max by (tier) (http_admission_rtt_seconds{{{sel}}})", "{{tier}} round trip"),
+        (f"max by (pod) (http_executor_lag_seconds{{{sel}}})", "{{pod}} executor lag"),
+    ], unit="s", minimum=0,
+         desc="What the adaptive limit follows: the mean time to answer per tier, and how late a 10 ms timer fires (a stalled pod completes no calls, so only lateness shows it). Lag of hundreds of milliseconds is a pod that is not scheduling work: GC, CPU throttling or a blocked thread, not a lack of capacity.")
+
+
+def rate_limits(b: Board, prefix: str) -> None:
+    """Rate limit policies, in the order an operator asks: who was refused, who would be, is a policy too tight, is memory bounded."""
+    b.row(f"{b.component} — Rate limits")
+    sel = b.sel
+    d = f"{prefix}_rate_limit_decisions_total"
+    b.ts("Refused by a rate limit / s", [(f'sum by (policy) (rate({d}{{{sel}, result="limited"}}[$__rate_interval]))', "{{policy}}")], unit="reqps", minimum=0,
+         desc="Calls answered 429, by policy. Only `enforce` policies appear here. A policy that refuses a steady share of one client's traffic is working; one that refuses many clients at once is too tight (see the share below).")
+    b.ts("Would be refused / s (shadow)", [(f'sum by (policy) (rate({d}{{{sel}, result="would_limit"}}[$__rate_interval]))', "{{policy}}")], unit="reqps", minimum=0,
+         desc="What a `shadow` policy counted and did not refuse. This is the number to read before switching a policy to enforce: if it is zero over a normal week the limit is safe, if it is not, ask who it would have refused (the log line per policy, once a minute) before enforcing.")
+    b.ts("Share of calls a policy refuses", [(f'sum by (policy) (rate({d}{{{sel}, result=~"limited|would_limit"}}[$__rate_interval])) / clamp_min(sum by (policy) (rate({d}{{{sel}}}[$__rate_interval])), 0.001)', "{{policy}}")],
+         unit="percentunit", minimum=0, maximum=1, line=steps((None, GREEN), (0.01, RED)),
+         desc="Refused (or would be) / all calls the policy decided, shadow included. Above 1% sustained, the policy is cutting into normal traffic: raise its limit or burst, or narrow what it is keyed on, before it enforces.")
+    b.ts("Keys tracked per policy", [(f"max by (policy) ({prefix}_rate_limit_tracked_keys{{{sel}}})", "{{policy}}")], unit="short", minimum=0,
+         line=steps((None, GREEN), (100000, RED)),
+         desc="Distinct callers (clients, users, addresses) a policy holds a bucket for, on the fullest pod. Dashed line: the 100,000 cap per policy, past which new keys share one overflow bucket.")
+    b.ts("Keys over the cap / s", [(f"sum by (policy) (rate({prefix}_rate_limit_overflow_hits_total{{{sel}}}[$__rate_interval]))", "{{policy}}")], unit="ops", minimum=0,
+         desc="Calls counted in the shared overflow bucket because the policy was at its key cap. Empty is healthy; non-zero is either far more callers than the cap or an attacker sending distinct keys, and those callers share one limit.")
+    if prefix == "edge":
+        b.ts("Pods the limit is divided by", [
+            (f"max by (source) (edge_rate_limit_replicas{{{sel}}})", "in force ({{source}})"),
+            (f"count(count by (pod) (http_server_requests_total{{{sel}}}))", "pods serving traffic"),
+        ], unit="short", minimum=0,
+             desc="`in force` is the number each pod divides a limit by, and where it came from: `dns` (replicas-from) or `policy` (the replicas of the policy set). `pods serving traffic` is how many pods answer. When they differ the limit is wrong by that factor: with more pods than in force the edge allows too much, with fewer it refuses too early.")
+        b.ts("Where the caller's address comes from", [(f"sum by (source) (rate(edge_client_address_total{{{sel}}}[$__rate_interval]))", "{{source}}")], unit="reqps", minimum=0,
+             desc="`forwarded`: read from the proxy's header. `socket`: the connection's peer, right when callers reach the edge directly; behind a proxy or load balancer it is the proxy's own address, the same for everyone, so address limits count everyone together. `forwarded_missing`: client-ip is forwarded but the header was absent or not an address: a misconfiguration, or a caller bypassing the proxy.")
+
+
+def snapshot(b: Board) -> None:
+    """auth and edge only: both start from the configuration snapshot when central is unreachable (#566)."""
+    b.ts("Configuration served from the snapshot — age", [(f"max by (pod, cache) (config_snapshot_age_seconds{{{b.sel}}})", "{{pod}} {{cache}}")], unit="s", minimum=0,
+         desc="Age of the configuration a cache is serving from its database snapshot because central could not be reached at startup. Zero is live. Anything else means that pod runs on configuration central last confirmed that long ago, and keeps retrying central in the background.")
+
+
+def saturation(b: Board) -> None:
+    """USE-style row: how close is the service to a limit, before latency says so."""
+    b.row(f"{b.component} — Saturation")
+    sel = b.sel
+    cadvisor = f'namespace="$namespace", container="{b.component}"'
+    b.ts("CPU cores in use", [(f"sum by (pod) (rate(process_cpu_seconds_total{{{sel}}}[$__rate_interval]))", "{{pod}}")], unit="short", minimum=0, w=6,
+         desc="Per pod. Uneven lines mean uneven load balancing or a hot pod. Compare with the pod's CPU limit.")
+    b.ts("CPU throttled", [(f"sum by (pod) (rate(container_cpu_cfs_throttled_periods_total{{{cadvisor}}}[$__rate_interval])) / clamp_min(sum by (pod) (rate(container_cpu_cfs_periods_total{{{cadvisor}}}[$__rate_interval])), 0.001)", "{{pod}}")],
+         unit="percentunit", minimum=0, maximum=1, line=steps((None, GREEN), (0.1, RED)), w=6,
+         desc="Share of scheduler periods in which the pod hit its CPU limit and was paused. Any sustained value adds latency that no CPU graph explains. Empty when the pod has no CPU limit.")
+    b.ts("Time in garbage collection", [(f"sum by (pod) (rate(jvm_gc_collection_seconds_sum{{{sel}}}[$__rate_interval]))", "{{pod}}")], unit="percentunit", minimum=0, w=6,
+         desc="Share of wall-clock time the JVM is paused for GC. Above a few percent the service is starved of memory.")
+    b.ts("DB pool in use", [(f'sum by (pod) (db_client_connection_count{{{sel}, state="used"}}) / clamp_min(sum by (pod) (db_client_connection_max{{{sel}}}), 1)', "{{pod}}")], unit="percentunit", minimum=0, maximum=1,
+         line=steps((None, GREEN), (0.9, RED)), w=6,
+         desc="Checked-out connections / pool size, per pod. The pool is sampled; a short saturation can pass between samples, so also read the wait panel on the Database board." + NO_POOL_DATA)
 
 
 def runtime(b: Board) -> None:
     b.row(f"{b.component} — Runtime (per pod)", collapsed=True)
     sel = b.sel
-    b.ts("CPU", [(f"sum by (pod) (rate(process_cpu_seconds_total{{{sel}}}[$__rate_interval]))", "{{pod}}")], unit="short",
-         desc="CPU cores in use per pod. Compare with the pod's CPU limit: at the limit the pod is throttled and latency climbs.")
     b.ts("Heap", [
         (f'sum by (pod) (jvm_memory_used_bytes{{{sel}, area="heap"}})', "{{pod}} used"),
         (f'sum by (pod) (jvm_memory_max_bytes{{{sel}, area="heap"}})', "{{pod}} limit"),
     ], unit="bytes", minimum=0, desc="Heap in use against its limit. A sawtooth is normal (GC working); a floor that keeps rising is a leak.")
-    b.ts("Time spent in garbage collection", [(f"sum by (pod) (rate(jvm_gc_collection_seconds_sum{{{sel}}}[$__rate_interval]))", "{{pod}}")], unit="percentunit", minimum=0,
-         desc="Share of wall-clock time the JVM is paused for GC. Above a few percent the service is starved of memory.")
     b.ts("Threads", [(f"sum by (pod) (jvm_threads_current{{{sel}}})", "{{pod}}")],
          desc="Live JVM threads per pod. Unbounded growth is a thread leak.")
 
@@ -459,7 +609,7 @@ def add_auth(b: Board, phase: str) -> None:
         (f'sum by (status_class) ({b.req_rate(refresh)})', "{{status_class}}"),
     ], unit="reqps", stack=True,
          desc="2xx = new tokens issued. 4xx = refresh refused (expired, revoked, or a refresh token replayed -- compare with revocations on the right). 5xx = our failure.")
-    b.ts("Refresh latency", [(b.quantile(0.5, refresh), "p50"), (b.quantile(0.95, refresh), "p95"), (b.quantile(0.99, refresh), "p99")], unit="s",
+    b.ts("Refresh latency", fan(lambda q: b.quantile(q, refresh)), unit="s",
          line=steps((None, GREEN), (0.12, RED)), desc="Time to answer a refresh. The dashed line is the 120 ms target for /token.")
     b.ts("Refresh rejections / s by status", [(f'sum by (status) ({b.req_rate(refresh + ", status_class!=\"2xx\"")})', "HTTP {{status}}")], unit="reqps", stack=True,
          desc="Why refreshes fail, by HTTP status. 400/401 are the token being refused; 5xx is the service.")
@@ -467,7 +617,7 @@ def add_auth(b: Board, phase: str) -> None:
          desc="Clients and users explicitly revoking a refresh token (logout, 'sign out everywhere'). A spike is followed by rejected refreshes.")
     b.ts("Token requests / s by grant type", [(f'sum by (route) ({b.req_rate(", route=~\"/token.*\"")})', "{{route}}")], unit="reqps", stack=True,
          desc="authorization_code = a fresh sign-in finishing, refresh_token = an existing session renewing, client_credentials = service-to-service. A healthy system is dominated by refreshes.")
-    b.ts("Token issuance latency p99 by grant type", [(b.quantile(0.99, ', route=~"/token.*"', by="route"), "{{route}}")], unit="s",
+    b.ts("Token issuance latency ${tail:text} by grant type", [(b.quantile("$tail", ', route=~"/token.*"', by="route"), "{{route}}")], unit="s",
          line=steps((None, GREEN), (0.12, RED)), desc="p99 of each token grant. The dashed line is the 120 ms /token target.")
 
     b.row("auth — Sign-in")
@@ -484,19 +634,12 @@ def add_auth(b: Board, phase: str) -> None:
          unit="percentunit", minimum=0, maximum=1, desc="Share of started sign-ins that completed. A drop with no traffic change means users are getting stuck -- check the step failures next.")
     b.ts("Failed attempts by step", [(f'sum by (step) (rate(auth_conversation_step_total{{{s}, result="failed"}}[$__rate_interval])) / clamp_min(sum by (step) (rate(auth_conversation_step_total{{{s}}}[$__rate_interval])), 0.001)', "{{step}}")],
          unit="percentunit", minimum=0, desc="For each sign-in step (password, OTP, passkey, …), the share of attempts that failed. Points at the factor users trip over.")
-    b.ts("Edge assertions (DPoP): accepted and rejected", [
-        (f"sum(rate(dpop_edge_assertion_exemptions_total{{{s}}}[$__rate_interval]))", "accepted (bound token honoured on edge's word)"),
-        (f"sum(rate(dpop_edge_assertion_rejections_total{{{s}}}[$__rate_interval]))", "rejected"),
-    ], unit="ops", minimum=0,
-         desc="Accepted: auth honoured a DPoP-bound token without a proof because an edge vouched for it (the only such path). Rejected: an assertion that did not check out. A few during an edge key rotation are normal; sustained, it is a misconfigured edge or an attack. Accepted should track edge's userinfo calls.")
-    b.ts("Edge assertions rejected, share", [
-        (f"sum(rate(dpop_edge_assertion_rejections_total{{{s}}}[$__rate_interval])) / clamp_min(sum(rate(dpop_edge_assertion_rejections_total{{{s}}}[$__rate_interval])) + sum(rate(dpop_edge_assertion_exemptions_total{{{s}}}[$__rate_interval])), 0.001)", "rejected / (rejected + accepted)"),
-    ], unit="percentunit", minimum=0, maximum=1, line=steps((None, GREEN), (0.01, RED)),
-         desc="Share of edge assertions refused. Empty when there are none. Above 1% for more than a rotation is worth a look.")
     argon2(b)
-    cleanup(b, volume=[("Users", "users"), ("Sessions", "sso_sessions"), ("Refresh tokens", "refresh_tokens")], expiring="sso_sessions|refresh_tokens")
-    wal(b)
-    dependencies(b)
+    rate_limits(b, "auth")
+    overload(b)
+    outbound(b)
+    snapshot(b)
+    saturation(b)
     runtime(b)
 
 
@@ -506,10 +649,10 @@ def add_edge(b: Board, phase: str) -> None:
     web = ', route=~"/login.*|/complete|/logout.*|/permissions.*"'
     mobile = ', route=~"/native/.*"'
     overview(b, [
+        ("Edge overhead ${tail:text}", f"histogram_quantile($tail, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{b.http(OWN)}[$__rate_interval])))", dict(
+            unit="s", thresholds=steps((None, GREEN), (0.015, RED)),
+            desc="What edge itself adds to a proxied request before it reaches the resource (token and DPoP checks, revocation, permissions, rules), at the quantile chosen in the Tail quantile selector. Requests that waited on auth (a /userinfo call, or a refresh of an expired token) are left out: that wait is auth's latency, shown on the graph below. Red from the 15 ms budget. Proxied traffic is in the graphs below.")),
         ("Proxied/s", f"sum({b.req_rate(proxied)})", dict(unit="reqps", desc="Requests edge forwards to protected resources -- the traffic edge exists to carry.")),
-        ("Revocation sync lag", f"max(revocation_cache_staleness_seconds{b.http()})", dict(
-            unit="s", thresholds=steps((None, GREEN), (1, RED)),
-            desc="0 = the last attempt to refresh the revocation list succeeded. Above 0 = refreshes are failing, and this is how long edge has gone without one: a token revoked in that time is still accepted.")),
     ])
     if phase == "overview":
         return
@@ -532,16 +675,11 @@ def add_edge(b: Board, phase: str) -> None:
         (f"{whole} - {in_backend} - {in_auth}", "edge itself"),
     ], unit="s", stack=True, minimum=0,
          desc="Average time per proxied request, split into the resource's own answer, the token lookup at auth, and what edge adds on top. The three add up to the proxy latency.")
-    b.ts("Edge overhead (measured)", [
-        (f"histogram_quantile(0.5, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{{{s}}}[$__rate_interval])))", "p50"),
-        (f"histogram_quantile(0.99, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{{{s}}}[$__rate_interval])))", "p99"),
-    ], unit="s", line=steps((None, GREEN), (0.015, RED)),
-         desc="Time edge spends on a request before it reaches the resource: token and DPoP checks, revocation, permissions, rules, the token lookup at auth. The wait for the resource is not included. Measured per request in edge (edge_proxy_overhead_seconds), so p99 here is the real p99. Dashed line: 15 ms budget. Empty until edge runs a build that includes the metric.")
-    b.ts("Edge overhead (estimated from backend latency)", [
-        (f"{b.quantile(0.99, ', route=~\"/resources/.*\"')} - histogram_quantile(0.99, sum by (le) (rate(http_client_request_duration_seconds_bucket{backend}[$__rate_interval])))", "proxy p99 − backend p99"),
-        (f"{whole} - {in_backend}", "proxy mean − backend mean"),
-    ], unit="s", line=steps((None, GREEN), (0.015, RED)),
-         desc="What edge adds over calling the backend directly, at the tail (p99) and on average. The mean includes the auth lookup. The dashed line is the 15 ms budget. Excludes /resources/central, which goes through central, not a backend.")
+    b.ts("Edge overhead (measured)", fan(lambda q: f"histogram_quantile({q}, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{{{s}{OWN}}}[$__rate_interval])))"),
+unit="s", line=steps((None, GREEN), (0.015, RED)),
+         desc="Time edge itself spends on a request before it reaches the resource: token and DPoP checks, revocation, permissions, rules. Requests that waited on auth (a /userinfo call, a refresh of an expired token) are left out and shown on the next graph. The wait for the resource is not included. Measured per request in edge (edge_proxy_overhead_seconds), so the quantiles here are real. Dashed line: 15 ms budget. Empty until edge runs a build that includes the metric.")
+    b.ts("Edge overhead by what it waited on (${tail:text})", [(f"histogram_quantile($tail, sum by (le, auth_call) (rate(edge_proxy_overhead_seconds_bucket{{{s}}}[$__rate_interval])))", "{{auth_call}}")], unit="s", minimum=0,
+         desc="The same overhead split by whether the request waited on auth: none (edge's own work), userinfo (the /userinfo call an endpoint asks for), refresh (an expired token refreshed at auth). The last two are mostly auth's latency, so a high line there is read as auth being slow, not edge. No label on an edge build before it was added.")
 
     traffic(b, title="Web apps (browser sign-in and sign-out)", extra=web,
             what="/login and /complete finish a sign-in; /complete includes a code exchange with auth, so it carries auth's latency")
@@ -558,9 +696,11 @@ def add_edge(b: Board, phase: str) -> None:
         (f"sum(rate(dpop_shared_ring_fallbacks_total{{{s}}}[$__rate_interval]))", "fell back to shared check"),
         (f"sum(rate(dpop_local_ring_capacity_hits_total{{{s}}}[$__rate_interval]))", "local ring full"),
     ], unit="ops", desc="How often the in-memory replay-proof store overflowed. Empty is healthy; sustained values mean it is undersized for the traffic.")
-    cleanup(b, volume=[("Sessions", "edge_sessions"), ("Revocations", "revocations")], expiring="edge_sessions|revocations")
-    wal(b)
-    dependencies(b)
+    rate_limits(b, "edge")
+    overload(b)
+    outbound(b)
+    snapshot(b)
+    saturation(b)
     runtime(b)
 
 
@@ -580,7 +720,7 @@ def add_central(b: Board, phase: str) -> None:
     s = b.sel
     b.ts("Config syncs / s by resource", [(f"sum by (route) ({b.req_rate(sync)})", "{{route}}")], unit="reqps", stack=True,
          desc="Pulls by auth and edge, per configuration kind. Expect a steady rate per replica of those services.")
-    b.ts("Config sync latency p99", [(b.quantile(0.99, sync, by="route"), "{{route}}")], unit="s",
+    b.ts("Config sync latency ${tail:text}", [(b.quantile("$tail", sync, by="route"), "{{route}}")], unit="s",
          desc="How long auth and edge wait for configuration. Slow syncs mean slow propagation of every admin change.")
     b.ts("Config changes / s by endpoint", [(f"sum by (method, route) ({b.req_rate(writes)})", "{{method}} {{route}}")], unit="reqps", stack=True,
          desc="Admin changes by endpoint. A burst here is a deployment or a bulk edit -- expect syncs and cache reloads in auth/edge shortly after.")
@@ -597,8 +737,9 @@ def add_central(b: Board, phase: str) -> None:
         (f"sum(rate(db_notification_listener_silent_total{{{s}}}[$__rate_interval]))", "silent windows"),
         (f"sum(rate(db_notification_listener_queue_overflow_total{{{s}}}[$__rate_interval]))", "queue overflows"),
     ], unit="ops", desc="Reconnects, long stretches without any message, and dropped notifications. Empty is healthy.")
-    wal(b)
-    dependencies(b)
+    overload(b)
+    outbound(b)
+    saturation(b)
     runtime(b)
 
 
@@ -610,7 +751,7 @@ def build_loadgen() -> Board:
     b = Board(
         "versola-loadgen", "Versola load generator",
         "The campaign as the emulator sees it: arrival and exchange rates, the refresh:code ratio against the target profile, the emulator's own health, and the mock backend. Read the Versola board for the system under test.",
-        namespace_query="label_values(loadgen_campaign_info, namespace)", tags=["versola", "versola-loadgen"],
+        namespace_query="label_values(loadgen_campaign_info, namespace)", tags=["versola", "versola-loadgen"], with_tail=False,
     )
     sel = 'namespace="$namespace"'
 
@@ -686,16 +827,310 @@ def build_loadgen() -> Board:
     return b
 
 
+
+# -- ingress ----------------------------------------------------------------------------------
+
+ING = 'exported_namespace="$namespace"'
+ING_REQ = f"nginx_ingress_controller_requests{{{ING}}}"
+
+
+def ing_rate(extra: str = "") -> str:
+    return f"sum(rate(nginx_ingress_controller_requests{{{ING}{extra}}}[$__rate_interval]))"
+
+
+def ing_quantile(q, metric: str, by: str = "") -> str:
+    group = f"le, {by}" if by else "le"
+    return f"histogram_quantile({q}, sum by ({group}) (rate({metric}_bucket{{{ING}}}[$__rate_interval])))"
+
+
+def ingress_tiles(b: Board, full: bool) -> None:
+    """The front door's key signals. Metrics are ingress-nginx's (`nginx_ingress_controller_*`), selected by the namespace of the
+    Ingress objects (`exported_namespace`) so they follow the Env selector; they are empty when another controller fronts the services."""
+    b.stat("Requests/s", ing_rate(), unit="reqps", desc="Requests the ingress controller answers for this environment's Ingress objects, any status.")
+    b.stat("Server errors", b.ratio(f"rate(nginx_ingress_controller_requests{{{ING}, status=~\"5..\"}}[$__rate_interval])", f"rate(nginx_ingress_controller_requests{{{ING}}}[$__rate_interval])"),
+           unit="percentunit", decimals=2, thresholds=steps((None, GREEN), (0.001, YELLOW), (0.01, RED)),
+           desc="Share of requests answered 5xx at the front door: the services failing or unreachable (502/503/504). Yellow from 0.1%, red from 1%.")
+    b.stat("Latency ${tail:text}", ing_quantile("$tail", "nginx_ingress_controller_request_duration_seconds"), unit="s",
+           desc="Whole request as the ingress sees it, from the first byte of the request to the last byte of the response, at the quantile chosen in Tail quantile. Includes slow clients.")
+    b.stat("Upstream latency ${tail:text}", ing_quantile("$tail", "nginx_ingress_controller_response_duration_seconds"), unit="s",
+           desc="Time the service behind the ingress took to answer, at the chosen quantile. The gap to the request latency is the network and the client.")
+    if full:
+        b.stat("Client closed (499) / s", ing_rate(', status="499"'), unit="ops", decimals=2, thresholds=steps((None, GREEN), (0.1, YELLOW)),
+               desc="Requests the client abandoned before the answer came: timeouts on the client side. A burst here with a calm server is the signature of a slow or overloaded client, or a network problem.")
+        b.stat("Active connections", "sum(nginx_ingress_controller_nginx_process_connections{state=\"active\"})", desc="Open client connections across controller pods.")
+        b.stat("Config reload", "min(nginx_ingress_controller_config_last_reload_successful)", thresholds=steps((None, RED), (1, GREEN)),
+               desc="1 = the last configuration reload succeeded on every controller pod. 0 means the controller is running an older configuration than the cluster describes.")
+        b.stat("Certificate expires in", "min(nginx_ingress_controller_ssl_expire_time_seconds) - time()", unit="s",
+               thresholds=steps((None, RED), (7 * 86400, YELLOW), (21 * 86400, GREEN)), desc="Soonest certificate expiry across hosts served by the controller. Red below a week.")
+
+
+def add_ingress_overview(b: Board) -> None:
+    b.row("Overview — ingress")
+    ingress_tiles(b, full=False)
+
+
+def build_ingress() -> Board:
+    b = Board(
+        "versola-ingress", "Versola — Ingress",
+        "The front door: ingress-nginx traffic, errors and latency for the selected environment. Empty if another controller fronts the services.",
+        namespace_query="label_values(nginx_ingress_controller_requests, exported_namespace)",
+    )
+    b.row("Overview")
+    ingress_tiles(b, full=True)
+    b.row("Traffic and errors")
+    b.ts("Requests / s by status class", [(f'sum by (class) (label_replace(rate(nginx_ingress_controller_requests{{{ING}}}[$__rate_interval]), "class", "${{1}}xx", "status", "(.).."))', "{{class}}")], unit="reqps", stack=True,
+         desc="2xx and 3xx are service; 4xx is callers (401 is part of the DPoP and token handshakes); 5xx is the service or the path to it failing.")
+    b.ts("Requests / s by service", [(f"sum by (service) (rate(nginx_ingress_controller_requests{{{ING}}}[$__rate_interval]))", "{{service}}")], unit="reqps", stack=True,
+         desc="Which backend Service the ingress sent the requests to.")
+    b.ts("Errors / s (4xx and 5xx) by service and status", [(f'sum by (service, status) (rate(nginx_ingress_controller_requests{{{ING}, status=~"[45].."}}[$__rate_interval]))', "{{service}} {{status}}")], unit="reqps", stack=True,
+         desc="Which failures, from which service. 499 is the client giving up; 502/503/504 is the service not answering.")
+    b.ts("Server errors (5xx) share by service", [(f'sum by (service) (rate(nginx_ingress_controller_requests{{{ING}, status=~"5.."}}[$__rate_interval])) / clamp_min(sum by (service) (rate(nginx_ingress_controller_requests{{{ING}}}[$__rate_interval])), 0.001)', "{{service}}")],
+         unit="percentunit", minimum=0, line=steps((None, GREEN), (0.01, RED)), desc="Per service, the share of its requests answered 5xx at the ingress.")
+    b.row("Latency")
+    b.ts("Request latency", fan(lambda q: ing_quantile(q, "nginx_ingress_controller_request_duration_seconds")), unit="s",
+         desc="Whole request as the ingress sees it, p50, p95, p99 and the tail quantiles up to the selected one." + TAIL_NOTE)
+    b.ts("Upstream (service) latency", fan(lambda q: ing_quantile(q, "nginx_ingress_controller_response_duration_seconds")), unit="s",
+         desc="Time the backend took to answer, p50, p95, p99 and the tail quantiles up to the selected one. Compare with the request latency above: the gap is the network and the client." + TAIL_NOTE)
+    b.ts("Slowest services (${tail:text})", [(f"topk(5, {ing_quantile('$tail', 'nginx_ingress_controller_request_duration_seconds', by='service')})", "{{service}}")], unit="s",
+         desc="The five services with the highest request latency at the chosen quantile.")
+    b.ts("Slowest ingress hosts and paths (${tail:text})", [(f"topk(5, {ing_quantile('$tail', 'nginx_ingress_controller_request_duration_seconds', by='host, path')})", "{{host}}{{path}}")], unit="s",
+         desc="The five host and path pairs with the highest request latency at the chosen quantile.")
+    b.row("Controller")
+    b.ts("Connections", [("sum by (state) (nginx_ingress_controller_nginx_process_connections)", "{{state}}")], minimum=0,
+         desc="Client connections by state across controller pods. A pile of `waiting` is idle keep-alive; `active` is work in progress.")
+    b.ts("Traffic volume", [
+        (f"sum(rate(nginx_ingress_controller_request_size_sum{{{ING}}}[$__rate_interval]))", "received"),
+        (f"sum(rate(nginx_ingress_controller_response_size_sum{{{ING}}}[$__rate_interval]))", "sent"),
+    ], unit="Bps", minimum=0, desc="Bytes per second of request and response bodies and headers.")
+    b.ts("Configuration reloads", [("sum(increase(nginx_ingress_controller_success[$__rate_interval]))", "successful reloads"), ("sum(increase(nginx_ingress_controller_errors[$__rate_interval]))", "failed reloads")], minimum=0,
+         desc="How often the controller reloaded its configuration. A reload during a load test is a place to look for a hiccup.")
+    return b
+
+
+# -- database ---------------------------------------------------------------------------------
+
+def build_db() -> Board:
+    """The database as each service sees it (client side: pool, queries, WAL as the service samples it, table sizes, cleanup).
+    One board with a Service selector instead of three copies; no host metrics (CPU, disk): those belong to the database platform."""
+    services = [{"text": c, "value": c, "selected": c == "auth"} for c in ("auth", "central", "edge")]
+    b = Board(
+        "versola-db", "Versola — Database",
+        "The database as each service sees it: connection pool, query latency, write-ahead log, table sizes and expired-row cleanup. Pick the service at the top. Host metrics (CPU, disk, replication) come from the database platform, not from here.",
+        extra_vars=[{
+            "name": "service", "label": "Service", "type": "custom", "query": "auth,central,edge",
+            "current": {"text": "auth", "value": "auth", "selected": True}, "options": services,
+            "multi": False, "includeAll": False, "hide": 0,
+        }],
+    )
+    b.component = "$service"
+    b.sel = 'namespace="$namespace", app_kubernetes_io_component="$service"'
+    b.phase = "detail"
+    sel = b.sel
+    b.row("Overview")
+    b.stat("DB pool", POOL_PCT.format(sel=sel), unit="percentunit", decimals=0, thresholds=steps((None, GREEN), (0.7, YELLOW), (0.9, RED)),
+           desc="Share of database connections checked out. Near 100% requests start queueing for a connection." + NO_POOL_DATA)
+    b.stat("Waiting for a connection ${tail:text}", f"histogram_quantile($tail, sum by (le) (rate(db_client_connection_wait_time_seconds_bucket{{{sel}}}[$__rate_interval])))", unit="s",
+           thresholds=steps((None, GREEN), (0.01, YELLOW), (0.1, RED)), desc="Time a request queues for a connection before it reaches the database, at the chosen quantile. Should be near 0.")
+    b.stat("Query latency ${tail:text}", f"histogram_quantile($tail, sum by (le) (rate(db_client_operation_duration_seconds_bucket{{{sel}}}[$__rate_interval])))", unit="s",
+           desc="Database operations, every repository, at the chosen quantile (client side).")
+    b.stat("Failed queries / s", f'sum(rate(db_client_operation_duration_seconds_count{{{sel}, outcome!="success"}}[$__rate_interval])) or vector(0)', unit="ops", decimals=2,
+           thresholds=steps((None, GREEN), (0.001, RED)), desc="Database operations that did not succeed. Must be 0.")
+    db_pool(b)
+    db_queries(b)
+    wal(b)
+    cleanup(b, volume=[], expiring=".*")
+    other(b)
+    return b
+
+
+# -- antifraud --------------------------------------------------------------------------------
+
+RED_SERIES = [{"matcher": {"id": "byRegexp", "options": ".*"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]}]
+
+
+def build_antifraud() -> Board:
+    """The antifraud module of auth, read for a shadow-mode rollout: what it decided, what it would have done had it
+    enforced, and whether the pipeline that feeds and stores its decisions is healthy. Some metrics are only on `main` once
+    the shadow, store and api PRs of the antifraud work are merged; a panel on a missing metric stays empty."""
+    b = Board(
+        "versola-antifraud", "Versola — Antifraud",
+        "The antifraud module of auth: decisions and what enforcing would have changed, rules, challenges, the SMS budget, the event pipeline, "
+        "velocity counters, lists, detectors and storage. Written for a shadow-mode rollout: read Decisions first. Alert rules for the same signals: dashboards/alerts/versola-antifraud.rules.yaml.",
+        with_tail=False,
+    )
+    b.use("auth")
+    s = b.sel
+    r = b.rate
+
+    def total(metric: str, extra: str = "") -> str:
+        return f"sum({r(metric, extra)})"
+
+    def rng(metric: str, extra: str = "") -> str:
+        return f"sum(increase({metric}{{{s}{extra}}}[$__range])) or vector(0)"
+
+    def share(part: str, whole: str) -> str:
+        return b.ratio(part, whole)
+
+    dec = "antifraud_decisions_total"
+
+    # -- decisions --------------------------------------------------------------------------
+    b.row("auth — Decisions")
+    b.stat("Decisions / s", total(dec), unit="ops", decimals=2,
+           desc="Antifraud decisions taken by this service: one per request that was judged. Empty means nothing is being judged: the engine is off, or no request has asked for a code.")
+    b.stat("Would be refused or challenged", share(r(dec, ', would_action!="Allow"'), r(dec)), unit="percentunit", decimals=1,
+           desc="Share of decisions whose would-be action (what the rules decided) was not Allow: Challenge, Fake or Block. In shadow mode this is the number to judge enforcing by: near the real share of bad traffic is right, a large share of ordinary traffic means a rule or a threshold is too tight.")
+    b.stat("Let through, would be stopped", share(r(dec, ', action="Allow", would_action!="Allow"'), r(dec)), unit="percentunit", decimals=1,
+           desc="Share of decisions that were acted on as Allow although the rules decided Challenge, Fake or Block. That is shadow mode working: the request went through and the decision was only recorded. After switching to enforce this falls to 0 (a failed evaluation under `failure-action` aside).")
+    b.stat("Evaluation failures", rng("antifraud_evaluation_failed_total"), unit="short", decimals=0, thresholds=steps((None, GREEN), (1, RED)),
+           desc="Evaluations that gave no decision in the selected time range (timeout, error or tuning unavailable); `failure-action` was applied instead. Must be 0: any is red.")
+    b.ts("Decisions / s by would-be action", [(f"sum by (would_action) ({r(dec)})", "{{would_action}}")], unit="ops", stack=True, minimum=0,
+         desc="What the rules decided, whatever was done about it. Mostly Allow is healthy; Challenge, Fake and Block here are what enforcing would do.")
+    b.ts("Share not allowed: would-be vs acted", [
+        (share(r(dec, ', would_action!="Allow"'), r(dec)), "would be (decided)"),
+        (share(r(dec, ', action!="Allow"'), r(dec)), "acted on"),
+    ], unit="percentunit", minimum=0,
+         desc="Share of decisions that were not Allow, by what was decided and by what was done. In shadow mode the second line is flat at 0 while the first shows what enforcing would change; in enforce mode they are the same line.")
+    b.ts("Acted on / s by action", [(f"sum by (action) ({r(dec)})", "{{action}}")], unit="ops", stack=True, minimum=0,
+         desc="What was really done to requests. In shadow mode it is all Allow. Side by side with the panel on the right.")
+    b.ts("Would have been / s by would-be action", [(f"sum by (would_action) ({r(dec)})", "{{would_action}}")], unit="ops", stack=True, minimum=0,
+         desc="What the decisions were. Compare with the panel on the left: the gap between them is what switching to enforce would change.")
+    b.ts("Evaluation failures / s by reason", [(f"sum by (reason) ({r('antifraud_evaluation_failed_total')})", "{{reason}}")], unit="ops", minimum=0, overrides=RED_SERIES,
+         desc="Evaluations with no decision: `timeout` (the engine took too long), `error` (an unexpected failure), `tuning_unavailable` (the tuned settings were never read). Empty is healthy; any value is red, and `failure-action` was applied to those requests.")
+
+    # -- rules ------------------------------------------------------------------------------
+    b.row("auth — Rules")
+    fired = "antifraud_rules_fired_total"
+    b.ts("Rules fired / s (enforcing)", [(f'topk(10, sum by (rule) ({r(fired, ", shadow=\"false\"")}))', "{{rule}}")], unit="ops", minimum=0,
+         desc="The ten rules that fired most, among rules that count towards the decision. A rule that fires on most requests is a rule that is too wide.")
+    b.ts("Rules fired / s (shadow rules)", [(f'topk(10, sum by (rule) ({r(fired, ", shadow=\"true\"")}))', "{{rule}}")], unit="ops", minimum=0,
+         desc="The ten most frequent rules that only record (`shadow:<name>` in the decision) and take no part in it. Read these before making a rule count: a rule that would fire on ordinary traffic must not be promoted.")
+    b.ts("Rules fired — share of decisions", [(f"topk(10, sum by (rule, shadow) ({r(fired)})) / scalar(clamp_min({total(dec)}, 0.001))", "{{rule}} (shadow={{shadow}})")], unit="percentunit", minimum=0,
+         desc="Each rule's firing rate over the decisions per second. Several rules can fire on one request, so the shares do not add up to 100%.")
+
+    # -- challenges -------------------------------------------------------------------------
+    ch = "antifraud_challenges_total"
+    b.row("auth — Challenges")
+    b.stat("Proof of work: solved", share(r(ch, ', kind="pow", outcome="challenge_passed"'), r(ch, ', kind="pow", outcome=~"challenge_passed|challenge_failed"')), unit="percentunit", decimals=0,
+           desc="Of the proofs of work that were answered, the share that were right. Real browsers solve nearly all; a low share is scripts guessing, or a difficulty a phone cannot meet.")
+    b.stat("Proof of work: answered", share(r(ch, ', kind="pow", outcome=~"challenge_passed|challenge_failed"'), r(ch, ', kind="pow", outcome="challenged"')), unit="percentunit", decimals=0,
+           desc="Of the proofs of work put to clients, the share that came back with an answer. The rest are clients that cannot or will not do the work (no script, a bot that gave up): that is the point of the challenge. Falls if real users cannot solve it.")
+    b.stat("Pause: paid", share(r(ch, ', kind="pause", outcome="challenge_passed"'), r(ch, ', kind="pause", outcome="challenged"')), unit="percentunit", decimals=0,
+           desc="Of the pauses imposed on clients that cannot answer a proof of work, the share followed by the request that completed it and got the code. Real people wait and come back; a low share is traffic that leaves.")
+    b.stat("Challenges / s", total(ch, ', outcome="challenged"'), unit="ops", decimals=2,
+           desc="Challenges put to clients. Empty while no decision is Challenge, which in shadow mode is always: nothing is challenged until enforcing.")
+    b.ts("Challenges / s by kind and outcome", [(f"sum by (kind, outcome) ({r(ch)})", "{{kind}} {{outcome}}")], unit="ops", stack=True, minimum=0,
+         desc="`challenged` is a challenge put to a client, `challenge_passed` a right answer, `challenge_failed` a wrong one. `pow` is the proof of work, `pause` the wait for clients that cannot do one. Empty in shadow mode: nothing is challenged until enforcing.")
+    b.ts("Pass rate and answered share", [
+        (share(r(ch, ', kind="pow", outcome="challenge_passed"'), r(ch, ', kind="pow", outcome=~"challenge_passed|challenge_failed"')), "pow: right of those answered"),
+        (share(r(ch, ', kind="pow", outcome=~"challenge_passed|challenge_failed"'), r(ch, ', kind="pow", outcome="challenged"')), "pow: answered of challenged"),
+        (share(r(ch, ', kind="pause", outcome="challenge_passed"'), r(ch, ', kind="pause", outcome="challenged"')), "pause: paid of imposed"),
+    ], unit="percentunit", minimum=0, maximum=1,
+         desc="A challenge that people pass and bots do not has a high pass rate among those answered and a lower answered share. Both low at once means real users are failing it.")
+
+    # -- sms budget -------------------------------------------------------------------------
+    b.row("auth — SMS budget")
+    b.ts("Refused / s by reason and mode", [(f"sum by (reason, mode) ({r('antifraud_sms_budget_refused_total')})", "{{reason}} ({{mode}})")], unit="ops", stack=True, minimum=0,
+         desc="Codes the SMS budget closed a range to: `cap` (sentPerHour reached), `conversion` (too few codes verified: entered, or passed by passkey). `shadow` means the code went out all the same and the number is what enforcing would refuse; `enforce` is a refusal that happened. Empty while the budget is off (the default).")
+    b.ts("Ranges not tracked / evicted per s", [
+        (r("antifraud_sms_budget_full_total"), "not tracked (table full)"),
+        (r("antifraud_sms_budget_evicted_total"), "evicted"),
+    ], unit="ops", minimum=0,
+         desc="`not tracked`: a code to a new range went out unchecked because the table of ranges was full: the budget no longer protects that tenant, and it is a sign of an attack or a table too small. `evicted`: a range was dropped to make room. Empty is healthy.")
+
+    # -- event pipeline ---------------------------------------------------------------------
+    ev = "antifraud_events_"
+    b.row("auth — Event pipeline")
+    b.ts("Events enqueued, written and dropped / s", [
+        (r(ev + "enqueued_total"), "enqueued"),
+        (r(ev + "written_total"), "written"),
+        (f"sum by (reason) ({r(ev + 'dropped_total')})", "dropped: {{reason}}"),
+    ], unit="ops", minimum=0,
+         desc="Every request leaves an event; a writer stores them in batches. Healthy: written follows enqueued, and dropped is empty. `throttled_shed` is the log giving way under load, `queue_full` and `write_failed` are lost events, `shutdown` is a pod stopping with a queue.")
+    b.ts("Events dropped / s by reason", [(f"sum by (reason) ({r(ev + 'dropped_total')})", "{{reason}}")], unit="ops", minimum=0,
+         desc="Events the log lost. Empty is healthy. `queue_full` and `write_failed` lose statistics (the decisions themselves are not affected); `build_failed` is a request that could not be described.")
+    b.ts("Event queue size", [(f"max by (pod) (antifraud_event_queue_size{{{s}}})", "{{pod}}")], unit="short", minimum=0,
+         desc="Events waiting for the writer, sampled each time the writer takes a batch. Near 0 is healthy; a queue that stays high is a database that cannot keep up.")
+    b.ts("Backlog growth: enqueued − written − dropped", [
+        (f"{total(ev + 'enqueued_total')} - {total(ev + 'written_total')} - ({total(ev + 'dropped_total', ', reason=~\"write_failed|shutdown\"')} or vector(0))", "net growth"),
+    ], unit="ops",
+         desc="Events that entered the queue and were neither written nor lost after entering (drops before the queue, `queue_full` and `throttled_shed`, are not in `enqueued`). Around 0 is healthy; above 0 for long is a queue filling up.")
+
+    # -- velocity ---------------------------------------------------------------------------
+    b.row("auth — Velocity")
+    b.ts("Buckets flushed / s", [(r("antifraud_velocity_flushed_total"), "flushed")], unit="ops", minimum=0,
+         desc="Counter buckets this service wrote to the database so that every instance sees the others' counts. Follows traffic; flat at 0 under traffic is a writer that does not run.")
+    b.ts("Velocity failures / s by what", [(f"sum by (what) ({r('antifraud_velocity_failed_total')})", "{{what}}")], unit="ops", minimum=0,
+         desc="`flush` (writing counts), `load` (reading the other instances' counts), `prune` (removing old rows). Empty is healthy; while it fails the counts are per instance only, so a limit is looser by the number of instances.")
+    b.ts("Keys tracked", [(f"max by (pod) (antifraud_velocity_keys{{{s}}})", "{{pod}}")], unit="short", minimum=0,
+         desc="Keys (networks, devices, ranges, phones) held in memory on each pod. Grows with distinct callers and is bounded by `velocity.max-keys`; a pod pinned at the bound is being flooded with keys.")
+    b.ts("Keys not counted or evicted / s", [
+        (r("antifraud_velocity_untracked_total"), "not counted (table full)"),
+        (r("antifraud_velocity_evicted_total"), "evicted (seen once)"),
+    ], unit="ops", minimum=0,
+         desc="`not counted`: requests whose key could not be admitted to a full table, so no counter limited them. Rare once a full table evicts by sampling; any value is a flood of distinct keys far above `velocity.max-keys` or a table too small. `evicted`: keys that made room for a new one; a steady stream is a flood of distinct keys.")
+
+    # -- lists ------------------------------------------------------------------------------
+    b.row("auth — Lists")
+    hits = "antifraud_list_hits_total"
+    b.ts("List hits / s", [(f"sum by (list_type, value_type, shadow) ({r(hits)})", "{{list_type}} {{value_type}} (shadow={{shadow}})")], unit="ops", minimum=0,
+         desc="Requests that matched a list entry, by list, kind of value and whether the entry is a `shadow` one (matched, enforces nothing). Written every 30 seconds, so it is stepped. A shadow entry that hits ordinary traffic must not be made enforcing.")
+    b.ts("List and tuning refresh failures", [
+        (f"sum(increase(antifraud_list_refresh_failed_total{{{s}}}[$__rate_interval]))", "list refresh failed"),
+        (f"sum(increase(antifraud_tuning_refresh_failed_total{{{s}}}[$__rate_interval]))", "tuning refresh failed"),
+        (f"sum(increase(antifraud_list_hit_flush_failed_total{{{s}}}[$__rate_interval]))", "hit counts not written"),
+    ], unit="short", minimum=0,
+         desc="A refresh that fails keeps the previous lists or tuning (fail open), so nothing breaks at once but changes stop arriving. Empty is healthy.")
+    b.ts("List snapshot age", [(f"time() - max by (pod) (antifraud_lists_refreshed_timestamp_seconds{{{s}}})", "{{pod}}")], unit="s", minimum=0, line=steps((None, GREEN), (600, RED)),
+         desc="Seconds since the lists were last read successfully. A minute or so is healthy (the refresh interval). The dashed line is the alert: 10 minutes means the pod enforces lists that old, and a hung refresh moves no failure counter, so this is the only place it shows. Empty while lists are off.")
+    b.ts("Tuning age", [(f"time() - max by (pod) (antifraud_tuning_refreshed_timestamp_seconds{{{s}}})", "{{pod}}")], unit="s", minimum=0, line=steps((None, GREEN), (600, RED)),
+         desc="Seconds since the tuned settings (mode, thresholds, weights) were last read successfully. A few seconds is healthy (the refresh interval). The dashed line is the alert at 10 minutes: a pod that old ignores a switch from shadow to enforce.")
+
+    # -- detectors and resets ---------------------------------------------------------------
+    b.row("auth — Detectors and resets")
+    b.ts("Proposals created / s by kind", [(f"sum by (kind) ({r('antifraud_proposals_created_total')})", "{{kind}}")], unit="ops", minimum=0,
+         desc="List entries the detectors proposed (they never create one). Empty while the detectors are off (the default) or nothing looks anomalous; a steady stream is worth reading in the console.")
+    b.ts("Detector and housekeeping failures", [
+        (f"sum by (kind) (increase(antifraud_detector_failed_total{{{s}}}[$__rate_interval]))", "detector {{kind}} failed"),
+        (f"sum(increase(antifraud_proposal_housekeeping_failed_total{{{s}}}[$__rate_interval]))", "housekeeping failed"),
+    ], unit="short", minimum=0, overrides=RED_SERIES,
+         desc="A detector run that failed (it tries again next interval) or the removal of old proposals that failed. Empty is healthy.")
+    b.ts("Counter resets / s by scope", [(f"sum by (scope) ({r('antifraud_counters_reset_total')})", "{{scope}}")], unit="ops", minimum=0,
+         desc="Resets of the velocity counters and the SMS budget made through the API (`velocity`, `budget`, `all`). Each is an operator forgiving someone; a burst of them is worth asking about.")
+    b.ts("Counter reset failures", [(f"sum by (what) (increase(antifraud_counters_reset_failed_total{{{s}}}[$__rate_interval]))", "{{what}}")], unit="short", minimum=0, overrides=RED_SERIES,
+         desc="A reset that did not complete: `delete` (removing the stored rows) or `poll` (an instance reading the resets). Until it does, that instance goes on counting. Empty is healthy.")
+
+    # -- storage ----------------------------------------------------------------------------
+    b.row("auth — Storage")
+    dbsel = f'{s}, operation=~".*antifraud.*"'
+    b.ts("Event partitions ahead", [(f"min by (pod) (antifraud_partition_days_ahead{{{s}}})", "{{pod}}")], unit="d", minimum=0, line=steps((None, RED), (2, GREEN)),
+         desc="Days of the event log that already have a partition. Healthy is the number the service keeps ahead (a few days). Below the dashed line at 2 maintenance is failing; at 0 the events of the day are written to the default partition until its partition is made.")
+    b.ts("Maintenance and rollup failures", [
+        (f"sum(increase(antifraud_partition_maintenance_failed_total{{{s}}}[$__rate_interval]))", "partition maintenance"),
+        (f"sum(increase(antifraud_stats_rollup_failed_total{{{s}}}[$__rate_interval]))", "statistics rollup"),
+    ], unit="short", minimum=0, overrides=RED_SERIES,
+         desc="Creating and dropping event partitions (retried every minute) and rolling the log up into the statistics the SMS detectors read. Empty is healthy; a failed rollup is recomputed by the next run, so a single one is not an incident.")
+    b.ts("Database latency, antifraud operations", [
+        (f"histogram_quantile({q}, sum by (le) (rate(db_client_operation_duration_seconds_bucket{{{dbsel}}}[$__rate_interval])))", name) for q, name in QUANTILES
+    ], unit="s", minimum=0,
+         desc="Every antifraud database operation together (event inserts, rollups, velocity, lists, proposals). Client side, so it includes the pool and the pooler.")
+    b.ts("Slowest antifraud operations (p99)", [(f"topk(5, histogram_quantile(0.99, sum by (le, operation) (rate(db_client_operation_duration_seconds_bucket{{{dbsel}}}[$__rate_interval]))))", "{{operation}}")], unit="s", minimum=0,
+         desc="The five operations with the highest p99. The event insert and the rollup are expected to lead; one that was fast and is not is where to look.")
+    b.ts("Failed antifraud database operations / s", [(f'sum by (operation) (rate(db_client_operation_duration_seconds_count{{{dbsel}, outcome!="success"}}[$__rate_interval]))', "{{operation}}")], unit="ops", minimum=0, overrides=RED_SERIES, w=24,
+         desc="Antifraud database operations that did not succeed. Empty is healthy.")
+    return b
+
+
 def build() -> Board:
     b = Board(
         "versola", "Versola",
         "Whole-system health: auth, central and edge on one page. Read the Overview matrix first; open a service's rows only for the part that is not green.",
     )
     services = (add_auth, add_central, add_edge)
+    b.phase = "overview"
+    add_ingress_overview(b)
     for add in services:
         b.phase = "overview"
         add(b, "overview")
-    other(b)
     for add in services:
         b.phase = "detail"
         add(b, "detail")
@@ -703,7 +1138,7 @@ def build() -> Board:
 
 
 def main() -> None:
-    for name, board in (("versola.json", build()), ("loadgen.json", build_loadgen())):
+    for name, board in (("versola.json", build()), ("versola-db.json", build_db()), ("versola-ingress.json", build_ingress()), ("versola-antifraud.json", build_antifraud()), ("loadgen.json", build_loadgen())):
         out = OUT_DIR / name
         out.write_text(json.dumps(board.render(), indent=2, ensure_ascii=False) + "\n")
         print(f"wrote {out}")

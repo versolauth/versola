@@ -2,7 +2,7 @@ package versola.oauth.conversation
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.auth.model.OtpCode
-import versola.oauth.client.model.{AuthFlow, AuthorizationDetail, ClientId, PrimaryCredential, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthFlow, AuthorizationDetail, ClientId, PassedAuthFactor, PrimaryCredential, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
 import versola.user.model.UserId
@@ -13,6 +13,7 @@ import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
 
+import java.time.Instant
 import java.util.UUID
 
 trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepositorySpec.Env]:
@@ -161,6 +162,36 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           found <- env.repository.find(authId1)
         yield assertTrue(found.map(_.authorizationDetails) == Some(Some(List(detail))))
       },
+      test("persist and retrieve the factors fixed for a built-in class") {
+        val sensitive = record1.copy(targetAcr = Some(Acr("sensitive")), targetFactors = Some(List(PassedAuthFactor.passkey)))
+        for
+          _ <- env.repository.create(authId1, sensitive, ttl)
+          found <- env.repository.find(authId1)
+        yield assertTrue(found.contains(sensitive))
+      },
+      test("a code step that has asked for the options of a passkey keeps the ceremony and what it says of it") {
+        val sentAt = Instant.parse("2026-11-03T10:00:00Z")
+        val asking = realOtp.copy(lastSentAt = Some(sentAt), passkeyRequest = Some("{\"ceremony\":true}"), passkeyFailed = true)
+        for
+          _ <- env.repository.create(authId1, record1.copy(step = asking), ttl)
+          found <- env.repository.find(authId1).map(_.get)
+        yield assertTrue(found.step == asking)
+      },
+      test("a code step stored before it could ask for a passkey reads back with no ceremony and no passkey error") {
+        val asking = realOtp.copy(passkeyRequest = Some("{\"ceremony\":true}"), passkeyFailed = true)
+        for
+          _ <- env.repository.create(authId1, record1.copy(step = asking), ttl)
+          _ <- env.fixtures.withoutStepField(authId1, step = "Otp", field = "passkeyRequest")
+          _ <- env.fixtures.withoutStepField(authId1, step = "Otp", field = "passkeyFailed")
+          found <- env.repository.find(authId1).map(_.map(_.step))
+        yield assertTrue(found == Some(realOtp))
+      },
+      test("a conversation that fixed no factors reads back with none") {
+        for
+          _ <- env.repository.create(authId1, record1, ttl)
+          found <- env.repository.find(authId1)
+        yield assertTrue(found.map(_.targetFactors) == Some(None))
+      },
       test("delete conversation by auth ID") {
         for
           _ <- env.repository.create(authId1, record1, ttl)
@@ -226,6 +257,51 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           found2.version == found1.version + 1,
         )
       },
+      test("wrong solutions of a challenge are counted by the statement, one by one, and read back with the record") {
+        for
+          _ <- env.repository.create(authId1, record1, ttl)
+          first <- env.repository.recordChallengeFailure(authId1)
+          second <- env.repository.recordChallengeFailure(authId1)
+          other <- env.repository.recordChallengeFailure(authId2)
+          found <- env.repository.find(authId1).map(_.get)
+        yield assertTrue(first == 1, second == 2, other == 0, found.challengeFailed == 2, found.challengeSolved == 0)
+      },
+      test("wrong solutions sent at once are all counted") {
+        for
+          _ <- env.repository.create(authId1, record1, ttl)
+          counts <- ZIO.foreachPar(1 to 20)(_ => env.repository.recordChallengeFailure(authId1))
+          found <- env.repository.find(authId1).map(_.get)
+        yield assertTrue(counts.toSet == (1 to 20).toSet, found.challengeFailed == 20)
+      },
+      test("a solved challenge is spent once per count: the same token does not pass twice, and the wrong solutions are forgotten") {
+        for
+          _ <- env.repository.create(authId1, record1, ttl)
+          _ <- env.repository.recordChallengeFailure(authId1)
+          first <- env.repository.consumeChallenge(authId1, solved = 0)
+          again <- env.repository.consumeChallenge(authId1, solved = 0)
+          stale <- env.repository.consumeChallenge(authId1, solved = 5)
+          next <- env.repository.consumeChallenge(authId1, solved = 1)
+          found <- env.repository.find(authId1).map(_.get)
+        yield assertTrue(first, !again, !stale, next, found.challengeSolved == 2, found.challengeFailed == 0)
+      },
+      test("of callers racing with the same solved token exactly one passes") {
+        for
+          _ <- env.repository.create(authId1, record1, ttl)
+          results <- ZIO.foreachPar(1 to 20)(_ => env.repository.consumeChallenge(authId1, solved = 0))
+        yield assertTrue(results.count(identity) == 1)
+      },
+      test("overwrite leaves the challenge counts alone, whatever the record it is given says") {
+        for
+          _ <- env.repository.create(authId1, record1, ttl)
+          _ <- env.repository.recordChallengeFailure(authId1)
+          _ <- env.repository.consumeChallenge(authId1, solved = 0)
+          _ <- env.repository.recordChallengeFailure(authId1)
+          stale <- env.repository.find(authId1).map(_.get.copy(challengeFailed = 0, challengeSolved = 0))
+          _ <- env.repository.recordChallengeFailure(authId1)
+          overwritten <- env.repository.overwrite(authId1, stale.copy(step = fakeOtp))
+          found <- env.repository.find(authId1).map(_.get)
+        yield assertTrue(overwritten, found.challengeSolved == 1, found.challengeFailed == 2)
+      },
       test("find returns None for expired conversation") {
         val pastAuthId = AuthId(UUID.fromString("00000000-0001-7000-8000-000000000001"))
         for
@@ -237,4 +313,11 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     )
 
 object ConversationRepositorySpec:
-  case class Env(repository: ConversationRepository)
+  case class Env(repository: ConversationRepository, fixtures: Fixtures)
+
+  /** What a case needs the storage to do that the repository under test does not: rows as an earlier release wrote them.
+    * The storage's runner implements it. */
+  trait Fixtures:
+    /** Takes `field` out of the stored `step` (`Otp`, `Credential`, ...) of the conversation, which is what a row written
+      * before the field existed holds: the field is not there, not null. */
+    def withoutStepField(authId: AuthId, step: String, field: String): Task[Unit]

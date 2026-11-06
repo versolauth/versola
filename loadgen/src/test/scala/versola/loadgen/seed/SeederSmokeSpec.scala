@@ -428,6 +428,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
             audience = List("http://mockapi-core.test:8110", "http://mockapi-pay.test:8120"),
             scope = List("openid", "profile", "phone", "offline_access"),
             refreshTokenTtl = 30.days,
+            names = versola.loadgen.provision.CampaignBlueprint.Names(None),
           )
           val minter = BulkTokenMinter(
             harness.security,

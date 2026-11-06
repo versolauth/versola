@@ -206,7 +206,48 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           results <- env.repository.findByUserId(userId1)
         yield assertTrue(
           results.size == 2,
-          results.forall(_.userId == userId1),
+          results.forall(_.record.userId == userId1),
+          results.forall(_.idleExpiresAt.isEmpty),
+        )
+      },
+      test("findByUserId reports the idle expiry of a session that has an idle window") {
+        for
+          now <- Clock.instant
+          _ <- env.repository.create(sessionId1, session1, ttl, Some(1.minute), None)
+          results <- env.repository.findByUserId(userId1)
+        yield assertTrue(
+          results.map(_.idleExpiresAt) == List(Some(now.plusSeconds(60))),
+          results.map(_.record.expiresAt) == List(now.plusSeconds(ttl.toSeconds)),
+        )
+      },
+      test("findByUserId does not return a session whose idle window has passed") {
+        for
+          _ <- env.repository.create(sessionId1, session1, ttl, Some(1.minute), None)
+          _ <- TestClock.adjust(2.minutes)
+          results <- env.repository.findByUserId(userId1)
+        yield assertTrue(results.isEmpty)
+      },
+      test("findEndedByUserId lists expired, idle-timed-out and invalidated sessions of the user, not live ones") {
+        for
+          _ <- env.repository.create(sessionId1, session1, 0.seconds, None, None)
+          _ <- env.repository.create(sessionId2, session2.copy(userId = userId1, userAgentId = userAgentId1), ttl, Some(0.seconds), None)
+          _ <- env.repository.create(
+            sessionId3,
+            session1.copy(publicId = publicId3, userAgentId = userAgentId2),
+            ttl,
+            None,
+            None,
+          )
+          _ <- env.repository.create(atomicSessionId, session1.copy(publicId = atomicPublicId), ttl, None, None)
+          _ <- env.repository.invalidate(atomicSessionId)
+          _ <- TestClock.adjust(1.second)
+          ended <- env.repository.findEndedByUserId(userId1)
+          otherUser <- env.repository.findEndedByUserId(userId2)
+        yield assertTrue(
+          ended.map(_.publicId).toSet == Set(publicId1, publicId2, atomicPublicId),
+          !ended.exists(_.publicId == publicId3),
+          ended.find(_.publicId == publicId1).map(_.userAgentId).contains(userAgentId1),
+          otherUser.isEmpty,
         )
       },
       test("findByUserId does not return expired sessions") {

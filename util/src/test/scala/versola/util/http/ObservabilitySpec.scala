@@ -23,21 +23,21 @@ object ObservabilitySpec extends ZIOSpecDefault:
   @jsonMemberNames(SnakeCase)
   private case class LoggedRequest(
       path: String,
-      cookies: List[String] = Nil,
-      baseUri: String = "http://",
-      queryParams: List[String] = Nil,
-      headers: List[String] = Nil,
-      body: Option[String] = None,
+      cookies: List[String],
+      baseUri: String,
+      queryParams: List[String],
+      headers: List[String],
+      body: Option[String],
   ) derives JsonDecoder
-  private case class LoggedResponse(code: Int, body: Option[String] = None, headers: List[String] = Nil) derives JsonDecoder
+  private case class LoggedResponse(code: Int, body: Option[String], headers: List[String]) derives JsonDecoder
   private case class LoggedHttp(request: LoggedRequest, response: LoggedResponse) derives JsonDecoder
   private case class LoggedError(code: String, description: Option[String]) derives JsonDecoder
   private case class LoggedEntry(
       level: String,
       message: String,
       http: LoggedHttp,
-      stack_trace: Option[String] = None,
-      error: Option[LoggedError] = None,
+      stack_trace: Option[String],
+      error: Option[LoggedError],
   ) derives JsonDecoder
 
   @jsonMemberNames(SnakeCase)
@@ -46,7 +46,7 @@ object ObservabilitySpec extends ZIOSpecDefault:
       queryParams: List[String],
       headers: List[String],
       body: Option[String],
-      baseUri: String = "",
+      baseUri: String,
   ) derives JsonDecoder
   private case class ClientLoggedHttp(
       request: ClientLoggedRequest,
@@ -74,8 +74,8 @@ object ObservabilitySpec extends ZIOSpecDefault:
       logAnnotation(Observability.sendHttp),
     ).reduce(_ |-| _)
 
-  private case class LoggedAuth(id: Option[String] = None) derives JsonDecoder
-  private case class AuthLoggedEntry(message: String, auth: Option[LoggedAuth] = None) derives JsonDecoder
+  private case class LoggedAuth(id: Option[String]) derives JsonDecoder
+  private case class AuthLoggedEntry(message: String, auth: Option[LoggedAuth]) derives JsonDecoder
 
   private val authLogFormat =
     List(
@@ -85,19 +85,19 @@ object ObservabilitySpec extends ZIOSpecDefault:
 
   @jsonMemberNames(SnakeCase)
   private case class FullLoggedAuth(
-      id: Option[String] = None,
-      priorSessionId: Option[String] = None,
-      sessionId: Option[String] = None,
-      clientId: Option[String] = None,
-      step: Option[String] = None,
-      userId: Option[String] = None,
-      userAgentId: Option[String] = None,
-      ip: Option[String] = None,
-      token: Option[String] = None,
-      refreshToken: Option[String] = None,
-      previousRefreshToken: Option[String] = None,
+      id: Option[String],
+      priorSessionId: Option[String],
+      sessionId: Option[String],
+      clientId: Option[String],
+      step: Option[String],
+      userId: Option[String],
+      userAgentId: Option[String],
+      ip: Option[String],
+      token: Option[String],
+      refreshToken: Option[String],
+      previousRefreshToken: Option[String],
   ) derives JsonDecoder
-  private case class FullAuthLoggedEntry(message: String, auth: Option[FullLoggedAuth] = None) derives JsonDecoder
+  private case class FullAuthLoggedEntry(message: String, auth: Option[FullLoggedAuth]) derives JsonDecoder
   private val fullAuthLogFormat =
     List(
       label("message", quoted(line)),
@@ -143,6 +143,32 @@ object ObservabilitySpec extends ZIOSpecDefault:
           },
           Method.GET / "error" -> Handler.fromFunctionZIO[Request] { _ =>
             Observability.setError("invalid_request", Some("Invalid request")).as(Response.badRequest)
+          },
+          Method.GET / "antifraud" -> Handler.fromFunctionZIO[Request] { _ =>
+            Observability.updateAntifraud(Observability.AntifraudDetails(
+              "otp_request",
+              "Allow",
+              0,
+              Nil,
+              None,
+              None,
+              None,
+              None,
+              wouldAction = None,
+              asn = None,
+              asnClass = None,
+              country = None,
+            ))(
+              _.copy(
+                decision = "Block",
+                score = 12,
+                rules = List("deny_list"),
+                outcome = Some("blocked"),
+                asn = Some(24940),
+                asnClass = Some("hosting"),
+                country = Some("DE"),
+              ),
+            ).as(Response.text("ok"))
           },
           Method.GET / "labeled" -> Handler.fromFunctionZIO[Request] { _ =>
             Observability.setRouteLabel("grant_type", "client_credentials").as(Response.text("ok"))
@@ -192,6 +218,19 @@ object ObservabilitySpec extends ZIOSpecDefault:
       ),
     )
 
+  private val okTags = Set(
+    MetricLabel("method", "GET"),
+    MetricLabel("route", "/ok"),
+    MetricLabel("status", "200"),
+    MetricLabel("status_class", "2xx"),
+  )
+
+  /** Runs `zio` with `settings` as the access log, restoring what was there. */
+  private def withAccessLog[R, E, A](settings: AccessLogSettings)(zio: ZIO[R, E, A]): ZIO[R, E, A] =
+    ZIO.acquireReleaseWith(ZIO.succeed(Observability.accessLog.getAndSet(settings)))(before =>
+      ZIO.succeed(Observability.accessLog.set(before)),
+    )(_ => zio)
+
   private def counterCount(tags: Set[MetricLabel]): UIO[Double] =
     Metric.counter("http_server_requests_total").tagged(tags).value.map(_.count)
 
@@ -222,8 +261,12 @@ object ObservabilitySpec extends ZIOSpecDefault:
         rendered == LoggedEntry(
           level = "INFO",
           message = "receive-http",
-          http = LoggedHttp(LoggedRequest("ok"), LoggedResponse(200)),
+          http = LoggedHttp(
+            LoggedRequest("ok", cookies = Nil, baseUri = "http://", queryParams = Nil, headers = Nil, body = None),
+            LoggedResponse(200, body = None, headers = Nil),
+          ),
           stack_trace = None,
+          error = None,
         ),
       )
     }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
@@ -278,7 +321,10 @@ object ObservabilitySpec extends ZIOSpecDefault:
         receiveLogs.length == 1,
         rendered.level == "ERROR",
         rendered.message == "receive-http",
-        rendered.http == LoggedHttp(LoggedRequest("boom"), LoggedResponse(500)),
+        rendered.http == LoggedHttp(
+          LoggedRequest("boom", cookies = Nil, baseUri = "http://", queryParams = Nil, headers = Nil, body = None),
+          LoggedResponse(500, body = None, headers = Nil),
+        ),
         rendered.stack_trace.exists(_.contains("RuntimeException: boom")),
       )
     }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
@@ -302,6 +348,42 @@ object ObservabilitySpec extends ZIOSpecDefault:
         ),
       )
     }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+    test("renders the antifraud check on the receive-http line, under the antifraud key") {
+      val format = List(label("message", quoted(line)), logAnnotation(Observability.antifraud)).reduce(_ |-| _)
+      for
+        env <- tracingLayer.build
+        _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+        client <- ZIO.service[Client]
+        _ <- client.batched(Request.get(URL.empty / "antifraud"))
+        logs <- ZTestLogger.logOutput
+        rawLog <- ZIO.fromOption(logs.find(_.message() == "receive-http"))
+          .orElseFail(new RuntimeException("Missing receive-http log"))
+        rendered = rawLog.call(format.toJsonLogger)
+      yield assertTrue(
+        rendered.contains("\"antifraud\":{\"action\":\"otp_request\",\"decision\":\"Block\",\"score\":12,\"rules\":[\"deny_list\"]"),
+        rendered.contains("\"outcome\":\"blocked\""),
+        rendered.contains("\"asn\":24940"),
+        rendered.contains("\"asn_class\":\"hosting\""),
+        rendered.contains("\"country\":\"DE\""),
+      )
+    }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+    test("the antifraud check says nothing of an ASN or a country when there is none, and carries no address") {
+      val json = Observability.AntifraudDetails(
+        "otp_request",
+        "Allow",
+        0,
+        Nil,
+        None,
+        None,
+        None,
+        None,
+        wouldAction = None,
+        asn = None,
+        asnClass = None,
+        country = None,
+      ).toJson
+      assertTrue(!json.contains("asn"), !json.contains("country"), !json.contains("\"ip\""))
+    },
     // Closes the ErrorDetails.description default-None gap (line 530): every other error test
     // supplies an explicit description, so the default value itself never runs.
     test("renders error details with no description when setError is called without one") {
@@ -422,7 +504,7 @@ object ObservabilitySpec extends ZIOSpecDefault:
     // explicit `description` (even when it's its own `None` default), so `ErrorDetails`'s own
     // default is only reachable by constructing it directly with a single argument.
     test("ErrorDetails defaults to no description when constructed without one") {
-      assertTrue(Observability.ErrorDetails("some_code") == Observability.ErrorDetails("some_code", None))
+      assertTrue(Observability.ErrorDetails("some_code", description = None) == Observability.ErrorDetails("some_code", None))
     },
     // Closes the auth-detail setters that no test previously exercised (lines 50-81): only
     // setAuthId, setError and setRouteLabel/setRoutePath were reached via existing routes.
@@ -561,14 +643,136 @@ object ObservabilitySpec extends ZIOSpecDefault:
         )
       }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
     ),
+    suite("access log")(
+      test("sampled mode drops a fast successful request but still counts it") {
+        for
+          before <- counterCount(okTags)
+          _ <- withAccessLog(AccessLogSettings(AccessLogMode.Sampled, 60000, 0.0)):
+            for
+              env <- tracingLayer.build
+              _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+              client <- ZIO.service[Client]
+              _ <- client.batched(Request.get(URL.empty / "ok"))
+            yield ()
+          logs <- ZTestLogger.logOutput
+          after <- counterCount(okTags)
+        yield assertTrue(!logs.exists(_.message() == "receive-http"), after == before + 1)
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("sampled mode always keeps a 4xx response and an unhandled error") {
+        for
+          _ <- withAccessLog(AccessLogSettings(AccessLogMode.Sampled, 60000, 0.0)):
+            for
+              env <- tracingLayer.build
+              _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+              client <- ZIO.service[Client]
+              _ <- client.batched(Request.get(URL.empty / "error"))
+              _ <- client.batched(Request.get(URL.empty / "boom"))
+            yield ()
+          logs <- ZTestLogger.logOutput
+        yield assertTrue(logs.filter(_.message() == "receive-http").map(_.logLevel) == Chunk(LogLevel.Info, LogLevel.Error))
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("sampled mode always keeps a slow successful request") {
+        for
+          _ <- withAccessLog(AccessLogSettings(AccessLogMode.Sampled, 0, 0.0)):
+            for
+              env <- tracingLayer.build
+              _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+              client <- ZIO.service[Client]
+              _ <- client.batched(Request.get(URL.empty / "ok"))
+            yield ()
+          logs <- ZTestLogger.logOutput
+        yield assertTrue(logs.count(_.message() == "receive-http") == 1)
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("off mode logs a failure and nothing else (nothing is slow here)") {
+        for
+          _ <- withAccessLog(AccessLogSettings(AccessLogMode.Off, 60000, 1.0)):
+            for
+              env <- tracingLayer.build
+              _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+              client <- ZIO.service[Client]
+              _ <- client.batched(Request.get(URL.empty / "ok"))
+              _ <- client.batched(Request.get(URL.empty / "error"))
+            yield ()
+          logs <- ZTestLogger.logOutput
+        yield assertTrue(logs.count(_.message() == "receive-http") == 1)
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("a request that is not logged does not contribute its auth context to a later request") {
+        for
+          _ <- withAccessLog(AccessLogSettings(AccessLogMode.Off, 60000, 1.0)):
+            for
+              env <- tracingLayer.build
+              _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+              client <- ZIO.service[Client]
+              _ <- client.batched(Request.get(URL.empty / "auth"))
+              _ <- client.batched(Request.get(URL.empty / "error"))
+            yield ()
+          logs <- ZTestLogger.logOutput
+          rendered <- ZIO.foreach(logs.filter(_.message() == "receive-http"))(l =>
+            ZIO.fromEither(l.call(authLogFormat.toJsonLogger).fromJson[AuthLoggedEntry]).mapError(new RuntimeException(_)),
+          )
+        yield assertTrue(rendered.flatMap(_.auth.flatMap(_.id)).isEmpty)
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("a successful send-http line is not built or written when DEBUG is off") {
+        for
+          _ <- ZIO.succeed(Observability.logsDebug = false)
+          _ <- TestClient.addRoutes(Routes(Method.GET / "ok" -> Handler.ok))
+          rawClient <- ZIO.service[Client]
+          tracing <- ZIO.service[Tracing]
+          client = rawClient @@ Observability.clientMiddleware(tracing)
+          _ <- Observability.asInternalCall(client.batched(Request.get(URL.empty / "ok"))).ensuring(ZIO.succeed(Observability.logsDebug = true))
+          logs <- ZTestLogger.logOutput
+        yield assertTrue(!logs.exists(_.message() == "send-http"))
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("a successful send-http call to an external peer is INFO even when DEBUG is hidden and the access log is off") {
+        for
+          levels <- withAccessLog(AccessLogSettings(AccessLogMode.Off, 60000, 0.0)):
+            for
+              _ <- ZIO.succeed(Observability.logsDebug = false)
+              _ <- TestClient.addRoutes(Routes(Method.GET / "ok" -> Handler.ok))
+              rawClient <- ZIO.service[Client]
+              tracing <- ZIO.service[Tracing]
+              client = rawClient @@ Observability.clientMiddleware(tracing)
+              _ <- client.batched(Request.get(URL.empty / "ok")).ensuring(ZIO.succeed(Observability.logsDebug = true))
+              logs <- ZTestLogger.logOutput
+            yield logs.filter(_.message() == "send-http").map(_.logLevel)
+        yield assertTrue(levels == Chunk(LogLevel.Info))
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("a peer listed as internal is DEBUG") {
+        for
+          _ <- ZIO.succeed(Observability.internalPeers.set(Set("unknown")))
+          _ <- ZIO.succeed(Observability.logsDebug = false)
+          _ <- TestClient.addRoutes(Routes(Method.GET / "ok" -> Handler.ok))
+          rawClient <- ZIO.service[Client]
+          tracing <- ZIO.service[Tracing]
+          client = rawClient @@ Observability.clientMiddleware(tracing)
+          _ <- client.batched(Request.get(URL.empty / "ok"))
+            .ensuring(ZIO.succeed { Observability.logsDebug = true; Observability.internalPeers.set(Set.empty) })
+          logs <- ZTestLogger.logOutput
+        yield assertTrue(!logs.exists(_.message() == "send-http"))
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      test("a slow successful send-http call is logged at INFO") {
+        for
+          entry <- withAccessLog(AccessLogSettings(AccessLogMode.Sampled, 0, 0.0)):
+            for
+              _ <- ZIO.succeed(Observability.logsDebug = false)
+              _ <- TestClient.addRoutes(Routes(Method.GET / "ok" -> Handler.ok))
+              rawClient <- ZIO.service[Client]
+              tracing <- ZIO.service[Tracing]
+              client = rawClient @@ Observability.clientMiddleware(tracing)
+              _ <- client.batched(Request.get(URL.empty / "ok")).ensuring(ZIO.succeed(Observability.logsDebug = true))
+              logs <- ZTestLogger.logOutput
+            yield logs.filter(_.message() == "send-http").map(_.logLevel)
+        yield assertTrue(entry == Chunk(LogLevel.Info))
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+    ),
     suite("client middleware")(
-      test("logs INFO for successful requests") {
+      test("logs a successful request at DEBUG") {
         for
           _ <- TestClient.addRoutes(Routes(Method.GET / "ok" -> Handler.ok))
           rawClient <- ZIO.service[Client]
           tracing <- ZIO.service[Tracing]
           client = rawClient @@ Observability.clientMiddleware(tracing)
-          response <- client.batched(Request.get(URL.empty / "ok"))
+          response <- Observability.asInternalCall(client.batched(Request.get(URL.empty / "ok")))
           logs <- ZTestLogger.logOutput
           sendLogs = logs.filter(_.message() == "send-http")
           rawLog <- ZIO.fromOption(sendLogs.headOption).orElseFail(new RuntimeException("Missing send-http log"))
@@ -577,7 +781,7 @@ object ObservabilitySpec extends ZIOSpecDefault:
         yield assertTrue(
           response.status == Status.Ok,
           sendLogs.length == 1,
-          entry.level == "INFO",
+          entry.level == "DEBUG",
           entry.message == "send-http",
           entry.http.response.code == 200,
         )
@@ -602,22 +806,27 @@ object ObservabilitySpec extends ZIOSpecDefault:
       }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
       // Where a pool is too small this gauge is what climbs: a request waiting for a connection is in
       // flight from its caller's side. It must also go back down, whatever way the request ends.
-      test("counts outbound requests in flight per peer and returns to zero afterwards") {
-        val peer = Set(MetricLabel("peer", "unknown"))
+      test("counts outbound requests in flight per peer and returns to where it was afterwards") {
+        // The gauge is process-wide and the util tests share one JVM, so any other spec's relative-URL
+        // request moves peer=unknown. An absolute URL to a host no other spec uses gives this test a
+        // gauge series of its own, which makes the absolute counts below exact.
+        val peer = Set(MetricLabel("peer", "in-flight-gauge.test:4711"))
         def inFlight = Metric.gauge("http_client_active_requests").tagged(peer).value.map(_.value)
         for
+          before <- inFlight
           release <- Promise.make[Nothing, Unit]
           _ <- TestClient.addRoutes(Routes(Method.GET / "held" -> handler(release.await.as(Response.ok))))
           rawClient <- ZIO.service[Client]
           tracing <- ZIO.service[Tracing]
           client = rawClient @@ Observability.clientMiddleware(tracing)
-          fibers <- ZIO.foreach(1 to 3)(_ => client.batched(Request.get(URL.empty / "held")).fork)
+          url <- ZIO.fromEither(URL.decode("http://in-flight-gauge.test:4711/held")).orDie
+          fibers <- ZIO.foreach(1 to 3)(_ => client.batched(Request.get(url)).fork)
           _ <- inFlight.repeatUntil(_ == 3.0).timeoutFail(new RuntimeException("never 3 in flight"))(5.seconds)
           during <- inFlight
           _ <- release.succeed(())
           _ <- ZIO.foreachDiscard(fibers)(_.join)
           after <- inFlight
-        yield assertTrue(during == 3.0, after == 0.0)
+        yield assertTrue(before == 0.0, during == 3.0, after == 0.0)
       }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging @@ TestAspect.withLiveClock,
       test("logs WARN for 5xx responses") {
         for
@@ -1024,4 +1233,4 @@ object ObservabilitySpec extends ZIOSpecDefault:
         )
       }.provide(ZTestLogger.default) @@ TestAspect.silentLogging,
     ),
-  )
+  ) @@ TestAspect.sequential @@ TestAspect.before(ZIO.succeed(Observability.logsDebug = true))

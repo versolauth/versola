@@ -1,6 +1,7 @@
 package versola.central.configuration.clients
 
 import versola.central.configuration.{PatchClientRedirectUris, PatchClientScope, PatchPermissions}
+import versola.util.theme.ThemeOverrides
 import versola.util.{Dpop, JsonWebKeySet, Patch, Secret}
 import zio.Duration
 import zio.http.URL
@@ -22,7 +23,6 @@ case class OAuthClientPatch(
     refreshTokenTtl: Option[Duration],
     theme: Option[String],
     authFlow: Option[Patch[AuthFlow]],
-    registrationFlow: Option[Patch[RegistrationFlow]],
     otpTemplateId: Option[String],
     frontChannelLogoutUri: Option[Patch[URL]],
     frontChannelLogoutSessionRequired: Option[Boolean],
@@ -46,6 +46,8 @@ case class OAuthClientPatch(
       * same terms as [[edgeSigningKey]]. */
     edgeClientCertificate: Option[Patch[Secret]],
     applicationType: Option[ApplicationType],
+    /** `Some(empty)` clears the overrides. */
+    themeOverrides: Option[ThemeOverrides],
 )
 
 object OAuthClientPatch:
@@ -58,7 +60,6 @@ object OAuthClientPatch:
     refreshTokenTtl = None,
     theme = None,
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = None,
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = None,
@@ -78,4 +79,5 @@ object OAuthClientPatch:
     edgeSigningKey = None,
     edgeClientCertificate = None,
     applicationType = None,
+    themeOverrides = None,
   )

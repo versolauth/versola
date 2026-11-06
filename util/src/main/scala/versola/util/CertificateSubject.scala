@@ -15,8 +15,10 @@ import zio.schema.*
 import java.io.StringReader
 import java.net.InetAddress
 import java.nio.charset.StandardCharsets
-import java.security.KeyPairGenerator
-import java.security.spec.ECGenParameterSpec
+import java.security.cert.X509Certificate
+import java.security.interfaces.{ECPublicKey, RSAPublicKey}
+import java.security.spec.{ECGenParameterSpec, ECParameterSpec}
+import java.security.{AlgorithmParameters, KeyPairGenerator, PublicKey}
 import java.util.Base64
 import javax.security.auth.x500.X500Principal
 import scala.jdk.CollectionConverters.*
@@ -42,6 +44,26 @@ case class CertificateSubject(
 ) derives JsonCodec, Schema:
 
   def principal: X500Principal = X500Principal(distinguishedName)
+
+  /** Whether `certificate` is for exactly this subject: the same distinguished name and the same alternative names, no
+    * name more and none fewer. The certificate-side counterpart of [[CertificateSubject.matches]], for deciding that a
+    * certificate presented today still says what the client is registered by.
+    *
+    * A subject that registers no alternative name at all may come back from step-ca with one DNS name, the common name:
+    * a JWK provisioner whose one-time token lists no `sans` falls back to the token's subject. `tolerateCommonNameDns`
+    * accepts exactly that (and nothing else) for such a subject, for the certificates a CA of that kind issues. */
+  def describes(certificate: X509Certificate, tolerateCommonNameDns: Boolean = false): Boolean =
+    val names = scala.util.Try(Option(certificate.getSubjectAlternativeNames).map(_.asScala.toList).getOrElse(Nil)).toOption
+    def of(tag: Int): Set[String] =
+      names.getOrElse(Nil).filter(_.get(0) == Integer.valueOf(tag)).map(_.get(1).toString).toSet
+    def ip(value: String): String = InetAddress.getByName(value).getHostAddress
+    names.isDefined && certificate.getSubjectX500Principal == principal &&
+    (of(GeneralName.dNSName) == dnsNames.toSet || (tolerateCommonNameDns && hasNoNames && of(GeneralName.dNSName) == Set(commonName))) &&
+    of(GeneralName.uniformResourceIdentifier) == uris.toSet &&
+    of(GeneralName.rfc822Name) == emailAddresses.toSet &&
+    of(GeneralName.iPAddress).map(ip) == ipAddresses.map(ip).toSet
+
+  private def hasNoNames: Boolean = dnsNames.isEmpty && uris.isEmpty && emailAddresses.isEmpty && ipAddresses.isEmpty
 
   private def alternativeNames: List[GeneralName] =
     dnsNames.map(GeneralName(GeneralName.dNSName, _)) ++
@@ -101,12 +123,49 @@ object CertificateSubject:
         names(GeneralName.uniformResourceIdentifier) == subject.uris.toSet &&
         names(GeneralName.rfc822Name) == subject.emailAddresses.toSet &&
         names(GeneralName.iPAddress) == expectedIps
-      (signedByItsKey, sameSubject, sans)
+      // A request with two `extensionRequest` attributes is read differently by different parsers (one
+      // takes the first, another the last): what this checks may not be what a CA then signs.
+      val oneExtensionRequest = csr.getAttributes(PKCSObjectIdentifiers.pkcs_9_at_extensionRequest).length <= 1
+      (signedByItsKey, sameSubject, sans && oneExtensionRequest)
     .toEither.left.map(error => s"the request is not a readable PKCS#10: ${error.getMessage}").flatMap:
       case (false, _, _) => Left("the request is not signed by the key it names")
       case (_, false, _) => Left("the request's subject is not the one the client is registered by")
       case (_, _, false) => Left("the request's alternative names are not the ones the client is registered by")
       case _ => Right(())
+
+  /** The public key `csrPem` asks a certificate for, when it is one worth issuing for: EC on P-256, or RSA of at least
+    * 2048 bits. Anything else (a weak RSA key, another curve, a key type this does not know) is refused with the reason,
+    * so a client cannot be handed a certificate no policy of ours would have admitted. */
+  def requestedKey(csrPem: String): Either[String, PublicKey] =
+    scala.util.Try(
+      JcaPKCS10CertificationRequest(PEMParser(StringReader(csrPem)).readObject().asInstanceOf[PKCS10CertificationRequest]).getPublicKey,
+    ).toEither.left.map(error => s"the request is not a readable PKCS#10: ${error.getMessage}").flatMap:
+      case key: ECPublicKey if isP256(key) => Right(key)
+      case _: ECPublicKey => Left("the request's key is an EC key on a curve other than P-256")
+      case key: RSAPublicKey if key.getModulus.bitLength >= MinRsaBits => Right(key)
+      case _: RSAPublicKey => Left(s"the request's RSA key is shorter than $MinRsaBits bits")
+      case other => Left(s"the request's key is ${other.getAlgorithm}, which is neither EC P-256 nor RSA")
+
+  /** Whether two public keys are the same key, by their key material and not their encoding: the same EC point on the
+    * same curve, or the same RSA modulus and exponent, however each was written down. */
+  def sameKey(a: PublicKey, b: PublicKey): Boolean =
+    (a, b) match
+      case (x: ECPublicKey, y: ECPublicKey) => x.getW == y.getW && sameCurve(x.getParams, y.getParams)
+      case (x: RSAPublicKey, y: RSAPublicKey) => x.getModulus == y.getModulus && x.getPublicExponent == y.getPublicExponent
+      case _ => false
+
+  private val MinRsaBits = 2048
+
+  private def p256: ECParameterSpec =
+    val parameters = AlgorithmParameters.getInstance("EC")
+    parameters.init(ECGenParameterSpec("secp256r1"))
+    parameters.getParameterSpec(classOf[ECParameterSpec])
+
+  /** The whole parameter set, not only the curve equation: explicit parameters with another generator are not P-256. */
+  private def sameCurve(a: ECParameterSpec, b: ECParameterSpec): Boolean =
+    a.getCurve == b.getCurve && a.getGenerator == b.getGenerator && a.getOrder == b.getOrder && a.getCofactor == b.getCofactor
+
+  private def isP256(key: ECPublicKey): Boolean = sameCurve(key.getParams, p256)
 
   /** The decoded common name of a subject -- `app,blue` for `CN=app\,blue`, which is what the
     * request carries and what a CA compares a token's subject against. */

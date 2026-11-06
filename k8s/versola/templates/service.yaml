@@ -28,5 +28,10 @@ spec:
       port: {{ $svc.mutualTlsPort }}
       targetPort: mtls
     {{- end }}
+    {{- if and (eq $name "central") $.Values.exposure.central.host }}
+    - name: enroll
+      port: {{ $svc.enrollmentPort }}
+      targetPort: enroll
+    {{- end }}
 {{- end }}
 {{- end }}

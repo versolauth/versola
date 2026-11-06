@@ -156,7 +156,6 @@ final class HttpAdminClient(
           refreshTokenTtl = spec.refreshTokenTtlSeconds,
           theme = defaultTheme,
           authFlow = spec.authFlow,
-          registrationFlow = spec.registrationFlow,
           otpTemplateId = defaultOtpTemplateId,
           frontChannelLogoutUri = None,
           frontChannelLogoutSessionRequired = false,
@@ -183,7 +182,6 @@ final class HttpAdminClient(
           refreshTokenTtl = spec.refreshTokenTtlSeconds,
           theme = defaultTheme,
           authFlow = spec.authFlow,
-          registrationFlow = spec.registrationFlow,
           otpTemplateId = defaultOtpTemplateId,
           frontChannelLogoutUri = None,
           frontChannelLogoutSessionRequired = false,
@@ -203,6 +201,7 @@ final class HttpAdminClient(
           requirePushedAuthorizationRequests = spec.fapi2,
           issueEdgeClientCertificate = spec.fapi2,
           enrollEdgeClientCertificate = false,
+          estEnrollment = false,
         ).toJson
     send(Method.POST, central("configuration", "clients", kindOf(spec)), Some(body)).flatMap: response =>
       if response.status == Status.Conflict then ZIO.none
@@ -220,8 +219,7 @@ final class HttpAdminClient(
     val scope = PatchSet(add = spec.allowedScopes, remove = current.scopes -- spec.allowedScopes)
     // A patchable field is cleared by an explicit `null` and left alone by omission, so the
     // blueprint's `None` has to be written rather than dropped -- a client that carried a
-    // registration flow or a logout URI the campaign no longer wants would otherwise keep it.
-    val registrationFlow = spec.registrationFlow.getOrElse(Json.Null)
+    // logout URI the campaign no longer wants would otherwise keep it.
     val backChannelLogoutUri = spec.backChannelLogoutUri.fold(Json.Null)(Json.Str(_))
     val body =
       if spec.publicClient then
@@ -235,7 +233,6 @@ final class HttpAdminClient(
           theme = Some(defaultTheme),
           otpTemplateId = Some(defaultOtpTemplateId),
           authFlow = spec.authFlow,
-          registrationFlow = registrationFlow,
           backChannelLogoutUri = backChannelLogoutUri,
           dpopSigningAlgs = Set.empty,
         ).toJson
@@ -250,7 +247,6 @@ final class HttpAdminClient(
           theme = Some(defaultTheme),
           otpTemplateId = Some(defaultOtpTemplateId),
           authFlow = spec.authFlow,
-          registrationFlow = registrationFlow,
           backChannelLogoutUri = backChannelLogoutUri,
           // Written on the update too, so a client a previous configuration left bound to a
           // certificate or narrowed to one proof algorithm converges on the blueprint instead of
@@ -295,6 +291,7 @@ final class HttpAdminClient(
       // credentials and never sees the caller's token, which would take the access token off the
       // one hop the campaign is meant to measure end to end.
       internal = false,
+      audienceRateLimits = Nil,
     )
     send(Method.POST, central("configuration", "resources"), Some(body.toJson)).flatMap: response =>
       convergeAfterFailedCreate("registerResource", response, listResources.map(_.get(spec.resourceId))): state =>
@@ -434,7 +431,13 @@ final class HttpAdminClient(
   override def upsertChallengeSettings(spec: ChallengeSettingsSpec): Task[Unit] =
     val body = UpsertChallengeSettingsBody(
       tenantId = tenantId,
-      allowedPrefixes = spec.allowedPrefixes,
+      phoneRegions = spec.phoneRegions.map(r => PhoneRegionBody(r.region, r.dialCode, r.length, r.regex, r.registration)),
+      emailRegistration = EmailRegistrationBody(
+        mode = spec.emailRegistration.mode,
+        domains = spec.emailRegistration.domains,
+        blockSubaddress = spec.emailRegistration.blockSubaddress,
+      ),
+      defaultRoles = spec.defaultRoles,
       submissionLimits = SubmissionLimitsBody(
         otpRequest = Nil,
         otpSubmit = Nil,
@@ -772,7 +775,6 @@ object HttpAdminClient:
       refreshTokenTtl: Option[Int],
       theme: String,
       authFlow: Json,
-      registrationFlow: Option[Json],
       otpTemplateId: String,
       frontChannelLogoutUri: Option[String],
       frontChannelLogoutSessionRequired: Boolean,
@@ -791,6 +793,7 @@ object HttpAdminClient:
       // certificate mode it did not name.
       issueEdgeClientCertificate: Boolean,
       enrollEdgeClientCertificate: Boolean,
+      estEnrollment: Boolean,
   ) derives JsonEncoder
 
   private case class CreateNativeClientBody(
@@ -803,7 +806,6 @@ object HttpAdminClient:
       refreshTokenTtl: Option[Int],
       theme: String,
       authFlow: Json,
-      registrationFlow: Option[Json],
       otpTemplateId: String,
       frontChannelLogoutUri: Option[String],
       frontChannelLogoutSessionRequired: Boolean,
@@ -828,7 +830,6 @@ object HttpAdminClient:
       theme: Option[String],
       otpTemplateId: Option[String],
       authFlow: Json,
-      registrationFlow: Json,
       backChannelLogoutUri: Json,
       certificateBoundAccessTokens: Boolean,
       dpopSigningAlgs: Set[String],
@@ -847,7 +848,6 @@ object HttpAdminClient:
       theme: Option[String],
       otpTemplateId: Option[String],
       authFlow: Json,
-      registrationFlow: Json,
       backChannelLogoutUri: Json,
       dpopSigningAlgs: Set[String],
   ) derives JsonEncoder
@@ -893,6 +893,7 @@ object HttpAdminClient:
       audience: List[String],
       endpoints: List[ResourceEndpointBody],
       internal: Boolean,
+      audienceRateLimits: List[Json],
   ) derives JsonEncoder
 
   private case class PatchAudience(add: Set[String], remove: Set[String]) derives JsonEncoder
@@ -987,9 +988,17 @@ object HttpAdminClient:
       userVerification: String,
   ) derives JsonEncoder
 
+  private case class PhoneRegionBody(region: String, dialCode: String, length: Int, regex: String, registration: Boolean)
+    derives JsonEncoder
+
+  private case class EmailRegistrationBody(mode: String, domains: List[String], blockSubaddress: Boolean)
+    derives JsonEncoder
+
   private case class UpsertChallengeSettingsBody(
       tenantId: String,
-      allowedPrefixes: List[String],
+      phoneRegions: List[PhoneRegionBody],
+      emailRegistration: EmailRegistrationBody,
+      defaultRoles: List[String],
       submissionLimits: SubmissionLimitsBody,
       otpLength: Int,
       otpResendAfter: Int,

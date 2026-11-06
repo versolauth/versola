@@ -37,7 +37,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
   private val startedAt = Instant.parse("2026-09-10T18:00:00Z")
 
   private val campaignRun = CampaignRun(
-    phases = List(RunPhase("steady", 36_000_000L, Some(1.0), None, None)),
+    phases = List(RunPhase("steady", 36_000_000L, Some(1.0), None, None, measured = true)),
     population = Map("registered" -> 10_000_000L),
     shardCount = 8,
     shardEpoch = 4L,

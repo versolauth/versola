@@ -59,14 +59,14 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
       id: ClientId,
       secret: Option[String],
       accessTokenTtl: Duration,
-      permissions: Set[String] = Set.empty,
-      requireSignedRequestObject: Boolean = false,
-      requirePushedAuthorizationRequests: Boolean = false,
-      edgeSigningKey: Option[String] = None,
-      edgeClientCertificate: Option[String] = None,
-      applicationType: Option[String] = None,
-      redirectUris: Set[String] = Set.empty,
-      edgeCertificateSubject: Option[versola.util.CertificateSubject] = None,
+      permissions: Set[String],
+      requireSignedRequestObject: Boolean,
+      requirePushedAuthorizationRequests: Boolean,
+      edgeSigningKey: Option[String],
+      edgeClientCertificate: Option[String],
+      applicationType: String,
+      redirectUris: Set[String],
+      edgeCertificateSubject: Option[versola.util.CertificateSubject],
   ) derives JsonCodec
 
   private case class SyncResponseMirror(clients: Vector[SyncClientRecordMirror]) derives JsonCodec
@@ -97,6 +97,11 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
             requireSignedRequestObject = true,
             requirePushedAuthorizationRequests = true,
             edgeSigningKey = Some(keyCiphertext),
+            permissions = Set.empty,
+            edgeClientCertificate = None,
+            applicationType = "web",
+            redirectUris = Set.empty,
+            edgeCertificateSubject = None,
           ),
         ),
       ).toJson
@@ -126,7 +131,19 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
     test("keeps a client that has a signing key and no secret at all") {
       val keyCiphertext = Base64.urlEncode(Array.fill(32)(42.toByte))
       val body = SyncResponseMirror(
-        Vector(SyncClientRecordMirror(ClientId("key-only"), None, 15.minutes, edgeSigningKey = Some(keyCiphertext))),
+        Vector(SyncClientRecordMirror(
+          ClientId("key-only"),
+          None,
+          15.minutes,
+          edgeSigningKey = Some(keyCiphertext),
+          permissions = Set.empty,
+          requireSignedRequestObject = false,
+          requirePushedAuthorizationRequests = false,
+          edgeClientCertificate = None,
+          applicationType = "web",
+          redirectUris = Set.empty,
+          edgeCertificateSubject = None,
+        )),
       ).toJson
       for
         _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)
@@ -146,7 +163,19 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
     // still what authorizes its service tokens at the proxy.
     test("reports the permissions of a client edge holds no credential for") {
       val body = SyncResponseMirror(
-        Vector(SyncClientRecordMirror(ClientId("utils"), None, 15.minutes, permissions = Set("oauth:read", "service:operate"))),
+        Vector(SyncClientRecordMirror(
+          ClientId("utils"),
+          None,
+          15.minutes,
+          permissions = Set("oauth:read", "service:operate"),
+          requireSignedRequestObject = false,
+          requirePushedAuthorizationRequests = false,
+          edgeSigningKey = None,
+          edgeClientCertificate = None,
+          applicationType = "web",
+          redirectUris = Set.empty,
+          edgeCertificateSubject = None,
+        )),
       ).toJson
       for
         _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)
@@ -162,7 +191,19 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
     test("fails the whole sync on an unusable key rather than serving a doubtful snapshot") {
       val keyCiphertext = Base64.urlEncode(Array.fill(32)(43.toByte))
       val body = SyncResponseMirror(
-        Vector(SyncClientRecordMirror(ClientId("broken"), None, 15.minutes, edgeSigningKey = Some(keyCiphertext))),
+        Vector(SyncClientRecordMirror(
+          ClientId("broken"),
+          None,
+          15.minutes,
+          edgeSigningKey = Some(keyCiphertext),
+          permissions = Set.empty,
+          requireSignedRequestObject = false,
+          requirePushedAuthorizationRequests = false,
+          edgeClientCertificate = None,
+          applicationType = "web",
+          redirectUris = Set.empty,
+          edgeCertificateSubject = None,
+        )),
       ).toJson
       for
         _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)
@@ -195,6 +236,12 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
             15.minutes,
             edgeSigningKey = Some(keyCiphertext),
             edgeClientCertificate = Some(certificateCiphertext),
+            permissions = Set.empty,
+            requireSignedRequestObject = false,
+            requirePushedAuthorizationRequests = false,
+            applicationType = "web",
+            redirectUris = Set.empty,
+            edgeCertificateSubject = None,
           ),
         ),
       ).toJson
@@ -226,7 +273,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
       )
     },
     // #420: what decides whether the native endpoints serve a client, and where they may send it.
-    test("carries a native client's application type and redirect URIs, and reads their absence as web") {
+    test("carries a native client's application type and redirect URIs, and reads an application type of web as not native") {
       val certificateCiphertext = Base64.urlEncode(Array.fill(32)(54.toByte))
       val body = SyncResponseMirror(
         Vector(
@@ -235,10 +282,27 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
             None,
             15.minutes,
             edgeClientCertificate = Some(certificateCiphertext),
-            applicationType = Some("native"),
+            applicationType = "native",
             redirectUris = Set("https://app.example/cb"),
+            permissions = Set.empty,
+            requireSignedRequestObject = false,
+            requirePushedAuthorizationRequests = false,
+            edgeSigningKey = None,
+            edgeCertificateSubject = None,
           ),
-          SyncClientRecordMirror(ClientId("legacy"), None, 15.minutes, edgeClientCertificate = Some(certificateCiphertext)),
+          SyncClientRecordMirror(
+            ClientId("legacy"),
+            None,
+            15.minutes,
+            edgeClientCertificate = Some(certificateCiphertext),
+            permissions = Set.empty,
+            requireSignedRequestObject = false,
+            requirePushedAuthorizationRequests = false,
+            edgeSigningKey = None,
+            applicationType = "web",
+            redirectUris = Set.empty,
+            edgeCertificateSubject = None,
+          ),
         ),
       ).toJson
       for
@@ -267,6 +331,13 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
             None,
             15.minutes,
             edgeClientCertificate = Some(certificateCiphertext),
+            permissions = Set.empty,
+            requireSignedRequestObject = false,
+            requirePushedAuthorizationRequests = false,
+            edgeSigningKey = None,
+            applicationType = "web",
+            redirectUris = Set.empty,
+            edgeCertificateSubject = None,
           ),
         ),
       ).toJson
@@ -294,8 +365,32 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
       val secretACiphertext = Base64.urlEncode(Array.fill(32)(30.toByte))
       val body = SyncResponseMirror(
         Vector(
-          SyncClientRecordMirror(ClientId("with-secret"), Some(secretACiphertext), 15.minutes, Set("oauth:read")),
-          SyncClientRecordMirror(ClientId("no-secret"), None, 30.minutes),
+          SyncClientRecordMirror(
+            ClientId("with-secret"),
+            Some(secretACiphertext),
+            15.minutes,
+            Set("oauth:read"),
+            requireSignedRequestObject = false,
+            requirePushedAuthorizationRequests = false,
+            edgeSigningKey = None,
+            edgeClientCertificate = None,
+            applicationType = "web",
+            redirectUris = Set.empty,
+            edgeCertificateSubject = None,
+          ),
+          SyncClientRecordMirror(
+            ClientId("no-secret"),
+            None,
+            30.minutes,
+            permissions = Set.empty,
+            requireSignedRequestObject = false,
+            requirePushedAuthorizationRequests = false,
+            edgeSigningKey = None,
+            edgeClientCertificate = None,
+            applicationType = "web",
+            redirectUris = Set.empty,
+            edgeCertificateSubject = None,
+          ),
         ),
       ).toJson
       for
@@ -317,7 +412,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
         request <- seen.get.someOrFail(RuntimeException("no request captured"))
       yield assertTrue(
         request.method == Method.GET,
-        request.url.path.encode.contains("configuration/clients/sync"),
+        request.url.path.encode.contains("edge/sync/clients"),
         request.header(Header.Authorization).contains(Header.Authorization.Bearer(syncToken)),
         clients.keySet == Set(ClientId("with-secret")),
         clients(ClientId("with-secret")).credential == ClientCredential.ClientSecret(Secret(decryptedSecretA)),
@@ -344,6 +439,13 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
           None,
           15.minutes,
           edgeCertificateSubject = Some(subject),
+          permissions = Set.empty,
+          requireSignedRequestObject = false,
+          requirePushedAuthorizationRequests = false,
+          edgeSigningKey = None,
+          edgeClientCertificate = None,
+          applicationType = "web",
+          redirectUris = Set.empty,
         ))).toJson
         for
           _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)
@@ -359,8 +461,32 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
           versola.util.CertificateSubject("CN=mobile-app", "mobile-app", dnsNames = Nil, uris = Nil, emailAddresses = Nil, ipAddresses = Nil)
         val secretCiphertext = Base64.urlEncode(Array.fill(32)(40.toByte))
         val body = SyncResponseMirror(Vector(
-          SyncClientRecordMirror(ClientId("enrolled"), None, 15.minutes, edgeCertificateSubject = Some(subject)),
-          SyncClientRecordMirror(ClientId("with-secret"), Some(secretCiphertext), 15.minutes),
+          SyncClientRecordMirror(
+            ClientId("enrolled"),
+            None,
+            15.minutes,
+            edgeCertificateSubject = Some(subject),
+            permissions = Set.empty,
+            requireSignedRequestObject = false,
+            requirePushedAuthorizationRequests = false,
+            edgeSigningKey = None,
+            edgeClientCertificate = None,
+            applicationType = "web",
+            redirectUris = Set.empty,
+          ),
+          SyncClientRecordMirror(
+            ClientId("with-secret"),
+            Some(secretCiphertext),
+            15.minutes,
+            permissions = Set.empty,
+            requireSignedRequestObject = false,
+            requirePushedAuthorizationRequests = false,
+            edgeSigningKey = None,
+            edgeClientCertificate = None,
+            applicationType = "web",
+            redirectUris = Set.empty,
+            edgeCertificateSubject = None,
+          ),
         )).toJson
         for
           _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)

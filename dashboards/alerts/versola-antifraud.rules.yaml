@@ -1,0 +1,160 @@
+# Alert rules for the antifraud module of auth. Prometheus rule-group format: loaded as it is by Prometheus
+# (`rule_files`) and by VictoriaMetrics' vmalert (`-rule`). See dashboards/alerts/README.md.
+#
+# Every rule sums by namespace: one deployment, one alert. The counters here are created by the first
+# increment, so a failure that happens once on a fresh pod is not seen by increase(); a failure that
+# repeats is. The board versola-antifraud (dashboards/grafana) draws each of these signals.
+groups:
+  - name: versola-antifraud
+    rules:
+      - alert: AntifraudPartitionMaintenanceFailed
+        expr: sum by (namespace) (increase(antifraud_partition_maintenance_failed_total[5m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Antifraud event partitions are not being maintained in {{ $labels.namespace }}"
+          description: "Creating or dropping the daily partitions of the antifraud event log has failed for 15 minutes (it is retried every minute). When the days ahead run out the events are written to the default partition (af_event_default) and moved into the day's partition once it exists. Check antifraud_partition_days_ahead and the auth log: 'could not maintain the antifraud event partitions'."
+
+      - alert: AntifraudPartitionsRunningOut
+        expr: min by (namespace) (antifraud_partition_days_ahead) < 2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Antifraud event log has fewer than 2 days of partitions ahead in {{ $labels.namespace }}"
+          description: "Only {{ $value }} days of the antifraud event log have a partition. At 0 the events of the day go to the default partition (af_event_default) until the day's partition is made. Fix the maintenance failure (see AntifraudPartitionMaintenanceFailed and AntifraudPartitionOwnerMismatch)."
+
+      - alert: AntifraudPartitionOwnerMismatch
+        expr: max by (namespace) (antifraud_partition_owner_mismatch) == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The antifraud service does not own the event log table in {{ $labels.namespace }}"
+          description: "The role auth connects as neither owns af_event nor is a member of its owner, so no partition is created or dropped (checked every six hours). The auth log has the statement to run: ALTER TABLE af_event OWNER TO <role>."
+
+      - alert: AntifraudEventsMovedFromDefault
+        expr: sum by (namespace) (increase(antifraud_events_moved_from_default_total[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Antifraud events were written to the default partition in {{ $labels.namespace }}"
+          description: "A day ran without its partition: its events were held in af_event_default and have been moved into the partition now. Find why the maintenance was late (AntifraudPartitionMaintenanceFailed, AntifraudPartitionOwnerMismatch)."
+
+      - alert: AntifraudTuningRefreshFailed
+        expr: sum by (namespace) (increase(antifraud_tuning_refresh_failed_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Antifraud tuning cannot be read in {{ $labels.namespace }}"
+          description: "The stored antifraud settings could not be read for 5 minutes. The instances go on with the settings they have (fail open), so a change of mode or thresholds does not arrive. Check the database and the auth log."
+
+      - alert: AntifraudListRefreshFailed
+        expr: sum by (namespace) (increase(antifraud_list_refresh_failed_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Antifraud lists cannot be read in {{ $labels.namespace }}"
+          description: "The antifraud lists could not be read for 5 minutes. The instances keep the previous lists (fail open), so new entries are not enforced and removed ones still are. Check the database and the auth log."
+
+      - alert: AntifraudListsStale
+        expr: time() - min by (namespace) (antifraud_lists_refreshed_timestamp_seconds) > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Antifraud lists in {{ $labels.namespace }} were last read more than 10 minutes ago"
+          description: "The oldest pod enforces lists that are {{ $value | humanizeDuration }} old. A refresh that hangs moves no failure counter, so this is the alert that catches it. Normal age is under a minute."
+
+      - alert: AntifraudTuningStale
+        expr: time() - min by (namespace) (antifraud_tuning_refreshed_timestamp_seconds) > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Antifraud tuning in {{ $labels.namespace }} was last read more than 10 minutes ago"
+          description: "The oldest pod works with settings that are {{ $value | humanizeDuration }} old, so it ignores a switch from shadow to enforce. A refresh that hangs moves no failure counter. Normal age is a few seconds."
+
+      - alert: AntifraudStatsRollupFailed
+        expr: sum by (namespace) (increase(antifraud_stats_rollup_failed_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Antifraud statistics are not being rolled up in {{ $labels.namespace }}"
+          description: "Rolling the event log up into the per-range statistics has failed for 10 minutes. The SMS detectors and reports read stale numbers; the decisions themselves are not affected. Check the auth log: 'could not roll up the antifraud statistics'."
+
+      - alert: AntifraudDetectorFailed
+        expr: sum by (namespace, kind) (increase(antifraud_detector_failed_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Antifraud detector {{ $labels.kind }} fails in {{ $labels.namespace }}"
+          description: "The detector {{ $labels.kind }} has failed for 5 minutes, so it proposes no list entries. Nothing is enforced differently. Check the auth log: 'antifraud detector ... failed'."
+
+      - alert: AntifraudProposalHousekeepingFailed
+        expr: sum by (namespace) (increase(antifraud_proposal_housekeeping_failed_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Old antifraud proposals are not being removed in {{ $labels.namespace }}"
+          description: "Expiring or deleting antifraud proposals has failed for 5 minutes. Proposals pile up; nothing is enforced differently. Check the auth log."
+
+      - alert: AntifraudVelocityUntracked
+        expr: sum by (namespace) (increase(antifraud_velocity_untracked_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Antifraud velocity counters are full in {{ $labels.namespace }}"
+          description: "Requests whose key could not be admitted to a full velocity table were not counted for 5 minutes, so no velocity limit applied to them. After the sampled eviction this should be rare: a flood of distinct keys far above velocity.max-keys, or max-keys set too low."
+
+      - alert: AntifraudSmsBudgetFull
+        expr: sum by (namespace) (increase(antifraud_sms_budget_full_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Antifraud SMS budget table is full in {{ $labels.namespace }}"
+          description: "Codes to new number ranges went out unchecked for 5 minutes because the budget already tracks the most ranges it can. The budget no longer protects the tenant whose attacker filled it. Check the SMS panels of the antifraud board."
+
+      - alert: AntifraudEventsDropped
+        expr: sum by (namespace, reason) (increase(antifraud_events_dropped_total{reason=~"write_failed|queue_full"}[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Antifraud events are being lost in {{ $labels.namespace }} ({{ $labels.reason }})"
+          description: "Antifraud events were dropped for 10 minutes: write_failed is a database that cannot take the writes (or has no partition), queue_full is a queue the writer cannot empty. The statistics are a lower estimate meanwhile; decisions are not affected."
+
+      - alert: AntifraudVelocityFailed
+        expr: sum by (namespace, what) (increase(antifraud_velocity_failed_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Antifraud velocity counters fail to {{ $labels.what }} in {{ $labels.namespace }}"
+          description: "The velocity counters could not {{ $labels.what }} for 10 minutes (flush, load or prune). The counts stay per instance, so a limit is looser by the number of instances. Check the database and the auth log."
+
+      - alert: AntifraudEvaluationFailed
+        expr: sum by (namespace, reason) (increase(antifraud_evaluation_failed_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Antifraud evaluations are failing in {{ $labels.namespace }} ({{ $labels.reason }})"
+          description: "Evaluations gave no decision for 5 minutes (timeout, error or tuning_unavailable) and failure-action was applied instead. Every such request skipped the antifraud checks, or was challenged if failure-action is challenge."
+
+      - alert: AntifraudCountersResetFailed
+        expr: sum by (namespace, what) (increase(antifraud_counters_reset_failed_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "An antifraud counter reset did not complete in {{ $labels.namespace }} ({{ $labels.what }})"
+          description: "A reset of the velocity counters or the SMS budget failed at {{ $labels.what }} (delete: the stored rows, poll: an instance reading the resets). That instance keeps counting. Repeat the reset after checking the database."

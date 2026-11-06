@@ -75,6 +75,43 @@ object RoleApiSpec extends CentralApiSpec:
       yield assertTrue(record.flatMap(_.bool("active")).contains(true))
         .label("a role that is created inactive could be assigned yet grant nothing, with no hint why")
     },
+    test("a role can be created inactive") {
+      for
+        central <- api
+        roleId <- CentralApi.id("e2e-role")
+        created <- central.post(path, Json.Obj(Fixtures.role(roleId).fields :+ ("active" -> Json.Bool(false))))
+        record <- read(central, roleId, expect = _.bool("active").contains(false))
+        _ <- cleanup(central, roleId)
+      yield assertTrue(created.status == Status.Created) &&
+        assertTrue(record.flatMap(_.bool("active")).contains(false))
+          .label("a role prepared ahead of its rollout is listed, assignable and grants nothing yet")
+    },
+    test("an update switches a role off and on again") {
+      for
+        central <- api
+        roleId <- CentralApi.id("e2e-role")
+        _ <- central.post(path, Fixtures.role(roleId))
+        off <- central.put(path, Json.Obj(Fixtures.roleUpdate(roleId).fields :+ ("active" -> Json.Bool(false))))
+        inactive <- read(central, roleId, expect = _.bool("active").contains(false))
+        on <- central.put(path, Json.Obj(Fixtures.roleUpdate(roleId).fields :+ ("active" -> Json.Bool(true))))
+        active <- read(central, roleId, expect = _.bool("active").contains(true))
+        _ <- cleanup(central, roleId)
+      yield assertTrue(off.status == Status.NoContent && on.status == Status.NoContent) &&
+        assertTrue(inactive.flatMap(_.bool("active")).contains(false)) &&
+        assertTrue(active.flatMap(_.bool("active")).contains(true))
+    },
+    test("an update that does not name active leaves an inactive role inactive") {
+      for
+        central <- api
+        roleId <- CentralApi.id("e2e-role")
+        _ <- central.post(path, Json.Obj(Fixtures.role(roleId).fields :+ ("active" -> Json.Bool(false))))
+        _ <- read(central, roleId, expect = _.bool("active").contains(false))
+        _ <- central.put(path, Fixtures.roleUpdate(roleId, description = Fixtures.patchText(add = Map("ru" -> "Агент"))))
+        record <- read(central, roleId, expect = _.obj("description").exists(_.has("ru")))
+        _ <- cleanup(central, roleId)
+      yield assertTrue(record.flatMap(_.bool("active")).contains(false))
+        .label("patch semantics: a member the body does not name is not touched")
+    },
     test("a role is stored with the permissions it grants") {
       for
         central <- api
@@ -112,6 +149,21 @@ object RoleApiSpec extends CentralApiSpec:
         _ <- central.delete(permissions, "tenantId" -> Fixtures.suiteTenant, "permission" -> first)
         _ <- central.delete(permissions, "tenantId" -> Fixtures.suiteTenant, "permission" -> second)
       yield assertTrue(record.map(_.strings("permissions")).contains(Set(first, second)))
+    },
+    test("a role granting a permission with a dot is refused on create and on update") {
+      for
+        central <- api
+        roleId <- CentralApi.id("e2e-role")
+        created <- central.post(path, Fixtures.role(roleId, permissions = Set("probe.orders")))
+        updated <- central.put(path, Fixtures.roleUpdate(roleId, permissions = Fixtures.patch(add = Set("probe.orders"))))
+        removed <- central.put(path, Fixtures.roleUpdate(roleId, permissions = Fixtures.patch(remove = Set("probe.orders"))))
+        record <- central.get(path, "tenantId" -> Fixtures.suiteTenant)
+      yield assertTrue(
+        created.status == Status.BadRequest,
+        updated.status == Status.BadRequest,
+        removed.status == Status.BadRequest,
+      ) && assertTrue(!record.body.contains(roleId))
+        .label("a dotted ID cannot be stored any more, so no role may reference one")
     },
     test("a role id outside the documented alphabet is refused") {
       for

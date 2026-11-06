@@ -8,7 +8,7 @@ const alphaClient = {
   clientName: { en: 'Alpha Web' },
   redirectUris: ['https://alpha.example/callback'],
   scope: ['openid'],
-  permissions: ['alpha.read'],
+  permissions: ['alpha:read'],
   secretRotation: false,
   // Required and NaN-checked by the Access Token TTL input - omitting it leaves the field's
   // native "required" constraint failing on an empty value, which silently swallows every
@@ -30,7 +30,7 @@ const serviceClient = {
   clientName: { en: 'Service Client' },
   redirectUris: ['https://service.example/callback'],
   scope: ['email'],
-  permissions: ['alpha.write'],
+  permissions: ['alpha:write'],
   secretRotation: false,
 };
 
@@ -91,7 +91,7 @@ const tenantsOn = (profile: Profile) => (profile === 'standard' ? standardTenant
 
 const mtlsTerminatingSettings = {
   tenantId: 'tenant-alpha',
-  allowedPrefixes: [],
+  phoneRegions: [],
   passwordRegex: null,
   submissionLimits: { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 },
   otpLength: 6,
@@ -106,7 +106,7 @@ function clientCard(page: Page, text: string) {
 
 /** A client's page: read-only, with an Edit button per group of settings. */
 async function openClientPage(page: Page, id: string) {
-  await page.getByRole('button', { name: `Open client ${id}`, exact: true }).click();
+  await page.getByRole('button', { name: new RegExp(`^Open client (.* )?${id}$`) }).click();
   await expect(page.locator('versola-clients-list .view-title')).toBeVisible();
 }
 
@@ -115,7 +115,6 @@ const SECTION_TITLES: Record<string, string> = {
   'Token lifetimes': 'Tokens',
   'How users sign in': 'Sign-in',
   'Scopes and permissions': 'Scopes',
-  'Registration and consent': 'Registration and consent',
   'Branding and logout': 'Branding and logout',
   'Client credential and binding': 'Type',
   'Request integrity': 'Type',
@@ -197,8 +196,8 @@ test('renders client details and filters by client id', async ({ page }) => {
       scopes: { 'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [] }, { scope: 'email', description: { en: 'Email scope' }, claims: [] }] },
       permissions: {
         'tenant-alpha': [
-          { permission: 'alpha.read', description: { en: 'Read alpha resources' }, endpointIds: [101] },
-          { permission: 'alpha.write', description: { en: 'Write alpha resources' }, endpointIds: [101] },
+          { permission: 'alpha:read', description: { en: 'Read alpha resources' }, endpointIds: [101] },
+          { permission: 'alpha:write', description: { en: 'Write alpha resources' }, endpointIds: [101] },
         ],
       },
     },
@@ -221,7 +220,7 @@ test('renders client details and filters by client id', async ({ page }) => {
   // A web client has scopes; permissions are a service client's alone, so the page does not list any.
   await expect(alpha.getByRole('region', { name: 'Scopes' })).toBeVisible();
   await expect(alpha.getByRole('region', { name: 'Permissions' })).toHaveCount(0);
-  await expect(alpha).not.toContainText('alpha.read');
+  await expect(alpha).not.toContainText('alpha:read');
   await expect(alpha).toContainText('1h');
   await expect(alpha.getByRole('region', { name: 'Sign-in' })).toBeVisible();
   await expect(alpha.getByRole('region', { name: 'Branding and logout' })).toContainText('Forms theme');
@@ -346,6 +345,7 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     mtlsAuth: null,
     certificateBoundAccessTokens: false,
     jwks: null,
+    estEnrollment: false,
   });
   // A service client is registered at its own endpoint, which has no redirect URIs, flows,
   // branding, PAR or JAR to send: the endpoint records what kind it is.
@@ -717,6 +717,7 @@ for (const profile of ['fapi2', 'standard'] as const) {
       // central issues it; only a native app's edge enrols for its own.
       issueEdgeClientCertificate: true,
       enrollEdgeClientCertificate: false,
+      estEnrollment: false,
       mtlsAuth: null,
       jwks: null,
       requirePushedAuthorizationRequests: true,
@@ -1019,18 +1020,10 @@ test('shows OTP settings for OTP factors and locks channel for phone credentials
   await expect(page.getByText('OTP Settings', { exact: true })).toBeVisible();
 });
 
-test('configures a registration flow and sends it when creating a client', async ({ page }) => {
+test('sends no registration flow: self-registration is a tenant setting, not a client one', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,
-    state: {
-      clients: { 'tenant-alpha': [alphaClient] },
-      roles: {
-        'tenant-alpha': [
-          { id: 'user', description: { en: 'User' }, permissions: [], active: true },
-          { id: 'alpha-admin', description: { en: 'Alpha admin' }, permissions: ['alpha.read'], active: true },
-        ],
-      },
-    },
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
   await startCreate(page);
@@ -1039,37 +1032,24 @@ test('configures a registration flow and sends it when creating a client', async
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
   await continueToThirdStep(page);
 
-  // Creation asks only whether users may sign themselves up; the credential they verify follows
-  // from the first screen, and the steps and roles are refined on the edit page.
-  await expect(checkRow(page, 'Let users sign themselves up')).toHaveAttribute('aria-pressed', 'false');
-  await checkRow(page, 'Let users sign themselves up').click();
-  await expect(checkRow(page, 'Let users sign themselves up'))
-    .toContainText('The phone is the credential whose ownership is verified');
+  await expect(page.getByText('Let users sign themselves up')).toHaveCount(0);
+  await expect(page.locator('versola-client-form .plan-line').filter({ hasText: 'register' })).toHaveCount(0);
+  await expect(page.locator('versola-client-form .wizard-warn').filter({ hasText: 'register' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Email', exact: true }).click();
+  await page.getByRole('button', { name: 'Phone', exact: true }).click();
 
   await continueToReview(page);
-  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Self-service sign-up' }))
-    .toContainText('on');
+  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'sign-up' })).toHaveCount(0);
   await submitCreate(page);
 
-  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
-    registrationFlow: {
-      credential: 'phone',
-      steps: [{ type: 'otp' }],
-      roleIds: ['user'],
-    },
-  });
+  expect((await findClientWrite(api.requests, 'POST')).body).not.toHaveProperty('registrationFlow');
 
-  await openEditSection(page, 'Registration and consent');
-  await page.getByLabel('Challenge', { exact: true }).selectOption('setPassword');
-  await page.getByRole('group', { name: 'Assigned roles' }).getByRole('checkbox', { name: 'alpha-admin', exact: true }).check();
+  await openEditSection(page, 'Ownership');
+  await expect(page.getByText('Assigned roles', { exact: false })).toHaveCount(0);
+  await expect(page.getByLabel('Challenge', { exact: true })).toHaveCount(0);
   await saveEdit(page);
 
-  expect((await findClientWrite(api.requests, 'PUT')).body).toMatchObject({
-    registrationFlow: {
-      steps: [{ type: 'otp' }, { type: 'setPassword' }],
-      roleIds: ['user', 'alpha-admin'],
-    },
-  });
+  expect((await findClientWrite(api.requests, 'PUT')).body).not.toHaveProperty('registrationFlow');
 });
 
 test('configures a consent flow and sends it when creating a client', async ({ page }) => {
@@ -1089,7 +1069,7 @@ test('configures a consent flow and sends it when creating a client', async ({ p
   await expect(page.getByLabel('Reuse the grant for')).toHaveCount(0);
   await expect(page.getByLabel('Logo URI')).toHaveCount(0);
 
-  await page.getByRole('button', { name: 'Ask for consent', exact: true }).click();
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
   await checkRow(page, 'Let the user grant part of it').click();
   await page.getByLabel('Reuse the grant for').selectOption('30');
 
@@ -1106,7 +1086,7 @@ test('configures a consent flow and sends it when creating a client', async ({ p
     policyUri: 'https://consenting.example/privacy',
     tosUri: 'https://consenting.example/terms',
   });
-  expect(body.consentFlow).toEqual({ allowPartial: true, rememberDuration: 30 * 86400 });
+  expect(body.consentFlow).toEqual({ allowPartial: true, rememberDuration: 30 * 86400, requiredScopes: [], offlineAccessOptional: false });
 });
 
 test('reads and updates a finite consent duration as seconds', async ({ page }) => {
@@ -1123,7 +1103,7 @@ test('reads and updates a finite consent duration as seconds', async ({ page }) 
   });
 
   await openClientPage(page, 'alpha-web');
-  await openEditSection(page, 'Registration and consent');
+  await openEditSection(page, 'Ownership');
   await expect(page.getByLabel('Remember', { exact: true })).toHaveValue('days');
   await expect(page.getByLabel('Remember duration in days')).toHaveValue('14');
 
@@ -1131,7 +1111,83 @@ test('reads and updates a finite consent duration as seconds', async ({ page }) 
   await saveEdit(page);
 
   expect((await findClientWrite(api.requests, 'PUT')).body.consentFlow)
-    .toEqual({ allowPartial: true, rememberDuration: 30 * 86400 });
+    .toEqual({ allowPartial: true, rememberDuration: 30 * 86400, requiredScopes: [], offlineAccessOptional: false });
+});
+
+test('marks required consent scopes and sends them with the flow', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: {
+        'tenant-alpha': [{
+          ...alphaClient,
+          scope: ['openid', 'phone', 'profile', 'offline_access'],
+          consentFlow: { allowPartial: true, rememberDuration: 14 * 86400, requiredScopes: ['phone'] },
+        }],
+      },
+    },
+  });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Ownership');
+
+  const required = page.getByRole('group', { name: 'Required scopes' });
+  // openid and offline_access are always required, so they are not offered as a choice.
+  await expect(required.getByRole('button')).toHaveText(['phone', 'profile']);
+  await expect(required.getByRole('button', { name: 'phone' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(required.getByRole('button', { name: 'profile' })).toHaveAttribute('aria-pressed', 'false');
+
+  await required.getByRole('button', { name: 'profile' }).click();
+  await required.getByRole('button', { name: 'phone' }).click();
+  await saveEdit(page);
+
+  expect((await findClientWrite(api.requests, 'PUT')).body.consentFlow)
+    .toEqual({ allowPartial: true, rememberDuration: 14 * 86400, requiredScopes: ['profile'], offlineAccessOptional: false });
+});
+
+test('lets the administrator allow users to turn off long-lived access', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: {
+        'tenant-alpha': [{
+          ...alphaClient,
+          consentFlow: { allowPartial: true, rememberDuration: null },
+        }],
+      },
+    },
+  });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Ownership');
+  const toggle = page.getByLabel('Let the user turn off long-lived access');
+  await expect(toggle).not.toBeChecked();
+  await toggle.check();
+  await saveEdit(page);
+
+  expect((await findClientWrite(api.requests, 'PUT')).body.consentFlow)
+    .toEqual({ allowPartial: true, rememberDuration: null, requiredScopes: [], offlineAccessOptional: true });
+});
+
+test('offers required scopes only while partial grants are allowed', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: {
+        'tenant-alpha': [{
+          ...alphaClient,
+          scope: ['openid', 'phone'],
+          consentFlow: { allowPartial: false, rememberDuration: null },
+        }],
+      },
+    },
+  });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Ownership');
+  await expect(page.getByRole('group', { name: 'Required scopes' })).toHaveCount(0);
+  await page.getByLabel('Let the user deselect optional scopes').check();
+  await expect(page.getByRole('group', { name: 'Required scopes' })).toBeVisible();
 });
 
 test('explains consent settings with info buttons', async ({ page }) => {
@@ -1141,13 +1197,12 @@ test('explains consent settings with info buttons', async ({ page }) => {
   });
 
   await openClientPage(page, 'alpha-web');
-  await openEditSection(page, 'Registration and consent');
+  await openEditSection(page, 'Ownership');
 
-  await page.getByRole('button', { name: 'Consent settings info' }).click();
-  await expect(page.getByText('Shows the user which scopes the client is requesting before an authorization code is issued.', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Ownership info' }).click();
+  await expect(page.getByText('A first party app is yours: users are not asked for consent. A partner app belongs to someone else: users see which scopes it requests before an authorization code is issued.', { exact: true })).toBeVisible();
 
-  const consentRow = page.getByText('Consent', { exact: true }).locator('..');
-  await consentRow.locator('label.toggle').click();
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
 
   const explanations = [
     ['Partial grants consent info', 'Allows the user to deselect optional scopes and approve only a subset of the requested access.'],
@@ -1188,9 +1243,8 @@ test('uses sentence case for consent property labels', async ({ page }) => {
   });
 
   await openClientPage(page, 'alpha-web');
-  await openEditSection(page, 'Registration and consent');
-  const consentRow = page.getByText('Consent', { exact: true }).locator('..');
-  await consentRow.locator('label.toggle').click();
+  await openEditSection(page, 'Ownership');
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
 
   for (const id of ['consent-remember', 'consent-logo-uri', 'consent-policy-uri', 'consent-tos-uri']) {
     const label = page.locator(`label[for="${id}"]`);
@@ -1208,7 +1262,7 @@ test('hides consent settings when the auth flow is disabled', async ({ page }) =
   await startCreate(page);
   await fillBasics(page, 'consenting-web', 'Consenting Web');
   await continueToThirdStep(page);
-  await expect(page.getByText('Consent', { exact: true })).toBeVisible();
+  await expect(page.getByText('Ownership', { exact: true })).toBeVisible();
 
   // Consent is an act by a user, so the kind with none never offers it.
   await page.getByRole('button', { name: 'Back', exact: true }).click();
@@ -1217,46 +1271,10 @@ test('hides consent settings when the auth flow is disabled', async ({ page }) =
   await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
   await continueToThirdStep(page);
 
-  await expect(page.getByText('Consent', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Ownership', { exact: true })).toHaveCount(0);
 });
 
-test('hides registration settings when inline password is enabled', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: clientsPath,
-    state: { clients: { 'tenant-alpha': [alphaClient] } },
-  });
-
-  // Inline password is a sign-in refinement; turning it on leaves sign-up nothing to verify.
-  await openClientPage(page, 'alpha-web');
-  await openEditSection(page, 'Registration and consent');
-
-  const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
-  await registrationRow.locator('label.toggle').click();
-  await expect(page.getByText('Assigned roles *', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-
-  await openEditSection(page, 'How users sign in');
-  await page.getByRole('checkbox', { name: 'inline password', exact: true }).check();
-  await saveEdit(page);
-
-  await openEditSection(page, 'Registration and consent');
-  await expect(page.getByText('Registration', { exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-
-  // Patch semantics: alpha-web had no registration flow before either, so nothing changed and
-  // the key is omitted rather than sent as an explicit null.
-  const putBody = (await findClientWrite(api.requests, 'PUT')).body;
-  expect(putBody).toMatchObject({
-    authFlow: {
-      primary: {
-        inlinePassword: true,
-      },
-    },
-  });
-  expect(putBody.registrationFlow).toBeUndefined();
-});
-
-test('hides registration settings for a login+password flow', async ({ page }) => {
+test('sends no registration flow for a login+password client', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,
     state: { clients: { 'tenant-alpha': [alphaClient] } },
@@ -1267,19 +1285,13 @@ test('hides registration settings for a login+password flow', async ({ page }) =
   await addRedirectUri(page, 'https://login-password.example/callback');
   await continueToThirdStep(page);
 
-  await checkRow(page, 'Let users sign themselves up').click();
-
-  // A login is not a delivery address, so there is nothing for sign-up to prove ownership of.
   await page.getByRole('button', { name: 'Login + password', exact: true }).click();
-  await expect(page.getByText('Users cannot sign themselves up', { exact: true })).toBeVisible();
-  await expect(checkRow(page, 'Let users sign themselves up')).toHaveCount(0);
+  await expect(page.getByText('Users cannot sign themselves up', { exact: true })).toHaveCount(0);
 
   await continueToReview(page);
   await submitCreate(page);
 
-  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
-    registrationFlow: null,
-  });
+  expect((await findClientWrite(api.requests, 'POST')).body).not.toHaveProperty('registrationFlow');
 });
 
 test('leaves out everything a sign-in flow owns when the client has none', async ({ page }) => {
@@ -1309,7 +1321,7 @@ test('leaves out everything a sign-in flow owns when the client has none', async
 
   // The service endpoint has no member for any of it, so none is sent.
   const sent = (await findClientWrite(api.requests, 'POST')).body as Record<string, unknown>;
-  for (const owned of ['authFlow', 'registrationFlow', 'theme', 'redirectUris', 'otpTemplateId', 'frontChannelLogoutUri',
+  for (const owned of ['authFlow', 'theme', 'redirectUris', 'otpTemplateId', 'frontChannelLogoutUri',
     'frontChannelLogoutSessionRequired', 'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow']) {
     expect(sent).not.toHaveProperty(owned);
   }
@@ -1400,8 +1412,8 @@ const patchState = {
   scopes: { 'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [] }, { scope: 'email', description: { en: 'Email scope' }, claims: [] }] },
   permissions: {
     'tenant-alpha': [
-      { permission: 'alpha.read', description: { en: 'Read alpha resources' }, endpointIds: [101] },
-      { permission: 'alpha.write', description: { en: 'Write alpha resources' }, endpointIds: [101] },
+      { permission: 'alpha:read', description: { en: 'Read alpha resources' }, endpointIds: [101] },
+      { permission: 'alpha:write', description: { en: 'Write alpha resources' }, endpointIds: [101] },
     ],
   },
 };
@@ -1439,7 +1451,7 @@ test('sends scopes as a patch when they are saved, with no permissions for a web
   await openEditSection(page, 'Scopes and permissions');
   await page.locator('.checkbox-item', { hasText: 'openid' }).getByRole('checkbox').uncheck();
   await page.locator('.checkbox-item', { hasText: 'email' }).getByRole('checkbox').check();
-  await expect(page.locator('.checkbox-item', { hasText: 'alpha.read' })).toHaveCount(0);
+  await expect(page.locator('.checkbox-item', { hasText: 'alpha:read' })).toHaveCount(0);
   await saveEdit(page);
 
   expect((await findClientWrite(api.requests, 'PUT')).body).toMatchObject({
@@ -1561,7 +1573,7 @@ test('gates the sign-in step on the consent URIs it edits', async ({ page }) => 
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
   await continueToThirdStep(page);
 
-  await page.getByRole('button', { name: 'Ask for consent', exact: true }).click();
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
   await page.getByLabel('Logo URI').fill('http://logo.example/logo.png');
 
   // The field lives on this step, so this step is where it has to be answered: submitting
@@ -1661,13 +1673,12 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
       primary: {
         credentials: ['phone'],
         inlinePassword: false,
-        factors: [{ type: 'otp', required: true }],
+        factors: [{ type: 'otp', required: true }, { type: 'passkeyEnroll', required: false }],
       },
-      passkey: null,
+      passkey: { factors: [] },
       equivalents: {},
       otpType: 'sms',
     },
-    registrationFlow: null,
     otpTemplateId: 'default',
     theme: 'default',
     frontChannelLogoutUri: null,
@@ -1688,6 +1699,7 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     requirePushedAuthorizationRequests: true,
     issueEdgeClientCertificate: true,
     enrollEdgeClientCertificate: false,
+    estEnrollment: false,
   });
 
   // The client should NOT be added to the list
@@ -1751,7 +1763,7 @@ test('says nothing about a template for a client registered without one', async 
 
   await openClientPage(page, 'alpha-web');
 
-  await expect(page.getByText(/template/i)).toHaveCount(0);
+  await expect(page.locator('versola-clients-list').getByText(/template/i)).toHaveCount(0);
 });
 
 // A client's kind is fixed at creation, and what the kind implies is shown rather than offered.
@@ -1891,27 +1903,27 @@ for (const width of [375, 320]) {
 
 test('lists the permissions of a service client, and sends them when they are saved', async ({ page }) => {
   const batch = { ...alphaClient, id: 'batch-job', clientName: { en: 'Batch Job' }, redirectUris: [], authFlow: null,
-    scope: [], permissions: ['alpha.read'], template: { kind: 'service' } };
+    scope: [], permissions: ['alpha:read'], template: { kind: 'service' } };
   const api = await loadAdminApp(page, {
     path: clientsPath,
     state: {
       clients: { 'tenant-alpha': [batch] },
       permissions: { 'tenant-alpha': [
-        { permission: 'alpha.read', description: { en: 'Read' }, endpointIds: [101] },
-        { permission: 'alpha.write', description: { en: 'Write' }, endpointIds: [101] },
+        { permission: 'alpha:read', description: { en: 'Read' }, endpointIds: [101] },
+        { permission: 'alpha:write', description: { en: 'Write' }, endpointIds: [101] },
       ] },
     },
   });
   await openClientPage(page, 'batch-job');
-  await expect(page.getByRole('region', { name: 'Permissions' })).toContainText('alpha.read');
+  await expect(page.getByRole('region', { name: 'Permissions' })).toContainText('alpha:read');
   await expect(page.getByRole('region', { name: 'Scopes' })).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Edit permissions', exact: true }).click();
-  await page.locator('.checkbox-item', { hasText: 'alpha.write' }).getByRole('checkbox').check();
+  await page.locator('.checkbox-item', { hasText: 'alpha:write' }).getByRole('checkbox').check();
   await saveEdit(page);
   const update = await findClientWrite(api.requests, 'PUT');
   expect(update.pathname).toBe('/configuration/clients/service');
-  expect(update.body).toMatchObject({ clientId: 'batch-job', permissions: { add: ['alpha.write'], remove: [] } });
+  expect(update.body).toMatchObject({ clientId: 'batch-job', permissions: { add: ['alpha:write'], remove: [] } });
 });
 
 
@@ -2013,4 +2025,375 @@ test('calls a certificate client over loopback http FAPI 2.0, with nothing to co
   await expect(page.getByText('Certificate-bound access tokens')).toHaveCount(0);
   await expect(page.getByText('Stored as off')).toHaveCount(0);
   await expect(page.getByLabel('Require DPoP-bound access tokens')).toHaveCount(0);
+});
+
+const partnerClient = {
+  ...alphaClient,
+  id: 'acme-app',
+  clientName: { en: 'Acme Wallet' },
+  otpTemplateId: 'partner',
+  consentFlow: { allowPartial: false, rememberDuration: 15552000 },
+};
+
+const smsTemplate = (id: string) => ({
+  id,
+  tenantId: 'tenant-alpha',
+  localizations: { en: id === 'partner' ? 'Your code for {{appName}}: {{code}}' : 'Your code {{code}}' },
+  purpose: 'otp',
+  channel: 'sms' as const,
+});
+
+test('marks a client that asks for consent as a partner and keeps its consent switched on', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [partnerClient, serviceClient] },
+      otpTemplates: { 'tenant-alpha': [smsTemplate('default'), smsTemplate('partner')] },
+    },
+  });
+
+  await expect(clientCard(page, 'Acme Wallet').locator('.chip', { hasText: 'Partner' })).toBeVisible();
+  await expect(clientCard(page, 'Service Client').locator('.chip', { hasText: 'Partner' })).toHaveCount(0);
+
+  await openClientPage(page, 'acme-app');
+  await expect(page.locator('versola-clients-list .view-meta .chip', { hasText: 'Partner' })).toBeVisible();
+
+  await openEditSection(page, 'Ownership');
+  // Partner is the choice made for good: the other one is there, and cannot be picked.
+  await expect(page.getByRole('button', { name: 'Partner app', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'First party app', exact: true })).toBeDisabled();
+  await expect(page.getByText('it cannot be made a first party app')).toBeVisible();
+});
+
+test('registering a client that asks for consent picks the partner OTP template', async ({ page }) => {
+  const { requests } = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { otpTemplates: { 'tenant-alpha': [smsTemplate('default'), smsTemplate('partner')] } },
+  });
+
+  await startCreate(page);
+  await fillBasics(page, 'new-partner', 'New Partner');
+  await addRedirectUri(page, 'https://partner.example/callback');
+  await continueToThirdStep(page);
+  await page.getByRole('button', { name: 'Partner app' }).click();
+  await continueToReview(page);
+  await submitCreate(page);
+
+  const body = (await findClientWrite(requests, 'POST')).body as { otpTemplateId: string; consentFlow: unknown };
+  expect(body.otpTemplateId).toBe('partner');
+  expect(body.consentFlow).not.toBeNull();
+});
+
+// A partner app's own appearance, laid over the theme it uses.
+const appearancePresets = [
+  { id: 'versola', title: { en: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } },
+  { id: 'fintech', title: { en: 'Fintech' }, tokens: { brand: '#5b5bd6', shape: 'soft', surface: 'neutral', mode: 'auto', background: 'linear' } },
+];
+const appearanceThemes = [
+  { id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } },
+  { id: 'money', css: '', tenantId: null, tokens: { base: 'fintech', overrides: { shape: 'sharp' } } },
+  { id: 'css-only', css: 'CSS-ONLY', tenantId: null },
+];
+const appearanceState = (client: Record<string, unknown>) => ({
+  clients: { 'tenant-alpha': [client] },
+  themes: appearanceThemes,
+  themePresets: appearancePresets,
+});
+const appearanceBlock = (page: Page) => page.getByRole('region', { name: 'Appearance for this app' });
+
+test('offers the appearance of an app only for a client with a consent flow', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { ...appearanceState(alphaClient), clients: { 'tenant-alpha': [alphaClient, partnerClient] } } });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Branding and logout');
+  await expect(page.getByLabel('Forms Theme')).toBeVisible();
+  await expect(appearanceBlock(page)).toHaveCount(0);
+});
+
+test('shows the appearance of an app for a client with a consent flow', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: appearanceState(partnerClient) });
+
+  await openClientPage(page, 'acme-app');
+  await expect(page.getByRole('region', { name: 'Branding and logout' })).toContainText('Appearance for this app');
+  await openEditSection(page, 'Branding and logout');
+  await expect(appearanceBlock(page)).toBeVisible();
+});
+
+test('shows the values of the theme the app uses as inherited, and sends only what the operator sets', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'money' }) });
+
+  await openClientPage(page, 'acme-app');
+  await openEditSection(page, 'Branding and logout');
+  const block = appearanceBlock(page);
+  await expect(block).toBeVisible();
+  // The theme is the fintech preset with sharp corners: those are what is shown, nothing is overridden.
+  await expect(block.getByText('This app uses the theme as it is.')).toBeVisible();
+  await expect(block.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Sharp' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(block.getByRole('group', { name: 'Page background' }).getByRole('button', { name: 'Neutral' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(block.getByLabel('Brand colour, #rrggbb')).toHaveAttribute('placeholder', '#5b5bd6');
+  await expect(block.getByText('Overridden', { exact: false })).toHaveCount(0);
+
+  await block.getByLabel('Brand colour, #rrggbb').fill('112233');
+  await block.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Round' }).click();
+  await expect(block.getByTitle('Overridden · base: #5b5bd6')).toBeVisible();
+  await expect(block.getByTitle('Overridden · base: sharp')).toBeVisible();
+  await saveEdit(page);
+
+  expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({ brand: '#112233', shape: 'round' });
+});
+
+test('the background of an app starts at the theme\'s, is overridden from the preset cards and reset to it', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'money' }) });
+
+  await openClientPage(page, 'acme-app');
+  await openEditSection(page, 'Branding and logout');
+  const block = appearanceBlock(page);
+  const cards = block.getByRole('group', { name: 'Background style' });
+  // The theme is the fintech preset, which is linear.
+  await expect(cards.getByRole('button', { name: 'Linear' })).toHaveAttribute('aria-pressed', 'true');
+
+  await cards.getByRole('button', { name: 'Horizon' }).click();
+  await expect(block.getByTitle('Overridden · base: linear')).toBeVisible();
+  await block.getByRole('button', { name: 'Reset background to the base' }).click();
+  await expect(block.getByText('This app uses the theme as it is.')).toBeVisible();
+
+  // The glow is a choice like the others, though it is the default look: it undoes the theme's gradient.
+  await cards.getByRole('button', { name: 'Glow' }).click();
+  await saveEdit(page);
+  expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({ background: 'glow' });
+  await expect(page.getByText('glow background')).toBeVisible();
+});
+
+test('resets one override, and clears all of them with an empty object', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: appearanceState({ ...partnerClient, themeOverrides: { brand: '#112233', mode: 'dark' } }),
+  });
+
+  await openClientPage(page, 'acme-app');
+  await expect(page.getByText('brand #112233, dark scheme')).toBeVisible();
+  await openEditSection(page, 'Branding and logout');
+  const block = appearanceBlock(page);
+  await expect(block.getByText('2 values differ from the theme, for this app only.')).toBeVisible();
+
+  await block.getByRole('button', { name: 'Reset mode to the base' }).click();
+  await saveEdit(page);
+  expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({ brand: '#112233' });
+
+  await openEditSection(page, 'Branding and logout');
+  await appearanceBlock(page).getByRole('button', { name: 'Clear overrides' }).click();
+  await saveEdit(page);
+  const writes = (await clientWrites(api.requests, 'PUT')).map(write => write.body.themeOverrides);
+  expect(writes).toEqual([{ brand: '#112233' }, {}]);
+  await expect(page.getByText('Same as the theme')).toBeVisible();
+});
+
+test('says that overrides apply on top of a theme that has only custom CSS, and sends nothing when none was set', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'css-only' }) });
+
+  await openClientPage(page, 'acme-app');
+  await openEditSection(page, 'Branding and logout');
+  await expect(appearanceBlock(page).getByText('The theme is only custom CSS')).toBeVisible();
+  // Its values are not known, so none is claimed: no preset's values stand in for them.
+  await expect(appearanceBlock(page).getByLabel('Brand colour, #rrggbb')).toHaveAttribute('placeholder', '#rrggbb');
+  await expect(appearanceBlock(page).getByText('Set by the theme\'s CSS')).toHaveCount(5);
+  await expect(appearanceBlock(page).locator('.seg-btn[aria-pressed="true"], .bg-card[aria-pressed="true"]')).toHaveCount(0);
+
+  await saveEdit(page);
+  expect((await findClientWrite(api.requests, 'PUT')).body).not.toHaveProperty('themeOverrides');
+});
+
+test('over a theme that has only custom CSS, a choice equal to the default theme is still saved as an override', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'css-only' }) });
+
+  await openClientPage(page, 'acme-app');
+  await openEditSection(page, 'Branding and logout');
+  const block = appearanceBlock(page);
+  // Soft is the default theme's shape: over a token theme that would be no override, over a CSS-only theme it is one.
+  await block.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Soft' }).click();
+  await block.getByLabel('Brand colour, #rrggbb').fill('155e75');
+  await expect(block.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Soft' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(block.getByText('2 values differ')).toBeVisible();
+  await saveEdit(page);
+
+  expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({ brand: '#155e75', shape: 'soft' });
+});
+
+test('does not save while the brand colour of the appearance is not a #rrggbb colour', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'money' }) });
+
+  await openClientPage(page, 'acme-app');
+  await openEditSection(page, 'Branding and logout');
+  const block = appearanceBlock(page);
+  await block.getByLabel('Brand colour, #rrggbb').fill('zzz');
+  await expect(block.getByText('Use #rrggbb')).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Save/ })).toBeDisabled();
+  await expect(page.getByText('Fix the brand colour')).toBeVisible();
+
+  await block.getByLabel('Brand colour, #rrggbb').fill('112233');
+  await expect(page.getByRole('button', { name: /^Save/ })).toBeEnabled();
+  await saveEdit(page);
+  expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({ brand: '#112233' });
+});
+
+test('clearing the overrides drops an unparsable brand colour too, and saving is possible again', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, themeOverrides: { shape: 'round' } }) });
+
+  await openClientPage(page, 'acme-app');
+  await openEditSection(page, 'Branding and logout');
+  const block = appearanceBlock(page);
+  await block.getByLabel('Brand colour, #rrggbb').fill('zzz');
+  await expect(page.getByRole('button', { name: /^Save/ })).toBeDisabled();
+  await block.getByRole('button', { name: 'Clear overrides' }).click();
+  await expect(block.getByLabel('Brand colour, #rrggbb')).toHaveValue('');
+  await expect(page.getByRole('button', { name: /^Save/ })).toBeEnabled();
+});
+
+test('clears the stored overrides of an app that does not ask for consent when it is saved', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { ...appearanceState({ ...alphaClient, themeOverrides: { brand: '#112233' } }), clients: { 'tenant-alpha': [{ ...alphaClient, themeOverrides: { brand: '#112233' } }] } },
+  });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Branding and logout');
+  await expect(appearanceBlock(page)).toHaveCount(0);
+  await saveEdit(page);
+
+  expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({});
+});
+
+test('leaves the appearance out when central has no built-in themes to show it against', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { ...appearanceState(partnerClient), themePresets: null } });
+
+  await openClientPage(page, 'acme-app');
+  await openEditSection(page, 'Branding and logout');
+  await expect(page.getByLabel('Forms Theme')).toBeVisible();
+  await expect(appearanceBlock(page)).toHaveCount(0);
+});
+
+
+async function startWizardAtStep3(page: Page, kind: string, id: string) {
+  await startCreate(page, kind);
+  await fillBasics(page, id, 'Wizard App');
+  await addRedirectUri(page, 'https://wizard.example/callback');
+  await continueToThirdStep(page);
+}
+
+for (const kind of ['Web app', 'Mobile or desktop app']) {
+  test(`${kind}: a partner is offered branding in the wizard and sends it`, async ({ page }) => {
+    const api = await loadAdminApp(page, {
+      path: clientsPath,
+      state: appearanceState(alphaClient),
+    });
+    await startWizardAtStep3(page, kind, 'branded-partner');
+    await expect(page.getByRole('button', { name: 'First party app', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByLabel('Forms Theme')).toHaveCount(0);
+    await expect(page.getByRole('region', { name: 'Appearance for this app' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+    await page.getByLabel('Forms Theme').selectOption('money');
+    const appearance = page.getByRole('region', { name: 'Appearance for this app' });
+    await expect(appearance).toBeVisible();
+    await appearance.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Round' }).click();
+    await continueToReview(page);
+    await submitCreate(page);
+
+    const body = (await findClientWrite(api.requests, 'POST')).body;
+    expect(body.theme).toBe('money');
+    expect(body.themeOverrides).toEqual({ shape: 'round' });
+    expect(body.consentFlow).not.toBeNull();
+  });
+}
+
+test('a first-party app in the wizard has no branding, and going back to it drops the partner theme', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: appearanceState(alphaClient),
+  });
+  await startWizardAtStep3(page, 'Web app', 'own-app');
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+  await page.getByLabel('Forms Theme').selectOption('money');
+  await page.getByRole('button', { name: 'First party app', exact: true }).click();
+  await expect(page.getByLabel('Forms Theme')).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Appearance for this app' })).toHaveCount(0);
+  await expect(page.getByLabel('Logo URI')).toHaveCount(0);
+  await continueToReview(page);
+  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'first party' })).toBeVisible();
+  await submitCreate(page);
+
+  const body = (await findClientWrite(api.requests, 'POST')).body;
+  expect(body.theme).toBe('default');
+  expect(body).not.toHaveProperty('themeOverrides');
+  expect(body.consentFlow).toBeNull();
+});
+
+test('a new partner has 90 days preselected, sends it, and the grant-part checkbox follows the duration', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+  await startWizardAtStep3(page, 'Web app', 'ninety-partner');
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+
+  const select = page.getByLabel('Reuse the grant for');
+  await expect(select).toHaveValue('90');
+  await expect(select.locator('option:checked')).toHaveText('90 days');
+
+  const selectBox = await select.boundingBox();
+  const partialBox = await checkRow(page, 'Let the user grant part of it').boundingBox();
+  expect(partialBox!.y).toBeGreaterThan(selectBox!.y + selectBox!.height - 1);
+
+  await continueToReview(page);
+  await submitCreate(page);
+  expect((await findClientWrite(api.requests, 'POST')).body.consentFlow.rememberDuration).toBe(90 * 86400);
+});
+
+test('a stored grant duration outside the presets is shown as its own option', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [{ ...alphaClient, consentFlow: { allowPartial: false, rememberDuration: 180 * 86400 } }] } },
+  });
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Ownership');
+  await expect(page.getByLabel('Remember', { exact: true })).toHaveValue('days');
+  await expect(page.getByLabel('Remember duration in days')).toHaveValue('180');
+});
+
+test('the edit page puts the partial-grants row after the remember row', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [{ ...alphaClient, consentFlow: { allowPartial: false, rememberDuration: null } }] } },
+  });
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Ownership');
+  const remember = await page.locator('#consent-remember').boundingBox();
+  const partial = await page.getByLabel('Let the user deselect optional scopes').boundingBox();
+  expect(partial!.y).toBeGreaterThan(remember!.y);
+});
+
+test('an unlocked first-party client can be made a partner from the edit page', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Ownership');
+  await expect(page.getByRole('button', { name: 'First party app', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+  await saveEdit(page);
+  expect((await findClientWrite(api.requests, 'PUT')).body.consentFlow.rememberDuration).toBe(90 * 86400);
+});
+
+test('the wizard select shows a grant duration outside its presets as its own option', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [alphaClient] } } });
+  await startWizardAtStep3(page, 'Web app', 'legacy-days');
+  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+  // The wizard cannot produce one itself; a value restored from elsewhere (an old client's 180) must not blank the select.
+  await page.locator('versola-client-form').evaluate((el: any) => {
+    el.formData = { ...el.formData, consentFlow: { ...el.formData.consentFlow, rememberDurationDays: 180 } };
+  });
+  const select = page.getByLabel('Reuse the grant for');
+  await expect(select).toHaveValue('180');
+  await expect(select.locator('option:checked')).toHaveText('180 days');
 });

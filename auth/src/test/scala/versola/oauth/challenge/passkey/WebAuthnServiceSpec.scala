@@ -7,6 +7,7 @@ import versola.oauth.client.model.{ClientId, PasskeySettings}
 import versola.user.model.UserId
 import versola.util.UnitSpecBase
 import zio.*
+import zio.json.*
 import zio.test.*
 import zio.test.Assertion.*
 
@@ -187,7 +188,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
           WebAuthnService.live,
         )
         _ <- repository.listByUser.succeedsWith(Vector.empty)
-        ceremony <- service.startRegistration(settings, userId, "Test User")
+        ceremony <- service.startRegistration(settings, userId, "+77001234567", "Test User")
       yield assertTrue(ceremony.request.nonEmpty) &&
         assertTrue(ceremony.publicKeyOptions.contains("publicKey")) &&
         assertTrue(ceremony.publicKeyOptions.contains("challenge"))
@@ -205,6 +206,77 @@ object WebAuthnServiceSpec extends UnitSpecBase:
       yield assertTrue(ceremony.request.nonEmpty) &&
         assertTrue(ceremony.publicKeyOptions.contains("publicKey")) &&
         assertTrue(ceremony.publicKeyOptions.contains("challenge"))
+    },
+    test("startUserAssertion lists the user's passkeys and the assertion finishes for them") {
+      val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
+      val keyPair = VirtualAuthenticator.keyPair()
+      val pub = keyPair.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey]
+      val priv = keyPair.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey]
+      val credId = CredentialId("test-credential-user".getBytes("UTF-8"))
+      val record = passkeyRecord(credId, userId).copy(publicKey = VirtualAuthenticator.publicKeyCose(pub))
+
+      for
+        service <- ZIO.service[WebAuthnService].provide(
+          ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
+          WebAuthnService.live,
+        )
+        _ <- repository.listByUser.succeedsWith(Vector(record))
+        ceremony <- service.startUserAssertion(settings, userId)
+        response = VirtualAuthenticator.assertionResponse(
+          rpId = settings.rpId,
+          origin = settings.origins.head,
+          challenge = VirtualAuthenticator.extractChallenge(ceremony.publicKeyOptions),
+          credentialId = credId,
+          userHandle = VirtualAuthenticator.userHandle(userId),
+          pub = pub,
+          priv = priv,
+        )
+        _ <- repository.findByCredentialId.succeedsWith(Vector(record))
+        _ <- repository.findByCredentialIdAndUser.succeedsWith(Some(record))
+        _ <- repository.updateUsage.succeedsWith(true)
+        outcome <- service.finishAssertion(settings, ceremony.request, response)
+      yield assertTrue(
+        ceremony.publicKeyOptions.contains("allowCredentials"),
+        ceremony.publicKeyOptions.contains(java.util.Base64.getUrlEncoder.withoutPadding.encodeToString(credId)),
+        ceremony.publicKeyOptions.contains("\"userVerification\":\"required\""),
+        outcome.userId == userId,
+      )
+    },
+    test("an assertion ceremony started for one user does not accept another user's passkey") {
+      val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
+      val keyPair = VirtualAuthenticator.keyPair()
+      val pub = keyPair.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey]
+      val priv = keyPair.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey]
+      val otherUser = UserId(java.util.UUID.randomUUID())
+      val credId = CredentialId("test-credential-other".getBytes("UTF-8"))
+      val otherRecord = passkeyRecord(credId, otherUser).copy(publicKey = VirtualAuthenticator.publicKeyCose(pub))
+
+      for
+        service <- ZIO.service[WebAuthnService].provide(
+          ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
+          WebAuthnService.live,
+        )
+        _ <- repository.listByUser.succeedsWith(Vector.empty)
+        ceremony <- service.startUserAssertion(settings, userId)
+        response = VirtualAuthenticator.assertionResponse(
+          rpId = settings.rpId,
+          origin = settings.origins.head,
+          challenge = VirtualAuthenticator.extractChallenge(ceremony.publicKeyOptions),
+          credentialId = credId,
+          userHandle = VirtualAuthenticator.userHandle(otherUser),
+          pub = pub,
+          priv = priv,
+        )
+        _ <- repository.findByCredentialId.succeedsWith(Vector(otherRecord))
+        _ <- repository.findByCredentialIdAndUser.succeedsWith(Some(otherRecord))
+        _ <- repository.updateUsage.succeedsWith(true)
+        result <- service.finishAssertion(settings, ceremony.request, response).exit
+        usageUpdates = repository.updateUsage.times
+      yield assertTrue(result.isFailure, usageUpdates == 0)
     },
     test("credentialIdFromResponse extracts id from valid JSON") {
       val repository = stub[PasskeyRepository]
@@ -288,6 +360,27 @@ object WebAuthnServiceSpec extends UnitSpecBase:
 
     // webauthn-server-core 2.7.0 has no Cable or SmartCard transport, so those two have to
     // drop out of the excluded-credential descriptor rather than fail the ceremony.
+    test("startRegistration names the account by the account name and carries the user id only as the opaque handle") {
+      val repository = stub[PasskeyRepository]
+      val configService = stub[OAuthConfigurationService]
+      for
+        service <- ZIO.service[WebAuthnService].provide(
+          ZLayer.succeed(repository),
+          ZLayer.succeed(configService),
+          WebAuthnService.live,
+        )
+        _ <- repository.listByUser.succeedsWith(Vector.empty)
+        ceremony <- service.startRegistration(settings, userId, "+77001234567", "Dana Smith")
+        user = ceremony.publicKeyOptions.fromJson[zio.json.ast.Json].toOption.get
+          .asInstanceOf[zio.json.ast.Json.Obj].get("publicKey").get.asInstanceOf[zio.json.ast.Json.Obj]
+          .get("user").get.asInstanceOf[zio.json.ast.Json.Obj]
+        field = (name: String) => user.get(name).collect { case zio.json.ast.Json.Str(value) => value }
+      yield assertTrue(
+        field("name").contains("+77001234567"),
+        field("displayName").contains("Dana Smith"),
+        field("id").exists(handle => handle.nonEmpty && !handle.contains(userId.toString)),
+      )
+    },
     test("startRegistration maps every known transport and drops the unsupported ones") {
       val repository = stub[PasskeyRepository]
       val configService = stub[OAuthConfigurationService]
@@ -300,7 +393,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
           WebAuthnService.live,
         )
         _ <- repository.listByUser.succeedsWith(Vector(record))
-        ceremony <- service.startRegistration(settings, userId, "Test User")
+        ceremony <- service.startRegistration(settings, userId, "+77001234567", "Test User")
       yield assertTrue(
         ceremony.request.contains("\"ble\""),
         ceremony.request.contains("\"hybrid\""),
@@ -322,7 +415,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
             WebAuthnService.live,
           )
           _ <- repository.listByUser.succeedsWith(Vector.empty)
-          ceremony <- service.startRegistration(settings.copy(userVerification = userVerification), userId, "Test User")
+          ceremony <- service.startRegistration(settings.copy(userVerification = userVerification), userId, "+77001234567", "Test User")
         yield ceremony.request
 
       for
@@ -368,7 +461,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
           WebAuthnService.live,
         )
         _ <- repository.listByUser.succeedsWith(Vector.empty)
-        ceremony <- service.startRegistration(settings, userId, "Test User")
+        ceremony <- service.startRegistration(settings, userId, "+77001234567", "Test User")
         challenge = VirtualAuthenticator.extractChallenge(ceremony.publicKeyOptions)
         response = VirtualAuthenticator.registrationResponse(
           rpId = settings.rpId,
@@ -485,7 +578,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
           WebAuthnService.live,
         )
         _ <- repository.listByUser.succeedsWith(Vector.empty)
-        ceremony <- service.startRegistration(settings, userId, "Test User")
+        ceremony <- service.startRegistration(settings, userId, "+77001234567", "Test User")
         challenge = VirtualAuthenticator.extractChallenge(ceremony.publicKeyOptions)
         response = VirtualAuthenticator.registrationResponse(
           rpId = settings.rpId,
@@ -521,7 +614,7 @@ object WebAuthnServiceSpec extends UnitSpecBase:
           ZLayer.succeed(configService),
           WebAuthnService.live,
         )
-        result <- service.startRegistration(settings, userId, null).exit
+        result <- service.startRegistration(settings, userId, "+77001234567", null).exit
       yield assert(result)(fails(isSubtype[WebAuthnError.CeremonyFailed](anything)))
     },
 

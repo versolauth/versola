@@ -1,12 +1,20 @@
 {
   "en": {
     "page_title": "Conversation expired",
+    "scheme_label": "Colour scheme",
+    "scheme_auto": "Auto",
+    "scheme_light": "Light",
+    "scheme_dark": "Dark",
     "title": "Conversation expired",
     "description": "This sign-in session has expired. Please start again.",
     "return_button": "Return"
   },
   "ru": {
     "page_title": "Срок действия сессии истёк",
+    "scheme_label": "Цветовая схема",
+    "scheme_auto": "Авто",
+    "scheme_light": "Светлая",
+    "scheme_dark": "Тёмная",
     "title": "Сессия истекла",
     "description": "Срок действия этой сессии входа истёк. Начните процесс заново.",
     "return_button": "Вернуться"

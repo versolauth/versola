@@ -5,29 +5,31 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
 import versola.util.postgres.BasicCodecs
+import versola.util.theme.ThemeTokens
 import zio.{Task, ZLayer}
 
 class PostgresThemeRepository(xa: TransactorZIO) extends ThemeRepository, BasicCodecs:
 
   given DbCodec[TenantId] = DbCodec.StringCodec.biMap(TenantId(_), identity[String])
+  given DbCodec[ThemeTokens] = jsonBCodec[ThemeTokens]
   given DbCodec[ThemeRecord] = DbCodec.derived
 
   override def getAll: Task[Vector[ThemeRecord]] =
     xa.connectMeasured("get-all-themes"):
-      sql"""SELECT id, css, tenant_id FROM themes ORDER BY id"""
+      sql"""SELECT id, css, tenant_id, tokens FROM themes ORDER BY id"""
         .query[ThemeRecord]
         .run()
 
   override def create(theme: ThemeRecord): Task[Unit] =
     xa.connectMeasured("create-theme"):
-      sql"""INSERT INTO themes (id, css, tenant_id)
-            VALUES (${theme.id}, ${theme.css}, ${theme.tenantId})"""
+      sql"""INSERT INTO themes (id, css, tenant_id, tokens)
+            VALUES (${theme.id}, ${theme.css}, ${theme.tenantId}, ${theme.tokens})"""
         .update.run()
     .unit
 
   override def update(theme: ThemeRecord): Task[Unit] =
     xa.connectMeasured("update-theme"):
-      sql"""UPDATE themes SET css = ${theme.css} WHERE id = ${theme.id}"""
+      sql"""UPDATE themes SET css = ${theme.css}, tokens = ${theme.tokens} WHERE id = ${theme.id}"""
         .update.run()
     .unit
 

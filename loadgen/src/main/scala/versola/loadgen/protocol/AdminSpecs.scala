@@ -10,7 +10,7 @@ import java.util.UUID
 // no tenant per call (a campaign provisions one tenant, named once on the client), and no
 // secret-rotation or delete surface.
 //
-// `authFlow`/`registrationFlow` stay `Json`: they are the shared flow documents of §3.4, read
+// `authFlow` stays `Json`: they are the shared flow documents of §3.4, read
 // verbatim out of `loadgen/src/main/resources/flows/` so that the emulator and the e2e suite
 // cannot drift from central's schema independently. Re-typing that tree here would reintroduce
 // exactly the second definition §3.4 exists to prevent.
@@ -35,7 +35,6 @@ case class ClientSpec(
     refreshTokenTtlSeconds: Option[Int],
     publicClient: Boolean,
     authFlow: Json,
-    registrationFlow: Option[Json],
     backChannelLogoutUri: Option[String],
     fapi2: Boolean,
 )
@@ -135,8 +134,22 @@ case class AuthRequestPresetsSpec(
   *                        with `client_secret` (see [[ClientSpec]]), which `fapi2` refuses, so
   *                        this must stay `standard` unless the client shapes above change too.
   */
+/** One entry of the tenant's `phoneRegions` (ISO alpha-2 region, dial code, digit count after the dial
+  * code, full-match regex over those digits, whether a number of it may register). An empty list means
+  * any E.164 number may sign in and none may register.
+  */
+case class PhoneRegionSpec(region: String, dialCode: String, length: Int, regex: String, registration: Boolean)
+
+/** The tenant's self-registration policy by email: `mode` is `closed`, `open` or `allowlist`; `domains`
+  * is the blocklist under `open` and the allowlist under `allowlist`.
+  */
+case class EmailRegistrationSpec(mode: String, domains: List[String], blockSubaddress: Boolean)
+
 case class ChallengeSettingsSpec(
-    allowedPrefixes: List[String],
+    phoneRegions: List[PhoneRegionSpec],
+    emailRegistration: EmailRegistrationSpec,
+    /** Role ids a self-registered account gets; central requires at least one. */
+    defaultRoles: List[String],
     otpLength: Int,
     otpResendAfterSeconds: Int,
     passkeyRpId: String,

@@ -16,26 +16,27 @@ import zio.http.Client
   */
 object Provisioner:
 
-  /** The order is not cosmetic. The tenant comes first, and its settings next, because every
-    * other write is made into it and a client is validated against the profile and the
-    * certificate header those settings hold. Resources come before permissions because a permission grants an
-    * endpoint id the resource has to have declared; permissions before roles because a role
-    * grants a permission; roles before clients because a client's registration flow grants a
-    * role by id and central rejects the write with a `400` if that role does not exist yet;
-    * clients before presets because a preset is validated against its client's redirect URIs.
-    * The sync comes last because auth reads client and preset state from central, and the wait
-    * on edge after it because edge reads the same state on its own schedule.
+  /** The order is not cosmetic. The tenant comes first because every other write is made into
+    * it. Resources come before permissions because a permission grants an endpoint id the
+    * resource has to have declared; permissions before roles because a role grants a
+    * permission; roles before the challenge settings because those name the roles a
+    * self-registered account gets, and before the clients because a client is validated against
+    * the profile and the certificate header those settings hold; clients before presets because
+    * a preset is validated against its client's redirect URIs. The sync comes last because auth
+    * reads client and preset state from central, and the wait on edge after it because edge
+    * reads the same state on its own schedule.
     */
   def run(admin: AdminClient, blueprint: CampaignBlueprint): Task[Map[String, ClientCreds]] =
     for
       _ <- ZIO.logInfo(s"Provisioning campaign configuration in tenant '${blueprint.tenant.tenantId}' (${blueprint.tenant.securityProfile})")
       _ <- admin.ensureTenant(blueprint.tenant)
-      // Before the clients, not after them: a `tls_client_auth` client is refused by a tenant that
-      // has no certificate header yet, and the profile in these settings is already the tenant's.
-      _ <- admin.upsertChallengeSettings(blueprint.challengeSettings)
       _ <- ZIO.foreachDiscard(blueprint.resources)(admin.registerResource)
       _ <- admin.upsertPermissions(blueprint.permissions)
       _ <- admin.upsertRoles(blueprint.roles)
+      // After the roles, because the settings name the roles a self-registered account gets; before
+      // the clients, because a `tls_client_auth` client is refused by a tenant that has no
+      // certificate header yet, and the profile in these settings is already the tenant's.
+      _ <- admin.upsertChallengeSettings(blueprint.challengeSettings)
       creds <- ZIO.foreach(blueprint.clients)(spec => admin.registerClient(spec).map(spec.clientId -> _))
       _ <- ZIO.foreachDiscard(blueprint.presets)(admin.upsertAuthRequestPresets)
       // The outbox carries user writes to auth. Nothing here creates a user, but the seeder (§10)

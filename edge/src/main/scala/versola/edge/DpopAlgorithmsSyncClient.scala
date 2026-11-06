@@ -24,11 +24,11 @@ object DpopAlgorithmsSyncClient:
       config: EdgeConfig,
       centralSyncTokenService: CentralSyncTokenService,
   ) extends DpopAlgorithmsSyncClient:
-    private val MetadataURL = config.central.url / "configuration" / "server-metadata" / "sync"
+    private val MetadataURL = config.central.url / "edge" / "sync" / "server-metadata"
 
     override def getAll: Task[Set[Dpop.Algorithm]] =
       for
         token <- centralSyncTokenService.getToken
         request = Request.get(MetadataURL).addHeader(Header.Authorization.Bearer(token))
-        document <- ZIO.scoped(httpClient.request(request).flatMap(_.body.asJsonFromCodec[Json.Obj]))
+        document <- ZIO.scoped(centralSyncTokenService.syncRequest(httpClient, request).flatMap(_.body.asJsonFromCodec[Json.Obj]))
       yield Dpop.Algorithm.fromMetadata(document)

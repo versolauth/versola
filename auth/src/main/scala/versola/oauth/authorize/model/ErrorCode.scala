@@ -18,3 +18,5 @@ private[authorize] object ErrorCode:
   val InvalidTarget: ErrorCode = "invalid_target"
   val InvalidAuthorizationDetails: ErrorCode = "invalid_authorization_details"
   val InvalidRequestObject: ErrorCode = "invalid_request_object"
+  val InvalidDpopProof: ErrorCode = "invalid_dpop_proof"
+  val UseDpopNonce: ErrorCode = "use_dpop_nonce"

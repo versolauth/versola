@@ -1,8 +1,38 @@
 package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
+import versola.antifraud.{
+  Antifraud,
+  AntifraudCounterResetRepository,
+  AntifraudCounters,
+  AntifraudCountersController,
+  AntifraudDetectors,
+  AntifraudEventRepository,
+  AntifraudEvents,
+  AntifraudListController,
+  AntifraudListRepository,
+  AntifraudLists,
+  AntifraudProposalRepository,
+  AntifraudSettingsController,
+  AntifraudSettingsRepository,
+  AntifraudStatusController,
+  AntifraudTuning,
+  AntifraudTuningStore,
+  ChallengeVerifier,
+  PostgresAntifraudCounterResetRepository,
+  PostgresAntifraudEventRepository,
+  PostgresAntifraudListRepository,
+  PostgresAntifraudProposalRepository,
+  PostgresAntifraudSettingsRepository,
+  PostgresVelocityRepository,
+  PowChallengeVerifier,
+  VelocityCounters,
+  VelocityRepository,
+  VelocityRules,
+}
+import versola.audit.{AuditReadRepository, AuditReportService, AuthAudit, ClientAuthFailures, PostgresAuditEventRepository}
 import versola.cleanup.PostgresCleanupManager
-import versola.oauth.account.AccountSettingsController
+import versola.oauth.account.{AccountSettingsController, AccountSettingsService}
 import versola.oauth.authorize.{
   AcrResolutionService,
   AuthorizationResponseService,
@@ -18,11 +48,18 @@ import versola.oauth.challenge.passkey.{PasskeyRepository, PostgresPasskeyReposi
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
 import versola.oauth.client.CentralSyncTokenService
 import versola.oauth.client.{OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient, ServiceController}
-import versola.oauth.clientauth.{ClientAssertionRepository, ClientAssertionService, ClientAuthentication, PostgresClientAssertionRepository}
+import versola.oauth.clientauth.{
+  ClientAssertionRepository,
+  ClientAssertionService,
+  ClientAuthThrottle,
+  ClientAuthentication,
+  PostgresClientAssertionRepository,
+}
 import versola.oauth.consent.{ConsentRepository, ConsentService, PostgresConsentRepository}
 import versola.oauth.conversation.limit.{ChallengeThrottleRepository, PostgresChallengeThrottleRepository, SubmissionLimiter}
 import versola.oauth.conversation.otp.{EmailOtpProvider, OtpGenerationService, OtpService, SmsOtpProvider}
 import versola.oauth.conversation.{
+  CodeAlternativeService,
   ConversationController,
   ConversationRenderService,
   ConversationRepository,
@@ -30,11 +67,14 @@ import versola.oauth.conversation.{
   ConversationService,
   PostgresConversationRepository,
 }
-import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, EdgeAssertionService, PostgresDpopProofRepository}
+import versola.oauth.delivery.DeliveryChannels
+import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, PostgresDpopProofRepository}
+import versola.oauth.est.{EstCentralClient, EstController, EstService}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
 import versola.oauth.metadata.{MetadataController, MetadataSyncClient}
+import versola.oauth.mtls.EdgeCertificateTrust
 import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController, RevocationService}
 import versola.oauth.session.{PostgresSessionRepository, PostgresUserAgentRepository, SessionRepository, SessionService, UserAgentRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
@@ -43,8 +83,10 @@ import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresPushedAuthori
 import versola.user.{PostgresUserRepository, UserController, UserRegistrationSyncClient, UserRepository, UserService}
 import versola.util.*
 import versola.util.SequentialLayers.*
+import versola.util.audit.{AuditEventRepository, AuditEvents}
 import versola.util.http.VersolaApp
-import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource, PostgresWalMetrics}
+import versola.util.net.{AsnResolver, AsnSettings, GeoResolver, GeoSettings}
+import versola.util.postgres.{PostgresConfig, PostgresConfigSnapshotRepository, PostgresHikariDataSource, PostgresWalMetrics}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.http.*
@@ -52,6 +94,7 @@ import zio.http.Server.RequestStreaming
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.security.PrivateKey
+import java.util.UUID
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
 
@@ -67,7 +110,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ClientAssertionRepository &
       ClientAssertionService &
       DpopService &
-      EdgeAssertionService &
+      EdgeCertificateTrust &
       UserRepository &
       UserService &
       OAuthConfigurationService &
@@ -99,20 +142,56 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AuthorizationResponseService &
       ConversationRouter &
       ConversationService &
+      AntifraudEvents &
+      AntifraudCounters &
+      ChallengeVerifier &
+      AntifraudEventRepository &
+      VelocityRepository &
+      AntifraudCounterResetRepository &
+      VelocityCounters &
+      AntifraudListRepository &
+      AntifraudLists &
+      AntifraudProposalRepository &
+      AntifraudSettingsRepository &
+      AntifraudTuning &
+      AntifraudTuningStore &
+      AntifraudEvents.Settings &
+      AntifraudDetectors &
       ConversationRenderService &
       OtpService &
       OtpGenerationService &
+      DeliveryChannels &
       SmsOtpProvider &
       EmailOtpProvider &
       UserInfoService &
       JwksService &
       SubmissionLimiter &
+      ClientAuthThrottle &
+      AccountSettingsService &
       ChallengeThrottleRepository &
       LogoutService &
       SessionService &
-      UserRegistrationSyncClient
+      UserRegistrationSyncClient &
+      EstCentralClient &
+      EstService &
+      AuditEvents &
+      AuditEvents.Settings &
+      AuthAudit.Tiers &
+      AuditReadRepository &
+      AuditReportService &
+      ClientAuthFailures
+
+  // central is the one peer auth cannot work without and waits for at start-up
+  override protected def guardExemptPeers =
+    ZIO.serviceWith[CoreConfig](config => Set(versola.util.http.OutboundGuard.peerOf(config.central.url)))
+
+  override protected def internalPeers =
+    ZIO.serviceWith[CoreConfig](config => Set(versola.util.http.OutboundGuard.peerOf(config.central.url)))
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
+    ClientAuthThrottle[Dependencies & Tracing & EnvName, Throwable](mainRoutes)
+
+  private def mainRoutes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
       AuthorizeEndpointController.routes,
       PushedAuthorizationController.routes,
@@ -124,8 +203,13 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       JwksController.routes,
       MetadataController.routes,
       UserController.routes,
+      AntifraudListController.routes,
+      AntifraudCountersController.routes,
+      AntifraudSettingsController.routes,
+      AntifraudStatusController.routes,
       ServiceController.routes,
       LogoutController.routes,
+      EstController.routes,
     ).reduce(_ ++ _)
 
   override def additionalRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
@@ -134,20 +218,26 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   /** RFC 8705 §5: the endpoints a client certificate is relevant to, served a second time on
     * the listener that demands one.
     *
-    * Exactly the five the metadata advertises as aliases, and not the whole route set: the
+    * Exactly the five the metadata advertises as aliases, and EST's `simplereenroll` (RFC 7030), which
+    * is authenticated by the certificate this listener validated and so can be served nowhere else.
+    * Not the whole route set: the
     * rest either authenticate nobody (`/jwks` and the discovery documents) or are the
     * browser's (`/authorize`, the conversation pages), and a browser arriving here is
     * answered with a certificate prompt before it ever sends a request.
     */
   override def mutualTlsRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
     Some(
-      List(
-        TokenEndpointController.routes,
-        IntrospectionController.routes,
-        RevocationController.routes,
-        PushedAuthorizationController.routes,
-        UserInfoController.routes,
-      ).reduce(_ ++ _),
+      // Not limited (a certificate is not a guessable secret), but the caller's address goes into the log context here too.
+      ClientAuthThrottle.withAddress(
+        List(
+          TokenEndpointController.routes,
+          IntrospectionController.routes,
+          RevocationController.routes,
+          PushedAuthorizationController.routes,
+          UserInfoController.routes,
+          EstController.reenrollmentRoutes,
+        ).reduce(_ ++ _),
+      ),
     )
 
   /** `ClientAuth.Required`, not `Optional`, and that is not a preference.
@@ -166,7 +256,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   override def mutualTlsServerConfig: ZIO[Dependencies, Throwable, Option[Server.Config]] =
     ZIO.serviceWith[CoreConfig](
       _.mutualTls.map(mtls =>
-        Server.Config.default.binding(bindHost, mutualTlsPort).ssl(
+        Server.Config.default.binding(mutualTlsBindHost, mutualTlsPort).ssl(
           SSLConfig.fromFile(
             behaviour = SSLConfig.HttpBehaviour.Fail,
             certPath = mtls.certificate,
@@ -194,6 +284,13 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresPasswordRepository.live >++>
       PostgresPasskeyRepository.live >++>
       PostgresChallengeThrottleRepository.live >++>
+      PostgresAntifraudEventRepository.live >++>
+      PostgresAuditEventRepository.live >++>
+      PostgresVelocityRepository.live >++>
+      PostgresAntifraudCounterResetRepository.live >++>
+      PostgresAntifraudListRepository.live >++>
+      PostgresAntifraudProposalRepository.live >++>
+      PostgresAntifraudSettingsRepository.live >++>
       PostgresCleanupManager.live
   )
 
@@ -205,16 +302,126 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       SecurityService.live(env.get[CoreConfig].argon2OrDefault)
     }
 
+  /** One per process: what tells the rows of one instance from another's in the audit log, as the velocity counters' instance id does. */
+  private val auditNodeId: String = UUID.randomUUID().toString
+
+  /** The keys of the `audit` block of the config, every one required (`scripts/gen-env.scala` writes them). `adminUserViewed` is central's
+    * and auth has no such event, so it is off here. */
+  private case class AuditConfig(
+      retention: Duration,
+      overflow: String,
+      blockTimeout: Duration,
+      events: AuditConfig.Events,
+  )
+
+  private object AuditConfig:
+    case class Events(tokenRefresh: Boolean, authorizeSuccess: Boolean, parSuccess: Boolean)
+
+    /** A retention the partitions cannot keep or an overflow that is neither word stops the start, naming the key. */
+    def settings(config: AuditConfig): Either[Config.Error, (AuditEvents.Settings, AuthAudit.Tiers)] =
+      for
+        overflow <- AuditEvents.Overflow.values.find(_.toString == config.overflow)
+          .toRight(Config.Error.InvalidData(message = s"audit.overflow must be one of block, drop, not '${config.overflow}'"))
+        _ <- Either.cond(
+          config.retention.toDays >= 1 && config.retention.toDays <= 14,
+          (),
+          Config.Error.InvalidData(message = "audit.retention must be between 1 and 14 days"),
+        )
+        _ <- Either.cond(
+          config.blockTimeout.toMillis > 0,
+          (),
+          Config.Error.InvalidData(message = "audit.block-timeout must be positive"),
+        )
+      yield (
+        AuditEvents.Settings(retention = config.retention, overflow = overflow, blockTimeout = config.blockTimeout),
+        AuthAudit.Tiers(
+          tokenRefresh = config.events.tokenRefresh,
+          authorizeSuccess = config.events.authorizeSuccess,
+          parSuccess = config.events.parSuccess,
+        ),
+      )
+
+  /** The `audit` block of the config: every key is required, so a config written before it existed makes auth refuse to start
+    * naming the missing key. */
+  private[versola] val auditSettings: ZLayer[ConfigProvider, Config.Error, AuditEvents.Settings & AuthAudit.Tiers] =
+    ZLayer.fromZIOEnvironment:
+      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("audit", deriveConfig[AuditConfig])))
+        .flatMap(config => ZIO.fromEither(AuditConfig.settings(config)))
+        .map((settings, tiers) => ZEnvironment[AuditEvents.Settings, AuthAudit.Tiers](settings, tiers))
+
+  /** The `antifraud` block of the config; every key has its value in `versola-defaults.conf`. */
+  private val antifraudSettings: ZLayer[ConfigProvider, Config.Error, AntifraudEvents.Settings] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("antifraud", deriveConfig[AntifraudEvents.Settings]))).flatMap: settings =>
+        // The rollup works in whole minutes and the instances share it by the interval: refused at start, not run wrongly.
+        ZIO.foreachDiscard(AntifraudEvents.statsIntervalError(settings.statsInterval))(message =>
+          ZIO.fail(Config.Error.InvalidData(message = message)),
+        ).as(settings)
+
+  /** `antifraud.asn`: every key, and the whole block, may be left out of a config written before it existed; the feature is then off. */
+  private val antifraudAsnSettings: ZLayer[ConfigProvider, Config.Error, AsnSettings] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("antifraud", Config.Nested("asn", AsnSettings.config))))
+
+  /** `antifraud.geo`: the same, for the country database. */
+  private val antifraudGeoSettings: ZLayer[ConfigProvider, Config.Error, GeoSettings] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("antifraud", Config.Nested("geo", GeoSettings.config))))
+
+  /** `antifraud.challenge` */
+  private val antifraudChallengeSettings: ZLayer[ConfigProvider, Config.Error, PowChallengeVerifier.Settings] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](
+        _.load(Config.Nested("antifraud", Config.Nested("challenge", deriveConfig[PowChallengeVerifier.Settings]))),
+      )
+
+  /** `antifraud.lists` */
+  private val antifraudListSettings: ZLayer[ConfigProvider, Config.Error, AntifraudLists.Settings] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("antifraud", Config.Nested("lists", deriveConfig[AntifraudLists.Settings]))))
+
+  /** `antifraud.tuning` */
+  private val antifraudTuningSettings: ZLayer[ConfigProvider, Config.Error, AntifraudTuningStore.Settings] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("antifraud", Config.Nested("tuning", deriveConfig[AntifraudTuningStore.Settings]))))
+
+  /** `antifraud.detectors` */
+  private val antifraudDetectorSettings: ZLayer[ConfigProvider, Config.Error, AntifraudDetectors.Settings] =
+    ZLayer.fromZIO:
+      ZIO.serviceWithZIO[ConfigProvider](
+        _.load(Config.Nested("antifraud", Config.Nested("detectors", deriveConfig[AntifraudDetectors.Settings]))),
+      )
+
+  /** Keyed off the auth-central transport secret, see [[ConfigSnapshot]]. */
+  private val configSnapshot: ZLayer[TransactorZIO & CoreConfig, Nothing, ConfigSnapshot] =
+    (PostgresConfigSnapshotRepository.live("auth_config_snapshots") ++ ZLayer.service[CoreConfig]) >>>
+      ZLayer.fromZIO:
+        for
+          repository <- ZIO.service[ConfigSnapshot.Repository]
+          config <- ZIO.service[CoreConfig]
+          snapshot <- ConfigSnapshot.make(repository, config.central.secretKey.getEncoded)
+        yield snapshot
+
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     repositories >++>
       parseConfig[CoreConfig] >++>
+      configSnapshot >++>
       SecureRandom.live >++>
       securityService >++>
+      // The audit writer and its partition maintenance: before everything that records into it.
+      auditSettings >++>
+      AuditEvents.live(AuthAudit.source, auditNodeId, AuthAudit.catalog, PostgresAuditEventRepository.Table) >++>
+      // The country of an address in the per-user report is read from the same database as antifraud's, from `antifraud.geo.file`.
+      antifraudGeoSettings >++>
+      GeoResolver.live >++>
+      AuditReportService.live >++>
+      ClientAuthFailures.live >++>
       // Sizes its own expiry ring from `dpop.iat-leeway`, so it has to follow the config.
       PostgresDpopProofRepository.live >++>
       PostgresClientAssertionRepository.live >++>
       DpopNonceService.live >++>
-      EdgeAssertionService.live >++>
+      // The issuer of edges' certificates, read once: `/userinfo` takes a call over one as an edge's.
+      EdgeCertificateTrust.live >++>
       JsonSchemaValidator.live >++>
       OAuthConfigurationService.live >++>
       DpopService.live >++>
@@ -239,6 +446,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PushedAuthorizationService.live >++>
       OtpGenerationService.live >++>
       ZLayer.succeed(versola.oauth.conversation.otp.OtpDecisionService.Impl()) >++>
+      // The SMTP server and SMS provider saved in central, else the blocks of auth.conf; reloaded on the configuration interval.
+      DeliveryChannels.live >++>
       EmailOtpProvider.live >++>
       SmsOtpProvider.live >++>
       OtpService.live >++>
@@ -247,10 +456,32 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       WebAuthnService.live >++>
       UserInfoService.live >++>
       SubmissionLimiter.live >++>
+      ClientAuthThrottle.live >++>
+      AccountSettingsService.live >++>
       AcrResolutionService.live >++>
       UserRegistrationSyncClient.live >++>
+      EstCentralClient.live >++>
+      EstService.live >++>
       UserService.live >++>
       ConsentService.live >++>
+      antifraudSettings >++>
+      antifraudListSettings >++>
+      AntifraudLists.live >++>
+      antifraudTuningSettings >++>
+      AntifraudTuningStore.live >++>
+      VelocityCounters.live >++>
+      Antifraud.live >++>
+      // The database the ASN of a request's address is looked up in: read from `antifraud.asn.file`, refreshed in the
+      // background, nothing at all while the block is absent.
+      antifraudAsnSettings >++>
+      AsnResolver.live >++>
+      AntifraudEvents.live >++>
+      AntifraudCounters.live >++>
+      antifraudDetectorSettings >++>
+      AntifraudDetectors.live >++>
+      antifraudChallengeSettings >++>
+      PowChallengeVerifier.live >++>
+      CodeAlternativeService.live >++>
       ConversationService.live >++>
       ConversationRouter.live >++>
       AuthorizationResponseService.live >++>
@@ -280,9 +511,6 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     .mapOrFail(Email.from(_).left.map(message => zio.Config.Error.InvalidData(message = message)))
 
   given DeriveConfig[PrivateKey] = DeriveConfig[String]
-    .mapOrFail(SecretConfig.rsaPrivateKey)
+    .mapOrFail(SecretConfig.signingPrivateKey)
 
-  given DeriveConfig[EnvName] = DeriveConfig[String]
-    .map:
-      case "prod" => EnvName.Prod
-      case value => EnvName.Test(value)
+  given DeriveConfig[EnvName] = DeriveConfig[String].map(EnvName.parse)

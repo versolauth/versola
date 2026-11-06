@@ -1,50 +1,15 @@
 import { render } from 'solid-js/web';
 import { createSignal, Show } from 'solid-js';
-
-function LocaleDropdown(props: { locales: string[]; current: string; onChange: (l: string) => void }) {
-  const [open, setOpen] = createSignal(false);
-  return (
-    <div class="locale-dropdown">
-      <button
-        type="button"
-        class="locale-trigger"
-        onClick={() => setOpen(!open())}
-        onBlur={() => setTimeout(() => setOpen(false), 120)}
-      >
-        {props.current}
-        <svg class="locale-chevron" viewBox="0 0 10 6" fill="none" aria-hidden="true">
-          <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </button>
-      <Show when={open()}>
-        <div class="locale-options">
-          {props.locales.map((loc) => (
-            <button
-              type="button"
-              class={`locale-option${loc === props.current ? ' locale-option-active' : ''}`}
-              onMouseDown={() => { props.onChange(loc); setOpen(false); }}
-            >
-              {loc}
-            </button>
-          ))}
-        </div>
-      </Show>
-    </div>
-  );
-}
+import { PageBrand, ClientBadge } from '../shared/brand';
+import { LocaleSelector, createTranslations } from '../shared/locale';
+import { PasswordInput } from '../shared/password-input';
+import type { BaseFormConfig } from '../shared/config';
 
 type SetPasswordStep = { type: 'set-password'; passwordRegex?: string };
 
-interface FormConfig {
+interface FormConfig extends BaseFormConfig {
   step: SetPasswordStep;
-  t: Record<string, string>;
-  locale?: string;
-  locales?: string[];
-  allT?: Record<string, Record<string, string>>;
   error?: string;
-  previewId?: string;
-  csrf?: string;
-  logo?: string;
 }
 
 declare global {
@@ -54,19 +19,7 @@ declare global {
 }
 
 function SetPasswordForm(props: { config: FormConfig }) {
-  const allT = props.config.allT ?? {};
-  const baseT = props.config.t;
-  const [currentLocale, setCurrentLocale] = createSignal(props.config.locale ?? 'en');
-  const changeLocale = (loc: string) => {
-    setCurrentLocale(loc);
-    try { window.parent.postMessage({ type: 'versola:locale-change', locale: loc, previewId: props.config.previewId }, '*'); } catch (_) {}
-  };
-  const t = () => {
-    const loc = currentLocale();
-    const locT = allT[loc] ?? {};
-    return { ...baseT, ...locT };
-  };
-  const locales = props.config.locales ?? [];
+  const { t, locale: currentLocale, changeLocale } = createTranslations(props.config);
 
   const [passwordNotAllowed, setPasswordNotAllowed] = createSignal(false);
   const [passwordMismatch, setPasswordMismatch] = createSignal(false);
@@ -94,51 +47,47 @@ function SetPasswordForm(props: { config: FormConfig }) {
   };
 
   return (
+    <>
+      <PageBrand logo={props.config.logo} />
     <div class="container">
-      <Show when={locales.length > 1}>
-        <div class="locale-selector">
-          <LocaleDropdown locales={locales} current={currentLocale()} onChange={changeLocale} />
-        </div>
-      </Show>
+      <LocaleSelector config={props.config} current={currentLocale()} onChange={changeLocale} />
+      <ClientBadge client={props.config.client} locale={currentLocale()} defaultLocale={props.config.defaultLocale} />
       <h1>{t().title}</h1>
       <Show when={props.config.error}>
-        <div class="error-text" style="margin-bottom: 8px;">{t()[props.config.error!] ?? props.config.error}</div>
+        <div class="error-text error-text-block" role="alert">{t()[props.config.error!] ?? props.config.error}</div>
       </Show>
       <form method="post" onSubmit={handleSubmit}>
         <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
-        <input
-          type="password"
+        <PasswordInput
+          id="password"
           name="password"
-          class={`input-field${passwordNotAllowed() ? ' input-error' : ''}`}
-          placeholder={t().password_placeholder}
+          label={t().password_placeholder}
           autocomplete="new-password"
-          required
-          onInput={(e) => checkPassword((e.currentTarget as HTMLInputElement).value)}
+          error={passwordNotAllowed() ? t().password_not_allowed : undefined}
+          showLabel={t().show_password}
+          hideLabel={t().hide_password}
+          onInput={(value) => checkPassword(value)}
         />
-        <Show when={passwordNotAllowed()}>
-          <div class="field-error error-text">{t().password_not_allowed}</div>
-        </Show>
-        <input
-          type="password"
+        <PasswordInput
+          id="confirm"
           name="confirm"
-          class={`input-field${passwordMismatch() ? ' input-error' : ''}`}
-          placeholder={t().confirm_placeholder}
+          label={t().confirm_placeholder}
           autocomplete="new-password"
-          required
-          onInput={(e) => {
-            const form = (e.currentTarget as HTMLInputElement).closest('form')!;
+          error={passwordMismatch() ? t().password_mismatch : undefined}
+          showLabel={t().show_password}
+          hideLabel={t().hide_password}
+          onInput={(value, input) => {
+            const form = input.closest('form')!;
             const pw = (form.elements.namedItem('password') as HTMLInputElement).value;
-            checkConfirm(pw, (e.currentTarget as HTMLInputElement).value);
+            checkConfirm(pw, value);
           }}
         />
-        <Show when={passwordMismatch()}>
-          <div class="field-error error-text">{t().password_mismatch}</div>
-        </Show>
         <button type="submit" formAction={`/challenge/set-password?ui_locale=${currentLocale()}`} class="btn btn-primary">
           {t().continue}
         </button>
       </form>
     </div>
+    </>
   );
 }
 

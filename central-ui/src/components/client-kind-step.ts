@@ -54,8 +54,8 @@ export class VersolaClientKindStep extends LitElement {
 
       .kind-card {
         text-align: left;
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-lg);
         padding: 1rem;
         cursor: pointer;
@@ -72,8 +72,8 @@ export class VersolaClientKindStep extends LitElement {
 
       .kind-card[aria-pressed='true'] {
         border-color: var(--accent);
-        background: rgba(var(--accent-tint), 0.06);
-        box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.16);
+        background: var(--accent-subtle);
+        box-shadow: 0 0 0 2px var(--accent-border);
       }
 
       .kind-card[aria-pressed='true'] .kind-blurb,
@@ -102,7 +102,7 @@ export class VersolaClientKindStep extends LitElement {
         color: var(--text-secondary);
         margin-top: 0.5rem;
         padding-top: 0.5rem;
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
 
       .plan { display: grid; gap: 0.6rem; margin-top: 0.25rem; }

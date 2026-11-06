@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_JWKS_KEYS,
+  isHttpUrl,
   clientCredentialKind,
   jwksVerifiesRequestObjects,
   validateClientCredential,
@@ -8,6 +9,9 @@ import {
   validateJwksJson,
   describeJwks,
   validateMtlsTermination,
+  validatePermission,
+  validateRoleId,
+  validateScopeId,
 } from './validators';
 
 describe('validateJwksJson', () => {
@@ -138,5 +142,46 @@ describe('describeJwks', () => {
 
   it('is empty for anything that is not a key set', () => {
     expect(describeJwks(undefined)).toEqual([]);
+  });
+});
+
+describe('identifier validators match the server patterns', () => {
+  it('role IDs allow hyphens and reject underscores', () => {
+    expect(validateRoleId('oauth-admin')).toBe(true);
+    expect(validateRoleId('role_admin')).toBe(false);
+    expect(validateRoleId('1admin')).toBe(false);
+  });
+
+  it('scope IDs allow underscores and reject hyphens, dots and colons', () => {
+    expect(validateScopeId('user_data')).toBe(true);
+    expect(validateScopeId('user-data')).toBe(false);
+    expect(validateScopeId('users:read')).toBe(false);
+    expect(validateScopeId('users.read')).toBe(false);
+  });
+
+  it('permissions use only the colon as a separator', () => {
+    expect(validatePermission('orders:read')).toBe(true);
+    expect(validatePermission('billing:invoice:read')).toBe(true);
+    expect(validatePermission('orders')).toBe(true);
+    expect(validatePermission('orders.read')).toBe(false);
+    expect(validatePermission('billing:invoice.read')).toBe(false);
+    expect(validatePermission('billing:')).toBe(false);
+    expect(validatePermission('billing-invoice')).toBe(true);
+    expect(validatePermission('auth-settings:manage')).toBe(true);
+    expect(validatePermission('-billing')).toBe(false);
+    expect(validatePermission('Billing')).toBe(false);
+  });
+});
+
+describe('isHttpUrl', () => {
+  it('accepts absolute http(s) URLs', () => {
+    expect(isHttpUrl('https://cdn.example/logo.svg')).toBe(true);
+    expect(isHttpUrl('http://localhost:8080/logo.png')).toBe(true);
+  });
+
+  it('refuses relative, scheme-less and non-http URLs', () => {
+    for (const value of ['/logo.svg', 'logo.svg', 'javascript:alert(1)', 'data:image/svg+xml,<svg/>', 'ftp://cdn.example/a.svg', '']) {
+      expect(isHttpUrl(value)).toBe(false);
+    }
   });
 });

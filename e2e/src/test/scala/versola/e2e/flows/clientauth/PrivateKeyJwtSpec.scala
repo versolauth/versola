@@ -26,6 +26,28 @@ object PrivateKeyJwtSpec extends E2ESpec:
   private def uid: UIO[String] =
     ZIO.succeed(UUID.randomUUID().toString.replace("-", "").take(8))
 
+  /** Waits until auth knows the client it was just told about.
+    *
+    * `syncConfiguration` makes auth reload from central's configuration cache, and central keeps that cache current
+    * from a Postgres notification, so on a slow runner the reload can run before central has seen the registration:
+    * /token then answers "Client not exist" for a client that is in the database. What is awaited here is exactly
+    * that answer going away (any other outcome, a refusal included, means auth has the client); each attempt reloads
+    * again, and it is bounded at ten seconds, never a fixed sleep.
+    */
+  private def awaitKnownToAuth(auth: OAuthClient, signer: AssertionSigner, clientId: String): Task[Unit] =
+    val probe =
+      for
+        // Each attempt asks for a reload again: one that ran too early does not repeat on its own.
+        _ <- auth.syncConfiguration()
+        assertion <- signer.assertion(clientId, auth.issuer)
+        result <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
+        unknown = result match
+          case TokenResult.Failure(_, body) => body.contains("Client not exist")
+          case _ => false
+        _ <- ZIO.when(unknown)(ZIO.fail(RuntimeException(s"auth does not know client $clientId yet")))
+      yield ()
+    probe.retry(Schedule.spaced(100.millis) && Schedule.recurs(100))
+
   /** A client that authenticates by assertion.
     *
     * Central still issues a secret — every `web` client gets one — but a client with `jwks`
@@ -48,6 +70,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         jwks = Some(signer.jwks),
       ).success
       _ <- auth.syncConfiguration()
+      _ <- awaitKnownToAuth(auth, signer, id)
     yield (id, result.secret)
 
   /** The same client, registered in a FAPI 2.0 tenant -- see [[SecurityProfiles.withFapi2Tenant]]
@@ -68,6 +91,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         requirePushedAuthorizationRequests = true,
       ).success
       _ <- auth.syncConfiguration()
+      _ <- awaitKnownToAuth(auth, signer, id)
     yield id
 
   /** A well-formed JWK Set holding a key no algorithm auth verifies with can use: `ES256`

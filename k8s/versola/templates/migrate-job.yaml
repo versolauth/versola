@@ -1,0 +1,55 @@
+{{- /*
+Applies the Flyway migrations of every enabled service once per release, before the new
+Deployments start (#209). The services never migrate on their own: RUN_MIGRATIONS is "false" in
+templates/deployment.yaml, they only *validate* the schema at boot and refuse to start when a
+migration is missing. That validation is also what makes a skipped Job loud rather than silent
+(new pods crash with the name of the missing migration) -- and it ignores a schema that is
+AHEAD of the build, which is what lets the previous version keep serving while this runs and
+lets `helm rollback` work. That only holds while migrations stay compatible with the previous
+release, see .claude/rules/database-migrations.md.
+*/ -}}
+{{- $m := .Values.migrations }}
+{{- if $m.enabled }}
+{{- $full := include "versola.fullname" . }}
+{{- $spec := include "versola.migrate.podSpec" . }}
+{{- if $spec }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  {{- if $m.hook }}
+  name: {{ $full }}-migrate
+  {{- else }}
+  # A Job's pod template cannot be changed, so without a hook (GitOps tools apply, they do not
+  # delete and recreate) every change to what it runs gets a new name: the hash covers the image,
+  # arguments, environment and mounts.
+  name: {{ $full }}-migrate-{{ $spec | sha256sum | trunc 8 }}
+  {{- end }}
+  labels:
+    {{- include "versola.componentLabels" (dict "component" "migrate" "context" $) | nindent 4 }}
+  {{- $annotations := dict }}
+  {{- if $m.hook }}
+  {{- /* before-hook-creation: a failed Job of the previous attempt is replaced, not "already
+         exists". hook-succeeded: a finished one is removed; a failed one stays for its logs. */ -}}
+  {{- $_ := set $annotations "helm.sh/hook" "pre-install,pre-upgrade" }}
+  {{- $_ := set $annotations "helm.sh/hook-delete-policy" "before-hook-creation,hook-succeeded" }}
+  {{- end }}
+  {{- range $k, $v := $m.annotations }}
+  {{- $_ := set $annotations $k $v }}
+  {{- end }}
+  {{- with $annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  backoffLimit: {{ $m.backoffLimit }}
+  activeDeadlineSeconds: {{ $m.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ $m.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "versola.componentSelectorLabels" (dict "component" "migrate" "context" $) | nindent 8 }}
+    spec:
+      {{- $spec | nindent 6 }}
+{{- end }}
+{{- end }}

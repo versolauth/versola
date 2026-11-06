@@ -22,13 +22,13 @@ object PermissionsSyncClient:
       config: EdgeConfig,
       centralSyncTokenService: CentralSyncTokenService,
   ) extends PermissionsSyncClient:
-    private val PermissionsURL = config.central.url / "configuration" / "permissions" / "sync"
+    private val PermissionsURL = config.central.url / "edge" / "sync" / "permissions"
 
     override def getAll: Task[Map[PermissionId, Set[ResourceEndpointId]]] =
       for
         token <- centralSyncTokenService.getToken
         request = Request.get(PermissionsURL).addHeader(Header.Authorization.Bearer(token))
-        body <- ZIO.scoped(httpClient.request(request).flatMap(_.bodyAs[GetPermissionsSyncResponse]))
+        body <- ZIO.scoped(centralSyncTokenService.syncRequest(httpClient, request).flatMap(_.bodyAs[GetPermissionsSyncResponse]))
       yield body.permissions
         .map(p => PermissionId(p.id) -> p.endpointIds.map(ResourceEndpointId(_)))
         .toMap

@@ -1,231 +1,648 @@
-import { expect, test, type Page } from '@playwright/test';
-import { findRequest, loadAdminApp } from './fixtures';
+import AxeBuilder from '@axe-core/playwright';
+import { expect, test } from '@playwright/test';
+import { findRequest, loadAdminApp, sidePanel, sidePanelDialog, expectSheetWidth } from './fixtures';
 
+/**
+ * Edges on the table + side panel pattern: the list with the key and DPoP nonce state,
+ * registering an edge in the panel (which lands on the new record with the one-time private
+ * key banner), rotating and retiring keys, the DPoP nonce editor, delete, the read-only
+ * console and the sheet below 720px.
+ */
 const edgesPath = '/?view=edges';
+const alphaEdge = { id: 'edge-alpha', hasOldKey: false, requireDpopNonce: true };
+const bravoEdge = { id: 'edge-bravo', hasOldKey: true, requireDpopNonce: false };
+const tenants = [{ id: 'tenant-alpha', description: 'Alpha Workspace', edgeId: 'edge-alpha' }, { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null }];
+const readOnly = { resources: { central: { permissions: ['edges:read', 'tenants:read'] } }, isProd: false };
 
-const alphaEdge = {
-  id: 'edge-alpha',
-  hasOldKey: false,
-  requireDpopNonce: true,
-};
+const panel = sidePanel;
 
-const bravoEdge = {
-  id: 'edge-bravo',
-  hasOldKey: false,
-  requireDpopNonce: true,
-};
+type Recorded = { method: string; pathname: string; body?: unknown };
+/** The policies patches that name `section` (they are one endpoint for the three sections). */
+const patchesOf = (requests: Recorded[], section: string) =>
+  requests.filter(request => request.method === 'PATCH' && request.pathname === '/configuration/edges/policies' && typeof request.body === 'object' && request.body !== null && section in request.body);
+const patchOf = (section: string) => (request: Recorded) => patchesOf([request], section).length > 0;
 
-function edgeCard(page: Page, edgeId: string) {
-  return page.locator('.edge-card').filter({ hasText: edgeId }).first();
-}
+test('lists edges with their tenants, key state and DPoP nonce, filters and searches', async ({ page }) => {
+  await loadAdminApp(page, { path: edgesPath, state: { edges: [alphaEdge, bravoEdge], tenants } });
 
-test('renders edges as expandable cards', async ({ page }) => {
-  await loadAdminApp(page, {
-    path: edgesPath,
-    state: { edges: [alphaEdge, bravoEdge] },
-  });
+  const table = page.locator('versola-data-table');
+  await expect(table.getByRole('columnheader')).toHaveText(['Edge', 'Tenants', 'Key', 'DPoP nonce', 'Actions']);
+  const alpha = table.getByRole('row').filter({ hasText: 'edge-alpha' });
+  await expect(alpha).toContainText('tenant-alpha');
+  await expect(alpha).toContainText('Key current');
+  await expect(alpha).toContainText('Required');
+  const bravo = table.getByRole('row').filter({ hasText: 'edge-bravo' });
+  await expect(bravo).toContainText('Key rotation');
+  await expect(bravo).toContainText('Not required');
 
-  const alpha = edgeCard(page, 'edge-alpha');
-  await expect(alpha).toContainText('edge-alpha');
-  await expect(alpha.getByRole('button', { name: 'Delete edge edge-alpha' })).toBeVisible();
-
-  const bravo = edgeCard(page, 'edge-bravo');
-  await expect(bravo).toContainText('edge-bravo');
+  await page.getByRole('button', { name: 'Key rotation', exact: true }).click();
+  await expect(table.getByRole('button', { name: /^Open edge/ })).toHaveText([/edge-bravo/]);
+  await page.getByRole('button', { name: 'No tenants', exact: true }).click();
+  await expect(table.getByRole('button', { name: /^Open edge/ })).toHaveText([/edge-bravo/]);
+  await page.getByRole('button', { name: 'All', exact: true }).click();
+  await page.getByLabel('Search edges').fill('alpha');
+  await expect(table.getByRole('button', { name: /^Open edge/ })).toHaveCount(1);
 });
 
-test('creates a new edge and shows the generated private key banner', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: edgesPath,
-    state: { edges: [] },
-  });
+test('opens an edge and shows its key, DPoP nonce, linked tenants and Fixed', async ({ page }) => {
+  await loadAdminApp(page, { path: edgesPath, state: { edges: [alphaEdge, bravoEdge], tenants } });
 
-  // Click on + Create Edge button from empty state
+  await page.getByRole('button', { name: 'Open edge edge-bravo' }).click();
+  const dialog = panel(page, 'edge-bravo');
+  await expect(dialog.getByRole('dialog')).toBeVisible();
+  await expect(page).toHaveURL(/id=edge-bravo/);
+  await expect(dialog.getByText('A key rotation is open: both keys verify')).toBeVisible();
+  await expect(dialog.getByRole('region', { name: 'Signing key' })).toContainText('Rotation open');
+  await expect(dialog.getByRole('button', { name: 'Retire old key' })).toBeVisible();
+  await expect(dialog.getByRole('region', { name: 'DPoP nonce' })).toContainText('Not required');
+  await expect(dialog.getByRole('region', { name: 'Linked tenants' })).toContainText('No tenants assigned to this edge.');
+  await expect(dialog.getByRole('region', { name: 'Fixed' })).toContainText('Set at registration');
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Open edge edge-bravo' })).toBeFocused();
+
+  await page.getByRole('button', { name: 'Open edge edge-alpha' }).click();
+  await expect(panel(page, 'edge-alpha').getByRole('region', { name: 'Linked tenants' })).toContainText('tenant-alpha');
+});
+
+test('registers an edge in the panel and lands on it with the one-time private key banner', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: edgesPath, state: { edges: [] } });
+
   await page.getByRole('button', { name: '+ Create Edge' }).click();
-  await page.getByLabel('Edge ID').fill('new');
-  await page.getByRole('button', { name: 'Create Edge', exact: true }).click();
-
-  await expect(page.locator('.secret-banner')).toContainText('Edge Key Generated');
-  await expect(page.getByRole('button', { name: 'Copy Private Key' })).toBeVisible();
-  await expect(page.locator('.secret-value').first()).toBeVisible();
-
-  // Dismiss the secret banner to return to list view
-  await page.getByRole('button', { name: "I've Saved It" }).click();
-
-  const created = edgeCard(page, 'edge-new');
-  await expect(created).toContainText('edge-new');
+  const dialog = panel(page, 'Register edge');
+  await dialog.getByLabel('Edge ID *').fill('new');
+  await expect(dialog.getByText('Registered as edge-new')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Register edge', exact: true }).click();
 
   expect((await findRequest(api.requests, 'POST', '/configuration/edges')).body).toEqual({ id: 'edge-new' });
+  const record = panel(page, 'edge-new');
+  await expect(record.getByText('Edge key generated')).toBeVisible();
+  await expect(record.locator('.secret-value')).toHaveCount(3);
+  await expect(record.getByRole('button', { name: 'Copy private key' })).toBeVisible();
+  await expect(page.locator('versola-data-table')).toContainText('edge-new');
+
+  await record.getByRole('button', { name: "I've saved it" }).click();
+  await expect(record.getByText('Edge key generated')).toHaveCount(0);
 });
 
-test('shows edge form validation for invalid edge ID', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: edgesPath,
-    state: { edges: [alphaEdge] }, // Have at least one edge so header button shows
-  });
+test('refuses an invalid or duplicate edge ID before submitting', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: edgesPath, state: { edges: [alphaEdge] } });
 
   await page.getByRole('button', { name: '+ Create Edge' }).click();
-  const edgeIdField = page.getByLabel('Edge ID');
-
-  // Test invalid characters
-  await edgeIdField.fill('Bad-ID');
-  await expect(page.getByText('Invalid edge ID format')).toBeVisible();
-
-  const submitButton = page.getByRole('button', { name: 'Create Edge', exact: true });
-  await expect(submitButton).toBeDisabled();
-
+  const dialog = panel(page, 'Register edge');
+  const id = dialog.getByLabel('Edge ID *');
+  await id.fill('Bad-ID');
+  await expect(id).toHaveAttribute('aria-invalid', 'true');
+  await expect(dialog.getByText('Lowercase letters, digits and dashes.')).toBeVisible();
+  await id.fill('alpha');
+  await expect(dialog.getByText('An edge with this ID already exists.')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Register edge', exact: true }).click();
   expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/edges')).toBeFalsy();
-});
-
-test('rejects duplicate edge ID when creating', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: edgesPath,
-    state: { edges: [alphaEdge] },
-  });
-
-  await page.getByRole('button', { name: '+ Create Edge' }).click();
-  const edgeIdField = page.getByLabel('Edge ID');
-  await edgeIdField.fill('alpha');
-  await expect(page.getByText('Edge ID already exists')).toBeVisible();
-
-  const submitButton = page.getByRole('button', { name: 'Create Edge', exact: true });
-  await expect(submitButton).toBeDisabled();
-
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/edges')).toBeFalsy();
-});
-
-test('expands edge card and shows linked tenants section', async ({ page }) => {
-  await loadAdminApp(page, {
-    path: edgesPath,
-    state: { edges: [alphaEdge] },
-  });
-
-  const card = edgeCard(page, 'edge-alpha');
-
-  // Initially the linked tenants section should not be visible
-  await expect(card.getByText('Linked Tenants')).not.toBeVisible();
-
-  // Click on the card header to expand
-  await card.locator('.edge-header').click();
-
-  // Should show linked tenants section
-  await expect(card.getByText('Linked Tenants')).toBeVisible();
 });
 
 // RFC 9449 section 9 is per edge and lives in central, so the console is where it is turned
 // off -- not in the edge's own config file, which no longer carries it.
-test('turns off an edge DPoP nonce requirement and reflects it after the save', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: edgesPath,
-    state: { edges: [alphaEdge] },
-  });
+test('turns off the DPoP nonce requirement in the group editor and reflects it after the save', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: edgesPath, state: { edges: [alphaEdge] } });
 
-  const card = edgeCard(page, 'edge-alpha');
-  await card.locator('.edge-header').click();
-
-  const toggle = card.locator('.dpop-toggle input[type="checkbox"]');
+  await page.getByRole('button', { name: 'Open edge edge-alpha' }).click();
+  await panel(page, 'edge-alpha').getByRole('button', { name: 'Edit dpop nonce' }).click();
+  const editor = panel(page, 'Edit DPoP nonce');
+  await expect(page).toHaveURL(/edit=dpop/);
+  await expect(editor).toContainText('use_dpop_nonce');
+  await expect(editor).toContainText('Governs this edge only');
+  const toggle = editor.getByRole('checkbox', { name: 'Required on every proxied call' });
   await expect(toggle).toBeChecked();
   await toggle.uncheck();
+  await editor.getByRole('button', { name: 'Save DPoP nonce' }).click();
 
   const request = await findRequest(api.requests, 'PUT', '/configuration/edges/dpop');
   expect(request.searchParams).toEqual({ edgeId: 'edge-alpha' });
   expect(request.body).toEqual({ requireDpopNonce: false });
-  await expect(toggle).not.toBeChecked();
+  await expect(panel(page, 'edge-alpha').getByRole('region', { name: 'DPoP nonce' })).toContainText('Not required');
+  await expect(page.locator('versola-data-table').getByRole('row').filter({ hasText: 'edge-alpha' })).toContainText('Not required');
 });
 
-// What the setting costs and what it breaks has to be readable where it is flipped; an
-// operator who has to go read RFC 9449 to decide is one who guesses instead.
-test('explains the DPoP nonce requirement next to the toggle', async ({ page }) => {
-  await loadAdminApp(page, {
-    path: edgesPath,
-    state: { edges: [alphaEdge] },
-  });
+test('rotates the key, shows the new private key, then retires the old key', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: edgesPath, state: { edges: [alphaEdge] } });
 
-  const card = edgeCard(page, 'edge-alpha');
-  await card.locator('.edge-header').click();
-
-  const tooltip = card.locator('.option-tooltip');
-  await expect(tooltip).not.toBeVisible();
-
-  await card.getByRole('button', { name: 'DPoP nonce requirement info' }).click();
-  await expect(tooltip).toBeVisible();
-  await expect(tooltip).toContainText('use_dpop_nonce');
-  await expect(tooltip).toContainText('Governs this edge only');
-});
-
-test('rotates edge key and shows the new private key banner', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: edgesPath,
-    state: { edges: [alphaEdge] },
-  });
-
-  const card = edgeCard(page, 'edge-alpha');
-
-  // Click edit button to open the form
-  await card.getByRole('button', { name: 'Edit edge edge-alpha' }).click();
-
-  // Click rotate key button in the form
-  await page.getByRole('button', { name: 'Rotate Key', exact: true }).click();
-
-  // Wait for and click the confirm button in the custom dialog (it's in a shadow DOM)
-  const dialog = page.getByRole('dialog');
-  await expect(dialog).toBeVisible();
-  await dialog.getByRole('button', { name: 'Rotate Key', exact: true }).click();
-
-  // Should see the key banner after rotation
-  await expect(page.locator('.secret-banner')).toContainText('Edge Key Rotated');
-  await expect(page.locator('.secret-value').first()).toBeVisible();
+  await page.getByRole('button', { name: 'Open edge edge-alpha' }).click();
+  const record = panel(page, 'edge-alpha');
+  await record.getByRole('button', { name: 'Rotate key', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Rotate edge key' }).getByRole('button', { name: 'Rotate key', exact: true }).click();
 
   expect((await findRequest(api.requests, 'POST', '/configuration/edges/rotate-key')).searchParams).toEqual({ edgeId: 'edge-alpha' });
+  await expect(record.getByText('Edge key rotated')).toBeVisible();
+  await expect(record.getByText('A key rotation is open: both keys verify')).toBeVisible();
+  await expect(record.locator('.chip', { hasText: 'Key rotation' })).toBeVisible();
+
+  await record.getByRole('button', { name: 'Retire old key' }).click();
+  await page.getByRole('dialog', { name: 'Retire old key' }).getByRole('button', { name: 'Retire old key' }).click();
+  expect((await findRequest(api.requests, 'DELETE', '/configuration/edges/old-key')).searchParams).toEqual({ edgeId: 'edge-alpha' });
+  await expect(record.locator('.chip', { hasText: 'Key current' })).toBeVisible();
+  await expect(record.getByRole('button', { name: 'Retire old key' })).toHaveCount(0);
 });
 
-test('deletes an edge through the confirm dialog', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: edgesPath,
-    state: { edges: [alphaEdge, bravoEdge] },
-  });
+test('deletes an edge from the panel through the confirm dialog and reaches the empty state', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: edgesPath, state: { edges: [bravoEdge] } });
 
-  await edgeCard(page, 'edge-bravo').getByRole('button', { name: 'Delete edge edge-bravo' }).click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
+  await page.getByRole('button', { name: 'Open edge edge-bravo' }).click();
+  await panel(page, 'edge-bravo').getByRole('button', { name: 'Delete edge edge-bravo' }).click();
+  await page.getByRole('dialog', { name: 'Delete edge' }).getByRole('button', { name: 'Delete', exact: true }).click();
 
   expect((await findRequest(api.requests, 'DELETE', '/configuration/edges')).searchParams).toEqual({ edgeId: 'edge-bravo' });
-  await expect(page.locator('.edge-card').filter({ hasText: 'edge-bravo' })).toHaveCount(0);
-  await expect(edgeCard(page, 'edge-alpha')).toBeVisible();
-});
-
-test('shows empty state when no edges are created', async ({ page }) => {
-  await loadAdminApp(page, {
-    path: edgesPath,
-    state: { edges: [] },
-  });
-
+  await expect(panel(page, 'edge-bravo')).toHaveCount(0);
   await expect(page.getByText('No edges yet')).toBeVisible();
-  await expect(page.getByText('Create your first edge to get started')).toBeVisible();
   await expect(page.getByRole('button', { name: '+ Create Edge' })).toBeVisible();
 });
 
-test('shows empty state after deleting the last edge', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: edgesPath,
-    state: { edges: [bravoEdge] },
-  });
+test('read-only console: no create, no Edit, no key actions, no danger card', async ({ page }) => {
+  await loadAdminApp(page, { path: edgesPath, state: { edges: [bravoEdge], myPermissions: readOnly } });
 
-  await edgeCard(page, 'edge-bravo').getByRole('button', { name: 'Delete edge edge-bravo' }).click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
-
-  await expect(page.locator('.edge-card')).toHaveCount(0);
-  await expect(page.getByText('No edges yet')).toBeVisible();
+  await expect(page.getByRole('button', { name: '+ Create Edge' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Actions for edge-bravo' }).click();
+  await expect(page.getByRole('menuitem')).toHaveText(['Open', 'Copy edge ID']);
+  await page.getByRole('menuitem', { name: 'Open' }).click();
+  const dialog = panel(page, 'edge-bravo');
+  await expect(dialog.getByRole('button', { name: /^Edit/ })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Rotate key' })).toHaveCount(0);
+  await expect(dialog.getByRole('region', { name: 'Delete edge' })).toHaveCount(0);
 });
 
-test('closes edge form when cancel button is clicked', async ({ page }) => {
-  await loadAdminApp(page, {
-    path: edgesPath,
-    state: { edges: [bravoEdge] },
-  });
+test('below 720px the panel is a full-screen sheet', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await loadAdminApp(page, { path: `${edgesPath}&id=edge-bravo`, state: { edges: [bravoEdge] } });
+
+  const dialog = panel(page, 'edge-bravo');
+  await expect(dialog.getByRole('dialog')).toBeVisible();
+  await expectSheetWidth(page, (await dialog.getByRole('dialog').boundingBox())?.width);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
+test('asks before the panel closes on a private key that is shown only once', async ({ page }) => {
+  await loadAdminApp(page, { path: edgesPath, state: { edges: [] } });
 
   await page.getByRole('button', { name: '+ Create Edge' }).click();
-  await expect(page.locator('versola-edge-form')).toBeVisible();
+  const dialog = panel(page, 'Register edge');
+  await dialog.getByLabel('Edge ID *').fill('new');
+  await dialog.getByRole('button', { name: 'Register edge', exact: true }).click();
+  const record = panel(page, 'edge-new');
+  await expect(record.getByText('Edge key generated')).toBeVisible();
 
-  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await expect(page.locator('versola-edge-form')).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'Edges' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  const confirm = page.getByRole('dialog', { name: 'Leave without saving the private key?' });
+  await confirm.getByRole('button', { name: 'Stay' }).click();
+  await expect(record.getByText('Edge key generated')).toBeVisible();
+
+  await page.keyboard.press('Escape');
+  await confirm.getByRole('button', { name: 'Leave' }).click();
+  await expect(panel(page, 'edge-new')).toHaveCount(0);
+});
+
+test.describe('overload protection', () => {
+  const policy = { inbound: { mode: 'enforce', maxInFlight: 512, adaptive: { maxLimit: 1536 } }, outbound: { mode: 'shadow' } };
+  const editPath = '/?view=edges&id=edge-alpha&edit=overload';
+  const alpha = { ...alphaEdge, overloadPolicy: policy };
+
+  test('the edge panel says what is set here and what comes from the deployment', async ({ page }) => {
+    await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alphaEdge, { ...bravoEdge, overloadPolicy: policy }] } });
+    const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Overload protection' });
+    await expect(card).toContainText('Deployment default');
+    await expect(card).toContainText('Nothing: every value comes from the deployment');
+    await expect(card.getByRole('button', { name: 'Reset to deployment defaults' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Open edge edge-bravo' }).click();
+    const custom = panel(page, 'edge-bravo').getByRole('region', { name: 'Overload protection' });
+    await expect(custom).toContainText('Enforce (set here)');
+    await expect(custom).toContainText('Shadow (set here)');
+    await expect(custom).toContainText('maxInFlight 512');
+  });
+
+  test('every field names what an empty value means', async ({ page }) => {
+    await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
+    const dialog = panel(page, 'Edit overload protection');
+    await expect(dialog.getByText('HTTP_ADMISSION_MAX_IN_FLIGHT if the edge sets it, otherwise 256')).toBeVisible();
+    await expect(dialog.getByText('HTTP_CLIENT_GUARD_REQUEST_TIMEOUT if the edge sets it, otherwise 10000')).toBeVisible();
+    await expect(dialog.getByLabel('Highest limit')).toHaveAttribute('placeholder', '1024');
+    await expect(dialog.getByLabel('Tolerance')).toBeHidden();
+    await dialog.getByText('Advanced').click();
+    await expect(dialog.getByLabel('Tolerance')).toBeVisible();
+  });
+
+  test('saves only the fields that were set', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
+    const dialog = panel(page, 'Edit overload protection');
+    await dialog.getByRole('group', { name: 'Mode' }).first().getByRole('button', { name: 'Enforce' }).click();
+    await dialog.getByLabel('Highest limit').fill('1536');
+    await dialog.getByRole('button', { name: 'Save overload protection' }).click();
+
+    const request = await findRequest(api.requests, 'PATCH', '/configuration/edges/policies');
+    expect(request.searchParams.edgeId).toBe('edge-alpha');
+    expect(request.body).toEqual({ overload: { inbound: { mode: 'enforce', adaptive: { maxLimit: 1536 } } }, expectedRevisions: { overload: 0 } });
+    await expect(panel(page, 'edge-alpha').getByText('Overload protection saved')).toBeVisible();
+    await expect(panel(page, 'edge-alpha').getByRole('region', { name: 'Overload protection' })).toContainText('Enforce (set here)');
+  });
+
+  test('validates inline with the server messages and sends nothing while a field is wrong', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
+    const dialog = panel(page, 'Edit overload protection');
+    await dialog.getByLabel('Starting limit').fill('0');
+    await expect(dialog.getByText('inbound.maxInFlight must be between 1 and 100000')).toBeVisible();
+    await expect(dialog.getByLabel('Starting limit')).toHaveAttribute('aria-invalid', 'true');
+    await dialog.getByLabel('Start share').fill('0.9');
+    await dialog.getByLabel('Continuation share').fill('0.5');
+    await expect(dialog.getByText(/inbound.startShare must not exceed inbound.continuationShare/)).toBeVisible();
+
+    await dialog.getByRole('button', { name: 'Save overload protection' }).click();
+    await expect(dialog.getByLabel('Starting limit')).toBeFocused();
+    expect(patchesOf(api.requests, 'overload')).toHaveLength(0);
+
+    await dialog.getByLabel('Starting limit').fill('8');
+    await expect(dialog.getByText('The limit starts at 16, the lowest limit, not at 8.')).toBeVisible();
+  });
+
+  test('a section central refuses (400, no body) says so in the console\'s words and keeps the draft', async ({ page }) => {
+    await loadAdminApp(page, { path: editPath, state: { edges: [alpha], overloadRejection: 'inbound.adaptive.maxLimit must be between 1 and 100000' } });
+    const dialog = panel(page, 'Edit overload protection');
+    await dialog.getByRole('button', { name: 'Save overload protection' }).click();
+    await expect(dialog.getByRole('alert').filter({ hasText: 'Central did not accept these values' })).toBeVisible();
+    await expect(dialog.getByLabel('Starting limit')).toHaveValue('512');
+  });
+
+  test('one click sends one request and the controls wait for it', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alpha], overloadDelayMs: 600 } });
+    const dialog = panel(page, 'Edit overload protection');
+    const save = dialog.getByRole('button', { name: 'Save overload protection' });
+    await save.dblclick();
+    await expect(dialog.getByRole('button', { name: 'Saving…' })).toBeDisabled();
+    await expect(dialog.getByLabel('Starting limit')).toBeDisabled();
+    await expect(panel(page, 'edge-alpha').getByText('Overload protection saved')).toBeVisible();
+    expect(patchesOf(api.requests, 'overload')).toHaveLength(1);
+  });
+
+  test('Reset to deployment defaults sends {} after a confirmation', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alpha] } });
+    const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Overload protection' });
+    await card.getByRole('button', { name: 'Reset to deployment defaults' }).click();
+    await page.getByRole('button', { name: 'Reset', exact: true }).click();
+
+    expect((await findRequest(api.requests, 'PATCH', '/configuration/edges/policies')).body).toMatchObject({ overload: null });
+    await expect(card).toContainText('Nothing: every value comes from the deployment');
+    await expect(panel(page, 'edge-alpha').getByText('returned to the deployment defaults')).toBeVisible();
+  });
+
+  test('the editor has no axe violations in either theme, errors showing', async ({ page }) => {
+    for (const scheme of ['light', 'dark'] as const) {
+      await page.addInitScript(value => localStorage.setItem('versola-theme', value), scheme);
+      await loadAdminApp(page, { path: editPath, state: { edges: [alpha] } });
+      const dialog = panel(page, 'Edit overload protection');
+      await dialog.getByLabel('Starting limit').fill('0');
+      await dialog.getByText('Advanced').click();
+      const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+      expect(results.violations.map(v => `${v.id}: ${v.nodes.length}`), scheme).toEqual([]);
+    }
+  });
+
+  test('a console without edges:manage can read it but not edit it', async ({ page }) => {
+    await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alpha], myPermissions: readOnly } });
+    const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Overload protection' });
+    await expect(card).toContainText('Enforce (set here)');
+    await expect(card.getByRole('button')).toHaveCount(0);
+  });
+});
+
+test.describe('access log', () => {
+  const policy = { mode: 'sampled', successSampleRate: 0.1 };
+  const editPath = '/?view=edges&id=edge-alpha&edit=access-log';
+  const alpha = { ...alphaEdge, accessLogPolicy: policy };
+  const put = patchOf('accessLog');
+
+  test('the edge panel says what is set here and what the edge defaults to', async ({ page }) => {
+    await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alphaEdge, { ...bravoEdge, accessLogPolicy: policy }] } });
+    const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Access log' });
+    await expect(card).toContainText('Default (off)');
+    await expect(card).toContainText('Nothing: the edge uses its defaults');
+    await expect(card).toContainText('Auth and central always log every request');
+    await expect(card.getByRole('button', { name: 'Reset to defaults' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Open edge edge-bravo' }).click();
+    const custom = panel(page, 'edge-bravo').getByRole('region', { name: 'Access log' });
+    await expect(custom).toContainText('Sampled (set here)');
+    await expect(custom).toContainText('successSampleRate 0.1');
+  });
+
+  test('every field names what an empty value means, and each mode says what it does', async ({ page }) => {
+    await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
+    const dialog = panel(page, 'Edit access log');
+    await expect(dialog.getByLabel('Slow threshold')).toHaveAttribute('placeholder', '500');
+    await expect(dialog.getByLabel('Sample rate')).toHaveAttribute('placeholder', '0.05');
+    await expect(dialog.getByText('Empty: 500 ms')).toBeVisible();
+    await expect(dialog.getByText('Empty: 0.05')).toBeVisible();
+    await expect(dialog.getByText('Only requests that failed (status 400 or above, or an error) and slow ones are logged.')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Full', exact: true }).click();
+    await expect(dialog.getByText('Every request gets a log line.')).toBeVisible();
+  });
+
+  test('saves only the fields that were set', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
+    const dialog = panel(page, 'Edit access log');
+    await dialog.getByRole('button', { name: 'Full', exact: true }).click();
+    await dialog.getByLabel('Slow threshold').fill('250');
+    await dialog.getByRole('button', { name: 'Save access log' }).click();
+
+    const request = await findRequest(api.requests, 'PATCH', '/configuration/edges/policies');
+    expect(request.searchParams.edgeId).toBe('edge-alpha');
+    expect(request.body).toEqual({ accessLog: { mode: 'full', slowMillis: 250 }, expectedRevisions: { accessLog: 0 } });
+    await expect(panel(page, 'edge-alpha').getByText('Access log saved')).toBeVisible();
+    await expect(panel(page, 'edge-alpha').getByRole('region', { name: 'Access log' })).toContainText('Full (set here)');
+    expect(patchesOf(api.requests, 'overload')).toHaveLength(0);
+  });
+
+  test('validates inline with the server messages and sends nothing while a field is wrong', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
+    const dialog = panel(page, 'Edit access log');
+    await dialog.getByLabel('Sample rate').fill('1.5');
+    await expect(dialog.getByText('successSampleRate must be between 0.0 and 1.0')).toBeVisible();
+    await expect(dialog.getByLabel('Sample rate')).toHaveAttribute('aria-invalid', 'true');
+    await dialog.getByLabel('Slow threshold').fill('-1');
+    await expect(dialog.getByText('slowMillis must be between 0 and 600000')).toBeVisible();
+
+    await dialog.getByRole('button', { name: 'Save access log' }).click();
+    await expect(dialog.getByLabel('Slow threshold')).toBeFocused();
+    expect(api.requests.some(put)).toBe(false);
+  });
+
+  test('a section central refuses (400, no body) says so in the console\'s words and keeps the draft', async ({ page }) => {
+    await loadAdminApp(page, { path: editPath, state: { edges: [alpha], accessLogRejection: 'mode must be full, sampled or off' } });
+    const dialog = panel(page, 'Edit access log');
+    await dialog.getByRole('button', { name: 'Save access log' }).click();
+    await expect(dialog.getByRole('alert').filter({ hasText: 'Central did not accept these values' })).toBeVisible();
+    await expect(dialog.getByLabel('Sample rate')).toHaveValue('0.1');
+  });
+
+  test('one click sends one request and the controls wait for it', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alpha], accessLogDelayMs: 600 } });
+    const dialog = panel(page, 'Edit access log');
+    await dialog.getByRole('button', { name: 'Save access log' }).dblclick();
+    await expect(dialog.getByRole('button', { name: 'Saving…' })).toBeDisabled();
+    await expect(dialog.getByLabel('Sample rate')).toBeDisabled();
+    await expect(panel(page, 'edge-alpha').getByText('Access log saved')).toBeVisible();
+    expect(api.requests.filter(put)).toHaveLength(1);
+  });
+
+  test('Reset to defaults sends {} after a confirmation', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alpha] } });
+    const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Access log' });
+    await card.getByRole('button', { name: 'Reset to defaults' }).click();
+    await page.getByRole('button', { name: 'Reset', exact: true }).click();
+
+    expect((await findRequest(api.requests, 'PATCH', '/configuration/edges/policies')).body).toMatchObject({ accessLog: null });
+    await expect(card).toContainText('Nothing: the edge uses its defaults');
+    await expect(panel(page, 'edge-alpha').getByText('returned to the defaults')).toBeVisible();
+  });
+
+  test('the editor has no axe violations in either theme, errors showing', async ({ page }) => {
+    for (const scheme of ['light', 'dark'] as const) {
+      await page.addInitScript(value => localStorage.setItem('versola-theme', value), scheme);
+      await loadAdminApp(page, { path: editPath, state: { edges: [alpha] } });
+      const dialog = panel(page, 'Edit access log');
+      await dialog.getByLabel('Sample rate').fill('2');
+      const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+      expect(results.violations.map(v => `${v.id}: ${v.nodes.length}`), scheme).toEqual([]);
+    }
+  });
+
+  test('a console without edges:manage can read it but not edit it', async ({ page }) => {
+    await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alpha], myPermissions: readOnly } });
+    const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Access log' });
+    await expect(card).toContainText('Sampled (set here)');
+    await expect(card.getByRole('button')).toHaveCount(0);
+  });
+});
+
+test.describe('rate limits', () => {
+  const set = { policies: [{ name: 'per-client', by: ['client'], scope: 'edge-wide', limits: [{ limit: 100, windowSeconds: 60 }], burst: 5, mode: 'shadow' }] };
+  const editPath = '/?view=edges&id=edge-alpha&edit=rate-limits';
+  const alpha = { ...alphaEdge, rateLimitPolicies: set };
+  const put = patchOf('rateLimits');
+
+  test('the edge panel says what is set and that nothing is refused yet', async ({ page }) => {
+    await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alphaEdge, { ...bravoEdge, rateLimitPolicies: set }] } });
+    const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' });
+    await expect(card).toContainText('Nothing: this edge applies no rate limit');
+    await expect(card).toContainText('Start in shadow (counts only), then enforce');
+    await expect(card.getByRole('button', { name: 'Remove all policies' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Open edge edge-bravo' }).click();
+    const custom = panel(page, 'edge-bravo').getByRole('region', { name: 'Rate limits' });
+    await expect(custom).toContainText('1 policy');
+    await expect(custom).toContainText('per-client');
+    await expect(custom).toContainText('Shadow · 100 / 60 s · by client · burst 5');
+  });
+
+  test('adds a policy, saves the set as typed and shows it on the card', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
+    const dialog = panel(page, 'Edit rate limits');
+    await expect(dialog.getByText('Start in shadow, then enforce')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Add policy' }).click();
+    await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toBeFocused();
+    await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill('per-endpoint');
+    await dialog.getByLabel('Scope').selectOption('endpoint');
+    await dialog.getByRole('checkbox', { name: 'User (subject)' }).check();
+    await dialog.getByLabel('Window 1: requests').fill('10');
+    await dialog.getByLabel('Window 1: seconds').fill('1');
+    await dialog.getByRole('button', { name: 'Add window' }).click();
+    await dialog.getByLabel('Window 2: requests').fill('500');
+    await dialog.getByLabel('Window 2: seconds').fill('3600');
+    await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+
+    const request = await findRequest(api.requests, 'PATCH', '/configuration/edges/policies');
+    expect(request.searchParams.edgeId).toBe('edge-alpha');
+    expect(request.body).toEqual({
+      rateLimits: { replicas: 1, policies: [{ name: 'per-endpoint', by: ['client', 'subject'], scope: 'endpoint', limits: [{ limit: 10, windowSeconds: 1 }, { limit: 500, windowSeconds: 3600 }], burst: 1, cost: 1, mode: 'shadow' }] },
+      expectedRevisions: { rateLimits: 0 },
+    });
+    await expect(panel(page, 'edge-alpha').getByText('Rate limit policies saved')).toBeVisible();
+    await expect(panel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' })).toContainText('Shadow · 10 / 1 s + 500 / 3600 s · by client, user, per endpoint');
+    expect(patchesOf(api.requests, 'overload')).toHaveLength(0);
+  });
+
+  test('with no policy the editor offers the recommended set, all in shadow, and adds only what is missing', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
+    const dialog = panel(page, 'Edit rate limits');
+    await expect(dialog.getByText('No policies yet')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Add recommended policies' }).click();
+    await expect(dialog.getByRole('group', { name: /^Policy / })).toHaveCount(5);
+    await expect(dialog.getByRole('button', { name: 'Shadow', exact: true }).first()).toHaveAttribute('aria-pressed', 'true');
+    // the first is per-client; renamed, a second click adds only the one that is missing
+    await dialog.getByRole('textbox', { name: 'Name', exact: true }).first().fill('mine');
+    await dialog.getByRole('button', { name: 'Add recommended policies' }).click();
+    await expect(dialog.getByRole('group', { name: /^Policy / })).toHaveCount(6);
+    await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+    const sent = (await findRequest(api.requests, 'PATCH', '/configuration/edges/policies')).body as { rateLimits: { policies: Array<{ name: string; mode: string }> } };
+    const body = sent.rateLimits;
+    expect(body.policies.map(policy => policy.name)).toEqual(['mine', 'per-user', 'per-user-endpoint', 'per-address', 'per-certificate', 'per-client']);
+    expect(body.policies.every(policy => policy.mode === 'shadow')).toBe(true);
+  });
+
+  test('IP address and certificate are counted before the token: they stand alone, and the editor says so', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alpha] } });
+    const dialog = panel(page, 'Edit rate limits');
+    await dialog.getByRole('checkbox', { name: 'IP address' }).check();
+    await expect(dialog.getByText('ip and certificate are counted before the token is read')).toBeVisible();
+    await expect(dialog.getByText('failed and unauthenticated attempts and logins only')).toBeVisible();
+    await dialog.getByRole('checkbox', { name: 'Client', exact: true }).uncheck();
+    await expect(dialog.getByText('ip and certificate are counted before the token is read, so')).toHaveCount(0);
+    await dialog.getByLabel('Scope').selectOption('endpoint');
+    await expect(dialog.getByText('take scope edge-wide and no other key')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+    await expect(dialog.getByRole('group', { name: 'Count by' }).first()).toBeFocused();
+    expect(api.requests.some(put)).toBe(false);
+    await dialog.getByLabel('Scope').selectOption('edge-wide');
+    await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+    expect((await findRequest(api.requests, 'PATCH', '/configuration/edges/policies')).body).toMatchObject({ rateLimits: { policies: [{ name: 'per-client', by: ['ip'], scope: 'edge-wide' }] } });
+  });
+
+  test('Enforce is offered, says what it does, and is saved as chosen', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alpha] } });
+    const dialog = panel(page, 'Edit rate limits');
+    await expect(dialog.getByRole('button', { name: 'Shadow', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await dialog.getByRole('button', { name: 'Off', exact: true }).click();
+    await expect(dialog.getByText('The policy is ignored.')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Enforce', exact: true }).click();
+    await expect(dialog.getByText('Refuses calls over the limit with 429 and Retry-After')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+    expect((await findRequest(api.requests, 'PATCH', '/configuration/edges/policies')).body).toMatchObject({ rateLimits: { policies: [{ name: 'per-client', mode: 'enforce' }] } });
+    await expect(panel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' })).toContainText('Enforce · 100 / 60 s');
+  });
+
+  test('validates inline with the server messages and sends nothing while a field is wrong', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alphaEdge] } });
+    const dialog = panel(page, 'Edit rate limits');
+    await dialog.getByRole('button', { name: 'Add policy' }).click();
+    // an empty required field is quiet until the first submit
+    await expect(dialog.getByRole('alert')).toHaveCount(0);
+    await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill('Bad Name');
+    await expect(dialog.getByText('name must be 1 to 48 characters')).toBeVisible();
+    await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toHaveAttribute('aria-invalid', 'true');
+    await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill('ok');
+    await dialog.getByLabel('Window 1: requests').fill('10');
+    await dialog.getByLabel('Window 1: seconds').fill('60');
+    await dialog.getByText('Advanced').click();
+    await dialog.getByLabel('Burst').fill('11');
+    await expect(dialog.getByText('burst must not exceed the smallest limit')).toBeVisible();
+
+    await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+    await expect(dialog.getByLabel('Burst')).toBeFocused();
+    expect(api.requests.some(put)).toBe(false);
+
+    await dialog.getByLabel('Burst').fill('');
+    await dialog.getByLabel('Window 1: requests').fill('');
+    await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+    await expect(dialog.getByText('limit must be between 1 and 1000000')).toBeVisible();
+    expect(api.requests.some(put)).toBe(false);
+  });
+
+  test('a section central refuses (400, no body) says so in the console\'s words and keeps the draft', async ({ page }) => {
+    await loadAdminApp(page, { path: editPath, state: { edges: [alpha], rateLimitRejection: 'two rate limit policies have the same name' } });
+    const dialog = panel(page, 'Edit rate limits');
+    await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+    await expect(dialog.getByRole('alert').filter({ hasText: 'Central did not accept these values' })).toBeVisible();
+    await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('per-client');
+  });
+
+  test('one click sends one request and the controls wait for it', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [alpha], rateLimitDelayMs: 600 } });
+    const dialog = panel(page, 'Edit rate limits');
+    await dialog.getByRole('button', { name: 'Save rate limits' }).dblclick();
+    await expect(dialog.getByRole('button', { name: 'Saving…' })).toBeDisabled();
+    await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toBeDisabled();
+    await expect(panel(page, 'edge-alpha').getByText('Rate limit policies saved')).toBeVisible();
+    expect(api.requests.filter(put)).toHaveLength(1);
+  });
+
+  test('removing a policy and saving sends the rest; Remove all policies sends an empty list after a confirmation', async ({ page }) => {
+    const two = { policies: [...set.policies, { ...set.policies[0], name: 'second' }] };
+    const api = await loadAdminApp(page, { path: editPath, state: { edges: [{ ...alphaEdge, rateLimitPolicies: two }] } });
+    const dialog = panel(page, 'Edit rate limits');
+    await dialog.getByRole('button', { name: 'Remove policy second' }).click();
+    await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+    expect((await findRequest(api.requests, 'PATCH', '/configuration/edges/policies')).body).toMatchObject({ rateLimits: { policies: [{ name: 'per-client' }] } });
+
+    const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' });
+    await card.getByRole('button', { name: 'Remove all policies' }).click();
+    await page.getByRole('button', { name: 'Remove all', exact: true }).click();
+    await expect(card).toContainText('Nothing: this edge applies no rate limit');
+    expect(api.requests.filter(put).at(-1)?.body).toMatchObject({ rateLimits: null });
+  });
+
+  test('the editor has no axe violations in either theme, errors showing', async ({ page }) => {
+    for (const scheme of ['light', 'dark'] as const) {
+      await page.addInitScript(value => localStorage.setItem('versola-theme', value), scheme);
+      await loadAdminApp(page, { path: editPath, state: { edges: [alpha] } });
+      const dialog = panel(page, 'Edit rate limits');
+      await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill('Bad');
+      await dialog.getByRole('button', { name: 'Add policy' }).click();
+      const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+      expect(results.violations.map(v => `${v.id}: ${v.nodes.length}`), scheme).toEqual([]);
+    }
+  });
+
+  test('a console without edges:manage can read it but not edit it', async ({ page }) => {
+    await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha', state: { edges: [alpha], myPermissions: readOnly } });
+    const card = panel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' });
+    await expect(card).toContainText('per-client');
+    await expect(card.getByRole('button')).toHaveCount(0);
+  });
+});
+
+test('rate limits: the number of edge pods is saved with the set and shown on the card', async ({ page }) => {
+  const alpha = { ...alphaEdge, rateLimitPolicies: { policies: [{ name: 'per-client', by: ['client'], scope: 'edge-wide', limits: [{ limit: 100, windowSeconds: 60 }], mode: 'shadow' }] } };
+  const api = await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha&edit=rate-limits', state: { edges: [alpha] } });
+  const dialog = sidePanel(page, 'Edit rate limits');
+  await dialog.getByLabel('Pods').fill('0');
+  await expect(dialog.getByText('replicas must be between 1 and 1000')).toBeVisible();
+  await dialog.getByLabel('Pods').fill('3');
+  await dialog.getByRole('button', { name: 'Save rate limits' }).click();
+  expect((await findRequest(api.requests, 'PATCH', '/configuration/edges/policies')).body).toMatchObject({ rateLimits: { replicas: 3, policies: [{ name: 'per-client' }] } });
+  await expect(sidePanel(page, 'edge-alpha').getByRole('region', { name: 'Rate limits' })).toContainText('3 (each pod enforces 1/3 of a limit)');
+});
+
+test.describe('policies are one endpoint, with revisions', () => {
+  const alpha = { ...alphaEdge, accessLogPolicy: { mode: 'sampled' }, policyRevisions: { accessLog: 4 } };
+
+  test('a save names the revision the console read, and the next save names the one central answered with', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha&edit=access-log', state: { edges: [alpha] } });
+    const dialog = sidePanel(page, 'Edit access log');
+    await dialog.getByLabel('Slow threshold').fill('250');
+    await dialog.getByRole('button', { name: 'Save access log' }).click();
+    await expect(sidePanel(page, 'edge-alpha').getByText('Access log saved')).toBeVisible();
+    await sidePanel(page, 'edge-alpha').getByRole('button', { name: 'Edit access log', exact: true }).click();
+    await sidePanel(page, 'Edit access log').getByLabel('Slow threshold').fill('300');
+    await sidePanel(page, 'Edit access log').getByRole('button', { name: 'Save access log' }).click();
+    await expect(sidePanel(page, 'edge-alpha').getByRole('region', { name: 'Access log' })).toContainText('slowMillis 300');
+    const bodies = patchesOf(api.requests, 'accessLog').map(request => request.body);
+    expect(bodies.map(body => (body as { expectedRevisions: unknown }).expectedRevisions)).toEqual([{ accessLog: 4 }, { accessLog: 5 }]);
+  });
+
+  test('a save that lost to someone else says so, writes nothing, and the editor shows what is stored when reopened', async ({ page }) => {
+    await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha&edit=access-log', state: { edges: [alpha], policyConflict: 'accessLog' } });
+    const dialog = sidePanel(page, 'Edit access log');
+    await dialog.getByLabel('Slow threshold').fill('250');
+    await dialog.getByRole('button', { name: 'Save access log' }).click();
+    await expect(dialog.getByRole('alert').filter({ hasText: 'Someone else changed this section' })).toBeVisible();
+    await expect(sidePanel(page, 'edge-alpha').getByRole('region', { name: 'Access log' })).toHaveCount(0);
+  });
+
+  test('a section saved alone leaves the others as they are, even when they are set', async ({ page }) => {
+    const both = { ...alpha, overloadPolicy: { inbound: { mode: 'enforce' } }, policyRevisions: { accessLog: 4, overload: 2 } };
+    const api = await loadAdminApp(page, { path: '/?view=edges&id=edge-alpha&edit=access-log', state: { edges: [both] } });
+    const dialog = sidePanel(page, 'Edit access log');
+    await dialog.getByLabel('Slow threshold').fill('250');
+    await dialog.getByRole('button', { name: 'Save access log' }).click();
+    await expect(sidePanel(page, 'edge-alpha').getByText('Access log saved')).toBeVisible();
+    expect(patchesOf(api.requests, 'overload')).toHaveLength(0);
+    await expect(sidePanel(page, 'edge-alpha').getByRole('region', { name: 'Overload protection' })).toContainText('Enforce (set here)');
+  });
 });

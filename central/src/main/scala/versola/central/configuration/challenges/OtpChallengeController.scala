@@ -1,19 +1,21 @@
 package versola.central.configuration.challenges
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
+import versola.central.configuration.roles.RoleRepository
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Patch.applyTo
-import versola.util.http.{BadRequest, Controller}
+import versola.util.http.BadRequest
 import zio.ZIO
-import zio.http.{Method, Request, Response, Routes, Status, handler}
+import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
 
-object OtpChallengeController extends Controller:
-  type Env = Tracing & OtpChallengeService & ChallengeSettingsService & ResourceService & CentralConfig & EdgeService
+object OtpChallengeController extends AuditedController:
+  type Env = Tracing & OtpChallengeService & ChallengeSettingsService & ResourceService & CentralConfig & EdgeService & RoleRepository
 
-  def routes: Routes[Env, Throwable] = Routes(
+  def endpoints = List(
     getTemplatesEndpoint,
     syncTemplatesEndpoint,
     upsertTemplateEndpoint,
@@ -21,10 +23,11 @@ object OtpChallengeController extends Controller:
     getChallengeSettingsEndpoint,
     syncChallengeSettingsEndpoint,
     upsertChallengeSettingsEndpoint,
+    patchChallengeSettingsEndpoint,
   )
 
   val getTemplatesEndpoint =
-    Method.GET / "configuration" / "challenges" / "otp-templates" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "challenges" / "otp-templates").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
@@ -34,7 +37,7 @@ object OtpChallengeController extends Controller:
     }
 
   val syncTemplatesEndpoint =
-    Method.GET / "configuration" / "challenges" / "otp-templates" / "sync" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "challenges" / "otp-templates" / "sync").audited(Audit.Internal) -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
         service <- ZIO.service[OtpChallengeService]
@@ -43,27 +46,36 @@ object OtpChallengeController extends Controller:
     }
 
   val upsertTemplateEndpoint =
-    Method.PUT / "configuration" / "challenges" / "otp-templates" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[OtpChallengeService]
-        body <- request.bodyAs[UpsertOtpTemplateRequest]
-        _ <- service.upsertTemplate(OtpTemplateRecord(body.id, body.tenantId, body.localizations, body.purpose, body.channel))
-      yield Response.status(Status.NoContent)
+    (Method.PUT / "configuration" / "challenges" / "otp-templates").audited(Audit.change("otp-template", Audit.update)) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          service <- ZIO.service[OtpChallengeService]
+          body <- request.bodyAs[UpsertOtpTemplateRequest]
+          _ <- Audit.targetByText(body.id)
+          _ <- Audit.tenant(body.tenantId)
+          _ <- Audit.changed(body, "id", "tenantId")
+          _ <- service.upsertTemplate(OtpTemplateRecord(body.id, body.tenantId, body.localizations, body.purpose, body.channel))
+        yield Response.status(Status.NoContent)
     }
 
   val deleteTemplateEndpoint =
-    Method.DELETE / "configuration" / "challenges" / "otp-templates" -> handler { (request: Request) =>
+    (Method.DELETE / "configuration" / "challenges" / "otp-templates").audited(Audit.change(
+      "otp-template",
+      Audit.delete,
+    )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OtpChallengeService]
         body <- request.bodyAs[DeleteOtpTemplateRequest]
+        _ <- Audit.targetByText(body.id)
+        _ <- Audit.tenant(body.tenantId)
         _ <- service.deleteTemplate(body.id, body.tenantId, body.purpose, body.channel)
       yield Response.status(Status.NoContent)
     }
 
   val getChallengeSettingsEndpoint =
-    Method.GET / "configuration" / "challenges" / "challenge-settings" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "challenges" / "challenge-settings").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
@@ -73,7 +85,7 @@ object OtpChallengeController extends Controller:
     }
 
   val syncChallengeSettingsEndpoint =
-    Method.GET / "configuration" / "challenges" / "challenge-settings" / "sync" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "challenges" / "challenge-settings" / "sync").audited(Audit.Internal) -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
         service <- ZIO.service[ChallengeSettingsService]
@@ -82,11 +94,18 @@ object OtpChallengeController extends Controller:
     }
 
   val upsertChallengeSettingsEndpoint =
-    Method.PUT / "configuration" / "challenges" / "challenge-settings" -> handler { (request: Request) =>
+    (Method.PUT / "configuration" / "challenges" / "challenge-settings").audited(Audit.change(
+      "challenge-settings",
+      Audit.update,
+      Some("tenant"),
+    )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ChallengeSettingsService]
         body <- request.bodyAs[UpsertChallengeSettingsRequest]
+        _ <- Audit.target(body.tenantId)
+        _ <- Audit.changed(body, "tenantId")
+        _ <- Audit.tenant(body.tenantId)
         existing <- service.getSettings(body.tenantId)
         mtlsCertificateHeader = body.mtlsCertificateHeader.applyTo(existing.flatMap(_.mtlsCertificateHeader))
         mtlsCertificateEncoding = body.mtlsCertificateEncoding.applyTo(existing.flatMap(_.mtlsCertificateEncoding))
@@ -105,41 +124,43 @@ object OtpChallengeController extends Controller:
         _ <- ZIO.fail(BadRequest(
           s"securityProfile of tenant '${body.tenantId}' is $securityProfile and cannot be changed after the tenant is created",
         )).when(body.securityProfile.exists(_ != securityProfile))
-        // One setting stored in two columns: a header no encoding says how to read, and an
-        // encoding that names no header, both leave `auth` with a tenant whose mutual TLS is
-        // off while central reports it configured.
-        _ <- ZIO.fail(BadRequest("mtlsCertificateHeader and mtlsCertificateEncoding must be set or cleared together"))
-          .when(mtlsCertificateHeader.isDefined != mtlsCertificateEncoding.isDefined)
-        _ <- ZIO.fail(BadRequest(
-          s"clientAssertionMaxLifetimeSeconds must be between ${ChallengeSettingsRecord.MinClientAssertionMaxLifetimeSeconds}" +
-            s" and ${ChallengeSettingsRecord.MaxClientAssertionMaxLifetimeSeconds}",
-        )).when(
-          clientAssertionMaxLifetimeSeconds < ChallengeSettingsRecord.MinClientAssertionMaxLifetimeSeconds ||
-            clientAssertionMaxLifetimeSeconds > ChallengeSettingsRecord.MaxClientAssertionMaxLifetimeSeconds,
+        logoLight = body.logoLight.applyTo(existing.flatMap(_.logoLight))
+        logoDark = body.logoDark.applyTo(existing.flatMap(_.logoDark))
+        record = ChallengeSettingsRecord(
+          tenantId = body.tenantId,
+          phoneRegions = body.phoneRegions,
+          emailRegistration = body.emailRegistration,
+          defaultRoles = body.defaultRoles,
+          submissionLimits = body.submissionLimits,
+          otpLength = body.otpLength,
+          otpResendAfter = body.otpResendAfter,
+          passkeySettings = body.passkeySettings,
+          authConversationTtlSeconds = body.authConversationTtlSeconds.orElse(existing.map(_.authConversationTtlSeconds)).getOrElse(900),
+          sessionTtlSeconds = body.sessionTtlSeconds.orElse(existing.map(_.sessionTtlSeconds)).getOrElse(86400),
+          sessionIdleTtlSeconds = body.sessionIdleTtlSeconds.orElse(existing.flatMap(_.sessionIdleTtlSeconds)),
+          userAgentTtlSeconds = body.userAgentTtlSeconds.orElse(existing.map(_.userAgentTtlSeconds)).getOrElse(15552000),
+          ipHeader = body.ipHeader,
+          acrVocabulary = body.acrVocabulary.orElse(existing.flatMap(_.acrVocabulary)),
+          postLogoutRedirectUris = body.postLogoutRedirectUris.orElse(existing.map(_.postLogoutRedirectUris)).getOrElse(Nil),
+          requireDpopNonce = body.requireDpopNonce.orElse(existing.map(_.requireDpopNonce)).getOrElse(false),
+          mtlsCertificateHeader = mtlsCertificateHeader,
+          mtlsCertificateEncoding = mtlsCertificateEncoding,
+          signingKeyId = body.signingKeyId.applyTo(existing.flatMap(_.signingKeyId)),
+          clientAssertionMaxLifetimeSeconds = clientAssertionMaxLifetimeSeconds,
+          securityProfile = securityProfile,
+          logoLight = logoLight,
+          logoDark = logoDark,
         )
-        _ <- service.upsertSettings(
-          ChallengeSettingsRecord(
-            body.tenantId,
-            body.allowedPrefixes,
-            body.submissionLimits,
-            body.otpLength,
-            body.otpResendAfter,
-            body.passkeySettings,
-            body.authConversationTtlSeconds.orElse(existing.map(_.authConversationTtlSeconds)).getOrElse(900),
-            body.sessionTtlSeconds.orElse(existing.map(_.sessionTtlSeconds)).getOrElse(86400),
-            body.sessionIdleTtlSeconds.orElse(existing.flatMap(_.sessionIdleTtlSeconds)),
-            body.userAgentTtlSeconds.orElse(existing.map(_.userAgentTtlSeconds)).getOrElse(15552000),
-            body.ipHeader,
-            body.acrVocabulary.orElse(existing.flatMap(_.acrVocabulary)),
-            body.postLogoutRedirectUris.orElse(existing.map(_.postLogoutRedirectUris)).getOrElse(Nil),
-            body.requireDpopNonce.orElse(existing.map(_.requireDpopNonce)).getOrElse(false),
-            mtlsCertificateHeader,
-            mtlsCertificateEncoding,
-            body.signingKeyId.applyTo(existing.flatMap(_.signingKeyId)),
-            clientAssertionMaxLifetimeSeconds,
-            securityProfile,
-          ),
-        )
+        validated <- ZIO.fromEither(ChallengeSettingsRecord.validate(record)).mapError(BadRequest(_))
+        // Roles are only looked up while some credential can register, see `registrationPossible`.
+        roles <- ZIO.service[RoleRepository]
+        _ <- ZIO.when(ChallengeSettingsRecord.registrationPossible(validated)):
+          ZIO.foreachDiscard(validated.defaultRoles): roleId =>
+            roles.findRole(
+              body.tenantId,
+              roleId,
+            ).someOrFail(BadRequest(s"defaultRoles names role '$roleId', which does not exist in tenant '${body.tenantId}'"))
+        _ <- service.upsertSettings(validated)
           // A kid nothing can sign with, or one signing under a disallowed algorithm, is the
           // operator naming a key that does not fit, not a fault of this server -- and the
           // message says which of the reasons it is.
@@ -148,4 +169,27 @@ object OtpChallengeController extends Controller:
             case other => other
           }
       yield Response.status(Status.NoContent)
+    }
+
+  /** The merge patch of the record, see [[PatchChallengeSettingsRequest]]: the members named are replaced, the others
+    * keep what is stored. 404 when the tenant has no settings yet -- the first write is a `PUT`. */
+  val patchChallengeSettingsEndpoint =
+    (Method.PATCH / "configuration" / "challenges" / "challenge-settings").audited(Audit.change(
+      "challenge-settings",
+      Audit.update,
+      Some("tenant"),
+    )) -> handler { (request: Request) =>
+      (for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[ChallengeSettingsService]
+        body <- request.bodyAs[PatchChallengeSettingsRequest]
+        _ <- Audit.target(body.tenantId)
+        _ <- Audit.changed(body, "tenantId")
+        _ <- Audit.tenant(body.tenantId)
+        _ <- service.patchSettings(body)
+      yield Response.status(Status.NoContent))
+        .catchAll:
+          case ChallengeSettingsService.SettingsNotFound(_) => ZIO.succeed(Response.status(Status.NotFound))
+          case error: ChallengeSettingsService.ValidationError => ZIO.fail(BadRequest(error.message))
+          case error: Throwable => ZIO.fail(error)
     }

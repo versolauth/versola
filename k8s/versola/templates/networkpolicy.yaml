@@ -1,0 +1,78 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- /*
+Auth and central accept traffic from this release's own pods, from the ingress controller on the ports
+a route leads to, from a LoadBalancer's clients on a mutual-TLS port it publishes, and from what
+`networkPolicy.extraIngress` names -- and from nobody else (design-edge-network.md, H8). Edge and the
+console are not covered: they are what the Ingress serves. Egress is not restricted.
+*/ -}}
+{{- $np := .Values.networkPolicy }}
+{{- $controller := $np.ingressControllerSelector }}
+{{- $m := .Values.exposure.mtls }}
+{{- $needController := false }}
+{{- if .Values.ingress.enabled }}{{ $needController = true }}{{ end }}
+{{- if .Values.exposure.central.host }}{{ $needController = true }}{{ end }}
+{{- if and (ne (default "ingressPassthrough" $m.type) "loadBalancer") (or $m.auth.host $m.central.host) }}{{ $needController = true }}{{ end }}
+{{- if and $needController (not $controller) }}
+{{- fail "networkPolicy.enabled needs networkPolicy.ingressControllerSelector: an Ingress, a TLSRoute or an exposure host leads to auth or central, and without the controller named as a peer the policy would cut it off" }}
+{{- end }}
+{{- range $name := list "auth" "central" }}
+{{- $svc := index $.Values.services $name }}
+{{- if $svc.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "versola.fullname" $ }}-{{ $name }}
+  labels:
+    {{- include "versola.componentLabels" (dict "component" $name "context" $) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "versola.componentSelectorLabels" (dict "component" $name "context" $) | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    # This release's own pods, on every port: edge, central and auth call each other, and the
+    # migration Job and cert-sync run with the release's labels.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "versola.selectorLabels" $ | nindent 14 }}
+    # Metrics.
+    - ports:
+        - port: {{ $svc.diagnosticsPort }}
+      {{- with $np.metricsFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- with $np.extraIngress }}
+    - from:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    {{- if and (eq $name "auth") $.Values.ingress.enabled }}
+    # Browsers and clients reach auth's HTTP port through the Ingress or Gateway.
+    - from:
+        - {{- toYaml $controller | nindent 10 }}
+      ports:
+        - port: {{ $svc.port }}
+    {{- end }}
+    {{- $listener := index $m $name }}
+    {{- if and $listener.host $svc.mutualTlsPort }}
+    # The published mutual-TLS port. A LoadBalancer's clients arrive from anywhere (the load
+    # balancer or cloud firewall limits who), through a controller from the controller's pods.
+    - ports:
+        - port: {{ $svc.mutualTlsPort }}
+      {{- if ne (default "ingressPassthrough" $m.type) "loadBalancer" }}
+      from:
+        - {{- toYaml $controller | nindent 10 }}
+      {{- end }}
+    {{- end }}
+    {{- if and (eq $name "central") $.Values.exposure.central.host }}
+    # The enrollment listener, behind the public TLS terminator.
+    - from:
+        - {{- toYaml $controller | nindent 10 }}
+      ports:
+        - port: {{ $svc.enrollmentPort }}
+    {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -4,6 +4,7 @@ import versola.util.SequentialLayers.*
 import versola.oauth.challenge.password.PasswordRepository
 import versola.oauth.client.model.TenantId
 import versola.role.model.RoleId
+import versola.antifraud.{AntifraudSettingsRepository, Tuning}
 import versola.user.UserRepository
 import versola.user.model.{Login, UserId}
 import versola.util.{CoreConfig, EnvName, Phone, Salt, Secret, SecureRandom, SecurityService}
@@ -26,16 +27,17 @@ object AuthBootstrapService:
     Option.when(envName.isTest)(NonProdAdminPhone)
 
   val live: ZLayer[
-    UserRepository & PasswordRepository & SecurityService & SecureRandom & CoreConfig & EnvName,
+    UserRepository & PasswordRepository & AntifraudSettingsRepository & SecurityService & SecureRandom & CoreConfig & EnvName,
     Throwable,
     AuthBootstrapService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _)) >++>
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _)) >++>
       ZLayer(ZIO.serviceWithZIO[AuthBootstrapService](_.bootstrap))
 
   private class Impl(
       userRepo: UserRepository,
       passwordRepo: PasswordRepository,
+      antifraudSettings: AntifraudSettingsRepository,
       securityService: SecurityService,
       secureRandom: SecureRandom,
       config: CoreConfig,
@@ -43,6 +45,13 @@ object AuthBootstrapService:
   ) extends AuthBootstrapService:
 
     def bootstrap: Task[Unit] =
+      seedAntifraudSettings *> bootstrapAdmin
+
+    /** The first row of the antifraud settings, everything off, unless an operator has saved one already. */
+    private val seedAntifraudSettings: Task[Unit] =
+      Clock.instant.flatMap(antifraudSettings.seed(Tuning.off, "bootstrap", _)).unit
+
+    private def bootstrapAdmin: Task[Unit] =
       ZIO.foreachDiscard(config.bootstrap): cfg =>
         for
           _ <- ZIO.logInfo(s"Bootstrapping admin user '${cfg.login}'...")

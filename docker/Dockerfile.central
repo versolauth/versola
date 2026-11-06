@@ -2,8 +2,7 @@
 # in CI (see ci-cd.yml's "Stage central for release image" step, `sbt
 # central-postgres-impl/stage`) and downloaded as an artifact by the
 # docker-central job before this Dockerfile ever runs -- this just copies
-# the already-built application onto a bare JRE, the same shape as
-# Dockerfile.gateway. Migrations come straight from the checkout (they're
+# the already-built application onto a bare JRE. Migrations come straight from the checkout (they're
 # source files, not build output), no staging needed for those.
 #
 # Pinned by digest, not just `:25-jre` -- a floating tag would let an
@@ -15,14 +14,14 @@
 # See Dockerfile.auth's comment on the diagnostics-tools stage below: jcmd is
 # absent from a `-jre` image entirely, and this draws it (and jdk.attach) out
 # of a full JDK's jmods once, independently pinned from the runtime image.
-FROM eclipse-temurin:25-jdk@sha256:8c0a84ea11c8f6ed52600fc19f1040121f2a162998e9f50a5faebbbad9172dcc AS diagnostics-tools
+FROM eclipse-temurin:27_35-jdk@sha256:473d02d477a8152a05dc42fde10b965754f1863d45e586a97763ef298965c48b AS diagnostics-tools
 RUN "$JAVA_HOME/bin/jlink" \
       --module-path "$JAVA_HOME/jmods" \
       --add-modules jdk.jcmd,jdk.attach \
       --strip-debug --no-man-pages --no-header-files --compress=2 \
       --output /opt/diagnostics-jdk
 
-FROM eclipse-temurin:25-jre@sha256:fcd7fd7b387f94bb2ac461478a7436ad8e349924c374ea8313919624dceae636
+FROM eclipse-temurin:27_35-jre@sha256:0dd0465f90d398fa3226b56a3973f5d3c47ac323934dceebdab45ac8910bee6e
 
 # See Dockerfile.auth: not merged into $JAVA_HOME, which has no jdk.jcmd of
 # its own to re-link against.

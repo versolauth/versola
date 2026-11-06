@@ -1,25 +1,23 @@
 package versola.central.configuration.clients
 
+import versola.central.audit.{Audit, AuditedController, audited}
+import versola.central.authorizeBasic
 import versola.central.configuration.*
-import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.util.http.Controller
 import zio.*
 import zio.http.*
 import zio.json.*
 
-object AuthorizationPresetController extends Controller:
-  type Env = Tracing & AuthorizationPresetService & ResourceService & CentralConfig & EdgeService
+object AuthorizationPresetController extends AuditedController:
+  type Env = Tracing & AuthorizationPresetService & ResourceService
 
-  def routes: Routes[Env, Throwable] = Routes(
+  def endpoints = List(
     getPresetsEndpoint,
     savePresetsEndpoint,
-    syncPresetsEndpoint,
   )
 
   val getPresetsEndpoint =
-    Method.GET / "configuration" / "auth-request-presets" -> handler { (req: Request) =>
+    (Method.GET / "configuration" / "auth-request-presets").audited(Audit.Unrecorded) -> handler { (req: Request) =>
       for
         _ <- authorizeBasic(req)
         clientId <- req.url.queryZIO[ClientId]("clientId")
@@ -44,40 +42,20 @@ object AuthorizationPresetController extends Controller:
     }
 
   val savePresetsEndpoint =
-    Method.POST / "configuration" / "auth-request-presets" -> handler { (req: Request) =>
+    (Method.POST / "configuration" / "auth-request-presets").audited(Audit.change(
+      "auth-request-preset",
+      Audit.create,
+      Some("client"),
+    )) -> handler { (req: Request) =>
       for
         _ <- authorizeBasic(req)
         service <- ZIO.service[AuthorizationPresetService]
         body <- req.bodyAs[SaveAuthorizationPresetsRequest]
+        _ <- Audit.target(body.clientId)
         result <- service.savePresets(body)
       yield result match
         case Right(_) => Response.status(Status.NoContent)
         case Left(error: PresetValidationError.DuplicatePresetId.type) =>
           Response.text(error.getMessage).status(Status.BadRequest)
         case Left(error) => Response.badRequest
-    }
-
-  val syncPresetsEndpoint =
-    Method.GET / "configuration" / "auth-request-presets" / "sync" -> handler { (req: Request) =>
-      for
-        service <- ZIO.service[AuthorizationPresetService]
-        edgeId <- authorizeInternal(req)
-        presets <- service.getPresetsForSync(edgeId)
-        response = GetAuthorizationPresetsSyncResponse(presets.map { preset =>
-          AuthorizationPresetSyncResponse(
-            id = preset.id,
-            clientId = preset.clientId,
-            description = preset.description,
-            redirectUri = preset.redirectUri,
-            postLoginRedirectUri = preset.postLoginRedirectUri,
-            postLogoutRedirectUri = preset.postLogoutRedirectUri,
-            scope = preset.scope,
-            responseType = preset.responseType,
-            uiLocales = preset.uiLocales,
-            customParameters = preset.customParameters,
-            cookieDomain = preset.cookieDomain,
-            cookiePath = preset.cookiePath,
-          )
-        })
-      yield Response.json(response.toJson)
     }

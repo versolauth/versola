@@ -116,16 +116,45 @@ object PermissionApiSpec extends CentralApiSpec:
         _ <- central.delete(resources, "resourceId" -> resourceId)
       yield assertTrue(record.map(_.strings("endpointIds")).contains(Set(first, second)))
     },
-    test("a segmented permission name is accepted") {
+    test("a colon-segmented permission name is accepted") {
       for
         central <- api
         base <- CentralApi.permission("probe")
-        permission = s"$base:orders.read_all"
+        permission = s"$base:orders:read_all"
         created <- central.post(path, Fixtures.permission(permission))
         record <- read(central, permission)
         _ <- cleanup(central, permission)
       yield assertTrue(created.status == Status.Created) && assertTrue(record.nonEmpty)
-        .label("`resource:action` and dotted namespaces are the documented naming convention")
+        .label("`resource:action` is the documented naming convention")
+    },
+    test("a hyphen inside a segment is accepted") {
+      for
+        central <- api
+        base <- CentralApi.permission("probe")
+        permission = s"$base:auth-settings:manage"
+        created <- central.post(path, Fixtures.permission(permission))
+        record <- read(central, permission)
+        _ <- cleanup(central, permission)
+      yield assertTrue(created.status == Status.Created) && assertTrue(record.nonEmpty)
+        .label("the bootstrap seed itself uses `auth-settings:manage`")
+    },
+    test("a permission name with a dot is refused on create") {
+      for
+        central <- api
+        base <- CentralApi.permission("probe")
+        rejected <- central.post(path, Fixtures.permission(s"$base:orders.read_all"))
+      yield assertTrue(rejected.status == Status.BadRequest) &&
+        assertTrue(rejected.body.contains("separated by ':'"))
+          .label("a dot is never a separator")
+    },
+    test("a permission name with a dot is refused on update and on delete") {
+      for
+        central <- api
+        base <- CentralApi.permission("probe")
+        dotted = s"$base.orders"
+        updated <- central.put(path, Fixtures.permissionUpdate(dotted, description = Fixtures.patchText(add = Map("en" -> "x"))))
+        deleted <- central.delete(path, "tenantId" -> Fixtures.suiteTenant, "permission" -> dotted)
+      yield assertTrue(updated.status == Status.BadRequest, deleted.status == Status.BadRequest)
     },
     test("a permission name outside the documented alphabet is refused") {
       for

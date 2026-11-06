@@ -37,7 +37,7 @@
 # is ever rebuilt.
 
 # ── jlink stage: build a minimal custom JRE ──────────────────────────────
-FROM eclipse-temurin:25-jdk-alpine@sha256:3fd2d245c4e0eba615fe366a71b8bd25f5db7104f53e4026b24bf508b880bd2a AS jlink
+FROM eclipse-temurin:27_35-jdk-alpine@sha256:63c4f0092cb994c7a8c0446aace33a2de3763128fcc68c211d7ad3577c75b59f AS jlink
 
 WORKDIR /work
 COPY scripts/target/universal/stage stage
@@ -82,7 +82,7 @@ RUN jdeps --multi-release 25 --recursive --ignore-missing-deps --print-module-de
       --output /opt/jre-minimal
 
 # ── runtime stage ─────────────────────────────────────────────────────────
-FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
 ARG VERSION=dev
 ENV VERSION=${VERSION}
@@ -123,9 +123,13 @@ COPY docker/versola-tools/compose.fragment.vps.yml.template .
 COPY docker/versola-tools/proxy_params.conf.template .
 COPY docker/versola-tools/openbao.hcl.template .
 COPY docker/versola-tools/openbao.hcl.vps.template .
+COPY docker/versola-tools/mtls-init.sh .
+COPY docker/versola-tools/step-ca-intermediates.sh .
+COPY docker/versola-tools/postgres-init-schemas.sh .
+COPY docker/versola-tools/release.json .
 COPY docker/versola-tools/entrypoint.sh .
 # Built admin console (central-ui's `npm run build` output -- a CI step in
-# the docker-tools job, not done here, same as for the gateway image).
+# the docker-tools job, not done here).
 # entrypoint.sh copies it into every deployment bundle; see the comment
 # there. .dockerignore already re-includes central-ui/dist for this.
 COPY central-ui/dist central-ui
@@ -201,15 +205,27 @@ RUN OUTPUT=$(java -cp 'migrate-lib/*' versola.migrate.MigrateTool 2>&1); \
 # 0600 (they land in a host bind mount), while openbao.hcl must stay
 # readable by others -- OpenBao reads it as its own user, so a blanket
 # umask 077 in entrypoint.sh would break it. And the secret schema
-# versola-cli reads (secrets.schema.json) must have made it into the bundle.
+# versola-cli reads (secrets.schema.json) must have made it into the bundle,
+# and so must the compatibility manifest (release.json).
 RUN OUT_DIR=/tmp/smoke-out TARGET=vps AUTH_URL=https://smoke-test.invalid POSTGRES_HOST=127.0.0.1:5432 ./entrypoint.sh \
  && test -f /tmp/smoke-out/central-ui/index.html \
  && grep -q '"schemaVersion"' /tmp/smoke-out/secrets.schema.json \
+ && grep -q '"releases"' /tmp/smoke-out/release.json \
  && for f in auth central edge; do \
       test "$(stat -c %a /tmp/smoke-out/$f.generated-secrets.env)" = 600 \
         || { echo "smoke test: $f.generated-secrets.env is not 0600" >&2; exit 1; }; \
     done \
  && test "$(stat -c %a /tmp/smoke-out/openbao.hcl)" = 644 \
  && rm -rf /tmp/smoke-out .local
+
+# The same for POSTGRES_MODE=bundled: the first-start script has to be in the image and reach the bundle,
+# and the compose file has to carry the postgres service pinned to a tag, bound to loopback and asking a
+# password on it. A bundle that lacks the script would start a database with no schemas.
+RUN OUT_DIR=/tmp/smoke-bundled TARGET=vps AUTH_URL=https://smoke-test.invalid POSTGRES_MODE=bundled ./entrypoint.sh \
+ && test -f /tmp/smoke-bundled/postgres-init-schemas.sh \
+ && grep -q 'listen_addresses=127.0.0.1' /tmp/smoke-bundled/compose.fragment.yml \
+ && grep -q 'auth-host=scram-sha-256' /tmp/smoke-bundled/compose.fragment.yml \
+ && grep -Eq '^    image: postgres:[0-9]+\.[0-9]+@sha256:[0-9a-f]{64}$' /tmp/smoke-bundled/compose.fragment.yml \
+ && rm -rf /tmp/smoke-bundled .local
 
 ENTRYPOINT ["./entrypoint.sh"]

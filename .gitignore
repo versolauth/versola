@@ -29,6 +29,7 @@ playwright/.cache/
 
 # Generated forms (built from central-ui/forms via npm run build:forms)
 central/src/main/resources/forms/
+util/src/main/resources/versola/forms/
 
 develop.txt
 .scala-semantic/
@@ -36,3 +37,6 @@ develop.txt
 # Claude Code: local state (settings.json, hooks/ and rules/ are shared)
 .claude/worktrees/
 .claude/settings.local.json
+
+# Reports of the antifraud loadgen runs: the recorded ones live in versolauth/loadgen-runbook
+loadgen/antifraud/results/

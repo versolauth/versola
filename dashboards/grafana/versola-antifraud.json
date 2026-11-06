@@ -1,0 +1,2617 @@
+{
+  "uid": "versola-antifraud",
+  "title": "Versola — Antifraud",
+  "description": "The antifraud module of auth: decisions and what enforcing would have changed, rules, challenges, the SMS budget, the event pipeline, velocity counters, lists, detectors and storage. Written for a shadow-mode rollout: read Decisions first. Alert rules for the same signals: dashboards/alerts/versola-antifraud.rules.yaml.",
+  "tags": [
+    "versola",
+    "versola-service"
+  ],
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timezone": "utc",
+  "links": [
+    {
+      "type": "dashboards",
+      "title": "Services",
+      "tags": [
+        "versola-service"
+      ],
+      "asDropdown": false,
+      "includeVars": true,
+      "keepTime": true,
+      "icon": "external link"
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "env",
+        "label": "Env",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": "label_values(up{app_kubernetes_io_component=~\"auth|central|edge\"}, environment)",
+        "refresh": 1,
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".*",
+        "hide": 0
+      },
+      {
+        "name": "namespace",
+        "label": "Namespace",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": "label_values(up{app_kubernetes_io_component=~\"auth|central|edge\", environment=~\"$env\"}, namespace)",
+        "refresh": 1,
+        "multi": false,
+        "includeAll": false,
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "auth — Decisions",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Decisions / s",
+      "description": "Antifraud decisions taken by this service: one per request that was judged. Empty means nothing is being judged: the engine is off, or no request has asked for a code.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(antifraud_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "instant": false
+        }
+      ],
+      "id": 2,
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Would be refused or challenged",
+      "description": "Share of decisions whose would-be action (what the rules decided) was not Allow: Challenge, Fake or Block. In shadow mode this is the number to judge enforcing by: near the real share of bad traffic is right, a large share of ordinary traffic means a rule or a threshold is too tight.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(antifraud_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", would_action!=\"Allow\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(antifraud_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])), 0.001)",
+          "instant": false
+        }
+      ],
+      "id": 3,
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Let through, would be stopped",
+      "description": "Share of decisions that were acted on as Allow although the rules decided Challenge, Fake or Block. That is shadow mode working: the request went through and the decision was only recorded. After switching to enforce this falls to 0 (a failed evaluation under `failure-action` aside).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(antifraud_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", action=\"Allow\", would_action!=\"Allow\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(antifraud_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])), 0.001)",
+          "instant": false
+        }
+      ],
+      "id": 4,
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Evaluation failures",
+      "description": "Evaluations that gave no decision in the selected time range (timeout, error or tuning unavailable); `failure-action` was applied instead. Must be 0: any is red.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(antifraud_evaluation_failed_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__range])) or vector(0)",
+          "instant": false
+        }
+      ],
+      "id": 5,
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Decisions / s by would-be action",
+      "description": "What the rules decided, whatever was done about it. Mostly Allow is healthy; Challenge, Fake and Block here are what enforcing would do.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (would_action) (rate(antifraud_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "{{would_action}}"
+        }
+      ],
+      "id": 6,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Share not allowed: would-be vs acted",
+      "description": "Share of decisions that were not Allow, by what was decided and by what was done. In shadow mode the second line is flat at 0 while the first shows what enforcing would change; in enforce mode they are the same line.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(antifraud_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", would_action!=\"Allow\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(antifraud_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "would be (decided)"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(antifraud_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", action!=\"Allow\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(antifraud_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "acted on"
+        }
+      ],
+      "id": 7,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Acted on / s by action",
+      "description": "What was really done to requests. In shadow mode it is all Allow. Side by side with the panel on the right.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (action) (rate(antifraud_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "{{action}}"
+        }
+      ],
+      "id": 8,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Would have been / s by would-be action",
+      "description": "What the decisions were. Compare with the panel on the left: the gap between them is what switching to enforce would change.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (would_action) (rate(antifraud_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "{{would_action}}"
+        }
+      ],
+      "id": 9,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Evaluation failures / s by reason",
+      "description": "Evaluations with no decision: `timeout` (the engine took too long), `error` (an unexpected failure), `tuning_unavailable` (the tuned settings were never read). Empty is healthy; any value is red, and `failure-action` was applied to those requests.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (reason) (rate(antifraud_evaluation_failed_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "id": 10,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      }
+    },
+    {
+      "id": 11,
+      "type": "row",
+      "title": "auth — Rules",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Rules fired / s (enforcing)",
+      "description": "The ten rules that fired most, among rules that count towards the decision. A rule that fires on most requests is a rule that is too wide.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "topk(10, sum by (rule) (rate(antifraud_rules_fired_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", shadow=\"false\"}[$__rate_interval])))",
+          "legendFormat": "{{rule}}"
+        }
+      ],
+      "id": 12,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 29
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Rules fired / s (shadow rules)",
+      "description": "The ten most frequent rules that only record (`shadow:<name>` in the decision) and take no part in it. Read these before making a rule count: a rule that would fire on ordinary traffic must not be promoted.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "topk(10, sum by (rule) (rate(antifraud_rules_fired_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", shadow=\"true\"}[$__rate_interval])))",
+          "legendFormat": "{{rule}}"
+        }
+      ],
+      "id": 13,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 29
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Rules fired — share of decisions",
+      "description": "Each rule's firing rate over the decisions per second. Several rules can fire on one request, so the shares do not add up to 100%.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "topk(10, sum by (rule, shadow) (rate(antifraud_rules_fired_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))) / scalar(clamp_min(sum(rate(antifraud_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])), 0.001))",
+          "legendFormat": "{{rule}} (shadow={{shadow}})"
+        }
+      ],
+      "id": 14,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 37
+      }
+    },
+    {
+      "id": 15,
+      "type": "row",
+      "title": "auth — Challenges",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 45
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Proof of work: solved",
+      "description": "Of the proofs of work that were answered, the share that were right. Real browsers solve nearly all; a low share is scripts guessing, or a difficulty a phone cannot meet.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(antifraud_challenges_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", kind=\"pow\", outcome=\"challenge_passed\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(antifraud_challenges_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", kind=\"pow\", outcome=~\"challenge_passed|challenge_failed\"}[$__rate_interval])), 0.001)",
+          "instant": false
+        }
+      ],
+      "id": 16,
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 0,
+        "y": 46
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Proof of work: answered",
+      "description": "Of the proofs of work put to clients, the share that came back with an answer. The rest are clients that cannot or will not do the work (no script, a bot that gave up): that is the point of the challenge. Falls if real users cannot solve it.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(antifraud_challenges_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", kind=\"pow\", outcome=~\"challenge_passed|challenge_failed\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(antifraud_challenges_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", kind=\"pow\", outcome=\"challenged\"}[$__rate_interval])), 0.001)",
+          "instant": false
+        }
+      ],
+      "id": 17,
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 6,
+        "y": 46
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Pause: paid",
+      "description": "Of the pauses imposed on clients that cannot answer a proof of work, the share followed by the request that completed it and got the code. Real people wait and come back; a low share is traffic that leaves.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(antifraud_challenges_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", kind=\"pause\", outcome=\"challenge_passed\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(antifraud_challenges_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", kind=\"pause\", outcome=\"challenged\"}[$__rate_interval])), 0.001)",
+          "instant": false
+        }
+      ],
+      "id": 18,
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 12,
+        "y": 46
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Challenges / s",
+      "description": "Challenges put to clients. Empty while no decision is Challenge, which in shadow mode is always: nothing is challenged until enforcing.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(antifraud_challenges_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", outcome=\"challenged\"}[$__rate_interval]))",
+          "instant": false
+        }
+      ],
+      "id": 19,
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 18,
+        "y": 46
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Challenges / s by kind and outcome",
+      "description": "`challenged` is a challenge put to a client, `challenge_passed` a right answer, `challenge_failed` a wrong one. `pow` is the proof of work, `pause` the wait for clients that cannot do one. Empty in shadow mode: nothing is challenged until enforcing.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (kind, outcome) (rate(antifraud_challenges_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "{{kind}} {{outcome}}"
+        }
+      ],
+      "id": 20,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 49
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Pass rate and answered share",
+      "description": "A challenge that people pass and bots do not has a high pass rate among those answered and a lower answered share. Both low at once means real users are failing it.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(antifraud_challenges_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", kind=\"pow\", outcome=\"challenge_passed\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(antifraud_challenges_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", kind=\"pow\", outcome=~\"challenge_passed|challenge_failed\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "pow: right of those answered"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(antifraud_challenges_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", kind=\"pow\", outcome=~\"challenge_passed|challenge_failed\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(antifraud_challenges_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", kind=\"pow\", outcome=\"challenged\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "pow: answered of challenged"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(antifraud_challenges_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", kind=\"pause\", outcome=\"challenge_passed\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(antifraud_challenges_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", kind=\"pause\", outcome=\"challenged\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "pause: paid of imposed"
+        }
+      ],
+      "id": 21,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 49
+      }
+    },
+    {
+      "id": 22,
+      "type": "row",
+      "title": "auth — SMS budget",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 57
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Refused / s by reason and mode",
+      "description": "Codes the SMS budget closed a range to: `cap` (sentPerHour reached), `conversion` (too few codes verified: entered, or passed by passkey). `shadow` means the code went out all the same and the number is what enforcing would refuse; `enforce` is a refusal that happened. Empty while the budget is off (the default).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (reason, mode) (rate(antifraud_sms_budget_refused_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "{{reason}} ({{mode}})"
+        }
+      ],
+      "id": 23,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 58
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Ranges not tracked / evicted per s",
+      "description": "`not tracked`: a code to a new range went out unchecked because the table of ranges was full: the budget no longer protects that tenant, and it is a sign of an attack or a table too small. `evicted`: a range was dropped to make room. Empty is healthy.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(antifraud_sms_budget_full_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])",
+          "legendFormat": "not tracked (table full)"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(antifraud_sms_budget_evicted_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])",
+          "legendFormat": "evicted"
+        }
+      ],
+      "id": 24,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 58
+      }
+    },
+    {
+      "id": 25,
+      "type": "row",
+      "title": "auth — Event pipeline",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 66
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Events enqueued, written and dropped / s",
+      "description": "Every request leaves an event; a writer stores them in batches. Healthy: written follows enqueued, and dropped is empty. `throttled_shed` is the log giving way under load, `queue_full` and `write_failed` are lost events, `shutdown` is a pod stopping with a queue.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(antifraud_events_enqueued_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])",
+          "legendFormat": "enqueued"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(antifraud_events_written_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])",
+          "legendFormat": "written"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (reason) (rate(antifraud_events_dropped_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "dropped: {{reason}}"
+        }
+      ],
+      "id": 26,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 67
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Events dropped / s by reason",
+      "description": "Events the log lost. Empty is healthy. `queue_full` and `write_failed` lose statistics (the decisions themselves are not affected); `build_failed` is a request that could not be described.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (reason) (rate(antifraud_events_dropped_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "id": 27,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 67
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Event queue size",
+      "description": "Events waiting for the writer, sampled each time the writer takes a batch. Near 0 is healthy; a queue that stays high is a database that cannot keep up.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (pod) (antifraud_event_queue_size{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "id": 28,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 75
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Backlog growth: enqueued − written − dropped",
+      "description": "Events that entered the queue and were neither written nor lost after entering (drops before the queue, `queue_full` and `throttled_shed`, are not in `enqueued`). Around 0 is healthy; above 0 for long is a queue filling up.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(antifraud_events_enqueued_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])) - sum(rate(antifraud_events_written_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])) - (sum(rate(antifraud_events_dropped_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", reason=~\"write_failed|shutdown\"}[$__rate_interval])) or vector(0))",
+          "legendFormat": "net growth"
+        }
+      ],
+      "id": 29,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 75
+      }
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "auth — Velocity",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 83
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Buckets flushed / s",
+      "description": "Counter buckets this service wrote to the database so that every instance sees the others' counts. Follows traffic; flat at 0 under traffic is a writer that does not run.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(antifraud_velocity_flushed_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])",
+          "legendFormat": "flushed"
+        }
+      ],
+      "id": 31,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 84
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Velocity failures / s by what",
+      "description": "`flush` (writing counts), `load` (reading the other instances' counts), `prune` (removing old rows). Empty is healthy; while it fails the counts are per instance only, so a limit is looser by the number of instances.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (what) (rate(antifraud_velocity_failed_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "{{what}}"
+        }
+      ],
+      "id": 32,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 84
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Keys tracked",
+      "description": "Keys (networks, devices, ranges, phones) held in memory on each pod. Grows with distinct callers and is bounded by `velocity.max-keys`; a pod pinned at the bound is being flooded with keys.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (pod) (antifraud_velocity_keys{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "id": 33,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 92
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Keys not counted or evicted / s",
+      "description": "`not counted`: requests whose key could not be admitted to a full table, so no counter limited them. Rare once a full table evicts by sampling; any value is a flood of distinct keys far above `velocity.max-keys` or a table too small. `evicted`: keys that made room for a new one; a steady stream is a flood of distinct keys.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(antifraud_velocity_untracked_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])",
+          "legendFormat": "not counted (table full)"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(antifraud_velocity_evicted_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])",
+          "legendFormat": "evicted (seen once)"
+        }
+      ],
+      "id": 34,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 92
+      }
+    },
+    {
+      "id": 35,
+      "type": "row",
+      "title": "auth — Lists",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 100
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "List hits / s",
+      "description": "Requests that matched a list entry, by list, kind of value and whether the entry is a `shadow` one (matched, enforces nothing). Written every 30 seconds, so it is stepped. A shadow entry that hits ordinary traffic must not be made enforcing.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (list_type, value_type, shadow) (rate(antifraud_list_hits_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "{{list_type}} {{value_type}} (shadow={{shadow}})"
+        }
+      ],
+      "id": 36,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 101
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "List and tuning refresh failures",
+      "description": "A refresh that fails keeps the previous lists or tuning (fail open), so nothing breaks at once but changes stop arriving. Empty is healthy.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(antifraud_list_refresh_failed_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "list refresh failed"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(antifraud_tuning_refresh_failed_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "tuning refresh failed"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(antifraud_list_hit_flush_failed_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "hit counts not written"
+        }
+      ],
+      "id": 37,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 101
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "List snapshot age",
+      "description": "Seconds since the lists were last read successfully. A minute or so is healthy (the refresh interval). The dashed line is the alert: 10 minutes means the pod enforces lists that old, and a hung refresh moves no failure counter, so this is the only place it shows. Empty while lists are off.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 600
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "time() - max by (pod) (antifraud_lists_refreshed_timestamp_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "id": 38,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 109
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Tuning age",
+      "description": "Seconds since the tuned settings (mode, thresholds, weights) were last read successfully. A few seconds is healthy (the refresh interval). The dashed line is the alert at 10 minutes: a pod that old ignores a switch from shadow to enforce.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 600
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "time() - max by (pod) (antifraud_tuning_refreshed_timestamp_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "id": 39,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 109
+      }
+    },
+    {
+      "id": 40,
+      "type": "row",
+      "title": "auth — Detectors and resets",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 117
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Proposals created / s by kind",
+      "description": "List entries the detectors proposed (they never create one). Empty while the detectors are off (the default) or nothing looks anomalous; a steady stream is worth reading in the console.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (kind) (rate(antifraud_proposals_created_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "{{kind}}"
+        }
+      ],
+      "id": 41,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 118
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Detector and housekeeping failures",
+      "description": "A detector run that failed (it tries again next interval) or the removal of old proposals that failed. Empty is healthy.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (kind) (increase(antifraud_detector_failed_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "detector {{kind}} failed"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(antifraud_proposal_housekeeping_failed_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "housekeeping failed"
+        }
+      ],
+      "id": 42,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 118
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Counter resets / s by scope",
+      "description": "Resets of the velocity counters and the SMS budget made through the API (`velocity`, `budget`, `all`). Each is an operator forgiving someone; a burst of them is worth asking about.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (scope) (rate(antifraud_counters_reset_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "{{scope}}"
+        }
+      ],
+      "id": 43,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 126
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Counter reset failures",
+      "description": "A reset that did not complete: `delete` (removing the stored rows) or `poll` (an instance reading the resets). Until it does, that instance goes on counting. Empty is healthy.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (what) (increase(antifraud_counters_reset_failed_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "{{what}}"
+        }
+      ],
+      "id": 44,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 126
+      }
+    },
+    {
+      "id": 45,
+      "type": "row",
+      "title": "auth — Storage",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 134
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Event partitions ahead",
+      "description": "Days of the event log that already have a partition. Healthy is the number the service keeps ahead (a few days). Below the dashed line at 2 maintenance is failing; at 0 the events of the day are written to the default partition until its partition is made.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "d",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 2
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "min by (pod) (antifraud_partition_days_ahead{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "id": 46,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 135
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Maintenance and rollup failures",
+      "description": "Creating and dropping event partitions (retried every minute) and rolling the log up into the statistics the SMS detectors read. Empty is healthy; a failed rollup is recomputed by the next run, so a single one is not an incident.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(antifraud_partition_maintenance_failed_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "partition maintenance"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(antifraud_stats_rollup_failed_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "statistics rollup"
+        }
+      ],
+      "id": 47,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 135
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Database latency, antifraud operations",
+      "description": "Every antifraud database operation together (event inserts, rollups, velocity, lists, proposals). Client side, so it includes the pool and the pooler.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(db_client_operation_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", operation=~\".*antifraud.*\"}[$__rate_interval])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(db_client_operation_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", operation=~\".*antifraud.*\"}[$__rate_interval])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(db_client_operation_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", operation=~\".*antifraud.*\"}[$__rate_interval])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "id": 48,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 143
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Slowest antifraud operations (p99)",
+      "description": "The five operations with the highest p99. The event insert and the rollup are expected to lead; one that was fast and is not is where to look.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "topk(5, histogram_quantile(0.99, sum by (le, operation) (rate(db_client_operation_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", operation=~\".*antifraud.*\"}[$__rate_interval]))))",
+          "legendFormat": "{{operation}}"
+        }
+      ],
+      "id": 49,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 143
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Failed antifraud database operations / s",
+      "description": "Antifraud database operations that did not succeed. Empty is healthy.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (operation) (rate(db_client_operation_duration_seconds_count{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", operation=~\".*antifraud.*\", outcome!=\"success\"}[$__rate_interval]))",
+          "legendFormat": "{{operation}}"
+        }
+      ],
+      "id": 50,
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 151
+      }
+    }
+  ]
+}

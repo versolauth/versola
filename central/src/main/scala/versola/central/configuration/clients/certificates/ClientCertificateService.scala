@@ -1,10 +1,12 @@
 package versola.central.configuration.clients.certificates
 
 import versola.central.CentralConfig
+import versola.central.audit.CentralAudit
 import versola.central.configuration.clients.*
-import versola.central.configuration.edges.EdgeId
+import versola.central.configuration.edges.{EdgeCertificate, EdgeId}
 import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
 import versola.util.CertificateSubject
+import versola.util.audit.{ActorType, AuditContext, AuditEvents}
 import versola.util.http.Observability
 import versola.util.{Patch, PrivateClientCertificate}
 import zio.*
@@ -63,9 +65,9 @@ object ClientCertificateService:
 
   val live: URLayer[
     ClientCertificateIssuer & OAuthClientService & ClientCertificateIssuanceRepository &
-      EdgeCertificateEnrollmentRepository & CentralConfig,
+      EdgeCertificateEnrollmentRepository & CentralConfig & AuditEvents,
     ClientCertificateService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _, _))
+  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   class Impl(
       issuer: ClientCertificateIssuer,
@@ -73,6 +75,7 @@ object ClientCertificateService:
       issuances: ClientCertificateIssuanceRepository,
       enrollments: EdgeCertificateEnrollmentRepository,
       config: CentralConfig,
+      events: AuditEvents,
   ) extends ClientCertificateService:
 
     /** `client-certificates`, or -- for a deployment that only has the earlier
@@ -196,6 +199,11 @@ object ClientCertificateService:
           java.security.cert.CertificateFactory.getInstance("X.509")
             .generateCertificates(java.io.ByteArrayInputStream(chain.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
             .iterator.next.asInstanceOf[java.security.cert.X509Certificate]
+        // Whatever was asked for, a certificate that names an edge is never handed to a client: it would
+        // pass `authorizeEdge` on central's mutual-TLS listener (the CA signing here may be one that
+        // listener trusts).
+        _ <- ZIO.fail(refused("the issued certificate carries a name that identifies an edge to central"))
+          .when(EdgeCertificate.uriNames(leaf).exists(EdgeCertificate.isReserved))
         // What the CA returned must say what the client is registered by, or auth would never
         // accept it: refuse here, with the reason, rather than hand the edge a certificate it
         // would present to a 401.
@@ -205,6 +213,13 @@ object ClientCertificateService:
           case _ => None)(ZIO.fail(_))
         now <- Clock.instant
         _ <- enrollments.recordIssued(clientId, leaf.getSerialNumber.toString(16), now, edgeId)
+          .zipRight(CentralAudit.certificate(
+            events,
+            CentralAudit.CertRenewed,
+            CentralAudit.Actors.Edge,
+            Some(edgeId.toString),
+            ("client", clientId.toString),
+          ))
           .catchAll(error => Observability.setError("edge_certificate_not_recorded", Some(s"client '$clientId': $error")))
         _ <- ZIO.logInfo(
           s"signed certificate ${leaf.getSerialNumber.toString(16)} for client '$clientId' at edge '$edgeId', valid until ${leaf.getNotAfter.toInstant}",
@@ -262,6 +277,9 @@ object ClientCertificateService:
             _ <- clients.updateClient(update(clientId, issued.certificate))
             now <- Clock.instant
             _ <- issuances.replace(ClientCertificateIssuance(clientId, issued.serial, issued.notAfter, now))
+            // By the administrator whose request renewed it, or by the system when the renewal came due.
+            actor <- AuditContext.current.map(_.actor.getOrElse((ActorType.system, None)))
+            _ <- CentralAudit.certificate(events, CentralAudit.CertRenewed, actor._1, actor._2, ("client", clientId.toString))
             _ <- ZIO.logInfo(s"issued certificate ${issued.serial} to client '$clientId', valid until ${issued.notAfter}")
           yield ()
       yield ()
@@ -283,6 +301,9 @@ object ClientCertificateService:
         certificate = PrivateClientCertificate(chain.trim + "\n" + generated.privateKeyPem)
         material <- ZIO.fromEither(certificate.material)
           .mapError(reason => RuntimeException(s"the CA returned a certificate central cannot use: $reason"))
+        // See `sign`: never a certificate that names an edge.
+        _ <- ZIO.fail(RuntimeException("the issued certificate carries a name that identifies an edge to central"))
+          .when(EdgeCertificate.uriNames(material.leaf).exists(EdgeCertificate.isReserved))
         // The issued certificate must name what the registration compares it against; refuse
         // here, with a reason, rather than store one auth would never accept.
         _ <- ZIO.foreachDiscard(auth match
@@ -303,7 +324,6 @@ object ClientCertificateService:
         refreshTokenTtl = None,
         theme = None,
         authFlow = None,
-        registrationFlow = None,
         otpTemplateId = None,
         frontChannelLogoutUri = None,
         frontChannelLogoutSessionRequired = None,
@@ -324,6 +344,7 @@ object ClientCertificateService:
         edgeSigningKey = None,
         edgeClientCertificate = Some(Patch.Modified(certificate)),
         applicationType = None,
+        themeOverrides = None,
       )
 
   /** Renews on a schedule for as long as the application runs; a no-op where no CA is configured. */

@@ -23,6 +23,28 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
     authMethod = AuthMethod.client_secret,
     issueEdgeClientCertificate = false,
     enrollEdgeClientCertificate = false,
+    themeOverrides = None,
+    theme = "default",
+    otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
+    dpopBoundAccessTokens = false,
+    dpopSigningAlgs = Set.empty,
+    dpopMinRsaKeySize = None,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
+    jwks = None,
+    generateJwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
+    edgeSigningKey = None,
+    edgeClientCertificate = None,
+    estEnrollment = false,
   )
 
   private val native = CreateNativeClientRequest(
@@ -37,6 +59,21 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
     authMethod = AuthMethod.none,
     issueEdgeClientCertificate = false,
     enrollEdgeClientCertificate = false,
+    themeOverrides = None,
+    theme = "default",
+    otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
+    dpopBoundAccessTokens = None,
+    dpopSigningAlgs = Set.empty,
+    dpopMinRsaKeySize = None,
+    mtlsAuth = None,
+    edgeClientCertificate = None,
   )
 
   private val service = CreateServiceClientRequest(
@@ -46,6 +83,15 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
     allowedScopes = Set(ScopeToken("read")),
     accessTokenTtl = 300,
     authMethod = AuthMethod.client_secret,
+    permissions = Set.empty,
+    dpopBoundAccessTokens = false,
+    dpopSigningAlgs = Set.empty,
+    dpopMinRsaKeySize = None,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
+    jwks = None,
+    generateJwks = None,
+    estEnrollment = false,
   )
 
   private def registration(kind: ClientKind, request: CreateClientRequest) =
@@ -65,7 +111,6 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
       permissions = Set.empty[Permission],
       theme = "default",
       authFlow = request.authFlow,
-      registrationFlow = None,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
@@ -88,6 +133,7 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
       template = request.template,
       createdAt = java.time.Instant.EPOCH,
       applicationType = request.applicationType.getOrElse(ApplicationType.web),
+      themeOverrides = None,
     )
 
   def spec = suite("typed client registration rules")(
@@ -174,7 +220,6 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
         assertTrue(
           fixed.redirectUris.isEmpty,
           fixed.authFlow.isEmpty,
-          fixed.registrationFlow.isEmpty,
           fixed.consentFlow.isEmpty,
           fixed.refreshTokenTtl.isEmpty,
           !fixed.requirePushedAuthorizationRequests,

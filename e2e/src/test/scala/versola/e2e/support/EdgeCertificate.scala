@@ -2,6 +2,7 @@ package versola.e2e.support
 
 import com.nimbusds.jose.jwk.RSAKey
 import zio.*
+import zio.http.{ClientSSLCertConfig, ClientSSLConfig}
 import zio.json.*
 import zio.json.ast.Json
 
@@ -47,6 +48,8 @@ final class EdgeCertificate private (
   /** The certificate and its private key as the single PEM `edgeClientCertificate` expects
     * (`PrivateClientCertificate` on the server side): the credential an edge fronting this
     * client presents at the TLS handshake. */
+  def privateKeyPemValue: String = privateKeyPem
+
   val edgeClientCertificate: String = s"$certificatePem\n$privateKeyPem\n"
 
   /** The certificate alone, as the header nginx forwards it (`ngx_escape_uri`: everything
@@ -59,6 +62,22 @@ final class EdgeCertificate private (
 
 object EdgeCertificate:
 
+  extension (certificate: EdgeCertificate)
+    /** What a connection presents this certificate with, to a server pinned by `serverCertificate`
+      * (a leaf, as edge pins it). zio-http reads a client certificate from paths only, so the
+      * material is written out, owner-readable, and removed on exit. */
+    def clientSsl(serverCertificate: String): Task[ClientSSLConfig] =
+      ZIO.attemptBlocking:
+        def write(suffix: String, content: String): String =
+          val file = Files.createTempFile("e2e-edge-client", suffix).nn
+          file.toFile.nn.deleteOnExit()
+          Files.writeString(file, content)
+          file.toString
+        ClientSSLConfig.FromClientAndServerCert(
+          ClientSSLConfig.FromCertFile(serverCertificate),
+          ClientSSLCertConfig.FromClientCertFile(write(".crt", certificate.certificatePem), write(".key", certificate.privateKeyPemValue)),
+        )
+
   /** @param caDirectory where the issuing CA's `ca.crt`/`ca.key` live, relative to the repo
     *   root. The default is nginx's CA (the header path); `auth/dev/mtls` is the CA auth's own
     *   mutual-TLS listener trusts, which a certificate presented straight to that listener has
@@ -66,6 +85,7 @@ object EdgeCertificate:
   def make(
       commonName: String = s"e2e-edge-mtls-${UUID.randomUUID().toString.take(8)}",
       caDirectory: String = "edge/dev/internal-tls",
+      uri: Option[String] = None,
   ): Task[EdgeCertificate] =
     ZIO.attempt:
       val generator = java.security.KeyPairGenerator.getInstance("RSA").nn
@@ -101,20 +121,27 @@ object EdgeCertificate:
         run("req", "-new", "-key", keyFile.toString, "-out", csrFile.toString, "-subj", s"/CN=$commonName")
         // Signed by the same CA nginx's own certificate is (see the class doc): its issuer is
         // what a JDK-provider TLS client is offered against the handshake's advertised list.
+        // A URI name rides in an extension file: `x509 -req` copies none from the request.
+        val extensions = uri.map: name =>
+          val file = directory.resolve("extensions.cnf").nn
+          Files.writeString(file, s"subjectAltName=URI:$name\n")
+          Seq("-extfile", file.toString)
         run(
-          "x509",
-          "-req",
-          "-in",
-          csrFile.toString,
-          "-CA",
-          caCert.toString,
-          "-CAkey",
-          caKey.toString,
-          "-CAcreateserial",
-          "-out",
-          certFile.toString,
-          "-days",
-          "2",
+          Seq(
+            "x509",
+            "-req",
+            "-in",
+            csrFile.toString,
+            "-CA",
+            caCert.toString,
+            "-CAkey",
+            caKey.toString,
+            "-CAcreateserial",
+            "-out",
+            certFile.toString,
+            "-days",
+            "2",
+          ) ++ extensions.getOrElse(Nil)*,
         )
         val certificatePem = Files.readString(certFile).nn
 
@@ -132,6 +159,16 @@ object EdgeCertificate:
     * `CN=<commonName>`, which is what a `subject_dn` registration names. */
   def forAuthListener(commonName: String): Task[EdgeCertificate] =
     make(commonName, caDirectory = "auth/dev/mtls")
+
+  /** The certificate an edge presents on central's mutual-TLS listener (#554), issued by the CA that
+    * listener trusts. `edgeId` is the edge it names (`urn:versola:edge:<id>`); `None` is one the
+    * CA vouches for that names no edge, which `authorizeEdge` refuses. */
+  def forCentralListener(edgeId: Option[String]): Task[EdgeCertificate] =
+    make(
+      commonName = edgeId.getOrElse(s"e2e-unnamed-${UUID.randomUUID().toString.take(8)}"),
+      caDirectory = "central/dev/mtls",
+      uri = edgeId.map(id => s"urn:versola:edge:$id"),
+    )
 
   private def pem(label: String, der: Array[Byte]): String =
     val body = Base64.getMimeEncoder(64, "\n".getBytes).encodeToString(der)

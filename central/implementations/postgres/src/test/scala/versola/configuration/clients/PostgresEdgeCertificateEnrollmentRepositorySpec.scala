@@ -31,7 +31,6 @@ object PostgresEdgeCertificateEnrollmentRepositorySpec extends PostgresSpec:
     permissions = Set.empty,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -53,6 +52,8 @@ object PostgresEdgeCertificateEnrollmentRepositorySpec extends PostgresSpec:
     edgeClientCertificate = None,
     template = None,
     createdAt = Instant.EPOCH,
+    themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   private val setup =

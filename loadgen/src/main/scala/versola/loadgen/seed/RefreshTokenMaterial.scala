@@ -25,7 +25,7 @@ case class WarmSessionConfig(
     /** The campaign's client ids, namespaced when `provision.namespace` is: a warm token is bound
       * to the client it was issued to, so one seeded for `mobile-otp` is refused (`invalid_grant`)
       * when the driver refreshes as `fapi-mobile-otp`. */
-    names: versola.loadgen.provision.CampaignBlueprint.Names = versola.loadgen.provision.CampaignBlueprint.Names(None),
+    names: versola.loadgen.provision.CampaignBlueprint.Names,
 )
 
 /** The credentials of one warm mobile session (§10 step 6): a refresh token auth will accept

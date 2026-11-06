@@ -8,7 +8,7 @@ object Versions {
   val zioSchema = "1.8.7"
   val zioJson = "1.0.0"
   val zioOpenTelemetry = "3.1.12"
-  val openTelemetry = "1.66.0"
+  val openTelemetry = "1.67.0"
   val openTelemetrySemConv = "1.37.0"
   val openTelemetrySemConvIncubating = "1.37.0-alpha"
   val zioHttp = "3.11.6"

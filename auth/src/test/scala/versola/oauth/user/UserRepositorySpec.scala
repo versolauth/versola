@@ -51,6 +51,7 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
       registerTests(env),
       claimsTests(env),
       deleteTests(env),
+      markVerifiedTests(env),
     )
 
   private def seed(
@@ -178,6 +179,33 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
           second <- env.userRepository.register(userId2, Left(email1), TenantId("tenant-1"), Set.empty)
         yield assertTrue(first.id == second.id, second.id == userId1)
       },
+      test("an email registration comes back with email_verified already set, and stores it") {
+        for
+          user <- env.userRepository.register(userId1, Left(email1), TenantId("tenant-1"), Set.empty)
+          found <- env.userRepository.find(user.id)
+        yield assertTrue(isVerified(Some(user), "email_verified"), isVerified(found, "email_verified"))
+      },
+      test("a phone registration comes back with phone_number_verified already set, and stores it") {
+        for
+          user <- env.userRepository.register(userId1, Right(phone1), TenantId("tenant-1"), Set.empty)
+          found <- env.userRepository.find(user.id)
+        yield assertTrue(
+          isVerified(Some(user), "phone_number_verified"),
+          isVerified(found, "phone_number_verified"),
+          !isVerified(found, "email_verified"),
+        )
+      },
+      test("claiming an existing account verifies its contact and keeps its other claims") {
+        for
+          _ <- seed(env, userId1, email = Some(email1))
+          _ <- env.userRepository.patchClaims(userId1, Json.Obj("name" -> Json.Str("Ann")))
+          user <- env.userRepository.register(userId2, Left(email1), TenantId("tenant-1"), Set.empty)
+        yield assertTrue(
+          user.id == userId1,
+          isVerified(Some(user), "email_verified"),
+          user.claims.fields.toMap.get("name").contains(Json.Str("Ann")),
+        )
+      },
       test("grants no roles when the registration flow configures none") {
         for
           user <- env.userRepository.register(userId1, Left(email1), TenantId("tenant-1"), Set.empty)
@@ -261,6 +289,109 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
           _ <- env.userRepository.delete(userId2)
           found <- env.userRepository.find(userId1)
         yield assertTrue(found.nonEmpty)
+      },
+    )
+
+  /** Whether the user's `claims` carry `claim: true`. */
+  private def isVerified(user: Option[UserRecord], claim: String): Boolean =
+    user.exists(_.claims.fields.toMap.get(claim).contains(zio.json.ast.Json.Bool(true)))
+
+  def markVerifiedTests(env: UserRepositorySpec.Env) =
+    suite("markVerified")(
+      test("sets the email_verified claim to true after successful email OTP") {
+        for
+          _ <- seed(env, userId1, email = Some(email1))
+          before <- env.userRepository.find(userId1)
+          result <- env.userRepository.markVerified(userId1, Left(email1))
+          after <- env.userRepository.find(userId1)
+        yield assertTrue(
+          result.exists(_.fields.toMap.get("email_verified").contains(Json.Bool(true))),
+          result == after.map(_.claims),
+          !isVerified(before, "email_verified"),
+          isVerified(after, "email_verified"),
+        )
+      },
+      test("sets the phone_number_verified claim to true after successful phone OTP") {
+        for
+          _ <- seed(env, userId1, phone = Some(phone1))
+          before <- env.userRepository.find(userId1)
+          _ <- env.userRepository.markVerified(userId1, Right(phone1))
+          after <- env.userRepository.find(userId1)
+        yield assertTrue(
+          !isVerified(before, "phone_number_verified"),
+          isVerified(after, "phone_number_verified"),
+        )
+      },
+      test("is idempotent: calling twice leaves the flag true") {
+        for
+          _ <- seed(env, userId1, email = Some(email1))
+          _ <- env.userRepository.markVerified(userId1, Left(email1))
+          _ <- env.userRepository.markVerified(userId1, Left(email1))
+          after <- env.userRepository.find(userId1)
+        yield assertTrue(isVerified(after, "email_verified"))
+      },
+      test("does not set the flag when the stored email differs from the credential") {
+        for
+          _ <- seed(env, userId1, email = Some(email1))
+          result <- env.userRepository.markVerified(userId1, Left(email2))
+          after <- env.userRepository.find(userId1)
+        yield assertTrue(result.isEmpty, !isVerified(after, "email_verified"))
+      },
+      // upsert only applies a version newer than the stored one (UUIDs compare bytewise), so these
+      // tests use fixed, ordered versions: a random one would be skipped about half the time.
+      test("upsert resets email_verified when email changes") {
+        val older = UUID(0L, 1L)
+        val newer = UUID(0L, 2L)
+        for
+          _ <- env.userRepository.upsert(userId1, older, Some(email1), None, None)
+          _ <- env.userRepository.markVerified(userId1, Left(email1))
+          verified <- env.userRepository.find(userId1)
+          _ <- env.userRepository.upsert(userId1, newer, Some(email2), None, None)
+          afterChange <- env.userRepository.find(userId1)
+        yield assertTrue(
+          isVerified(verified, "email_verified"),
+          afterChange.exists(_.email.contains(email2)),
+          !isVerified(afterChange, "email_verified"),
+        )
+      },
+      test("verifying keeps the other claims the user already has") {
+        for
+          _ <- seed(env, userId1, email = Some(email1))
+          _ <- env.userRepository.patchClaims(userId1, zio.json.ast.Json.Obj("name" -> zio.json.ast.Json.Str("Ann")))
+          _ <- env.userRepository.markVerified(userId1, Left(email1))
+          after <- env.userRepository.find(userId1)
+        yield assertTrue(
+          isVerified(after, "email_verified"),
+          after.exists(_.claims.fields.toMap.get("name").contains(zio.json.ast.Json.Str("Ann"))),
+        )
+      },
+      test("upsert resets phone_number_verified when the phone changes and leaves the email claim alone") {
+        val older = UUID(0L, 1L)
+        val newer = UUID(0L, 2L)
+        for
+          _ <- env.userRepository.upsert(userId1, older, Some(email1), Some(phone1), None)
+          _ <- env.userRepository.markVerified(userId1, Left(email1))
+          _ <- env.userRepository.markVerified(userId1, Right(phone1))
+          _ <- env.userRepository.upsert(userId1, newer, Some(email1), Some(phone2), None)
+          after <- env.userRepository.find(userId1)
+        yield assertTrue(
+          after.exists(_.phone.contains(phone2)),
+          !isVerified(after, "phone_number_verified"),
+          isVerified(after, "email_verified"),
+        )
+      },
+      test("upsert preserves email_verified when email is unchanged") {
+        val older = UUID(0L, 1L)
+        val newer = UUID(0L, 2L)
+        for
+          _ <- env.userRepository.upsert(userId1, older, Some(email1), None, None)
+          _ <- env.userRepository.markVerified(userId1, Left(email1))
+          _ <- env.userRepository.upsert(userId1, newer, Some(email1), None, Some(Login("someone")))
+          after <- env.userRepository.find(userId1)
+        yield assertTrue(
+          after.exists(_.login.contains(Login("someone"))),
+          isVerified(after, "email_verified"),
+        )
       },
     )
 

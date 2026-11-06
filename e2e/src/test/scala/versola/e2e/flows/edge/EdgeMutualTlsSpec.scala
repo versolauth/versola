@@ -45,22 +45,59 @@ object EdgeMutualTlsSpec
     resourceId = "e2e-edge-mutual-tls",
     resourceUri = UpstreamStub.uriOn(UpstreamPort),
     endpoints = List(
-      EdgeFixture.Endpoint(name = "items", method = "GET", path = "/items"),
+      EdgeFixture.Endpoint(
+        name = "items",
+        method = "GET",
+        path = "/items",
+        permitted = true,
+        fetchUserInfo = false,
+        allow = None,
+        inject = Nil,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
       // Only the dual-binding test calls this one, so the upstream seeing it at all is that
       // test's request getting through -- the tests above run alongside and share the stub.
-      EdgeFixture.Endpoint(name = "dual-bound", method = "GET", path = "/dual-bound"),
+      EdgeFixture.Endpoint(
+        name = "dual-bound",
+        method = "GET",
+        path = "/dual-bound",
+        permitted = true,
+        fetchUserInfo = false,
+        allow = None,
+        inject = Nil,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
       // The endpoint that makes edge call `/userinfo` with the token it was issued, and the
       // injected header that proves the call came back with claims rather than a refusal.
       EdgeFixture.Endpoint(
         name = "profile",
         method = "GET",
         path = "/profile",
+        permitted = true,
         fetchUserInfo = true,
+        allow = None,
         inject = List(Fixtures.inject("header", "X-User-Sub", "user.sub")),
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
       ),
     ),
-    mutualTls = true,
+    scopes = Set("openid", "email", "offline_access"),
+    presetScope = Set("openid"),
+    postLogoutRedirectUri = None,
+    cookiePath = None,
     awaitProxyReady = true,
+    privateKeyJwt = false,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
+    mutualTls = true,
+    nativeApp = false,
+    issuedCertificate = false,
+    enrolledCertificate = false,
   )
 
   override val bootstrap: ZLayer[Any, Any, OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub] =
@@ -197,5 +234,30 @@ object EdgeMutualTlsSpec
           .label("the certificate rule comes before the proof is looked at, so no nonce is ever offered") &&
         assertTrue(answered.status == Status.Unauthorized, !seen.exists(_.path == "/dual-bound"))
           .label("a valid proof, nonce included, must not carry a certificate-bound token past edge")
+    },
+    // The same token on edge's own `/permissions/me`, which answers on the tokens the proxy
+    // does and so has to refuse this one the same way.
+    test("refuses a token bound to both a key and a certificate on /permissions/me too") {
+      for
+        edgeApi <- edge
+        prover <- DpopProver.make
+        token <- doublyBoundToken(prover)
+        cnf <- confirmation(token)
+        htu = s"${edgeApi.baseUrl}/permissions/me"
+        call = (nonce: Option[String]) =>
+          prover.proof(Method.GET, htu, accessToken = Some(token), nonce = nonce)
+            .flatMap(proof => edgeApi.permissions(EdgeAuth.Dpop(token, proof)))
+        first <- call(None)
+        answered <- DpopProver.nonceOf(first.response) match
+          case None => ZIO.succeed(first)
+          case Some(nonce) => call(Some(nonce))
+      yield assertTrue(
+        cnf.get("jkt").isDefined,
+        cnf.get("x5t#S256").isDefined,
+      ).label(s"the control: this token has to carry both bindings, got $cnf") &&
+        assertTrue(DpopProver.nonceOf(first.response).isEmpty)
+          .label("the certificate rule comes before the proof is looked at, so no nonce is ever offered") &&
+        assertTrue(answered.status == Status.Unauthorized)
+          .label("a valid proof, nonce included, must not carry a certificate-bound token past /permissions/me")
     },
   ) @@ TestAspect.sequential

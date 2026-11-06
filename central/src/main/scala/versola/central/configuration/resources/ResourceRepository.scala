@@ -31,6 +31,9 @@ trait ResourceRepository extends CacheSource[Vector[ResourceRecord]]:
       deleteEndpoints: Set[ResourceEndpointId],
   ): Task[Unit]
 
+  /** Replaces the limits the resource sets for its audience clients (an empty list removes them). */
+  def updateAudienceRateLimits(resourceId: ResourceId, limits: List[AudienceRateLimit]): Task[Unit]
+
   /** Returns true only when an internal resource with no pending rotation was rotated. */
   def rotateSecret(resourceId: ResourceId, newSecret: Array[Byte]): Task[Boolean]
 

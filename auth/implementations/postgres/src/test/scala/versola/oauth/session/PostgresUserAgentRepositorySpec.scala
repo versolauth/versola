@@ -13,12 +13,12 @@ object PostgresUserAgentRepositorySpec extends PostgresSpec, UserAgentRepository
     ZLayer:
       for
         xa <- ZIO.service[TransactorZIO]
-      yield UserAgentRepositorySpec.Env(PostgresUserAgentRepository(xa))
+      yield UserAgentRepositorySpec.Env(PostgresUserAgentRepository(xa), PostgresSessionRepository(xa))
 
   override def beforeEach(env: UserAgentRepositorySpec.Env) =
     for
       xa <- ZIO.service[TransactorZIO]
       _ <- xa.connect:
-        sql"TRUNCATE TABLE users, user_agents CASCADE".update.run()
+        sql"TRUNCATE TABLE users, user_agents, sso_sessions, refresh_tokens CASCADE".update.run()
         sql"""INSERT INTO users (id, claims) VALUES (${(userId1: UUID)}, '{}'::jsonb), (${(userId2: UUID)}, '{}'::jsonb)""".update.run()
     yield ()

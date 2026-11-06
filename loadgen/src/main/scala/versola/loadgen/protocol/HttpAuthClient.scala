@@ -40,6 +40,7 @@ private case class AuthEndpoints(
     challenge: URL,
     challengePhone: URL,
     challengeOtp: URL,
+    challengeOtpResend: URL,
     challengePassword: URL,
     challengeSetPassword: URL,
     challengeLoginPassword: URL,
@@ -59,6 +60,7 @@ private object AuthEndpoints:
       challenge <- at("/challenge")
       phone <- at("/challenge/phone")
       otp <- at("/challenge/otp")
+      resend <- at("/challenge/otp/resend")
       password <- at("/challenge/password")
       setPassword <- at("/challenge/set-password")
       loginPassword <- at("/challenge/login-password")
@@ -71,6 +73,7 @@ private object AuthEndpoints:
       challenge,
       phone,
       otp,
+      resend,
       password,
       setPassword,
       loginPassword,
@@ -93,8 +96,18 @@ final class HttpAuthClient(
     endpoints: AuthEndpoints,
     clients: ClientRegistry,
     nonce: Ref[Option[String]],
+    extra: Headers = Headers.empty,
 ) extends AuthClient:
   import HttpAuthClient.*
+
+  /** The same client, every request of which carries `headers` too: a source address for a session
+    * (`X-Forwarded-For`, where the stack trusts it from this process), as the antifraud scenarios need to
+    * tell their sessions apart. Shares the pool, the endpoints and the nonce; costs an object.
+    */
+  def withHeaders(headers: Headers): HttpAuthClient = HttpAuthClient(exchange, endpoints, clients, nonce, extra ++ headers)
+
+  private def send(request: Request): IO[ProtocolError, Received] =
+    exchange.send(if extra.isEmpty then request else request.addHeaders(extra))
 
   /** RFC 9449 §4.3 step 9 compares the proof's `htu` against the endpoint's own URI, and auth
     * derives that from its configured issuer rather than from the inbound request, so that a
@@ -155,7 +168,7 @@ final class HttpAuthClient(
   ): IO[ProtocolError, Either[ConversationCookie, AuthorizedRedirect]] =
     val request = Request.get(endpoints.authorize.addQueryParams(params))
     val withSession = sessionCookie.fold(request)(session => request.addHeader(HttpExchange.cookieHeader(ssoSessionCookie, session.value)))
-    exchange.send(withSession).flatMap: received =>
+    send(withSession).flatMap: received =>
       HttpExchange.setCookie(received.response, conversationCookie) match
         case Some(cookie) => ZIO.succeed(Left(ConversationCookie(cookie.content)))
         case None =>
@@ -184,6 +197,20 @@ final class HttpAuthClient(
 
   override def submitOtp(conversation: ConversationCookie, code: String, csrf: Csrf): IO[ProtocolError, SubmitOutcome] =
     submit(endpoints.challengeOtp, otpEndpoint, conversation, List("code" -> code, "csrf" -> csrf.value))
+
+  override def submitResend(conversation: ConversationCookie, csrf: Csrf): IO[ProtocolError, SubmitOutcome] =
+    submit(endpoints.challengeOtpResend, resendEndpoint, conversation, List("csrf" -> csrf.value))
+
+  override def submitPhoneInline(
+      conversation: ConversationCookie,
+      phone: String,
+      csrf: Csrf,
+      proof: Option[PowAnswer],
+  ): IO[ProtocolError, InlineOutcome] =
+    submitInline(endpoints.challengePhone, phoneEndpoint, conversation, List("phone" -> phone, "csrf" -> csrf.value), proof)
+
+  override def resendInline(conversation: ConversationCookie, csrf: Csrf, proof: Option[PowAnswer]): IO[ProtocolError, InlineOutcome] =
+    submitInline(endpoints.challengeOtpResend, resendEndpoint, conversation, List("csrf" -> csrf.value), proof)
 
   override def submitPassword(conversation: ConversationCookie, password: String, csrf: Csrf): IO[ProtocolError, SubmitOutcome] =
     submit(endpoints.challengePassword, passwordEndpoint, conversation, List("password" -> password, "csrf" -> csrf.value))
@@ -272,7 +299,7 @@ final class HttpAuthClient(
       url <- ZIO
         .fromEither(URL.decode(location))
         .mapError(error => ProtocolError.MalformedResponse(logoutEndpoint, error.getMessage))
-      received <- exchange.send(Request.get(url).addHeader(HttpExchange.cookieHeader(ssoSessionCookie, ssoSession.value)))
+      received <- send(Request.get(url).addHeader(HttpExchange.cookieHeader(ssoSessionCookie, ssoSession.value)))
       confirmation <-
         if received.status != Status.Ok then ZIO.fail(HttpExchange.unexpected(expectedOk, received.status, logoutEndpoint))
         else
@@ -299,7 +326,7 @@ final class HttpAuthClient(
       .post(confirmation.url, HttpExchange.formBody(fields))
       .addHeader(HttpExchange.cookieHeader(ssoSessionCookie, ssoSession.value))
       .addHeader(HttpExchange.formContentType)
-    exchange.send(request).flatMap: received =>
+    send(request).flatMap: received =>
       // The signed-out page, or a redirect to the post-logout URI when one was posted back.
       if received.status == Status.Ok || HttpExchange.isRedirect(received.status) then ZIO.unit
       // A 403 is the confirmation not matching -- the session is still live, so this is the one
@@ -318,7 +345,7 @@ final class HttpAuthClient(
       .post(url, HttpExchange.formBody(fields))
       .addHeader(HttpExchange.cookieHeader(conversationCookie, conversation.value))
       .addHeader(HttpExchange.formContentType)
-    exchange.send(request).flatMap { received =>
+    send(request).flatMap { received =>
       if HttpExchange.isRedirect(received.status) then
         HttpExchange
           .required(received.location, endpoint, "redirect without a Location header")
@@ -327,6 +354,38 @@ final class HttpAuthClient(
       else if received.status == Status.Ok then ZIO.succeed(SubmitOutcome.Rendered(ChallengePage.parse(conversation, received.body)))
       else ZIO.fail(HttpExchange.unexpected(expectedSubmit, received.status, endpoint))
     }
+
+  /** What `central-ui/forms/shared/inline.ts` sends: the form's fields with `proof_inline=1`, and the answer to a challenge
+    * as `proof_token` and `proof_solution`. The answer is JSON (`InlineStep`) when `auth` could answer in that shape and a
+    * page otherwise; an error status is a failure as it is on a plain submit.
+    */
+  private def submitInline(
+      url: URL,
+      endpoint: String,
+      conversation: ConversationCookie,
+      fields: List[(String, String)],
+      proof: Option[PowAnswer],
+  ): IO[ProtocolError, InlineOutcome] =
+    val all = fields ++ List(proofInlineField -> "1") ++ proof.toList.flatMap(answer =>
+      List(proofTokenField -> answer.token, proofSolutionField -> answer.solution),
+    )
+    val request = Request
+      .post(url, HttpExchange.formBody(all))
+      .addHeader(HttpExchange.cookieHeader(conversationCookie, conversation.value))
+      .addHeader(HttpExchange.formContentType)
+    send(request).flatMap: received =>
+      if received.status != Status.Ok && !HttpExchange.isRedirect(received.status) then
+        ZIO.fail(HttpExchange.unexpected(expectedSubmit, received.status, endpoint))
+      else if received.response.rawHeader("content-type").exists(_.contains("application/json")) then
+        ZIO
+          .fromEither(received.body.fromJson[InlineStep])
+          .mapError(error => ProtocolError.MalformedResponse(endpoint, error.take(120)))
+          .map(InlineOutcome.Step.apply)
+      else if HttpExchange.isRedirect(received.status) then
+        HttpExchange
+          .required(received.location, endpoint, "redirect without a Location header")
+          .map(location => InlineOutcome.Step(InlineStep(next = Some(location), challenge = None, otp = false)))
+      else ZIO.succeed(InlineOutcome.Page(ChallengePage.parse(conversation, received.body)))
 
   /** A confidential client authenticates with HTTP Basic; a public one (the three `mobile-*`
     * clients of design doc §2.2 hold no secret) names itself in the body and proves itself with
@@ -358,12 +417,12 @@ final class HttpAuthClient(
       key: Option[DpopKey],
   ): IO[ProtocolError, Received] =
     key match
-      case None => exchange.send(tokenRequest(fields, client, None))
+      case None => send(tokenRequest(fields, client, None))
       case Some(signing) =>
         for
           held <- nonce.get
           proof <- signing.proof(Method.POST, tokenHtu, None, held)
-          first <- exchange.send(tokenRequest(fields, client, Some(proof)))
+          first <- send(tokenRequest(fields, client, Some(proof)))
           received <- nonceChallenge(first) match
             case None => adoptNonce(first).as(first)
             case Some(issued) =>
@@ -371,7 +430,7 @@ final class HttpAuthClient(
                 _ <- nonce.set(Some(issued))
                 _ <- LoadgenMetrics.dpopNonceRetried
                 retried <- signing.proof(Method.POST, tokenHtu, None, Some(issued))
-                second <- exchange.send(tokenRequest(fields, client, Some(retried)))
+                second <- send(tokenRequest(fields, client, Some(retried)))
                 _ <- adoptNonce(second)
               yield second
         yield received
@@ -442,6 +501,7 @@ object HttpAuthClient:
   private val challengeEndpoint = "/challenge"
   private val phoneEndpoint = "/challenge/phone"
   private val otpEndpoint = "/challenge/otp"
+  private val resendEndpoint = "/challenge/otp/resend"
   private val passwordEndpoint = "/challenge/password"
   private val setPasswordEndpoint = "/challenge/set-password"
   private val loginPasswordEndpoint = "/challenge/login-password"
@@ -467,6 +527,11 @@ object HttpAuthClient:
   private val csrfField = "csrf_token"
   private val postLogoutRedirectUriParam = "post_logout_redirect_uri"
   private val stateParam = "state"
+
+  // The fields of a request for a code from script (`ProofInput` in auth).
+  private val proofInlineField = "proof_inline"
+  private val proofTokenField = "proof_token"
+  private val proofSolutionField = "proof_solution"
 
   private val expectedOk: Set[Status] = Set(Status.Ok)
   private val expectedSubmit: Set[Status] = Set(Status.Ok, Status.SeeOther)

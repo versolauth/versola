@@ -29,9 +29,14 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build:
+  # Everything that needs no staged stack: compile, the unit specs against Postgres (plain and TLS) and
+  # PgBouncer, coverage, and the loadgen/mockapi/tools specs. Runs beside `build` (staging + e2e) instead of
+  # in front of it: e2e depends on none of this, and the two used to run back to back on one runner (~31 min
+  # in total). Skipped on release for the same reason `build` skips its tests: a release only publishes images
+  # from a commit whose push-to-main run already passed them.
+  unit-tests:
+    if: github.event_name != 'release'
     runs-on: ubuntu-latest
-    # A normal run takes ~15 minutes. Without a bound a hung e2e step holds the job for the 6-hour default.
     timeout-minutes: 45
     services:
       postgres:
@@ -75,6 +80,229 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          java-version: '25.0.5+8'
+          force-download: true
+          distribution: 'temurin'
+          cache: 'sbt'
+      - uses: sbt/setup-sbt@b113b960ba361e87e08ce02a390d51871b7ee459 # v1
+      - name: Set up Scala CLI
+        if: github.event_name != 'release'
+        uses: VirtusLab/scala-cli-setup@3f5bf11a33bb88343238780c18257c8fa43789e1 # v1
+
+      # sbt's incremental compile state (classes, test classes and zinc's analysis), restored from the
+      # last push to main so a PR recompiles what it changed instead of everything: `unit-tests` and
+      # `build` each compiled the whole tree from scratch (~2.5 min apiece before any test ran).
+      # Only a push to main writes it (see "Save compile cache" in `unit-tests`), so a PR can read it
+      # but never put anything into it. Not used on release/workflow_dispatch: what those publish is
+      # built from a clean tree. The key carries the ISO week, so a stale-state bug in zinc costs at
+      # most a week and then a clean build replaces it; bump `compile-v1` when something zinc cannot
+      # see changes (the JDK that compiles, scalac flags passed from outside the build files).
+      - name: Compile cache week
+        id: week
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore compile cache
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            target/streams
+            project/target
+            project/project/target
+            */target/scala-*
+            */target/streams
+            */implementations/*/target/scala-*
+            */implementations/*/target/streams
+          key: compile-v1-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('build.sbt', 'project/*.sbt', 'project/*.scala', 'project/build.properties') }}-${{ github.sha }}
+          restore-keys: |
+            compile-v1-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('build.sbt', 'project/*.sbt', 'project/*.scala', 'project/build.properties') }}-
+
+      # The built forms are needed before the first sbt step, not only before staging: the base
+      # stylesheet every theme is composed on (forms/common.css) is copied by `build:forms` into
+      # util's resources, and util, auth and central read it when they run (their tests too).
+      # Without this step `sbt test` fails on the missing resource.
+      # No `if: != release` guard here (unlike many steps below) --
+      # central-postgres-impl/stage packages whatever's under
+      # central/src/main/resources at stage time, and this is what
+      # populates that with the built forms. Needed on release too now
+      # that central is staged here instead of inside Dockerfile.central
+      # (which used to run its own npm build:forms before its own `sbt
+      # stage`, see docker-central job below).
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.12'
+          cache: npm
+          cache-dependency-path: central-ui/package-lock.json
+
+      - name: Build forms
+        working-directory: central-ui
+        run: |
+          npm ci
+          npm run build:forms
+
+
+      # tools (build.sbt's gen-env.scala sub-project) is deliberately not
+      # part of root's aggregate -- see its comment in build.sbt -- so
+      # plain `sbt compile` above wouldn't touch it. Without this, the
+      # *only* place it ever got compiled was `tools/stage` in "Stage
+      # services for release images" below, which only runs on release/
+      # workflow_dispatch -- meaning a normal PR or push to main could
+      # merge a change that breaks the sbt tools project (wrong
+      # scalacOptions, a dependency only tools pulls in, etc.) and nobody
+      # would find out until an actual release was cut. Compiling it here
+      # too closes that gap without pulling it into root's aggregate --
+      # it's still not part of the default `compile`/`test` loop for
+      # everyone else, just guaranteed to be checked on every run.
+      - name: Compile
+        run: sbt compile "tools/compile" "loadgen/compile" "mockapi/compile" "migrateTool/compile"
+
+      # `PostgresTlsConnectionSpec` needs a Postgres that serves TLS; the `postgres` service above
+      # does not (and a service container cannot take the server flags or certificates it
+      # needs), so the one from services.yml is started here, on 5433. Its CA lands in
+      # target/postgres-tls/ca.crt, and the test steps below point POSTGRES_TLS_HOST at it.
+      - name: Start Postgres with TLS
+        run: |
+          mkdir -p target/postgres-tls
+          chmod a+w target/postgres-tls
+          POSTGRES_PORT=5433 docker compose -f services.yml up -d --build --wait postgres
+
+
+      # These two run before the root tests on purpose. `sbt coverage test` instruments the classes it
+      # compiles, so whatever runs after it recompiles util and the rest from scratch (about 40 s more on a
+      # push to main, on top of the instrumented build itself); here they reuse what `Compile` built.
+
+      # loadgen/mockapi aren't part of root's aggregate (see build.sbt), so neither `sbt
+      # test` nor `sbt coverage test` below touches them -- same reasoning as `tools/compile`
+      # above, and the same gap `e2e` closes for itself with its own explicit step below.
+      # Both set `coverageEnabled := false`, so this deliberately runs outside the coverage
+      # step rather than being folded into it. Needs only the `postgres` service already up
+      # for the job (see PostgresSpec/SutDatabases): loadgen's specs create and migrate their
+      # own scratch databases (`loadgen_test`, `loadgen_sut_auth_test`,
+      # `loadgen_sut_central_test`) against it directly with Flyway, so this needs none of the
+      # staged auth/central services the e2e step below spins up. Skipped on release for the
+      # same reason e2e's staging is: a release only builds and publishes images from a commit
+      # that already passed this on its push-to-main run.
+      - name: Run loadgen and mockapi tests
+        if: github.event_name != 'release'
+        env:
+          POSTGRES_HOST: localhost:5432
+        run: sbt "loadgen/test" "mockapi/test"
+
+      # tools (gen-env.scala) isn't in root's aggregate either, so `sbt test` below never runs its
+      # specs: SecretSchemaSpec is the secret schema versola-cli reads. Needs no database.
+      - name: Run tools tests
+        if: github.event_name != 'release'
+        run: sbt "tools/test"
+
+      # The state worth keeping is the plain one: `sbt coverage test` below instruments and rewrites the
+      # classes, so this saves before it, after compiling every test source (the root `sbt test` would
+      # do that only after). `build` needs impl classes and e2e test classes from here as well.
+      - name: Compile all test sources for the cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: sbt Test/compile "tools/Test/compile"
+
+      - name: Save compile cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            target/streams
+            project/target
+            project/project/target
+            */target/scala-*
+            */target/streams
+            */implementations/*/target/scala-*
+            */implementations/*/target/streams
+          key: compile-v1-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('build.sbt', 'project/*.sbt', 'project/*.scala', 'project/build.properties') }}-${{ github.sha }}
+
+      - name: Run tests
+        if: github.event_name != 'push'
+        env:
+          POSTGRES_HOST: localhost:5432
+          POSTGRES_TLS_HOST: localhost:5433
+        run: sbt test
+
+      - name: Run tests with coverage
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          POSTGRES_HOST: localhost:5432
+          POSTGRES_TLS_HOST: localhost:5433
+        run: sbt coverage test coverageReport coverageAggregate
+
+      - name: Publish coverage badge to gist
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: bd1fd5151f5190b2f8325a56610909ef
+          GIST_FILENAME: versola-coverage.json
+        run: scala-cli run --server=false .github/scripts/coverage-badge.scala
+
+  # Every push to main saves a compile cache of its own (see "Save compile cache" in `unit-tests`), a few
+  # hundred MB each, and the repository's 10 GB Actions cache quota is shared with the sbt and npm
+  # dependency caches, which are evicted oldest-first when it fills. Only the newest two are of any use
+  # (a restore takes the latest), so the rest are deleted. Its own job so `actions: write` is held by
+  # nothing but these few lines.
+  compile-cache-prune:
+    needs: unit-tests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Delete all but the two newest compile caches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh cache list --repo "$GITHUB_REPOSITORY" --key compile-v1- --sort created_at --order desc \
+            --limit 100 --json id --jq '.[2:][].id' |
+            while read -r id; do gh cache delete "$id" --repo "$GITHUB_REPOSITORY"; done
+
+  # Stages the services and runs e2e against them (and, on release/workflow_dispatch, produces the stage
+  # artifacts the docker-* jobs ship). The unit specs live in `unit-tests`, beside this job; every docker-*
+  # job waits for both (see their `needs:`/`if:`), so a failing unit spec still blocks a manual test_tag publish.
+  build:
+    runs-on: ubuntu-latest
+    # A normal run takes ~15 minutes. Without a bound a hung e2e step holds the job for the 6-hour default.
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: auth
+          POSTGRES_USER: dev
+          POSTGRES_PASSWORD: 1234
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U dev -d auth"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+          --health-start-period=10s
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The manifest's newest entry has to be the tag being published (release.md: run the same script with
+      # the tag before Publish, a published tag cannot be reused). It is the first step of `build` so that a
+      # wrong manifest fails in seconds, before any image is pushed: every docker-* job needs this job, so
+      # auth, central, edge and the rest are not published under a tag whose versola-tools image never
+      # gets built (a release the CLI cannot configure, and a tag that cannot be reused). The operator
+      # deletes the release and the tag, adds the entry to release.json and publishes again.
+      # The tag goes through env:, like the "Extract version from tag" step in the docker-* jobs.
+      - name: Check the release manifest matches the tag
+        if: ${{ github.event_name == 'release' }}
+        env:
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+        run: bash .github/scripts/check-release-manifest.sh "$RELEASE_TAG_NAME"
 
       # test_tag's own description says it must never be "latest" or a real
       # version number, but a text input on the manual-run form doesn't
@@ -134,15 +362,46 @@ jobs:
           fi
 
       - name: Set up JDK 25
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
-          java-version: '25'
+          java-version: '25.0.5+8'
+          force-download: true
           distribution: 'temurin'
           cache: 'sbt'
-      - uses: sbt/setup-sbt@6158cb0903b8ceeae04f830055f3155e1b6a5ad7 # v1
+      - uses: sbt/setup-sbt@b113b960ba361e87e08ce02a390d51871b7ee459 # v1
       - name: Set up Scala CLI
         if: github.event_name != 'release'
-        uses: VirtusLab/scala-cli-setup@c33dfbf1a5f16ee60efff453b7f9a987d2b6955b # v1
+        uses: VirtusLab/scala-cli-setup@3f5bf11a33bb88343238780c18257c8fa43789e1 # v1
+
+      # sbt's incremental compile state (classes, test classes and zinc's analysis), restored from the
+      # last push to main so a PR recompiles what it changed instead of everything: `unit-tests` and
+      # `build` each compiled the whole tree from scratch (~2.5 min apiece before any test ran).
+      # Only a push to main writes it (see "Save compile cache" in `unit-tests`), so a PR can read it
+      # but never put anything into it. Not used on release/workflow_dispatch: what those publish is
+      # built from a clean tree. The key carries the ISO week, so a stale-state bug in zinc costs at
+      # most a week and then a clean build replaces it; bump `compile-v1` when something zinc cannot
+      # see changes (the JDK that compiles, scalac flags passed from outside the build files).
+      - name: Compile cache week
+        id: week
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore compile cache
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            target/streams
+            project/target
+            project/project/target
+            */target/scala-*
+            */target/streams
+            */implementations/*/target/scala-*
+            */implementations/*/target/streams
+          key: compile-v1-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('build.sbt', 'project/*.sbt', 'project/*.scala', 'project/build.properties') }}-${{ github.sha }}
+          restore-keys: |
+            compile-v1-${{ runner.os }}-${{ steps.week.outputs.week }}-${{ hashFiles('build.sbt', 'project/*.sbt', 'project/*.scala', 'project/build.properties') }}-
+
       - name: Enforce measured DB access in production code
         shell: bash
         run: |
@@ -184,73 +443,40 @@ jobs:
 
           echo "OK: no unmeasured .connect/.transact found in src/main."
 
-      # tools (build.sbt's gen-env.scala sub-project) is deliberately not
-      # part of root's aggregate -- see its comment in build.sbt -- so
-      # plain `sbt compile` above wouldn't touch it. Without this, the
-      # *only* place it ever got compiled was `tools/stage` in "Stage
-      # services for release images" below, which only runs on release/
-      # workflow_dispatch -- meaning a normal PR or push to main could
-      # merge a change that breaks the sbt tools project (wrong
-      # scalacOptions, a dependency only tools pulls in, etc.) and nobody
-      # would find out until an actual release was cut. Compiling it here
-      # too closes that gap without pulling it into root's aggregate --
-      # it's still not part of the default `compile`/`test` loop for
-      # everyone else, just guaranteed to be checked on every run.
-      - name: Compile
-        run: sbt compile "tools/compile" "loadgen/compile" "mockapi/compile"
 
-      # `PostgresTlsConnectionSpec` needs a Postgres that serves TLS; the `postgres` service above
-      # does not (and a service container cannot take the server flags or certificates it
-      # needs), so it is started here. Writes its CA to target/postgres-tls/ca.crt.
-      - name: Start Postgres with TLS
-        run: util/implementations/postgres/tls-fixture/start.sh
+      # The built forms are needed before the first sbt step, not only before staging: the base
+      # stylesheet every theme is composed on (forms/common.css) is copied by `build:forms` into
+      # util's resources, and util, auth and central read it when they run (their tests too).
+      # Without this step `sbt test` fails on the missing resource.
+      # No `if: != release` guard here (unlike many steps below) --
+      # central-postgres-impl/stage packages whatever's under
+      # central/src/main/resources at stage time, and this is what
+      # populates that with the built forms. Needed on release too now
+      # that central is staged here instead of inside Dockerfile.central
+      # (which used to run its own npm build:forms before its own `sbt
+      # stage`, see docker-central job below).
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.12'
+          cache: npm
+          cache-dependency-path: central-ui/package-lock.json
 
-      - name: Run tests
-        if: github.event_name != 'push'
-        env:
-          POSTGRES_HOST: localhost:5432
-        run: sbt test
+      - name: Build forms
+        working-directory: central-ui
+        run: |
+          npm ci
+          npm run build:forms
 
-      - name: Run tests with coverage
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          POSTGRES_HOST: localhost:5432
-        run: sbt coverage test coverageReport coverageAggregate
 
-      # loadgen/mockapi aren't part of root's aggregate (see build.sbt), so neither `sbt
-      # test` nor `sbt coverage test` above touches them -- same reasoning as `tools/compile`
-      # above, and the same gap `e2e` closes for itself with its own explicit step below.
-      # Both set `coverageEnabled := false`, so this deliberately runs outside the coverage
-      # step rather than being folded into it. Needs only the `postgres` service already up
-      # for the job (see PostgresSpec/SutDatabases): loadgen's specs create and migrate their
-      # own scratch databases (`loadgen_test`, `loadgen_sut_auth_test`,
-      # `loadgen_sut_central_test`) against it directly with Flyway, so this needs none of the
-      # staged auth/central services the e2e step below spins up. Skipped on release for the
-      # same reason e2e's staging is: a release only builds and publishes images from a commit
-      # that already passed this on its push-to-main run.
-      - name: Run loadgen and mockapi tests
-        if: github.event_name != 'release'
-        env:
-          POSTGRES_HOST: localhost:5432
-        run: sbt "loadgen/test" "mockapi/test"
-
-      # tools (gen-env.scala) isn't in root's aggregate either, so `sbt test` above never ran its
-      # specs: SecretSchemaSpec is the secret schema versola-cli reads. Needs no database.
-      - name: Run tools tests
-        if: github.event_name != 'release'
-        run: sbt "tools/test"
-
-      - name: Publish coverage badge to gist
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
-          GIST_ID: bd1fd5151f5190b2f8325a56610909ef
-          GIST_FILENAME: versola-coverage.json
-        run: scala-cli run .github/scripts/coverage-badge.scala
-
+      # `--server=false`: with scala-cli's bloop compile server, Scala 3.8.1's sbt-bridge and
+      # repl artifacts are first looked up on repo.scala-lang.org's maven-nightlies. When that
+      # host accepts connections and never answers, every lookup waits ~2.5 min before falling
+      # back to Maven Central, which turned a 30 s step into 25 min. Compiling in-process never
+      # touches that repository.
       - name: Generate dev configs
         if: github.event_name != 'release'
-        run: echo "local" | scala-cli run scripts/gen-env.scala
+        run: echo "local" | scala-cli run --server=false scripts/gen-env.scala
 
       # For the fresh-start check after edge comes up (see
       # check-fresh-start-login.sh): with the dev default (1 minute) a slow
@@ -265,23 +491,6 @@ jobs:
           sed -i 's/^configuration-cache-refresh-interval = .*/configuration-cache-refresh-interval = "10 minutes"/' central/dev/env.conf
           grep -n '^configuration-cache-refresh-interval = "10 minutes"' central/dev/env.conf
 
-      # No `if: != release` guard here (unlike the steps above/below it) --
-      # central-postgres-impl/stage packages whatever's under
-      # central/src/main/resources at stage time, and this is what
-      # populates that with the built forms. Needed on release too now
-      # that central is staged here instead of inside Dockerfile.central
-      # (which used to run its own npm build:forms before its own `sbt
-      # stage`, see docker-central job below).
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22.12'
-
-      - name: Build forms
-        working-directory: central-ui
-        run: |
-          npm ci
-          npm run build:forms
 
       - name: Stage services for e2e tests
         if: github.event_name != 'release'
@@ -306,7 +515,7 @@ jobs:
 
       - name: Upload auth stage artifact
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: auth-stage
           path: auth/implementations/postgres/target/universal/stage
@@ -314,7 +523,7 @@ jobs:
 
       - name: Upload central stage artifact
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: central-stage
           path: central/implementations/postgres/target/universal/stage
@@ -322,7 +531,7 @@ jobs:
 
       - name: Upload edge stage artifact
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: edge-stage
           path: edge/implementations/postgres/target/universal/stage
@@ -330,7 +539,7 @@ jobs:
 
       - name: Upload tools stage artifact
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tools-stage
           path: scripts/target/universal/stage
@@ -338,7 +547,7 @@ jobs:
 
       - name: Upload migrate-tool stage artifact
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: migrate-tool-stage
           path: migrate-tool/target/universal/stage
@@ -351,7 +560,7 @@ jobs:
       # exactly the schema drift `SutSchemaGuard` exists to catch.
       - name: Upload loadgen stage artifact
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: loadgen-stage
           path: loadgen/target/universal/stage
@@ -359,7 +568,7 @@ jobs:
 
       - name: Upload mockapi stage artifact
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mockapi-stage
           path: mockapi/target/universal/stage
@@ -377,7 +586,7 @@ jobs:
           # service -- see versola-tools' migrate-tool), so this e2e job -- which has no separate
           # migrate step of its own against the fresh Postgres container above -- must opt back in
           # explicitly, the same way any other local/dev setup would.
-          PORT=9001 DPORT=9002 RUN_MIGRATIONS=true \
+          PORT=9001 DPORT=9002 MPORT=9011 RUN_MIGRATIONS=true \
             central/implementations/postgres/target/universal/stage/bin/central-postgres-impl \
             -Denv.path=central/dev/env.conf > /tmp/central.log 2>&1 &
           echo $! > /tmp/central.pid
@@ -517,8 +726,10 @@ jobs:
           [ -f /tmp/nginx.pid ]  && sudo kill "$(cat /tmp/nginx.pid)" 2>/dev/null || true
 
   docker-auth:
-    needs: build
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    # unit-tests is skipped on release (see its `if:`), so `!cancelled()` plus an explicit result check replaces the
+    # implicit `success()`: a skipped unit-tests lets a release through, a failed one still blocks a manual publish.
+    needs: [build, unit-tests]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.unit-tests.result != 'failure' && (github.event_name == 'release' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -533,7 +744,7 @@ jobs:
       # Dockerfile.auth copies straight from this instead of installing
       # sbt and rebuilding auth-postgres-impl again inside the image.
       - name: Download auth stage artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: auth-stage
           path: auth/implementations/postgres/target/universal/stage
@@ -551,7 +762,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -648,8 +859,10 @@ jobs:
           push-to-registry: true
 
   docker-central:
-    needs: build
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    # unit-tests is skipped on release (see its `if:`), so `!cancelled()` plus an explicit result check replaces the
+    # implicit `success()`: a skipped unit-tests lets a release through, a failed one still blocks a manual publish.
+    needs: [build, unit-tests]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.unit-tests.result != 'failure' && (github.event_name == 'release' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -668,7 +881,7 @@ jobs:
       # sbt and rebuilding central-postgres-impl (and central-ui's forms)
       # again inside the image.
       - name: Download central stage artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: central-stage
           path: central/implementations/postgres/target/universal/stage
@@ -682,7 +895,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -746,8 +959,10 @@ jobs:
           push-to-registry: true
 
   docker-edge:
-    needs: build
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    # unit-tests is skipped on release (see its `if:`), so `!cancelled()` plus an explicit result check replaces the
+    # implicit `success()`: a skipped unit-tests lets a release through, a failed one still blocks a manual publish.
+    needs: [build, unit-tests]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.unit-tests.result != 'failure' && (github.event_name == 'release' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -762,7 +977,7 @@ jobs:
       # Dockerfile.edge copies straight from this instead of installing
       # sbt and rebuilding edge-postgres-impl again inside the image.
       - name: Download edge stage artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: edge-stage
           path: edge/implementations/postgres/target/universal/stage
@@ -776,7 +991,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -847,8 +1062,10 @@ jobs:
   # copy to drift out of sync (confirmed by hand that this drift is a real
   # risk, not a hypothetical one).
   docker-tools:
-    needs: build
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    # unit-tests is skipped on release (see its `if:`), so `!cancelled()` plus an explicit result check replaces the
+    # implicit `success()`: a skipped unit-tests lets a release through, a failed one still blocks a manual publish.
+    needs: [build, unit-tests]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.unit-tests.result != 'failure' && (github.event_name == 'release' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -858,12 +1075,22 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The manifest's newest entry has to be the tag being published (release.md: run the same script with
+      # the tag before Publish, a published tag cannot be reused). Fails before the image is built and
+      # pushed (versola-tools only: the other images build in parallel jobs), so no versola-tools image says it is a version whose compatibility nobody wrote down.
+      # The tag goes through env:, like the "Extract version from tag" step below.
+      - name: Check the release manifest matches the tag
+        if: ${{ github.event_name == 'release' }}
+        env:
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+        run: bash .github/scripts/check-release-manifest.sh "$RELEASE_TAG_NAME"
+
       # Downloads the sbt-native-packager output that "Stage services for
       # release images" (in the build job) already produced and uploaded --
       # Dockerfile.tools compiles gen-env.scala ahead of time via this
       # instead of shipping scala-cli and compiling it inside the image.
       - name: Download tools stage artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: tools-stage
           path: scripts/target/universal/stage
@@ -872,7 +1099,7 @@ jobs:
       # comment) -- same reasoning as the tools stage download just above:
       # a pre-built jar, not a rebuild-inside-the-image step.
       - name: Download migrate-tool stage artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: migrate-tool-stage
           path: migrate-tool/target/universal/stage
@@ -882,7 +1109,7 @@ jobs:
       # where the reverse proxy versola-cli sets up serves it as static
       # files -- no separate gateway image for it.
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22.12'
 
@@ -906,7 +1133,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -990,8 +1217,10 @@ jobs:
   # seeder in particular writes straight into auth's tables, which is
   # what `SutSchemaGuard` guards against drifting.
   docker-loadgen:
-    needs: build
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    # unit-tests is skipped on release (see its `if:`), so `!cancelled()` plus an explicit result check replaces the
+    # implicit `success()`: a skipped unit-tests lets a release through, a failed one still blocks a manual publish.
+    needs: [build, unit-tests]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.unit-tests.result != 'failure' && (github.event_name == 'release' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1006,7 +1235,7 @@ jobs:
       # Dockerfile.loadgen copies straight from this instead of installing
       # sbt and rebuilding loadgen inside the image.
       - name: Download loadgen stage artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: loadgen-stage
           path: loadgen/target/universal/stage
@@ -1022,7 +1251,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -1086,8 +1315,10 @@ jobs:
           push-to-registry: true
 
   docker-mockapi:
-    needs: build
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    # unit-tests is skipped on release (see its `if:`), so `!cancelled()` plus an explicit result check replaces the
+    # implicit `success()`: a skipped unit-tests lets a release through, a failed one still blocks a manual publish.
+    needs: [build, unit-tests]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.unit-tests.result != 'failure' && (github.event_name == 'release' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1101,7 +1332,7 @@ jobs:
       # the plainest image in docker/ (no config file, no migrations) and
       # does nothing but copy this staged tree.
       - name: Download mockapi stage artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: mockapi-stage
           path: mockapi/target/universal/stage
@@ -1114,7 +1345,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -1173,18 +1404,34 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
-  # Guards against the k8s/*/values.yaml `image.tag: ""` default -- which
-  # _helpers.tpl resolves to .Chart.AppVersion -- naming a tag that was never
-  # published. That is how k8s/loadgen shipped pointing at 0.4.0 images whose
-  # docker-* jobs did not exist until c17190d8, three releases later.
+  # The chart checks that need nothing but Helm (and the runner's python3 with PyYAML), in one job: each
+  # was a job of its own that ran for 5-10 s behind ~25 s of runner start and checkout. They share one
+  # checkout and one Helm install, and every step runs even if an earlier one failed, so a PR still
+  # sees all the failures at once and the step name says which check broke.
   #
-  # No `needs:` -- it compiles nothing, so it stays off the critical path and
-  # reports in well under a minute. Skipped on `release`/`workflow_dispatch`
-  # because the docker-* jobs above are pushing these exact tags on those
-  # events and this check would race them.
-  helm-images:
+  # * images: guards against the k8s/*/values.yaml `image.tag: ""` default -- which _helpers.tpl
+  #   resolves to .Chart.AppVersion -- naming a tag that was never published (how k8s/loadgen shipped
+  #   pointing at 0.4.0 images whose docker-* jobs did not exist until c17190d8). Skipped on
+  #   `release`/`workflow_dispatch` with the rest: the docker-* jobs push these exact tags then and
+  #   this check would race them.
+  # * placement: nodeSelector / tolerations / affinity in both charts reach every pod, a component's own
+  #   value replaces them rather than merging, and the loadgen coordinator's standby spread survives a
+  #   user's nodeAffinity. A pod that ignores its placement still schedules -- on the wrong node.
+  # * availability (versolauth/versola#211): HPA, PDB, topology spread and priority classes each fail
+  #   silently when wrong, so the script asserts on `helm template` output and on the render refusals.
+  # * migrations (versolauth/versola#209): a wrong migration Job render fails late and quietly -- a hook
+  #   that is not replaced on retry, a Job template that cannot be updated in place, one shared
+  #   container handing every schema the others' database password.
+  # * ingress: the plain-Ingress path must refuse to render with no className rather than fall back to
+  #   a cluster default that may not exist, while the Gateway API path keeps rendering without one.
+  #   Every other chart check renders the defaults, where `ingress.enabled` is false.
+  #
+  # No `needs:` -- it compiles nothing, so it stays off the critical path. The scripts exit 2, not 0,
+  # if PyYAML is absent.
+  helm-checks:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event_name == 'pull_request'
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -1196,13 +1443,29 @@ jobs:
       - name: Check chart images exist in ghcr
         run: .github/scripts/check-chart-images.sh
 
-  # Separate from helm-images on purpose. That job installs only Helm and
+      - name: Check chart pod placement
+        if: ${{ !cancelled() }}
+        run: .github/scripts/check-chart-placement.sh
+
+      - name: Check chart availability rendering
+        if: ${{ !cancelled() }}
+        run: .github/scripts/check-chart-availability.sh
+
+      - name: Check chart migration Job rendering
+        if: ${{ !cancelled() }}
+        run: .github/scripts/check-chart-migrations.sh
+
+      - name: Check chart ingress class contract
+        if: ${{ !cancelled() }}
+        run: .github/scripts/check-chart-ingress.sh
+
+  # Separate from helm-checks on purpose. That job installs only Helm and
   # reports in seconds; this one runs gen-env.scala through scala-cli, which
   # has to compile it first, so folding the two together would slow the fast
-  # check down to the slow one's pace for no gain -- they share no setup
+  # checks down to the slow one's pace for no gain -- they share no setup
   # beyond the checkout.
   #
-  # Same event guard as helm-images, for a different reason: nothing here
+  # Same event guard as helm-checks, for a different reason: nothing here
   # races the docker-* jobs, but a drift between the chart and the generator
   # is something to catch on the PR that introduces it, which is where this
   # runs.
@@ -1218,7 +1481,7 @@ jobs:
           version: v3.16.3
 
       - name: Set up Scala CLI
-        uses: VirtusLab/scala-cli-setup@c33dfbf1a5f16ee60efff453b7f9a987d2b6955b # v1
+        uses: VirtusLab/scala-cli-setup@3f5bf11a33bb88343238780c18257c8fa43789e1 # v1
 
       - name: Check chart secret vars match gen-env
         run: .github/scripts/check-chart-secret-vars.sh
@@ -1231,17 +1494,36 @@ jobs:
       - name: Check the secret schema matches what gen-env generates
         run: bash .github/scripts/check-secret-schema.sh
 
-  # Pod placement (nodeSelector / tolerations / affinity) in both charts: that
-  # global values reach every pod, that a component's own value replaces them
-  # rather than merging, and that the loadgen coordinator's standby spread
-  # survives a user's nodeAffinity. A pod that ignores its placement still
-  # schedules -- on the wrong node -- so nothing else would catch a regression.
+      # Static, needs nothing installed: without `exec` the shell stays PID 1, SIGTERM never
+      # reaches the JVM and `docker stop` ends in exit code 137 after the grace period.
+      - name: Check the service images start the JVM with exec
+        run: .github/scripts/check-entrypoint-exec.sh
+
+      # The compatibility manifest versola-tools ships (release.json, versolauth/versola#823): well-formed,
+      # no version both "rolling" and "fresh database". The entrypoint tests next to it run
+      # entrypoint.sh with a stub java (no JVM, no docker needed; the postgres-mode one also uses
+      # Docker when the runner has it). jq is on the runner image. A loop over the glob, not a list
+      # of names: a new entrypoint-*.test.sh is run without anyone remembering to add it here.
+      - name: Check the release manifest and the tools entrypoint
+        run: |
+          bash .github/scripts/check-release-manifest.sh
+          for t in docker/versola-tools/test/entrypoint-*.test.sh; do
+            echo "== $t"
+            sh "$t"
+          done
+
+  # Install-level checks (versolauth/versola#391): every other helm-* job asserts on `helm template`
+  # output, and the failures the charts actually hit rendered cleanly and broke only once installed.
+  # This installs into an ephemeral kind cluster: k8s/loadgen with only mockapi (needs no database and
+  # no Secrets), the scheduler honouring nodeSelector and tolerations, and k8s/versola's Ingress as the
+  # API server accepts it.
   #
-  # Its own job rather than a step in helm-images, which checks something
-  # unrelated, so a failure names what broke. Needs only Helm and the runner's
-  # system python3 with PyYAML; the script exits 2, not 0, if PyYAML is absent.
-  helm-placement:
+  # Its own job: it is the only one that needs a cluster and pulls an image from ghcr, so it is the
+  # slowest of the helm-* jobs. Same event guard, and for the same reason as helm-checks' images step: it pulls the
+  # chart's default mockapi tag, which the docker-* jobs are pushing on release/workflow_dispatch.
+  helm-install:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1251,51 +1533,14 @@ jobs:
         with:
           version: v3.16.3
 
-      - name: Check chart pod placement
-        run: .github/scripts/check-chart-placement.sh
-
-  # Availability rendering (versolauth/versola#211): HPA, PDB, topology spread and priority
-  # classes each fail silently when wrong -- a PDB selecting no pods, an HPA fighting a Deployment that
-  # still states `replicas`, a spread selector matching every service's pods together -- so the
-  # script asserts on `helm template` output and on the render refusals.
-  #
-  # Its own job, like helm-placement. Needs only Helm and the runner's system python3 with PyYAML;
-  # the script exits 2, not 0, if PyYAML is absent.
-  helm-availability:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - name: Create kind cluster
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:
-          version: v3.16.3
+          node_image: kindest/node:v1.31.2
+          cluster_name: chart-install
 
-      - name: Check chart availability rendering
-        run: .github/scripts/check-chart-availability.sh
-
-  # The plain-Ingress path's className contract: the chart must refuse to
-  # render an Ingress with no class rather than fall back to a cluster default
-  # that may not exist, while the Gateway API path keeps rendering without one.
-  # Every other chart check renders the defaults, where `ingress.enabled` is
-  # false, so dropping the guard would leave CI green.
-  #
-  # Its own job, like helm-placement, so a failure names what broke. Needs only
-  # Helm -- the script asserts on `helm template` output and its exit status.
-  helm-ingress:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: v3.16.3
-
-      - name: Check chart ingress class contract
-        run: .github/scripts/check-chart-ingress.sh
+      - name: Check chart installs
+        run: .github/scripts/check-chart-install.sh
 
   # central-ui's own checks: type-check, Vitest (unit tests), and Playwright (the admin console's
   # UI tests, which also include the axe accessibility scan, tests/accessibility.spec.ts). Nothing here needs the Scala build or a
@@ -1312,6 +1557,15 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     timeout-minutes: 20
+    # Browser and system libraries come with the image instead of `playwright install --with-deps`: that
+    # runs apt-get on the runner, and one stalled package download from the Ubuntu mirror took 7 of the 8.7
+    # minutes the step lasted (the browser download itself is ~8 s). The tag must be the @playwright/test
+    # version in central-ui/package-lock.json -- the browser build is tied to it -- and the next step fails
+    # with a message if they drift (a Dependabot bump of @playwright/test must change both). Pinned by
+    # digest like the Dockerfile base images; Dependabot does not read `container:` images, so bump the tag
+    # and digest by hand: `docker buildx imagetools inspect mcr.microsoft.com/playwright:v<version>-noble`.
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea
     defaults:
       run:
         working-directory: central-ui
@@ -1319,7 +1573,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22.12'
           cache: npm
@@ -1334,15 +1588,22 @@ jobs:
       - name: Unit tests
         run: npm run test:unit
 
-      - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
+      - name: Check the Playwright image matches the locked version
+        env:
+          IMAGE_PLAYWRIGHT_VERSION: '1.64.1'
+        run: |
+          locked="$(node -p "require('./package-lock.json').packages['node_modules/@playwright/test'].version")"
+          if [ "$locked" != "$IMAGE_PLAYWRIGHT_VERSION" ]; then
+            echo "::error::package-lock.json locks @playwright/test $locked but this job's container image is Playwright $IMAGE_PLAYWRIGHT_VERSION; update the image tag and digest of the central-ui job (and IMAGE_PLAYWRIGHT_VERSION) together."
+            exit 1
+          fi
 
       - name: UI tests
         run: npx playwright test
 
       - name: Upload Playwright report on failure
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: central-ui-test-results
           path: central-ui/test-results

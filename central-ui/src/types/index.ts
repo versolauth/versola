@@ -4,6 +4,10 @@ export interface Tenant {
   name: string;
   description?: string;
   edgeId?: string | null;
+  /** Fixed when the tenant is created; `GET /configuration/tenants` reads it from the challenge settings. */
+  securityProfile: SecurityProfile;
+  /** The `kid` the tenant's tokens are signed with; `null` when it falls back to auth's configured key. */
+  signingKeyId: string | null;
 }
 
 // Authorization Preset
@@ -21,9 +25,20 @@ export interface AuthorizationPreset {
   cookiePath?: string;
 }
 
+export type EmailRegistrationMode = 'closed' | 'open' | 'allowlist';
+
+/**
+ * `domains` is a blocklist in `open` mode and an allowlist in `allowlist` mode; `closed` stores
+ * it but ignores it.
+ */
+export interface EmailRegistration {
+  mode: EmailRegistrationMode;
+  domains: string[];
+  blockSubaddress: boolean;
+}
+
 // Authentication flow (cards: credential -> factor -> factor)
 export type PrimaryCredential = 'email' | 'phone' | 'login';
-export type RegistrationCredential = 'email' | 'phone';
 export type OtpType = 'sms' | 'email';
 export type AuthFactorType = 'otp' | 'password' | 'passkeyEnroll';
 
@@ -46,23 +61,13 @@ export interface AuthFlow {
 }
 
 // Registration flow (self-service account creation)
-export type RegistrationStepType = 'otp' | 'setPassword' | 'passkeyEnroll';
-
-export interface RegistrationStep {
-  type: RegistrationStepType;
-}
-
-export interface RegistrationFlow {
-  credential: RegistrationCredential;     // entry credential whose ownership is verified
-  steps: RegistrationStep[];  // ordered steps the user passes before the account is created
-  roleIds: string[];          // roles granted to the account on creation
-}
-
 // Consent screen shown before an authorization code is issued. Absent for first-party
 // clients, which never prompt.
 export interface ConsentFlow {
   allowPartial: boolean;  // let the user deselect optional scopes and grant a subset
   rememberDurationDays: number | null;  // how long a grant is reused; null = until revoked
+  offlineAccessOptional: boolean;  // let the user deselect offline_access (no refresh token then)
+  requiredScopes: string[];  // scopes the user cannot deselect (besides openid and offline_access)
 }
 
 // Whether a client can hold a secret. Chosen once, at creation: a web client is
@@ -113,7 +118,6 @@ export interface OAuthClient {
   theme: string;
   otpTemplateId?: string | null;
   authFlow: AuthFlow | null;
-  registrationFlow: RegistrationFlow | null;
   frontChannelLogoutUri?: string | null;
   frontChannelLogoutSessionRequired: boolean;
   backChannelLogoutUri?: string | null;
@@ -158,8 +162,23 @@ export interface OAuthClient {
   /** When the registration was accepted, as an ISO-8601 instant; absent for a client the
    *  backend did not report one for. */
   createdAt?: string | null;
+  /** Where the client stands when it obtains its mTLS certificate through EST (RFC 7030);
+   *  absent or null when it does not. */
+  est?: ClientEstState | null;
+  /** What this client changes in the theme it uses (a partner app with its own brand); absent or
+   *  null when it changes nothing. */
+  themeOverrides?: ThemeOverrides | null;
   tenantId?: string;  // Tenant scope (clients inherit edge from their tenant)
   authorizationPresets?: AuthorizationPreset[];
+}
+
+/** A client that obtains its certificate through EST: `pending` until its first certificate is
+ *  issued, then when the latest one expires and, where chains end, when the chain does (renewing is
+ *  refused from then until an operator extends it). */
+export interface ClientEstState {
+  pending: boolean;
+  certificateExpiresAt?: string | null;
+  chainEndsAt?: string | null;
 }
 
 // OTP Template
@@ -209,11 +228,29 @@ export interface PasskeySettings {
 // headers again), so `auth` has to be told which shape to expect.
 export type MtlsCertificateEncoding = 'urlEncodedPem' | 'base64Der';
 
+export interface PhoneRegion {
+  /** ISO 3166-1 alpha-2, unique within the list. */
+  region: string;
+  /** '+' and 1-4 digits; several regions may share one. */
+  dialCode: string;
+  /** Digits after the dial code, 4..14; dial code digits + length <= 15. */
+  length: number;
+  /** Java regex matched in full against those digits. */
+  regex: string;
+  /** A number from this region may create an account by phone; no region listed means nobody can. */
+  registration: boolean;
+}
+
 export interface ChallengeSettingsRecord {
   tenantId: string;
   /** The profile the tenant's clients are held to; fixed when the tenant is created. */
   securityProfile?: SecurityProfile;
-  allowedPrefixes: string[];
+  /** Order is the order the login form lists the codes; empty accepts any E.164 number. */
+  phoneRegions: PhoneRegion[];
+  /** Who may create an account by email; `closed` unless the tenant opted in. */
+  emailRegistration?: EmailRegistration;
+  /** Role ids granted to every self-registered account; at least one. */
+  defaultRoles?: string[];
   submissionLimits: SubmissionLimits;
   otpLength: number;
   otpResendAfter: number;
@@ -236,7 +273,15 @@ export interface ChallengeSettingsRecord {
   /** RFC 7523 section 3: how far into the future a `private_key_jwt` client assertion from
    * one of this tenant's clients may set its `exp`. */
   clientAssertionMaxLifetimeSeconds?: number;
+  /** The tenant's logo above its sign-in card: the file for the light colour scheme (dark artwork) and the one for the
+   * dark scheme (light artwork). Both or neither. */
+  logoLight?: string | null;
+  logoDark?: string | null;
 }
+
+/** The members of a challenge-settings record a PATCH names: absent keeps the stored value, a value replaces it, `null`
+ * clears an optional member. The tenant is named beside them and the profile cannot be patched. */
+export type ChallengeSettingsChanges = Partial<Omit<ChallengeSettingsRecord, 'tenantId' | 'securityProfile'>>;
 
 // One row of the JWKS key list: what a key is published as, and whether central holds the
 // private half needed to sign with it. Never carries the key material itself.
@@ -253,7 +298,6 @@ export interface SystemSettingsRecord {
   passwordRegex: string;
   passwordHistorySize: number;
   passwordNumDifferent: number;
-  identityProviderLogo?: string | null;
 }
 
 // A registered passkey credential for a user
@@ -337,6 +381,8 @@ export interface ResourceEndpoint {
   stepUpCondition?: string;
   stepUpAcr?: string;
   maxAge?: number;
+  /** A limit on how often this endpoint is called, checked by the edge with its own policies (the smallest wins). Absent: none. */
+  rateLimit?: DeclaredRateLimit;
 }
 
 export interface Resource {
@@ -348,6 +394,8 @@ export interface Resource {
   // of forwarding the caller's own access token. Public resources have neither.
   hasSecret: boolean;
   hasPreviousSecret: boolean;
+  /** What the resource lets each of its audience clients take, one per client; absent when it sets none. */
+  audienceRateLimits?: AudienceRateLimit[];
 }
 
 // Pagination
@@ -364,10 +412,23 @@ export interface PaginatedResponse<T> {
 }
 
 // Edge
+export type { OverloadPolicy } from '../utils/overload-policy';
+import type { OverloadPolicy } from '../utils/overload-policy';
+export type { AccessLogPolicy } from '../utils/access-log-policy';
+import type { AccessLogPolicy } from '../utils/access-log-policy';
+export type { RateLimitPolicies, RateLimitPolicy } from '../utils/rate-limit-policies';
+export type { AudienceRateLimit, DeclaredRateLimit } from '../utils/declared-rate-limit';
+import type { AudienceRateLimit, DeclaredRateLimit } from '../utils/declared-rate-limit';
+import type { RateLimitPolicies } from '../utils/rate-limit-policies';
+import type { VariableValue } from '../utils/theme-variables';
 export interface Edge {
   id: string;
   hasOldKey?: boolean;  // True if old key exists during rotation
   requireDpopNonce: boolean;  // RFC 9449 section 9 on the calls this edge proxies
+  overloadPolicy?: OverloadPolicy;  // absent when none is set: the edge uses its deployment's values
+  accessLogPolicy?: AccessLogPolicy;  // absent when none is set: the edge uses its built-in defaults
+  rateLimitPolicies?: RateLimitPolicies;  // absent when none are set: the edge applies no rate limit
+  policyRevisions?: Record<string, number>;  // how often each policy section changed, for the compare-and-set of the policies patch
 }
 
 export interface ServiceKey {
@@ -393,10 +454,52 @@ export interface UserRoleAssignment {
 export type UserSearchField = 'id' | 'email' | 'phone' | 'login';
 
 // Theme
+export type ThemeShape = 'round' | 'soft' | 'sharp';
+export type ThemeSurface = 'bold' | 'soft' | 'neutral';
+export type ThemeMode = 'auto' | 'light' | 'dark';
+// What is drawn over the page colour behind the card; the CSS of each is generated by central (ThemeCss in util).
+export type ThemeBackground = 'glow' | 'linear' | 'horizon' | 'flat';
+
+// What a theme sets over its base; an absent value is the base's.
+export interface ThemeOverrides {
+  brand?: string;
+  shape?: ThemeShape;
+  surface?: ThemeSurface;
+  mode?: ThemeMode;
+  background?: ThemeBackground;
+}
+
+// A built-in base theme and the values a theme overrides on it.
+export interface ThemeTokens {
+  base: string;
+  overrides?: ThemeOverrides;
+  /** Token overrides: CSS variables of the forms' theming API (`--rs` -> `8px`), laid after the five values. */
+  variables?: Record<string, VariableValue>;
+}
+
+// Every token with a value: a built-in theme's own.
+export interface ResolvedThemeTokens {
+  brand: string;
+  shape: ThemeShape;
+  surface: ThemeSurface;
+  mode: ThemeMode;
+  background: ThemeBackground;
+}
+
+// A theme that ships with Versola: what a theme can be based on. Fixed by the central build.
+export interface ThemePreset {
+  id: string;
+  title: Record<string, string>;
+  tokens: ResolvedThemeTokens;
+}
+
+// A theme is a built-in base with overrides (`tokens`) and optional custom CSS (`css`), which is laid after the CSS
+// generated from the tokens. A theme stored before tokens existed has `css` and no `tokens`.
 export interface ThemeRecord {
   id: string;
   css: string;
   tenantId: string | null;
+  tokens?: ThemeTokens | null;
 }
 
 // Backend properties
@@ -420,6 +523,20 @@ export interface NumberProperty {
 }
 
 export type BackendProperty = BooleanProperty | StringArrayProperty | NumberProperty;
+
+// One state of a built-in form, as central lists it: the `step` the form receives (shaped like the
+// step auth serialises) and the error key shown above it. Fixed by the central build.
+export interface FormPreviewScenario {
+  id: string;
+  title: Record<string, string>;
+  step: Record<string, unknown>;
+  error?: string | null;
+}
+
+export interface FormPreview {
+  formId: string;
+  scenarios: FormPreviewScenario[];
+}
 
 // Auth Forms
 export interface FormRecord {
@@ -455,12 +572,89 @@ export interface SessionClientEntry {
   expiresAt: string;
 }
 
+/** The user agent (browser or app install) as auth stores it. */
+export interface UserAgent {
+  id: string;
+  /** The raw `User-Agent` header as last seen on sign-in. */
+  userAgent?: string;
+  platform?: 'ios' | 'android' | 'desktop';
+  os?: string;
+  browser?: string;
+  version?: string;
+  createdAt: string;
+  /** The device is remembered until then; it slides forward on every sign-in. */
+  expiresAt: string;
+}
+
 export interface UserSession {
+  /** What `endUserSession` takes to end this one session. */
+  publicId?: string;
   clients: SessionClientEntry[];
   createdAt?: string;
   platform?: 'ios' | 'android' | 'desktop';
   os?: string;
   browser?: string;
   version?: string;
+  /** When the session ends regardless of activity. */
+  expiresAt?: string;
+  /** When it ends if it stays idle; absent when no idle timeout applies. */
+  idleExpiresAt?: string;
+  userAgent?: UserAgent;
 }
 
+/** One remembered device: its user agent and the session under it, `null` once signed out. */
+export interface UserDevice {
+  /** Absent only for a live session whose user agent row has expired and been swept. */
+  userAgent?: UserAgent;
+  session: UserSession | null;
+  /** Public ids of this user agent's sessions that ended and are still stored: what ties a refresh
+   *  token (it names only its session) to a signed-out device. */
+  endedSessionIds: string[];
+}
+
+/** A live refresh token, one per grant; it outlives the session it was issued under. */
+export interface UserRefreshToken {
+  sessionId: string;
+  clientId: string;
+  scope: string[];
+  issuedAt: string;
+  expiresAt: string;
+  dpopBound: boolean;
+}
+
+
+// Global (not tenant-scoped) delivery settings: the SMTP server and the SMS provider auth sends codes and temporary
+// passwords through. Passwords are write-only: central reports only whether one is stored.
+export interface SmtpDeliverySettings {
+  host: string;
+  port: number;
+  username: string;
+  from: string;
+  subject: string;
+  startTls: boolean;
+  enabled: boolean;
+}
+
+export interface OtpProviderDeliverySettings {
+  method: string;
+  url: string;
+  username?: string | null;
+  body: Record<string, string>;
+  enabled: boolean;
+}
+
+export interface DeliverySettingsRecord {
+  smtp?: SmtpDeliverySettings;
+  hasSmtpPassword: boolean;
+  otpProvider?: OtpProviderDeliverySettings;
+  hasOtpProviderPassword: boolean;
+}
+
+/** A save replaces both blocks: one left out is removed with its password. A password left out or `null` keeps the
+ * stored one, `''` clears it, any other value replaces it. */
+export interface DeliverySettingsUpdate {
+  smtp?: SmtpDeliverySettings;
+  smtpPassword?: string | null;
+  otpProvider?: OtpProviderDeliverySettings;
+  otpProviderPassword?: string | null;
+}

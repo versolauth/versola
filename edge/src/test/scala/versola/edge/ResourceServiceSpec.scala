@@ -19,6 +19,7 @@ object ResourceServiceSpec extends ZIOSpecDefault:
     stepUpCondition = None,
     stepUpAcr = None,
     maxAge = None,
+    rateLimit = None,
   )
 
   private val alpha = Resource(
@@ -26,6 +27,7 @@ object ResourceServiceSpec extends ZIOSpecDefault:
     resource = URL.decode("https://alpha.example").toOption.get,
     endpoints = Vector(alphaEndpoint),
     secret = None,
+    audienceRateLimits = Nil,
   )
 
   private val beta = alpha.copy(

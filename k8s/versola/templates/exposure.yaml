@@ -1,0 +1,190 @@
+{{- /*
+Public names for edges and clients outside the cluster (values.yaml's `exposure`). Off by default.
+
+The two mutual-TLS hosts (`id-mtls.<domain>`, `central-mtls.<domain>`) must be carried with the TLS
+handshake passed through untouched -- never terminated. The pod demands the client certificate in that
+handshake and checks it, so a terminating proxy would see the certificate and the pod would not. The
+enrollment host (`central.<domain>`) is the opposite on purpose: the caller has no certificate yet, so
+the controller terminates ordinary TLS and the Ingress carries one path.
+
+values.schema.json refuses a host without `pki.enabled` and a limit; the checks here are the ones a
+schema cannot make (is there a port to publish, is a class named).
+*/ -}}
+{{- $full := include "versola.fullname" . }}
+{{- $m := .Values.exposure.mtls }}
+{{- $type := default "ingressPassthrough" $m.type }}
+{{- if not (has $type (list "ingressPassthrough" "gatewayTLSRoute" "loadBalancer")) }}
+{{- fail (printf "exposure.mtls.type %q is not one of ingressPassthrough, gatewayTLSRoute, loadBalancer" $type) }}
+{{- end }}
+{{- range $name := list "auth" "central" }}
+{{- $listener := index $m $name }}
+{{- $svc := index $.Values.services $name }}
+{{- if $listener.host }}
+{{- if not (and $svc.enabled $svc.mutualTlsPort) }}
+{{- fail (printf "exposure.mtls.%s.host needs services.%s.enabled and services.%s.mutualTlsPort: there is no mutual-TLS port to publish" $name $name $name) }}
+{{- end }}
+{{- $service := printf "%s-%s" $full $name }}
+{{- if eq $type "loadBalancer" }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $service }}-mtls
+  labels:
+    {{- include "versola.componentLabels" (dict "component" $name "context" $) | nindent 4 }}
+  {{- with $m.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: LoadBalancer
+  {{- with $m.limits.sourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    {{- include "versola.componentSelectorLabels" (dict "component" $name "context" $) | nindent 4 }}
+  ports:
+    - name: mtls
+      port: {{ $m.loadBalancer.port }}
+      targetPort: mtls
+{{- else if eq $type "ingressPassthrough" }}
+{{- if not $m.className }}
+{{- fail "exposure.mtls.className is required for ingressPassthrough (the controller must support TLS passthrough, e.g. ingress-nginx started with --enable-ssl-passthrough)" }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $service }}-mtls
+  labels:
+    {{- include "versola.componentLabels" (dict "component" $name "context" $) | nindent 4 }}
+  annotations:
+    # ingress-nginx: route by SNI and hand the connection on without terminating TLS. A connection
+    # handled this way never reaches nginx's HTTP stage, so none of its per-client limit annotations
+    # applies to it: see `exposure.mtls.limits` in values.yaml.
+    nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    {{- with $m.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ $m.className }}
+  rules:
+    - host: {{ $listener.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $service }}
+                port:
+                  number: {{ $svc.mutualTlsPort }}
+{{- else if eq $type "gatewayTLSRoute" }}
+{{- if not $m.parentRefs }}
+{{- fail "exposure.mtls.parentRefs is required for gatewayTLSRoute: name a Gateway listener with protocol TLS and tls.mode Passthrough" }}
+{{- end }}
+---
+apiVersion: {{ default "gateway.networking.k8s.io/v1alpha2" $m.apiVersion }}
+kind: TLSRoute
+metadata:
+  name: {{ $service }}-mtls
+  labels:
+    {{- include "versola.componentLabels" (dict "component" $name "context" $) | nindent 4 }}
+spec:
+  parentRefs:
+    {{- toYaml $m.parentRefs | nindent 4 }}
+  hostnames:
+    - {{ $listener.host | quote }}
+  rules:
+    - backendRefs:
+        - name: {{ $service }}
+          port: {{ $svc.mutualTlsPort }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $e := .Values.exposure.central }}
+{{- if $e.host }}
+{{- $central := .Values.services.central }}
+{{- if not (and $central.enabled $central.enrollmentPort) }}
+{{- fail "exposure.central.host needs services.central.enabled and services.central.enrollmentPort: there is no enrollment listener to publish" }}
+{{- end }}
+{{- if not (has (default "ingress" $e.type) (list "ingress" "gatewayAPI")) }}
+{{- fail (printf "exposure.central.type %q is not one of ingress, gatewayAPI" $e.type) }}
+{{- end }}
+{{- $service := printf "%s-central" $full }}
+{{- if eq (default "ingress" $e.type) "ingress" }}
+{{- if not $e.className }}
+{{- fail "exposure.central.className is required, as ingress.className is: an empty value falls back to the cluster's default IngressClass, and the Ingress may then be adopted by no controller" }}
+{{- end }}
+{{- $l := $e.limits }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $service }}-enroll
+  labels:
+    {{- include "versola.componentLabels" (dict "component" "central" "context" $) | nindent 4 }}
+  {{- if or $e.annotations $l.connectionsPerIP $l.requestsPerSecondPerIP }}
+  annotations:
+    {{- /* ingress-nginx only; a controller that does not know them ignores them. */}}
+    {{- if $l.connectionsPerIP }}
+    nginx.ingress.kubernetes.io/limit-connections: {{ $l.connectionsPerIP | quote }}
+    {{- end }}
+    {{- if $l.requestsPerSecondPerIP }}
+    nginx.ingress.kubernetes.io/limit-rps: {{ $l.requestsPerSecondPerIP | quote }}
+    {{- end }}
+    {{- with $e.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  ingressClassName: {{ $e.className }}
+  {{- with $e.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ $e.host | quote }}
+      http:
+        paths:
+          # The only route central's enrollment listener serves; naming it here as well keeps the
+          # host from forwarding anything else should the listener ever grow another.
+          - path: /edge/enroll
+            pathType: Exact
+            backend:
+              service:
+                name: {{ $service }}
+                port:
+                  number: {{ $central.enrollmentPort }}
+{{- else }}
+{{- if not $e.parentRefs }}
+{{- fail "exposure.central.parentRefs is required for type gatewayAPI: an HTTPRoute has no effect until it attaches to a Gateway" }}
+{{- end }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $service }}-enroll
+  labels:
+    {{- include "versola.componentLabels" (dict "component" "central" "context" $) | nindent 4 }}
+  {{- with $e.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- toYaml $e.parentRefs | nindent 4 }}
+  hostnames:
+    - {{ $e.host | quote }}
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /edge/enroll
+      backendRefs:
+        - name: {{ $service }}
+          port: {{ $central.enrollmentPort }}
+{{- end }}
+{{- end }}

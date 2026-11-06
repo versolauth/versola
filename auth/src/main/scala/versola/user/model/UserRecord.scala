@@ -15,15 +15,15 @@ case class UserRecord(
 ):
   def createdAt: Instant = id.createdAt
 
-  /** The name a passkey authenticator shows in its account picker: the "name" claim if
-    * present, falling back to email, phone, login, and finally the user id. */
-  def passkeyDisplayName: String =
-    claims.fields.toMap.get("name")
-      .collect { case Json.Str(value) => value }
-      .orElse(email)
-      .orElse(phone)
-      .orElse(login)
-      .getOrElse(id.toString)
+  /** The user's own `name` claim, if they have one. */
+  def nameClaim: Option[String] =
+    claims.fields.toMap.get("name").collect { case Json.Str(value) if value.trim.nonEmpty => value }
+
+  /** The account name a passkey authenticator shows when the user did not sign in with a credential we know
+    * (account settings, a re-authentication): their email, phone or login. Never the user id, which means nothing
+    * to a person; a user with none of them has no account name, and the caller falls back to the service's name. */
+  def passkeyAccountName: Option[String] =
+    email.orElse(phone).orElse(login)
 
 object UserRecord:
   def empty(id: UserId): UserRecord =

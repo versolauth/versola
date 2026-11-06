@@ -1,0 +1,618 @@
+{
+  "groups" : [
+    {
+      "id" : "page",
+      "title" : {
+        "en" : "Page",
+        "ru" : "Страница"
+      }
+    },
+    {
+      "id" : "brand",
+      "title" : {
+        "en" : "Brand and logo",
+        "ru" : "Бренд и логотип"
+      }
+    },
+    {
+      "id" : "card",
+      "title" : {
+        "en" : "Card",
+        "ru" : "Карточка"
+      }
+    },
+    {
+      "id" : "text",
+      "title" : {
+        "en" : "Text",
+        "ru" : "Текст"
+      }
+    },
+    {
+      "id" : "fields",
+      "title" : {
+        "en" : "Fields",
+        "ru" : "Поля"
+      }
+    },
+    {
+      "id" : "buttons",
+      "title" : {
+        "en" : "Buttons",
+        "ru" : "Кнопки"
+      }
+    },
+    {
+      "id" : "links",
+      "title" : {
+        "en" : "Links and focus",
+        "ru" : "Ссылки и фокус"
+      }
+    },
+    {
+      "id" : "lines",
+      "title" : {
+        "en" : "Lines",
+        "ru" : "Линии"
+      }
+    },
+    {
+      "id" : "status",
+      "title" : {
+        "en" : "Status and overlays",
+        "ru" : "Статус и затемнение"
+      }
+    }
+  ],
+  "variables" : [
+    {
+      "name" : "--page-light",
+      "group" : "page",
+      "kind" : "colour",
+      "pair" : false,
+      "description" : {
+        "en" : "Page colour in the light scheme",
+        "ru" : "Цвет страницы в светлой теме"
+      },
+      "default" : "color-mix(in oklab, var(--brand) 9%, #f6f4ef)",
+      "start" : "#f6f4ef"
+    },
+    {
+      "name" : "--page-dark",
+      "group" : "page",
+      "kind" : "colour",
+      "pair" : false,
+      "description" : {
+        "en" : "Page colour in the dark scheme",
+        "ru" : "Цвет страницы в тёмной теме"
+      },
+      "default" : "color-mix(in oklab, var(--brand) 10%, #060707)",
+      "start" : "#060707"
+    },
+    {
+      "name" : "--glow-light",
+      "group" : "page",
+      "kind" : "colour",
+      "pair" : false,
+      "description" : {
+        "en" : "Glow behind the card in the light scheme",
+        "ru" : "Свечение за карточкой в светлой теме"
+      },
+      "default" : "color-mix(in oklab, var(--brand) 30%, transparent)",
+      "start" : "rgba(21, 94, 117, 0.3)"
+    },
+    {
+      "name" : "--glow-dark",
+      "group" : "page",
+      "kind" : "colour",
+      "pair" : false,
+      "description" : {
+        "en" : "Glow behind the card in the dark scheme",
+        "ru" : "Свечение за карточкой в тёмной теме"
+      },
+      "default" : "color-mix(in oklab, var(--brand) 55%, transparent)",
+      "start" : "rgba(21, 94, 117, 0.55)"
+    },
+    {
+      "name" : "--brand",
+      "group" : "brand",
+      "kind" : "colour",
+      "pair" : false,
+      "description" : {
+        "en" : "Accent colour; page tints and focus rings follow it",
+        "ru" : "Фирменный цвет; оттенки страницы и рамки фокуса следуют за ним"
+      },
+      "default" : "#155e75",
+      "start" : "#155e75"
+    },
+    {
+      "name" : "--on-brand",
+      "group" : "brand",
+      "kind" : "colour",
+      "pair" : false,
+      "description" : {
+        "en" : "Text colour that reads on the accent colour",
+        "ru" : "Цвет текста, читаемый на фирменном цвете"
+      },
+      "default" : "#ffffff",
+      "start" : "#ffffff"
+    },
+    {
+      "name" : "--page-ink",
+      "group" : "brand",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Colour of the logo and wordmark above the card",
+        "ru" : "Цвет логотипа и названия над карточкой"
+      },
+      "default" : "light-dark(#1c1b19, #f3f2f0)",
+      "start" : {
+        "light" : "#1c1b19",
+        "dark" : "#f3f2f0"
+      }
+    },
+    {
+      "name" : "--logo-plate",
+      "group" : "brand",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Plate behind a partner's logo in the app badge and on the consent screen, so a dark logo stays visible",
+        "ru" : "Подложка под логотипом приложения-партнёра на значке и на экране согласия, чтобы тёмный логотип был виден"
+      },
+      "default" : "light-dark(var(--field), rgba(255, 255, 255, 0.94))",
+      "start" : {
+        "light" : "#f5f3ee",
+        "dark" : "#f0f0f0"
+      }
+    },
+    {
+      "name" : "--logo-h",
+      "group" : "brand",
+      "kind" : "length",
+      "pair" : false,
+      "description" : {
+        "en" : "Height of your logo above the card",
+        "ru" : "Высота вашего логотипа над карточкой"
+      },
+      "default" : "40px",
+      "start" : "40px"
+    },
+    {
+      "name" : "--sheet",
+      "group" : "card",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Surface of the card",
+        "ru" : "Фон карточки"
+      },
+      "default" : "light-dark(#ffffff, color-mix(in oklab, var(--brand) 7%, #1f1f20))",
+      "start" : {
+        "light" : "#ffffff",
+        "dark" : "#1e2326"
+      }
+    },
+    {
+      "name" : "--sheet-line",
+      "group" : "card",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Border of the card (invisible in the light scheme by default)",
+        "ru" : "Рамка карточки (в светлой теме по умолчанию не видна)"
+      },
+      "default" : "light-dark(transparent, rgba(255, 255, 255, 0.09))",
+      "start" : {
+        "light" : "transparent",
+        "dark" : "#2f3031"
+      }
+    },
+    {
+      "name" : "--rs",
+      "group" : "card",
+      "kind" : "length",
+      "pair" : false,
+      "description" : {
+        "en" : "Corner radius of the card",
+        "ru" : "Скругление углов карточки"
+      },
+      "default" : "24px",
+      "start" : "24px"
+    },
+    {
+      "name" : "--shadow",
+      "group" : "card",
+      "kind" : "shadow",
+      "pair" : false,
+      "description" : {
+        "en" : "Shadow under the card; none removes it",
+        "ru" : "Тень под карточкой; none убирает её"
+      },
+      "default" : "0 30px 60px -24px var(--shadow-color)",
+      "start" : "0 30px 60px -24px var(--shadow-color)"
+    },
+    {
+      "name" : "--shadow-color",
+      "group" : "card",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Colour of the shadow under the card",
+        "ru" : "Цвет тени под карточкой"
+      },
+      "default" : "light-dark(rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0.8))",
+      "start" : {
+        "light" : "rgba(0, 0, 0, 0.45)",
+        "dark" : "rgba(0, 0, 0, 0.8)"
+      }
+    },
+    {
+      "name" : "--card-w",
+      "group" : "card",
+      "kind" : "length",
+      "pair" : false,
+      "description" : {
+        "en" : "Width of the card on a desktop; a phone uses the full width",
+        "ru" : "Ширина карточки на компьютере; на телефоне она во всю ширину"
+      },
+      "default" : "460px",
+      "start" : "460px"
+    },
+    {
+      "name" : "--card-pad",
+      "group" : "card",
+      "kind" : "length",
+      "pair" : false,
+      "description" : {
+        "en" : "Side padding inside the card (at most 22px on a phone)",
+        "ru" : "Боковые отступы внутри карточки (на телефоне не больше 22px)"
+      },
+      "default" : "40px",
+      "start" : "40px"
+    },
+    {
+      "name" : "--ink",
+      "group" : "text",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Main text colour; links, the main button and the focused field's border follow it unless set",
+        "ru" : "Основной цвет текста; ссылки, главная кнопка и рамка поля в фокусе следуют за ним, пока их не задали"
+      },
+      "default" : "light-dark(#1c1b19, #f3f2f0)",
+      "start" : {
+        "light" : "#1c1b19",
+        "dark" : "#f3f2f0"
+      }
+    },
+    {
+      "name" : "--text-muted",
+      "group" : "text",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Secondary text: descriptions, hints and labels",
+        "ru" : "Второстепенный текст: описания, подсказки и подписи"
+      },
+      "default" : "light-dark(#6b6a66, #a9a9b0)",
+      "start" : {
+        "light" : "#6b6a66",
+        "dark" : "#a9a9b0"
+      }
+    },
+    {
+      "name" : "--invert",
+      "group" : "text",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Text colour on the --ink fill, the opposite of --ink",
+        "ru" : "Цвет текста на заливке цветом --ink, противоположный --ink"
+      },
+      "default" : "light-dark(#ffffff, #1c1b19)",
+      "start" : {
+        "light" : "#ffffff",
+        "dark" : "#1c1b19"
+      }
+    },
+    {
+      "name" : "--heading-weight",
+      "group" : "text",
+      "kind" : "weight",
+      "pair" : false,
+      "description" : {
+        "en" : "Weight of the page title, 100 to 900",
+        "ru" : "Насыщенность заголовка страницы, от 100 до 900"
+      },
+      "default" : "750",
+      "start" : "750"
+    },
+    {
+      "name" : "--font",
+      "group" : "text",
+      "kind" : "font",
+      "pair" : false,
+      "description" : {
+        "en" : "Font of all text: names of fonts installed on the device, no web fonts",
+        "ru" : "Шрифт всего текста: названия шрифтов, установленных на устройстве, без веб-шрифтов"
+      },
+      "default" : "system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+      "start" : "system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+    },
+    {
+      "name" : "--field",
+      "group" : "fields",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Fill of fields, code boxes and quiet rows",
+        "ru" : "Заливка полей, ячеек кода и спокойных строк"
+      },
+      "default" : "light-dark(#f5f3ee, color-mix(in oklab, var(--brand) 9%, #2b2b2d))",
+      "start" : {
+        "light" : "#f5f3ee",
+        "dark" : "#2a2e30"
+      }
+    },
+    {
+      "name" : "--field-hover",
+      "group" : "fields",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Fill of a field under the pointer",
+        "ru" : "Заливка поля под курсором"
+      },
+      "default" : "light-dark(#edeae3, color-mix(in oklab, var(--brand) 12%, #323235))",
+      "start" : {
+        "light" : "#edeae3",
+        "dark" : "#31373a"
+      }
+    },
+    {
+      "name" : "--field-focus",
+      "group" : "fields",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Border of the focused field and of the active code box",
+        "ru" : "Рамка поля в фокусе и активной ячейки кода"
+      },
+      "default" : "var(--ink)",
+      "start" : {
+        "light" : "#1c1b19",
+        "dark" : "#f3f2f0"
+      }
+    },
+    {
+      "name" : "--placeholder",
+      "group" : "fields",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Placeholder text in empty fields",
+        "ru" : "Подсказка в пустых полях"
+      },
+      "default" : "color-mix(in srgb, var(--text-muted) 70%, transparent)",
+      "start" : {
+        "light" : "rgba(107, 106, 102, 0.7)",
+        "dark" : "rgba(169, 169, 176, 0.7)"
+      }
+    },
+    {
+      "name" : "--rf",
+      "group" : "fields",
+      "kind" : "length",
+      "pair" : false,
+      "description" : {
+        "en" : "Corner radius of fields",
+        "ru" : "Скругление углов полей"
+      },
+      "default" : "14px",
+      "start" : "14px"
+    },
+    {
+      "name" : "--control-h",
+      "group" : "fields",
+      "kind" : "length",
+      "pair" : false,
+      "description" : {
+        "en" : "Height of fields and buttons",
+        "ru" : "Высота полей и кнопок"
+      },
+      "default" : "54px",
+      "start" : "54px"
+    },
+    {
+      "name" : "--btn",
+      "group" : "buttons",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Fill of the main button",
+        "ru" : "Заливка главной кнопки"
+      },
+      "default" : "var(--ink)",
+      "start" : {
+        "light" : "#1c1b19",
+        "dark" : "#f3f2f0"
+      }
+    },
+    {
+      "name" : "--on-btn",
+      "group" : "buttons",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Text colour on the main button",
+        "ru" : "Цвет текста на главной кнопке"
+      },
+      "default" : "var(--invert)",
+      "start" : {
+        "light" : "#ffffff",
+        "dark" : "#1c1b19"
+      }
+    },
+    {
+      "name" : "--btn-hover",
+      "group" : "buttons",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Fill of the main button under the pointer",
+        "ru" : "Заливка главной кнопки под курсором"
+      },
+      "default" : "color-mix(in srgb, var(--btn) 88%, var(--sheet))",
+      "start" : {
+        "light" : "#373635",
+        "dark" : "#dbdbd8"
+      }
+    },
+    {
+      "name" : "--btn-secondary-line",
+      "group" : "buttons",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Border of the secondary button",
+        "ru" : "Рамка второстепенной кнопки"
+      },
+      "default" : "var(--line)",
+      "start" : {
+        "light" : "#e6e2d8",
+        "dark" : "#343c41"
+      }
+    },
+    {
+      "name" : "--btn-secondary-ink",
+      "group" : "buttons",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Text of the secondary button, and its border under the pointer",
+        "ru" : "Текст второстепенной кнопки и её рамка под курсором"
+      },
+      "default" : "var(--ink)",
+      "start" : {
+        "light" : "#1c1b19",
+        "dark" : "#f3f2f0"
+      }
+    },
+    {
+      "name" : "--rb",
+      "group" : "buttons",
+      "kind" : "length",
+      "pair" : false,
+      "description" : {
+        "en" : "Corner radius of buttons",
+        "ru" : "Скругление углов кнопок"
+      },
+      "default" : "14px",
+      "start" : "14px"
+    },
+    {
+      "name" : "--link",
+      "group" : "links",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Colour of links",
+        "ru" : "Цвет ссылок"
+      },
+      "default" : "var(--ink)",
+      "start" : {
+        "light" : "#1c1b19",
+        "dark" : "#f3f2f0"
+      }
+    },
+    {
+      "name" : "--focus",
+      "group" : "links",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Focus rings, ticks and the underline of links; keep it visible on the card",
+        "ru" : "Рамки фокуса, галочки и подчёркивание ссылок; оставьте его заметным на карточке"
+      },
+      "default" : "light-dark(var(--brand), color-mix(in oklab, var(--brand) 50%, white))",
+      "start" : {
+        "light" : "#155e75",
+        "dark" : "#8aaeba"
+      }
+    },
+    {
+      "name" : "--on-focus",
+      "group" : "links",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Text colour on the focus colour, such as the tick in a checked box",
+        "ru" : "Цвет текста на цвете фокуса, например галочки в отмеченном поле"
+      },
+      "default" : "light-dark(var(--on-brand), #1c1b19)",
+      "start" : {
+        "light" : "#ffffff",
+        "dark" : "#1c1b19"
+      }
+    },
+    {
+      "name" : "--line",
+      "group" : "lines",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Dividers, borders of rows, and the secondary button's border",
+        "ru" : "Разделители, рамки строк и рамка второстепенной кнопки"
+      },
+      "default" : "light-dark(#e6e2d8, color-mix(in oklab, var(--brand) 10%, #38383b))",
+      "start" : {
+        "light" : "#e6e2d8",
+        "dark" : "#343c41"
+      }
+    },
+    {
+      "name" : "--line-strong",
+      "group" : "lines",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Stronger lines: the border of a tick box and the divider in the country selector",
+        "ru" : "Заметные линии: рамка переключателя и разделитель в выборе страны"
+      },
+      "default" : "light-dark(#cfc9bb, #55535a)",
+      "start" : {
+        "light" : "#cfc9bb",
+        "dark" : "#55535a"
+      }
+    },
+    {
+      "name" : "--danger",
+      "group" : "status",
+      "kind" : "colour",
+      "pair" : true,
+      "description" : {
+        "en" : "Colour of error text and of an invalid field's border",
+        "ru" : "Цвет текста ошибки и рамки поля с ошибкой"
+      },
+      "default" : "light-dark(#c0341d, #ff8a73)",
+      "start" : {
+        "light" : "#c0341d",
+        "dark" : "#ff8a73"
+      }
+    },
+    {
+      "name" : "--scrim",
+      "group" : "status",
+      "kind" : "colour",
+      "pair" : false,
+      "description" : {
+        "en" : "Dim layer behind dialogs and the phone's country sheet",
+        "ru" : "Затемнение за диалогами и списком стран на телефоне"
+      },
+      "default" : "rgba(16, 24, 40, 0.45)",
+      "start" : "rgba(16, 24, 40, 0.45)"
+    }
+  ]
+}

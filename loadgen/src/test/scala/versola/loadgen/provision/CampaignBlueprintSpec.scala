@@ -1,6 +1,6 @@
 package versola.loadgen.provision
 
-import versola.loadgen.protocol.Acr
+import versola.loadgen.protocol.{Acr, EmailRegistrationSpec}
 import zio.json.ast.Json
 import zio.test.*
 import zio.test.Assertion.*
@@ -73,9 +73,13 @@ object CampaignBlueprintSpec extends ZIOSpecDefault:
           flows(CampaignBlueprint.webOtpClientId) == ProvisionFixtures.flows.phonePasskeyAuthFlow,
         )
       },
-      test("withholds a registration flow from the passkey client only") {
-        val without = blueprint.clients.filter(_.registrationFlow.isEmpty).map(_.clientId)
-        assertTrue(without == List(CampaignBlueprint.mobilePasskeyClientId))
+      test("registers by phone in Germany and by any email domain, granting the retail role") {
+        val settings = blueprint.challengeSettings
+        assertTrue(
+          settings.phoneRegions.exists(r => r.region == "DE" && r.registration),
+          settings.emailRegistration == EmailRegistrationSpec("open", Nil, blockSubaddress = false),
+          settings.defaultRoles == List(CampaignBlueprint.retailUserRoleId),
+        )
       },
       // Without offline_access there is no refresh token, and §2.3's 96.7% refresh path -- most
       // of the campaign's traffic -- cannot be exercised at all.

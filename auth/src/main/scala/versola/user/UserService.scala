@@ -1,8 +1,12 @@
 package versola.user
 
+import versola.audit.AuditSupport.*
+import versola.audit.AuthAuditDetails
+import versola.audit.AuthAuditKinds
 import versola.oauth.client.model.TenantId
 import versola.role.model.RoleId
 import versola.user.model.UserRecord
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.{Email, Phone}
 import zio.*
 
@@ -22,12 +26,13 @@ trait UserService:
   ): Task[UserRecord]
 
 object UserService:
-  def live: ZLayer[UserRepository & UserRegistrationSyncClient, Nothing, UserService] =
-    ZLayer.fromFunction(Impl(_, _))
+  def live: ZLayer[UserRepository & UserRegistrationSyncClient & AuditEvents, Nothing, UserService] =
+    ZLayer.fromFunction(Impl(_, _, _))
 
   class Impl(
       userRepository: UserRepository,
       registrationSyncClient: UserRegistrationSyncClient,
+      audit: AuditEvents,
   ) extends UserService:
     override def register(
         credential: Either[Email, Phone],
@@ -40,4 +45,15 @@ object UserService:
       for
         userId <- registrationSyncClient.claimRegistration(claim)
         user <- userRepository.register(userId, credential, tenantId, roleIds)
+        _ <- audit.log(
+          AuditDraft(
+            kind = AuthAuditKinds.AccountRegistered,
+            outcome = AuditOutcome.success,
+            reason = None,
+            actor = None,
+            userId = Some(user.id),
+            target = None,
+            details = AuthAuditDetails.Account(via = "registration", detail = None),
+          ),
+        )
       yield user

@@ -1,0 +1,37 @@
+{
+  "_comment": "Findings known and accepted for this setup. A module that does not pass is still reported, but only counts as a regression if its result differs from 'result' here or it fails on a condition not listed under 'conditions'. Keyed by the module's name without the 'fapi2-security-profile-final-' prefix; 'conditions' are prefixes of the suite's condition names (the 'src' of its log entries), 'why' says why it is acceptable.",
+  "happy-flow": {
+    "conditions": [
+      "RequireOnlyBCP195"
+    ],
+    "why": "The suite checks the TLS cipher suites of the issuer's host. Through an ngrok tunnel that is ngrok's configuration, not Versola's; behind our own TLS termination it is checked for real.",
+    "result": "FAILED"
+  },
+  "ensure-holder-of-key-required": {
+    "conditions": [
+      "RequireOnlyBCP195"
+    ],
+    "why": "Same TLS cipher check as happy-flow.",
+    "result": "FAILED"
+  },
+  "test-claims-parameter-identity-claims": {
+    "conditions": [],
+    "why": "Skipped by the suite: it needs a claims configuration this plan does not provide.",
+    "result": "SKIPPED"
+  },
+  "refresh-token": {
+    "conditions": [
+      "CheckTokenEndpointHttpStatus200",
+      "CheckIfTokenEndpointResponseError"
+    ],
+    "result": "FAILED",
+    "why": "The suite refreshes with a DPoP key other than the one the code was exchanged with; Versola holds a refresh token to the key it was issued to. RFC 9449 \u00a75 requires that only of public clients, but the binding is what protects a native client behind edge, and nothing yet tells such a client from a web one. Deliberately not relaxed: versolauth/versola#728."
+  },
+  "attempt-reuse-authorization-code-after-one-second": {
+    "conditions": [
+      "EnsureHttpStatusCodeIs4xx"
+    ],
+    "result": "WARNING",
+    "why": "After a code is replayed Versola revokes the family and pushes the revocation to the client's back channel, but /userinfo keeps no record of revoked access tokens and still accepts the first one. Needs an auth-side revocation store: versolauth/versola#729."
+  }
+}

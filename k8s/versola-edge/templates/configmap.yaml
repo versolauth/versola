@@ -1,0 +1,41 @@
+{{- $full := include "versola-edge.fullname" . }}
+{{- $c := .Values.central }}
+{{- $a := .Values.auth }}
+# What differs for a remote edge, as one HOCON file env.conf includes:
+#   include file("/app/remote-edge/central.conf")
+# plus the pinned leaf certificates it points at.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $full }}-remote
+  labels:
+    {{- include "versola-edge.labels" . | nindent 4 }}
+data:
+  central.conf: |
+    central {
+      url = {{ $c.mtlsUrl | quote }}
+      mutual-tls {
+        trusted-certificates = [{{ range $i, $_ := $c.pins }}{{ if $i }}, {{ end }}"/app/remote-edge/central-pin-{{ $i }}.crt"{{ end }}]
+      }
+      enrollment {
+        url = {{ $c.enrollment.url | quote }}
+        token-file = "/app/enrollment/token"
+      }
+    }
+    identity {
+      directory = "/var/lib/versola-edge"
+    }
+    {{- if $a.mtlsUrl }}
+    native {
+      auth-mutual-tls-url = {{ $a.mtlsUrl | quote }}
+      trusted-certificates = [{{ range $i, $_ := $a.pins }}{{ if $i }}, {{ end }}"/app/remote-edge/auth-pin-{{ $i }}.crt"{{ end }}]
+    }
+    {{- end }}
+  {{- range $i, $pin := $c.pins }}
+  central-pin-{{ $i }}.crt: |
+    {{- $pin | trim | nindent 4 }}
+  {{- end }}
+  {{- range $i, $pin := $a.pins }}
+  auth-pin-{{ $i }}.crt: |
+    {{- $pin | trim | nindent 4 }}
+  {{- end }}

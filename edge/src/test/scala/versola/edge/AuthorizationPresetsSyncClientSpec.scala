@@ -65,7 +65,7 @@ object AuthorizationPresetsSyncClientSpec extends ZIOSpecDefault:
         request <- seen.get.someOrFail(RuntimeException("no request captured"))
       yield assertTrue(
         request.method == Method.GET,
-        request.url.path.encode.contains("configuration/auth-request-presets/sync"),
+        request.url.path.encode.contains("edge/sync/auth-request-presets"),
         request.header(Header.Authorization).contains(Header.Authorization.Bearer(syncToken)),
         presets == Map(PresetId("preset-1") -> preset),
       )

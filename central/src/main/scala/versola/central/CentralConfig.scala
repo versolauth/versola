@@ -4,9 +4,10 @@ import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.tenants.TenantId
 import versola.util.Secret
-import zio.Duration
+import versola.util.audit.AuditEvents
 import zio.http.URL
 import zio.json.ast.Json
+import zio.{Config, Duration}
 
 import javax.crypto.SecretKey
 
@@ -25,6 +26,27 @@ case class CentralConfig(
     /** #440: how central issues and renews edge-fronted clients' certificates. Absent leaves
       * issuance to the operator, who supplies `edgeClientCertificate` PEMs as before. */
     clientCertificates: Option[CentralConfig.ClientCertificatesConfig] = None,
+    /** How central issues the certificates of edges (`POST /edge/enroll`, `/edge/certificate/renew`), when that is not
+      * the CA that issues clients' certificates. Edge certificates are what central's mutual-TLS listener and auth
+      * trust for edges, clients' what auth trusts for clients, so the two are signed by different CAs. Same shape as
+      * [[clientCertificates]]. */
+    edgeCertificates: Option[CentralConfig.ClientCertificatesConfig] = None,
+    /** The same, for a deployment where central holds the edge CA's own key (certificate and PKCS#8 key files), the
+      * way `client-certificate-authority` does for clients. Central is the one authority on which edges exist --
+      * registering one and enrolling it are both its admin API -- so the key gives it no power it lacks. */
+    edgeCertificateAuthority: Option[CentralConfig.ClientCertificateAuthorityConfig] = None,
+    /** How long the certificate chain of an edge may run, and what happens at the end of it. */
+    edgeIdentity: CentralConfig.EdgeIdentityConfig = CentralConfig.EdgeIdentityConfig(),
+    /** How long the certificate chain of a client that gets its certificate through EST may run, and what happens at the
+      * end of it. */
+    clientIdentity: CentralConfig.ClientIdentityConfig = CentralConfig.ClientIdentityConfig(),
+    /** The listener the edge surface (under `/edge`) is served on, and nowhere else (#554). Absent,
+      * central has no such listener and no edge can sync from it -- there is deliberately no
+      * fallback to the main listener, which is the admin console's and auth's. */
+    mutualTls: Option[CentralConfig.MutualTlsConfig] = None,
+    /** The audit log (#469). Every key has a default, so a deployment that sets none keeps what an earlier release did and
+      * records admin actions for 7 days. */
+    audit: CentralConfig.AuditConfig = CentralConfig.AuditConfig(),
 ):
   /** `client-certificates` only where it names a CA. A config with no such block still decodes to
     * `Some(defaults)` -- every field has a default, so an absent block parses -- and must read as
@@ -32,11 +54,65 @@ case class CentralConfig(
   def certificateBackends: Option[CentralConfig.ClientCertificatesConfig] =
     clientCertificates.filter(settings => settings.stepCa.isDefined || settings.certManager.isDefined)
 
+  /** `edge-certificates` only where it names a CA, for the reason given on [[certificateBackends]]. */
+  def edgeCertificateBackends: Option[CentralConfig.ClientCertificatesConfig] =
+    edgeCertificates.filter(settings => settings.stepCa.isDefined || settings.certManager.isDefined)
+
 object CentralConfig:
   val centralClientId: ClientId = ClientId("central-admin")
   val defaultTenantId: TenantId = TenantId("default")
 
   case class AuthConfig(url: URL)
+
+  /** Central terminates mutual TLS itself for the edge surface, which is reachable from outside
+    * the cluster: the handshake demands a client certificate that chains to
+    * [[trustedCertificates]], and `authorizeEdge` then requires it to be the one registered for
+    * the edge the token names (`PUT /configuration/edges/certificate`).
+    *
+    * @param certificate PEM path to the certificate this listener presents.
+    * @param privateKey PEM path to its key, unencrypted PKCS#8 -- the only form the TLS stack
+    *   here reads back.
+    * @param trustedCertificates PEM path to the anchors an edge's certificate is validated
+    *   against. Required, with no default: left unset, Netty falls back to the JDK's trust store
+    *   and every publicly-trusted CA would vouch for edges.
+    */
+  case class MutualTlsConfig(
+      certificate: String,
+      privateKey: String,
+      trustedCertificates: String,
+  )
+
+  /** An edge whose certificate central issues renews it by itself, over the mutual-TLS listener, for as long as it is
+    * registered. That is a chain, and it begins at the edge's enrollment.
+    *
+    * @param maxAge how old a chain may get before it needs more than a renewal.
+    * @param autoExtend what happens then. On (the default), central extends the chain itself and says so in its log: an
+    *   edge never stops for want of anyone enrolling it again. Off, central stops renewing the edges of **partner**
+    *   groups at `maxAge` until an operator extends the edge (the operator's own edges are always extended) (`POST /configuration/edges/extend`) or enrols it again: for an operator who wants every partner's
+    *   edge to be re-approved on a schedule. The edge is told the date long before, and so is the console.
+    */
+  case class EdgeIdentityConfig(
+      maxAge: Duration = Duration.fromSeconds(365 * 24 * 3600L),
+      autoExtend: Boolean = true,
+  )
+
+  /** A client whose certificate is obtained through EST (`estEnrollment`) renews it by itself, with the certificate it
+    * has, for as long as it is registered. That is a chain, and it begins at the client's enrolment.
+    *
+    * @param maxAge how old a chain may get before it needs more than a renewal.
+    * @param autoExtend what happens then. Off (the default), central stops renewing the client's certificate at `maxAge`
+    *   until an operator extends it (`POST /configuration/clients/est/extend`) or enrols it again with a new token: every
+    *   client is re-approved on a schedule, which is what a partner relationship asks for. On, central extends the chain
+    *   itself and the client never stops for want of anyone approving it. The client is told the date in every answer, and
+    *   so is the console.
+    * @param renewWindow the part of a certificate's life, at its end, in which it may be renewed: a third by default, so
+    *   that a certificate is not renewed in its first days. A renewal outside it is refused (`403`).
+    */
+  case class ClientIdentityConfig(
+      maxAge: Duration = Duration.fromSeconds(365 * 24 * 3600L),
+      autoExtend: Boolean = false,
+      renewWindow: Double = 1.0 / 3,
+  )
 
   /** @param certificate PEM path to the CA certificate. It has to be one every party an edge
     *                    presents an issued certificate to trusts: auth's
@@ -131,8 +207,9 @@ object CentralConfig:
       authAdditionalUrl: URL,
       /** Base64Url-encoded secret shared with auth's additional listener, used to
         * authenticate the seeded "auth" resource record. Always required — unlike
-        * the central resource secret, this is not auto-generated, since auth also
-        * needs to be configured with the same value out of band.
+        * the central resource secret, this is not auto-generated. Auth is not
+        * configured with it: it receives the value through the configuration sync
+        * from central (`accountResourceSecrets`).
         */
       authResourceSecret: Secret,
       /** Optional confidential client for tooling such as `loadgen provision`, seeded with the
@@ -211,6 +288,42 @@ object CentralConfig:
         cookieDomain: Option[String] = None,
         cookiePath: Option[String] = None,
     )
+
+  /** How long the audit log is kept and what a full writer queue does: `overflow = block` makes an event wait for room up to
+    * `blockTimeout`, `drop` does not wait.
+    *
+    * @param retention    a day's partition is dropped once the whole day is older than this; from 1 to 14 days, 7 by default (the
+    *                     table is partitioned 14 days ahead, and the per-user report asks auth, whose log is kept as long, for the
+    *                     same window). What it stores: about 430 bytes an event on disk, the one index included, so at 1 000 events
+    *                     a second about 37 GB a day, about 260 GB for 7 days and about 520 GB for 14 days; at 100 events a second a
+    *                     tenth of that. Events a second equal requests a second only if every request records an event; `events`
+    *                     is what changes it. A design estimate, to be replaced with the figure measured under load.
+    * @param events       the kinds a deployment may leave out
+    */
+  case class AuditConfig(
+      retention: Duration = Duration.fromSeconds(7 * 24 * 3600L),
+      overflow: AuditEvents.Overflow = AuditEvents.Overflow.drop,
+      blockTimeout: Duration = Duration.fromSeconds(2),
+      events: AuditConfig.Events = AuditConfig.Events(),
+  ):
+    /** What the writer of `versola.util.audit` takes; the keys that are central's own (`events`) it does not. */
+    def settings: AuditEvents.Settings =
+      AuditEvents.Settings(retention = retention, overflow = overflow, blockTimeout = blockTimeout)
+
+  object AuditConfig:
+    val MinRetentionDays = 1
+    val MaxRetentionDays = 14
+
+    /** A retention the partitions cannot keep stops the start, naming the key. */
+    def validated(config: AuditConfig): Either[Config.Error, AuditConfig] =
+      Either.cond(
+        config.retention.toDays >= MinRetentionDays && config.retention.toDays <= MaxRetentionDays,
+        config,
+        Config.Error.InvalidData(message = s"audit.retention must be between $MinRetentionDays and $MaxRetentionDays days"),
+      )
+
+    /** @param adminUserViewed whether a look at a user (`GET /users`) is an event: it is the one read that is many */
+    case class Events(adminUserViewed: Boolean = true)
 
   case class UserOutboxConfig(
       pollInterval: Duration,

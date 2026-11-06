@@ -1,12 +1,12 @@
 import { render } from 'solid-js/web';
 import { For, Show, onMount } from 'solid-js';
+import { PageBrand } from '../shared/brand';
+import type { BaseFormConfig } from '../shared/config';
 
 type SignedOutStep = { type: 'signed-out'; logoutUris: string[]; redirectUri?: string };
 
-interface FormConfig {
+interface FormConfig extends BaseFormConfig {
   step: SignedOutStep;
-  t: Record<string, string>;
-  logo?: string;
 }
 
 declare global {
@@ -29,10 +29,18 @@ function SignedOut(props: { config: FormConfig }) {
   });
 
   return (
+    <>
+      <PageBrand logo={props.config.logo} />
     <div class="container">
       <For each={props.config.step.logoutUris}>
         {(uri) => <iframe src={uri} style={{ display: 'none' }} sandbox="allow-scripts allow-same-origin" />}
       </For>
+      <div class="signed-out-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10" />
+          <path d="M7.5 12.5l3 3 6-6.5" />
+        </svg>
+      </div>
       <h1>{t().title}</h1>
       <Show when={redirectUri}>
         {(uri) => (
@@ -40,6 +48,7 @@ function SignedOut(props: { config: FormConfig }) {
         )}
       </Show>
     </div>
+    </>
   );
 }
 

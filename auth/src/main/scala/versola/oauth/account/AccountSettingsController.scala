@@ -1,15 +1,20 @@
 package versola.oauth.account
 
+import versola.audit.AuditSupport.*
+import versola.audit.AuthAuditDetails
+import versola.audit.AuthAuditKinds
 import versola.auth.model.{CredentialId, PasskeyName}
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
+import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ClientId
-import versola.oauth.conversation.ConversationRenderService
 import versola.oauth.conversation.ConversationRenderService.StepView
+import versola.oauth.conversation.{ConversationRenderService, UiLocales}
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.PublicSessionId
 import versola.user.UserRepository
 import versola.user.model.UserId
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{BadRequest, Controller, Observability, Unauthorized}
 import versola.util.{Base64, CoreConfig, Secret}
 import zio.*
@@ -26,7 +31,8 @@ import java.security.MessageDigest
     */
 object AccountSettingsController extends Controller:
   type Env = Tracing & CoreConfig & OAuthConfigurationService & SessionService &
-    PasskeyRepository & WebAuthnService & UserRepository & ConversationRenderService
+    PasskeyRepository & WebAuthnService & UserRepository & ConversationRenderService &
+    PasswordService & AccountSettingsService & AuditEvents
 
   /** How long an unfinished enrollment ceremony stays usable. */
   private val enrollmentTtl = 5.minutes
@@ -36,6 +42,7 @@ object AccountSettingsController extends Controller:
     revokeSessionRoute,
     renamePasskeyRoute,
     deletePasskeyRoute,
+    changePasswordRoute,
     startPasskeyEnrollmentRoute,
     finishPasskeyEnrollmentRoute,
   )
@@ -49,7 +56,7 @@ object AccountSettingsController extends Controller:
         sessionId <- request.queryZIO[PublicSessionId]("sessionId")
         view <- accountView(userId, sessionId)
         requestedLocales <- request.queryZIO[Option[String]]("ui_locales")
-        uiLocales = Some(requestedLocales.fold(acceptedLocales(request))(splitLocales)).filter(_.nonEmpty)
+        uiLocales = UiLocales.resolve(request, hints = requestedLocales.fold(List.empty[String])(UiLocales.split))
         response <- ZIO.serviceWithZIO[ConversationRenderService](_.renderAccount(clientId, view, uiLocales))
       yield response
     }
@@ -65,8 +72,39 @@ object AccountSettingsController extends Controller:
         _ <- authorizeResource(request)
         body <- request.bodyAs[RevokeSessionRequest]
         response <- ZIO.serviceWithZIO[SessionService](_.invalidateForUser(body.targetSessionId, body.userId)).flatMap:
-          case true => ZIO.succeed(Response.status(Status.NoContent))
+          case true =>
+            // The session's own record is gone with it, so the number of relying parties is not known here: 0 says "not known".
+            ZIO.serviceWithZIO[AuditEvents](
+              _.log(
+                AuditDraft(
+                  kind = AuthAuditKinds.SessionEnded,
+                  outcome = AuditOutcome.success,
+                  reason = None,
+                  actor = None,
+                  userId = Some(body.userId),
+                  target = None,
+                  details = AuthAuditDetails.SessionEnded(cause = "user_revoked", clients = 0),
+                ),
+              ),
+            ).as(Response.status(Status.NoContent))
           case false => Observability.setError("session_not_found").as(Response.status(Status.NoContent))
+      yield response
+    }
+
+  /** A refusal carries a stable `error` code instead of prose: the Security page picks the
+    * translation by it, so the wording stays with the page and follows the visitor's language. */
+  val changePasswordRoute: Route[Env, Throwable] =
+    Method.PATCH / "settings" / "password" -> handler { (request: Request) =>
+      for
+        _ <- authorizeResource(request)
+        body <- request.bodyAs[ChangePasswordRequest]
+        result <- ZIO.serviceWithZIO[AccountSettingsService](
+          _.changePassword(body.userId, body.clientId, body.currentPassword, body.newPassword),
+        ).either
+        response <- result match
+          case Right(_) => ZIO.succeed(Response.status(Status.NoContent))
+          case Left(error: ChangePasswordError) => Observability.setError(error.code).as(changePasswordRefusal(error))
+          case Left(error: Throwable) => ZIO.fail(error)
       yield response
     }
 
@@ -85,6 +123,19 @@ object AccountSettingsController extends Controller:
         _ <- authorizeResource(request)
         body <- request.bodyAs[DeletePasskeyRequest]
         _ <- ZIO.serviceWithZIO[PasskeyRepository](_.deleteByUser(body.credentialId, body.userId))
+        _ <- ZIO.serviceWithZIO[AuditEvents](
+          _.log(
+            AuditDraft(
+              kind = AuthAuditKinds.AccountPasskeyRemoved,
+              outcome = AuditOutcome.success,
+              reason = None,
+              actor = None,
+              userId = Some(body.userId),
+              target = None,
+              details = AuthAuditDetails.Passkey(credentialPrefix = Some(body.credentialId.toString.take(9)), deviceType = None),
+            ),
+          ),
+        )
       yield Response.status(Status.NoContent)
     }
 
@@ -98,8 +149,10 @@ object AccountSettingsController extends Controller:
         config <- ZIO.service[CoreConfig]
         settings <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasskeySettings(body.clientId))
           .someOrFail(BadRequest("passkeys are not enabled"))
-        displayName <- displayNameOf(body.userId)
-        ceremony <- ZIO.serviceWithZIO[WebAuthnService](_.startRegistration(settings, body.userId, displayName))
+        user <- ZIO.serviceWithZIO[UserRepository](_.find(body.userId))
+        accountName = user.flatMap(_.passkeyAccountName).getOrElse(settings.rpName)
+        displayName = user.flatMap(_.nameClaim).getOrElse(accountName)
+        ceremony <- ZIO.serviceWithZIO[WebAuthnService](_.startRegistration(settings, body.userId, accountName, displayName))
         now <- Clock.instant
         ticket = PasskeyEnrollmentTicket.serialize(
           PasskeyEnrollmentTicket(body.userId, now.plus(enrollmentTtl), ceremony.request),
@@ -118,6 +171,19 @@ object AccountSettingsController extends Controller:
           _.finishRegistration(body.clientId, body.userId, ticket.request, body.response.toJson, Some(body.name)),
         ).tapError(error => Observability.setError("enroll_failed", Some(error.getMessage)))
           .mapError(error => BadRequest(error.getMessage))
+        _ <- ZIO.serviceWithZIO[AuditEvents](
+          _.log(
+            AuditDraft(
+              kind = AuthAuditKinds.AccountPasskeyEnrolled,
+              outcome = AuditOutcome.success,
+              reason = None,
+              actor = None,
+              userId = Some(body.userId),
+              target = None,
+              details = AuthAuditDetails.Passkey(credentialPrefix = Some(record.id.toString.take(9)), deviceType = Some(record.deviceType.toString)),
+            ),
+          ),
+        )
       yield Response.json(passkeyView(record.id, record.name, record.backedUp, record.lastUsedAt, record.createdAt).toJson)
     }
 
@@ -127,7 +193,7 @@ object AccountSettingsController extends Controller:
     ZIO.serviceWithZIO[OAuthConfigurationService] { service =>
       service.accountResourceSecrets.flatMap:
         case Nil => ZIO.fail(Unauthorized)
-        case secrets => authorizeBasic(request, secrets)
+        case secrets => authorizeBasic(request, secrets) *> noteUserAgent(request)
     }
 
   private def parseAndValidatePasskeyTicket(
@@ -156,14 +222,28 @@ object AccountSettingsController extends Controller:
         yield ()
       case _ => ZIO.fail(Unauthorized)
 
+  private def changePasswordRefusal(error: ChangePasswordError): Response =
+    val (status, retryAfter) = error match
+      case ChangePasswordError.TooManyAttempts(retryAfter) => (Status.TooManyRequests, retryAfter)
+      case _ => (Status.BadRequest, None)
+    val response = Response.json(ChangePasswordRefusal(error.code, retryAfter).toJson).status(status)
+    retryAfter.fold(response)(seconds => response.addHeader(Header.RetryAfter.ByDuration(seconds.seconds)))
+
   private def accountView(
       userId: UserId,
       sessionId: PublicSessionId,
-  ): ZIO[SessionService & PasskeyRepository, Throwable, StepView.AccountSettings] =
+  ): ZIO[SessionService & PasskeyRepository & PasswordService & OAuthConfigurationService, Throwable, StepView.AccountSettings] =
     for
       sessions <- listSessions(userId, sessionId)
       passkeys <- listPasskeys(userId)
-    yield StepView.AccountSettings(sessions, passkeys)
+      hasPassword <- ZIO.serviceWithZIO[PasswordService](_.hasPassword(userId))
+      passwordRegex <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasswordRegex)
+    yield StepView.AccountSettings(
+      sessions = sessions,
+      passkeys = passkeys,
+      hasPassword = hasPassword,
+      passwordRegex = passwordRegex,
+    )
 
   private def listSessions(userId: UserId, sessionId: PublicSessionId): ZIO[SessionService, Throwable, List[StepView.AccountSession]] =
     ZIO.serviceWithZIO[SessionService](_.listByUser(userId)).map:
@@ -197,21 +277,6 @@ object AccountSettingsController extends Controller:
       lastUsedAt = lastUsedAt,
       createdAt = createdAt,
     )
-
-  /** The name the authenticator shows in its account picker, resolved the same way the
-    * enrollment step of the login flow resolves it. */
-  private def displayNameOf(userId: UserId): ZIO[UserRepository, Throwable, String] =
-    ZIO.serviceWithZIO[UserRepository](_.find(userId)).map(_.map(_.passkeyDisplayName).getOrElse(userId.toString))
-
-  private def acceptedLocales(request: Request): List[String] =
-    request.header(Header.AcceptLanguage).toList.flatMap(_.renderedValue.split(',').toList)
-      .map(_.takeWhile(_ != ';').trim)
-      .filter(_.nonEmpty)
-
-  /** Parses the OIDC `ui_locales` convention: a space-separated, most-preferred-first list
-    * (see [[versola.oauth.authorize.AuthorizeRequestParser]]). */
-  private def splitLocales(raw: String): List[String] =
-    raw.split(' ').toList.map(_.trim).filter(_.nonEmpty)
 
   /** `userId` is the edge-injected caller context (needed to scope the revocation to the
     * caller's own account). `targetSessionId` is the id of the session to invalidate,
@@ -250,3 +315,12 @@ object AccountSettingsController extends Controller:
       response: Json,
       name: PasskeyName,
   ) derives JsonCodec
+
+  private case class ChangePasswordRequest(
+      userId: UserId,
+      clientId: ClientId,
+      currentPassword: String,
+      newPassword: String,
+  ) derives JsonCodec
+
+  private case class ChangePasswordRefusal(error: String, retryAfterSeconds: Option[Long]) derives JsonCodec

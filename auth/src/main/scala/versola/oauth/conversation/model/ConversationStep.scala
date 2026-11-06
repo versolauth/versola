@@ -17,6 +17,9 @@ object ConversationStep:
       passkeyRequest: Option[String] = None, // serialized assertion ceremony state, set by GET options
       passkeyFailed: Boolean = false,        // set when a submitted assertion fails verification
       loginFailed: Boolean = false,          // set when login+password submission fails authentication
+      /** The card asks for nothing but a passkey of the user the conversation already identifies: a
+        * step-up whose ACR needs `passkey`. The form starts the assertion by itself. */
+      passkeyOnly: Boolean = false,
   ) extends ConversationStep(StepId.Credential)
 
   case class Otp(
@@ -27,8 +30,28 @@ object ConversationStep:
       rateLimitExceeded: Boolean,
       lockedSeconds: Int,
       lastSentAt: Option[Instant],
+      /** For a pending step: the moment from which the page's ask for the code is honoured (when it was left pending plus
+        * `antifraud.challenge.pause`). The pause is what a request that answers no proof of work pays instead. A step
+        * stored without it (before it existed) is honoured at once. */
+      pendingUntil: Option[Instant] = None,
+      /** The serialized assertion ceremony of a passkey chosen from this code page in place of the code, set when the page's
+        * options were asked for (as [[Credential.passkeyRequest]] is). It is discoverable with an empty allow list for every
+        * conversation, so the page tells nothing of who the number belongs to. */
+      passkeyRequest: Option[String] = None,
+      /** A passkey submitted from this page did not verify: the page shows the same code step with that said, and nothing
+        * else about it changes. */
+      passkeyFailed: Boolean = false,
   ) extends ConversationStep(StepId.Otp):
     def isFake: Boolean = real.isEmpty
+
+    /** The step a request for a code that has to prove itself is left on, before any code is sent (`timesRequested` is 1
+      * from the first send on): the page asks for the code by itself, as a resend, and answers the challenge there. */
+    def pending: Boolean = timesRequested == 0
+
+    /** Whole seconds of the pause still to wait at `now`; 0 when it is over, and for a step that is not pending. */
+    def pauseRemaining(now: Instant): Int =
+      if !pending then 0
+      else pendingUntil.fold(0)(until => math.max(0L, (until.toEpochMilli - now.toEpochMilli + 999) / 1000).toInt)
 
   object Otp:
     case class Real(code: OtpCode)

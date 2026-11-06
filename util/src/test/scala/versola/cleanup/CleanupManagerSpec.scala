@@ -207,11 +207,7 @@ object CleanupManagerSpec extends ZIOSpecDefault:
           for
             _ <- cleanup.start()
             _ <- TestClock.adjust(0.seconds)
-            // stop() joins the jobs it just interrupted, which hands their interruption
-            // to whoever called it, so run it on its own fiber and await the outcome
-            // instead of letting that land on the test fiber.
-            stopped <- cleanup.stop().forkDaemon
-            _ <- stopped.await
+            _ <- cleanup.stop()
             _ <- TestClock.adjust(5.hours)
             recorded <- calls.get
           yield recorded

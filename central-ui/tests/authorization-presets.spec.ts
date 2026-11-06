@@ -48,7 +48,7 @@ function clientCard(page: any, _clientId: string) {
 }
 
 async function openClient(page: any, clientId: string) {
-  await page.getByRole('button', { name: `Open client ${clientId}`, exact: true }).click();
+  await page.getByRole('button', { name: new RegExp(`^Open client (.* )?${clientId}$`) }).click();
 }
 
 test('loads presets when client is expanded', async ({ page }) => {
@@ -99,7 +99,7 @@ test('caches presets and does not reload on subsequent expands', async ({ page }
   ).length;
 
   // Leave the client's page and come back to it
-  await page.getByRole('button', { name: 'Clients', exact: true }).click();
+  await page.getByRole('navigation', { name: 'Breadcrumb' }).getByRole('button', { name: 'Clients', exact: true }).click();
   await openClient(page, 'alpha-web');
 
   // Wait a bit to ensure no new request

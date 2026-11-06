@@ -3,7 +3,7 @@ package versola.oauth.session
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.model.UserAgentData
-import versola.oauth.session.model.{UserAgentDetails, UserAgentId}
+import versola.oauth.session.model.{UserAgentDetails, UserAgentId, UserAgentRecord}
 import versola.user.model.UserId
 import versola.util.postgres.BasicCodecs
 import zio.{Clock, Duration, Task, ZIO, ZLayer}
@@ -15,6 +15,7 @@ class PostgresUserAgentRepository(xa: TransactorZIO) extends UserAgentRepository
   given DbCodec[UserAgentId] = DbCodec.UUIDCodec.biMap(UserAgentId(_), identity[UUID])
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
   given DbCodec[UserAgentDetails] = DbCodec.derived[UserAgentDetails]
+  given DbCodec[UserAgentRecord] = DbCodec.derived[UserAgentRecord]
 
   override def find(id: UserAgentId): Task[Option[UserAgentDetails]] =
     Clock.instant.flatMap: now =>
@@ -59,6 +60,32 @@ class PostgresUserAgentRepository(xa: TransactorZIO) extends UserAgentRepository
           SET expires_at = ${now.plusSeconds(ttl.toSeconds)}, user_id = ${data.userId},
               platform = ${details.platform}, os = ${details.os}, browser = ${details.browser}, version = ${details.version}
           WHERE id = $id
+        """.update.run() > 0
+
+  override def findByUserId(userId: UserId): Task[List[UserAgentRecord]] =
+    Clock.instant.flatMap: now =>
+      xa.connectMeasured("find-user-agents-by-user"):
+        sql"""
+          SELECT id, raw, platform, os, browser, version, created_at, expires_at
+          FROM user_agents
+          WHERE user_id = $userId AND expires_at > $now
+          ORDER BY expires_at DESC
+        """.query[UserAgentRecord].run().toList
+
+  override def forget(id: UserAgentId, userId: UserId): Task[Boolean] =
+    Clock.instant.flatMap: now =>
+      xa.transactMeasured("forget-user-agent"):
+        sql"""
+          UPDATE refresh_tokens SET expires_at = $now
+          WHERE expires_at > $now
+            AND session_id IN (SELECT id FROM sso_sessions WHERE user_agent_id = $id AND user_id = $userId)
+        """.update.run()
+        sql"""
+          UPDATE sso_sessions SET expires_at = $now
+          WHERE user_agent_id = $id AND user_id = $userId AND expires_at > $now
+        """.update.run()
+        sql"""
+          DELETE FROM user_agents WHERE id = $id AND user_id = $userId
         """.update.run() > 0
 
 object PostgresUserAgentRepository:

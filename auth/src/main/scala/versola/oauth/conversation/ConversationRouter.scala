@@ -1,10 +1,24 @@
 package versola.oauth.conversation
 
+import versola.audit.AuditSupport.*
+import versola.audit.AuthAuditDetails
+import versola.audit.AuthAuditKinds
 import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthFactor, AuthFactorType, OtpType, PassedAuthFactor, PrimaryCredential, RegistrationCredential, RegistrationStep}
+import versola.oauth.client.model.{
+  AuthFactor,
+  AuthFactorType,
+  ClientId,
+  OtpType,
+  PassedAuthFactor,
+  PhoneRegion,
+  PrimaryCredential,
+  RegistrationCredential,
+  RegistrationStep,
+}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import versola.user.UserRepository
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Observability
 import versola.util.{Email, Phone, SecureRandom}
 import zio.{Task, UIO, ZIO, ZLayer}
@@ -32,7 +46,7 @@ trait ConversationRouter:
   def advance(authId: AuthId, conversation: ConversationRecord): Task[Unit]
 
 object ConversationRouter:
-  def live = ZLayer.fromFunction(Impl(_, _, _, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   class Impl(
       conversationRepository: ConversationRepository,
@@ -40,6 +54,7 @@ object ConversationRouter:
       configService: OAuthConfigurationService,
       secureRandom: SecureRandom,
       userRepository: UserRepository,
+      audit: AuditEvents,
   ) extends ConversationRouter:
 
     /** Sets `auth.user_id` and `auth.user_agent_id` as soon as an already-identified conversation
@@ -73,6 +88,11 @@ object ConversationRouter:
                     conversationService.startPasskeyAssertion(authId, record, cred, settings).map(Some(_))
               case _: ConversationStep.Credential =>
                 ZIO.none
+              // From the code page itself; not an alternative of this page now answers as a passkey that cannot be had.
+              case otp: ConversationStep.Otp =>
+                configService.getPasskeySettings(record.clientId).flatMap:
+                  case None => ZIO.none
+                  case Some(settings) => conversationService.startPasskeyOnCode(authId, record, otp, settings)
               case _ =>
                 ZIO.fail(new Exception("startPasskeyAssertion called outside Credential step"))
 
@@ -113,10 +133,10 @@ object ConversationRouter:
           conversationService.accessDenied(authId, conversation).zipLeft(AuthMetrics.stepFailed("credential"))
 
         case (submitted: EmailSubmission, _) =>
-          afterCredential(authId, conversation, Left(submitted.email)).tap(observeCredential)
+          afterCredential(authId, conversation, Left(submitted.email), submitted.proof).tap(observeCredential)
 
         case (submitted: PhoneSubmission, _) =>
-          afterCredential(authId, conversation, Right(submitted.phone)).tap(observeCredential)
+          afterCredential(authId, conversation, Right(submitted.phone), submitted.proof).tap(observeCredential)
 
         case (submitted: OtpSubmission, ConversationRecord.Otp(otp, _)) =>
           conversationService.checkOtp(conversation, otp, submitted.code, authId)
@@ -129,8 +149,8 @@ object ConversationRouter:
               case other: ConversationResult.Render =>
                 ZIO.succeed(other)
 
-        case (_: OtpResendSubmission, ConversationRecord.Otp(otp, credential)) =>
-          conversationService.prepareInitialOtp(authId, conversation, credential, otp.factorIndex)
+        case (submitted: OtpResendSubmission, ConversationRecord.Otp(otp, credential)) =>
+          conversationService.prepareInitialOtp(authId, conversation, credential, otp.factorIndex, submitted.proof)
 
         case (submitted: PasswordSubmission, ConversationRecord.Password(password)) =>
           conversationService.checkPassword(conversation, password, submitted.password, authId)
@@ -150,9 +170,27 @@ object ConversationRouter:
               case other: ConversationResult.Render =>
                 ZIO.succeed(other)
 
+        // A passkey submitted from the code page satisfies the factor the code was for, and the conversation goes on as it would
+        // after the code: a passkey that proves the user is not a reason to skip what comes after.
+        case (submitted: PasskeyAssertionSubmission, ConversationRecord.Otp(otp, _)) =>
+          conversationService.checkPasskeyOnCode(authId, conversation, otp, submitted.response, ipAddress)
+            .tap(observeDecision("passkey"))
+            .flatMap:
+              case ConversationResult.StepPassed(updated) =>
+                afterFactor(authId, updated, otp.factorIndex + 1)
+              case other: ConversationResult.Render =>
+                ZIO.succeed(other)
+
+        // The browser could not make a passkey, or the prompt was dismissed: the code page, as it was.
+        case (_: PasskeyUnavailableSubmission, ConversationRecord.Otp(otp, _)) =>
+          ZIO.succeed(ConversationResult.RenderStep(otp))
+
         case (submitted: PasskeyAssertionSubmission, _) =>
           conversationService.finishPasskeyAssertion(authId, conversation, submitted.response, ipAddress)
             .tap(observePasskeyAssertion)
+
+        case (_: PasskeyUnavailableSubmission, ConversationRecord.PasskeyOnly(_)) =>
+          conversationService.accessDenied(authId, conversation).zipLeft(AuthMetrics.stepFailed("passkey"))
 
         case (submitted: PasskeyEnrollSubmission, ConversationRecord.PasskeyEnroll(enroll)) =>
           conversationService.finishPasskeyEnroll(authId, conversation, enroll, submitted.response, submitted.name)
@@ -189,8 +227,23 @@ object ConversationRouter:
           conversationService.allowConsent(authId, conversation, consentStep, submitted.scope)
             .tap(observeConsent)
 
-        case (_: ConsentDenySubmission, ConversationRecord.Consent(_)) =>
-          conversationService.accessDenied(authId, conversation).zipLeft(AuthMetrics.stepFailed("consent"))
+        case (_: ConsentDenySubmission, ConversationRecord.Consent(consentStep)) =>
+          // The user's own answer, not a failure of the request: the grant they were asked for is the subject.
+          audit.log(
+            AuditDraft(
+              kind = AuthAuditKinds.ConsentDenied,
+              outcome = AuditOutcome.denied,
+              reason = None,
+              actor = None,
+              userId = conversation.userId,
+              target = None,
+              details = AuthAuditDetails.Consent(
+                scope = consentStep.requestedScope.toList.map(_.toString).sorted,
+                authorizationDetailTypes = Nil,
+                expiresAt = None,
+              ),
+            ),
+          ) *> conversationService.accessDenied(authId, conversation).zipLeft(AuthMetrics.stepFailed("consent"))
 
         case _ =>
           // Submission doesn't match the conversation's current step, e.g. a stale form
@@ -219,7 +272,7 @@ object ConversationRouter:
         authId: AuthId,
         conversation: ConversationRecord,
     ): Task[ConversationResult.Render] =
-      runRegistrationStep(authId, conversation.copy(registrationStep = conversation.registrationStep.map(_ + 1)))
+      runRegistrationStep(authId, conversation.copy(registrationStep = conversation.registrationStep.map(_ + 1)), ProofInput.NoScript)
 
     /** Resolve the account only after OTP verification, immediately before an account-bound setup
       * step or successful completion.
@@ -254,12 +307,13 @@ object ConversationRouter:
     private def runRegistrationStep(
         authId: AuthId,
         conversation: ConversationRecord,
+        proof: ProofInput,
     ): Task[ConversationResult.Render] =
       conversation.currentRegistrationStep match
         case Some(_: RegistrationStep.Otp) =>
           conversation.credential match
             case Some(credential) =>
-              conversationService.prepareInitialOtp(authId, conversation, credential, factorIndex = 0)
+              conversationService.prepareInitialOtp(authId, conversation, credential, factorIndex = 0, proof)
             case None =>
               conversationService.accessDenied(authId, conversation)
 
@@ -282,41 +336,52 @@ object ConversationRouter:
         authId: AuthId,
         conversation: ConversationRecord,
         credential: Either[Email, Phone],
+        proof: ProofInput,
     ): Task[ConversationResult.Render] =
-      userRepository.findByCredential(credential).flatMap: user =>
-        (user, conversation.registrationFlow) match
-          case (Some(user), _) =>
-            val identified = conversation.copy(
-              userId = Some(user.id),
-              credential = Some(credential),
-              userEmail = user.email,
-              userPhone = user.phone,
-              userLogin = user.login,
-              userClaims = Some(user.claims),
-            )
-            afterAuthenticationCredential(authId, identified, credential)
+      userRepository.findByCredential(credential).flatMap:
+        case Some(user) =>
+          val identified = conversation.copy(
+            userId = Some(user.id),
+            credential = Some(credential),
+            userEmail = user.email,
+            userPhone = user.phone,
+            userLogin = user.login,
+            userClaims = Some(user.claims),
+          )
+          afterAuthenticationCredential(authId, identified, credential, proof)
 
-          case (None, Some(flow)) if flow.credential == RegistrationCredential.from(credential) =>
-            conversationService.startRegistration(authId, conversation, flow, credential).flatMap:
-              case RegistrationEntry.Registering(updated) =>
-                runRegistrationStep(authId, updated)
-              case ConversationResult.WriteConflict =>
-                ZIO.succeed(ConversationResult.WriteConflict)
-
-          case (None, Some(_)) =>
-            afterAuthenticationCredential(authId, conversation, credential)
-
-          case (None, None) =>
-            afterAuthenticationCredential(authId, conversation, credential)
+        // A new user: the tenant decides whether this address may create an account. When it may
+        // not, the ordinary sign-in path runs, indistinguishable from any other unknown credential.
+        case None =>
+          configService.registrationFor(conversation.clientId, credential).flatMap:
+            case Some(flow) =>
+              conversationService.startRegistration(authId, conversation, flow, credential).flatMap:
+                case RegistrationEntry.Registering(updated) =>
+                  runRegistrationStep(authId, updated, proof)
+                case ConversationResult.WriteConflict =>
+                  ZIO.succeed(ConversationResult.WriteConflict)
+            case None =>
+              afterAuthenticationCredential(authId, conversation, credential, proof)
 
     private def afterAuthenticationCredential(
         authId: AuthId,
         conversation: ConversationRecord,
         credential: Either[Email, Phone],
+        proof: ProofInput,
+    ): Task[ConversationResult.Render] =
+      passkeyPending(conversation).flatMap:
+        case true => conversationService.promptPasskey(authId, conversation)
+        case false => afterAuthenticationCredentialFactors(authId, conversation, credential, proof)
+
+    private def afterAuthenticationCredentialFactors(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        credential: Either[Email, Phone],
+        proof: ProofInput,
     ): Task[ConversationResult.Render] =
       nextNeededFactor(conversation, conversation.authFlow.primary.factors.zipWithIndex).flatMap:
         case Some((AuthFactor(AuthFactorType.otp, _), idx)) =>
-          conversationService.prepareInitialOtp(authId, conversation, credential, factorIndex = idx)
+          conversationService.prepareInitialOtp(authId, conversation, credential, factorIndex = idx, proof)
 
         case Some((AuthFactor(AuthFactorType.password, _), idx)) =>
           conversationService.prepareInitialPassword(authId, conversation, credential, factorIndex = idx)
@@ -339,6 +404,25 @@ object ConversationRouter:
         conversation: ConversationRecord,
         nextFactorIndex: Int,
     ): Task[ConversationResult.Render] =
+      passkeyPending(conversation).flatMap:
+        case true => conversationService.promptPasskey(authId, conversation)
+        case false => afterFactorSteps(authId, conversation, nextFactorIndex)
+
+    /** Whether the ACR this conversation pursues needs a passkey that has not been passed yet. A passkey is
+      * not one of `primary.factors`, so nothing else would ask for it: the conversation goes straight to a
+      * passkey-only step, ahead of any other factor, because the passkey (user-verifying) is the one that
+      * proves the device and a one-time code must not stand in for it.
+      */
+    private def passkeyPending(conversation: ConversationRecord): Task[Boolean] =
+      configService.getAcrVocabulary(conversation.clientId).map: vocabulary =>
+        conversation.requiredFactors(vocabulary).exists(_.contains(PassedAuthFactor.passkey)) &&
+          !conversation.amr.keySet.exists(_.satisfies(PassedAuthFactor.passkey, conversation.authFlow.equivalents))
+
+    private def afterFactorSteps(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        nextFactorIndex: Int,
+    ): Task[ConversationResult.Render] =
       nextNeededFactor(conversation, conversation.authFlow.primary.factors.zipWithIndex.drop(nextFactorIndex)).flatMap:
         case Some((AuthFactor(AuthFactorType.otp, _), idx)) =>
           val credential = conversation.authFlow.otpType match
@@ -348,7 +432,7 @@ object ConversationRouter:
               conversation.userPhone.map(Right(_))
 
           credential match
-            case Some(cred) => conversationService.prepareInitialOtp(authId, conversation, cred, idx)
+            case Some(cred) => conversationService.prepareInitialOtp(authId, conversation, cred, idx, ProofInput.NoScript)
             case _ => conversationService.accessDenied(authId, conversation)
 
         case Some((AuthFactor(AuthFactorType.password, _), idx)) =>
@@ -360,11 +444,26 @@ object ConversationRouter:
         case Some((AuthFactor(AuthFactorType.passkeyEnroll, _), _)) =>
           conversationService.offerPasskeyEnroll(authId, conversation)
 
-        case None if conversation.needsPasswordChange =>
-          conversationService.offerSetPassword(authId, conversation)
-
         case None =>
-          conversationService.finish(authId, conversation)
+          inlinePasswordPending(conversation).flatMap:
+            case true =>
+              conversationService.preparePasswordStep(authId, conversation, conversation.authFlow.primary.factors.size)
+            case false if conversation.needsPasswordChange => conversationService.offerSetPassword(authId, conversation)
+            case false => conversationService.finish(authId, conversation)
+
+    /** Whether the ACR this conversation pursues needs a password that has not been passed yet, in a flow
+      * that takes it on the credential card. No factor in `primary.factors` would ask for it again, and the
+      * card is skipped for a user the conversation already knows, so without this the conversation would
+      * finish with nothing having verified them. The password step goes after the listed factors.
+      */
+    private def inlinePasswordPending(conversation: ConversationRecord): Task[Boolean] =
+      configService.getAcrVocabulary(conversation.clientId).map: vocabulary =>
+        val flow = conversation.authFlow
+        conversation.userId.isDefined &&
+        flow.primary.inlinePassword &&
+        !flow.primary.factors.exists(_.`type` == AuthFactorType.password) &&
+        conversation.requiredFactors(vocabulary).exists(_.contains(PassedAuthFactor.password)) &&
+        !conversation.amr.keySet.exists(_.satisfies(PassedAuthFactor.password, flow.equivalents))
 
     private def nextNeededFactor(
         conversation: ConversationRecord,
@@ -372,7 +471,7 @@ object ConversationRouter:
     ): Task[Option[(AuthFactor, Int)]] =
       for
         vocabulary <- configService.getAcrVocabulary(conversation.clientId)
-        reqFactors = conversation.targetAcr.flatMap(vocabulary.get).map(_.toList.toSet).getOrElse(Set.empty)
+        reqFactors = conversation.requiredFactors(vocabulary).map(_.toSet).getOrElse(Set.empty)
       yield factors.find { case (factor, _) =>
         val passed = isSatisfied(conversation, factor)
         val needed = factor.required || PassedAuthFactor.fromFactorType(factor.`type`).exists(reqFactors.contains)

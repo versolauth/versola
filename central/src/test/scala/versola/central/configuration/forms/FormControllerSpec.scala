@@ -96,6 +96,24 @@ object FormControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ),
     ),
     controllerTestCase(
+      description = "GET /configuration/forms/previews returns the preview scenarios of the built-in forms",
+      request = Request.get(URL.empty / "configuration" / "forms" / "previews"),
+      expectedStatus = Status.Ok,
+      verify = (response, service) =>
+        for
+          body <- response.body.asString
+        yield assertTrue(
+          body.fromJson[GetFormPreviewsResponse] == Right(FormPreviews.response),
+          service.getAllForms.calls.isEmpty,
+        ),
+    ),
+    controllerTestCase(
+      description = "GET /configuration/forms/previews refuses a service token, which is not the admin's basic credential",
+      request = Request.get(URL.empty / "configuration" / "forms" / "previews")
+        .addHeader(Header.Authorization.Bearer(syncToken)),
+      expectedStatus = Status.Unauthorized,
+    ),
+    controllerTestCase(
       description = "GET /configuration/forms/sync returns active forms for an authorized service token",
       request = Request.get(URL.empty / "configuration" / "forms" / "sync")
         .addHeader(Header.Authorization.Bearer(syncToken)),
@@ -130,6 +148,19 @@ object FormControllerSpec extends ZIOSpecDefault, ZIOStubs:
             false,
           )),
         )),
+    ),
+    controllerTestCase(
+      description = "PUT /configuration/forms answers 400 with the reason when the texts of the languages disagree",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "forms",
+        body = Body.fromString(updateFormRequest.copy(localizations = Map("en" -> Map("title" -> "Hello"), "ru" -> Map.empty)).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = service => service.updateForm.failsWith(IllegalArgumentException("Locale 'ru' has no text for 'title', which 'en' has")),
+      verify = (response, _) =>
+        for body <- response.body.asString
+        yield assertTrue(body.fromJson[Json] == Right(Json.Obj("message" -> Json.Str("Locale 'ru' has no text for 'title', which 'en' has")))),
     ),
     controllerTestCase(
       description = "PUT /configuration/forms/active sets the active version",

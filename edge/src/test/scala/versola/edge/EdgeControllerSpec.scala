@@ -8,6 +8,7 @@ import versola.edge.model.{
   AuthConversationNotFound,
   AuthorizationPreset,
   ClientId,
+  Code,
   EdgeId,
   InvalidLogoutToken,
   PermissionId,
@@ -16,6 +17,7 @@ import versola.edge.model.{
   ResourceId,
   RoleId,
   SessionId,
+  State,
   TenantId,
 }
 import versola.edge.revocation.TokenRevocationService
@@ -68,8 +70,12 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     val fields =
       Chunk(Some("client_id" -> Json.Str(clientId))) ++
         Chunk(tenantId.map(tid => "tenant_id" -> Json.Str(tid))) ++
-        Chunk(cnfJkt.map(jkt => "cnf" -> Json.Obj("jkt" -> Json.Str(jkt)))) ++
-        Chunk(cnfX5t.map(thumbprint => "cnf" -> Json.Obj("x5t#S256" -> Json.Str(thumbprint)))) ++
+        // One `cnf` claim carrying whichever bindings were asked for -- a token may be bound to both.
+        Chunk(Option.when(cnfJkt.isDefined || cnfX5t.isDefined)(
+          "cnf" -> Json.Obj(
+            Chunk(cnfJkt.map("jkt" -> Json.Str(_)), cnfX5t.map("x5t#S256" -> Json.Str(_))).flatten,
+          ),
+        )) ++
         Chunk(roles.map(rs => "roles" -> Json.Arr(rs.map(Json.Str(_))*))
           .orElse(Some("roles" -> Json.Arr())))
     JWT.serialize(
@@ -232,6 +238,25 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.getMyPermissions.calls.isEmpty,
       )
     },
+    // #452 on this route: the proof only shows the key half of the binding, and the
+    // certificate half cannot be shown to edge, so a valid proof must not be enough.
+    test("returns 401 when a token bound to both a key and a certificate carries a valid proof") {
+      for
+        accessToken <- token(cnfJkt = Some("thumb-1"), cnfX5t = Some("certificate-thumbprint"))
+        (response, service, _) <- run(
+          Request.get(URL.decode("/permissions/me?resource=central").toOption.get)
+            .addHeader(Header.Custom("Authorization", s"DPoP $accessToken"))
+            .addHeader(Header.Custom("DPoP", "the-one-proof")),
+          (s, _) => s.getMyPermissions.succeedsWith(sampleResponse),
+          dpopSetup = _.verify.succeedsWith(
+            versola.util.Dpop.Proof(jkt = "thumb-1", jti = "jti-1", iat = Instant.EPOCH, nonce = None, ath = None),
+          ),
+        )
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        service.getMyPermissions.calls.isEmpty,
+      )
+    },
     test("honours a DPoP-bound token presented with a single valid proof") {
       for
         accessToken <- token(clientId = "web-app", tenantId = Some("default"), roles = Some(List("member")), cnfJkt = Some("thumb-1"))
@@ -327,18 +352,45 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
   )
 
+  private val loginPath = Path.decode("/complete")
+  private def loginStart(url: URL) = EdgeService.LoginStart(
+    url = url,
+    state = State("s-1"),
+    browserBinding = "secret-1",
+    loginCookiePath = loginPath,
+    loginTtl = 10.minutes,
+  )
+
   private val loginSuite = suite("GET /login/{presetId}")(
     test("redirects to the SSO authorize URL on a known preset") {
       val authorizeUrl = URL.decode("https://idp.example/authorize?client_id=web-app").toOption.get
       for
         (response, service, _) <- run(
           Request.get(URL.decode("/login/preset-1").toOption.get),
-          (s, _) => s.authorize.succeedsWith(authorizeUrl),
+          (s, _) => s.authorize.succeedsWith(loginStart(authorizeUrl)),
         )
       yield assertTrue(
         response.status == Status.SeeOther,
         response.header(Header.Location).map(_.url).contains(authorizeUrl),
-        service.authorize.calls == List((PresetId("preset-1"), Map.empty[String, String])),
+        service.authorize.calls == List((PresetId("preset-1"), Map.empty[String, String], None)),
+      )
+    },
+    test("binds the login to the browser with an EDGE_LOGIN_<state> cookie that Lax-scopes to /complete") {
+      val authorizeUrl = URL.decode("https://idp.example/authorize?client_id=web-app").toOption.get
+      for
+        (response, _, _) <- run(
+          Request.get(URL.decode("/login/preset-1").toOption.get),
+          (s, _) => s.authorize.succeedsWith(loginStart(authorizeUrl)),
+        )
+        cookie = response.headers.getAll(Header.SetCookie).map(_.value).find(_.name == "EDGE_LOGIN_s-1")
+      yield assertTrue(
+        cookie.map(_.content).contains("secret-1"),
+        cookie.exists(_.isHttpOnly),
+        cookie.exists(_.isSecure),
+        cookie.flatMap(_.sameSite).contains(Cookie.SameSite.Lax),
+        cookie.flatMap(_.path).contains(loginPath),
+        cookie.flatMap(_.maxAge).contains(10.minutes),
+        cookie.flatMap(_.domain).isEmpty,
       )
     },
     test("passes whitelisted query params to authorize") {
@@ -346,11 +398,25 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         (response, service, _) <- run(
           Request.get(URL.decode("/login/preset-1?acr_values=mfa&prompt=login&unknown=ignored").toOption.get),
-          (s, _) => s.authorize.succeedsWith(authorizeUrl),
+          (s, _) => s.authorize.succeedsWith(loginStart(authorizeUrl)),
         )
       yield assertTrue(
         response.status == Status.SeeOther,
-        service.authorize.calls == List((PresetId("preset-1"), Map("acr_values" -> "mfa", "prompt" -> "login"))),
+        service.authorize.calls == List((PresetId("preset-1"), Map("acr_values" -> "mfa", "prompt" -> "login"), None)),
+      )
+    },
+    test("passes the page the login should return to on to authorize") {
+      val authorizeUrl = URL.decode("https://idp.example/authorize?client_id=web-app").toOption.get
+      for
+        (response, service, _) <- run(
+          Request.get(URL.decode("/login/preset-1?acr_values=sensitive&return_to=%2Fresources%2Fauth%2Fsettings").toOption.get),
+          (s, _) => s.authorize.succeedsWith(loginStart(authorizeUrl)),
+        )
+      yield assertTrue(
+        response.status == Status.SeeOther,
+        service.authorize.calls == List(
+          (PresetId("preset-1"), Map("acr_values" -> "sensitive"), Some("/resources/auth/settings")),
+        ),
       )
     },
     test("returns 404 when the preset is unknown") {
@@ -451,16 +517,47 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         postLoginRedirectUri = RedirectUri("https://app.example/home"),
         cookieDomain = Some("app.example"),
         cookiePath = Some("/"),
+        returnTo = None,
+        loginCookiePath = loginPath,
       )
       for
         (response, _, _) <- run(
           Request.get(URL.decode("/complete?code=c-1&state=s-1").toOption.get),
           (s, _) => s.complete.succeedsWith(completion),
         )
+        cookies = response.headers.getAll(Header.SetCookie).map(_.value)
       yield assertTrue(
         response.status == Status.SeeOther,
         response.header(Header.Location).map(_.url.encode).contains("https://app.example/home"),
-        response.header(Header.SetCookie).map(_.value.name).contains(EdgeSessionCookie.name),
+        cookies.exists(_.name == EdgeSessionCookie.name),
+        cookies.exists(cookie => cookie.name == "EDGE_LOGIN_s-1" && cookie.maxAge.contains(Duration.Zero) && cookie.path.contains(loginPath)),
+      )
+    },
+    test("hands the EDGE_LOGIN_<state> cookie of the request to complete") {
+      val completion = EdgeService.LoginCompletion(
+        presetId = PresetId("preset-default"),
+        accessToken = AccessToken("header.payload.sig"),
+        cookieTtl = 1.hour,
+        postLoginRedirectUri = RedirectUri("https://app.example/home"),
+        returnTo = None,
+        cookieDomain = None,
+        cookiePath = None,
+        loginCookiePath = loginPath,
+      )
+      def complete(request: Request) =
+        run(request, (s, _) => s.complete.succeedsWith(completion)).map(_._2.complete.calls)
+      val url = URL.decode("/complete?code=c-1&state=s-1").toOption.get
+      def withCookie(name: String, value: String) =
+        Request.get(url).addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request(name = name, content = value))))
+      for
+        own <- complete(withCookie("EDGE_LOGIN_s-1", "secret-1"))
+        // a secret held for another login of the same browser is not this login's
+        other <- complete(withCookie("EDGE_LOGIN_s-2", "secret-2"))
+        none <- complete(Request.get(url))
+      yield assertTrue(
+        own == List((Code("c-1"), State("s-1"), Some("secret-1"))),
+        other == List((Code("c-1"), State("s-1"), None)),
+        none == List((Code("c-1"), State("s-1"), None)),
       )
     },
     test("returns 400 when the auth conversation is unknown") {
@@ -497,7 +594,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         )
       yield assertTrue(response.status == Status.InternalServerError)
     },
-    test("redirects OAuth errors to the post-login URL without setting a session cookie") {
+    test("redirects OAuth errors to the post-login URL, clearing the login cookie and setting no session cookie") {
       val redirectUrl = URL.decode("https://app.example/home?from=login").toOption.get.addQueryParams(
         List(
           "error" -> "access_denied",
@@ -510,13 +607,15 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Request.get(URL.decode(
             "/complete?error=access_denied&error_description=User%20cancelled&error_uri=https%3A%2F%2Fidp.example%2Ferrors%2Faccess_denied&state=s-1",
           ).toOption.get),
-          (s, _) => s.completeError.succeedsWith(redirectUrl),
+          (s, _) => s.completeError.succeedsWith(EdgeService.LoginErrorRedirect(redirectUrl, loginPath)),
         )
         location = response.header(Header.Location).map(_.url)
+        cookies = response.headers.getAll(Header.SetCookie).map(_.value)
       yield assertTrue(
         response.status == Status.SeeOther,
         location.contains(redirectUrl),
-        response.header(Header.SetCookie).isEmpty,
+        cookies.map(_.name) == List("EDGE_LOGIN_s-1"),
+        cookies.forall(_.maxAge.contains(Duration.Zero)),
         service.complete.calls.isEmpty,
         service.completeError.calls.size == 1,
       )

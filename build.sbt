@@ -48,6 +48,9 @@ lazy val `auth-postgres-impl` = project.in(implementations / "postgres")
     commonSettings,
     libraryDependencies ++= Dependencies.database.postgres,
     Compile / mainClass := Some("versola.PostgresOAuthApp"),
+    // Every spec in here resets the tables it uses between tests (the antifraud ones drop every partition of
+    // `af_event` and empty `af_counter_reset`), so two of them running at once would clear each other's rows.
+    Test / parallelExecution := false,
     sbtForkSettings,
   ).dependsOn(
     auth % CompileTest,
@@ -360,8 +363,24 @@ lazy val securityPins = Seq(
   "io.netty" % "netty-transport-native-kqueue" % "4.2.19.Final",
   "io.netty" % "netty-transport-native-unix-common" % "4.2.19.Final",
   "com.google.protobuf" % "protobuf-java" % "4.36.2",
+  // GHSA-xxph-c9ww-hj94: bound allocation during Guava collection deserialization.
+  "com.google.guava" % "guava" % "33.7.2-jre",
   "org.yaml" % "snakeyaml" % "2.7",
   "com.nimbusds" % "nimbus-jose-jwt" % "10.10",
+  // zio-http drags netty-pkitesting, which pulls BouncyCastle 1.84 (CVE-2026 name-constraints
+  // bypass) into mockapi, the one module with no direct BouncyCastle dependency to win eviction.
+  "org.bouncycastle" % "bcprov-jdk18on" % Versions.bouncyCastle,
+  "org.bouncycastle" % "bcpkix-jdk18on" % Versions.bouncyCastle,
+  "org.bouncycastle" % "bcutil-jdk18on" % Versions.bouncyCastle,
+)
+
+// The Scala 3.9.0 compiler's REPL drags JLine 4.0.14 (ReDoS in HISTORY_IGNORE, fixed in 4.3.1;
+// Scala 3.10 ships 4.3.1 itself but needs source changes). Build-time only: never on a runtime classpath.
+ThisBuild / dependencyOverrides ++= Seq(
+  "org.jline" % "jline-reader" % "4.3.1",
+  "org.jline" % "jline-terminal" % "4.3.1",
+  "org.jline" % "jline-terminal-jni" % "4.3.1",
+  "org.jline" % "jline-native" % "4.3.1",
 )
 
 lazy val commonSettings =

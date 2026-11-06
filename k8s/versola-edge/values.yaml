@@ -1,0 +1,123 @@
+# Values for the versola-edge chart: one remote edge (design-edge-network.md, 5 and H7).
+#
+# A remote edge differs from the one in the `versola` chart in three ways, and these values are
+# those three: it finds central and auth by their public names and pins their listener certificates
+# (`central`, `auth`); it has no certificate until it enrolls, once, with a one-time token
+# (`central.enrollment`); and it keeps the identity it gets on a volume (`persistence`).
+#
+# Ground rules, as for the versola chart: no bundled Postgres, no secret backend, no cert-manager.
+# The edge's own configuration (presets, clients, public hosts, ...) is an env.conf you generate
+# with scripts/gen-env.scala and supply as `config.existingSecret`; what this chart adds is the
+# `central` block and `identity`, rendered as a second file the env.conf includes (k8s/README.md).
+
+nameOverride: ""
+fullnameOverride: ""
+
+global:
+  imageRegistry: ghcr.io
+  imageRepository: versolauth
+  imagePullPolicy: IfNotPresent
+  imagePullSecrets: []
+
+image:
+  repository: versola-edge
+  tag: "" # empty: the chart's appVersion
+
+# One replica. Every replica has its own key and certificate (central accepts several live
+# certificates under one edge id), but a token enrolls exactly one identity, so a second replica
+# would find its empty volume and a spent token. For a second instance in the same place, enroll a
+# second edge id (a second release).
+replicaCount: 1
+
+port: 8095
+diagnosticsPort: 8096
+
+# The edge's env.conf, as in the versola chart.
+config:
+  existingSecret: ""
+  secretKey: env.conf
+
+# The `${VAR}` values env.conf references, one Secret, same keys as the versola chart's edge:
+# edge-private-key, edge-key-id, edge-token-enc-key, edge-sessions-secret, edge-internal-secret,
+# edge-dpop-nonce-salt, edge-native-blob-key, edge-postgres-password.
+secrets:
+  existingSecret: ""
+
+# Central, over the public mutual-TLS name `central-mtls.<domain>` (`exposure.mtls.central.host` of
+# the versola chart). Required.
+central:
+  mtlsUrl: "" # https://central-mtls.example.com
+  # The leaf certificate(s) of central's listener, PEM, as the `server-pin/tls.crt` the in-cluster
+  # edge gets. A set, not one: put the next leaf in beside the current one before central switches,
+  # so a rotation does not cut the edge off (design 4.3). A leaf, not the CA -- the pin is what
+  # keeps any certificate of that CA from standing in for central.
+  pins: []
+  #  - |
+  #    -----BEGIN CERTIFICATE-----
+  #    ...
+  # The first start only: the edge sends a CSR and the token to this URL and gets its identity back,
+  # which it then keeps on `persistence`. After that nothing here is read. The URL is
+  # `https://central.<domain>` (`exposure.central.host`): ordinary TLS, no client certificate.
+  enrollment:
+    url: "" # https://central.example.com
+    # Where the one-time token comes from. A token lives an hour and works once: create it
+    # (`POST /configuration/edges/enrollment-tokens?edgeId=...`) when you install, not before.
+    #   existingSecret: a Secret you made, holding the token under `key`. Preferred.
+    #   token:          the chart makes the Secret from this value, which then sits in the Helm
+    #                   release too. Fine for a token that is spent on the first start.
+    existingSecret: ""
+    key: token
+    token: ""
+
+# Auth, for a client the edge serves that authenticates with a certificate (`tls_client_auth`, FAPI
+# 2.0) and for edge's own calls to auth, over `id-mtls.<domain>`. Optional here: leave both empty
+# when env.conf has no `native` block.
+auth:
+  mtlsUrl: ""
+  pins: []
+
+# The edge's identity: its key and the certificate chain central issued it, renewed by the edge
+# itself at a third of its life left. Without a volume the identity is gone with the pod: the edge
+# enrolls again at every restart, which needs a new token each time and leaves the old
+# certificate valid until it expires. Keep it on.
+persistence:
+  enabled: true
+  size: 100Mi
+  storageClass: "" # empty: the cluster's default class
+  accessModes: [ReadWriteOnce]
+
+# Where the edge listens for browsers. The edge serves its routes at the root of its host; list only
+# what the host should expose, as the versola chart's route groups do.
+ingress:
+  enabled: false
+  className: "" # required when enabled
+  annotations: {}
+  host: ""
+  tls: []
+  paths:
+    - /login/
+    - /complete
+    - /logout/
+    - /resources/
+    - /permissions/
+    - /native/
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 1Gi
+  limits:
+    memory: 1Gi
+
+preStopSleepSeconds: 5
+terminationGracePeriodSeconds: 30
+
+metrics:
+  prometheusAnnotations: true
+
+extraEnv: []
+extraVolumes: []
+extraVolumeMounts: []
+nodeSelector: {}
+tolerations: []
+affinity: {}

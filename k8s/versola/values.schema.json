@@ -1,0 +1,379 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "versola chart values",
+  "description": "Deliberately narrow: it checks only what a typo or a missing neighbour would turn into an open public port (`exposure`), and leaves every other value to the templates. A value not named here is not restricted.",
+  "type": "object",
+  "properties": {
+    "pki": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "exposure": {
+      "type": "object",
+      "properties": {
+        "mtls": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "enum": [
+                "ingressPassthrough",
+                "gatewayTLSRoute",
+                "loadBalancer"
+              ]
+            },
+            "auth": {
+              "$ref": "#/definitions/host"
+            },
+            "central": {
+              "$ref": "#/definitions/host"
+            },
+            "limits": {
+              "type": "object",
+              "properties": {
+                "sourceRanges": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "enforcedBy": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "allOf": [
+            {
+              "$comment": "sourceRanges is applied only to a LoadBalancer Service. With passthrough nothing would enforce it, so it is refused rather than left to look like a limit.",
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "loadBalancer"
+                  }
+                },
+                "required": [
+                  "type"
+                ]
+              },
+              "else": {
+                "properties": {
+                  "limits": {
+                    "properties": {
+                      "sourceRanges": {
+                        "maxItems": 0
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "$comment": "H10: a mutual-TLS host is a public TLS port. It needs a limit: sourceRanges on a LoadBalancer, or an `enforcedBy` naming the one kept outside the chart (ingress-nginx's connection limits do not apply to a passthrough).",
+              "if": {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "auth": {
+                        "properties": {
+                          "host": {
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "host"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "auth"
+                    ]
+                  },
+                  {
+                    "properties": {
+                      "central": {
+                        "properties": {
+                          "host": {
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "host"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "central"
+                    ]
+                  }
+                ]
+              },
+              "then": {
+                "required": [
+                  "limits"
+                ],
+                "properties": {
+                  "limits": {
+                    "anyOf": [
+                      {
+                        "required": [
+                          "enforcedBy"
+                        ],
+                        "properties": {
+                          "enforcedBy": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      },
+                      {
+                        "required": [
+                          "sourceRanges"
+                        ],
+                        "properties": {
+                          "sourceRanges": {
+                            "type": "array",
+                            "minItems": 1
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "central": {
+          "type": "object",
+          "properties": {
+            "host": {
+              "$ref": "#/definitions/host/properties/host"
+            },
+            "type": {
+              "enum": [
+                "ingress",
+                "gatewayAPI"
+              ]
+            },
+            "limits": {
+              "type": "object",
+              "properties": {
+                "connectionsPerIP": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "requestsPerSecondPerIP": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "enforcedBy": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "allOf": [
+            {
+              "$comment": "H10 for the enrollment host: ingress-nginx's per-IP limits, or an `enforcedBy`. gatewayAPI has no per-IP annotation in this chart, so it needs `enforcedBy`.",
+              "if": {
+                "properties": {
+                  "host": {
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "host"
+                ]
+              },
+              "then": {
+                "required": [
+                  "limits"
+                ],
+                "properties": {
+                  "limits": {
+                    "anyOf": [
+                      {
+                        "required": [
+                          "enforcedBy"
+                        ],
+                        "properties": {
+                          "enforcedBy": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      },
+                      {
+                        "$comment": "only counts for type ingress",
+                        "required": [
+                          "connectionsPerIP"
+                        ],
+                        "properties": {
+                          "connectionsPerIP": {
+                            "minimum": 1
+                          }
+                        }
+                      },
+                      {
+                        "required": [
+                          "requestsPerSecondPerIP"
+                        ],
+                        "properties": {
+                          "requestsPerSecondPerIP": {
+                            "minimum": 1
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "host": {
+                    "minLength": 1
+                  },
+                  "type": {
+                    "const": "gatewayAPI"
+                  }
+                },
+                "required": [
+                  "host",
+                  "type"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "limits": {
+                    "required": [
+                      "enforcedBy"
+                    ],
+                    "properties": {
+                      "enforcedBy": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "H10: no public host without pki.enabled. Stated at the top because it spans two top-level keys.",
+      "if": {
+        "properties": {
+          "exposure": {
+            "anyOf": [
+              {
+                "properties": {
+                  "mtls": {
+                    "anyOf": [
+                      {
+                        "properties": {
+                          "auth": {
+                            "properties": {
+                              "host": {
+                                "minLength": 1
+                              }
+                            },
+                            "required": [
+                              "host"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "auth"
+                        ]
+                      },
+                      {
+                        "properties": {
+                          "central": {
+                            "properties": {
+                              "host": {
+                                "minLength": 1
+                              }
+                            },
+                            "required": [
+                              "host"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "central"
+                        ]
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "mtls"
+                ]
+              },
+              {
+                "properties": {
+                  "central": {
+                    "properties": {
+                      "host": {
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "host"
+                    ]
+                  }
+                },
+                "required": [
+                  "central"
+                ]
+              }
+            ]
+          }
+        },
+        "required": [
+          "exposure"
+        ]
+      },
+      "then": {
+        "required": [
+          "pki"
+        ],
+        "properties": {
+          "pki": {
+            "required": [
+              "enabled"
+            ],
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "host": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "pattern": "^$|^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$"
+        }
+      }
+    }
+  }
+}

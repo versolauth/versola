@@ -405,7 +405,13 @@ object ClientApiSpec extends CentralApiSpec:
         outcome <- withClient(central, Fixtures.client(id)) { clientId =>
           central.put(
             s"$path/web",
-            Fixtures.clientUpdate(clientId, "authMethod" -> Json.Str("private_key_jwt"), "accessTokenTtl" -> Json.Num(60)),
+            Fixtures.clientUpdate(
+              clientId,
+              "redirectUris" -> Fixtures.patch(),
+              "scope" -> Fixtures.patch(),
+              "authMethod" -> Json.Str("private_key_jwt"),
+              "accessTokenTtl" -> Json.Num(60),
+            ),
           ).zip(read(central, id))
         }
         (rejected, record) = outcome
@@ -535,11 +541,40 @@ object ClientApiSpec extends CentralApiSpec:
             "allowedScopes" -> Json.Arr(),
             "permissions" -> Json.Arr(Json.Str("Not A Permission")),
             "accessTokenTtl" -> Json.Num(3600),
+            "dpopBoundAccessTokens" -> Json.Bool(false),
+            "dpopSigningAlgs" -> Json.Arr(),
             "authMethod" -> Json.Str("client_secret"),
+            "certificateBoundAccessTokens" -> Json.Bool(false),
+            "estEnrollment" -> Json.Bool(false),
           ),
         )
       yield assertTrue(rejected.status == Status.BadRequest)
         .label("permissions are matched literally against endpoint grants, so the alphabet is fixed")
+    },
+    test("a service client referencing a permission with a dot is refused on create and on update") {
+      def service(id: String, permissions: Json.Arr) =
+        Json.Obj(
+          "tenantId" -> Json.Str(Fixtures.suiteTenant),
+          "id" -> Json.Str(id),
+          "clientName" -> Fixtures.text("Service"),
+          "allowedScopes" -> Json.Arr(),
+          "permissions" -> permissions,
+          "accessTokenTtl" -> Json.Num(3600),
+          "dpopBoundAccessTokens" -> Json.Bool(false),
+          "dpopSigningAlgs" -> Json.Arr(),
+          "authMethod" -> Json.Str("client_secret"),
+          "certificateBoundAccessTokens" -> Json.Bool(false),
+          "estEnrollment" -> Json.Bool(false),
+        )
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        created <- central.post(s"$path/service", service(id, Json.Arr(Json.Str("probe.orders"))))
+        registered <- central.post(s"$path/service", service(id, Json.Arr()))
+        updated <- central.put(path, Fixtures.clientUpdate(id, "permissions" -> Fixtures.patch(add = Set("probe.orders"))))
+        _ <- central.delete(path, "clientId" -> id)
+      yield assertTrue(created.status == Status.BadRequest, registered.status == Status.Created, updated.status == Status.BadRequest)
+        .label("permissions are matched literally against endpoint grants, and a dotted ID cannot exist")
     },
     test("a body missing a required member is refused") {
       for
@@ -766,12 +801,15 @@ object ClientApiSpec extends CentralApiSpec:
         assertTrue(record.exists(!_.strings("redirectUris").contains("versola://callback")))
           .label("validation that only runs on the create path is validation an update can bypass")
     },
-    test("an update that names only the client changes nothing, and is accepted") {
+    test("an update that states only empty patches changes nothing, and is accepted") {
       for
         central <- api
         id <- CentralApi.id("e2e-client")
         outcome <- withClient(central, Fixtures.client(id, name = "Untouched")) { clientId =>
-          central.put(s"$path/web", Json.Obj("clientId" -> Json.Str(clientId))).zip(read(central, id))
+          central.put(
+            s"$path/web",
+            Json.Obj("clientId" -> Json.Str(clientId), "redirectUris" -> Fixtures.patch(), "scope" -> Fixtures.patch()),
+          ).zip(read(central, id))
         }
         (updated, record) = outcome
       yield assertTrue(updated.status == Status.NoContent) &&

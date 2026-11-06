@@ -1,9 +1,12 @@
 package versola.migrate
 
-import com.typesafe.config.ConfigFactory
+import com.typesafe.config.{ConfigException, ConfigFactory, ConfigResolveOptions}
 import org.flywaydb.core.Flyway
 
 import java.io.File
+import java.sql.SQLException
+import scala.annotation.tailrec
+import scala.util.Random
 
 /** Standalone migration runner, shipped inside versola-tools' image (see
   * docker/versola-tools/entrypoint.sh's "migrate" dispatch branch, added alongside this).
@@ -24,6 +27,18 @@ import java.io.File
   * `--dry-run`/`--service` flags on `versola migrate` -- see its own comment for why a CI
   * pipeline needs both (checking what WOULD apply without a human in the loop, and being able to
   * fail on just one service's migrations rather than all three at once).
+  *
+  * Only `postgres.url`/`postgres.user`/`postgres.password` are ever read, and only those have to
+  * resolve: every other `${VAR}` placeholder in the file may stay unset. A one-shot Job therefore
+  * needs the Postgres credentials and nothing else -- not the token, signing or client secrets
+  * the same files reference for the running services.
+  *
+  * Tuning, all from the environment so the Job can set them without a new flag:
+  * `MIGRATE_LOCK_TIMEOUT_MS` (default 5000, 0 disables) is set as the session's `lock_timeout`, so
+  * a DDL statement waiting behind a long transaction of the version still serving traffic gives up
+  * instead of queueing every query behind it; `MIGRATE_LOCK_RETRIES` (default 3) is how many times
+  * a service's migration is retried after such a timeout; `MIGRATE_CONNECT_RETRIES` (default 3)
+  * covers Postgres not accepting connections yet.
   *
   * A plain synchronous `main`, not a ZIO app, and Flyway is handed a raw JDBC URL/user/password
   * rather than going through `PostgresHikariDataSource`/HikariCP (see build.sbt's `migrateTool`
@@ -57,7 +72,7 @@ object MigrateTool:
     * long-lived config value out of a service's own logs/toString over its whole process
     * lifetime; this process reads it once, hands it straight to Flyway, and exits.
     */
-  private case class PgConnection(url: String, user: String, password: String)
+  private case class PgConnection(url: String, user: String, password: String, sslRootCert: Option[String])
 
   /** Reads just the `postgres.url`/`postgres.user`/`postgres.password` fields straight off the
     * mounted .conf file via plain typesafe-config -- no `ConfigProvider`/kebab-case conversion
@@ -73,12 +88,101 @@ object MigrateTool:
   private def readConnection(path: String): PgConnection =
     val file = File(path)
     if !file.isFile then throw java.io.FileNotFoundException(s"Config file not found: $path")
-    val conf = ConfigFactory.parseFile(file).resolve()
+    // Unresolved placeholders are tolerated at resolve time and only fail when a value is read, so
+    // the keys below are the whole requirement. Resolving the document strictly would demand every
+    // secret the three files reference, which this process has no use for.
+    val conf = ConfigFactory.parseFile(file).resolve(ConfigResolveOptions.defaults().setAllowUnresolved(true))
+    def read(key: String): String =
+      try conf.getString(key)
+      catch
+        case e: ConfigException =>
+          throw IllegalStateException(s"$path: cannot read '$key' (${e.getMessage}); set the environment variable it references", e)
     PgConnection(
-      url = conf.getString("postgres.url"),
-      user = conf.getString("postgres.user"),
-      password = conf.getString("postgres.password"),
+      url = read("postgres.url"),
+      user = read("postgres.user"),
+      password = read("postgres.password"),
+      sslRootCert = Option.when(conf.hasPath("postgres.ssl-root-cert"))(read("postgres.ssl-root-cert")),
     )
+
+  /** The URL as the services themselves would connect with it. They verify the database's
+    * certificate (`sslmode=verify-full`, see `PostgresTls`), against `postgres.ssl-root-cert` when
+    * the config names one -- a plain pgjdbc URL does neither, so without this the migrations of a
+    * deployment with its own CA would run over a connection nothing verified. Each of the two is
+    * added only when the URL does not carry its own, independently of the other, as for the
+    * services: a URL with `sslmode=verify-full` and no `sslrootcert` is the common form, and
+    * leaving the CA out there made pgjdbc look for `~/.postgresql/root.crt` instead. Without a CA
+    * in the config this tool keeps connecting exactly as before.
+    */
+  private def withTls(connection: PgConnection): String =
+    connection.sslRootCert match
+      case None => connection.url
+      case Some(path) =>
+        val missing = List(
+          Option.when(!connection.url.contains("sslmode="))("sslmode=verify-full"),
+          Option.when(!connection.url.contains("sslrootcert="))(s"sslrootcert=$path"),
+        ).flatten
+        if missing.isEmpty then connection.url
+        else
+          val separator = if connection.url.contains("?") then "&" else "?"
+          s"${connection.url}$separator${missing.mkString("&")}"
+
+  private def intEnv(name: String, default: Int): Int =
+    Option(System.getenv(name)).map(_.trim).filter(_.nonEmpty) match
+      case None => default
+      case Some(v) =>
+        v.toIntOption.filter(_ >= 0).getOrElse:
+          System.err.println(s"versola-tools migrate: $name must be a non-negative integer, got '$v'")
+          sys.exit(1)
+
+  private val lockTimeoutMs = intEnv("MIGRATE_LOCK_TIMEOUT_MS", 5000)
+  private val lockRetries = intEnv("MIGRATE_LOCK_RETRIES", 3)
+  private val connectRetries = intEnv("MIGRATE_CONNECT_RETRIES", 3)
+
+  /** Postgres' `lock_not_available`, what `lock_timeout` raises. */
+  private val LockNotAvailable = "55P03"
+
+  /** Gives the migration session a `lock_timeout`, through the driver's `options` startup
+    * parameter, so it applies to every statement Flyway runs on it. The old version keeps serving
+    * while this runs (see `.claude/rules/database-migrations.md`): a DDL statement that has to wait
+    * for a lock queues every later query on that table behind itself, so waiting long is itself
+    * an outage. Giving up instead is safe, the migration is one transaction and is retried (see
+    * `withLockRetries`). A URL that sets its own `options` is the operator's choice and stays.
+    */
+  private def withLockTimeout(url: String): String =
+    if lockTimeoutMs == 0 || url.contains("options=") then url
+    else
+      val separator = if url.contains("?") then "&" else "?"
+      s"$url${separator}options=-c%20lock_timeout=$lockTimeoutMs"
+
+  private def isLockTimeout(t: Throwable): Boolean =
+    @tailrec def inChain(e: SQLException): Boolean =
+      e != null && (e.getSQLState == LockNotAvailable || inChain(e.getNextException))
+    @tailrec def inCauses(e: Throwable, depth: Int): Boolean =
+      if e == null || depth >= 16 then false
+      else
+        e match
+          case sql: SQLException if inChain(sql) => true
+          case _ => inCauses(e.getCause, depth + 1)
+    inCauses(t, 0)
+
+  /** Retries `op` when Postgres refused a lock within `lock_timeout`, up to `lockRetries` times,
+    * with a growing, jittered pause so two migrators (or a migrator and the traffic that held the
+    * lock) do not collide again in step. Any other failure is raised at once: a broken migration is
+    * not made better by another try.
+    */
+  private def withLockRetries[A](name: String)(op: => A): A =
+    @tailrec def attempt(n: Int): A =
+      val result: Either[Throwable, A] =
+        try Right(op)
+        catch case e: Throwable if isLockTimeout(e) && n < lockRetries => Left(e)
+      result match
+        case Right(a) => a
+        case Left(_) =>
+          val pauseMs = 1000L * (n + 1) + Random.nextInt(1000)
+          println(s"$name: a lock was not available within ${lockTimeoutMs}ms, retry ${n + 1} of $lockRetries in ${pauseMs}ms")
+          Thread.sleep(pauseMs)
+          attempt(n + 1)
+    attempt(0)
 
   /** Builds the one Flyway instance both `migrate` and `checkPending` need --
     * identical configuration either way, since a dry run has to validate
@@ -98,7 +202,11 @@ object MigrateTool:
     val config = Flyway
       .configure()
       .locations(target.migrationsLocation)
-      .dataSource(connection.url, connection.user, connection.password)
+      .dataSource(withLockTimeout(withTls(connection)), connection.user, connection.password)
+      // Postgres not accepting connections yet (a restart in progress, a pod started a moment ahead
+      // of its database): wait instead of failing the whole release over it.
+      .connectRetries(connectRetries)
+      .connectRetriesInterval(5)
       // Never disabled, unlike `PostgresHikariDataSource.layer`'s own `validateOnMigrate` (which
       // services can turn off in tests/development) -- this is the one place that actually
       // mutates a real schema, so there's no context where skipping Flyway's own pre-migrate
@@ -126,7 +234,7 @@ object MigrateTool:
   private def migrate(target: Target): Unit =
     println(s"${target.serviceName}: applying migrations from ${target.configPath}")
     val flyway = buildFlyway(target)
-    flyway.migrate()
+    withLockRetries(target.serviceName)(flyway.migrate())
     println(s"${target.serviceName}: migrations complete")
 
   /** `--dry-run`'s own path: validates the same way `migrate` would, then

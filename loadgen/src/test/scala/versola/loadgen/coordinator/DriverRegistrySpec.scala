@@ -193,6 +193,20 @@ object DriverRegistrySpec extends ZIOSpecDefault:
         view.health.latencyClampedTotal == 1L,
       )
     },
+    test("health keeps a driver's worst moment, not its last reading") {
+      val saturated = CoordinatorFixture.healthyVitals.copy(cpuRatio = Some(1.0), scheduleLagP99Micros = Some(425_000_000L))
+      val calm = CoordinatorFixture.healthyVitals.copy(cpuRatio = Some(0.2), scheduleLagP99Micros = Some(1L))
+      for
+        drivers <- registry
+        _ <- drivers.accept(report("driver-0", t0, 100L).copy(vitals = calm))
+        _ <- drivers.accept(report("driver-0", t0.plusSeconds(10), 200L).copy(vitals = saturated))
+        _ <- drivers.accept(report("driver-0", t0.plusSeconds(20), 300L).copy(vitals = calm))
+        view <- drivers.view(t0.plusSeconds(20), 0L)
+      yield assertTrue(
+        view.health.maxDriverCpu == Some(1.0),
+        view.health.scheduleLagP99Micros == Some(425_000_000L),
+      )
+    },
     test("refuses another campaign's report and another build's envelope") {
       for
         drivers <- registry

@@ -91,6 +91,30 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
 
   def testCases(env: RefreshTokenRepositorySpec.Env): List[Spec[RefreshTokenRepositorySpec.Env & Scope, Any]] =
     List(
+      test("revokeRefreshTokensByUserAndClient expires the client's live tokens for the user and nothing else") {
+        for
+          now <- Clock.instant
+          mine = tokenRecord1(now, refreshTtl)
+          sameUserOtherClient = tokenRecord1(now, refreshTtl).copy(clientId = clientId2)
+          otherUserSameClient = tokenRecord2(now, refreshTtl).copy(clientId = clientId1)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, mine, None)
+          _ <- env.repository.createRefreshToken(refreshToken2, None, mine.copy(familyId = familyId2), None)
+          _ <- env.repository.createRefreshToken(refreshToken3, None, sameUserOtherClient, None)
+          _ <- env.repository.createRefreshToken(refreshToken4, None, otherUserSameClient, None)
+          revoked <- env.repository.revokeRefreshTokensByUserAndClient(userId1, clientId1)
+          gone1 <- env.repository.findToken(refreshToken1)
+          gone2 <- env.repository.findToken(refreshToken2)
+          kept3 <- env.repository.findToken(refreshToken3)
+          kept4 <- env.repository.findToken(refreshToken4)
+          again <- env.repository.revokeRefreshTokensByUserAndClient(userId1, clientId1)
+        yield assertTrue(
+          revoked == 2,
+          gone1.isEmpty && gone2.isEmpty,
+          kept3.isDefined,
+          kept4.isDefined,
+          again == 0,
+        )
+      },
       test("create and find multiple refresh tokens") {
         for
           now <- Clock.instant

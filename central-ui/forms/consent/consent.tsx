@@ -1,37 +1,9 @@
 import { render } from 'solid-js/web';
 import { createSignal, Show } from 'solid-js';
-
-function LocaleDropdown(props: { locales: string[]; current: string; onChange: (l: string) => void }) {
-  const [open, setOpen] = createSignal(false);
-  return (
-    <div class="locale-dropdown">
-      <button
-        type="button"
-        class="locale-trigger"
-        onClick={() => setOpen(!open())}
-        onBlur={() => setTimeout(() => setOpen(false), 120)}
-      >
-        {props.current}
-        <svg class="locale-chevron" viewBox="0 0 10 6" fill="none" aria-hidden="true">
-          <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </button>
-      <Show when={open()}>
-        <div class="locale-options">
-          {props.locales.map((loc) => (
-            <button
-              type="button"
-              class={`locale-option${loc === props.current ? ' locale-option-active' : ''}`}
-              onMouseDown={() => { props.onChange(loc); setOpen(false); }}
-            >
-              {loc}
-            </button>
-          ))}
-        </div>
-      </Show>
-    </div>
-  );
-}
+import { PageBrand } from '../shared/brand';
+import { pickClientName } from '../shared/client-name';
+import { LocaleSelector, createTranslations } from '../shared/locale';
+import type { BaseFormConfig } from '../shared/config';
 
 type ConsentScope = {
   scope: string;
@@ -45,7 +17,11 @@ type ConsentScope = {
 type ConsentStep = {
   type: 'consent';
   clientName?: string;
+  /** The client's name in every locale it is stored in; the card picks by the current language. */
+  clientNames?: Record<string, string>;
   logoUri?: string;
+  /** The signed-in user, when the server knows how to name them: shown so they can see whose account is being shared. */
+  user?: { name?: string; identifier?: string; picture?: string };
   policyUri?: string;
   tosUri?: string;
   scopes: ConsentScope[];
@@ -53,15 +29,9 @@ type ConsentStep = {
   denyUri: string;
 };
 
-interface FormConfig {
+interface FormConfig extends BaseFormConfig {
   step: ConsentStep;
-  t: Record<string, string>;
-  locale?: string;
-  locales?: string[];
-  allT?: Record<string, Record<string, string>>;
   error?: string;
-  previewId?: string;
-  csrf?: string;
 }
 
 declare global {
@@ -70,20 +40,45 @@ declare global {
   }
 }
 
+// The partner's icon at the top of the card: its logo, or its initial on a tile in the theme colour
+// when it has none (or it fails to load). Icon only, never a text logo.
+function ClientIcon(props: { logoUri?: string; name?: string }) {
+  const [failed, setFailed] = createSignal(false);
+  const initial = () => Array.from(props.name?.trim() ?? '')[0]?.toLocaleUpperCase();
+  return (
+    <Show
+      when={props.logoUri && !failed()}
+      fallback={<Show when={initial()}>{(letter) => <div class="consent-icon consent-icon-initial" aria-hidden="true">{letter()}</div>}</Show>}
+    >
+      <div class="consent-icon" aria-hidden="true">
+        <img src={props.logoUri} alt="" referrerpolicy="no-referrer" onError={() => setFailed(true)} />
+      </div>
+    </Show>
+  );
+}
+
+function UserBadge(props: { user: NonNullable<ConsentStep['user']>; label: string }) {
+  const [failed, setFailed] = createSignal(false);
+  const shown = () => props.user.name || props.user.identifier || '';
+  const initial = () => Array.from(shown().trim())[0]?.toLocaleUpperCase() ?? '';
+  return (
+    <div class="consent-user">
+      <Show
+        when={props.user.picture && !failed()}
+        fallback={<div class="consent-avatar" aria-hidden="true">{initial()}</div>}
+      >
+        <img class="consent-avatar" src={props.user.picture} alt="" referrerpolicy="no-referrer" onError={() => setFailed(true)} />
+      </Show>
+      <div class="consent-user-text">
+        <span class="consent-user-label">{props.label}</span>
+        <span class="consent-user-name">{shown()}</span>
+      </div>
+    </div>
+  );
+}
+
 function ConsentForm(props: { config: FormConfig }) {
-  const allT = props.config.allT ?? {};
-  const baseT = props.config.t;
-  const [currentLocale, setCurrentLocale] = createSignal(props.config.locale ?? 'en');
-  const changeLocale = (loc: string) => {
-    setCurrentLocale(loc);
-    try { window.parent.postMessage({ type: 'versola:locale-change', locale: loc, previewId: props.config.previewId }, '*'); } catch (_) {}
-  };
-  const t = () => {
-    const loc = currentLocale();
-    const locT = allT[loc] ?? {};
-    return { ...baseT, ...locT };
-  };
-  const locales = props.config.locales ?? [];
+  const { t, locale: currentLocale, changeLocale } = createTranslations(props.config);
   const step = props.config.step;
   const scopes = step.scopes ?? [];
 
@@ -95,41 +90,44 @@ function ConsentForm(props: { config: FormConfig }) {
     if (next.has(scope)) next.delete(scope); else next.add(scope);
     setSelected(next);
   };
+  // The translated sentence keeps its `{client}` placeholder; splitting on it lets the name be
+  // rendered as an element while the surrounding words stay translatable. Odd indices are the name.
+  const clientName = () => pickClientName(currentLocale(), step.clientName, step.clientNames, props.config.defaultLocale);
+  const descriptionParts = () => {
+    const name = clientName() ?? t().unknown_client ?? 'An application';
+    const parts = (t().description ?? '{client} wants to access your account.').split('{client}');
+    return parts.flatMap((part, index) => index < parts.length - 1 ? [part, name] : [part]);
+  };
   const grantedScope = () => scopes.filter(s => selected().has(s.scope)).map(s => s.scope).join(' ');
   const scopeDescription = (scope: ConsentScope) =>
     scope.descriptionLocalizations?.[currentLocale()] || scope.description || scope.scope;
+  // A claim worded like its scope ("Postal address" under "Postal address") says nothing new.
   const claimDescriptions = (scope: ConsentScope) =>
     (scope.claimLocalizations ?? []).map((localizations, index) =>
       localizations[currentLocale()] || scope.claims[index] || '',
-    ).filter(Boolean);
+    ).filter(claim => claim && claim.trim().toLowerCase() !== scopeDescription(scope).trim().toLowerCase());
 
   return (
+    <>
+      <PageBrand logo={props.config.logo} />
     <div class="container">
-      <Show when={locales.length > 1}>
-        <div class="locale-selector">
-          <LocaleDropdown locales={locales} current={currentLocale()} onChange={changeLocale} />
-        </div>
-      </Show>
-      <Show when={step.logoUri}>
-        {uri => <img class="consent-logo" src={uri()} alt="" />}
-      </Show>
+      <LocaleSelector config={props.config} current={currentLocale()} onChange={changeLocale} />
+      <ClientIcon logoUri={step.logoUri} name={clientName()} />
       <h1>{t().title}</h1>
       <p class="consent-description">
-        {(t().description ?? '{client} wants to access your account.').replace('{client}', step.clientName ?? t().unknown_client ?? 'An application')}
+        {descriptionParts().map((part, index) => index % 2 === 1 ? <strong class="consent-client">{part}</strong> : part)}
       </p>
+      <Show when={step.user && (step.user.name || step.user.identifier)}>
+        <UserBadge user={step.user!} label={t().signed_in_as ?? 'Signed in as'} />
+      </Show>
       <Show when={props.config.error}>
-        <div class="error-text" style="margin-bottom: 8px;">{t()[props.config.error!] ?? props.config.error}</div>
+        <div class="error-text error-text-block" role="alert">{t()[props.config.error!] ?? props.config.error}</div>
       </Show>
       <form method="post">
         <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
         <input type="hidden" name="scope" value={grantedScope()} />
-        <div
-          class="consent-scopes-container"
-          role="region"
-          aria-label={t().scopes_label ?? 'Requested scopes'}
-          tabindex="0"
-        >
-          <ul class="consent-scopes">
+        <div class="consent-scopes-container">
+          <ul class="consent-scopes" aria-label={t().scopes_label ?? 'Requested scopes'}>
             {scopes.map(s => (
               <li class="consent-scope">
                 <label class="consent-scope-label">
@@ -145,6 +143,9 @@ function ConsentForm(props: { config: FormConfig }) {
                       <span class="consent-scope-claims">{claimDescriptions(s).join(', ')}</span>
                     </Show>
                   </span>
+                  <Show when={step.allowPartial && !s.deselectable}>
+                    <span class="consent-scope-required">{t().required ?? 'Required'}</span>
+                  </Show>
                 </label>
               </li>
             ))}
@@ -156,7 +157,7 @@ function ConsentForm(props: { config: FormConfig }) {
       </form>
       <form method="post" action={`/challenge/consent/deny?ui_locale=${currentLocale()}`}>
         <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
-        <button type="submit" class="btn btn-secondary">{t().deny_button}</button>
+        <button type="submit" class="btn btn-secondary btn-quiet">{t().deny_button}</button>
       </form>
       <Show when={step.policyUri || step.tosUri}>
         <p class="consent-legal">
@@ -170,6 +171,7 @@ function ConsentForm(props: { config: FormConfig }) {
         </p>
       </Show>
     </div>
+    </>
   );
 }
 

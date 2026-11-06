@@ -4,8 +4,10 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.Stub
+import versola.audit.ClientAuthFailures
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.{AuthMethod, ClientId, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
 import versola.oauth.model.{AccessToken, RefreshToken}
@@ -42,7 +44,6 @@ object RevocationControllerSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -60,6 +61,8 @@ object RevocationControllerSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   def authHeader(clientId: ClientId, secret: Secret): Header.Authorization =
@@ -107,7 +110,8 @@ object RevocationControllerSpec extends UnitSpecBase:
         // The controller looks the client up only to decide whether reading a client
         // certificate could matter to it; an unknown client never needs one.
         _ = clientService.find.returnsWith(ZIO.none)
-        clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig)
+        clientAuthentication =
+          ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig, ClientAuthFailures.noop)
         jwksService = TestEnvConfig.jwksService
         config = TestEnvConfig.coreConfig
         tracing <- NoopTracing.layer.build

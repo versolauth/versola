@@ -1,6 +1,10 @@
 {
   "en": {
     "page_title": "Authorize",
+    "scheme_label": "Colour scheme",
+    "scheme_auto": "Auto",
+    "scheme_light": "Light",
+    "scheme_dark": "Dark",
     "title": "Authorize access",
     "description": "{client} wants to access your account.",
     "unknown_client": "An application",
@@ -10,10 +14,16 @@
     "policy_link": "Privacy policy",
     "tos_link": "Terms of service",
     "invalid_consent": "That selection is not allowed. Please review the permissions and try again.",
-    "service_unavailable": "Service temporarily unavailable. Please try again later"
+    "service_unavailable": "Service temporarily unavailable. Please try again later",
+    "required": "Required",
+    "signed_in_as": "Signed in as"
   },
   "ru": {
     "page_title": "Авторизация",
+    "scheme_label": "Цветовая схема",
+    "scheme_auto": "Авто",
+    "scheme_light": "Светлая",
+    "scheme_dark": "Тёмная",
     "title": "Разрешить доступ",
     "description": "Приложение {client} запрашивает доступ к вашей учётной записи.",
     "unknown_client": "Приложение",
@@ -23,6 +33,8 @@
     "policy_link": "Политика конфиденциальности",
     "tos_link": "Условия использования",
     "invalid_consent": "Такой выбор недопустим. Проверьте разрешения и попробуйте ещё раз.",
-    "service_unavailable": "Сервис временно недоступен. Попробуйте позже"
+    "service_unavailable": "Сервис временно недоступен. Попробуйте позже",
+    "required": "Обязательно",
+    "signed_in_as": "Вы вошли как"
   }
 }

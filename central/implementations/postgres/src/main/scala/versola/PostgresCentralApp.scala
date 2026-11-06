@@ -2,7 +2,18 @@ package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.zaxxer.hikari.HikariDataSource
-import versola.central.CentralConfig
+import versola.audit.PostgresAuditEventRepository
+import versola.central.antifraud.{
+  AntifraudCountersController,
+  AntifraudCountersService,
+  AntifraudListController,
+  AntifraudListService,
+  AntifraudSettingsController,
+  AntifraudSettingsService,
+  AntifraudStatusController,
+  AntifraudStatusService,
+}
+import versola.central.audit.{AuditHook, AuditReportService, CentralAudit, CentralAuditRepository}
 import versola.central.configuration.challenges.{
   ChallengeSettingsRepository,
   ChallengeSettingsService,
@@ -16,6 +27,7 @@ import versola.central.configuration.clients.certificates.{
   ClientCertificateService,
   EdgeCertificateEnrollmentRepository,
 }
+import versola.central.configuration.clients.est.{ClientEstController, ClientEstRepository, ClientEstService}
 import versola.central.configuration.clients.{
   AuthorizationPresetController,
   AuthorizationPresetRepository,
@@ -25,8 +37,22 @@ import versola.central.configuration.clients.{
   OAuthClientRepository,
   OAuthClientService,
 }
+import versola.central.configuration.delivery.{DeliverySettingsController, DeliverySettingsRepository, DeliverySettingsService}
 import versola.central.configuration.details.{AuthorizationDetailTypeController, AuthorizationDetailTypeRepository, AuthorizationDetailTypeService}
-import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService}
+import versola.central.configuration.edges.{
+  EdgeCertificateIssuer,
+  EdgeCertificateRepository,
+  EdgeController,
+  EdgeEnrollController,
+  EdgeEnrollmentTokenRepository,
+  EdgeGroupRepository,
+  EdgeGroupService,
+  EdgeIdentityChainRepository,
+  EdgeIdentityService,
+  EdgeRepository,
+  EdgeService,
+  EdgeSyncController,
+}
 import versola.central.configuration.forms.{FormController, FormRepository, FormService}
 import versola.central.configuration.jwks.{JwksController, JwksService}
 import versola.central.configuration.locales.{LocaleCompletenessValidator, LocaleController, LocaleRepository, LocaleService}
@@ -40,15 +66,24 @@ import versola.central.configuration.system.{SystemSettingsController, SystemSet
 import versola.central.configuration.tenants.{TenantController, TenantRepository, TenantService}
 import versola.central.configuration.themes.{ThemeController, ThemeRepository, ThemeService}
 import versola.central.users.{AuthClient, ServiceController, UserController, UserOutboxProcessor, UserRepository, UserService}
+import versola.central.{CentralConfig, refuseEdgeCallers}
 import versola.configuration.challenges.{PostgresChallengeSettingsRepository, PostgresOtpChallengeRepository}
 import versola.configuration.clients.{
   PostgresAuthorizationPresetRepository,
   PostgresClientCertificateIssuanceRepository,
+  PostgresClientEstRepository,
   PostgresEdgeCertificateEnrollmentRepository,
   PostgresOAuthClientRepository,
 }
+import versola.configuration.delivery.PostgresDeliverySettingsRepository
 import versola.configuration.details.PostgresAuthorizationDetailTypeRepository
-import versola.configuration.edges.PostgresEdgeRepository
+import versola.configuration.edges.{
+  PostgresEdgeCertificateRepository,
+  PostgresEdgeEnrollmentTokenRepository,
+  PostgresEdgeGroupRepository,
+  PostgresEdgeIdentityChainRepository,
+  PostgresEdgeRepository,
+}
 import versola.configuration.forms.PostgresFormRepository
 import versola.configuration.jwks.PostgresJwksRepository
 import versola.configuration.locales.PostgresLocaleRepository
@@ -64,6 +99,7 @@ import versola.configuration.themes.PostgresThemeRepository
 import versola.users.PostgresUserRepository
 import versola.util.*
 import versola.util.SequentialLayers.*
+import versola.util.audit.{AuditEventRepository, AuditEvents}
 import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp
 import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource, PostgresWalMetrics}
@@ -74,8 +110,12 @@ import zio.json.DecoderOps
 import zio.json.ast.Json
 import zio.telemetry.opentelemetry.tracing.Tracing
 
+import java.lang.System as JavaSystem
+import java.net.InetAddress
+import java.util.UUID
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
+import scala.util.Try
 
 object PostgresCentralApp extends VersolaApp("central"):
   override given Tag[Dependencies] = Tag[Dependencies]
@@ -100,7 +140,14 @@ object PostgresCentralApp extends VersolaApp("central"):
       RoleRepository &
       RoleService &
       EdgeRepository &
+      EdgeGroupRepository &
+      EdgeEnrollmentTokenRepository &
+      EdgeIdentityChainRepository &
+      EdgeCertificateRepository &
       EdgeService &
+      EdgeGroupService &
+      EdgeCertificateIssuer &
+      EdgeIdentityService &
       FormRepository &
       FormService &
       LocaleRepository &
@@ -113,43 +160,108 @@ object PostgresCentralApp extends VersolaApp("central"):
       ChallengeSettingsRepository &
       ChallengeSettingsService &
       SystemSettingsRepository &
+      DeliverySettingsRepository &
       SystemSettingsService &
+      DeliverySettingsService &
       CacheSyncRepository &
       CacheSyncService &
       SecurityService &
       UserRepository &
       UserService &
+      AntifraudListService &
+      AntifraudSettingsService &
+      AntifraudCountersService &
+      AntifraudStatusService &
       AuthClient &
+      CentralAuditRepository &
+      AuditEventRepository &
+      AuditEvents.Settings &
+      AuditEvents &
+      AuditReportService &
       UserOutboxProcessor &
       ClientCertificateIssuanceRepository &
       EdgeCertificateEnrollmentRepository &
+      ClientEstRepository &
       ClientCertificateIssuer &
       ClientCertificateService &
+      ClientEstService &
       ServerMetadataRepository &
       ServerMetadataService &
       JwksService
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
+    // #554: an edge reaches central through `EdgeSyncController`, on the mutual-TLS listener,
+    // and nothing else. Every other
+    // controller is auth's or the admin console's and refuses an edge token here, as a group,
+    // so a controller added to this list is auth-only without doing anything about it.
+    // #469: what an administrator does is recorded on every one of these routes by one hook, which takes what each route means from
+    // the route's own declaration. The service surface is declared internal: the operator's tooling is not recorded.
+    Routes.fromIterable(adminEndpoints.map(AuditHook.wrap)) @@ refuseEdgeCallers
+
+  /** Every route of the main listener, each with the declaration the audit log takes its meaning from: a controller lists only
+    * [[AuditedRoute]]s, so there is none without one. */
+  val adminEndpoints =
     List(
-      TenantController.routes,
-      PermissionController.routes,
-      ResourceController.routes,
-      ClientController.routes,
-      AuthorizationPresetController.routes,
-      ScopeController.routes,
-      AuthorizationDetailTypeController.routes,
-      RoleController.routes,
-      EdgeController.routes,
-      FormController.routes,
-      LocaleController.routes,
-      ThemeController.routes,
-      OtpChallengeController.routes,
-      SystemSettingsController.routes,
-      UserController.routes,
-      JwksController.routes,
-      ServerMetadataController.routes,
-      ServiceController.routes,
-    ).reduce(_ ++ _)
+      TenantController.endpoints,
+      PermissionController.endpoints,
+      ResourceController.endpoints,
+      ClientController.endpoints,
+      ClientEstController.endpoints,
+      AuthorizationPresetController.endpoints,
+      ScopeController.endpoints,
+      AuthorizationDetailTypeController.endpoints,
+      RoleController.endpoints,
+      EdgeController.endpoints,
+      FormController.endpoints,
+      LocaleController.endpoints,
+      ThemeController.endpoints,
+      OtpChallengeController.endpoints,
+      SystemSettingsController.endpoints,
+      DeliverySettingsController.endpoints,
+      UserController.endpoints,
+      AntifraudListController.endpoints,
+      AntifraudSettingsController.endpoints,
+      AntifraudCountersController.endpoints,
+      AntifraudStatusController.endpoints,
+      JwksController.endpoints,
+      ServerMetadataController.endpoints,
+      ServiceController.endpoints,
+    ).flatten
+
+  /** The one route an edge reaches before it has a certificate (`POST /edge/enroll`), on the additional listener
+    * (`APORT`): plain HTTP meant to sit behind the TLS terminator of the public name for central, which makes it the
+    * public one of central's three ports (`PORT` is internal, `MPORT` is the edges' mutual TLS). Nothing else is
+    * served there.
+    *
+    * Only where `APORT` is set. Unlike auth, which has always served its additional listener on the default, central
+    * has none unless asked: binding 8082 by default would take a port another service uses on a host where central
+    * and auth share the network (vps), and an edge that is not remote has no use for enrollment at all. */
+  override def additionalRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
+    Option.when(JavaSystem.getenv("APORT") != null)(EdgeEnrollController.routes)
+
+  /** The edge surface, on its own mutual-TLS listener and not on the main one: an edge is
+    * authenticated by the certificate it presents in the handshake as well as by its token. */
+  override def mutualTlsRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
+    Some(EdgeSyncController.routes)
+
+  /** `ClientAuth.Required` for the reasons given on `PostgresOAuthApp.mutualTlsServerConfig`:
+    * `Optional` with `includeClientCert` drops the connection of a client that sends no
+    * certificate, and no edge route is reachable without one anyway. */
+  override def mutualTlsServerConfig: ZIO[Dependencies, Throwable, Option[Server.Config]] =
+    ZIO.serviceWith[CentralConfig](
+      _.mutualTls.map(mtls =>
+        Server.Config.default.binding(mutualTlsBindHost, mutualTlsPort).ssl(
+          SSLConfig.fromFile(
+            behaviour = SSLConfig.HttpBehaviour.Fail,
+            certPath = mtls.certificate,
+            keyPath = mtls.privateKey,
+            clientAuth = Some(ClientAuth.Required),
+            trustCertCollectionPath = Some(mtls.trustedCertificates),
+            includeClientCert = true,
+          ),
+        ),
+      ),
+    )
 
   private val repositories =
     PostgresHikariDataSource.transactor(serviceName = Some("central"), migrate = runMigrations) >++>
@@ -161,26 +273,53 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresOAuthClientRepository.live >++>
           PostgresClientCertificateIssuanceRepository.live >++>
           PostgresEdgeCertificateEnrollmentRepository.live >++>
+          PostgresClientEstRepository.live >++>
           PostgresAuthorizationPresetRepository.live >++>
           PostgresOAuthScopeRepository.live >++>
           PostgresAuthorizationDetailTypeRepository.live >++>
           PostgresRoleRepository.live >++>
           PostgresEdgeRepository.live >++>
+          PostgresEdgeGroupRepository.live >++>
+          PostgresEdgeEnrollmentTokenRepository.live >++>
+          PostgresEdgeIdentityChainRepository.live >++>
+          PostgresEdgeCertificateRepository.live >++>
           PostgresFormRepository.live >++>
           PostgresLocaleRepository.live >++>
           PostgresThemeRepository.live >++>
           PostgresOtpChallengeRepository.live >++>
           PostgresChallengeSettingsRepository.live >++>
           PostgresSystemSettingsRepository.live >++>
+          PostgresDeliverySettingsRepository.live >++>
           PostgresCacheSyncRepository.live >++>
           PostgresJwksRepository.live >++>
           PostgresServerMetadataRepository.live >++>
+          PostgresAuditEventRepository.live >++>
           PostgresUserRepository.live
       )
+
+  /** This process in the audit log: its host, which is what tells the instances of a deployment apart, and a part that is its own
+    * (a host can run more than one). */
+  private val nodeId: String =
+    val host = Try(InetAddress.getLocalHost.getHostName).getOrElse("central")
+    s"$host-${UUID.randomUUID().toString.take(8)}"
+
+  /** The audit log's writer (#469): it makes the partitions of `central_audit_event` and writes the events the services record, and writes
+    * what is queued once more when its scope closes. It is built on the transactor and the repository, before everything that records:
+    * bootstrap does. */
+  private[versola] def auditWriter(
+      sizing: AuditEvents.Sizing = AuditEvents.Sizing.standard,
+  ): ZLayer[AuditEventRepository & AuditEvents.Settings & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
+    AuditEvents.liveWith(sizing)(CentralAudit.Source, nodeId, CentralAudit.catalog, CentralAudit.Table)
+
+  /** The audit log: its settings from the `audit` block of the config, and the writer. */
+  private val auditEvents
+      : ZLayer[CentralConfig & AuditEventRepository & Tracing & SecureRandom & Scope, Nothing, AuditEvents.Settings & AuditEvents] =
+    ZLayer.fromFunction((config: CentralConfig) => config.audit.settings) >++> auditWriter()
 
   override val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     parseConfig[CentralConfig] >++>
       repositories >++>
+      auditEvents >++>
       SecurityService.live >++>
       CelEvaluator.live >++>
       JsonSchemaValidator.live >++>
@@ -191,7 +330,9 @@ object PostgresCentralApp extends VersolaApp("central"):
       ClientCertificateAuthority.live >++>
       OAuthClientService.live >++>
       ClientCertificateIssuer.live >++>
+      EdgeCertificateIssuer.live >++>
       ClientCertificateService.live >++>
+      ClientEstService.live >++>
       BootstrapService.live >++>
       TenantService.live >++>
       PermissionService.live >++>
@@ -202,15 +343,23 @@ object PostgresCentralApp extends VersolaApp("central"):
       AuthorizationDetailTypeService.live >++>
       RoleService.live >++>
       EdgeService.live >++>
+      EdgeGroupService.live >++>
+      EdgeIdentityService.live >++>
       LocaleCompletenessValidator.live >++> LocaleService.live >++>
       JwksService.live >++>
       FormService.live >++>
       ThemeService.live >++>
       OtpChallengeService.live >++>
       SystemSettingsService.live >++>
+      DeliverySettingsService.live >++>
       CacheSyncService.live >++>
       AuthClient.live >++>
+      AuditReportService.live >++>
       UserService.live >++>
+      AntifraudListService.live >++>
+      AntifraudSettingsService.live >++>
+      AntifraudCountersService.live >++>
+      AntifraudStatusService.live >++>
       UserOutboxProcessor.live >++>
       // Renews the certificates central issued, for as long as it runs. A no-op where
       // `client-certificates` is not configured.
@@ -218,6 +367,15 @@ object PostgresCentralApp extends VersolaApp("central"):
 
   given DeriveConfig[Secret] = DeriveConfig[String]
     .mapOrFail(SecretConfig.secret)
+
+  given DeriveConfig[AuditEvents.Overflow] = DeriveConfig[String]
+    .mapOrFail(name =>
+      AuditEvents.Overflow.values.find(_.toString == name)
+        .toRight(zio.Config.Error.InvalidData(message = s"audit.overflow is 'block' or 'drop', not '$name'")),
+    )
+
+  given DeriveConfig[CentralConfig.AuditConfig] =
+    DeriveConfig.derived[CentralConfig.AuditConfig].mapOrFail(CentralConfig.AuditConfig.validated)
 
   given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
     .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))

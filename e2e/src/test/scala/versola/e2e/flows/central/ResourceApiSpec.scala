@@ -171,7 +171,7 @@ object ResourceApiSpec extends CentralApiSpec:
         central <- api
         rejected <- central.post(path, Fixtures.resource("edge", "https://edge-impostor.test"))
       yield assertTrue(rejected.status == Status.BadRequest) &&
-        assertTrue(rejected.body.contains("ReservedResourceId"))
+        assertTrue(rejected.body.isEmpty)
           .label("`resource://edge` is the edge's own audience; a resource claiming it could borrow edge tokens")
     },
     test("a resource id outside the documented alphabet is refused") {
@@ -202,9 +202,8 @@ object ResourceApiSpec extends CentralApiSpec:
         )
         _ <- cleanup(central, id)
       yield assertTrue(rejected.status == Status.BadRequest) &&
-        assertTrue(rejected.body.contains("InvalidEndpointPath")) &&
-        assertTrue(rejected.body.contains(endpointId))
-          .label("the error has to identify which endpoint of the submitted set is at fault")
+        assertTrue(rejected.body.isEmpty)
+          .label("refused with no body; which endpoint is at fault is in central's log and in ResourceServiceSpec")
     },
     test("an allow expression that does not compile is refused") {
       for
@@ -222,10 +221,10 @@ object ResourceApiSpec extends CentralApiSpec:
         )
         _ <- cleanup(central, id)
       yield assertTrue(rejected.status == Status.BadRequest) &&
-        assertTrue(rejected.body.contains("InvalidAllowExpression"))
+        assertTrue(rejected.body.isEmpty)
           .label("an uncompilable rule is evaluated as a denial at runtime, locking the endpoint out silently")
     },
-    test("the rejection of an allow expression explains where it broke") {
+    test("the rejection of an allow expression has no body: where it broke is in central's log") {
       for
         central <- api
         ids <- resourceId
@@ -236,9 +235,7 @@ object ResourceApiSpec extends CentralApiSpec:
           Fixtures.resource(id, uri, endpoints = List(Fixtures.endpoint(endpointId, allow = Some("token.sub =")))),
         )
         _ <- cleanup(central, id)
-      yield assertTrue(rejected.body.contains("ERROR")) &&
-        assertTrue(rejected.body.contains(endpointId))
-          .label("an operator writing CEL in a form field needs the compiler's message, not a generic 400")
+      yield assertTrue(rejected.status == Status.BadRequest, rejected.body.isEmpty)
     },
     test("an inject expression that does not compile is refused") {
       for
@@ -258,9 +255,7 @@ object ResourceApiSpec extends CentralApiSpec:
         )
         _ <- cleanup(central, id)
       yield assertTrue(rejected.status == Status.BadRequest) &&
-        assertTrue(rejected.body.contains("InvalidInjectExpression")) &&
-        assertTrue(rejected.body.contains("X-Subject"))
-          .label("the rule name has to be reported: an endpoint may carry several inject rules")
+        assertTrue(rejected.body.isEmpty)
     },
     test("a step-up condition that does not compile is refused") {
       for
@@ -274,7 +269,7 @@ object ResourceApiSpec extends CentralApiSpec:
         )
         _ <- cleanup(central, id)
       yield assertTrue(rejected.status == Status.BadRequest) &&
-        assertTrue(rejected.body.contains("InvalidStepUpConditionExpression"))
+        assertTrue(rejected.body.isEmpty)
     },
     test("two endpoints that differ only in their path parameter names are refused") {
       for
@@ -296,7 +291,7 @@ object ResourceApiSpec extends CentralApiSpec:
         )
         _ <- cleanup(central, id)
       yield assertTrue(rejected.status == Status.BadRequest) &&
-        assertTrue(rejected.body.contains("AmbiguousEndpointPath"))
+        assertTrue(rejected.body.isEmpty)
           .label("both match the same requests, so which rules apply would come down to storage order")
     },
     test("the same path under different methods is not ambiguous") {

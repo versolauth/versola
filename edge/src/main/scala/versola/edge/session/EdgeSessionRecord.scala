@@ -15,4 +15,14 @@ case class EdgeSessionRecord(
     accessTokenId: AccessTokenId,
     encryptedRefreshToken: Option[Secret],
     expiresAt: Instant,
+    /** The `accessTokenId` this row had before its last rotation. Set by the repository on rotation
+      * and read-only for callers: whatever is passed to `create` is ignored.
+      */
+    previousAccessTokenId: Option[AccessTokenId],
+    /** The current access token, sealed like the refresh token, so a request that lost a refresh race
+      * can be handed the winner's token instead of presenting the refresh token a second time.
+      */
+    encryptedAccessToken: Option[Secret],
+    /** When this row last changed its `accessTokenId`; read-only like `previousAccessTokenId`. */
+    rotatedAt: Option[Instant],
 )

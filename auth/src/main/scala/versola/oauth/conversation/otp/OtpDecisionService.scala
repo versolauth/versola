@@ -11,6 +11,7 @@ trait OtpDecisionService:
       previous: Option[ConversationStep.Otp],
       userId: Option[UserId],
       isRegistering: Boolean,
+      forceFake: Boolean,
   ): UIO[SendOtpResult]
 
 object OtpDecisionService:
@@ -20,9 +21,14 @@ object OtpDecisionService:
         previous: Option[ConversationStep.Otp],
         userId: Option[UserId],
         isRegistering: Boolean,
+        forceFake: Boolean,
     ): UIO[SendOtpResult] =
       ZIO.succeed:
         previous match
+          // The antifraud decision was `Fake`: answered like a send, nothing is sent.
+          case _ if forceFake =>
+            SendOtpResult.Success(fake = true)
+
           case Some(previous) if previous.isFake =>
             SendOtpResult.Success(fake = true)
 

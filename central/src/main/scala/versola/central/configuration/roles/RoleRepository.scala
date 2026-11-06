@@ -20,6 +20,7 @@ trait RoleRepository extends CacheSource[Vector[RoleRecord]]:
       id: RoleId,
       description: Map[String, String],
       permissions: List[Permission],
+      active: Boolean,
   ): Task[Unit]
 
   /** Upserts a role: inserts it if absent, otherwise updates description and permissions.
@@ -32,11 +33,13 @@ trait RoleRepository extends CacheSource[Vector[RoleRecord]]:
       permissions: List[Permission],
   ): Task[Unit]
 
+  /** Patches a role: `active` left `None` keeps the stored flag. */
   def updateRole(
       tenantId: TenantId,
       id: RoleId,
       description: PatchDescription,
       permissions: PatchPermissions,
+      active: Option[Boolean],
   ): Task[Unit]
 
   def markRoleInactive(

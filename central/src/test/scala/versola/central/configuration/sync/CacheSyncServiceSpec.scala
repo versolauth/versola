@@ -2,6 +2,7 @@ package versola.central.configuration.sync
 
 import versola.central.configuration.challenges.{ChallengeSettingsService, OtpChallengeService, OtpTemplateChannel, OtpTemplatePurpose}
 import versola.central.configuration.clients.{AuthorizationPresetService, OAuthClientService, PresetId}
+import versola.central.configuration.delivery.DeliverySettingsService
 import versola.central.configuration.details.AuthorizationDetailTypeService
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.forms.{FormId, FormService}
@@ -37,6 +38,7 @@ object CacheSyncServiceSpec extends UnitSpecBase:
     val otpChallengeService = stub[OtpChallengeService]
     val challengeSettingsService = stub[ChallengeSettingsService]
     val systemSettingsService = stub[SystemSettingsService]
+    val deliverySettingsService = stub[DeliverySettingsService]
     val jwksService = stub[JwksService]
     val themeService = stub[ThemeService]
     val serverMetadataService = stub[ServerMetadataService]
@@ -55,6 +57,7 @@ object CacheSyncServiceSpec extends UnitSpecBase:
       otpChallengeService,
       challengeSettingsService,
       systemSettingsService,
+      deliverySettingsService,
       jwksService,
       themeService,
       serverMetadataService,
@@ -122,6 +125,13 @@ object CacheSyncServiceSpec extends UnitSpecBase:
         _ <- (() => env.systemSettingsService.sync()).succeedsWith(())
         _ <- env.service.sync()
       yield assertTrue((() => env.systemSettingsService.sync()).calls.nonEmpty)
+    },
+    test("routes DeliverySettingsUpdated to DeliverySettingsService.sync") {
+      val env = Env(SyncEvent.DeliverySettingsUpdated)
+      for
+        _ <- (() => env.deliverySettingsService.sync()).succeedsWith(())
+        _ <- env.service.sync()
+      yield assertTrue((() => env.deliverySettingsService.sync()).calls.nonEmpty)
     },
     test("routes RolesUpdated to RoleService.sync") {
       val event = SyncEvent.RolesUpdated(TenantId("t1"), RoleId("r1"), SyncEvent.Op.UPDATE)

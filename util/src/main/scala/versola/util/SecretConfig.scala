@@ -37,5 +37,15 @@ object SecretConfig:
   def rsaPrivateKey(raw: String): Either[Config.Error.InvalidData, PrivateKey] =
     PrivateKeyUtil.parse(raw, "RSA").left.map(_ => invalid("not a base64-encoded PKCS#8 RSA private key"))
 
+  /** A base64-encoded (standard alphabet) PKCS#8 private key that auth signs tokens with: RSA (a deployment
+    * generated before ES256 became the default) or EC (what `gen-env` generates now). The key factory is
+    * chosen by trying RSA, then EC, the way `JwksSyncClient` reads the keys central supplies. The curve is
+    * not checked here; a key that is not P-256 never matches an `ES256` JWKS entry, so it is not used.
+    */
+  def signingPrivateKey(raw: String): Either[Config.Error.InvalidData, PrivateKey] =
+    PrivateKeyUtil.parse(raw, "RSA")
+      .orElse(PrivateKeyUtil.parse(raw, "EC"))
+      .left.map(_ => invalid("not a base64-encoded PKCS#8 RSA or EC private key"))
+
   private def invalid(reason: String): Config.Error.InvalidData =
     Config.Error.InvalidData(message = reason)

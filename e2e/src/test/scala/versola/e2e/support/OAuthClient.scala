@@ -175,6 +175,8 @@ object UserinfoResult:
       givenName: Option[String],
       familyName: Option[String],
       phoneNumber: Option[String],
+      emailVerified: Option[Boolean],
+      phoneVerified: Option[Boolean],
   ) extends UserinfoResult
 
   case class Failure(response: Response, body: String) extends UserinfoResult
@@ -186,6 +188,8 @@ object UserinfoResult:
       @jsonField("given_name") givenName: Option[String],
       @jsonField("family_name") familyName: Option[String],
       @jsonField("phone_number") phoneNumber: Option[String],
+      @jsonField("email_verified") emailVerified: Option[Boolean],
+      @jsonField("phone_number_verified") phoneVerified: Option[Boolean],
   ) derives JsonDecoder
 
   def parse(response: Response): Task[UserinfoResult] =
@@ -195,7 +199,9 @@ object UserinfoResult:
           err => ZIO.succeed(Failure(response, s"JSON parse error [$err] body=$body")),
           raw =>
             ZIO.attempt(java.util.UUID.fromString(raw.sub))
-              .map(uuid => Success(response, uuid, raw.email, raw.name, raw.givenName, raw.familyName, raw.phoneNumber))
+              .map(uuid =>
+                Success(response, uuid, raw.email, raw.name, raw.givenName, raw.familyName, raw.phoneNumber, raw.emailVerified, raw.phoneVerified),
+              )
               .orElse(ZIO.succeed(Failure(response, s"sub is not a valid UUID: ${raw.sub}"))),
         )
       else ZIO.succeed(Failure(response, body))
@@ -212,7 +218,7 @@ sealed trait IntrospectResult:
       ZIO.fail(RuntimeException(s"Expected introspect success but got: status=${resp.status} body=$body"))
 
 object IntrospectResult:
-  case class Success(response: Response, active: Boolean, cnf: Option[Json.Obj] = None) extends IntrospectResult
+  case class Success(response: Response, active: Boolean, cnf: Option[Json.Obj]) extends IntrospectResult
   case class Failure(response: Response, body: String) extends IntrospectResult
 
   private case class Raw(active: Boolean, cnf: Option[Json.Obj]) derives JsonDecoder
@@ -520,6 +526,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       authorizationDetails: Option[String] = None,
       /** OIDC Core §5.5: the raw JSON value of the `claims` request parameter. */
       claims: Option[String] = None,
+      /** The `User-Agent` header the browser would send; auth stores it, parsed, with the user agent
+        * the sign-in creates. None sends the HTTP client's own. */
+      userAgent: Option[String] = None,
   ): Task[AuthorizeResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
     val effectiveRedirectUri = redirectUri.getOrElse(config.redirectUri)
@@ -536,7 +545,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
         "code_challenge" -> challenge,
         "code_challenge_method" -> "S256",
       ) ++ authorizationDetails.map("authorization_details" -> _) ++ claims.map("claims" -> _))
-      response <- Client.batched(Request.get(url)).provide(ZLayer.succeed(client))
+      request = userAgent.fold(Request.get(url))(ua => Request.get(url).addHeader(Header.Custom("User-Agent", ua)))
+      response <- Client.batched(request).provide(ZLayer.succeed(client))
       cookie <- ZIO.fromOption(OAuthClient.extractConversationCookie(response))
         .orElseFail(new RuntimeException(
           s"No SSO_CONVERSATION cookie in /authorize response (status=${response.status})",
@@ -578,6 +588,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
         * `"query.jwt"`, `"fragment.jwt"`.
         */
       responseMode: Option[String] = None,
+      /** The address the tenant's IP header (`X-Forwarded-For`) carries, which the antifraud rules key on. */
+      ip: Option[String] = None,
   ): Task[AuthorizeResult] =
     val (verifier, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
@@ -609,7 +621,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
           "request_uri" -> Some(uri),
         ),
       ).collect { case (k, Some(v)) => k -> v }
-      req = Request.get(base.addQueryParams(params))
+      req = ip.fold(Request.get(base.addQueryParams(params)))(address =>
+        Request.get(base.addQueryParams(params)).addHeader(Header.Custom("X-Forwarded-For", address)),
+      )
       reqWithSession = sessionCookie.fold(req)(sc =>
         req.addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_SESSION", sc)))),
       )
@@ -630,6 +644,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** RFC 7523 §2.2: what a caller that registered a key set authenticates with instead of
         * a secret and Basic, neither of which are then sent. */
       assertion: Option[String] = None,
+      /** RFC 9449 §10.1: a proof sent to `/par`, which binds the authorization code to its key. */
+      dpop: Option[DpopProver] = None,
   ): Task[PushedAuthorizationResult] =
     val (verifier, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
@@ -652,7 +668,15 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val req0 = Request.post(s"${config.authUrl}/par", formBody(formParams))
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
     val req = if useBasicAuth && assertion.isEmpty then req0.addHeader(Authorization.Basic(clientId, clientSecret)) else req0
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(PushedAuthorizationResult.parse(_, verifier, state))
+    for
+      // The issuer is what auth compares `htu` against, not the inbound request's own URL.
+      proofed <- dpop.fold(ZIO.succeed(req))(prover =>
+        prover.proof(Method.POST, s"${config.authUrl}/par")
+          .map(proof => req.addHeader(Header.Custom("DPoP", proof))),
+      )
+      result <- Client.batched(proofed).provide(ZLayer.succeed(client))
+        .flatMap(PushedAuthorizationResult.parse(_, verifier, state))
+    yield result
 
   /** Issues an arbitrary HTTP method against /par — used to test method-not-allowed handling. */
   def parRaw(method: Method): Task[Response] =
@@ -660,9 +684,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
     Client.batched(req).provide(ZLayer.succeed(client))
 
   /** GET /challenge — fetches the current challenge form HTML and parses the step meta tag. */
-  def getChallenge(cookie: String): Task[ChallengeResult] =
+  /** GET /challenge. `uiLocale` is the `ui_locale` the redirect from the previous submit carried. */
+  def getChallenge(cookie: String, uiLocale: Option[String] = None): Task[ChallengeResult] =
     Client.batched(
-      Request.get(s"${config.authUrl}/challenge")
+      Request.get(s"${config.authUrl}/challenge${uiLocale.fold("")(l => s"?ui_locale=${encode(l)}")}")
         .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_CONVERSATION", cookie)))),
     ).provide(ZLayer.succeed(client))
       .flatMap(resp => resp.body.asString.map(ChallengeResult(resp, _)))
@@ -672,14 +697,30 @@ final class OAuthClient(client: Client, config: E2EConfig):
     formPost(s"${config.authUrl}/challenge/email", Map("email" -> email, "csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
-  /** POST /challenge/phone — submits a phone credential to start the OTP flow. */
-  def submitPhone(cookie: String, phone: String, csrf: String): Task[SubmitResult] =
-    formPost(s"${config.authUrl}/challenge/phone", Map("phone" -> phone, "csrf" -> csrf), cookie)
+  /** POST /challenge/phone — submits a phone credential to start the OTP flow. `ip` is sent in the header the
+    * suite's tenant reads the client's address from (`X-Forwarded-For`, see [[upsertChallengeSettings]]), which the
+    * antifraud rules key on. */
+  def submitPhone(cookie: String, phone: String, csrf: String, ip: Option[String] = None): Task[SubmitResult] =
+    submitPhoneWith(cookie, phone, csrf, ip, Map.empty)
+
+  /** [[submitPhone]] with more form fields: what a page that can answer a challenge adds (`proof_inline`, `proof_token`, `proof_solution`). */
+  def submitPhoneWith(cookie: String, phone: String, csrf: String, ip: Option[String], extra: Map[String, String]): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/phone", Map("phone" -> phone, "csrf" -> csrf) ++ extra, cookie, ip.map("X-Forwarded-For" -> _).toList)
+      .map(SubmitResult(_))
+
+  /** POST /challenge/otp/resend, with the fields of [[submitPhoneWith]]. */
+  def submitOtpResendWith(cookie: String, csrf: String, ip: Option[String], extra: Map[String, String]): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/otp/resend", Map("csrf" -> csrf) ++ extra, cookie, ip.map("X-Forwarded-For" -> _).toList)
       .map(SubmitResult(_))
 
   /** POST /challenge/otp — submits an OTP code (always "123456" in non-prod). */
   def submitOtp(cookie: String, code: String, csrf: String): Task[SubmitResult] =
     formPost(s"${config.authUrl}/challenge/otp", Map("code" -> code, "csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
+
+  /** POST /challenge/password — submits the password of a user the conversation already knows. */
+  def submitPassword(cookie: String, password: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/password", Map("password" -> password, "csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
   /** POST /challenge/set-password — submits a new password when the conversation requires it. */
@@ -701,6 +742,13 @@ final class OAuthClient(client: Client, config: E2EConfig):
     formPost(s"${config.authUrl}/challenge/passkey", Map("response" -> response, "csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
+  /** POST /challenge/passkey/unavailable — what the passkey-only form sends when the browser
+    * could not produce a passkey.
+    */
+  def submitPasskeyUnavailable(cookie: String, csrf: String): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/passkey/unavailable", Map("csrf" -> csrf), cookie)
+      .map(SubmitResult(_))
+
   /** POST /challenge/login-password — submits login + password in a single step. */
   def submitLoginPassword(cookie: String, login: String, password: String, csrf: String): Task[SubmitResult] =
     formPost(
@@ -717,9 +765,11 @@ final class OAuthClient(client: Client, config: E2EConfig):
       cookie,
     ).map(SubmitResult(_))
 
-  /** POST /challenge/consent/deny — refuses the grant. */
-  def denyConsent(cookie: String, csrf: String): Task[SubmitResult] =
-    formPost(s"${config.authUrl}/challenge/consent/deny", Map("csrf" -> csrf), cookie)
+  /** POST /challenge/consent/deny — refuses the grant. `uiLocale` is the language the user
+    * switched the form to, which the form sends as the `ui_locale` query parameter.
+    */
+  def denyConsent(cookie: String, csrf: String, uiLocale: Option[String] = None): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/consent/deny${uiLocale.fold("")(l => s"?ui_locale=${encode(l)}")}", Map("csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
   /** POST /token — exchanges authorization code for tokens.
@@ -1126,7 +1176,6 @@ final class OAuthClient(client: Client, config: E2EConfig):
       tenantId: String = Fixtures.suiteTenant,
       allowedScopes: Set[String] = Set("openid"),
       authFlow: Option[zio.json.ast.Json] = None,
-      registrationFlow: Option[zio.json.ast.Json] = None,
       consentFlow: Option[zio.json.ast.Json] = None,
       backChannelLogoutUri: Option[String] = None,
       authMethod: String = "client_secret",
@@ -1193,7 +1242,6 @@ final class OAuthClient(client: Client, config: E2EConfig):
       refreshTokenTtl = refreshTokenTtl,
       theme = "default",
       authFlow = authFlow,
-      registrationFlow = registrationFlow,
       consentFlow = consentFlow,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
@@ -1214,12 +1262,41 @@ final class OAuthClient(client: Client, config: E2EConfig):
       applicationType = applicationType,
       issueEdgeClientCertificate = issueEdgeClientCertificate,
       enrollEdgeClientCertificate = enrollEdgeClientCertificate,
+      estEnrollment = false,
     ).toJson
     val (kindPath, typed) = ClientEndpoints.registration(flat.fromJson[Json.Obj].getOrElse(Json.Obj()))
     val req = Request.post(s"${config.centralUrl}$kindPath", Body.fromString(typed.toJson))
       .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterClientResult.parse)
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterClientResult.parse).tap:
+      case _: RegisterClientResult.Success => redirectUris.headOption.fold(ZIO.unit)(awaitKnownToAuth(clientId, _))
+      case _: RegisterClientResult.Failure => ZIO.unit
+
+  /** Waits until auth serves the client that central has just registered.
+    *
+    * Registration writes central's database only. Auth learns of the client when it reloads from
+    * central's configuration cache, and central refreshes that cache from a Postgres notification,
+    * so a reload that runs before the notification is processed misses the client and `/token`
+    * answers `invalid_client` for it. `/token` cannot tell the two cases apart (its answer is the
+    * same for an unknown client and for wrong credentials), but `/authorize` can: an unknown client
+    * is a `400` with no redirect, a known one always redirects (to the challenge, or to the
+    * registered redirect URI with an error). What is awaited is that redirect, so no credentials
+    * are needed and no token is issued. Each attempt asks auth to reload again, because a reload
+    * that ran too early is not repeated on its own. Bounded at ten seconds; on a timeout the
+    * registration still succeeds and the spec's own assertion reports the missing client. */
+  private def awaitKnownToAuth(clientId: String, redirectUri: String): Task[Unit] =
+    val probe =
+      for
+        _ <- syncConfiguration()
+        result <- authorizeRaw(clientId, redirectUri)
+        _ <- ZIO.fail(RuntimeException(s"auth does not serve client $clientId yet"))
+          .unless(result.response.status.isRedirection)
+      yield ()
+    probe.retry(Schedule.spaced(100.millis) && Schedule.recurs(100))
+      .timeout(10.seconds)
+      .withClock(Clock.ClockLive)
+      .unit
+      .orElse(ZIO.unit)
 
   /** PUT /configuration/clients — patches a registered client through the Central API.
     *
@@ -1261,6 +1338,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
         "audience" -> Json.Arr(Chunk.fromIterable(audience.map(Json.Str(_)))),
         "endpoints" -> Json.Arr(),
         "internal" -> Json.Bool(internal),
+        "audienceRateLimits" -> Json.Arr(),
       ).toJson,
     )
     val req = Request.post(s"${config.centralUrl}/configuration/resources", body)
@@ -1401,6 +1479,24 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** The JWKS key this tenant's tokens are signed with. `None` clears the selection,
         * which puts the tenant back on auth's own configured private key. */
       signingKeyId: Option[String] = None,
+      /** The tenant's accepted phone regions as a JSON array; `[]` accepts any E.164 number for sign-in
+        * and lets none register. The default is the German mobiles the suite's users have, with
+        * registration on, because registering a phone number is the country's say. */
+      phoneRegions: String = OAuthClient.germanMobileRegion,
+      /** The tenant's email self-registration policy as a JSON object. The default is `open` with
+        * no blocked domain, so the suite's flows keep registering unknown addresses. */
+      emailRegistration: String = OAuthClient.openEmailRegistration,
+      /** The role ids a self-registered account gets, as a JSON array; central wants at least one. */
+      defaultRoles: String = """["user"]""",
+      /** The tenant's logo for the light and the dark colour scheme. Sent as null when `None`, which clears the
+        * stored file (central keeps what an omitted field says), so every call leaves the tenant on exactly
+        * these two. Central takes both or neither. */
+      logoLight: Option[String] = None,
+      logoDark: Option[String] = None,
+      /** The tenant's limits on codes asked for one credential, as a JSON array of `{"maxAttempts", "windowSeconds"}`.
+        * None (the default) is no limit, and then nothing is recorded; a limit too high to be reached is what a spec that
+        * counts the steps of it wants. */
+      otpRequestLimits: String = "[]",
   ): Task[Unit] =
     val vocabJson =
       if acrVocabulary.isEmpty then "null"
@@ -1411,8 +1507,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val bodyStr =
       s"""{
          |  "tenantId": "$tenantId",
-         |  "allowedPrefixes": [],
-         |  "submissionLimits": {"otpRequest":[],"otpSubmit":[],"passwordSubmit":[],"passkeyAssertion":[],"banDurationSeconds":0},
+         |  "phoneRegions": $phoneRegions,
+         |  "emailRegistration": $emailRegistration,
+         |  "defaultRoles": $defaultRoles,
+         |  "submissionLimits": {"otpRequest":$otpRequestLimits,"otpSubmit":[],"passwordSubmit":[],"passkeyAssertion":[],"banDurationSeconds":0},
          |  "otpLength": 6,
          |  "otpResendAfter": 60,
          |  "passkeySettings": {"rpId":"localhost","rpName":"Versola","origins":["http://localhost:3000"],"userVerification":"preferred"},
@@ -1420,7 +1518,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
          |  "acrVocabulary": $vocabJson,
          |  "mtlsCertificateHeader": ${mtlsCertificateHeader.fold("null")(h => s"\"$h\"")},
          |  "mtlsCertificateEncoding": ${mtlsCertificateEncoding.fold("null")(e => s"\"$e\"")},
-         |  "signingKeyId": ${signingKeyId.fold("null")(k => s"\"$k\"")}
+         |  "signingKeyId": ${signingKeyId.fold("null")(k => s"\"$k\"")},
+         |  "logoLight": ${logoLight.fold("null")(url => s"\"$url\"")},
+         |  "logoDark": ${logoDark.fold("null")(url => s"\"$url\"")}
          |}""".stripMargin
     val req = Request.put(s"${config.centralUrl}/configuration/challenges/challenge-settings", Body.fromString(bodyStr))
       .addHeader(centralAuthorization)
@@ -1653,6 +1753,24 @@ final class OAuthClient(client: Client, config: E2EConfig):
       accessToken,
     )
 
+  /** PATCH /resources/auth/settings/password — changes the caller's password through edge. */
+  def edgeChangePassword(
+      accessToken: Option[String],
+      currentPassword: String,
+      newPassword: String,
+  ): Task[AccountResult] =
+    edgeAccountRequest(
+      Method.PATCH,
+      "/settings/password",
+      Some(
+        Json.Obj(
+          "currentPassword" -> Json.Str(currentPassword),
+          "newPassword" -> Json.Str(newPassword),
+        ),
+      ),
+      accessToken,
+    )
+
   /** POST /resources/auth/settings/passkeys/register/start — obtains creation options plus the ticket. */
   def edgeStartPasskeyEnrollment(accessToken: Option[String]): Task[AccountResult] =
     edgeAccountRequest(Method.POST, "/settings/passkeys/register/start", Some(Json.Obj()), accessToken)
@@ -1702,6 +1820,40 @@ final class OAuthClient(client: Client, config: E2EConfig):
   val authBaseUrl: String = config.authUrl
 
   /** Auth's diagnostics base URL (`DPORT`) -- `/metrics`, `/liveness`, `/readiness`. */
+  /** The service token central presents to auth on its internal calls, minted from the `central.secret-key` auth's own config holds: the
+    * key the two share, which is how a spec reaches an endpoint that only central is meant to call. */
+  private def internalToken(key: Array[Byte]): Task[String] =
+    ZIO.attemptBlocking:
+      val claims = com.nimbusds.jwt.JWTClaimsSet.Builder()
+        .jwtID(java.util.UUID.randomUUID().toString).issuer("central").subject("central").audience("auth")
+        .expirationTime(java.util.Date.from(java.time.Instant.now.plusSeconds(600)))
+        .build()
+      val jwt = SignedJWT(
+        com.nimbusds.jose.JWSHeader.Builder(com.nimbusds.jose.JWSAlgorithm.HS256).`type`(com.nimbusds.jose.JOSEObjectType.JWT).build(),
+        claims,
+      )
+      jwt.sign(com.nimbusds.jose.crypto.MACSigner(key))
+      jwt.serialize()
+
+  private lazy val authSharedKey: Task[Array[Byte]] =
+    ZIO.attemptBlocking:
+      val conf = com.typesafe.config.ConfigFactory.parseFile(java.io.File(config.authEnvConf)).resolve()
+      java.util.Base64.getUrlDecoder.decode(conf.getString("central.secret-key"))
+
+  /** GET `path` (with its query) on auth's internal audit endpoints, as central would call them. `Authenticated.No` sends no token and
+    * `Authenticated.WrongKey` one signed with a key auth does not hold. */
+  def auditGet(path: String, authenticated: OAuthClient.Authenticated = OAuthClient.Authenticated.Yes): Task[Response] =
+    for
+      key <- authSharedKey
+      token <- authenticated match
+        case OAuthClient.Authenticated.Yes => internalToken(key).asSome
+        case OAuthClient.Authenticated.WrongKey => internalToken(Array.fill(32)(99.toByte)).asSome
+        case OAuthClient.Authenticated.No => ZIO.none
+      url <- ZIO.fromEither(URL.decode(s"${config.authUrl}$path")).mapError(RuntimeException(_))
+      request = Request(method = Method.GET, url = url)
+      response <- Client.batched(token.fold(request)(t => request.addHeader(Authorization.Bearer(t)))).provide(ZLayer.succeed(client))
+    yield response
+
   val authDiagnosticsBaseUrl: String = config.authDiagnosticsUrl
 
   /** Issues an unauthenticated request at an arbitrary URL, so tests can check that an
@@ -1768,10 +1920,12 @@ final class OAuthClient(client: Client, config: E2EConfig):
 
   // ── helpers ────────────────────────────────────────────────────────────────
 
-  private def formPost(url: String, fields: Map[String, String], cookie: String): Task[Response] =
-    val req = Request.post(url, formBody(fields))
-      .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_CONVERSATION", cookie))))
-      .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+  private def formPost(url: String, fields: Map[String, String], cookie: String, headers: List[(String, String)] = Nil): Task[Response] =
+    val req = headers.foldLeft(
+      Request.post(url, formBody(fields))
+        .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_CONVERSATION", cookie))))
+        .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`)),
+    ) { case (request, (name, value)) => request.addHeader(Header.Custom(name, value)) }
     Client.batched(req).provide(ZLayer.succeed(client))
 
   private def formBody(fields: Map[String, String]): Body =
@@ -1782,6 +1936,25 @@ final class OAuthClient(client: Client, config: E2EConfig):
     java.net.URLEncoder.encode(s, "UTF-8")
 
 object OAuthClient:
+
+  /** Whether, and how, a call to an internal endpoint authenticates. */
+  enum Authenticated:
+    case Yes, No, WrongKey
+
+  /** `+49` and eleven digits starting 15, 16 or 17: the numbers the suite's users are given. */
+  val germanMobileRegion: String =
+    """[{"region":"DE","dialCode":"+49","length":11,"regex":"1[5-7]\\d{9}","registration":true}]"""
+
+  /** Any email domain registers; nothing is blocked. */
+  val openEmailRegistration: String =
+    """{"mode":"open","domains":[],"blockSubaddress":false}"""
+
+  val openEmailRegistrationJson: zio.json.ast.Json =
+    zio.json.ast.Json.Obj(
+      "mode" -> zio.json.ast.Json.Str("open"),
+      "domains" -> zio.json.ast.Json.Arr(),
+      "blockSubaddress" -> zio.json.ast.Json.Bool(false),
+    )
 
   /** Creates the suite's `standard` tenant first -- see [[SecurityProfiles]]. */
   val live: ZLayer[Client & E2EConfig, Nothing, OAuthClient] =
@@ -1830,7 +2003,6 @@ object OAuthClient:
       refreshTokenTtl: Option[Int],
       theme: String,
       authFlow: Option[zio.json.ast.Json],
-      registrationFlow: Option[zio.json.ast.Json],
       consentFlow: Option[zio.json.ast.Json],
       otpTemplateId: String,
       frontChannelLogoutUri: Option[String],
@@ -1848,7 +2020,8 @@ object OAuthClient:
       dpopMinRsaKeySize: Option[Int],
       edgeSigningKey: Option[zio.json.ast.Json],
       edgeClientCertificate: Option[String],
-      applicationType: Option[String] = None,
+      applicationType: Option[String],
       issueEdgeClientCertificate: Boolean,
       enrollEdgeClientCertificate: Boolean,
+      estEnrollment: Boolean,
   ) derives JsonEncoder

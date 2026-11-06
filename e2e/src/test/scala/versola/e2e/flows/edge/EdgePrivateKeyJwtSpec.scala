@@ -27,6 +27,16 @@ object EdgePrivateKeyJwtSpec extends EdgeSpec(
       privateKeyJwt = true,
       requireSignedRequestObject = true,
       requirePushedAuthorizationRequests = true,
+      endpoints = Nil,
+      scopes = Set("openid", "email", "offline_access"),
+      presetScope = Set("openid"),
+      postLogoutRedirectUri = None,
+      cookiePath = None,
+      awaitProxyReady = false,
+      mutualTls = false,
+      nativeApp = false,
+      issuedCertificate = false,
+      enrolledCertificate = false,
     ),
   ):
 

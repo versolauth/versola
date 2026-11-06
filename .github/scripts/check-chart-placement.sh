@@ -96,6 +96,19 @@ SHARED_NODE_AFFINITY = {
 }
 
 
+# k8s/versola-edge is one workload with no `global` block, so its placement is read at the top level
+# of its values; the other two charts refuse that spelling, this one is where it belongs.
+EDGE_BASE = {
+    "central": {
+        "mtlsUrl": "https://central-mtls.example.com",
+        "enrollment": {"url": "https://central.example.com", "token": "ci-check"},
+        "pins": ["-----BEGIN CERTIFICATE-----"],
+    },
+    "config": {"existingSecret": "edge-config"},
+    "secrets": {"existingSecret": "edge-secrets"},
+}
+
+
 def deep_merge(base, extra):
     out = dict(base)
     for k, v in extra.items():
@@ -137,6 +150,12 @@ def loadgen(values=None):
     missing = LOADGEN_KNOWN - pods.keys()
     assert not missing, f"loadgen rendered without {sorted(missing)}"
     return pods
+
+
+def remote_edge(values=None):
+    pods = render("versola-edge", "edge", EDGE_BASE, values or {})
+    assert set(pods) == {"edge-versola-edge"}, f"versola-edge rendered {sorted(pods)}"
+    return pods["edge-versola-edge"]
 
 
 def render_error(chart, base, values):
@@ -313,6 +332,21 @@ def coordinator_does_not_mutate_global_affinity():
        {"nodeAffinity": SHARED_NODE_AFFINITY})
 
 
+# Break caught: a placement value the remote edge's template never reads -- `--set nodeSelector...`
+# installs and places nothing, which for a remote edge means the wrong site.
+def remote_edge_reads_its_placement():
+    eq("edge-versola-edge", "nodeSelector (default)", remote_edge().get("nodeSelector"), None)
+    placement = {
+        "nodeSelector": {"pool": "edge-site"},
+        "tolerations": [SHARED_TOLERATION],
+        "affinity": {"nodeAffinity": SHARED_NODE_AFFINITY},
+    }
+    got = remote_edge(placement)
+    eq("edge-versola-edge", "nodeSelector", got.get("nodeSelector"), {"pool": "edge-site"})
+    eq("edge-versola-edge", "tolerations", got.get("tolerations"), [SHARED_TOLERATION])
+    eq("edge-versola-edge", "affinity", got.get("affinity"), {"nodeAffinity": SHARED_NODE_AFFINITY})
+
+
 check("a top-level placement field fails the render in both charts", top_level_placement_is_rejected)
 check("global placement reaches every pod in both charts", global_reaches_every_pod)
 check("a component's value replaces the global one, never merges", component_replaces_global)
@@ -320,6 +354,7 @@ check("defaults add no placement beyond the coordinator's standby spread", defau
 check("coordinator keeps its standby spread when the user adds nodeAffinity", coordinator_keeps_spread_under_user_node_affinity)
 check("an explicit podAntiAffinity replaces the coordinator's built-in one", explicit_anti_affinity_replaces_builtin)
 check("rendering the coordinator leaves global.affinity untouched", coordinator_does_not_mutate_global_affinity)
+check("the remote edge chart reads its placement from its own values", remote_edge_reads_its_placement)
 
 if failures:
     print(f"\n{len(failures)} of {checks} placement checks failed")

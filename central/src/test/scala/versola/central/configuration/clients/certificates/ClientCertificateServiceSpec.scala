@@ -7,12 +7,14 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.bouncycastle.pkcs.PKCS10CertificationRequest
 import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequest
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.audit.{CentralAudit, RecordedAudit}
 import versola.central.configuration.clients.*
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.CertificateSubject
+import versola.util.audit.{ActorType, AuditEvents}
 import versola.util.{Patch, PrivateClientCertificate, TestCertificates}
 import zio.*
 import zio.test.*
@@ -34,7 +36,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   /** A CA that signs whatever request it is handed, as the real ones do for an authorised one:
     * the subject and SANs come from the request, the lifetime from `validity`. */
-  private class FakeCa extends ClientCertificateIssuer:
+  private class FakeCa(addedUri: Option[String] = None) extends ClientCertificateIssuer:
     var requests: List[CertificateSigningRequest] = Nil
 
     override def sign(request: CertificateSigningRequest): Task[String] =
@@ -50,8 +52,13 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
           csr.getSubject,
           csr.getPublicKey,
         )
-        Option(csr.getRequestedExtensions).flatMap(e => Option(e.getExtension(Extension.subjectAlternativeName))).foreach: san =>
-          builder.addExtension(Extension.subjectAlternativeName, false, GeneralNames.getInstance(san.getParsedValue))
+        val requested = Option(csr.getRequestedExtensions).flatMap(e => Option(e.getExtension(Extension.subjectAlternativeName)))
+          .map(san => GeneralNames.getInstance(san.getParsedValue).getNames.toList).getOrElse(Nil)
+        // A CA that adds a name of its own to what it signs, as a misconfigured template would.
+        val names = requested ++ addedUri.map(uri =>
+          org.bouncycastle.asn1.x509.GeneralName(org.bouncycastle.asn1.x509.GeneralName.uniformResourceIdentifier, uri),
+        )
+        if names.nonEmpty then builder.addExtension(Extension.subjectAlternativeName, false, GeneralNames(names.toArray))
         val signer = JcaContentSignerBuilder("SHA256withRSA").build(ca.privateKey)
         val certificate = JcaX509CertificateConverter().getCertificate(builder.build(signer))
         ClientCertificateRequests.pem("CERTIFICATE", certificate.getEncoded)
@@ -89,7 +96,6 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = None,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -114,6 +120,8 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     applicationType = Some(ApplicationType.native),
     issueEdgeClientCertificate = true,
     enrollEdgeClientCertificate = false,
+    themeOverrides = None,
+    estEnrollment = false,
   )
 
   private def record =
@@ -130,7 +138,6 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       permissions = Set.empty,
       theme = "",
       authFlow = None,
-      registrationFlow = None,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
@@ -153,6 +160,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       template = None,
       createdAt = registeredAt,
       applicationType = ApplicationType.native,
+      themeOverrides = None,
     )
 
   private val config =
@@ -175,7 +183,6 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = None,
     theme = None,
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = None,
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = None,
@@ -196,6 +203,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     edgeSigningKey = None,
     edgeClientCertificate = None,
     applicationType = None,
+    themeOverrides = None,
   )
 
   def spec = suite("ClientCertificateService")(
@@ -203,7 +211,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val clients = stub[OAuthClientService]
       val issuances = Issuances()
       val fakeCa = FakeCa()
-      val service = ClientCertificateService.Impl(fakeCa, clients, issuances, Enrollments(), config)
+      val service = ClientCertificateService.Impl(fakeCa, clients, issuances, Enrollments(), config, AuditEvents.noop)
       for
         _ <- clients.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None))
         _ <- service.register(createRequest)
@@ -218,7 +226,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("passes a registration that asks for no certificate straight through, issuing nothing") {
       val clients = stub[OAuthClientService]
       val fakeCa = FakeCa()
-      val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), Enrollments(), config)
+      val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), Enrollments(), config, AuditEvents.noop)
       val plain = createRequest.copy(issueEdgeClientCertificate = false, authMethod = AuthMethod.none, mtlsAuth = None)
       for
         _ <- clients.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None))
@@ -228,13 +236,13 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("refuses to issue when the request also supplies a certificate") {
       val clients = stub[OAuthClientService]
       val supplied = PrivateClientCertificate(TestCertificates.generate(dnsName = Some(dnsName)).bundle)
-      val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config)
+      val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config, AuditEvents.noop)
       for exit <- service.register(createRequest.copy(edgeClientCertificate = Some(supplied))).exit
       yield assertTrue(exit.isFailure, clients.registerClient.calls.isEmpty)
     },
     test("registers by CN=<client>,OU=<tenant>,O=Versola when the request names no mtlsAuth") {
       val clients = stub[OAuthClientService]
-      val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config)
+      val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config, AuditEvents.noop)
       val dn = "CN=mobile-app,OU=tenant-a,O=Versola"
       for
         _ <- clients.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None))
@@ -246,20 +254,55 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     test("refuses to issue for a method that reads no certificate") {
-      val service = ClientCertificateService.Impl(FakeCa(), stub[OAuthClientService], Issuances(), Enrollments(), config)
+      val service = ClientCertificateService.Impl(FakeCa(), stub[OAuthClientService], Issuances(), Enrollments(), config, AuditEvents.noop)
       for exit <- service.register(createRequest.copy(authMethod = AuthMethod.client_secret)).exit
       yield assertTrue(exit.isFailure)
     },
+    // `urn:versola:edge:<id>` names an edge to central's mutual-TLS listener; the CA that signs a client's
+    // certificate may be one that listener trusts, so no client is issued a certificate carrying it.
+    test("refuses to issue a certificate carrying the URI name that makes it an edge's") {
+      val clients = stub[OAuthClientService]
+      val fakeCa = FakeCa()
+      val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), Enrollments(), config, AuditEvents.noop)
+      val asEdge = createRequest.copy(mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_uri, "urn:versola:edge:edge-default")))
+      for exit <- service.register(asEdge).exit
+      yield assertTrue(exit.isFailure, fakeCa.requests.isEmpty, clients.registerClient.calls.isEmpty)
+    },
     test("says so when central has no CA to issue from") {
-      val service = ClientCertificateService.Impl(ClientCertificateIssuer.notConfigured, stub[OAuthClientService], Issuances(), Enrollments(), config)
+      val service = ClientCertificateService.Impl(
+        ClientCertificateIssuer.notConfigured,
+        stub[OAuthClientService],
+        Issuances(),
+        Enrollments(),
+        config,
+        AuditEvents.noop,
+      )
       for exit <- service.register(createRequest).exit
       yield assertTrue(exit.isFailure, exit.toString.contains("none configured"))
+    },
+    test("a renewal that came due is recorded as cert.renewed by the system") {
+      val clients = stub[OAuthClientService]
+      val issuances = Issuances()
+      val audit = RecordedAudit.unsafe
+      val service = ClientCertificateService.Impl(FakeCa(), clients, issuances, Enrollments(), config, audit)
+      for
+        now <- Clock.instant
+        _ = issuances.rows = Map(clientId -> ClientCertificateIssuance(clientId, "01", now.plusSeconds(3600), now.minusSeconds(86400)))
+        _ <- clients.getAllClients.succeedsWith(Vector(record))
+        _ <- clients.updateClient.succeedsWith(())
+        _ <- service.renewDue
+        recorded <- audit.drafts
+      yield assertTrue(
+        recorded.map(_.kind) == Vector(CentralAudit.CertRenewed),
+        recorded.head.actor == Some((ActorType.system, None)),
+        recorded.head.target == Some(("client", clientId.toString)),
+      )
     },
     test("renews only the certificates inside the renewal window") {
       val clients = stub[OAuthClientService]
       val issuances = Issuances()
       val other = ClientId("other-app")
-      val service = ClientCertificateService.Impl(FakeCa(), clients, issuances, Enrollments(), config)
+      val service = ClientCertificateService.Impl(FakeCa(), clients, issuances, Enrollments(), config, AuditEvents.noop)
       for
         // The test clock, not the wall clock: the service reads `Clock.instant`.
         now <- Clock.instant
@@ -287,7 +330,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val issuances = Issuances()
       val failing = new ClientCertificateIssuer:
         def sign(request: CertificateSigningRequest) = ZIO.fail(RuntimeException("CA down"))
-      val service = ClientCertificateService.Impl(failing, clients, issuances, Enrollments(), config)
+      val service = ClientCertificateService.Impl(failing, clients, issuances, Enrollments(), config, AuditEvents.noop)
       for
         now <- Clock.instant
         _ = issuances.rows = Map(clientId -> ClientCertificateIssuance(clientId, "01", now.plusSeconds(60), now))
@@ -303,7 +346,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
         private val inner = FakeCa()
         def sign(request: CertificateSigningRequest) =
           issuances.delete(clientId) *> inner.sign(request)
-      val service = ClientCertificateService.Impl(slowCa, clients, issuances, Enrollments(), config)
+      val service = ClientCertificateService.Impl(slowCa, clients, issuances, Enrollments(), config, AuditEvents.noop)
       for
         now <- Clock.instant
         _ = issuances.rows = Map(clientId -> ClientCertificateIssuance(clientId, "01", now.plusSeconds(60), now))
@@ -315,7 +358,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val clients = stub[OAuthClientService]
       val failing = new Issuances:
         override def upsert(issuance: ClientCertificateIssuance) = ZIO.fail(RuntimeException("db down"))
-      val service = ClientCertificateService.Impl(FakeCa(), clients, failing, Enrollments(), config)
+      val service = ClientCertificateService.Impl(FakeCa(), clients, failing, Enrollments(), config, AuditEvents.noop)
       for
         _ <- clients.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None))
         _ <- clients.deleteClient.succeedsWith(())
@@ -327,7 +370,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val clients = stub[OAuthClientService]
         val enrollments = Enrollments()
         val fakeCa = FakeCa()
-        val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), enrollments, config)
+        val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), enrollments, config, AuditEvents.noop)
         for
           _ <- clients.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None))
           _ <- service.register(createRequest.copy(issueEdgeClientCertificate = false, enrollEdgeClientCertificate = true))
@@ -342,7 +385,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
       test("with no mtlsAuth the client is registered by CN=<client>,OU=<tenant>,O=Versola") {
         val clients = stub[OAuthClientService]
-        val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config)
+        val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config, AuditEvents.noop)
         for
           _ <- clients.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None))
           _ <- service.register(createRequest.copy(issueEdgeClientCertificate = false, enrollEdgeClientCertificate = true, mtlsAuth = None))
@@ -353,7 +396,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
       test("is refused beside issueEdgeClientCertificate, a supplied certificate, or a method that reads none") {
         val clients = stub[OAuthClientService]
-        val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config)
+        val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config, AuditEvents.noop)
         val enrolling = createRequest.copy(issueEdgeClientCertificate = false, enrollEdgeClientCertificate = true)
         val supplied = PrivateClientCertificate(TestCertificates.generate(dnsName = Some(dnsName)).bundle)
         for
@@ -366,7 +409,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val clients = stub[OAuthClientService]
         val failing = new Enrollments:
           override def enroll(clientId: ClientId, at: Instant) = ZIO.fail(RuntimeException("db down"))
-        val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), failing, config)
+        val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), failing, config, AuditEvents.noop)
         for
           _ <- clients.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None))
           _ <- clients.deleteClient.succeedsWith(())
@@ -378,7 +421,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val clients = stub[OAuthClientService]
         val enrollments = Enrollments()
         enrollments.enrolled = Set(clientId)
-        val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), enrollments, config)
+        val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), enrollments, config, AuditEvents.noop)
         val subject = ClientCertificateRequests.subjectFor(clientId, auth).toOption.get
         for
           _ <- clients.getClientsForSync.succeedsWith(Vector(record))
@@ -390,12 +433,51 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
           enrollments.issued.map(entry => (entry._1, entry._3)) == List((clientId, EdgeId("edge-1"))),
         )
       },
+      test("the certificate an edge made for an enrolled client is recorded as cert.renewed by that edge") {
+        val clients = stub[OAuthClientService]
+        val enrollments = Enrollments()
+        enrollments.enrolled = Set(clientId)
+        val audit = RecordedAudit.unsafe
+        val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), enrollments, config, audit)
+        val subject = ClientCertificateRequests.subjectFor(clientId, auth).toOption.get
+        for
+          _ <- clients.getClientsForSync.succeedsWith(Vector(record))
+          generated <- CertificateSubject.generate(subject)
+          _ <- service.sign(EdgeId("edge-1"), clientId, generated.csrPem)
+          recorded <- audit.drafts
+        yield assertTrue(
+          recorded.map(_.kind) == Vector(CentralAudit.CertRenewed),
+          recorded.head.actor == Some((CentralAudit.Actors.Edge, Some("edge-1"))),
+          recorded.head.target == Some(("client", clientId.toString)),
+        )
+      },
+      // Even a CA that signs a name nobody asked for must not yield a certificate that passes for an edge.
+      test("refuses a signed chain that carries a name identifying an edge") {
+        val clients = stub[OAuthClientService]
+        val enrollments = Enrollments()
+        enrollments.enrolled = Set(clientId)
+        val service =
+          ClientCertificateService.Impl(FakeCa(Some("urn:versola:edge:edge-1")), clients, Issuances(), enrollments, config, AuditEvents.noop)
+        val subject = ClientCertificateRequests.subjectFor(clientId, auth).toOption.get
+        for
+          _ <- clients.getClientsForSync.succeedsWith(Vector(record))
+          generated <- CertificateSubject.generate(subject)
+          exit <- service.sign(EdgeId("edge-1"), clientId, generated.csrPem).exit
+        yield assertTrue(exit.isFailure, enrollments.issued.isEmpty)
+      },
+      test("refuses to store a certificate it issued that carries a name identifying an edge") {
+        val clients = stub[OAuthClientService]
+        val service =
+          ClientCertificateService.Impl(FakeCa(Some("urn:versola:edge:edge-1")), clients, Issuances(), Enrollments(), config, AuditEvents.noop)
+        for exit <- service.register(createRequest).exit
+        yield assertTrue(exit.isFailure, clients.registerClient.calls.isEmpty)
+      },
       test("refuses a client the edge is not served, whatever the CSR says") {
         val clients = stub[OAuthClientService]
         val enrollments = Enrollments()
         enrollments.enrolled = Set(clientId)
         val fakeCa = FakeCa()
-        val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), enrollments, config)
+        val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), enrollments, config, AuditEvents.noop)
         val subject = ClientCertificateRequests.subjectFor(clientId, auth).toOption.get
         for
           // The sync filter, by tenant, does not list the client for this edge.
@@ -406,7 +488,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
       test("is refused for a web client, whose tokens are bound to a certificate replicas would not share") {
         val clients = stub[OAuthClientService]
-        val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config)
+        val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config, AuditEvents.noop)
         for exit <- service.register(createRequest.copy(
             issueEdgeClientCertificate = false,
             enrollEdgeClientCertificate = true,
@@ -417,7 +499,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       test("refuses a client that is not enrolled") {
         val clients = stub[OAuthClientService]
         val fakeCa = FakeCa()
-        val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), Enrollments(), config)
+        val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), Enrollments(), config, AuditEvents.noop)
         val subject = ClientCertificateRequests.subjectFor(clientId, auth).toOption.get
         for
           generated <- CertificateSubject.generate(subject)
@@ -429,7 +511,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val enrollments = Enrollments()
         enrollments.enrolled = Set(clientId)
         val fakeCa = FakeCa()
-        val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), enrollments, config)
+        val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), enrollments, config, AuditEvents.noop)
         val subject = ClientCertificateRequests.subjectFor(clientId, auth).toOption.get
         for
           _ <- clients.getClientsForSync.succeedsWith(Vector(record))
@@ -442,20 +524,20 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       test("tells an edge what the certificates of the enrolled clients among those it syncs must say") {
         val enrollments = Enrollments()
         enrollments.enrolled = Set(clientId)
-        val service = ClientCertificateService.Impl(FakeCa(), stub[OAuthClientService], Issuances(), enrollments, config)
+        val service = ClientCertificateService.Impl(FakeCa(), stub[OAuthClientService], Issuances(), enrollments, config, AuditEvents.noop)
         for subjects <- service.enrollmentSubjects(Vector(record, record.copy(id = ClientId("other"))))
         yield assertTrue(subjects.keySet == Set(clientId), subjects(clientId).dnsNames == List(dnsName))
       },
     ),
     test("renew reports a client central does not manage") {
-      val service = ClientCertificateService.Impl(FakeCa(), stub[OAuthClientService], Issuances(), Enrollments(), config)
+      val service = ClientCertificateService.Impl(FakeCa(), stub[OAuthClientService], Issuances(), Enrollments(), config, AuditEvents.noop)
       for renewed <- service.renew(clientId)
       yield assertTrue(!renewed)
     },
     test("an operator-supplied certificate takes the client out of renewal") {
       val issuances = Issuances()
       issuances.rows = Map(clientId -> ClientCertificateIssuance(clientId, "01", Instant.now(), Instant.now()))
-      val service = ClientCertificateService.Impl(FakeCa(), stub[OAuthClientService], issuances, Enrollments(), config)
+      val service = ClientCertificateService.Impl(FakeCa(), stub[OAuthClientService], issuances, Enrollments(), config, AuditEvents.noop)
       val supplied = PrivateClientCertificate(TestCertificates.generate(dnsName = Some(dnsName)).bundle)
       for
         _ <- service.forgetIfReplaced(untouchedUpdate)

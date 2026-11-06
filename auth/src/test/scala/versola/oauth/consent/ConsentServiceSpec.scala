@@ -1,11 +1,15 @@
 package versola.oauth.consent
 
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.oauth.authorize.model.Prompt
+import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.{AuthMethod, ClientId, ConsentFlow, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.consent.model.ConsentRecord
 import versola.user.model.UserId
 import versola.util.UnitSpecBase
+import versola.util.audit.AuditOutcome
 import zio.*
+import zio.json.*
 import zio.test.*
 
 import java.time.Instant
@@ -34,7 +38,6 @@ object ConsentServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -52,19 +55,24 @@ object ConsentServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   private def clientWith(
       allowPartial: Boolean = false,
       rememberDuration: Option[Duration] = None,
-  ) = baseClient.copy(consentFlow = Some(ConsentFlow(allowPartial, rememberDuration)))
+      requiredScopes: Set[ScopeToken] = Set.empty,
+      offlineAccessOptional: Boolean = false,
+  ) = baseClient.copy(consentFlow = Some(ConsentFlow(allowPartial, rememberDuration, requiredScopes, offlineAccessOptional)))
 
   private def grant(scope: Set[ScopeToken], expiresAt: Option[Instant] = None) =
     ConsentRecord(userId, clientId, scope, grantedAt = now, expiresAt = expiresAt)
 
   final class Env:
     val consentRepository = stub[ConsentRepository]
-    val service: ConsentService = ConsentService.Impl(consentRepository)
+    val audit = CapturingAuditEvents.shared()
+    val service: ConsentService = ConsentService.Impl(consentRepository, audit)
 
   /** `decide` reads the wall clock to expire stored grants, so tests pin it. */
   private val atNow = TestAspect.before(TestClock.setTime(now))
@@ -198,10 +206,101 @@ object ConsentServiceSpec extends UnitSpecBase:
         )
         assertTrue(result.isLeft)
       },
+      test("reject dropping a scope the client marked required") {
+        val env = Env()
+        val result = env.service.validateSubmission(
+          clientWith(allowPartial = true, requiredScopes = Set(profile)),
+          Set(openid, profile, email),
+          Set(openid, email),
+        )
+        assertTrue(result.isLeft)
+      },
+      test("accept a submission that keeps every required scope and drops an optional one") {
+        val env = Env()
+        val result = env.service.validateSubmission(
+          clientWith(allowPartial = true, requiredScopes = Set(profile)),
+          Set(openid, profile, email),
+          Set(openid, profile),
+        )
+        assertTrue(result == Right(Set(openid, profile)))
+      },
+      test("ignore a required scope that was not requested") {
+        val env = Env()
+        val result = env.service.validateSubmission(
+          clientWith(allowPartial = true, requiredScopes = Set(email)),
+          Set(openid, profile),
+          Set(openid),
+        )
+        assertTrue(result == Right(Set(openid)))
+      },
+      test("reject an empty submission when a required scope was requested") {
+        val env = Env()
+        val result = env.service.validateSubmission(
+          clientWith(allowPartial = true, requiredScopes = Set(profile)),
+          Set(profile, email),
+          Set.empty,
+        )
+        assertTrue(result.isLeft)
+      },
+      test("still require openid and offline_access when the client lists other required scopes") {
+        val env = Env()
+        val result = env.service.validateSubmission(
+          clientWith(allowPartial = true, requiredScopes = Set(profile)),
+          Set(openid, offline, profile),
+          Set(openid, profile),
+        )
+        assertTrue(result.isLeft)
+      },
+      test("accept dropping offline_access when the client lets the user turn it off") {
+        val env = Env()
+        val result = env.service.validateSubmission(
+          clientWith(allowPartial = true, offlineAccessOptional = true),
+          Set(openid, offline, profile),
+          Set(openid, profile),
+        )
+        assertTrue(result == Right(Set(openid, profile)))
+      },
+      test("still reject dropping openid when offline_access is optional") {
+        val env = Env()
+        val result = env.service.validateSubmission(
+          clientWith(allowPartial = true, offlineAccessOptional = true),
+          Set(openid, offline),
+          Set(offline),
+        )
+        assertTrue(result.isLeft)
+      },
+      test("keep offline_access required when the client lists it as required, even if optional") {
+        val env = Env()
+        val result = env.service.validateSubmission(
+          clientWith(allowPartial = true, requiredScopes = Set(offline), offlineAccessOptional = true),
+          Set(openid, offline),
+          Set(openid),
+        )
+        assertTrue(result.isLeft)
+      },
+      test("reject dropping offline_access without partial grants even if marked optional") {
+        val env = Env()
+        val result = env.service.validateSubmission(
+          clientWith(offlineAccessOptional = true),
+          Set(openid, offline),
+          Set(openid),
+        )
+        assertTrue(result.isLeft)
+      },
       test("accept an empty submission when nothing mandatory was requested") {
         val env = Env()
         val result = env.service.validateSubmission(clientWith(allowPartial = true), Set(profile), Set.empty)
         assertTrue(result == Right(Set.empty[ScopeToken]))
+      },
+    ),
+    suite("ConsentFlow json")(
+      test("a flow that does not state requiredScopes and offlineAccessOptional is refused, not read as empty") {
+        val missing = """{"allowPartial":true,"rememberDuration":null}""".fromJson[ConsentFlow]
+        val stated = """{"allowPartial":true,"rememberDuration":null,"requiredScopes":[],"offlineAccessOptional":false}""".fromJson[ConsentFlow]
+        assertTrue(
+          missing.isLeft,
+          stated == Right(ConsentFlow(allowPartial = true, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
+        )
       },
     ),
     suite("grant")(
@@ -210,10 +309,16 @@ object ConsentServiceSpec extends UnitSpecBase:
         for
           _ <- env.consentRepository.upsert.succeedsWith(())
           _ <- env.service.grant(userId, clientWith(), Set(openid, profile))
+          drafts <- env.audit.recorded
         yield assertTrue(
           env.consentRepository.upsert.calls == List(
             ConsentRecord(userId, clientId, Set(openid, profile), grantedAt = now, expiresAt = None),
           ),
+          // consent.granted: what was granted, sorted, and no expiry when it is remembered until revoked
+          drafts.map(_.kind) == List(AuthAuditKinds.ConsentGranted),
+          drafts.head.outcome == AuditOutcome.success,
+          drafts.head.userId == Some(userId.asInstanceOf[UUID]),
+          drafts.head.details == AuthAuditDetails.Consent(scope = List("openid", "profile"), authorizationDetailTypes = Nil, expiresAt = None),
         )
       },
       test("expire the grant after the client's remember duration") {
@@ -221,10 +326,16 @@ object ConsentServiceSpec extends UnitSpecBase:
         for
           _ <- env.consentRepository.upsert.succeedsWith(())
           _ <- env.service.grant(userId, clientWith(rememberDuration = Some(30.days)), Set(openid))
+          drafts <- env.audit.recorded
         yield assertTrue(
           env.consentRepository.upsert.calls == List(
             ConsentRecord(userId, clientId, Set(openid), grantedAt = now, expiresAt = Some(now.plusSeconds(30 * 86400))),
           ),
+          drafts.map(_.details) == List(AuthAuditDetails.Consent(
+            scope = List("openid"),
+            authorizationDetailTypes = Nil,
+            expiresAt = Some(now.plusSeconds(30 * 86400).toString),
+          )),
         )
       },
     ) @@ atNow,
@@ -234,7 +345,20 @@ object ConsentServiceSpec extends UnitSpecBase:
         for
           _ <- env.consentRepository.delete.succeedsWith(())
           _ <- env.service.revoke(userId, baseClient)
-        yield assertTrue(env.consentRepository.delete.calls == List((userId, clientId)))
+          drafts <- env.audit.recorded
+        yield assertTrue(
+          env.consentRepository.delete.calls == List((userId, clientId)),
+          drafts.map(_.kind) == List(AuthAuditKinds.ConsentRevoked),
+          drafts.head.userId == Some(userId.asInstanceOf[UUID]),
+        )
+      },
+      test("a grant is not reported as given when the store refused it") {
+        val env = Env()
+        for
+          _ <- env.consentRepository.upsert.failsWith(new RuntimeException("db down"))
+          result <- env.service.grant(userId, clientWith(), Set(openid)).either
+          drafts <- env.audit.recorded
+        yield assertTrue(result.isLeft, drafts.isEmpty)
       },
     ),
   )

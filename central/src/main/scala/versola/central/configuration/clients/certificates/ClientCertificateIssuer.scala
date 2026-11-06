@@ -52,16 +52,25 @@ object ClientCertificateIssuer:
       for
         config <- ZIO.service[CentralConfig]
         client <- ZIO.service[Client]
-        issuer <- (config.certificateBackends, config.clientCertificateAuthority) match
-          case (Some(settings), _) =>
-            (settings.stepCa, settings.certManager) match
-              case (Some(stepCa), None) => StepCaIssuer.make(stepCa, client)
-              case (None, Some(certManager)) => CertManagerIssuer.make(certManager, client)
-              case _ =>
-                ZIO.fail(IllegalArgumentException(
-                  "`client-certificates` names both `step-ca` and `cert-manager`; it must name exactly one",
-                ))
-          // The earlier setting: central holds the CA's own key. Kept for a deployment that has it.
-          case (None, Some(authority)) => LocalCaIssuer.make(authority)
-          case (None, None) => ZIO.succeed(notConfigured)
+        issuer <- from(config.certificateBackends, config.clientCertificateAuthority, client, "client-certificates", "client-certificate-authority")
       yield issuer
+
+  /** The issuer a pair of settings names: one backend, else a CA central holds the key of, else [[notConfigured]].
+    * `backendKey` and `authorityKey` are the configuration keys, for the messages. */
+  def from(
+      backends: Option[CentralConfig.ClientCertificatesConfig],
+      authority: Option[CentralConfig.ClientCertificateAuthorityConfig],
+      client: Client,
+      backendKey: String,
+      authorityKey: String,
+  ): Task[ClientCertificateIssuer] =
+    (backends, authority) match
+      case (Some(settings), _) =>
+        (settings.stepCa, settings.certManager) match
+          case (Some(stepCa), None) => StepCaIssuer.make(stepCa, client)
+          case (None, Some(certManager)) => CertManagerIssuer.make(certManager, client)
+          case _ =>
+            ZIO.fail(IllegalArgumentException(s"`$backendKey` names both `step-ca` and `cert-manager`; it must name exactly one"))
+      // The earlier setting: central holds the CA's own key. Kept for a deployment that has it.
+      case (None, Some(authority)) => LocalCaIssuer.make(authority, authorityKey)
+      case (None, None) => ZIO.succeed(notConfigured)

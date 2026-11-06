@@ -1,51 +1,15 @@
 import { render } from 'solid-js/web';
 import { createSignal, Show } from 'solid-js';
 import { getRegistrationResponse, submitViaForm } from '../passkey/webauthn';
-
-function LocaleDropdown(props: { locales: string[]; current: string; onChange: (l: string) => void }) {
-  const [open, setOpen] = createSignal(false);
-  return (
-    <div class="locale-dropdown">
-      <button
-        type="button"
-        class="locale-trigger"
-        onClick={() => setOpen(!open())}
-        onBlur={() => setTimeout(() => setOpen(false), 120)}
-      >
-        {props.current}
-        <svg class="locale-chevron" viewBox="0 0 10 6" fill="none" aria-hidden="true">
-          <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </button>
-      <Show when={open()}>
-        <div class="locale-options">
-          {props.locales.map((loc) => (
-            <button
-              type="button"
-              class={`locale-option${loc === props.current ? ' locale-option-active' : ''}`}
-              onMouseDown={() => { props.onChange(loc); setOpen(false); }}
-            >
-              {loc}
-            </button>
-          ))}
-        </div>
-      </Show>
-    </div>
-  );
-}
+import { PageBrand, ClientBadge } from '../shared/brand';
+import { LocaleSelector, createTranslations } from '../shared/locale';
+import type { BaseFormConfig } from '../shared/config';
 
 type PasskeyEnrollStep = { type: 'passkey-enroll'; publicKeyOptions: string };
 
-interface FormConfig {
+interface FormConfig extends BaseFormConfig {
   step: PasskeyEnrollStep;
-  t: Record<string, string>;
-  locale?: string;
-  locales?: string[];
-  allT?: Record<string, Record<string, string>>;
   error?: string;
-  previewId?: string;
-  csrf?: string;
-  logo?: string;
 }
 
 declare global {
@@ -55,19 +19,7 @@ declare global {
 }
 
 function PasskeyEnrollForm(props: { config: FormConfig }) {
-  const allT = props.config.allT ?? {};
-  const baseT = props.config.t;
-  const [currentLocale, setCurrentLocale] = createSignal(props.config.locale ?? 'en');
-  const changeLocale = (loc: string) => {
-    setCurrentLocale(loc);
-    try { window.parent.postMessage({ type: 'versola:locale-change', locale: loc, previewId: props.config.previewId }, '*'); } catch (_) {}
-  };
-  const t = () => {
-    const loc = currentLocale();
-    const locT = allT[loc] ?? {};
-    return { ...baseT, ...locT };
-  };
-  const locales = props.config.locales ?? [];
+  const { t, locale: currentLocale, changeLocale } = createTranslations(props.config);
   const step = props.config.step;
 
   const [busy, setBusy] = createSignal(false);
@@ -104,35 +56,38 @@ function PasskeyEnrollForm(props: { config: FormConfig }) {
   };
 
   return (
+    <>
+      <PageBrand logo={props.config.logo} />
     <div class="container">
-      <Show when={locales.length > 1}>
-        <div class="locale-selector">
-          <LocaleDropdown locales={locales} current={currentLocale()} onChange={changeLocale} />
-        </div>
-      </Show>
+      <LocaleSelector config={props.config} current={currentLocale()} onChange={changeLocale} />
+      <ClientBadge client={props.config.client} locale={currentLocale()} defaultLocale={props.config.defaultLocale} />
       <div class="passkey-enroll-icon" aria-hidden="true">
         <span class="passkey-icon" />
       </div>
       <h1>{t().title}</h1>
       <p class="passkey-enroll-description">{t().description}</p>
 
-      <div class="name-field">
+      <div class="name-field field">
+        <label class="field-label" for="passkey-name">{t().name_label}</label>
         <input
+          id="passkey-name"
           class={`input-field${nameError() ? ' input-error' : ''}`}
           type="text"
           value={name()}
-          placeholder={t().name_placeholder}
           onInput={(e) => { setName(e.currentTarget.value); setNameError(false); }}
           disabled={busy()}
+          placeholder={t().name_placeholder}
           autocomplete="off"
+          aria-invalid={nameError() ? 'true' : undefined}
+          aria-describedby={nameError() ? 'passkey-name-error' : undefined}
         />
         <Show when={nameError()}>
-          <div class="field-error error-text">{t().name_invalid}</div>
+          <div id="passkey-name-error" class="error-text" role="alert">{t().name_invalid}</div>
         </Show>
       </div>
 
       <Show when={enrollError()}>
-        <div class="phone-error-message error-text">{t().enroll_failed}</div>
+        <div class="error-text error-text-block" role="alert">{t().enroll_failed}</div>
       </Show>
 
       <button type="button" class="btn btn-primary" disabled={busy()} onClick={handleEnroll}>
@@ -142,6 +97,7 @@ function PasskeyEnrollForm(props: { config: FormConfig }) {
         {t().skip_button}
       </button>
     </div>
+    </>
   );
 }
 

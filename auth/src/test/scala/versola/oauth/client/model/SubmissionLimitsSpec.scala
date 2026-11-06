@@ -12,6 +12,7 @@ object SubmissionLimitsSpec extends UnitSpecBase:
     passwordSubmit = List(RateLimit(5, 900)),
     passkeyAssertion = List(RateLimit(5, 300)),
     banDurationSeconds = 1800,
+    stepUp = None,
   )
 
   private val stepUpLimits = StepUpLimits(

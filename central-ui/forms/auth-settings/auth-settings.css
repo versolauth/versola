@@ -6,6 +6,10 @@
   max-height: min(720px, calc(100dvh - 40px));
   text-align: left;
   overflow-y: auto;
+  /* The card is a centred column; content taller than the card would overflow its top as well, where
+   * nothing can scroll to it, and the heading would be lost. Centre only while it fits. */
+  justify-content: flex-start;
+  justify-content: safe center;
 }
 .account-container h1 {
   text-align: center;
@@ -17,7 +21,7 @@
   font-size: 1rem;
   font-weight: 600;
   margin: 0 0 12px;
-  color: var(--text);
+  color: var(--ink);
 }
 .account-empty {
   color: var(--text-muted);
@@ -38,9 +42,9 @@
   justify-content: space-between;
   gap: 12px;
   padding: 12px 14px;
-  background: var(--field-bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: var(--rf);
 }
 .account-row-info {
   display: flex;
@@ -54,7 +58,7 @@
   gap: 8px;
   font-size: 0.92rem;
   font-weight: 500;
-  color: var(--text);
+  color: var(--ink);
 }
 .account-row-subtitle {
   font-size: 0.8rem;
@@ -63,8 +67,8 @@
 .account-badge {
   font-size: 0.72rem;
   font-weight: 600;
-  color: var(--accent);
-  background: rgba(21, 94, 117, 0.1);
+  color: var(--focus);
+  background: color-mix(in oklab, var(--brand) 10%, transparent);
   border-radius: 999px;
   padding: 2px 8px;
 }
@@ -75,8 +79,11 @@
 }
 .account-row-action {
   width: auto;
-  padding: 8px 14px;
+  height: 40px;
+  padding: 0 14px;
   font-size: 0.85rem;
+  /* A button is one line: when the row is short the details beside it give way (they may wrap), not the label. */
+  white-space: nowrap;
 }
 .account-rename {
   flex: 1;
@@ -93,6 +100,21 @@
 .account-enroll-error {
   font-size: 0.85rem;
 }
+.account-password-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.account-password-form .btn {
+  align-self: flex-start;
+  width: auto;
+  margin-top: 8px;
+}
+.account-password-done {
+  margin: 8px 0 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
 .account-go-back {
   margin-top: 28px;
 }
@@ -104,22 +126,22 @@
   align-items: center;
   justify-content: center;
   padding: 20px;
-  background: rgba(21, 23, 28, 0.35);
+  background: var(--scrim);
   z-index: 300;
 }
 .confirmation-dialog {
   width: min(360px, 100%);
   padding: 28px;
   text-align: left;
-  background: var(--card-bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: var(--rs);
   box-shadow: 0 20px 48px rgba(16, 24, 40, 0.2);
 }
 .confirmation-dialog h2 {
   margin: 0 0 10px;
   font-size: 1.1rem;
-  color: var(--text);
+  color: var(--ink);
 }
 .confirmation-dialog p {
   margin: 0 0 22px;
@@ -135,4 +157,7 @@
   width: auto;
   padding: 10px 16px;
   font-size: 0.9rem;
+}
+.account-notice {
+  margin-bottom: 16px;
 }

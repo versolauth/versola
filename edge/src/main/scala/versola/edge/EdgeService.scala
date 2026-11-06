@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.edge.dpop.DpopVerifier
-import versola.edge.login.{LoginRecord, LoginRepository}
+import versola.edge.login.{BrowserBinding, LoginRecord, LoginRepository, ReturnTo}
 import versola.edge.model.{
   AccessToken,
   AccessTokenClaims,
@@ -32,29 +32,35 @@ import versola.edge.model.{
 import versola.edge.revocation.{RevocationKey, TokenRevocationService}
 import versola.edge.session.{EdgeSessionRecord, EdgeSessionRepository}
 import versola.util.cel.CelEvaluator
-import versola.util.http.Observability
+import versola.util.http.{Checkpoint, Observability, RateDecision, RateLimitKeys, RateLimiter}
 import versola.util.{Base64, Base64Url, EnvName, JWT, JsonJava, RedirectUri, Secret, SecureRandom, SecurityService}
-import zio.http.{Body, Client, Cookie, Header, MediaType, Path, Request, Response, Status, URL}
+import zio.http.{Body, Client, Cookie, Header, Headers, MediaType, Path, Request, Response, Status, URL}
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder, jsonField}
 import zio.{Chunk, Clock, Duration, IO, NonEmptyChunk, Task, UIO, ZIO, ZLayer, durationInt}
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.security.cert.X509Certificate
 import java.time.Instant
 import javax.crypto.AEADBadTagException
 import javax.crypto.spec.SecretKeySpec
 import scala.jdk.CollectionConverters.{MapHasAsJava, SeqHasAsJava}
 
 trait EdgeService:
+  /** The URL to send the browser to for a login with `presetId`. `returnTo`, a path of the preset's origin, is
+    * where it goes afterwards instead of the preset's own post-login page; anything else is ignored. */
   def authorize(
       presetId: PresetId,
       overrideParams: Map[String, String] = Map.empty,
-  ): IO[Throwable | PresetNotFound, URL]
+      returnTo: Option[String] = None,
+  ): IO[Throwable | PresetNotFound, EdgeService.LoginStart]
 
+  /** `browserBinding` is the value of the browser's `EDGE_LOGIN_<state>` cookie, if it sent one. */
   def complete(
       code: Code,
       state: State,
+      browserBinding: Option[String],
   ): IO[Throwable | AuthConversationNotFound, EdgeService.LoginCompletion]
 
   def completeError(
@@ -62,7 +68,8 @@ trait EdgeService:
       error: String,
       errorDescription: Option[String],
       errorUri: Option[String],
-  ): IO[Throwable | AuthConversationNotFound, URL]
+      browserBinding: Option[String],
+  ): IO[Throwable | AuthConversationNotFound, EdgeService.LoginErrorRedirect]
 
   def proxy(
       resourceId: ResourceId,
@@ -96,14 +103,35 @@ trait EdgeService:
   def backChannelLogout(logoutToken: String): IO[Throwable | InvalidLogoutToken, Unit]
 
 object EdgeService:
+
+  /** The exchange with auth outlasted the refresh lease's budget; see `refreshExchangeTimeout`. */
+  final class RefreshExchangeTimedOut extends RuntimeException("refresh token exchange with auth timed out")
+
   case class LoginCompletion(
       presetId: PresetId,
       accessToken: AccessToken,
       cookieTtl: Duration,
       postLoginRedirectUri: RedirectUri,
+      returnTo: Option[String],
       cookieDomain: Option[String],
       cookiePath: Option[String],
+      loginCookiePath: Path,
+  ):
+    /** Where the browser goes: the page that asked for the login when there is one, else the preset's. */
+    def redirectUrl: URL = ReturnTo.onto(postLoginRedirectUri.toUrl, returnTo)
+
+  /** Where to send the browser to log in, and the secret to hand it so that only it can finish this login:
+    * `/login` sets it as `EDGE_LOGIN_<state>` ([[EdgeLoginCookie]]). */
+  case class LoginStart(
+      url: URL,
+      state: State,
+      browserBinding: String,
+      loginCookiePath: Path,
+      loginTtl: Duration,
   )
+
+  /** A login that ended in an OAuth error: where the browser goes, and the path its login cookie is cleared at. */
+  case class LoginErrorRedirect(url: URL, loginCookiePath: Path)
 
   case class ClientNotFound(clientId: ClientId)
     extends RuntimeException(s"OAuth client not found in cache: $clientId")
@@ -168,11 +196,11 @@ object EdgeService:
   ) derives JsonCodec
 
   def live: ZLayer[
-    OAuthClientService & ResourceService & CelEvaluator & SecureRandom & LoginRepository & SSOClient & SecurityService & Client & EdgeConfig & session.EdgeSessionRepository & TokenRevocationService & JwksService & PermissionService & DpopVerifier & EnvName,
+    OAuthClientService & ResourceService & CelEvaluator & SecureRandom & LoginRepository & SSOClient & SecurityService & Client & EdgeConfig & session.EdgeSessionRepository & TokenRevocationService & JwksService & PermissionService & DpopVerifier & EnvName & RateLimiter,
     Nothing,
     EdgeService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       clientService: OAuthClientService,
@@ -190,6 +218,7 @@ object EdgeService:
       permissionService: PermissionService,
       dpopVerifier: DpopVerifier,
       env: EnvName,
+      rateLimiter: RateLimiter,
   ) extends EdgeService:
 
     private val loginTtl = 10.minutes
@@ -201,13 +230,42 @@ object EdgeService:
       */
     private val sessionExpiryGracePeriod = 10.seconds
 
+    // How long a request may hold the right to refresh one session. It has to outlast the round trip
+    // to auth; if the holder dies the lease simply runs out. Requests that lose the claim wait up to
+    // this long for the holder's result.
+    private val refreshLeaseDuration = 10.seconds
+    private val refreshPollInterval = 100.millis
+    // Waiters look for the holder's result every poll but only retry the claim every few polls, so a
+    // burst of requests on one session costs about one query per poll each instead of two.
+    private val claimRetryEveryPolls = 5L
+    // The exchange with auth is abandoned before the lease runs out. Otherwise a slow auth would let
+    // a waiter claim the lease while the holder's request is still in flight and present the same
+    // refresh token a second time, which revokes the family.
+    private val refreshExchangeTimeout = 8.seconds
+
+    // How long after a rotation a cookie of the previous generation is still served the current access
+    // token. It only has to cover requests already in flight with the old cookie and the browser's
+    // propagation of the new one. Bounding it matters: without it a stolen old cookie would keep
+    // working until the next rotation, since nothing else invalidates it. Auth does not do this for
+    // us, it refuses the old refresh token at once.
+    private val rotationGracePeriod = 10.seconds
+    // The floor for the cookie handed to a request that adopts another's token, so a row about to
+    // lapse does not produce a cookie that expires before the browser stores it.
+    private val minAdoptedCookieTtl = 1.second
+
     override def authorize(
         presetId: PresetId,
         overrideParams: Map[String, String] = Map.empty,
-    ): IO[Throwable | PresetNotFound, URL] =
-      clientService.findPreset(presetId).someOrFail(PresetNotFound()).flatMap(prepareAuthorizeUrl(_, overrideParams))
+        returnTo: Option[String] = None,
+    ): IO[Throwable | PresetNotFound, LoginStart] =
+      clientService.findPreset(presetId).someOrFail(PresetNotFound())
+        .flatMap(prepareAuthorizeUrl(_, overrideParams, returnTo.flatMap(ReturnTo.parse)))
 
-    private def prepareAuthorizeUrl(preset: AuthorizationPreset, overrideParams: Map[String, String]): zio.Task[URL] =
+    private def prepareAuthorizeUrl(
+        preset: AuthorizationPreset,
+        overrideParams: Map[String, String],
+        returnTo: Option[String],
+    ): zio.Task[LoginStart] =
       for
         // The client, not just the preset: what the authorization request may look like is
         // the client's registration (RFC 9101 §10.5, RFC 9126 §6.2), and the credential that
@@ -222,25 +280,53 @@ object EdgeService:
 
         state <- secureRandom.nextBytes(16).map(State.fromBytes)
 
+        browserBinding <- secureRandom.nextBytes(16).map(Base64.urlEncode)
+
         _ <- loginRepository.create(
           record = LoginRecord(
             codeVerifier = codeVerifier,
             presetId = preset.id,
             state = state,
+            returnTo = returnTo,
+            browserBindingHash = Some(BrowserBinding.hash(browserBinding)),
           ),
           ttl = loginTtl,
         )
 
         authUrl <- ssoClient.authorizeUri(preset, client, codeChallenge, state, overrideParams)
-      yield authUrl
+      yield LoginStart(
+        url = authUrl,
+        state = state,
+        browserBinding = browserBinding,
+        loginCookiePath = loginCookiePath(preset),
+        loginTtl = loginTtl,
+      )
+
+    // Where the browser comes back to, so the only path the login cookie is sent to and cleared at.
+    private def loginCookiePath(preset: AuthorizationPreset): Path = preset.redirectUri.toUrl.path
+
+    // A login that is not this browser's is indistinguishable from one that does not exist. It is
+    // not deleted: whoever sent the wrong cookie must not be able to burn the owner's login by
+    // replaying its state.
+    private def findOwnLogin(state: State, browserBinding: Option[String]): IO[Throwable | AuthConversationNotFound, LoginRecord] =
+      loginRepository.findByState(state).flatMap:
+        case None =>
+          Observability.setError("login_not_found") *> ZIO.fail(AuthConversationNotFound())
+        case Some(record) if BrowserBinding.accepts(record.browserBindingHash, browserBinding) =>
+          ZIO.succeed(record)
+        case Some(_) =>
+          Observability.setError("login_binding_mismatch") *> ZIO.fail(AuthConversationNotFound())
 
     override def complete(
         code: Code,
         state: State,
+        browserBinding: Option[String],
     ): IO[Throwable | AuthConversationNotFound, LoginCompletion] =
       for
-        record <- loginRepository.findByState(state).someOrFail(AuthConversationNotFound())
-        preset <- clientService.findPreset(record.presetId).someOrFail(AuthConversationNotFound())
+        record <- findOwnLogin(state, browserBinding)
+        preset <- clientService.findPreset(record.presetId)
+          .someOrFail(AuthConversationNotFound())
+          .tapError(_ => Observability.setError("preset_not_found"))
         client <- clientService.findClient(preset.clientId).someOrFail(ClientNotFound(preset.clientId))
         tokens <- ssoClient.exchangeAuthorizationCode(
           code = code,
@@ -257,8 +343,10 @@ object EdgeService:
         accessToken = tokens.accessToken,
         cookieTtl = cookieTtl,
         postLoginRedirectUri = preset.postLoginRedirectUri,
+        returnTo = record.returnTo,
         cookieDomain = preset.cookieDomain,
         cookiePath = preset.cookiePath,
+        loginCookiePath = loginCookiePath(preset),
       )
 
     override def completeError(
@@ -266,15 +354,21 @@ object EdgeService:
         error: String,
         errorDescription: Option[String],
         errorUri: Option[String],
-    ): IO[Throwable | AuthConversationNotFound, URL] =
+        browserBinding: Option[String],
+    ): IO[Throwable | AuthConversationNotFound, LoginErrorRedirect] =
       for
-        record <- loginRepository.findByState(state).someOrFail(AuthConversationNotFound())
-        preset <- clientService.findPreset(record.presetId).someOrFail(AuthConversationNotFound())
+        record <- findOwnLogin(state, browserBinding)
+        preset <- clientService.findPreset(record.presetId)
+          .someOrFail(AuthConversationNotFound())
+          .tapError(_ => Observability.setError("preset_not_found"))
         _ <- loginRepository.deleteByState(state)
-      yield preset.postLoginRedirectUri.toUrl.addQueryParams(
-        List("error" -> error) ++
-          errorDescription.map("error_description" -> _) ++
-          errorUri.map("error_uri" -> _),
+      yield LoginErrorRedirect(
+        url = ReturnTo.onto(preset.postLoginRedirectUri.toUrl, record.returnTo).addQueryParams(
+          List("error" -> error) ++
+            errorDescription.map("error_description" -> _) ++
+            errorUri.map("error_uri" -> _),
+        ),
+        loginCookiePath = loginCookiePath(preset),
       )
 
     /** Records this preset's participation in the SSO session. Written on every login
@@ -291,6 +385,7 @@ object EdgeService:
         ids <- extractTokenIds(tokens)
         _ <- ZIO.foreachDiscard(tokens.refreshToken)(Observability.setRefreshToken)
         encryptedRefreshToken <- ZIO.foreach(tokens.refreshToken)(encryptRefreshToken)
+        encryptedAccessToken <- encryptAccessToken(tokens.accessToken)
         _ <- sessionRepository.create(
           EdgeSessionRecord(
             publicSessionId = ids.sessionId,
@@ -298,6 +393,9 @@ object EdgeService:
             accessTokenId = ids.accessTokenId,
             encryptedRefreshToken = encryptedRefreshToken,
             expiresAt = now.plusSeconds(cookieTtl.toSeconds + sessionExpiryGracePeriod.toSeconds),
+            previousAccessTokenId = None,
+            encryptedAccessToken = Some(encryptedAccessToken),
+            rotatedAt = None,
           ),
         )
       yield ()
@@ -317,6 +415,18 @@ object EdgeService:
         encryptionKey,
       ).map(Secret(_))
 
+    // Stored so that a request which lost a refresh race can be handed the winner's token. It is
+    // sealed like the refresh token: the row then reveals no more than it did before.
+    private def encryptAccessToken(accessToken: AccessToken): Task[Secret] =
+      securityService.encryptAes256(
+        accessToken.getBytes(StandardCharsets.UTF_8),
+        encryptionKey,
+      ).map(Secret(_))
+
+    private def decryptAccessToken(encrypted: Secret): Task[AccessToken] =
+      securityService.decryptAes256(encrypted, encryptionKey)
+        .map(bytes => AccessToken(new String(bytes, StandardCharsets.UTF_8)))
+
     private def decryptRefreshToken(encrypted: Secret): Task[RefreshToken] =
       securityService.decryptAes256(encrypted, encryptionKey)
         .map(bytes => RefreshToken(new String(bytes, StandardCharsets.UTF_8)))
@@ -331,22 +441,33 @@ object EdgeService:
         case Outcome.Forbidden => ZIO.succeed(Response.forbidden)
         case Outcome.NotFound => ZIO.succeed(Response.notFound)
         case Outcome.InternalServerError => ZIO.succeed(Response.internalServerError)
+        case Outcome.UnsupportedMediaType => ZIO.succeed(Response.status(Status.UnsupportedMediaType))
+        // No body: a body is a contract callers would parse, and everything a caller can act on is in the headers. `Retry-After` is whole
+        // seconds, rounded up; the policy is named by `RateLimit-Policy`, never the key or what else is being counted.
+        case Outcome.RateLimited(_, retryAfterSeconds, headers) =>
+          ZIO.succeed(
+            Response.status(Status.TooManyRequests)
+              .addHeader(Header.Custom("Retry-After", retryAfterSeconds.toString))
+              .addHeaders(Headers(headers.map((name, value) => Header.Custom(name, value)))),
+          )
         case Outcome.Reauthenticate(uri, clear) =>
           ZIO.succeed(
             Response.status(Status.Unauthorized)
               .addHeader(Header.Location(uri))
               .addCookie(clear),
           )
-        case Outcome.InsufficientAuthentication(acr, maxAge) =>
+        case Outcome.InsufficientAuthentication(acr, maxAge, loginUri) =>
           val params = List(
             Some("""error="insufficient_user_authentication""""),
             acr.map(v => s"""acr_values="$v""""),
             maxAge.map(v => s"""max_age="$v""""),
           ).flatten.mkString(", ")
-          ZIO.succeed(
-            Response.status(Status.Unauthorized)
-              .addHeader(Header.Custom("WWW-Authenticate", s"Bearer $params")),
-          )
+          val challenge = Response.status(Status.Unauthorized)
+            .addHeader(Header.Custom("WWW-Authenticate", s"Bearer $params"))
+          // A browser holding the session cookie cannot read the challenge and build the login URL the
+          // way an API client does: it is handed the URL that asks for what is missing, so the page
+          // only has to go there.
+          ZIO.succeed(loginUri.fold(challenge)(uri => challenge.addHeader(Header.Location(uri))))
         case Outcome.InvalidDpopProof =>
           ZIO.succeed(
             Response.status(Status.Unauthorized)
@@ -516,8 +637,10 @@ object EdgeService:
           )
         typedClaims <- ZIO.fromEither(session.claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
         _ <- logAccessTokenClaims(typedClaims)
+        // R2: from the verified token, before the revocation check and before the DPoP proof records its state
+        _ <- observeIdentity(typedClaims)
         _ <- checkRevoked(typedClaims)
-        _ <- checkTokenBinding(request, session.accessToken, typedClaims, authSource)
+        binding <- checkTokenBinding(request, session.accessToken, typedClaims, authSource)
 
         resource <- resourceService.findByResourceId(resourceId).someOrFail(Outcome.NotFound)
         endpoint <- findEndpoint(resource.endpoints, request.method.name, restPath)
@@ -527,7 +650,9 @@ object EdgeService:
         parsedBody <- readJsonBody(request)
         _ <- checkPermissions(typedClaims, endpoint)
         _ <- checkAudience(resource, typedClaims)
-        userInfo <- fetchUserInfo(session.accessToken, typedClaims)
+        // R3: the route is known and the caller may use it; nothing has been asked of auth or the resource yet
+        _ <- observeRoute(typedClaims, resourceId, endpoint)
+        userInfo <- fetchUserInfo(session.accessToken, typedClaims, binding)
           .when(endpoint.fetchUserInfo)
           .someOrElse(Json.Obj())
           .mapError {
@@ -539,17 +664,70 @@ object EdgeService:
             case _ => ZIO.unit
           }
         celContext <- checkRules(session.claims, userInfo, request, endpoint, restPath, parsedBody)
-        _ <- checkStepUp(endpoint, typedClaims, now, celContext)
+        _ <- checkStepUp(endpoint, typedClaims, now, celContext, authSource)
         upstream <- buildUpstreamRequest(resource, endpoint, restPath, request, parsedBody, session.accessToken, celContext)
         // `collect` inside the scope: the response this returns is handed straight back to
         // edge's own server, which streams it to the caller long after the upstream scope has
         // closed. Left streaming, whatever the body had not yet delivered by then dies with the
         // upstream connection, and the caller sees its own connection close mid-body.
         dispatched <- Clock.nanoTime
-        _ <- ProxyMetrics.beforeUpstream(resourceId, dispatched - started)
-        response <- ZIO.scoped(httpClient.request(upstream).flatMap(_.collect))
+        authCall =
+          if session.rotatedCookie.isDefined then ProxyMetrics.AuthCall.Refresh
+          else if endpoint.fetchUserInfo then ProxyMetrics.AuthCall.UserInfo
+          else ProxyMetrics.AuthCall.None
+        _ <- ProxyMetrics.beforeUpstream(resourceId, authCall, dispatched - started)
+        response <- versola.util.http.Observability.asInternalCall(ZIO.scoped(httpClient.request(upstream).flatMap(_.collect)))
         stripped = response.removeHeader(Header.SetCookie)
       yield session.rotatedCookie.fold(stripped)(stripped.addCookie)
+
+    /** Rate limit checkpoints R2 and R3. A policy in `enforce` refuses the call here with `429` and `Retry-After`; one in
+      * `shadow` only counts `would_limit` and the request goes on unchanged. With no policy at the checkpoint this is one
+      * volatile read and builds nothing. A refused call has not yet been revoked-checked, DPoP-recorded (R2), asked of
+      * `/userinfo` or sent upstream (R2 and R3). Refresh exchanges are not counted: the proxied call is what is counted.
+      *
+      * Every value is from the verified token or the matched route, never from the request as sent. The endpoint is the
+      * registered template (the one the metrics use), not the concrete path.
+      */
+    private def observeIdentity(claims: AccessTokenClaims): IO[Outcome, Unit] =
+      if !rateLimiter.active(Checkpoint.Identity) then ZIO.unit
+      else
+        Clock.nanoTime.flatMap: now =>
+          val keys = identityKeys(claims)
+          refuseIfLimited(Checkpoint.Identity, keys, rateLimiter.check(Checkpoint.Identity, keys, now))
+
+    private def observeRoute(
+        claims: AccessTokenClaims,
+        resourceId: ResourceId,
+        endpoint: ResourceEndpoint,
+    ): IO[Outcome, Unit] =
+      if !rateLimiter.active(Checkpoint.Route) then ZIO.unit
+      else
+        Clock.nanoTime.flatMap: now =>
+          val keys = RateLimitKeys(
+            client = claims.clientId.toString,
+            subject = claims.subject,
+            session = claims.sid.fold("")(_.toString),
+            jkt = claims.confirmation.flatMap(_.jkt).getOrElse(""),
+            resource = resourceId.toString,
+            endpoint = endpoint.template(resourceId),
+          )
+          refuseIfLimited(Checkpoint.Route, keys, rateLimiter.check(Checkpoint.Route, keys, now))
+
+    // The code is the closed `rate_limited`; the policy name is operator-chosen (a closed set per edge), not caller input.
+    private def refuseIfLimited(point: Checkpoint, keys: RateLimitKeys, decision: RateDecision): IO[Outcome, Unit] =
+      decision match
+        case RateDecision.Allowed => ZIO.unit
+        case limited @ RateDecision.Limited(policy, retryAfterSeconds) =>
+          Observability.setError("rate_limited", Some(policy)) *>
+            ZIO.fail(Outcome.RateLimited(policy, retryAfterSeconds, rateLimiter.responseHeaders(limited, point, keys)))
+
+    private def identityKeys(claims: AccessTokenClaims): RateLimitKeys =
+      RateLimitKeys(
+        client = claims.clientId.toString,
+        subject = claims.subject,
+        session = claims.sid.fold("")(_.toString),
+        jkt = claims.confirmation.flatMap(_.jkt).getOrElse(""),
+      )
 
     private enum AuthSource:
       case Cookie(presetId: PresetId)
@@ -607,23 +785,32 @@ object EdgeService:
       * parsing on this side -- #320), so it cannot tell a holder of a leaked bound token from
       * the client the token was bound to, and §3 is explicit that a bound token must not be
       * honoured for anyone else.
+      *
+      * The one place edge can see a caller's certificate is the handshake of its own mutual-TLS
+      * listener (`EdgeMutualTls`): a `Bearer` token arriving there is judged against the
+      * certificate presented, and honoured when that is the one it names. Every other
+      * presentation is judged as above, whichever port it came in on.
       */
     private def checkTokenBinding(
         request: Request,
         accessToken: AccessToken,
         claims: AccessTokenClaims,
         authSource: AuthSource,
-    ): IO[Outcome, Unit] =
-      val boundKey = claims.confirmation.flatMap(_.jkt)
-      val boundCertificate = claims.confirmation.flatMap(_.certificateThumbprint)
-      (boundKey, boundCertificate, authSource) match
-        // Bound to both: the key is only half of what the client proved at issuance, and the
-        // certificate half cannot be shown here, so a valid proof must not be enough.
-        case (Some(_), Some(_), AuthSource.Header(AuthScheme.Dpop)) =>
+    ): IO[Outcome, BindingCheck] =
+      val presentation = authSource match
+        case AuthSource.Cookie(_) => Presentation.Cookie
+        case AuthSource.Header(AuthScheme.Bearer) =>
+          request.remoteCertificate match
+            case Some(certificate: X509Certificate) => Presentation.BearerOverMutualTls(TokenBinding.thumbprint(certificate))
+            case _ => Presentation.Bearer
+        case AuthSource.Header(AuthScheme.Dpop) => Presentation.Dpop
+      val check = TokenBinding.check(claims.confirmation, presentation)
+      (check match
+        case BindingCheck.CertificateOutsideSession =>
           Observability.setError("certificate_bound_token_outside_session") *>
             ZIO.fail(Outcome.Unauthorized)
 
-        case (Some(jkt), _, AuthSource.Header(AuthScheme.Dpop)) =>
+        case BindingCheck.VerifyProof(jkt) =>
           val verified =
             for
               proof <- DpopVerifier.proofHeader(request)
@@ -649,40 +836,37 @@ object EdgeService:
               Observability.setError(s"dpop_${error.productPrefix.toLowerCase}") *>
                 ZIO.fail(Outcome.InvalidDpopProof)
 
-        case (Some(_), _, _) =>
+        case BindingCheck.Downgrade =>
           Observability.setError("dpop_downgrade") *> ZIO.fail(Outcome.InvalidDpopProof)
-
-        // The session cookie is edge's own copy of the token, and the certificate it is bound
-        // to is one edge still holds -- and presents on every call it makes with this token.
-        case (None, Some(_), AuthSource.Cookie(_)) => ZIO.unit
-
-        case (None, Some(_), _) =>
-          Observability.setError("certificate_bound_token_outside_session") *>
-            ZIO.fail(Outcome.Unauthorized)
 
         // A proof signed with some key says nothing about a token that was never bound to
         // one: anyone holding the token could have produced it. §7.1 has the resource server
         // treat the token as invalid rather than fall back to bearer semantics.
-        case (None, None, AuthSource.Header(AuthScheme.Dpop)) =>
+        case BindingCheck.UnboundDpop =>
           Observability.setError("dpop_unbound_token") *> ZIO.fail(Outcome.Unauthorized)
 
-        case (None, None, _) => ZIO.unit
+        case BindingCheck.Accept | BindingCheck.AcceptCallerCertificate => ZIO.unit
+      ).as(check)
 
     /** Auth enforces a token's binding on `/userinfo` as strictly as the proxy enforces it
-      * here, so the call has to carry whatever that binding names -- and the two are carried
-      * in different places: an edge assertion in a header for a key-bound token, the
-      * certificate itself in the handshake for a certificate-bound one. Only the second needs
-      * the client looked up: its certificate is part of the registration central syncs, not
-      * of the token.
+      * here, so the call has to say what edge already established -- and says it by the
+      * handshake, not by a header: a token bound to the certificate of one of this edge's own
+      * sessions is presented over that client's certificate (looked up, as it is part of the
+      * registration central syncs, not of the token), and one whose holder this edge verified at
+      * its boundary -- a key proof, or the certificate of its mutual-TLS listener -- over this
+      * edge's own certificate, which auth accepts only from an edge it trusts.
       */
     private def fetchUserInfo(
         accessToken: AccessToken,
         claims: AccessTokenClaims,
+        check: BindingCheck,
     ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
       for
         binding <-
           (claims.confirmation.flatMap(_.jkt), claims.confirmation.flatMap(_.certificateThumbprint)) match
             case (Some(_), _) => ZIO.succeed(SSOClient.TokenBinding.Key)
+            case (None, Some(_)) if check == BindingCheck.AcceptCallerCertificate =>
+              ZIO.succeed(SSOClient.TokenBinding.CallerCertificate)
             case (None, Some(_)) =>
               clientService.findClient(claims.clientId)
                 .someOrFail(ClientNotFound(claims.clientId))
@@ -754,6 +938,7 @@ object EdgeService:
         claims: AccessTokenClaims,
         now: Instant,
         celContext: Map[String, AnyRef],
+        authSource: AuthSource,
     ): IO[Outcome, Unit] =
       def unsatisfied(required: String): Option[String] =
         val requiredSet = required.split(' ').toSet.filter(_.nonEmpty)
@@ -781,11 +966,24 @@ object EdgeService:
         requiredAcr = Option.when(conditionPassed)(endpoint.stepUpAcr).flatten
         acrFailed = requiredAcr.flatMap(unsatisfied)
 
+        maxAgeRequired = Option.when(maxAgeFailed)(endpoint.maxAge).flatten
         _ <- (Observability.setError("step_up_required") *> ZIO.fail(Outcome.InsufficientAuthentication(
           acr = acrFailed,
-          maxAge = Option.when(maxAgeFailed)(endpoint.maxAge).flatten,
+          maxAge = maxAgeRequired,
+          loginUri = authSource match
+            case AuthSource.Cookie(presetId) => Some(stepUpLoginUri(presetId, requiredAcr, maxAgeRequired))
+            case AuthSource.Header(_) => None,
         ))).when(acrFailed.isDefined || maxAgeFailed)
       yield ()
+
+    /** The edge login of the preset the caller's session came from, asking for what the endpoint requires: its
+      * `acr_values` whenever the endpoint asks for one, and the `max_age` when the sign-in is too old. The class
+      * is asked for again even when only the age failed: a sign-in that is not asked for it yields a token
+      * without it, and the very next call would be refused for that. Both go on to `/authorize` through `/login`. */
+    private def stepUpLoginUri(presetId: PresetId, acr: Option[String], maxAge: Option[Int]): URL =
+      val login = URL(Path.root / "login" / presetId)
+      val withAcr = acr.fold(login)(login.addQueryParam("acr_values", _))
+      maxAge.fold(withAcr)(age => withAcr.addQueryParam("max_age", age.toString))
 
     private def checkRules(
         claims: Json.Obj,
@@ -815,34 +1013,150 @@ object EdgeService:
             case outcome: Outcome => ZIO.fail(outcome)
       .as(context)
 
+    // Auth rotates refresh tokens strictly: presenting one a second time revokes the whole family
+    // (OAuthTokenService.detectReplay), with no grace window. Two requests carrying the same expired
+    // cookie must therefore not both refresh. The one that claims the row's lease does; the others
+    // are handed the token it produces. The lease is a column and not a database lock because the
+    // refresh is an HTTP call to auth, and no connection or transaction may stay open across it.
     private def refreshSession(
         accessTokenId: AccessTokenId,
         cookiePresetId: PresetId,
         now: Instant,
     ): IO[Throwable | Outcome, ActiveSession] =
+      sessionRepository.claimRefresh(accessTokenId, now, now.plus(refreshLeaseDuration))
+        .flatMap:
+          case Some(record) => refreshClaimed(accessTokenId, record, cookiePresetId)
+          case None => adoptRotation(accessTokenId, cookiePresetId)
+
+    private def refreshClaimed(
+        accessTokenId: AccessTokenId,
+        record: EdgeSessionRecord,
+        cookiePresetId: PresetId,
+    ): IO[Throwable | Outcome, ActiveSession] =
       // When the session record, its preset or its refresh token is gone the
       // session is fully expired; fall back to the preset carried by the cookie so
       // the caller is sent to the right app's login, whichever app this edge is fronting.
+      val refreshed =
+        for
+          preset <- clientService.findPreset(record.presetId)
+            .someOrElseZIO(failWithReauthenticate(cookiePresetId, None, None))
+          encryptedRefreshToken <- ZIO.succeed(record.encryptedRefreshToken)
+            .someOrElseZIO(failWithReauthenticate(record.presetId, preset.cookieDomain, preset.cookiePath))
+          decryptedRefreshToken <- decryptRefreshToken(encryptedRefreshToken).catchSome:
+            // GCM authenticates as it decrypts, so a token sealed under another EDGE_TOKEN_ENC_KEY
+            // (lost or replaced key) or altered in the store fails the tag check; a value shorter
+            // than IV + tag is rejected before that. Both mean this row can never be read again:
+            // send the caller to log in, which overwrites the row. Any other failure of the
+            // decryption itself -- a key that is not an AES key, say -- is not the session's fault
+            // and stays a failure.
+            // No separate log line: the error code on the HTTP log context is enough.
+            case _: AEADBadTagException | _: IllegalArgumentException =>
+              Observability.setError("refresh_token_undecryptable") *>
+                failWithReauthenticate(record.presetId, preset.cookieDomain, preset.cookiePath)
+          session <- rotate(decryptedRefreshToken, preset, record.presetId)
+        yield session
+
+      // A successful rotation ends the lease itself (the upsert in storeSession). Anything else must
+      // hand it back, or the requests waiting on this one sit out the whole lease. A failed release
+      // is ignored so it cannot replace the error that got us here; the lease then just expires.
+      // A timed-out exchange is the exception: auth may still have spent the token, so the lease is
+      // kept and runs out on its own rather than letting a waiter present the token at once.
+      refreshed.onError: cause =>
+        if cause.failureOption.exists(_.isInstanceOf[RefreshExchangeTimedOut]) then ZIO.unit
+        else sessionRepository.releaseRefresh(accessTokenId).ignore
+
+    /** Reached when this request did not get the lease: either another request is refreshing the same
+      * session right now, or it already did and this request carries the cookie from before. In both
+      * cases the result is the other request's access token, so auth is not called.
+      */
+    private def adoptRotation(
+        accessTokenId: AccessTokenId,
+        cookiePresetId: PresetId,
+    ): IO[Throwable | Outcome, ActiveSession] =
+      findRotated(accessTokenId).flatMap:
+        case Some(rotated) => sessionFromRotated(rotated, cookiePresetId)
+        case None =>
+          sessionRepository.findByAccessTokenId(accessTokenId).flatMap:
+            case Some(_) => awaitRotation(accessTokenId, cookiePresetId, refreshLeaseDuration.toMillis / refreshPollInterval.toMillis)
+            case None =>
+              // No row under the old id. Either the session is gone, or the holder committed after
+              // the read above and before this one; reading again tells the two apart.
+              findRotated(accessTokenId).flatMap:
+                case Some(rotated) => sessionFromRotated(rotated, cookiePresetId)
+                case None => failWithReauthenticate(cookiePresetId, None, None)
+
+    // The row this request's stale cookie lost to, if the rotation is recent enough to honour it (see
+    // rotationGracePeriod). Rotation time is stamped when the holder stores its result, so a waiter
+    // that sees the result is always inside the window.
+    private def findRotated(accessTokenId: AccessTokenId): Task[Option[EdgeSessionRecord]] =
+      Clock.instant.flatMap(now =>
+        sessionRepository.findByPreviousAccessTokenId(accessTokenId, now.minus(rotationGracePeriod)),
+      )
+
+    // Polls instead of subscribing to anything: edge replicas share nothing but the database. Each
+    // round also retries the claim, so a holder that failed (and released) or died (lease expired)
+    // does not leave its waiters to time out; one of them takes over and refreshes.
+    private def awaitRotation(
+        accessTokenId: AccessTokenId,
+        cookiePresetId: PresetId,
+        remaining: Long,
+    ): IO[Throwable | Outcome, ActiveSession] =
+      if remaining <= 0 then reauthenticateFromCookie(cookiePresetId)
+      else
+        for
+          _ <- ZIO.sleep(refreshPollInterval)
+          rotated <- findRotated(accessTokenId)
+          session <- rotated match
+            case Some(record) => sessionFromRotated(record, cookiePresetId)
+            case None if remaining % claimRetryEveryPolls != 0 =>
+              awaitRotation(accessTokenId, cookiePresetId, remaining - 1)
+            case None =>
+              for
+                now <- Clock.instant
+                claimed <- sessionRepository.claimRefresh(accessTokenId, now, now.plus(refreshLeaseDuration))
+                session <- claimed match
+                  case Some(record) => refreshClaimed(accessTokenId, record, cookiePresetId)
+                  case None => awaitRotation(accessTokenId, cookiePresetId, remaining - 1)
+              yield session
+        yield session
+
+    /** Serves the access token another request obtained by refreshing this session, validated again
+      * here. The cookie lifetime is what is left of the row's, so it ends when the winner's does.
+      */
+    private def sessionFromRotated(
+        rotated: EdgeSessionRecord,
+        cookiePresetId: PresetId,
+    ): IO[Throwable | Outcome, ActiveSession] =
       for
-        record <- sessionRepository.findByAccessTokenId(accessTokenId)
+        preset <- clientService.findPreset(rotated.presetId)
           .someOrElseZIO(failWithReauthenticate(cookiePresetId, None, None))
-        preset <- clientService.findPreset(record.presetId)
-          .someOrElseZIO(failWithReauthenticate(cookiePresetId, None, None))
-        encryptedRefreshToken <- ZIO.succeed(record.encryptedRefreshToken)
-          .someOrElseZIO(failWithReauthenticate(record.presetId, preset.cookieDomain, preset.cookiePath))
-        decryptedRefreshToken <- decryptRefreshToken(encryptedRefreshToken).catchSome:
-          // GCM authenticates as it decrypts, so a token sealed under another EDGE_TOKEN_ENC_KEY
-          // (lost or replaced key) or altered in the store fails the tag check; a value shorter
-          // than IV + tag is rejected before that. Both mean this row can never be read again:
-          // send the caller to log in, which overwrites the row. Any other failure of the
-          // decryption itself -- a key that is not an AES key, say -- is not the session's fault
-          // and stays a failure.
-          // No separate log line: the error code on the HTTP log context is enough.
+        reauthenticate = failWithReauthenticate(rotated.presetId, preset.cookieDomain, preset.cookiePath)
+        encryptedAccessToken <- ZIO.succeed(rotated.encryptedAccessToken).someOrElseZIO(reauthenticate)
+        // An unreadable value is handled as for the refresh token: this row cannot serve the caller.
+        accessToken <- decryptAccessToken(encryptedAccessToken).catchSome:
           case _: AEADBadTagException | _: IllegalArgumentException =>
-            Observability.setError("refresh_token_undecryptable") *>
-              failWithReauthenticate(record.presetId, preset.cookieDomain, preset.cookiePath)
-        session <- rotate(decryptedRefreshToken, preset, record.presetId)
-      yield session
+            Observability.setError("access_token_undecryptable") *> reauthenticate
+        publicKeys <- jwksService.getPublicKeys
+        // Expired or malformed: the winner's token is no better than the one the caller came with.
+        claims <- JWT.deserialize[Json.Obj](accessToken, publicKeys, JWT.Type.AccessToken)
+          .orElse(reauthenticate)
+        now <- Clock.instant
+        remaining = Duration.fromSeconds(rotated.expiresAt.getEpochSecond - sessionExpiryGracePeriod.toSeconds - now.getEpochSecond)
+        cookie = EdgeSessionCookie(
+          presetId = rotated.presetId,
+          accessToken = accessToken,
+          ttl = if remaining.compareTo(minAdoptedCookieTtl) < 0 then minAdoptedCookieTtl else remaining,
+          domain = preset.cookieDomain,
+          path = preset.cookiePath,
+          now = now,
+        )
+      yield ActiveSession(accessToken, claims, Some(cookie))
+
+    // Waiting for the holder timed out. The preset is looked up for the cookie's domain and path, so
+    // that clearing it reaches the cookie that was set.
+    private def reauthenticateFromCookie(cookiePresetId: PresetId): IO[Throwable | Outcome, Nothing] =
+      clientService.findPreset(cookiePresetId).flatMap: preset =>
+        failWithReauthenticate(cookiePresetId, preset.flatMap(_.cookieDomain), preset.flatMap(_.cookiePath))
 
     private def rotate(
         refreshToken: RefreshToken,
@@ -854,6 +1168,7 @@ object EdgeService:
           _ <- Observability.setPreviousRefreshToken(refreshToken)
           client <- clientService.findClient(preset.clientId).someOrFail(ClientNotFound(preset.clientId))
           tokens <- ssoClient.exchangeRefreshToken(refreshToken, client.id, client.credential)
+            .timeoutFail(RefreshExchangeTimedOut())(refreshExchangeTimeout)
           cookieTtl = Duration.fromSeconds(tokens.refreshTokenExpiresIn.getOrElse(tokens.expiresIn))
           _ <- storeSession(tokens, presetId, cookieTtl)
           publicKeys <- jwksService.getPublicKeys
@@ -1037,6 +1352,12 @@ object EdgeService:
           // Body was already read before permission check; reconstruct from the parsed JSON
           // so we don't double-consume the body stream when forwarding to upstream.
           ZIO.succeed(Body.fromString(json.toJson, StandardCharsets.UTF_8))
+        // An inject rule is trusted only because edge overwrites the field. A body edge did not parse (another content type) would
+        // reach upstream as the client wrote it, `userId` or `callerTenantId` included, and upstream reads it whatever the
+        // content type says: refused, not forwarded.
+        case None if rules.nonEmpty && !request.body.isEmpty =>
+          Observability.setError("inject_body_not_json", Some("an endpoint with body inject rules got a body that is not JSON")) *>
+            ZIO.fail(Outcome.UnsupportedMediaType)
         case None =>
           ZIO.succeed(request.body)
 
@@ -1047,8 +1368,11 @@ object EdgeService:
           if raw.isEmpty then ZIO.none
           else ZIO.fromEither(raw.fromJson[Json]).mapError(new RuntimeException(_)).asSome
 
+    /** `application/json`, and the JSON merge patch type (RFC 7396 §3, `application/merge-patch+json`), which is a JSON document too. */
     private def isJsonRequest(request: Request): Boolean =
-      request.header(Header.ContentType).exists(_.mediaType == MediaType.application.json)
+      request.header(Header.ContentType).exists(contentType =>
+        contentType.mediaType == MediaType.application.json || contentType.mediaType.fullType == "application/merge-patch+json",
+      )
 
     /** Picks the most specific endpoint whose template matches the request: a static
       * segment always wins over a `{name}` placeholder at the same position, so
@@ -1102,11 +1426,17 @@ object EdgeService:
     case Forbidden
     case NotFound
     case InternalServerError
+
+    /** The endpoint has body inject rules and the body is not JSON that edge could rewrite. */
+    case UnsupportedMediaType
+
+    /** A rate limit policy in `enforce` refused the call: `429`, with the wait in whole seconds. */
+    case RateLimited(policy: String, retryAfterSeconds: Int, headers: List[(String, String)])
     case Reauthenticate(loginUri: URL, clearCookie: Cookie.Response)
 
     /** The token is valid but its authentication does not meet what this endpoint
       * requires (RFC 9470 §2): ACR too low (`acr`) and/or too old (`maxAge`). */
-    case InsufficientAuthentication(acr: Option[String], maxAge: Option[Int])
+    case InsufficientAuthentication(acr: Option[String], maxAge: Option[Int], loginUri: Option[URL])
 
     /** RFC 9449 §7.1: the token is sender-constrained and the accompanying proof of that
       * key was absent, malformed, bound elsewhere, or already used. */

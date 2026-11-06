@@ -62,7 +62,7 @@ object JwksSyncClientSpec extends ZIOSpecDefault:
         request <- seen.get.someOrFail(RuntimeException("no request captured"))
       yield assertTrue(
         request.method == Method.GET,
-        request.url.path.encode.contains("configuration/jwks/sync"),
+        request.url.path.encode.contains("edge/sync/jwks"),
         request.header(Header.Authorization).contains(Header.Authorization.Bearer(syncToken)),
         keys.active.id == "central-key",
       )

@@ -1,5 +1,6 @@
 package versola.oauth.clientauth
 
+import versola.audit.ClientAuthFailures
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{
   AuthMethod,
@@ -162,13 +163,14 @@ enum AuthenticatedEndpoint(val path: String):
     case SecurityProfile.standard => JwtAudience.AnyOf(acceptedAudiences(issuer))
 
 object ClientAuthentication:
-  def live: ZLayer[OAuthConfigurationService & ClientAssertionService & CoreConfig, Nothing, ClientAuthentication] =
-    ZLayer.fromFunction(Impl(_, _, _))
+  def live: ZLayer[OAuthConfigurationService & ClientAssertionService & CoreConfig & ClientAuthFailures, Nothing, ClientAuthentication] =
+    ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
       oauthClientService: OAuthConfigurationService,
       clientAssertionService: ClientAssertionService,
       config: CoreConfig,
+      failures: ClientAuthFailures,
   ) extends ClientAuthentication:
 
     override def certificate(
@@ -228,6 +230,9 @@ object ClientAuthentication:
         endpoint: AuthenticatedEndpoint,
         secretRequired: Boolean = false,
     ): IO[Throwable | Unit, OAuthClientRecord] =
+      // A refusal is told to the audit log (`client.auth_failed`, coalesced) with the reason, which the caller never learns.
+      def refuse(reason: String, method: String): IO[Unit, Nothing] =
+        failures.failed(credentials.clientId, reason, method) *> ZIO.fail(())
       Observability.setClientId(credentials.clientId) *> (credentials match
         case ClientIdWithAssertion(clientId, assertion) =>
           oauthClientService.find(clientId).flatMap:
@@ -245,9 +250,12 @@ object ClientAuthentication:
                   case error: Throwable => error
                   case _: ClientAssertionService.Error => ()
                 }
+                .tapError:
+                  case _: Throwable => ZIO.unit
+                  case _ => failures.failed(clientId, "invalid_assertion", AuthMethod.private_key_jwt.toString)
                 .as(client)
             case _ =>
-              ZIO.fail(())
+              refuse("method_mismatch", AuthMethod.private_key_jwt.toString)
 
         case ClientIdWithSecret(clientId, clientSecret) =>
           oauthClientService.find(clientId).flatMap:
@@ -261,18 +269,20 @@ object ClientAuthentication:
                     certificate.exists(_.matches(auth))
                   case MutualTlsAuth.SelfSignedTlsClientAuth() =>
                     certificate.exists(cert => client.jwks.exists(cert.matchesKey)),
-              )(())
+              )(()).tapError(_ => failures.failed(clientId, "certificate_mismatch", client.authMethod.toString))
             // The client registered an assertion as its credential, so a secret is not one.
             // Accepting one here would leave `private_key_jwt` an option an attacker can
             // simply decline to use.
             case Some(client) if client.authMethod == AuthMethod.private_key_jwt =>
-              ZIO.fail(())
+              refuse("method_mismatch", AuthMethod.client_secret.toString)
             case _ if secretRequired && clientSecret.isEmpty =>
-              ZIO.fail(())
+              refuse("secret_required", AuthMethod.client_secret.toString)
             case _ =>
               oauthClientService.verifySecret(clientId, clientSecret)
                 .someOrFail(())
-      ).tap(client => ZIO.fail(()).whenZIO(refusedByProfile(client)))
+                // an unknown client and a wrong secret are one answer, and one reason here
+                .tapError(_ => failures.failed(clientId, "invalid_credentials", AuthMethod.client_secret.toString))
+      ).tap(client => refuse("profile_refused", client.authMethod.toString).whenZIO(refusedByProfile(client)))
 
     /** Only a public client can be refused here: every confidential method is one FAPI 2.0
       * either admits or leaves to central to refuse at registration, since the client did

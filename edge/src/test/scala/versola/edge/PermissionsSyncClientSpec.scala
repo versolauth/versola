@@ -56,7 +56,7 @@ object PermissionsSyncClientSpec extends ZIOSpecDefault:
         request <- seen.get.someOrFail(RuntimeException("no request captured"))
       yield assertTrue(
         request.method == Method.GET,
-        request.url.path.encode.contains("configuration/permissions/sync"),
+        request.url.path.encode.contains("edge/sync/permissions"),
         request.header(Header.Authorization).contains(Header.Authorization.Bearer(syncToken)),
         permissions == Map(
           PermissionId("oauth:read") -> Set(ResourceEndpointId(endpointA), ResourceEndpointId(endpointB)),

@@ -38,13 +38,13 @@ object OAuthClientsSyncClient:
       centralSyncTokenService: CentralSyncTokenService,
       enrollment: ClientCertificateEnrollment,
   ) extends OAuthClientsSyncClient:
-    private val ClientsURL = config.central.url / "configuration" / "clients" / "sync"
+    private val ClientsURL = config.central.url / "edge" / "sync" / "clients"
 
     private def fetch: Task[GetOAuthClientsSyncResponse] =
       for
         token <- centralSyncTokenService.getToken
         request = Request.get(ClientsURL).addHeader(Header.Authorization.Bearer(token))
-        response <- ZIO.scoped(httpClient.request(request).flatMap(_.bodyAs[GetOAuthClientsSyncResponse]))
+        response <- ZIO.scoped(centralSyncTokenService.syncRequest(httpClient, request).flatMap(_.bodyAs[GetOAuthClientsSyncResponse]))
       yield response
 
     override def getAll: Task[Map[ClientId, OAuthClient]] =
@@ -144,13 +144,13 @@ object OAuthClientsSyncClient:
         id: ClientId,
         secret: Option[String],
         accessTokenTtl: Duration,
-        permissions: Set[String] = Set.empty,
-        requireSignedRequestObject: Boolean = false,
-        requirePushedAuthorizationRequests: Boolean = false,
-        edgeSigningKey: Option[String] = None,
-        edgeClientCertificate: Option[String] = None,
-        applicationType: ApplicationType = ApplicationType.web,
-        redirectUris: Set[String] = Set.empty,
+        permissions: Set[String],
+        requireSignedRequestObject: Boolean,
+        requirePushedAuthorizationRequests: Boolean,
+        edgeSigningKey: Option[String],
+        edgeClientCertificate: Option[String],
+        applicationType: ApplicationType,
+        redirectUris: Set[String],
         edgeCertificateSubject: Option[CertificateSubject],
     ) derives JsonCodec
 

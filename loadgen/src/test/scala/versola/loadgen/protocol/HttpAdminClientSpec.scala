@@ -86,7 +86,7 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           num(body, "accessTokenTtl").contains(BigDecimal(900)),
           num(body, "refreshTokenTtl").contains(BigDecimal(15552000)),
           field(body, "authFlow").contains(webClient.authFlow),
-          field(body, "registrationFlow") == webClient.registrationFlow,
+          field(body, "registrationFlow").isEmpty,
           optionalStr(body, "backChannelLogoutUri") == webClient.backChannelLogoutUri,
           creds == ClientCreds(webClient.clientId, Some("secret-web-otp-0")),
         )
@@ -247,8 +247,8 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
         )
       },
       // A patchable field is cleared by an explicit null and left alone by omission, so a client
-      // that carried a registration flow the campaign no longer wants must be sent one.
-      test("clears a dropped registration flow and logout URI rather than omitting them") {
+      // that carried a logout URI the campaign no longer wants must be sent one.
+      test("clears a dropped logout URI rather than omitting it") {
         for
           (admin, fake) <- fakeAdmin()
           _ <- admin.registerClient(passkeyClient)
@@ -256,7 +256,7 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           state <- fake.snapshot
           update = parse(state.clientCalls(Method.PUT).head.body)
         yield assertTrue(
-          field(update, "registrationFlow").contains(Json.Null),
+          field(update, "registrationFlow").isEmpty,
           field(update, "backChannelLogoutUri").contains(Json.Null),
         )
       },
@@ -284,23 +284,7 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           stored.scopes == webClient.allowedScopes,
         )
       },
-      // Central validates the roles a registration flow grants while saving the client, so a
-      // pass that wrote the clients before the roles would be rejected outright.
-      test("is refused when the role its registration flow grants does not exist yet") {
-        for
-          fake <- FakeCentral.make()
-          _ <- TestClient.addRoutes(fake.handler.toRoutes)
-          client <- ZIO.service[Client]
-          admin <- HttpAdminClient.make(client, ProvisionFixtures.targets, ProvisionFixtures.provision)
-          error <- admin.registerClient(webClient).flip
-        yield assert(error)(
-          isSubtype[AdminCallFailed](
-            hasField[AdminCallFailed, String]("operation", _.operation, equalTo("registerClient")) &&
-              hasField[AdminCallFailed, Status]("status", _.status, equalTo(Status.BadRequest)),
-          ),
-        )
-      },
-      test("sends the blueprint's flow as a patch when the client keeps one") {
+      test("patches the blueprint's auth flow and scopes when the client keeps one") {
         for
           (admin, fake) <- fakeAdmin()
           _ <- admin.registerClient(webClient)
@@ -308,7 +292,7 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           state <- fake.snapshot
           update = parse(state.clientCalls(Method.PUT).head.body)
         yield assertTrue(
-          field(update, "registrationFlow") == webClient.registrationFlow,
+          field(update, "registrationFlow").isEmpty,
           field(update, "authFlow").contains(webClient.authFlow),
           strings(obj(update, "scope"), "add").toSet == webClient.allowedScopes,
         )
@@ -489,6 +473,8 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           strings(obj(body, "acrVocabulary"), versola.loadgen.protocol.Acr.OtpLevel) == List("otp"),
           field(obj(body, "submissionLimits"), "banDurationSeconds").isDefined,
           str(body, "securityProfile") == "standard",
+          str(obj(body, "emailRegistration"), "mode") == "open",
+          strings(body, "defaultRoles") == List(CampaignBlueprint.retailUserRoleId),
         )
       },
     ),

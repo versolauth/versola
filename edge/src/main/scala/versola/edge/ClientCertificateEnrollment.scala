@@ -66,7 +66,7 @@ object ClientCertificateEnrollment:
       held: Ref.Synchronized[Map[ClientId, Held]],
   ) extends ClientCertificateEnrollment:
 
-    private val SignUrl: URL = config.central.url / "configuration" / "clients" / "edge-certificate" / "sign"
+    private val SignUrl: URL = config.central.url / "edge" / "clients" / "edge-certificate" / "sign"
 
     override def certificateFor(clientId: ClientId, subject: CertificateSubject): Task[PrivateClientCertificate.Material] =
       // One enrolment at a time, and the same one for every caller that arrives while it runs.
@@ -94,7 +94,7 @@ object ClientCertificateEnrollment:
         request = Request.post(SignUrl, Body.fromString(body))
           .addHeader(Header.Authorization.Bearer(token))
           .addHeader(Header.ContentType(MediaType.application.json))
-        response <- ZIO.scoped(httpClient.request(request).flatMap(r => r.body.asString.map(r.status -> _)))
+        response <- ZIO.scoped(tokens.connection(httpClient).request(request).flatMap(r => r.body.asString.map(r.status -> _)))
         (status, text) = response
         _ <- ZIO.fail(RuntimeException(s"central refused the certificate request for client '$clientId' with $status: $text"))
           .unless(status.isSuccess)

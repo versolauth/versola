@@ -210,7 +210,12 @@ object StepUpFlowSpec extends E2ESpec:
       },
     ),
     suite("missing user (session / hint)")(
-      test("session user deleted -> step-up fails with access_denied") {
+      // Deleting a user purges their sessions with them, so the session cookie presented here
+      // no longer resolves to a session at all. Without `prompt=none` auth would start a fresh
+      // login (what the "hint user deleted" case below asserts); with it, OIDC Core 3.1.2.6
+      // requires the `login_required` error returned to the client, which is what a step-up
+      // on behalf of a vanished user has to end in rather than a form.
+      test("session user deleted -> prompt=none step-up fails with login_required") {
         for
           // Use shared client config but a fresh per-test user to avoid cross-test interference.
           (s, auth) <- setup(Flows.Id.EmailOtp)
@@ -233,10 +238,11 @@ object StepUpFlowSpec extends E2ESpec:
             redirectUri = s.redirectUri,
             sessionCookie = Some(sessionCookie),
             acrValues = Some(Acr.PasskeyLevel),
-          ).assertErrorRedirect("access_denied")
+            prompt = Some("none"),
+          ).assertErrorRedirect("login_required")
         yield assertCompletes
       },
-      test("session user deleted -> max_age=0 fails with access_denied") {
+      test("session user deleted -> prompt=none max_age=0 fails with login_required") {
         for
           (s, auth) <- setup(Flows.Id.EmailOtp)
           uid = java.util.UUID.randomUUID().toString.take(8)
@@ -258,7 +264,8 @@ object StepUpFlowSpec extends E2ESpec:
             redirectUri = s.redirectUri,
             sessionCookie = Some(sessionCookie),
             maxAge = Some(0),
-          ).assertErrorRedirect("access_denied")
+            prompt = Some("none"),
+          ).assertErrorRedirect("login_required")
         yield assertCompletes
       },
       test("hint user deleted (no session) -> fall back to login prompt") {

@@ -48,7 +48,7 @@ object DpopPolicySyncClientSpec extends ZIOSpecDefault:
       for (policy, request) <- served("""{"requireDpopNonce": true}""")
       yield assertTrue(
         request.method == Method.GET,
-        request.url.path.encode.contains("configuration/edges/dpop/sync"),
+        request.url.path.encode.contains("edge/sync/dpop"),
         request.header(Header.Authorization).contains(Header.Authorization.Bearer(syncToken)),
         policy == DpopPolicy(requireNonce = true),
       )

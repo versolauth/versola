@@ -28,13 +28,13 @@ object DpopPolicySyncClient:
       config: EdgeConfig,
       centralSyncTokenService: CentralSyncTokenService,
   ) extends DpopPolicySyncClient:
-    private val DpopPolicyURL = config.central.url / "configuration" / "edges" / "dpop" / "sync"
+    private val DpopPolicyURL = config.central.url / "edge" / "sync" / "dpop"
 
     override def getAll: Task[DpopPolicy] =
       for
         token <- centralSyncTokenService.getToken
         request = Request.get(DpopPolicyURL).addHeader(Header.Authorization.Bearer(token))
-        body <- ZIO.scoped(httpClient.request(request).flatMap(_.bodyAs[EdgeDpopSyncResponse]))
+        body <- ZIO.scoped(centralSyncTokenService.syncRequest(httpClient, request).flatMap(_.bodyAs[EdgeDpopSyncResponse]))
       yield DpopPolicy(requireNonce = body.requireDpopNonce)
 
   private case class EdgeDpopSyncResponse(

@@ -15,6 +15,7 @@ import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Instant
+import java.util.Locale
 import scala.util.Try
 
 /** RFC 9449 DPoP proof JWTs.
@@ -215,7 +216,12 @@ object Dpop:
       // RFC 9449 §4.3 step 9: compare against the request URI "ignoring any query and
       // fragment parts" -- normalization is this side's job, since a compliant client is free
       // to stamp `htu` with the full URL it actually called, query string and all.
-      _ <- ZIO.fail(Error.UriMismatch).unless(normalizeHtu(htu).contains(expectedUri))
+      //
+      // Both sides go through the same normalization: §4.3 step 9 compares "using the syntax-
+      // based normalization (RFC 3986 §6.2.2) and scheme-based normalization (§6.2.3)", so a
+      // proof stamped with `HTTPS://Auth.Example.com:443/token` is for the same target as one
+      // stamped `https://auth.example.com/token`.
+      _ <- ZIO.fail(Error.UriMismatch).unless(normalizeHtu(htu).exists(h => normalizeHtu(expectedUri).contains(h)))
 
       iat = iatDate.toInstant
       _ <- ZIO.fail(Error.IatOutOfWindow)
@@ -247,7 +253,26 @@ object Dpop:
     */
   private def normalizeHtu(htu: String): Option[String] =
     Try(new URI(htu)).toOption.filter(_.getScheme != null).map: uri =>
-      s"${uri.getScheme}://${Option(uri.getRawAuthority).getOrElse("")}${Option(uri.getRawPath).getOrElse("")}"
+      // RFC 3986 §6.2.2.1: the scheme and the host are case-insensitive, and every other part is
+      // not -- the path in particular is compared exactly.
+      val scheme = uri.getScheme.toLowerCase(Locale.ROOT)
+      val authority = Option(uri.getRawAuthority).getOrElse("")
+      val at = authority.lastIndexOf('@')
+      val (userInfo, hostAndPort) = (authority.take(at + 1), authority.drop(at + 1))
+      // A colon after the closing bracket of an IPv6 literal, or any colon of a registered name.
+      val colon = hostAndPort.lastIndexOf(':')
+      val (host, port) =
+        if colon >= 0 && colon > hostAndPort.lastIndexOf(']') then (hostAndPort.take(colon), hostAndPort.drop(colon + 1))
+        else (hostAndPort, "")
+      // RFC 3986 §6.2.3: the default port of the scheme is the same as no port, and an empty
+      // path is the same as `/`.
+      val defaultPort = scheme match
+        case "https" => "443"
+        case "http" => "80"
+        case _ => ""
+      val keptPort = if port.isEmpty || port == defaultPort then "" else s":$port"
+      val path = Option(uri.getRawPath).filter(_.nonEmpty).getOrElse("/")
+      s"$scheme://$userInfo${host.toLowerCase(Locale.ROOT)}$keptPort$path"
 
   /** RFC 9449 §4.2: `ath` is base64url(SHA-256(ASCII(access token))) -- what a resource
     * request's proof `ath` claim is checked against. Shared by every resource server that

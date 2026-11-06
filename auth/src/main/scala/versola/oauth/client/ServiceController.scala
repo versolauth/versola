@@ -1,6 +1,8 @@
 package versola.oauth.client
 
+import versola.oauth.delivery.DeliveryChannels
 import versola.oauth.jwks.JwksService
+import versola.oauth.mtls.EdgeCertificateTrust
 import versola.user.authorizeInternal
 import versola.util.http.Controller
 import versola.util.{CoreConfig, EnvName}
@@ -10,7 +12,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 
 object ServiceController extends Controller:
   type Env = Tracing & OAuthConfigurationService & JwksService & EnvName & CoreConfig &
-    versola.user.UserRepository
+    versola.user.UserRepository & EdgeCertificateTrust & DeliveryChannels
 
   def routes: Routes[Env, Throwable] = Routes(syncEndpoint, deleteUserEndpoint)
 
@@ -26,6 +28,10 @@ object ServiceController extends Controller:
             // lives in the JWKS cache rather than the configuration one -- a sync that
             // reloaded only the selection would leave the key it names unsynced.
             _ <- ZIO.serviceWithZIO[JwksService](_.refresh)
+            // And the edges central lists, which `/userinfo` checks an edge's certificate against.
+            _ <- ZIO.serviceWithZIO[EdgeCertificateTrust](_.refresh)
+            // And the SMTP server and SMS provider an administrator saved in the console.
+            _ <- ZIO.serviceWithZIO[DeliveryChannels](_.refresh)
           yield Response.ok
     }
 

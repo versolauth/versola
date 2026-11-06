@@ -1,9 +1,13 @@
 package versola.oauth.consent
 
+import versola.audit.AuditSupport.*
+import versola.audit.AuthAuditDetails
+import versola.audit.AuthAuditKinds
 import versola.oauth.authorize.model.Prompt
-import versola.oauth.client.model.{OAuthClientRecord, ScopeToken}
+import versola.oauth.client.model.{ConsentFlow, OAuthClientRecord, ScopeToken}
 import versola.oauth.consent.model.ConsentRecord
 import versola.user.model.UserId
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import zio.{Clock, Task, ZIO, ZLayer}
 
 /** Whether the user still has to be asked before a code may be issued. */
@@ -46,15 +50,25 @@ trait ConsentService:
   def revoke(userId: UserId, client: OAuthClientRecord): Task[Unit]
 
 object ConsentService:
-  /** Scopes the user may never deselect: dropping `openid` would silently turn an OIDC request
-    * into a plain OAuth one, and dropping `offline_access` would strip the refresh token the
-    * client asked for. Both must be granted as requested or the whole request denied.
+  /** Scopes the user may not deselect unless the client says otherwise: dropping `openid` would
+    * silently turn an OIDC request into a plain OAuth one, and dropping `offline_access` would
+    * strip the refresh token the client asked for. Both must be granted as requested or the
+    * whole request denied; `offlineAccessOptional` lets a client accept the second trade.
     */
   val NonDeselectable: Set[ScopeToken] = Set(ScopeToken.OpenId, ScopeToken.OfflineAccess)
 
-  def live = ZLayer.fromFunction(Impl(_))
+  /** What the user may not drop from this client's consent screen: the protocol-level scopes plus
+    * whatever the client marked as required.
+    */
+  def mandatoryScopes(consentFlow: Option[ConsentFlow]): Set[ScopeToken] =
+    val offlineOptional = consentFlow.exists(_.offlineAccessOptional)
+    // An explicitly required scope stays required even if it is `offline_access`.
+    (if offlineOptional then NonDeselectable - ScopeToken.OfflineAccess else NonDeselectable) ++
+      consentFlow.fold(Set.empty[ScopeToken])(_.requiredScopes)
 
-  class Impl(consentRepository: ConsentRepository) extends ConsentService:
+  def live = ZLayer.fromFunction(Impl(_, _))
+
+  class Impl(consentRepository: ConsentRepository, audit: AuditEvents) extends ConsentService:
 
     override def decide(
         userId: UserId,
@@ -85,7 +99,7 @@ object ConsentService:
         requestedScope: Set[ScopeToken],
         submittedScope: Set[ScopeToken],
     ): Either[String, Set[ScopeToken]] =
-      val missingMandatory = (requestedScope & NonDeselectable) -- submittedScope
+      val missingMandatory = (requestedScope & mandatoryScopes(client.consentFlow)) -- submittedScope
       if !submittedScope.subsetOf(requestedScope) then
         Left(s"Granted scope exceeds the requested scope - ${(submittedScope -- requestedScope).mkString(" ")}")
       else if missingMandatory.nonEmpty then
@@ -97,15 +111,40 @@ object ConsentService:
 
     override def grant(userId: UserId, client: OAuthClientRecord, scope: Set[ScopeToken]): Task[Unit] =
       Clock.instant.flatMap: now =>
+        val expiresAt = client.consentFlow.flatMap(_.rememberDuration).map(d => now.plusSeconds(d.toSeconds))
         consentRepository.upsert(
           ConsentRecord(
             userId = userId,
             clientId = client.id,
             scope = scope,
             grantedAt = now,
-            expiresAt = client.consentFlow.flatMap(_.rememberDuration).map(d => now.plusSeconds(d.toSeconds)),
+            expiresAt = expiresAt,
+          ),
+        ) *> audit.log(
+          AuditDraft(
+            kind = AuthAuditKinds.ConsentGranted,
+            outcome = AuditOutcome.success,
+            reason = None,
+            actor = None,
+            userId = Some(userId),
+            target = None,
+            details = AuthAuditDetails.Consent(
+              scope = scope.toList.map(_.toString).sorted,
+              authorizationDetailTypes = Nil,
+              expiresAt = expiresAt.map(_.toString),
+            ),
           ),
         )
 
     override def revoke(userId: UserId, client: OAuthClientRecord): Task[Unit] =
-      consentRepository.delete(userId, client.id)
+      consentRepository.delete(userId, client.id) *> audit.log(
+        AuditDraft(
+          kind = AuthAuditKinds.ConsentRevoked,
+          outcome = AuditOutcome.success,
+          reason = None,
+          actor = None,
+          userId = Some(userId),
+          target = None,
+          details = AuthAuditDetails.Consent(scope = Nil, authorizationDetailTypes = Nil, expiresAt = None),
+        ),
+      )

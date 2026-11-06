@@ -2,6 +2,7 @@ package versola.central.configuration.edges
 
 import com.nimbusds.jose.jwk.RSAKey
 import versola.util.JWT
+import versola.util.http.{AccessLogPolicy, OverloadPolicy, RateLimitPolicies}
 import zio.json.EncoderOps
 import zio.json.ast.Json
 
@@ -21,12 +22,34 @@ import java.security.interfaces.RSAPublicKey
  * per endpoint, because a proof's `htm`/`htu` already bind it to one method and URL -- a nonce
  * accepted across one edge's resources buys an attacker nothing that splitting the space would
  * deny. Distinct from a tenant's `require_dpop_nonce`, which governs `auth`'s own endpoints.
+ *
+ * `groupId` and `groupKind` say which group of edges this one belongs to and who runs that group; the kind is
+ * the group's, copied here so the edge cache answers it without a lookup per call. Neither changes after
+ * the edge is registered.
+ *
+ * `overloadPolicy` is what the edge does when asked for more than it can do: a patch over the settings the edge starts
+ * with, `None` meaning none set (the deployment's own values). See [[OverloadPolicy]].
+ *
+ * `accessLogPolicy` is which of its requests the edge writes a log line for, set the same way and independently: a patch
+ * over `HTTP_ACCESS_LOG*`, `None` meaning none set. See [[AccessLogPolicy]].
+ *
+ * `rateLimitPolicies` is who may send how much through the edge, set the same way and independently; `None` means none set
+ * and the edge applies no rate limit. See [[RateLimitPolicies]].
+ *
+ * `policyMeta` counts the changes of each of the three sections above, by the name of the section in the API, for the
+ * compare-and-set of `PATCH /configuration/edges/policies`; a section never set has no entry (revision 0).
  */
 case class EdgeRecord(
     id: EdgeId,
     publicKey: Json.Obj,
     oldPublicKey: Option[Json.Obj],
     requireDpopNonce: Boolean,
+    overloadPolicy: Option[OverloadPolicy],
+    accessLogPolicy: Option[AccessLogPolicy],
+    rateLimitPolicies: Option[RateLimitPolicies],
+    policyMeta: Option[Map[String, PolicySectionMeta]],
+    groupId: EdgeGroupId,
+    groupKind: EdgeGroupKind,
 ):
   def asPublicKeys: JWT.PublicKeys =
     val keys = Json.Arr((publicKey +: oldPublicKey.toVector)*)

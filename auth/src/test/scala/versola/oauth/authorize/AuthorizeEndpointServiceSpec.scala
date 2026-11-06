@@ -6,6 +6,7 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseMode, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.{
   Acr,
   AuthFactor,
@@ -24,6 +25,7 @@ import versola.oauth.client.model.{
   TenantId,
 }
 import versola.oauth.consent.{ConsentDecision, ConsentService}
+import versola.oauth.conversation.ProofInput
 import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter, EmailSubmission, PhoneSubmission}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, Nonce, State}
@@ -73,7 +75,6 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     refreshTokenTtl = zio.durationInt(7776000).seconds,
     theme = "default",
     authFlow = Some(otpFlow),
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -91,6 +92,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
+    applicationType = ApplicationType.web,
   )
 
   val baseRequest = AuthorizeRequest(
@@ -116,6 +119,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     resources = Nil,
     authorizationDetails = None,
     dpopJkt = None,
+    ip = None,
   )
 
   val rawSessionId = SessionId(Array.fill(32)(5.toByte))
@@ -148,6 +152,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     val conversationRouter = stub[ConversationRouter]
     val acrResolver = stub[AcrResolutionService]
     val consentService = stub[ConsentService]
+    // Registration is a tenant decision; a test that is about it says so.
+    configurationService.registrationAvailable.returnsWith(ZIO.succeed(false))
     val service = AuthorizeEndpointService.Impl(
       conversationRepository,
       configurationService,
@@ -208,6 +214,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     consentFlow = Some(versola.oauth.client.model.ConsentFlow(
       allowPartial = false,
       rememberDuration = None,
+      requiredScopes = Set.empty,
+      offlineAccessOptional = false,
     )),
   )
 
@@ -525,7 +533,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield assertTrue(
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         submitCalls.nonEmpty,
-        submitCalls.head._2 == EmailSubmission(emailHint, "testcsrf1"),
+        submitCalls.head._2 == EmailSubmission(emailHint, ProofInput.NoScript, "testcsrf1"),
       )
     },
     test("advance conversation to OTP step when login_hint phone is provided on phone+otp flow") {
@@ -543,7 +551,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield assertTrue(
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         submitCalls.nonEmpty,
-        submitCalls.head._2 == PhoneSubmission(phoneHint, "testcsrf1"),
+        submitCalls.head._2 == PhoneSubmission(phoneHint, ProofInput.NoScript, "testcsrf1"),
       )
     },
     test("force re-authentication when max_age exceeded") {
@@ -922,6 +930,80 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield assertTrue(result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)))
     },
     // ── id_token_hint without an active session ──────────────────────────────
+    // An id_token_hint identifies the user and verifies nothing. With no session, the credential card it would skip
+    // is the only place a flow with an inline password and no further factor authenticates anyone, so the card is
+    // shown, as for a re-authentication of a session's user above, and nothing advances on the hint's strength.
+    test("show the credential card for an id_token_hint without session when no verifying factor would be left") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val hintUserId = versola.user.model.UserId(UUID.randomUUID())
+      val inlinePasswordFlow = otpFlow.copy(
+        primary = otpFlow.primary.copy(
+          credentials = List(PrimaryCredential.email),
+          inlinePassword = true,
+          factors = Nil,
+        ),
+      )
+      val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+        .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
+        .build()
+      val hintClaims = new JWTClaimsSet.Builder()
+        .subject(hintUserId.toString)
+        .audience(clientId.toString)
+        .issuer("https://versolauth.com")
+        .build()
+      val jwtToken = new SignedJWT(header, hintClaims)
+      jwtToken.sign(new RSASSASigner(TestEnvConfig.privateKey))
+      val idTokenHintStr = jwtToken.serialize()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow.copy(authFlow = Some(inlinePasswordFlow))))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(idTokenHintStr)))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        createCalls.head._2.userId.isEmpty,
+        createCalls.head._2.step.isInstanceOf[versola.oauth.conversation.model.ConversationStep.Credential],
+        env.conversationRouter.advance.calls.isEmpty,
+        env.userRepository.find.calls.isEmpty,
+      )
+    },
+    test("skip the credential card for an id_token_hint without session when a required factor is still asked") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val hintUserId = versola.user.model.UserId(UUID.randomUUID())
+      val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+        .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
+        .build()
+      val hintClaims = new JWTClaimsSet.Builder()
+        .subject(hintUserId.toString)
+        .audience(clientId.toString)
+        .issuer("https://versolauth.com")
+        .build()
+      val jwtToken = new SignedJWT(header, hintClaims)
+      jwtToken.sign(new RSASSASigner(TestEnvConfig.privateKey))
+      val idTokenHintStr = jwtToken.serialize()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(hintUserId)))
+        _ <- env.conversationRouter.advance.succeedsWith(())
+        result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(idTokenHintStr)))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        createCalls.head._2.userId == Some(hintUserId),
+        env.conversationRouter.advance.calls.nonEmpty,
+      )
+    },
     test("fail with AccessDenied when id_token_hint is provided without session and ACR not achievable") {
       val env = Env()
       val hintUserId = versola.user.model.UserId(UUID.randomUUID())
@@ -980,6 +1062,74 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         createCalls.nonEmpty,
         createCalls.head._2.userId == Some(hintUserId),
         createCalls.head._2.targetAcr == Some(targetAcr),
+      )
+    },
+    test("fixes the factors a built-in class asks of the user when the step-up conversation starts") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val hintUserId = versola.user.model.UserId(UUID.randomUUID())
+      val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+        .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
+        .build()
+      val hintClaims = new JWTClaimsSet.Builder()
+        .subject(hintUserId.toString)
+        .audience(clientId.toString)
+        .issuer("https://versolauth.com")
+        .build()
+      val jwtToken = new SignedJWT(header, hintClaims)
+      jwtToken.sign(new RSASSASigner(TestEnvConfig.privateKey))
+      val sensitive = AcrResolutionService.Sensitive
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(Some(sensitive))
+        _ <- env.acrResolver.builtInFactors.succeedsWith(Some(NonEmptyList(PassedAuthFactor.passkey)))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(hintUserId)))
+        _ <- env.conversationRouter.advance.succeedsWith(())
+        _ <- env.service.authorize(
+          baseRequest.copy(idTokenHint = Some(jwtToken.serialize()), acrValues = Some(NonEmptyList(sensitive))),
+        )
+        created = env.conversationRepository.create.calls.head._2
+      yield assertTrue(
+        created.targetAcr == Some(sensitive),
+        created.targetFactors == Some(List(PassedAuthFactor.passkey)),
+      )
+    },
+    test("fixes no factors for a class the tenant's vocabulary defines") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val hintUserId = versola.user.model.UserId(UUID.randomUUID())
+      val targetAcr = Acr("mfa")
+      val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+        .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
+        .build()
+      val hintClaims = new JWTClaimsSet.Builder()
+        .subject(hintUserId.toString)
+        .audience(clientId.toString)
+        .issuer("https://versolauth.com")
+        .build()
+      val jwtToken = new SignedJWT(header, hintClaims)
+      jwtToken.sign(new RSASSASigner(TestEnvConfig.privateKey))
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.acrResolver.resolveAchievableAcr.succeedsWith(Some(targetAcr))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(hintUserId)))
+        _ <- env.conversationRouter.advance.succeedsWith(())
+        _ <- env.service.authorize(
+          baseRequest.copy(idTokenHint = Some(jwtToken.serialize()), acrValues = Some(NonEmptyList(targetAcr))),
+        )
+      yield assertTrue(
+        env.conversationRepository.create.calls.head._2.targetFactors.isEmpty,
+        env.acrResolver.builtInFactors.calls.isEmpty,
       )
     },
     test("create conversation with known userId when id_token_hint provided without session and no acr_values") {
@@ -1558,18 +1708,12 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield assertTrue(result == Error.UnmetAuthenticationRequirements(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query))
     },
     // ── createConversation field population branches ──────────────────────────
-    test("mark the credential step as offering registration when the client has a registration flow and no known user") {
+    test("mark the credential step as offering registration when the tenant lets the client's credentials register and no user is known") {
       val env = Env()
       val uuid = UUID.randomUUID()
-      val clientWithRegistration = clientWithOtpFlow.copy(
-        registrationFlow = Some(versola.oauth.client.model.RegistrationFlow(
-          credential = versola.oauth.client.model.RegistrationCredential.phone,
-          steps = List(versola.oauth.client.model.RegistrationStep.Otp()),
-          roleIds = Set.empty,
-        )),
-      )
       for
-        _ <- env.configurationService.find.succeedsWith(Some(clientWithRegistration))
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.registrationAvailable.succeedsWith(true)
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
@@ -1580,6 +1724,25 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         createCalls.nonEmpty,
         createCalls.head._2.step.asInstanceOf[versola.oauth.conversation.model.ConversationStep.Credential].registration,
+        // The flow is built when an unknown credential is entered, from the tenant's policy.
+        createCalls.head._2.registrationFlow.isEmpty,
+      )
+    },
+    test("does not offer registration when the tenant lets none of the client's credentials register") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.registrationAvailable.succeedsWith(false)
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.service.authorize(baseRequest)
+        created = env.conversationRepository.create.calls.head._2
+      yield assertTrue(
+        !created.step.asInstanceOf[versola.oauth.conversation.model.ConversationStep.Credential].registration,
+        created.registrationFlow.isEmpty,
       )
     },
     test("sanitize non-printable characters from user agent when starting a new conversation") {

@@ -10,8 +10,35 @@ import versola.edge.login.LoginRepository
 import versola.edge.model.*
 import versola.edge.revocation.{RevocationKey, TokenRevocationService}
 import versola.util.cel.CelEvaluator
-import versola.util.http.Observability
-import versola.util.{DpopNonce, EcKeyPair, EnvName, JWT, MAC, PrivateClientCertificate, ReloadingCache, RsaKeyPair, Salt, Secret, SecureRandom, SecurityService, TestCertificates}
+import versola.util.http.{
+  Checkpoint,
+  DeclaredLimit,
+  DeclaredOwner,
+  DeclaredRateLimit,
+  DeclaredRateLimitBy,
+  GuardMode,
+  Observability,
+  RateLimitDimension,
+  RateLimitPolicy,
+  RateLimitScope,
+  RateLimitWindow,
+  RateLimiter,
+}
+import versola.util.{
+  DpopNonce,
+  EcKeyPair,
+  EnvName,
+  JWT,
+  MAC,
+  PrivateClientCertificate,
+  ReloadingCache,
+  RsaKeyPair,
+  Salt,
+  Secret,
+  SecureRandom,
+  SecurityService,
+  TestCertificates,
+}
 import zio.*
 import zio.http.*
 import zio.json.ast.Json
@@ -19,8 +46,10 @@ import zio.json.{DecoderOps, EncoderOps}
 import zio.metrics.{Metric, MetricLabel}
 import zio.test.*
 
-import java.security.{InvalidKeyException, KeyPairGenerator, PrivateKey, PublicKey}
+import java.security.cert.X509Certificate
 import java.security.interfaces.{ECPrivateKey, ECPublicKey, RSAPublicKey}
+import java.security.{InvalidKeyException, KeyPairGenerator, PrivateKey, PublicKey}
+import java.time.Instant
 import java.util.{Date, UUID}
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
@@ -58,12 +87,20 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))),
     permissions = Set.empty,
     accessTokenTtl = 15.minutes,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
+    applicationType = ApplicationType.web,
+    redirectUris = Set.empty,
   )
   private val svcClient = OAuthClient(
     id = ClientId("svc-1"),
     credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(3.toByte))),
     permissions = Set.empty,
     accessTokenTtl = 15.minutes,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
+    applicationType = ApplicationType.web,
+    redirectUris = Set.empty,
   )
 
   /** A client that authenticates by certificate (RFC 8705 §2), which is what makes the tokens
@@ -84,9 +121,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       override def requireNonce: UIO[Boolean] = ZIO.succeed(true)
       override def refreshNow: Task[Unit] = ZIO.unit
 
-  private def overheadCount(resource: ResourceId): UIO[Long] =
+  private def overheadCount(resource: ResourceId, authCall: ProxyMetrics.AuthCall = ProxyMetrics.AuthCall.None): UIO[Long] =
     Metric.histogram("edge_proxy_overhead_seconds", ProxyMetrics.boundaries)
-      .tagged(MetricLabel("resource", resource.toString)).value.map(_.count)
+      .tagged(Set(MetricLabel("resource", resource.toString), MetricLabel("auth_call", authCall.label))).value.map(_.count)
 
   class Env:
     val secureRandom = stub[SecureRandom]
@@ -96,6 +133,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     val sessionRepository = stub[session.EdgeSessionRepository]
     val revocationService = stub[TokenRevocationService]
     val permissionService = stub[PermissionService]
+    val rateLimiter: RateLimiter = Unsafe.unsafe(unsafe ?=> Runtime.default.unsafe.run(RateLimiter.make()).getOrThrow())
 
     val resourceCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[ResourceId, Resource])))
     val presetCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[PresetId, AuthorizationPreset])))
@@ -187,6 +225,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         _ <- permissionService.getAllowedEndpointsForRoles.succeedsWith(scenarioEndpointIds)
         _ <- permissionService.getAllowedEndpointsForClient.succeedsWith(scenarioEndpointIds)
         _ <- sessionRepository.findByAccessTokenId.succeedsWith(None)
+        _ <- sessionRepository.claimRefresh.succeedsWith(None)
+        _ <- sessionRepository.findByPreviousAccessTokenId.succeedsWith(None)
+        _ <- sessionRepository.releaseRefresh.succeedsWith(())
         _ <- revocationService.isRevoked.succeedsWith(false)
         _ <- withClients(oauthClient)
       yield ()
@@ -204,6 +245,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         httpClient: Client,
         security: SecurityService,
         verifier: DpopVerifier = dpopVerifier,
+        sessions: session.EdgeSessionRepository = sessionRepository,
     ): EdgeService =
       EdgeService.Impl(
         clientService,
@@ -215,12 +257,13 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         security,
         httpClient,
         edgeConfig,
-        sessionRepository,
+        sessions,
         revocationService,
         jwksService,
         permissionService,
         verifier,
         EnvName.Test("test"),
+        rateLimiter,
       )
 
   /** Real crypto, except that opening an AES-GCM value fails with `failure`: the one way to make
@@ -266,8 +309,11 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(storedBytes)),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         )
-        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(record))
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
         request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
         service = env.buildService(client, security)
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
@@ -283,11 +329,72 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       )
     }
 
+  /** An in-memory [[session.EdgeSessionRepository]] with the real repository's semantics, for the
+    * tests where several requests act on one row and a canned answer per call would hide the race.
+    */
+  private final class FakeSessions(rows: Ref[Map[(SessionId, PresetId), (session.EdgeSessionRecord, Option[Instant])]])
+    extends session.EdgeSessionRepository:
+    private def live(now: Instant)(row: (session.EdgeSessionRecord, Option[Instant])) = row._1.expiresAt.isAfter(now)
+
+    def seed(record: session.EdgeSessionRecord, lease: Option[Instant] = None): UIO[Unit] =
+      rows.update(_.updated((record.publicSessionId, record.presetId), (record, lease)))
+
+    def lease(id: AccessTokenId): UIO[Option[Instant]] =
+      rows.get.map(_.values.collectFirst { case (r, lease) if r.accessTokenId == id => lease }.flatten)
+
+    def current(sid: SessionId): UIO[Option[session.EdgeSessionRecord]] =
+      rows.get.map(_.collectFirst { case ((`sid`, _), (r, _)) => r })
+
+    override def create(record: session.EdgeSessionRecord): Task[Unit] =
+      Clock.instant.flatMap: now =>
+        rows.update: all =>
+          val key = (record.publicSessionId, record.presetId)
+          val previous = all.get(key).map(_._1.accessTokenId).filter(_ != record.accessTokenId)
+          all.updated(key, (record.copy(previousAccessTokenId = previous, rotatedAt = previous.map(_ => now)), None))
+
+    override def findByAccessTokenId(id: AccessTokenId): Task[Option[session.EdgeSessionRecord]] =
+      Clock.instant.flatMap(now => rows.get.map(_.values.filter(live(now)).collectFirst { case (r, _) if r.accessTokenId == id => r }))
+
+    override def findByPreviousAccessTokenId(id: AccessTokenId, rotatedAfter: Instant): Task[Option[session.EdgeSessionRecord]] =
+      Clock.instant.flatMap(now =>
+        rows.get.map(_.values.filter(live(now)).collectFirst {
+          case (r, _) if r.previousAccessTokenId.contains(id) && r.rotatedAt.exists(_.isAfter(rotatedAfter)) => r
+        }),
+      )
+
+    override def claimRefresh(id: AccessTokenId, now: Instant, leaseUntil: Instant): Task[Option[session.EdgeSessionRecord]] =
+      rows.modify: all =>
+        all.collectFirst {
+          case (key, (r, lease)) if r.accessTokenId == id && live(now)((r, lease)) && lease.forall(_.isBefore(now)) => key -> r
+        } match
+          case Some((key, r)) => (Some(r), all.updated(key, (r, Some(leaseUntil))))
+          case None => (None, all)
+
+    override def releaseRefresh(id: AccessTokenId): Task[Unit] =
+      rows.update(_.map { case (key, (r, lease)) => key -> (r, if r.accessTokenId == id then None else lease) })
+
+    override def delete(id: AccessTokenId): Task[Unit] =
+      rows.update(_.filterNot(_._2._1.accessTokenId == id))
+
+    override def findBySessionId(sid: SessionId): Task[List[session.EdgeSessionRecord]] =
+      rows.get.map(_.values.map(_._1).filter(_.publicSessionId == sid).toList)
+
+  private object FakeSessions:
+    def make: UIO[FakeSessions] =
+      Ref.make(Map.empty[(SessionId, PresetId), (session.EdgeSessionRecord, Option[Instant])]).map(FakeSessions(_))
+
+  /** Polls the clock forward until every fiber is done: requests that lost a refresh race sleep
+    * between lookups, and under the test clock nothing wakes them otherwise. */
+  private def runClockUntilDone(fibers: Fiber[?, ?]*): UIO[Unit] =
+    (ZIO.yieldNow *> TestClock.adjust(50.millis) *> ZIO.foreach(fibers)(_.poll).map(_.forall(_.isDefined)))
+      .repeatUntil(identity).unit
+
   private val securityServiceLayer: ULayer[SecurityService] =
     SecureRandom.live >>> SecurityService.live
 
   def spec = suite("EdgeService.proxy")(
     proxySuite,
+    rateLimitSuite,
   ).provideLayer(TestClient.layer ++ securityServiceLayer) @@ TestAspect.silentLogging
 
   private val usersEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000401"))
@@ -318,6 +425,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = stepUpCondition,
       stepUpAcr = stepUpAcr,
       maxAge = maxAge,
+      rateLimit = None,
     )
 
   private def userByIdEndpoint(allow: Option[String] = None, inject: Vector[InjectRule] = Vector.empty) =
@@ -331,6 +439,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = None,
       stepUpAcr = None,
       maxAge = None,
+      rateLimit = None,
     )
 
   private def currentUserEndpoint(inject: Vector[InjectRule] = Vector.empty) =
@@ -344,6 +453,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = None,
       stepUpAcr = None,
       maxAge = None,
+      rateLimit = None,
     )
 
   private def tenantOrderEndpoint(allow: Option[String] = None, inject: Vector[InjectRule] = Vector.empty) =
@@ -357,6 +467,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = None,
       stepUpAcr = None,
       maxAge = None,
+      rateLimit = None,
     )
 
   private def createUserEndpoint(
@@ -375,12 +486,13 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = stepUpCondition,
       stepUpAcr = stepUpAcr,
       maxAge = None,
+      rateLimit = None,
     )
 
   private def usersResource(endpoints: ResourceEndpoint*): Resource = usersResourceNamed(ResourceId("users-api"), endpoints*)
 
   private def usersResourceNamed(id: ResourceId, endpoints: ResourceEndpoint*) =
-    Resource(resourceId = id, resource = backendUrl, endpoints = endpoints.toVector, secret = None)
+    Resource(resourceId = id, resource = backendUrl, endpoints = endpoints.toVector, secret = None, audienceRateLimits = Nil)
 
   private def centralEndpoint() =
     ResourceEndpoint(
@@ -393,6 +505,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = None,
       stepUpAcr = None,
       maxAge = None,
+      rateLimit = None,
     )
 
   private val centralResourceSecret = Secret(Array.fill(48)(2.toByte))
@@ -402,7 +515,13 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     * the caller's own token (see [[EdgeService.Impl.resolveAuthHeader]]).
     */
   private def centralResource(endpoints: ResourceEndpoint*) =
-    Resource(resourceId = ResourceId("central"), resource = centralUrl, endpoints = endpoints.toVector, secret = Some(centralResourceSecret))
+    Resource(
+      resourceId = ResourceId("central"),
+      resource = centralUrl,
+      endpoints = endpoints.toVector,
+      secret = Some(centralResourceSecret),
+      audienceRateLimits = Nil,
+    )
 
   private val accountResourceSecret = Secret(Array.fill(48)(4.toByte))
 
@@ -417,13 +536,20 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = None,
       stepUpAcr = None,
       maxAge = None,
+      rateLimit = None,
     )
 
   /** The "auth" alias proxies Account Settings to auth's additional listener. Like "central" it is
     * internal: edge authenticates with `Basic(resourceId, secret)` rather than forwarding the caller's token.
     */
   private def accountResource(endpoints: ResourceEndpoint*) =
-    Resource(resourceId = ResourceId("auth"), resource = backendUrl, endpoints = endpoints.toVector, secret = Some(accountResourceSecret))
+    Resource(
+      resourceId = ResourceId("auth"),
+      resource = backendUrl,
+      endpoints = endpoints.toVector,
+      secret = Some(accountResourceSecret),
+      audienceRateLimits = Nil,
+    )
 
   private def captureUpstream(status: Status = Status.Ok, body: String = "ok"): ZIO[TestClient, Nothing, Ref[Option[Request]]] =
     for
@@ -743,6 +869,25 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         after <- overheadCount(resource)
       yield assertTrue(response.status == Status.Ok, after - before == 1L)
     },
+    test("labels the overhead of a request that asked auth for /userinfo, so the budget skips auth's latency") {
+      val env = new Env
+      val resource = ResourceId("users-api-overhead-userinfo")
+      for
+        _ <- env.setupDefaults()
+        _ <- env.ssoClient.userInfo.succeedsWith(Json.Obj())
+        _ <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResourceNamed(resource, usersEndpoint(fetchUserInfo = true)))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        withUserInfo <- overheadCount(resource, ProxyMetrics.AuthCall.UserInfo)
+        withoutAuth <- overheadCount(resource)
+        response <- env.buildService(client, security).proxy(resource, Path.decode("/users"), request)
+        afterUserInfo <- overheadCount(resource, ProxyMetrics.AuthCall.UserInfo)
+        afterNone <- overheadCount(resource)
+      yield assertTrue(response.status == Status.Ok, afterUserInfo - withUserInfo == 1L, afterNone == withoutAuth)
+    },
     test("records no overhead for a request refused before it reached the resource") {
       val env = new Env
       val resource = ResourceId("users-api-overhead-refused")
@@ -928,6 +1073,85 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response.status == Status.Unauthorized,
         challenge.exists(_.contains("""error="insufficient_user_authentication"""")),
         challenge.exists(_.contains("""acr_values="passkey-level mfa-level"""")),
+      )
+    },
+    test("points a cookie session at the login of its preset that asks for the acr and max_age missing") {
+      val env = new Env
+      val endpoint = usersEndpoint(stepUpCondition = Some("true"), stepUpAcr = Some("sensitive"), maxAge = Some(300))
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        now <- Clock.instant
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(acr = Some("otp-level"), authTime = Some(now.getEpochSecond - 600))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        location = response.headers.get("Location")
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        location.contains(s"/login/${presetId}?acr_values=sensitive&max_age=300"),
+      )
+    },
+    test("asks the login for the endpoint's acr even when only the age is too old, so the new sign-in keeps it") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        now <- Clock.instant
+        _ <- env.withResources(usersResource(usersEndpoint(stepUpCondition = Some("true"), stepUpAcr = Some("sensitive"), maxAge = Some(300))))
+        fresh <- env.signToken(acr = Some("otp-level"), authTime = Some(now.getEpochSecond))
+        stale <- env.signToken(acr = Some("sensitive"), authTime = Some(now.getEpochSecond - 600))
+        service = env.buildService(client, security)
+        wrongAcr <- service.proxy(
+          ResourceId("users-api"),
+          Path.decode("/users"),
+          Request.get(URL.empty / "users").addCookie(sessionCookie(fresh)),
+        )
+        tooOld <- service.proxy(
+          ResourceId("users-api"),
+          Path.decode("/users"),
+          Request.get(URL.empty / "users").addCookie(sessionCookie(stale)),
+        )
+      yield assertTrue(
+        wrongAcr.headers.get("Location").contains(s"/login/${presetId}?acr_values=sensitive"),
+        tooOld.headers.get("Location").contains(s"/login/${presetId}?acr_values=sensitive&max_age=300"),
+      )
+    },
+    test("asks the login for the age alone when the endpoint requires no acr") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        now <- Clock.instant
+        _ <- env.withResources(usersResource(usersEndpoint(maxAge = Some(300))))
+        stale <- env.signToken(authTime = Some(now.getEpochSecond - 600))
+        response <- env.buildService(client, security).proxy(
+          ResourceId("users-api"),
+          Path.decode("/users"),
+          Request.get(URL.empty / "users").addCookie(sessionCookie(stale)),
+        )
+      yield assertTrue(response.headers.get("Location").contains(s"/login/${presetId}?max_age=300"))
+    },
+    test("gives a bearer caller the challenge only, with no login URL to follow") {
+      val env = new Env
+      val endpoint = usersEndpoint(stepUpCondition = Some("true"), stepUpAcr = Some("sensitive"))
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(acr = Some("otp-level"))
+        request = Request.get(URL.empty / "users").addHeader(Header.Custom("Authorization", s"Bearer $token"))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        response.headers.get("WWW-Authenticate").exists(_.contains("""acr_values="sensitive"""")),
+        response.headers.get("Location").isEmpty,
       )
     },
     test("returns 401 with max_age challenge when auth_time is older than endpoint maxAge") {
@@ -1335,6 +1559,80 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         parsed.exists(_.fields.exists((k, v) => k == "name" && v == Json.Str("Alice"))),
       )
     },
+    test("an endpoint with body injects refuses a body that is not JSON, so a client cannot send the field edge would overwrite") {
+      val env = new Env
+      val endpoint = createUserEndpoint(inject = Vector(InjectRule(InjectTarget.body, "actor", "token.sub")))
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken()
+        forged = Json.Obj("actor" -> Json.Str("attacker-controlled")).toJson
+        asText = Request.post(URL.empty / "users", Body.fromString(forged))
+          .addHeader(Header.ContentType(MediaType.text.plain))
+          .addCookie(sessionCookie(token))
+        noType = Request.post(URL.empty / "users", Body.fromString(forged)).addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        text <- service.proxy(ResourceId("users-api"), Path.decode("/users"), asText)
+        untyped <- service.proxy(ResourceId("users-api"), Path.decode("/users"), noType)
+        upstream <- capture.get
+      yield assertTrue(
+        text.status == Status.UnsupportedMediaType,
+        untyped.status == Status.UnsupportedMediaType,
+        upstream.isEmpty,
+      )
+    },
+    test("a JSON merge patch body is rewritten like JSON: the injected field replaces the client's") {
+      val env = new Env
+      val endpoint = createUserEndpoint(inject = Vector(InjectRule(InjectTarget.body, "actor", "token.sub")))
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken()
+        body = Json.Obj("blockAt" -> Json.Num(70), "actor" -> Json.Str("attacker-controlled")).toJson
+        request = Request.post(URL.empty / "users", Body.fromString(body))
+          .addHeader(Header.ContentType(MediaType.parseCustomMediaType("application/merge-patch+json").get))
+          .addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+        forwarded <- ZIO.foreach(upstream)(_.body.asString).map(_.getOrElse(""))
+        parsed = forwarded.fromJson[Json.Obj].toOption
+      yield assertTrue(
+        response.status == Status.Ok,
+        parsed.exists(_.fields.exists((k, v) => k == "actor" && v == Json.Str("user-1"))),
+        parsed.exists(_.fields.count(_._1 == "actor") == 1),
+        parsed.exists(_.fields.exists((k, v) => k == "blockAt" && v == Json.Num(70))),
+      )
+    },
+    test("a query inject replaces a parameter of the same name the client sent") {
+      val env = new Env
+      val endpoint = usersEndpoint(inject = Vector(InjectRule(InjectTarget.query, "adminSubject", "token.sub")))
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users")
+          .updateURL(_.addQueryParams(QueryParams("adminSubject" -> "attacker", "other" -> "kept")))
+          .addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+        subjects = upstream.map(_.url.queryParams.queryParams("adminSubject")).getOrElse(Chunk.empty)
+      yield assertTrue(
+        response.status == Status.Ok,
+        subjects == Chunk("user-1"),
+        upstream.exists(_.url.queryParams.queryParam("other").contains("kept")),
+      )
+    },
     test("returns 403 when JSON body does not satisfy allow expression") {
       val env = new Env
       val endpoint = createUserEndpoint(allow = Some("request.body.action == 'create'"))
@@ -1710,8 +2008,11 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(encryptedRefresh)),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         )
-        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(record))
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
         newAccessToken <- env.signToken(jti = "new-jti", ttlSeconds = 600L)
         newTokens = TokenResponse(
           accessToken = newAccessToken,
@@ -1757,8 +2058,11 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(encryptedRefresh)),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         )
-        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(record))
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
         _ <- env.ssoClient.exchangeRefreshToken.failsWith(SSOClient.InvalidGrant)
         request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
         service = env.buildService(client, security)
@@ -1771,24 +2075,20 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         setCookieHeader.flatMap(_.maxAge).contains(Duration.Zero),
       )
     },
-    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token was sealed under another key")(
-      (security, _) =>
-        security.encryptAes256(
-          unreadableRefreshTokenPlaintext.getBytes("UTF-8"),
-          SecretKeySpec(Array.fill(32)(7.toByte), "AES"),
-        ),
+    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token was sealed under another key")((security, _) =>
+      security.encryptAes256(
+        unreadableRefreshTokenPlaintext.getBytes("UTF-8"),
+        SecretKeySpec(Array.fill(32)(7.toByte), "AES"),
+      ),
     ),
-    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token was altered")(
-      (security, key) =>
-        security.encryptAes256(unreadableRefreshTokenPlaintext.getBytes("UTF-8"), key)
-          .map(bytes => bytes.updated(bytes.length - 1, (bytes.last ^ 1).toByte)),
+    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token was altered")((security, key) =>
+      security.encryptAes256(unreadableRefreshTokenPlaintext.getBytes("UTF-8"), key)
+        .map(bytes => bytes.updated(bytes.length - 1, (bytes.last ^ 1).toByte)),
     ),
-    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token is too short to be sealed")(
-      (_, _) => ZIO.succeed(Array.fill(16)(1.toByte)),
+    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token is too short to be sealed")((_, _) =>
+      ZIO.succeed(Array.fill(16)(1.toByte)),
     ),
-    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token is empty")(
-      (_, _) => ZIO.succeed(Array.empty[Byte]),
-    ),
+    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token is empty")((_, _) => ZIO.succeed(Array.empty[Byte])),
     // Only an unreadable *value* means "log in again". A decryption that breaks for any other
     // reason is not the session's fault and must stay a failure, not be turned into a re-login.
     test("propagates a decryption failure that is not an unreadable value") {
@@ -1812,8 +2112,11 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(encryptedRefresh)),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         )
-        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(record))
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
         request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
         service = env.buildService(client, FailingDecrypt(security, failure))
         result <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request).either
@@ -1860,8 +2163,11 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(Array.fill(16)(1.toByte))),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         )
-        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(record))
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
         // No env.withPresets(preset): clientService.findPreset(record.presetId) misses.
         request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
         service = env.buildService(client, security)
@@ -1892,8 +2198,11 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = None,
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         )
-        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(record))
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
         request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
         service = env.buildService(client, security)
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
@@ -1928,8 +2237,11 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(encryptedRefresh)),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         )
-        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(record))
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
         newAccessToken <- env.signToken(jti = "new-jti", ttlSeconds = 600L)
         newTokens = TokenResponse(
           accessToken = newAccessToken,
@@ -1984,13 +2296,304 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(encryptedRefresh)),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         )
-        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(record))
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
         _ <- env.ssoClient.exchangeRefreshToken.failsWith(failure)
         request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
         service = env.buildService(client, security)
         result <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request).either
       yield assertTrue(result == Left(failure))
+    },
+    // Auth revokes the whole token family when a refresh token is presented twice, so two requests
+    // carrying one expired cookie must produce a single refresh and share its result.
+    test("two concurrent requests with the same expired cookie refresh once and share the new access token") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.withClients(oauthClient)
+        sessions <- FakeSessions.make
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        encryptionKey = SecretKeySpec(env.edgeConfig.security.tokenEncryption.key, "AES")
+        encryptedRefresh <- security.encryptAes256("rt-secret".getBytes("UTF-8"), encryptionKey)
+        now <- Clock.instant
+        _ <- sessions.seed(session.EdgeSessionRecord(
+          publicSessionId = SessionId("sso-session-1"),
+          presetId = presetId,
+          accessTokenId = AccessTokenId("old-jti"),
+          encryptedRefreshToken = Some(Secret(encryptedRefresh)),
+          expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
+        ))
+        newAccessToken <- env.signToken(jti = "new-jti", ttlSeconds = 600L)
+        gate <- Promise.make[Nothing, Unit]
+        newTokens = TokenResponse(newAccessToken, "Bearer", 600L, Some(RefreshToken("new-refresh")), Some(7200L), None, None)
+        // The refresh is held open until both requests are in, so the second one meets the lease.
+        _ <- env.ssoClient.exchangeRefreshToken.returnsZIO((_, _, _) => gate.await.as(newTokens))
+        service = env.buildService(client, security, sessions = sessions)
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        first <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request).fork
+        second <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request).fork
+        _ <- ZIO.yieldNow.repeatUntilZIO(_ => sessions.lease(AccessTokenId("old-jti")).map(_.isDefined))
+        // let the loser find the lease taken and start waiting
+        _ <- ZIO.yieldNow.repeat(Schedule.recurs(200))
+        _ <- gate.succeed(())
+        _ <- runClockUntilDone(first, second)
+        responses <- ZIO.foreach(List(first, second))(_.join)
+        cookies = responses.map(_.header(Header.SetCookie).map(_.value))
+      yield assertTrue(
+        responses.forall(_.status == Status.Ok),
+        env.ssoClient.exchangeRefreshToken.calls.size == 1,
+        cookies.forall(_.exists(c => c.name == EdgeSessionCookie.name && c.content == s"${presetId}:${newAccessToken}")),
+      )
+    },
+    test("a request arriving within the rotation window gets the winner's access token without calling auth") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.withClients(oauthClient)
+        sessions <- FakeSessions.make
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        encryptionKey = SecretKeySpec(env.edgeConfig.security.tokenEncryption.key, "AES")
+        encryptedRefresh <- security.encryptAes256("rt-secret".getBytes("UTF-8"), encryptionKey)
+        now <- Clock.instant
+        _ <- sessions.seed(session.EdgeSessionRecord(
+          publicSessionId = SessionId("sso-session-1"),
+          presetId = presetId,
+          accessTokenId = AccessTokenId("old-jti"),
+          encryptedRefreshToken = Some(Secret(encryptedRefresh)),
+          expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
+        ))
+        newAccessToken <- env.signToken(jti = "new-jti", ttlSeconds = 600L)
+        _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(
+          TokenResponse(newAccessToken, "Bearer", 600L, Some(RefreshToken("new-refresh")), Some(7200L), None, None),
+        )
+        service = env.buildService(client, security, sessions = sessions)
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        winner <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        _ <- TestClock.adjust(5.seconds)
+        late <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+        lateCookie = late.header(Header.SetCookie).map(_.value)
+      yield assertTrue(
+        winner.status == Status.Ok,
+        late.status == Status.Ok,
+        env.ssoClient.exchangeRefreshToken.calls.size == 1,
+        lateCookie.exists(c => c.name == EdgeSessionCookie.name && c.content == s"${presetId}:${newAccessToken}"),
+        lateCookie.flatMap(_.maxAge).exists(_ > Duration.Zero),
+        upstream.exists(_.header(Header.Authorization).contains(Header.Authorization.Bearer(newAccessToken))),
+      )
+    },
+    test("a request arriving after the rotation window is sent to log in, without calling auth") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.withClients(oauthClient)
+        sessions <- FakeSessions.make
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        encryptionKey = SecretKeySpec(env.edgeConfig.security.tokenEncryption.key, "AES")
+        encryptedRefresh <- security.encryptAes256("rt-secret".getBytes("UTF-8"), encryptionKey)
+        now <- Clock.instant
+        _ <- sessions.seed(session.EdgeSessionRecord(
+          publicSessionId = SessionId("sso-session-1"),
+          presetId = presetId,
+          accessTokenId = AccessTokenId("old-jti"),
+          encryptedRefreshToken = Some(Secret(encryptedRefresh)),
+          expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
+        ))
+        newAccessToken <- env.signToken(jti = "new-jti", ttlSeconds = 600L)
+        _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(
+          TokenResponse(newAccessToken, "Bearer", 600L, Some(RefreshToken("new-refresh")), Some(7200L), None, None),
+        )
+        service = env.buildService(client, security, sessions = sessions)
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        winner <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        _ <- TestClock.adjust(11.seconds)
+        late <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(
+        winner.status == Status.Ok,
+        late.status == Status.Unauthorized,
+        late.header(Header.Location).exists(_.url.encode == s"/login/${presetId}"),
+        env.ssoClient.exchangeRefreshToken.calls.size == 1,
+      )
+    },
+    test("a refresh that fails with invalid_grant releases the lease and sends the caller to log in") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.withClients(oauthClient)
+        sessions <- FakeSessions.make
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        encryptionKey = SecretKeySpec(env.edgeConfig.security.tokenEncryption.key, "AES")
+        encryptedRefresh <- security.encryptAes256("rt-secret".getBytes("UTF-8"), encryptionKey)
+        now <- Clock.instant
+        _ <- sessions.seed(session.EdgeSessionRecord(
+          publicSessionId = SessionId("sso-session-1"),
+          presetId = presetId,
+          accessTokenId = AccessTokenId("old-jti"),
+          encryptedRefreshToken = Some(Secret(encryptedRefresh)),
+          expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
+        ))
+        _ <- env.ssoClient.exchangeRefreshToken.failsWith(SSOClient.InvalidGrant)
+        service = env.buildService(client, security, sessions = sessions)
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        leaseAfter <- sessions.lease(AccessTokenId("old-jti"))
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        response.header(Header.Location).exists(_.url.encode == s"/login/${presetId}"),
+        leaseAfter.isEmpty,
+      )
+    },
+    test("a generic failure of the refresh also releases the lease and is propagated") {
+      val env = new Env
+      val failure = RuntimeException("sso token endpoint unreachable")
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.withClients(oauthClient)
+        sessions <- FakeSessions.make
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        encryptionKey = SecretKeySpec(env.edgeConfig.security.tokenEncryption.key, "AES")
+        encryptedRefresh <- security.encryptAes256("rt-secret".getBytes("UTF-8"), encryptionKey)
+        now <- Clock.instant
+        _ <- sessions.seed(session.EdgeSessionRecord(
+          publicSessionId = SessionId("sso-session-1"),
+          presetId = presetId,
+          accessTokenId = AccessTokenId("old-jti"),
+          encryptedRefreshToken = Some(Secret(encryptedRefresh)),
+          expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
+        ))
+        _ <- env.ssoClient.exchangeRefreshToken.failsWith(failure)
+        service = env.buildService(client, security, sessions = sessions)
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        result <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request).either
+        leaseAfter <- sessions.lease(AccessTokenId("old-jti"))
+      yield assertTrue(result == Left(failure), leaseAfter.isEmpty)
+    },
+    // Auth answering slower than the lease would let a waiter claim it while the holder's request is
+    // still in flight; the holder gives up first and keeps the lease, since auth may have spent the token.
+    test("an exchange with auth that outlasts its budget fails and keeps the lease") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.withClients(oauthClient)
+        sessions <- FakeSessions.make
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        encryptionKey = SecretKeySpec(env.edgeConfig.security.tokenEncryption.key, "AES")
+        encryptedRefresh <- security.encryptAes256("rt-secret".getBytes("UTF-8"), encryptionKey)
+        now <- Clock.instant
+        _ <- sessions.seed(session.EdgeSessionRecord(
+          publicSessionId = SessionId("sso-session-1"),
+          presetId = presetId,
+          accessTokenId = AccessTokenId("old-jti"),
+          encryptedRefreshToken = Some(Secret(encryptedRefresh)),
+          expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
+        ))
+        _ <- env.ssoClient.exchangeRefreshToken.returnsZIO((_, _, _) => ZIO.never)
+        service = env.buildService(client, security, sessions = sessions)
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        fiber <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request).either.fork
+        _ <- runClockUntilDone(fiber)
+        result <- fiber.join
+        leaseAfter <- sessions.lease(AccessTokenId("old-jti"))
+      yield assertTrue(
+        result.left.exists(_.isInstanceOf[EdgeService.RefreshExchangeTimedOut]),
+        leaseAfter.isDefined,
+        env.ssoClient.exchangeRefreshToken.calls.size == 1,
+      )
+    },
+    // The holder of the lease may have died; waiting must end, with the lease still held, in a login
+    // redirect and without ever calling auth.
+    test("a request that keeps finding the lease taken gives up with Reauthenticate when the wait runs out") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.withClients(oauthClient)
+        sessions <- FakeSessions.make
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        now <- Clock.instant
+        _ <- sessions.seed(
+          session.EdgeSessionRecord(
+            publicSessionId = SessionId("sso-session-1"),
+            presetId = presetId,
+            accessTokenId = AccessTokenId("old-jti"),
+            encryptedRefreshToken = Some(Secret(Array.fill(16)(1.toByte))),
+            expiresAt = now.plusSeconds(7200),
+            previousAccessTokenId = None,
+            encryptedAccessToken = None,
+            rotatedAt = None,
+          ),
+          lease = Some(now.plusSeconds(3600)),
+        )
+        service = env.buildService(client, security, sessions = sessions)
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        fiber <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request).fork
+        _ <- runClockUntilDone(fiber)
+        response <- fiber.join
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        response.header(Header.Location).exists(_.url.encode == s"/login/${presetId}"),
+        response.header(Header.SetCookie).map(_.value) ==
+          Some(EdgeSessionCookie.clear(preset.cookieDomain, preset.cookiePath)),
+        env.ssoClient.exchangeRefreshToken.calls.isEmpty,
+      )
     },
     test("exposes user info in CEL allow and inject rules") {
       val env = new Env
@@ -2193,6 +2796,10 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
         permissions = Set.empty,
         accessTokenTtl = 15.minutes,
+        requireSignedRequestObject = false,
+        requirePushedAuthorizationRequests = false,
+        applicationType = ApplicationType.web,
+        redirectUris = Set.empty,
       )
       for
         _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
@@ -2228,6 +2835,10 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
         permissions = Set.empty,
         accessTokenTtl = 15.minutes,
+        requireSignedRequestObject = false,
+        requirePushedAuthorizationRequests = false,
+        applicationType = ApplicationType.web,
+        redirectUris = Set.empty,
       )
       for
         _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
@@ -2263,6 +2874,10 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
         permissions = Set.empty,
         accessTokenTtl = 15.minutes,
+        requireSignedRequestObject = false,
+        requirePushedAuthorizationRequests = false,
+        applicationType = ApplicationType.web,
+        redirectUris = Set.empty,
       )
       for
         _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
@@ -2553,6 +3168,129 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         ),
       )
     },
+    // The one place edge sees a caller's certificate: the handshake of its own mutual-TLS listener.
+    suite("a token presented over edge's mutual-TLS listener")(
+      {
+        val callerCertificate = TestCertificates.generate(subject = "CN=bank,O=Bank,C=KZ").certificate
+        val otherCertificate = TestCertificates.generate(subject = "CN=attacker,O=Bank,C=KZ").certificate
+        val callerThumbprint = TokenBinding.thumbprint(callerCertificate)
+
+        def over(certificate: X509Certificate, token: AccessToken) =
+          Request.get(URL.empty / "users")
+            .addHeader(Header.Authorization.Bearer(token))
+            .copy(remoteCertificate = Some(certificate))
+
+        val withUserInfo = usersEndpoint(
+          inject = Vector(InjectRule(InjectTarget.header, "x-user-email", "user.email")),
+          fetchUserInfo = true,
+        )
+
+        Chunk(
+          test("accepts a certificate-bound token when the caller presented the certificate it is bound to") {
+            val env = new Env
+            for
+              _ <- env.setupDefaults()
+              capture <- captureUpstream()
+              client <- ZIO.service[Client]
+              security <- ZIO.service[SecurityService]
+              _ <- env.withResources(usersResource(usersEndpoint()))
+              token <- env.signToken(cnfX5t = Some(callerThumbprint))
+              service = env.buildService(client, security)
+              response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), over(callerCertificate, token))
+              upstream <- capture.get
+            yield assertTrue(response.status == Status.Ok, upstream.isDefined)
+          },
+          test("refuses it when the caller presented another certificate") {
+            val env = new Env
+            for
+              _ <- env.setupDefaults()
+              capture <- captureUpstream()
+              client <- ZIO.service[Client]
+              security <- ZIO.service[SecurityService]
+              _ <- env.withResources(usersResource(usersEndpoint()))
+              token <- env.signToken(cnfX5t = Some(callerThumbprint))
+              service = env.buildService(client, security)
+              response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), over(otherCertificate, token))
+              upstream <- capture.get
+            yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
+          },
+          test("refuses the same token on the plain listener, where there is no certificate to compare") {
+            val env = new Env
+            for
+              _ <- env.setupDefaults()
+              capture <- captureUpstream()
+              client <- ZIO.service[Client]
+              security <- ZIO.service[SecurityService]
+              _ <- env.withResources(usersResource(usersEndpoint()))
+              token <- env.signToken(cnfX5t = Some(callerThumbprint))
+              request = Request.get(URL.empty / "users").addHeader(Header.Authorization.Bearer(token))
+              service = env.buildService(client, security)
+              response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+              upstream <- capture.get
+            yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
+          },
+          test("tells ssoClient the userinfo call is for a token whose holder edge verified, not for this edge's client") {
+            val env = new Env
+            for
+              _ <- env.setupDefaults()
+              _ <- env.ssoClient.userInfo.succeedsWith(Json.Obj("email" -> Json.Str("john@example.com")))
+              _ <- captureUpstream()
+              client <- ZIO.service[Client]
+              security <- ZIO.service[SecurityService]
+              _ <- env.withResources(usersResource(withUserInfo))
+              token <- env.signToken(cnfX5t = Some(callerThumbprint))
+              service = env.buildService(client, security)
+              response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), over(callerCertificate, token))
+            yield assertTrue(
+              response.status == Status.Ok,
+              env.ssoClient.userInfo.calls.map(_._2) == List(SSOClient.TokenBinding.CallerCertificate),
+            )
+          },
+          test("does not let the certificate stand in for a key proof of a key-bound token") {
+            val env = new Env
+            for
+              _ <- env.setupDefaults()
+              capture <- captureUpstream()
+              client <- ZIO.service[Client]
+              security <- ZIO.service[SecurityService]
+              _ <- env.withResources(usersResource(usersEndpoint()))
+              token <- env.signToken(cnfJkt = Some(dpopJkt))
+              service = env.buildService(client, security)
+              response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), over(callerCertificate, token))
+              upstream <- capture.get
+            yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
+          },
+          test("refuses a token bound to both a key and the certificate presented") {
+            val env = new Env
+            for
+              _ <- env.setupDefaults()
+              capture <- captureUpstream()
+              client <- ZIO.service[Client]
+              security <- ZIO.service[SecurityService]
+              _ <- env.withResources(usersResource(usersEndpoint()))
+              token <- env.signToken(cnfJkt = Some(dpopJkt), cnfX5t = Some(callerThumbprint))
+              service = env.buildService(client, security)
+              response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), over(callerCertificate, token))
+              upstream <- capture.get
+            yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
+          },
+          test("leaves a token with no cnf claim to bearer semantics") {
+            val env = new Env
+            for
+              _ <- env.setupDefaults()
+              capture <- captureUpstream()
+              client <- ZIO.service[Client]
+              security <- ZIO.service[SecurityService]
+              _ <- env.withResources(usersResource(usersEndpoint()))
+              token <- env.signToken()
+              service = env.buildService(client, security)
+              response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), over(callerCertificate, token))
+              upstream <- capture.get
+            yield assertTrue(response.status == Status.Ok, upstream.isDefined)
+          },
+        )
+      }*,
+    ),
     // Turning the feature off must not turn the binding off with it.
     test("refuses a DPoP request when this edge has no dpop block configured") {
       val env = new Env
@@ -2573,6 +3311,495 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), dpopRequest("/users", token, proof))
         upstream <- capture.get
       yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
+    },
+  )
+
+  // ── Rate limits, shadow only ─────────────────────────────────────────────────
+
+  private def shadowPolicy(
+      name: String,
+      by: List[RateLimitDimension],
+      scope: RateLimitScope = RateLimitScope.EdgeWide,
+  ) =
+    RateLimitPolicy(
+      name = name,
+      by = by,
+      scope = scope,
+      limits = List(RateLimitWindow(limit = 1, windowSeconds = 3600)),
+      mode = GuardMode.Shadow,
+      burst = 1,
+      cost = 1,
+    )
+
+  /** What a policy has counted so far: admitted, and would-have-been-refused. */
+  private def counts(limiter: RateLimiter, policy: String): (Long, Long) =
+    limiter.stats(policy).fold((0L, 0L))(s => (s.allowed, s.wouldLimit))
+
+  private def decisions(policy: String, result: String): UIO[Double] =
+    Metric.counter("edge_rate_limit_decisions_total")
+      .tagged(Set(MetricLabel("policy", policy), MetricLabel("result", result))).value.map(_.count)
+
+  private val rateLimitSuite = suite("rate limits")(
+    test("with no policy configured the limiter is inactive and the request is served as before") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream(body = "users-payload")
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        body <- response.body.asString
+      yield assertTrue(
+        response.status == Status.Ok,
+        body == "users-payload",
+        !env.rateLimiter.active(Checkpoint.Identity),
+        !env.rateLimiter.active(Checkpoint.Route),
+        env.rateLimiter.names.isEmpty,
+      )
+    },
+    test("a policy in shadow leaves every response unchanged while the counters move") {
+      val env = new Env
+      val perClient = shadowPolicy("edge-shadow-client", List(RateLimitDimension.Client))
+      val perEndpoint = shadowPolicy("edge-shadow-endpoint", List(RateLimitDimension.Subject), RateLimitScope.Endpoint)
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream(body = "users-payload")
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.rateLimiter.update(List(perClient, perEndpoint))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        responses <- ZIO.foreach(1 to 3)(_ => service.proxy(ResourceId("users-api"), Path.decode("/users"), request))
+        bodies <- ZIO.foreach(responses)(_.body.asString)
+        _ <- env.rateLimiter.publish
+        clientWould <- decisions("edge-shadow-client", "would_limit")
+        endpointAllowed <- decisions("edge-shadow-endpoint", "allowed")
+        limited <- decisions("edge-shadow-client", "limited")
+      yield assertTrue(
+        responses.forall(_.status == Status.Ok),
+        bodies.forall(_ == "users-payload"),
+        // one passes the 1-per-hour bucket, the next two would have been refused
+        counts(env.rateLimiter, "edge-shadow-client") == (1L, 2L),
+        counts(env.rateLimiter, "edge-shadow-endpoint") == (1L, 2L),
+        clientWould == 2.0,
+        endpointAllowed == 1.0,
+        limited == 0.0,
+      )
+    },
+    test("the keys are the verified token's own: another subject has its own bucket, and a token with no key for a policy is not counted") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.rateLimiter.update(
+          List(shadowPolicy("edge-keys-subject", List(RateLimitDimension.Subject)), shadowPolicy("edge-keys-jkt", List(RateLimitDimension.Jkt))),
+        )
+        service = env.buildService(client, security)
+        run = (sub: String) =>
+          env.signToken(sub = sub).flatMap: token =>
+            service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(token)))
+        _ <- run("alice")
+        _ <- run("bob")
+        _ <- run("alice")
+      yield assertTrue(
+        counts(env.rateLimiter, "edge-keys-subject") == (2L, 1L),
+        // a bearer-style token carries no `cnf.jkt`: the policy does not apply, it does not share one bucket among such tokens
+        counts(env.rateLimiter, "edge-keys-jkt") == (0L, 0L),
+        env.rateLimiter.stats("edge-keys-jkt").map(_.trackedKeys) == Some(0),
+      )
+    },
+    test("a token that does not verify is not counted: no identity exists to key on") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.rateLimiter.update(List(shadowPolicy("edge-unverified", List(RateLimitDimension.Client))))
+        request = Request.get(URL.empty / "users").addHeader(Header.Authorization.Bearer("not.a.jwt"))
+        response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(response.status == Status.Unauthorized, counts(env.rateLimiter, "edge-unverified") == (0L, 0L))
+    },
+    test("R2 is checked before the revocation check and before the DPoP proof records its state") {
+      val env = new Env
+      val policy = shadowPolicy("edge-order-r2", List(RateLimitDimension.Client))
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        log <- Ref.make(List.empty[(String, (Long, Long))])
+        _ <- env.revocationService.isRevoked.returnsZIO((_, _) =>
+          log.update(_ :+ ("revocation" -> counts(env.rateLimiter, "edge-order-r2"))).as(false),
+        )
+        recording = new DpopVerifier:
+          override def verify(
+              proofHeader: String,
+              accessToken: String,
+              boundKeyThumbprint: String,
+              method: Method,
+              path: Path,
+          ): IO[DpopVerifier.Error, versola.util.Dpop.Proof] =
+            log.update(_ :+ ("dpop" -> counts(env.rateLimiter, "edge-order-r2"))) *>
+              env.dpopVerifier.verify(proofHeader, accessToken, boundKeyThumbprint, method, path)
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.rateLimiter.update(List(policy))
+        token <- env.signToken(cnfJkt = Some(dpopJkt))
+        service = env.buildService(client, security, recording)
+        first <- dpopProof(token, "/users", jti = "proof-a")
+        second <- dpopProof(token, "/users", jti = "proof-b")
+        r1 <- service.proxy(ResourceId("users-api"), Path.decode("/users"), dpopRequest("/users", token, first))
+        r2 <- service.proxy(ResourceId("users-api"), Path.decode("/users"), dpopRequest("/users", token, second))
+        seen <- log.get
+      yield assertTrue(
+        r1.status == Status.Ok,
+        // shadow: still served. Under enforce the second would have stopped at R2, and by these numbers that is before
+        // either of the two steps that spend state or time on a request
+        r2.status == Status.Ok,
+        seen == List(
+          "revocation" -> (1L, 0L),
+          "dpop" -> (1L, 0L),
+          "revocation" -> (1L, 1L),
+          "dpop" -> (1L, 1L),
+        ),
+      )
+    },
+    test("R3 is checked after permissions, and before the user-info call and the upstream") {
+      val env = new Env
+      val policy = shadowPolicy("edge-order-r3", List(RateLimitDimension.Subject), RateLimitScope.Endpoint)
+      for
+        _ <- env.setupDefaults()
+        log <- Ref.make(List.empty[(String, (Long, Long))])
+        _ <- env.ssoClient.userInfo.returnsZIO((_, _) =>
+          log.update(_ :+ ("userinfo" -> counts(env.rateLimiter, "edge-order-r3"))).as(Json.Obj()),
+        )
+        _ <- TestClient.addRoute(Method.ANY / trailing -> handler { (_: Request) =>
+          log.update(_ :+ ("upstream" -> counts(env.rateLimiter, "edge-order-r3"))).as(Response.ok)
+        })
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(fetchUserInfo = true)))
+        _ <- env.rateLimiter.update(List(policy))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        r1 <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        r2 <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        seen <- log.get
+      yield assertTrue(
+        r1.status == Status.Ok,
+        r2.status == Status.Ok,
+        seen == List(
+          "userinfo" -> (1L, 0L),
+          "upstream" -> (1L, 0L),
+          "userinfo" -> (1L, 1L),
+          "upstream" -> (1L, 1L),
+        ),
+      )
+    },
+    test("a caller without permission for the endpoint is counted at R2 and spends nothing at R3") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        _ <- env.permissionService.getAllowedEndpointsForRoles.succeedsWith(Set.empty)
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.rateLimiter.update(
+          List(
+            shadowPolicy("edge-denied-r2", List(RateLimitDimension.Client)),
+            shadowPolicy("edge-denied-r3", List(RateLimitDimension.Subject), RateLimitScope.Endpoint),
+          ),
+        )
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(
+        response.status == Status.Forbidden,
+        counts(env.rateLimiter, "edge-denied-r2") == (1L, 0L),
+        counts(env.rateLimiter, "edge-denied-r3") == (0L, 0L),
+        env.rateLimiter.stats("edge-denied-r3").map(_.trackedKeys) == Some(0),
+      )
+    },
+    test("an endpoint is keyed by its registered template, not the concrete path") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(), userByIdEndpoint()))
+        _ <- env.rateLimiter.update(List(shadowPolicy("edge-template", Nil, RateLimitScope.Endpoint)))
+        token <- env.signToken()
+        service = env.buildService(client, security)
+        get = (path: String) =>
+          service.proxy(
+            ResourceId("users-api"),
+            Path.decode(path),
+            Request.get(URL.decode(path).toOption.get).addCookie(sessionCookie(token)),
+          )
+        // two ids on one template share a bucket, another endpoint has its own
+        _ <- get("/users/1")
+        _ <- get("/users/2")
+        _ <- get("/users")
+      yield assertTrue(
+        counts(env.rateLimiter, "edge-template") == (2L, 1L),
+        env.rateLimiter.stats("edge-template").map(_.trackedKeys) == Some(2),
+      )
+    },
+    test("enforce: R2 refuses with 429 and Retry-After before revocation, DPoP, user-info and the upstream, and the other client is unaffected") {
+      val env = new Env
+      val policy = shadowPolicy("edge-enforce-r2", List(RateLimitDimension.Client)).copy(mode = GuardMode.Enforce)
+      for
+        _ <- env.setupDefaults()
+        upstream <- Ref.make(0)
+        _ <- TestClient.addRoute(Method.ANY / trailing -> handler { (_: Request) => upstream.update(_ + 1).as(Response.ok) })
+        revoked <- Ref.make(0)
+        _ <- env.revocationService.isRevoked.returnsZIO((_, _) => revoked.update(_ + 1).as(false))
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.rateLimiter.update(List(policy))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        first <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        second <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        body <- second.body.asString
+        _ <- env.rateLimiter.publish
+        limited <- decisions("edge-enforce-r2", "limited")
+        upstreamCalls <- upstream.get
+        revocationChecks <- revoked.get
+      yield assertTrue(
+        first.status == Status.Ok,
+        second.status == Status.TooManyRequests,
+        second.rawHeader("Retry-After").contains("3600"),
+        second.rawHeader("RateLimit-Policy").contains("\"edge-enforce-r2\";q=1;w=3600"),
+        second.rawHeader("RateLimit").contains("\"edge-enforce-r2\";r=0;t=3600"),
+        first.rawHeader("RateLimit").isEmpty,
+        // no body; the policy is named by the header, never a key or another policy
+        body.isEmpty,
+        // the refused call reached neither the revocation check nor the upstream
+        upstreamCalls == 1,
+        revocationChecks == 1,
+        counts(env.rateLimiter, "edge-enforce-r2") == (1L, 0L),
+        limited == 1.0,
+      )
+    },
+    test("enforce: R3 refuses before the user-info call and the upstream; the same user on another endpoint is served") {
+      val env = new Env
+      val policy = shadowPolicy("edge-enforce-r3", List(RateLimitDimension.Subject), RateLimitScope.Endpoint).copy(mode = GuardMode.Enforce)
+      for
+        _ <- env.setupDefaults()
+        userInfo <- Ref.make(0)
+        upstream <- Ref.make(0)
+        _ <- env.ssoClient.userInfo.returnsZIO((_, _) => userInfo.update(_ + 1).as(Json.Obj()))
+        _ <- TestClient.addRoute(Method.ANY / trailing -> handler { (_: Request) => upstream.update(_ + 1).as(Response.ok) })
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(fetchUserInfo = true), userByIdEndpoint()))
+        _ <- env.rateLimiter.update(List(policy))
+        token <- env.signToken()
+        service = env.buildService(client, security)
+        get = (path: String) =>
+          service.proxy(ResourceId("users-api"), Path.decode(path), Request.get(URL.decode(path).toOption.get).addCookie(sessionCookie(token)))
+        r1 <- get("/users")
+        r2 <- get("/users")
+        other <- get("/users/7")
+        infoCalls <- userInfo.get
+        upstreamCalls <- upstream.get
+      yield assertTrue(
+        r1.status == Status.Ok,
+        r2.status == Status.TooManyRequests,
+        r2.rawHeader("Retry-After").isDefined,
+        other.status == Status.Ok,
+        // two served calls: one user-info call (only the first call's endpoint asks) and two upstream calls
+        infoCalls == 1,
+        upstreamCalls == 2,
+      )
+    },
+    test("a limit declared on an endpoint refuses that endpoint only, under the fixed name, and the smaller of it and the edge's policy wins") {
+      val env = new Env
+      val declared =
+        DeclaredRateLimit(
+          limits = List(RateLimitWindow(limit = 1, windowSeconds = 600)),
+          by = DeclaredRateLimitBy.Subject,
+          mode = GuardMode.Enforce,
+          burst = 1,
+        )
+      val generous = shadowPolicy("edge-generous", List(RateLimitDimension.Subject), RateLimitScope.Endpoint)
+        .copy(mode = GuardMode.Enforce, limits = List(RateLimitWindow(limit = 1000, windowSeconds = 60)), burst = 100)
+      val users = usersEndpoint().copy(rateLimit = Some(declared))
+      for
+        _ <- env.setupDefaults()
+        upstream <- Ref.make(0)
+        _ <- TestClient.addRoute(Method.ANY / trailing -> handler { (_: Request) => upstream.update(_ + 1).as(Response.ok) })
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(users, userByIdEndpoint()))
+        _ <- env.rateLimiter.update(
+          List(generous),
+          declared =
+            List(DeclaredLimit(owner = DeclaredOwner.Endpoint, selector = users.template(ResourceId("users-api")), limit = declared, resource = "")),
+        )
+        token <- env.signToken()
+        service = env.buildService(client, security)
+        get = (path: String) =>
+          service.proxy(ResourceId("users-api"), Path.decode(path), Request.get(URL.decode(path).toOption.get).addCookie(sessionCookie(token)))
+        first <- get("/users")
+        second <- get("/users")
+        other <- get("/users/7")
+        body <- second.body.asString
+        upstreamCalls <- upstream.get
+      yield assertTrue(
+        first.status == Status.Ok,
+        second.status == Status.TooManyRequests,
+        second.rawHeader("Retry-After").contains("600"),
+        second.rawHeader("RateLimit-Policy").contains("\"resource-endpoint\";q=1;w=600"),
+        body.isEmpty,
+        other.status == Status.Ok,
+        upstreamCalls == 2,
+      )
+    },
+    test(
+      "a limit the resource sets for a client of its audience refuses that client's calls to it at R3 under resource-client, and another client is served",
+    ) {
+      val env = new Env
+      val declared = DeclaredRateLimit(
+        limits = List(RateLimitWindow(limit = 1, windowSeconds = 900)),
+        mode = GuardMode.Enforce,
+        burst = 1,
+        by = DeclaredRateLimitBy.None,
+      )
+      for
+        _ <- env.setupDefaults()
+        upstream <- Ref.make(0)
+        _ <- TestClient.addRoute(Method.ANY / trailing -> handler { (_: Request) => upstream.update(_ + 1).as(Response.ok) })
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.rateLimiter.update(
+          Nil,
+          declared = List(DeclaredLimit(owner = DeclaredOwner.Audience, selector = "web-app", limit = declared, resource = "users-api")),
+        )
+        limitedToken <- env.signToken(clientId = "web-app")
+        freeToken <- env.signToken(clientId = "other-app")
+        service = env.buildService(client, security)
+        call = (token: AccessToken) =>
+          service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(token)))
+        first <- call(limitedToken)
+        second <- call(limitedToken)
+        free <- call(freeToken)
+        body <- second.body.asString
+        upstreamCalls <- upstream.get
+      yield assertTrue(
+        first.status == Status.Ok,
+        second.status == Status.TooManyRequests,
+        second.rawHeader("RateLimit-Policy").contains("\"resource-client\";q=1;w=900"),
+        body.isEmpty,
+        free.status == Status.Ok,
+        // the refused call never reached the upstream
+        upstreamCalls == 2,
+      )
+    },
+    test("enforce: a refusal names the policy that makes the caller wait longest and spends nothing on the others") {
+      val env = new Env
+      val fast = shadowPolicy("edge-enforce-fast", List(RateLimitDimension.Client)).copy(
+        mode = GuardMode.Enforce,
+        limits = List(RateLimitWindow(limit = 1, windowSeconds = 10)),
+      )
+      val slow = shadowPolicy("edge-enforce-slow", List(RateLimitDimension.Subject)).copy(mode = GuardMode.Enforce)
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.rateLimiter.update(List(fast, slow))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        _ <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        refused <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(
+        refused.status == Status.TooManyRequests,
+        refused.rawHeader("Retry-After").contains("3600"),
+      )
+    },
+    test("a policy in shadow still answers as before, and one switched off is ignored") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.rateLimiter.update(
+          List(
+            shadowPolicy("edge-mode-shadow", List(RateLimitDimension.Client)),
+            shadowPolicy("edge-mode-off", List(RateLimitDimension.Client)).copy(mode = GuardMode.Off),
+          ),
+        )
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        responses <- ZIO.foreach(1 to 3)(_ => service.proxy(ResourceId("users-api"), Path.decode("/users"), request))
+      yield assertTrue(responses.forall(_.status == Status.Ok), env.rateLimiter.names == List("edge-mode-shadow"))
+    },
+    test("a refresh is not counted separately: the proxied call is") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.rateLimiter.update(List(shadowPolicy("edge-refresh", List(RateLimitDimension.Client))))
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        encryptionKey = SecretKeySpec(env.edgeConfig.security.tokenEncryption.key, "AES")
+        encryptedRefresh <- security.encryptAes256("rt-secret".getBytes("UTF-8"), encryptionKey)
+        now <- Clock.instant
+        record = session.EdgeSessionRecord(
+          publicSessionId = SessionId("sso-session-1"),
+          presetId = presetId,
+          accessTokenId = AccessTokenId("old-jti"),
+          encryptedRefreshToken = Some(Secret(encryptedRefresh)),
+          expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
+        )
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+        newAccessToken <- env.signToken(jti = "new-jti", ttlSeconds = 600L)
+        _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(
+          TokenResponse(
+            accessToken = newAccessToken,
+            tokenType = "Bearer",
+            expiresIn = 600L,
+            refreshToken = Some(RefreshToken("new-refresh")),
+            refreshTokenExpiresIn = Some(7200L),
+            scope = None,
+            idToken = None,
+          ),
+        )
+        _ <- env.sessionRepository.create.succeedsWith(())
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(
+        response.status == Status.Ok,
+        env.ssoClient.exchangeRefreshToken.calls.size == 1,
+        counts(env.rateLimiter, "edge-refresh") == (1L, 0L),
+      )
     },
   )
 end EdgeServiceProxySpec

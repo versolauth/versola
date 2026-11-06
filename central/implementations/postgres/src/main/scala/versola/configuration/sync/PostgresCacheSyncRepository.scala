@@ -43,6 +43,7 @@ object PostgresCacheSyncRepository:
     "challenge_settings_change",
     "theme_change",
     "system_settings_change",
+    "delivery_settings_change",
     "metadata_change",
   )
 
@@ -146,6 +147,9 @@ object PostgresCacheSyncRepository:
 
       case "system_settings_change" =>
         SyncEvent.SystemSettingsUpdated
+
+      case "delivery_settings_change" =>
+        SyncEvent.DeliverySettingsUpdated
 
       case "metadata_change" =>
         SyncEvent.ServerMetadataUpdated

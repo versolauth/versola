@@ -2,11 +2,13 @@ package versola.oauth.client
 
 import versola.oauth.client.model.{
   Acr,
+  AuthFactorType,
   AuthorizationDetailType,
   AuthorizationDetailTypeRecord,
   ChallengeSettingsRecord,
   ClientId,
   ClientSecret,
+  EmailRegistrationMode,
   FormRecord,
   Locales,
   MtlsCertificateSource,
@@ -19,6 +21,11 @@ import versola.oauth.client.model.{
   PassedAuthFactor,
   PasskeySettings,
   PasswordHistorySettings,
+  PhoneRegion,
+  PrimaryCredential,
+  RegistrationCredential,
+  RegistrationFlow,
+  RegistrationStep,
   ResourceId,
   ResourceRecord,
   ResourceUri,
@@ -28,6 +35,7 @@ import versola.oauth.client.model.{
   SubmissionLimits,
   SystemSettingsRecord,
   TenantId,
+  TenantLogo,
   ThemeRecord,
 }
 import versola.oauth.conversation.otp.model.OtpTemplate
@@ -36,9 +44,12 @@ import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata, ServerMetadat
 import versola.util.{
   CacheSource,
   ClientAssertion,
+  ConfigSnapshot,
   CoreConfig,
   Dpop,
+  Email,
   JsonSchemaValidator,
+  Phone,
   ReloadingCache,
   RequestObject,
   Secret,
@@ -75,7 +86,21 @@ trait OAuthConfigurationService:
 
   def getLocales: UIO[Locales]
 
-  def getAllowedPhonePrefixes(id: ClientId): UIO[List[String]]
+  def getPhoneRegions(id: ClientId): UIO[List[PhoneRegion]]
+
+  /** Whether any email address or phone number could register through this client: it offers
+    * registration ([[OAuthClientRecord.offersRegistration]]) and its tenant's policy lets at least one of
+    * the credentials it signs in by create accounts. Decides whether the credential card mentions
+    * registration at all; the address itself is checked by [[registrationFor]].
+    */
+  def registrationAvailable(client: OAuthClientRecord): UIO[Boolean]
+
+  /** The registration a new user of this client goes through for the address they entered, or
+    * `None` when the tenant does not let that address register (a closed email policy, a domain it
+    * refuses, a phone number whose region has no registration). The user is then taken down the
+    * ordinary sign-in path, as for any unknown credential.
+    */
+  def registrationFor(id: ClientId, credential: Either[Email, Phone]): UIO[Option[RegistrationFlow]]
 
   def getPasswordRegex: UIO[String]
 
@@ -101,7 +126,9 @@ trait OAuthConfigurationService:
 
   def getPasswordHistorySettings: UIO[PasswordHistorySettings]
 
-  def getIdentityProviderLogo: UIO[Option[String]]
+  /** The logo the tenant's login pages show above the card. `None` for a tenant without one, or with only one of the
+    * two files, or one auth does not know: the forms then show the Versola wordmark. */
+  def getTenantLogo(tenantId: TenantId): UIO[Option[TenantLogo]]
 
   def getAuthConversationTtl(id: ClientId): UIO[Duration]
 
@@ -186,14 +213,14 @@ object OAuthConfigurationService:
   val DefaultUserAgentTtl: Duration = Duration.fromSeconds(15552000L)
 
   def live: ZLayer[
-    Client & SecurityService & Scope & CoreConfig & JsonSchemaValidator,
+    Client & SecurityService & Scope & CoreConfig & ConfigSnapshot & JsonSchemaValidator,
     Throwable,
     OAuthConfigurationService,
   ] = {
     def cacheLayer[A: Tag]: ZLayer[Scope & CoreConfig & CacheSource[A], Throwable, ReloadingCache[A]] =
       ZLayer.fromZIO:
         ZIO.serviceWithZIO[CoreConfig](config =>
-          ReloadingCache.make[A](config.configurationCacheRefreshInterval),
+          ReloadingCache.make[A](config.configurationCacheRefreshInterval, fromSnapshot = true),
         )
     // Derives `ServedMetadata` at the point the document is actually fetched -- initial load,
     // periodic refresh, and `syncConfiguration`'s manual resync all go through `getAll` here --
@@ -385,23 +412,27 @@ object OAuthConfigurationService:
         otpType: OtpType,
         uiLocales: Option[List[String]],
     ): UIO[OtpTemplate] =
-      val templateOpt = find(id).flatMap:
+      val clientOpt = find(id)
+      val templateOpt = clientOpt.flatMap:
         case None => ZIO.none
         case Some(client) =>
           getOtpTemplates(client.tenantId, client.otpTemplateId, otpType)
 
       for
         template <- templateOpt
+        client <- clientOpt
         locales <- getLocales
       yield template match
         case None => IllegalStateTemplate
         case Some(t) =>
           val preferredLocales = uiLocales.getOrElse(Nil) :+ locales.default
-          val body = preferredLocales
-            .collectFirst { case loc if t.localizations.contains(loc) => t.localizations(loc) }
-            .orElse(t.localizations.values.headOption)
-            .getOrElse(IllegalStateTemplate)
-          OtpTemplate(body)
+          def pick(values: Map[String, String]): Option[String] =
+            preferredLocales
+              .collectFirst { case loc if values.contains(loc) => values(loc) }
+              .orElse(values.values.headOption)
+          val body = pick(t.localizations).getOrElse(IllegalStateTemplate)
+          val appName = client.flatMap(c => pick(c.clientName)).getOrElse(id.toString)
+          OtpTemplate(body.replace("{{appName}}", appName))
 
     override def getPasswordTemplate(channel: OtpTemplateChannel, uiLocales: Option[List[String]]): Task[OtpTemplate] =
       for
@@ -422,20 +453,56 @@ object OAuthConfigurationService:
           .orElseFail(RuntimeException("Password template has no localizations"))
       yield OtpTemplate(body)
 
-    override def getAllowedPhonePrefixes(id: ClientId): UIO[List[String]] =
+    override def getPhoneRegions(id: ClientId): UIO[List[PhoneRegion]] =
       find(id).flatMap:
         case None => ZIO.succeed(Nil)
         case Some(client) =>
           challengeSettingsCache.get.map(
             _.find(_.tenantId == client.tenantId)
-              .fold(Nil)(_.allowedPrefixes),
+              .fold(Nil)(_.phoneRegions),
           )
+
+    override def registrationAvailable(client: OAuthClientRecord): UIO[Boolean] =
+      if !client.offersRegistration then ZIO.succeed(false)
+      else
+        val credentials = client.authFlow.fold(Nil)(_.primary.credentials)
+        tenantChallengeSettings(client.tenantId).map: settings =>
+          settings.exists: settings =>
+            credentials.contains(PrimaryCredential.email) && settings.emailRegistration.mode != EmailRegistrationMode.closed ||
+              credentials.contains(PrimaryCredential.phone) && settings.phoneRegions.exists(_.registration)
+
+    override def registrationFor(id: ClientId, credential: Either[Email, Phone]): UIO[Option[RegistrationFlow]] =
+      find(id).flatMap:
+        case Some(client) if client.offersRegistration =>
+          tenantChallengeSettings(client.tenantId).map:
+            _.filter: settings =>
+              credential.fold(
+                email => settings.emailRegistration.allows(email),
+                phone => PhoneRegion.allowsRegistration(settings.phoneRegions, phone),
+              )
+            .map(settings => RegistrationFlow(RegistrationCredential.from(credential), registrationSteps(client), settings.defaultRoles))
+        case _ => ZIO.none
+
+    /** The one-time code that proves the address, then a password when the client's sign-in demands one:
+      * a user who registered without it could never pass that factor on the next sign-in.
+      */
+    private def registrationSteps(client: OAuthClientRecord): List[RegistrationStep] =
+      val passwordRequired = client.authFlow.exists(_.primary.factors.exists(factor => factor.`type` == AuthFactorType.password && factor.required))
+      RegistrationStep.Otp() :: Option.when(passwordRequired)(RegistrationStep.SetPassword()).toList
+
+    private def tenantChallengeSettings(tenantId: TenantId): UIO[Option[ChallengeSettingsRecord]] =
+      challengeSettingsCache.get.map(_.find(_.tenantId == tenantId))
 
     override def getPasswordRegex: UIO[String] =
       systemSettingsCache.get.map(_.passwordRegex)
 
-    override def getIdentityProviderLogo: UIO[Option[String]] =
-      systemSettingsCache.get.map(_.identityProviderLogo)
+    override def getTenantLogo(tenantId: TenantId): UIO[Option[TenantLogo]] =
+      challengeSettingsCache.get.map:
+        _.find(_.tenantId == tenantId).flatMap: settings =>
+          for
+            light <- settings.logoLight
+            dark <- settings.logoDark
+          yield TenantLogo(light, dark)
 
     override def getSubmissionLimits(id: ClientId): UIO[SubmissionLimits] =
       find(id).flatMap:

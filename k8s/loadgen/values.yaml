@@ -405,9 +405,9 @@ mockapi:
     resources:
       requests:
         cpu: 50m
-        memory: 32Mi
+        memory: 128Mi
       limits:
-        memory: 32Mi
+        memory: 128Mi
 
 # Where the system's dashboard (dashboards/grafana/) gets its data from, and
 # how the pods are found.

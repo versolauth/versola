@@ -66,20 +66,14 @@ def authorize(
     case None =>
       ZIO.fail(AuthorizeOutcome.Denied)
 
-/** Where the caller put the token. Only the cookie is edge's own copy of it -- the two header
-  * schemes carry whatever the caller chose to send -- which is what tells a certificate-bound
-  * token apart here. */
-private enum Presentation:
-  case Cookie, Bearer, Dpop
-
 /** RFC 9449 §7.1/§7.2 and RFC 8705 §3 for the edge's own endpoints. Nonce enforcement is
   * unconditional (`DpopVerifier.checkNonce`), so this has exactly one challenge to negotiate,
   * the same as the proxy's -- everything else here (missing proof, bad binding, a downgrade)
   * has nothing for the client to retry differently and collapses to the same bare refusal.
   *
-  * A certificate-bound token is answered exactly as the proxy answers it (`EdgeService`'s
-  * `checkTokenBinding`): honoured out of the session cookie, where it is edge's own copy,
-  * refused in a header, which edge holds no certificate to check it against.
+  * Which of these applies is decided by `TokenBinding.check`, the same function the proxy's
+  * `checkTokenBinding` uses, so a token bound to both a key and a certificate is refused here
+  * on every presentation too.
   */
 private def verifyBinding(
     request: Request,
@@ -87,8 +81,8 @@ private def verifyBinding(
     claims: PermissionsClaims,
     presentation: Presentation,
 ): ZIO[DpopVerifier, AuthorizeOutcome, Unit] =
-  (claims.confirmation.flatMap(_.jkt), claims.confirmation.flatMap(_.certificateThumbprint), presentation) match
-    case (Some(jkt), _, Presentation.Dpop) =>
+  TokenBinding.check(claims.confirmation, presentation) match
+    case BindingCheck.VerifyProof(jkt) =>
       ZIO.serviceWithZIO[DpopVerifier]: verifier =>
         DpopVerifier.proofHeader(request)
           .orElseFail(AuthorizeOutcome.Denied)
@@ -106,12 +100,12 @@ private def verifyBinding(
               case _ => AuthorizeOutcome.Denied
             }
           .unit
-    // §7.2: a key-bound token presented without proof of that key, here as in the proxy.
-    case (Some(_), _, _) => ZIO.fail(AuthorizeOutcome.Denied)
-    case (None, Some(_), Presentation.Cookie) => ZIO.unit
-    case (None, Some(_), _) => ZIO.fail(AuthorizeOutcome.Denied)
-    case (None, None, Presentation.Dpop) => ZIO.fail(AuthorizeOutcome.Denied)
-    case (None, None, _) => ZIO.unit
+    case BindingCheck.Accept => ZIO.unit
+    // Edge's own endpoints are not served on the mutual-TLS listener, so no presentation here
+    // produces `AcceptCallerCertificate`; refused all the same if one ever did.
+    case BindingCheck.Downgrade | BindingCheck.CertificateOutsideSession | BindingCheck.UnboundDpop |
+        BindingCheck.AcceptCallerCertificate =>
+      ZIO.fail(AuthorizeOutcome.Denied)
 
 case class PermissionsClaims(
     @jsonField("jti") jti: AccessTokenId,
@@ -120,7 +114,7 @@ case class PermissionsClaims(
     @jsonField("client_id") clientId: Option[ClientId],
     @jsonField("tenant_id") tenantId: Option[TenantId],
     roles: Option[List[RoleId]],
-    @jsonField("sid") sid: Option[SessionId] = None,
-    @jsonField("fam") family: Option[RefreshTokenFamilyId] = None,
+    @jsonField("sid") sid: Option[SessionId],
+    @jsonField("fam") family: Option[RefreshTokenFamilyId],
     @jsonField("cnf") confirmation: Option[Confirmation],
 ) derives JsonCodec

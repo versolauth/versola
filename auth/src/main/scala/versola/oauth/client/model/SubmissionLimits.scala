@@ -8,33 +8,34 @@ case class RateLimit(maxAttempts: Int, windowSeconds: Int) derives JsonCodec
   * from the sign-in ones: same shape, evaluated against the step-up throttle records.
   */
 case class StepUpLimits(
-    otpRequest: List[RateLimit] = Nil,
-    otpSubmit: List[RateLimit] = Nil,
-    passwordSubmit: List[RateLimit] = Nil,
-    passkeyAssertion: List[RateLimit] = Nil,
-    banDurationSeconds: Int = 0,
+    otpRequest: List[RateLimit],
+    otpSubmit: List[RateLimit],
+    passwordSubmit: List[RateLimit],
+    passkeyAssertion: List[RateLimit],
+    banDurationSeconds: Int,
 ) derives JsonCodec
 
 case class SubmissionLimits(
-    otpRequest: List[RateLimit] = Nil,
-    otpSubmit: List[RateLimit] = Nil,
-    passwordSubmit: List[RateLimit] = Nil,
-    passkeyAssertion: List[RateLimit] = Nil,
-    banDurationSeconds: Int = 0,
+    otpRequest: List[RateLimit],
+    otpSubmit: List[RateLimit],
+    passwordSubmit: List[RateLimit],
+    passkeyAssertion: List[RateLimit],
+    banDurationSeconds: Int,
     /** `None` for a tenant that never configured step-up limits: its step-ups then follow the
       * sign-in windows above (with their own counters), so existing tenants keep their throttling.
       * `Some` replaces them entirely, including the ban duration -- an empty list there switches
       * that step-up challenge's throttling off, as it does for sign-in.
       */
-    stepUp: Option[StepUpLimits] = None,
+    stepUp: Option[StepUpLimits],
 ) derives JsonCodec:
 
   /** The limits that govern a step-up: the dedicated ones when configured, otherwise these. */
   def forStepUp: SubmissionLimits =
-    stepUp.fold(this)(s => SubmissionLimits(s.otpRequest, s.otpSubmit, s.passwordSubmit, s.passkeyAssertion, s.banDurationSeconds))
+    stepUp.fold(this)(s => SubmissionLimits(s.otpRequest, s.otpSubmit, s.passwordSubmit, s.passkeyAssertion, s.banDurationSeconds, stepUp = None))
 
 object SubmissionLimits:
-  val empty: SubmissionLimits = SubmissionLimits()
+  val empty: SubmissionLimits =
+    SubmissionLimits(otpRequest = Nil, otpSubmit = Nil, passwordSubmit = Nil, passkeyAssertion = Nil, banDurationSeconds = 0, stepUp = None)
 
   /** Mirrors `SubmissionLimits.recommended` in `central`'s equivalent model -- keep the two
     * in sync. Used as the fallback here (rather than `empty`) when a tenant has no
@@ -47,4 +48,5 @@ object SubmissionLimits:
     passwordSubmit = List(RateLimit(5, 900), RateLimit(10, 3600)),
     passkeyAssertion = List(RateLimit(5, 300), RateLimit(10, 3600)),
     banDurationSeconds = 1800,
+    stepUp = None,
   )

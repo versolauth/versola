@@ -17,11 +17,11 @@ object JwksSyncClient:
       config: EdgeConfig,
       centralSyncTokenService: CentralSyncTokenService,
   ) extends JwksSyncClient:
-    private val JwksURL = config.central.url / "configuration" / "jwks" / "sync"
+    private val JwksURL = config.central.url / "edge" / "sync" / "jwks"
 
     override def getAll: Task[JWT.PublicKeys] =
       for
         token <- centralSyncTokenService.getToken
         request = Request.get(JwksURL).addHeader(Header.Authorization.Bearer(token))
-        keys <- ZIO.scoped(httpClient.request(request).flatMap(_.body.asJsonFromCodec[JWT.PublicKeys]))
+        keys <- ZIO.scoped(centralSyncTokenService.syncRequest(httpClient, request).flatMap(_.body.asJsonFromCodec[JWT.PublicKeys]))
       yield keys

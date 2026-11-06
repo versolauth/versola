@@ -31,9 +31,45 @@ object NativeAppFlowSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
   private val config = EdgeFixture.Config(
     resourceId = "e2e-edge-native-app",
     resourceUri = UpstreamStub.uriOn(UpstreamPort),
-    endpoints = List(EdgeFixture.Endpoint(name = "items", method = "GET", path = "/items")),
+    endpoints = List(
+      EdgeFixture.Endpoint(
+        name = "items",
+        method = "GET",
+        path = "/items",
+        permitted = true,
+        fetchUserInfo = false,
+        allow = None,
+        inject = Nil,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
+      // The endpoint that makes edge call `/userinfo`, and the header built from its answer.
+      EdgeFixture.Endpoint(
+        name = "profile",
+        method = "GET",
+        path = "/profile",
+        permitted = true,
+        fetchUserInfo = true,
+        allow = None,
+        inject = List(Fixtures.inject("header", "X-User-Sub", "user.sub")),
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
+    ),
+    scopes = Set("openid", "email", "offline_access"),
+    presetScope = Set("openid"),
+    postLogoutRedirectUri = None,
+    cookiePath = None,
+    awaitProxyReady = false,
+    privateKeyJwt = false,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
+    mutualTls = false,
     nativeApp = true,
     issuedCertificate = true,
+    enrolledCertificate = false,
   )
 
   override val bootstrap: ZLayer[Any, Any, OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub] =
@@ -201,6 +237,32 @@ object NativeAppFlowSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
         assertTrue(revoked.status == Status.Ok) &&
         assertTrue(afterRevoke.status == Status.BadRequest, afterRevokeBody.contains("invalid_grant"))
           .label("a revoked refresh token is dead")
+    },
+    // The call edge makes for `fetchUserInfo` carries the device's key-bound token and no proof
+    // (the key is the device's). Auth honours it because the handshake presents edge's own
+    // certificate, which names an edge auth trusts -- nothing is signed or sent besides.
+    test("an endpoint that needs userinfo is served for a device-bound token") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        stub <- ZIO.service[UpstreamStub]
+        prover <- DpopProver.make
+        _ <- stub.reset
+        (_, issued) <- tokens(prover)
+        htu = edgeApi.proxyUrl(f.resourceId, "/profile")
+        proxyOnce = withNonce(nonce =>
+          prover.proof(Method.GET, htu, accessToken = Some(issued.accessToken), nonce = nonce)
+            .flatMap(proof => edgeApi.proxy(Method.GET, f.resourceId, "/profile", EdgeAuth.Dpop(issued.accessToken, proof)))
+            .map(_.response),
+        )
+        proxied <- (edgeApi.syncConfiguration *> proxyOnce)
+          .repeat(Schedule.spaced(1.second) *> Schedule.recurUntil[Response](r => r.status != Status.NotFound && r.status != Status.Forbidden))
+          .timeout(60.seconds).someOrFail(RuntimeException("edge never served the proxied resource"))
+        seen <- stub.lastRequest
+      yield assertTrue(proxied.status == Status.Ok)
+        .label("a 401 here means auth did not honour edge's call for the key-bound token") &&
+        assertTrue(seen.flatMap(_.header("X-User-Sub")).contains(f.userId.toString))
+          .label("the injected header is built from the userinfo response, so it proves the call came back")
     },
     test("a code presented without its blob, or with another flow's blob, is refused without being spent") {
       for

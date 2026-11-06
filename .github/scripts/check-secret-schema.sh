@@ -15,7 +15,8 @@
 #   3. a value one entry shares between services (CENTRAL_SECRET_KEY, CLIENT_SECRETS_SECRET,
 #      and vps's POSTGRES_PASSWORD) is the identical value in each service's file. (k8s's
 #      POSTGRES_PASSWORD is an entry per service: separate values, nothing to compare.);
-#   4. a base64url value decodes to the byte count the schema declares;
+#   4. a `base64url` value decodes to the byte count the schema declares (only that type is
+#      measured: other types, e.g. opaque, have no size to check);
 #   5. a secret the schema puts in a file of its own (the `utils` client's private key) is in
 #      that file and in no *.generated-secrets.env;
 #   6. secrets.schema.json holds no secret value.
@@ -79,7 +80,7 @@ conf_placeholders() {
   # secret: the chart sets it from its own issuer (see gen-env.scala's clientCertificatesBlock),
   # so it is neither generated nor in the shared Secret.
   { grep -v '^[[:space:]]*#' "$1" | grep -o '\${[A-Z][A-Z0-9_]*}' || true; } | tr -d '${}' | sort -u \
-    | { grep -vx 'CLIENT_CERT_ISSUER_NAME' || true; }
+    | { grep -vxe 'CLIENT_CERT_ISSUER_NAME' -e 'EDGE_CERT_ISSUER_NAME' || true; }
 }
 
 # Prints the difference of two sorted key lists as `<what>: <keys>`; fails when there is one.
@@ -180,6 +181,34 @@ for target in "${TARGETS[@]}"; do
   done
   echo "    checked $target"
 done
+
+# A vps bundle with POSTGRES_MODE=bundled (versola-tools' entrypoint.sh) hands gen-env the container's
+# own address, 127.0.0.1:5432, and relies on three things the generator decides: a URL per service
+# for that address on the shared database and the service's own schema, `sslmode=disable` because
+# the container speaks no TLS (a loopback host is the one case gen-env writes that), and one role
+# name the container can create, the same in all three configs -- the entrypoint creates that role,
+# the database and the schemas, so a config that said otherwise would point a service at nothing.
+# The password is the schema's vps POSTGRES_PASSWORD, which the loop above already compares.
+echo "==> vps, bundled Postgres"
+mkdir -p "$work/vps-bundled"
+(
+  cd "$work/vps-bundled"
+  ENV_NAME=ci-check AUTH_URL=https://ci.invalid POSTGRES_HOST=127.0.0.1:5432 \
+    scala-cli run --server=false "$repo_root/scripts/gen-env.scala" <<< "vps" >/dev/null
+)
+bundled_dir="$work/vps-bundled/.local/env/vps"
+role=""
+for svc in "${SERVICES[@]}"; do
+  conf="$bundled_dir/$svc.conf"
+  url="$(sed -n '/^postgres {/,/^}/s/^  url = "\(.*\)"$/\1/p' "$conf")"
+  user="$(sed -n '/^postgres {/,/^}/s/^  user = "\(.*\)"$/\1/p' "$conf")"
+  want="jdbc:postgresql://127.0.0.1:5432/auth?currentSchema=$svc&sslmode=disable"
+  [ "$url" = "$want" ] || fail "bundled/$svc: postgres.url is '$url', expected '$want'"
+  [[ "$user" =~ ^[a-z_][a-z0-9_]*$ ]] || fail "bundled/$svc: postgres.user '$user' is not a role name the container can create"
+  if [ -z "$role" ]; then role="$user"; elif [ "$user" != "$role" ]; then fail "bundled: auth, central and edge name different Postgres users"; fi
+  grep -q '^  password = \${POSTGRES_PASSWORD}$' "$conf" || fail "bundled/$svc: postgres.password is not the POSTGRES_PASSWORD placeholder"
+done
+echo "    checked vps, bundled Postgres"
 
 echo
 if [ "$failed" -ne 0 ]; then

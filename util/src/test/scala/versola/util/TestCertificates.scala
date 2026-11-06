@@ -1,6 +1,7 @@
 package versola.util
 
-import org.bouncycastle.asn1.x509.{BasicConstraints, Extension, GeneralName, GeneralNames, KeyUsage}
+import org.bouncycastle.asn1.ASN1ObjectIdentifier
+import org.bouncycastle.asn1.x509.{BasicConstraints, ExtendedKeyUsage, Extension, GeneralName, GeneralNames, KeyPurposeId, KeyUsage}
 import org.bouncycastle.x509.X509V3CertificateGenerator
 import zio.json.*
 import zio.json.ast.Json
@@ -62,6 +63,11 @@ object TestCertificates:
       ca: Boolean = false,
       issuer: Option[Generated] = None,
       keyUsage: Option[Int] = None,
+      validity: Option[(Date, Date)] = None,
+      uri: Option[String] = None,
+      uris: List[String] = Nil,
+      /** `ExtendedKeyUsage` purposes as OIDs (`1.3.6.1.5.5.7.3.2` is clientAuth); omitted when `None`. */
+      extendedKeyUsage: Option[List[String]] = None,
   ): Generated =
     val keyPair = keys(algorithm)
     val generator = X509V3CertificateGenerator()
@@ -69,8 +75,8 @@ object TestCertificates:
     generator.setSerialNumber(BigInteger.valueOf(System.nanoTime()))
     generator.setIssuerDN(issuer.fold(principal)(_.certificate.getSubjectX500Principal.nn))
     generator.setSubjectDN(principal)
-    generator.setNotBefore(Date(System.currentTimeMillis() - 3600_000))
-    generator.setNotAfter(Date(System.currentTimeMillis() + 86_400_000))
+    generator.setNotBefore(validity.fold(Date(System.currentTimeMillis() - 3600_000))(_._1))
+    generator.setNotAfter(validity.fold(Date(System.currentTimeMillis() + 86_400_000))(_._2))
     generator.setPublicKey(keyPair.getPublic.nn)
     // The signature is made with the issuer's key, so it is the issuer's algorithm that names
     // it -- a CA of one kind may perfectly well issue to a leaf of another.
@@ -78,14 +84,20 @@ object TestCertificates:
     generator.setSignatureAlgorithm(
       if signingKey.getAlgorithm == "EC" then "SHA256withECDSA" else "SHA256withRSA",
     )
-    dnsName.foreach: name =>
-      generator.addExtension(
-        Extension.subjectAlternativeName.nn,
-        false,
-        GeneralNames(GeneralName(GeneralName.dNSName, name)),
-      )
+    val names =
+      dnsName.toList.map(GeneralName(GeneralName.dNSName, _)) ++
+        (uri.toList ++ uris).map(GeneralName(GeneralName.uniformResourceIdentifier, _))
+    if names.nonEmpty then
+      generator.addExtension(Extension.subjectAlternativeName.nn, false, GeneralNames(names.toArray))
     if ca then generator.addExtension(Extension.basicConstraints.nn, true, BasicConstraints(true))
     keyUsage.foreach(bits => generator.addExtension(Extension.keyUsage.nn, true, KeyUsage(bits)))
+    extendedKeyUsage.foreach(oids =>
+      generator.addExtension(
+        Extension.extendedKeyUsage.nn,
+        false,
+        ExtendedKeyUsage(oids.map(oid => KeyPurposeId.getInstance(ASN1ObjectIdentifier(oid))).toArray),
+      ),
+    )
     Generated(generator.generate(signingKey).nn, keyPair.getPrivate.nn)
 
   private def keys(algorithm: String): KeyPair =

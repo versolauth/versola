@@ -1,0 +1,155 @@
+{{- $full := include "versola-edge.fullname" . }}
+{{- $p := .Values.persistence }}
+{{- $tokenSecret := include "versola-edge.tokenSecret" . }}
+{{- if not (or .Values.central.enrollment.existingSecret .Values.central.enrollment.token) }}
+{{- fail "central.enrollment needs a token: set central.enrollment.existingSecret (a Secret holding it under central.enrollment.key) or central.enrollment.token" }}
+{{- end }}
+{{- if not .Values.config.existingSecret }}
+{{- fail "config.existingSecret is required: the edge's env.conf (see k8s/README.md)" }}
+{{- end }}
+# A StatefulSet, not a Deployment: the edge's identity lives on its own volume, and the pod must
+# find the same one after a restart. One replica (see values.yaml).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $full }}
+  labels:
+    {{- include "versola-edge.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ $full }}
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "versola-edge.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "versola-edge.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Pins are read at startup: a changed pin set needs a new pod.
+        checksum/remote-config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.metrics.prometheusAnnotations }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.diagnosticsPort | quote }}
+        prometheus.io/path: /metrics
+        {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: edge
+          image: {{ printf "%s/%s/%s:%s" .Values.global.imageRegistry .Values.global.imageRepository .Values.image.repository (default .Chart.AppVersion .Values.image.tag) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.port }}
+            - name: diagnostics
+              containerPort: {{ .Values.diagnosticsPort }}
+          env:
+            - name: PORT
+              value: {{ .Values.port | quote }}
+            - name: DPORT
+              value: {{ .Values.diagnosticsPort | quote }}
+            - name: BIND_HOST
+              value: "0.0.0.0"
+            - name: CONFIG_PATH
+              value: /app/config/env.conf
+            - name: RUN_MIGRATIONS
+              value: "false"
+            {{- include "versola-edge.secretEnv" . | nindent 12 }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+            - name: remote-config
+              mountPath: /app/remote-edge
+              readOnly: true
+            - name: enrollment
+              mountPath: /app/enrollment
+              readOnly: true
+            - name: identity
+              mountPath: /var/lib/versola-edge
+            - name: diagnostics
+              mountPath: /diagnostics
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /liveness
+              port: diagnostics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: diagnostics
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep {{ .Values.preStopSleepSeconds }}"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: config
+          secret:
+            secretName: {{ .Values.config.existingSecret }}
+            items:
+              - key: {{ .Values.config.secretKey }}
+                path: env.conf
+        - name: remote-config
+          configMap:
+            name: {{ $full }}-remote
+        - name: enrollment
+          secret:
+            secretName: {{ $tokenSecret }}
+            items:
+              - key: {{ .Values.central.enrollment.key }}
+                path: token
+        - name: diagnostics
+          emptyDir:
+            sizeLimit: 1Gi
+        {{- if not $p.enabled }}
+        # No persistence: the identity is lost with the pod. See values.yaml.
+        - name: identity
+          emptyDir: {}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+  {{- if $p.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: identity
+        labels:
+          {{- include "versola-edge.selectorLabels" . | nindent 10 }}
+      spec:
+        accessModes:
+          {{- toYaml $p.accessModes | nindent 10 }}
+        {{- with $p.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $p.size }}
+  {{- end }}

@@ -41,22 +41,22 @@ export class VersolaPagination extends LitElement {
         display: flex;
         align-items: center;
         justify-content: center;
-        border: 1px solid var(--border-dark);
-        border-radius: var(--radius-sm);
+        border: 1.5px solid var(--border-default);
+        border-radius: var(--radius-md);
         cursor: pointer;
         transition: all var(--transition-fast);
         color: var(--text-secondary);
       }
 
       .page-number:hover:not(.active) {
-        border-color: var(--accent);
-        color: var(--accent);
+        border-color: var(--text-primary);
+        color: var(--text-primary);
       }
 
       .page-number.active {
-        background: var(--accent);
-        border-color: var(--accent);
-        color: white;
+        background: var(--btn);
+        border-color: var(--btn);
+        color: var(--on-btn);
       }
     `,
   ];

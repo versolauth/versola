@@ -83,7 +83,7 @@ object ClientCertificateEnrollmentSpec extends ZIOSpecDefault:
       mode <- Ref.make(0)
       authorization <- Ref.make(Option.empty[String])
       routes = Routes(
-        Method.POST / "configuration" / "clients" / "edge-certificate" / "sign" -> handler { (req: Request) =>
+        Method.POST / "edge" / "clients" / "edge-certificate" / "sign" -> handler { (req: Request) =>
           for
             text <- req.body.asString
             body <- ZIO.fromEither(text.fromJson[SignRequest]).mapError(RuntimeException(_))

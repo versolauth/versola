@@ -5,6 +5,7 @@ import versola.oauth.challenge.password.model.{
   CheckPassword,
   DeliveryChannel,
   PasswordDeliveryUnavailable,
+  PasswordHistoryChanged,
   PasswordReuseError,
   PasswordRevealForbidden,
   TemporaryPasswordGenerationFailed,
@@ -93,11 +94,43 @@ object PasswordService:
         .map(mac => mac === MAC(record.password))
 
     override def setPassword(userId: UserId, password: Password): IO[Throwable | PasswordReuseError, Unit] =
+      setPassword(userId, password, attemptsLeft = SetPasswordAttempts)
+
+    /** The reuse check reads the history outside the repository's transaction, because it needs the hashing
+      * service. The repository refuses the insert if another change got in between ([[PasswordHistoryChanged]]),
+      * and the check is then made again against the history that change left. */
+    private def setPassword(
+        userId: UserId,
+        password: Password,
+        attemptsLeft: Int,
+    ): IO[Throwable | PasswordReuseError, Unit] =
       for
         settings <- configuration.getPasswordHistorySettings
+        permanents <- passwordRepository.list(userId).map(_.filter(_.expiresAt.isEmpty))
+        _ <- ZIO.foreachDiscard(permanents.take(settings.numDifferent)) { record =>
+          securityService
+            .hashPassword(Secret.fromString(password), record.salt, config.security.passwordsSecret)
+            .flatMap { rehashed =>
+              ZIO.fail(PasswordReuseError(settings.numDifferent))
+                .when(MAC(rehashed) === MAC(record.password))
+            }
+        }.mapError(identity[Throwable | PasswordReuseError])
         salt <- secureRandom.nextBytes(16).map(Salt(_))
         hash <- securityService.hashPassword(Secret.fromString(password), salt, config.security.passwordsSecret)
-        _ <- passwordRepository.create(userId, Secret(hash), salt, settings.historySize, settings.numDifferent)
+        _ <- passwordRepository
+          .create(
+            userId = userId,
+            passwordHash = Secret(hash),
+            salt = salt,
+            historySize = settings.historySize,
+            numDifferent = settings.numDifferent,
+            expectedHead = permanents.map(_.id).maxOption,
+          )
+          .catchAll:
+            case PasswordHistoryChanged if attemptsLeft > 1 => setPassword(userId, password, attemptsLeft - 1)
+            case PasswordHistoryChanged => ZIO.fail(IllegalStateException(s"The password history of $userId kept changing"))
+            case error: PasswordReuseError => ZIO.fail(error)
+            case error: Throwable => ZIO.fail(error)
       yield ()
 
     override def setTemporaryPassword(userId: UserId, password: Password, expiresAt: Instant): Task[Unit] =
@@ -207,3 +240,6 @@ object PasswordService:
     private val TempPasswordLen = 16
     private val MaxGenerationAttempts = 20
     private val DefaultTtlSeconds = 12L * 60 * 60 // 12 hours
+
+    /** How often a password change re-checks reuse after another change got in between. */
+    private val SetPasswordAttempts = 3

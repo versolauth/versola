@@ -2,10 +2,11 @@ package versola.central.configuration.edges
 
 import org.scalamock.stubs.ZIOStubs
 import versola.central.configuration.tenants.TenantId
+import versola.util.http.{AccessLogPolicy, InboundPolicy, OverloadPolicy, RateLimitDimension, RateLimitPolicies, RateLimitPolicy, RateLimitWindow}
 import versola.util.{ReloadingCache, RsaKeyPair}
 import zio.json.ast.Json
 import zio.test.*
-import zio.{Ref, UIO, Unsafe, ZIO}
+import zio.{Exit, Ref, UIO, Unsafe, ZIO}
 
 import java.security.KeyPairGenerator
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
@@ -43,7 +44,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.security.generateRsaKeyPair.succeedsWith(testKeyPair)
         _ <- env.repository.createEdge.succeedsWith(())
-        keyPair <- env.service.registerEdge(edgeId)
+        keyPair <- env.service.registerEdge(edgeId, EdgeGroup.DefaultId)
       yield
         val createCalls = env.repository.createEdge.calls
         assertTrue(
@@ -52,6 +53,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           keyPair.publicKey == testKeyPair.publicKey,
           createCalls.length == 1,
           createCalls.head._1 == edgeId,
+          createCalls.head._4 == EdgeGroup.DefaultId,
         )
     },
     test("rotateEdgeKey updates keys and keeps old key") {
@@ -87,10 +89,150 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.service.setRequireDpopNonce(edgeId, false)
       yield assertTrue(env.repository.setRequireDpopNonce.calls == List((edgeId, false)))
     },
+    test("patchPolicies hands the repository a change that applies the patch, and refreshes the cache after a write") {
+      val env = Env()
+      val stored = EdgeRecord(
+        edgeId,
+        testJwk,
+        None,
+        requireDpopNonce = true,
+        overloadPolicy = None,
+        accessLogPolicy = None,
+        rateLimitPolicies = None,
+        policyMeta = None,
+        groupId = EdgeGroup.DefaultId,
+        groupKind = EdgeGroupKind.FirstParty,
+      )
+      val patch = EdgePoliciesPatch(overload =
+        Change.Replace(OverloadPolicy(
+          inbound = Some(InboundPolicy(
+            maxInFlight = Some(64),
+            mode = None,
+            continuationShare = None,
+            startShare = None,
+            retryAfterSeconds = None,
+            adaptive = None,
+          )),
+          outbound = None,
+        )),
+      )
+      for
+        _ <- env.repository.patchPolicies.succeedsWith(Some(Right(stored)))
+        _ <- env.repository.getAll.succeedsWith(Vector(stored))
+        result <- env.service.patchPolicies(edgeId, patch, dryRun = false)
+        (id, change) = env.repository.patchPolicies.calls.head
+        applied = change(stored)
+        cached <- env.service.find(edgeId)
+      yield assertTrue(
+        result == Some(Right(stored)),
+        id == edgeId,
+        applied.toOption.flatMap(_.overloadPolicy).exists(_.inbound.exists(_.maxInFlight.contains(64))),
+        applied.toOption.flatMap(_.policyMeta).exists(_.get("overload").exists(_.revision == 1)),
+        env.repository.getAll.calls.size == 1,
+        cached.contains(stored),
+      )
+    },
+    test("a refused patch writes nothing and leaves the cache alone") {
+      val env = Env()
+      val stored = EdgeRecord(
+        edgeId,
+        testJwk,
+        None,
+        requireDpopNonce = true,
+        overloadPolicy = None,
+        accessLogPolicy = None,
+        rateLimitPolicies = None,
+        policyMeta = None,
+        groupId = EdgeGroup.DefaultId,
+        groupKind = EdgeGroupKind.FirstParty,
+      )
+      val refused = PolicyPatchError.Conflict(PolicySection.Overload, stored)
+      for
+        _ <- env.repository.patchPolicies.succeedsWith(Some(Left(refused)))
+        result <- env.service.patchPolicies(edgeId, EdgePoliciesPatch(), dryRun = false)
+      yield assertTrue(result == Some(Left(refused)), env.repository.getAll.calls.isEmpty)
+    },
+    test("dryRun answers the record the patch would make and writes nothing") {
+      val env = Env()
+      val stored = EdgeRecord(
+        edgeId,
+        testJwk,
+        None,
+        requireDpopNonce = true,
+        overloadPolicy = None,
+        accessLogPolicy = None,
+        rateLimitPolicies = None,
+        policyMeta = None,
+        groupId = EdgeGroup.DefaultId,
+        groupKind = EdgeGroupKind.FirstParty,
+      )
+      val patch = EdgePoliciesPatch(accessLog = Change.Replace(AccessLogPolicy(mode = Some("full"), slowMillis = None, successSampleRate = None)))
+      for
+        _ <- env.repository.find.succeedsWith(Some(stored))
+        result <- env.service.patchPolicies(edgeId, patch, dryRun = true)
+      yield assertTrue(
+        result.flatMap(_.toOption).flatMap(_.accessLogPolicy).contains(AccessLogPolicy(
+          mode = Some("full"),
+          slowMillis = None,
+          successSampleRate = None,
+        )),
+        env.repository.patchPolicies.calls.isEmpty,
+      )
+    },
+    test("an edge that does not exist answers None, with and without dryRun") {
+      val env = Env()
+      for
+        _ <- env.repository.find.succeedsWith(None)
+        _ <- env.repository.patchPolicies.succeedsWith(None)
+        dry <- env.service.patchPolicies(edgeId, EdgePoliciesPatch(), dryRun = true)
+        real <- env.service.patchPolicies(edgeId, EdgePoliciesPatch(), dryRun = false)
+      yield assertTrue(dry.isEmpty, real.isEmpty)
+    },
+    test("findFresh reads the repository, not the cache") {
+      val env = Env()
+      val stored = EdgeRecord(
+        edgeId,
+        testJwk,
+        None,
+        requireDpopNonce = true,
+        overloadPolicy = None,
+        accessLogPolicy = None,
+        rateLimitPolicies = None,
+        policyMeta = None,
+        groupId = EdgeGroup.DefaultId,
+        groupKind = EdgeGroupKind.FirstParty,
+      )
+      for
+        _ <- env.repository.find.succeedsWith(Some(stored))
+        fresh <- env.service.findFresh(edgeId)
+      yield assertTrue(fresh.contains(stored))
+    },
     test("getAllEdges returns edges from cache") {
       val edges = Vector(
-        EdgeRecord(edge2Id, testJwk, None, requireDpopNonce = true),
-        EdgeRecord(edgeId, testJwk, None, requireDpopNonce = true),
+        EdgeRecord(
+          edge2Id,
+          testJwk,
+          None,
+          requireDpopNonce = true,
+          overloadPolicy = None,
+          accessLogPolicy = None,
+          rateLimitPolicies = None,
+          policyMeta = None,
+          groupId = EdgeGroup.DefaultId,
+          groupKind = EdgeGroupKind.FirstParty,
+        ),
+        EdgeRecord(
+          edgeId,
+          testJwk,
+          None,
+          requireDpopNonce = true,
+          overloadPolicy = None,
+          accessLogPolicy = None,
+          rateLimitPolicies = None,
+          policyMeta = None,
+          groupId = EdgeGroup.DefaultId,
+          groupKind = EdgeGroupKind.FirstParty,
+        ),
       )
       val env = Env(initial = edges)
       for all <- env.service.getAllEdges
@@ -100,7 +242,18 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     test("find returns edge from cache") {
-      val edges = Vector(EdgeRecord(edgeId, testJwk, None, requireDpopNonce = true))
+      val edges = Vector(EdgeRecord(
+        edgeId,
+        testJwk,
+        None,
+        requireDpopNonce = true,
+        overloadPolicy = None,
+        accessLogPolicy = None,
+        rateLimitPolicies = None,
+        policyMeta = None,
+        groupId = EdgeGroup.DefaultId,
+        groupKind = EdgeGroupKind.FirstParty,
+      ))
       val env = Env(initial = edges)
       for
         found <- env.service.find(edgeId)
@@ -111,7 +264,18 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     test("sync reloads cache from repository") {
-      val edges = Vector(EdgeRecord(edgeId, testJwk, None, requireDpopNonce = true))
+      val edges = Vector(EdgeRecord(
+        edgeId,
+        testJwk,
+        None,
+        requireDpopNonce = true,
+        overloadPolicy = None,
+        accessLogPolicy = None,
+        rateLimitPolicies = None,
+        policyMeta = None,
+        groupId = EdgeGroup.DefaultId,
+        groupKind = EdgeGroupKind.FirstParty,
+      ))
       val env = Env()
       for
         _ <- env.repository.getAll.succeedsWith(edges)

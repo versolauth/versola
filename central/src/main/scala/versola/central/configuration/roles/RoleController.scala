@@ -1,62 +1,70 @@
 package versola.central.configuration.roles
 
-import versola.central.configuration.edges.EdgeService
+import versola.central.audit.{Audit, AuditedController, audited}
+import versola.central.authorizeBasic
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
-import versola.central.configuration.{CreateRoleRequest, GetAllRolesResponse, GetRolesSyncResponse, RoleResponse, RoleSyncResponse, UpdateRoleRequest}
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.util.http.Controller
-import zio.http.{Method, Request, Response, Routes, Status, handler}
+import versola.central.configuration.{CreateRoleRequest, GetAllRolesResponse, RoleResponse, UpdateRoleRequest}
+import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.{EncoderOps, JsonCodec}
 import zio.schema.*
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.{Cause, ZIO}
 
-object RoleController extends Controller:
-  type Env = Tracing & RoleService & ResourceService & CentralConfig & EdgeService
+object RoleController extends AuditedController:
+  type Env = Tracing & RoleService & ResourceService
 
-  def routes: Routes[Env, Throwable] = Routes(
+  def endpoints = List(
     createRoleEndpoint,
     updateRoleEndpoint,
     deleteRoleEndpoint,
     getAllRolesEndpoint,
-    syncRolesEndpoint,
   )
 
   val createRoleEndpoint =
-    Method.POST / "configuration" / "roles" -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "roles").audited(Audit.change("role", Audit.create)) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[RoleService]
         body <- request.bodyAs[CreateRoleRequest]
+        _ <- Audit.target(body.id)
+        _ <- Audit.tenant(body.tenantId)
         role <- service.createRole(body)
       yield Response.status(Status.Created)
     }
 
   val updateRoleEndpoint =
-    Method.PUT / "configuration" / "roles" -> handler { (request: Request) =>
+    (Method.PUT / "configuration" / "roles").audited(Audit.change("role", Audit.update)) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[RoleService]
         body <- request.bodyAs[UpdateRoleRequest]
+        _ <- Audit.target(body.id)
+        _ <- Audit.tenant(body.tenantId)
+        _ <- Audit.changed(body, "tenantId", "id")
         _ <- service.updateRole(body)
       yield Response.status(Status.NoContent)
     }
 
   val deleteRoleEndpoint =
-    Method.DELETE / "configuration" / "roles" -> handler { (request: Request) =>
-      for
+    (Method.DELETE / "configuration" / "roles").audited(Audit.change("role", Audit.delete)) -> handler { (request: Request) =>
+      (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[RoleService]
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
+        _ <- Audit.tenant(tenantId)
         roleId <- request.url.queryZIO[RoleId]("roleId")
+        _ <- Audit.target(roleId)
         _ <- service.deleteRole(tenantId, roleId)
-      yield Response.status(Status.NoContent)
+      yield Response.status(Status.NoContent))
+        .catchSome:
+          case error: RoleService.RoleInUseError =>
+            ZIO.succeed(Response.json(s"""{"message":"${error.getMessage}"}""").status(Status.Conflict))
     }
 
   val getAllRolesEndpoint =
-    Method.GET / "configuration" / "roles" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "roles").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         configurationService <- ZIO.service[RoleService]
@@ -74,21 +82,4 @@ object RoleController extends Controller:
           )
         })
       yield Response.json(GetAllRolesResponse(roles).toJson)
-    }
-
-  val syncRolesEndpoint =
-    Method.GET / "configuration" / "roles" / "sync" -> handler { (request: Request) =>
-      for
-        service <- ZIO.service[RoleService]
-        edgeId <- authorizeInternal(request)
-        roles <- service.getRolesForSync(edgeId)
-        response = GetRolesSyncResponse(roles.map { role =>
-          RoleSyncResponse(
-            tenantId = role.tenantId,
-            id = role.id,
-            permissions = role.permissions,
-            active = role.active,
-          )
-        })
-      yield Response.json(response.toJson)
     }

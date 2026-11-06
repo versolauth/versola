@@ -1,5 +1,6 @@
 package versola.central.configuration.details
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
@@ -12,15 +13,14 @@ import versola.central.configuration.{
   UpdateAuthorizationDetailTypeRequest,
 }
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.util.http.Controller
 import zio.ZIO
-import zio.http.{Method, Request, Response, Routes, Status, handler}
+import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
 
-object AuthorizationDetailTypeController extends Controller:
+object AuthorizationDetailTypeController extends AuditedController:
   type Env = Tracing & AuthorizationDetailTypeService & ResourceService & CentralConfig & EdgeService
 
-  def routes: Routes[Env, Throwable] = Routes(
+  def endpoints = List(
     getAllTypesEndpoint,
     getAllTypesSyncEndpoint,
     createTypeEndpoint,
@@ -29,7 +29,7 @@ object AuthorizationDetailTypeController extends Controller:
   )
 
   val getAllTypesEndpoint =
-    Method.GET / "configuration" / "authorization-detail-types" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "authorization-detail-types").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[AuthorizationDetailTypeService]
@@ -43,7 +43,7 @@ object AuthorizationDetailTypeController extends Controller:
     }
 
   val getAllTypesSyncEndpoint =
-    Method.GET / "configuration" / "authorization-detail-types" / "sync" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "authorization-detail-types" / "sync").audited(Audit.Internal) -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
         service <- ZIO.service[AuthorizationDetailTypeService]
@@ -55,11 +55,16 @@ object AuthorizationDetailTypeController extends Controller:
     }
 
   val createTypeEndpoint =
-    Method.POST / "configuration" / "authorization-detail-types" -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "authorization-detail-types").audited(Audit.change(
+      "authorization-detail-type",
+      Audit.create,
+    )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[AuthorizationDetailTypeService]
         body <- request.bodyAs[CreateAuthorizationDetailTypeRequest]
+        _ <- Audit.targetByText(body.`type`)
+        _ <- Audit.tenant(body.tenantId)
         result <- service.createType(body)
       yield result match
         case Right(_) => Response.status(Status.Created)
@@ -67,11 +72,17 @@ object AuthorizationDetailTypeController extends Controller:
     }
 
   val updateTypeEndpoint =
-    Method.PUT / "configuration" / "authorization-detail-types" -> handler { (request: Request) =>
+    (Method.PUT / "configuration" / "authorization-detail-types").audited(Audit.change(
+      "authorization-detail-type",
+      Audit.update,
+    )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[AuthorizationDetailTypeService]
         body <- request.bodyAs[UpdateAuthorizationDetailTypeRequest]
+        _ <- Audit.targetByText(body.`type`)
+        _ <- Audit.changed(body, "tenantId")
+        _ <- Audit.tenant(body.tenantId)
         result <- service.updateType(body)
       yield result match
         case Right(_) => Response.status(Status.NoContent)
@@ -79,12 +90,17 @@ object AuthorizationDetailTypeController extends Controller:
     }
 
   val deleteTypeEndpoint =
-    Method.DELETE / "configuration" / "authorization-detail-types" -> handler { (request: Request) =>
+    (Method.DELETE / "configuration" / "authorization-detail-types").audited(Audit.change(
+      "authorization-detail-type",
+      Audit.delete,
+    )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[AuthorizationDetailTypeService]
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
+        _ <- Audit.tenant(tenantId)
         `type` <- request.url.queryZIO[AuthorizationDetailType]("type")
+        _ <- Audit.targetByText(`type`.toString)
         _ <- service.deleteType(tenantId, `type`)
       yield Response.status(Status.NoContent)
     }

@@ -1,9 +1,11 @@
 package versola.oauth.account
 
 import org.scalamock.stubs.Stub
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
 import versola.auth.model.{CredentialId, PasskeyName, PasskeyRecord}
 import versola.oauth.challenge.passkey.{PasskeyCeremony, PasskeyRepository, WebAuthnError, WebAuthnService}
+import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PasskeySettings}
 import versola.oauth.conversation.ConversationRenderService
@@ -11,6 +13,7 @@ import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionUnderUserAgent}
 import versola.user.UserRepository
 import versola.user.model.UserId
+import versola.util.audit.{AuditDraft, AuditEvents}
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.{Base64, Secret, UnitSpecBase}
 import zio.*
@@ -28,6 +31,11 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
   private val otherUserId = UserId(UUID.fromString("a1b2c3d4-0000-4000-8000-000000000001"))
   private val clientId = ClientId("test-client-1")
 
+  private val passwordRegex = "^.{8,}$"
+  private val changePassword = Request.patch(
+    URL.empty / "settings" / "password",
+    Body.fromString("""{"currentPassword":"OldPass1!","newPassword":"NewPass1!"}"""),
+  ).addHeader(Header.ContentType(MediaType.application.json))
   private val ownSessionId = PublicSessionId("session-of-the-caller")
   private val foreignSessionId = PublicSessionId("session-of-someone-else")
 
@@ -40,6 +48,8 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
     browser = Some("Firefox"),
     version = Some("140"),
     expiresAt = Instant.EPOCH,
+    idleExpiresAt = None,
+    userAgent = None,
   )
 
   private val otherDeviceSession = ownSession.copy(publicId = PublicSessionId("session-on-another-device"))
@@ -128,6 +138,8 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
       Stub[WebAuthnService],
       Stub[UserRepository],
       Stub[ConversationRenderService],
+      Stub[PasswordService],
+      Stub[AccountSettingsService],
   )
 
   private def controllerTestCase(
@@ -140,6 +152,8 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
       callerSessionId: PublicSessionId = ownSessionId,
       resourceSecrets: List[Secret] = List(accountResourceSecret),
       callerSecret: Secret = accountResourceSecret,
+      verifyAudit: List[AuditDraft] => TestResult = _ => assertCompletes,
+      auditEvents: CapturingAuditEvents = CapturingAuditEvents.shared(),
   ) =
     test(description) {
       for
@@ -150,7 +164,18 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         webAuthnService = stub[WebAuthnService]
         userRepository = stub[UserRepository]
         renderService = stub[ConversationRenderService]
-        stubs = (configuration, sessionService, passkeyRepository, webAuthnService, userRepository, renderService)
+        passwordService = stub[PasswordService]
+        accountSettingsService = stub[AccountSettingsService]
+        stubs = (
+          configuration,
+          sessionService,
+          passkeyRepository,
+          webAuthnService,
+          userRepository,
+          renderService,
+          passwordService,
+          accountSettingsService,
+        )
         tracing <- NoopTracing.layer.build
 
         _ <- TestClient.addRoutes(
@@ -163,7 +188,10 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
                   ZEnvironment(webAuthnService) ++
                   ZEnvironment(userRepository) ++
                   ZEnvironment(renderService) ++
+                  ZEnvironment(passwordService) ++
+                  ZEnvironment(accountSettingsService) ++
                   ZEnvironment(TestEnvConfig.coreConfig) ++
+                  ZEnvironment[AuditEvents](auditEvents) ++
                   tracing,
               ),
           ),
@@ -174,7 +202,8 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         routedRequest <- if authenticate then withCaller(request, userId, callerSessionId, callerSecret) else ZIO.succeed(request)
         response <- httpClient.batched(routedRequest)
         verifyResult <- verify(response, stubs)
-      yield assertTrue(response.status == expectedStatus) && verifyResult
+        drafts <- auditEvents.recorded
+      yield assertTrue(response.status == expectedStatus) && verifyResult && verifyAudit(drafts)
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   val spec = suite("AccountSettingsController")(
@@ -199,9 +228,11 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         expectedStatus = Status.Ok,
         resourceSecrets = List(accountResourceSecret, previousAccountResourceSecret),
         callerSecret = previousAccountResourceSecret,
-        setup = (_, sessionService, passkeyRepository, _, _, renderService) =>
+        setup = (configuration, sessionService, passkeyRepository, _, _, renderService, passwordService, _) =>
           sessionService.listByUser.succeedsWith(List(ownSession)) *>
             passkeyRepository.listByUser.succeedsWith(Vector(passkey)) *>
+            passwordService.hasPassword.succeedsWith(false) *>
+            configuration.getPasswordRegex.succeedsWith(passwordRegex) *>
             renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
       ),
       controllerTestCase(
@@ -234,12 +265,14 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         description = "renders the page with the caller's own sessions and passkeys",
         request = Request.get(URL.empty / "settings"),
         expectedStatus = Status.Ok,
-        setup = (_, sessionService, passkeyRepository, _, _, renderService) =>
+        setup = (configuration, sessionService, passkeyRepository, _, _, renderService, passwordService, _) =>
           sessionService.listByUser.succeedsWith(List(ownSession)) *>
             passkeyRepository.listByUser.succeedsWith(Vector(passkey)) *>
+            passwordService.hasPassword.succeedsWith(false) *>
+            configuration.getPasswordRegex.succeedsWith(passwordRegex) *>
             renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
         verify = (_, stubs) =>
-          val (_, sessionService, passkeyRepository, _, _, renderService) = stubs
+          val (_, sessionService, passkeyRepository, _, _, renderService, _, _) = stubs
           ZIO.succeed(assertTrue(
             sessionService.listByUser.calls == List(userId),
             passkeyRepository.listByUser.calls == List(userId),
@@ -250,9 +283,11 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         description = "marks the session the page is viewed from using edge's injected sid",
         request = Request.get(URL.empty / "settings"),
         expectedStatus = Status.Ok,
-        setup = (_, sessionService, passkeyRepository, _, _, renderService) =>
+        setup = (configuration, sessionService, passkeyRepository, _, _, renderService, passwordService, _) =>
           sessionService.listByUser.succeedsWith(List(ownSession, otherDeviceSession)) *>
             passkeyRepository.listByUser.succeedsWith(Vector.empty) *>
+            passwordService.hasPassword.succeedsWith(false) *>
+            configuration.getPasswordRegex.succeedsWith(passwordRegex) *>
             renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
@@ -270,13 +305,20 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           body = Body.fromString(s"""{"targetSessionId":"${otherDeviceSession.publicId}"}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.NoContent,
-        setup = (_, sessionService, _, _, _, _) =>
+        setup = (_, sessionService, _, _, _, _, _, _) =>
           sessionService.invalidateForUser.succeedsWith(true),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
             stubs._2.invalidateForUser.calls == List((otherDeviceSession.publicId, userId)),
             stubs._2.listByUser.calls.isEmpty,
           )),
+        // session.ended by the user themself: the subject is the caller, and the cause says it was their own doing
+        verifyAudit = drafts =>
+          assertTrue(
+            drafts.map(_.kind) == List(AuthAuditKinds.SessionEnded),
+            drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
+            drafts.head.details == AuthAuditDetails.SessionEnded(cause = "user_revoked", clients = 0),
+          ),
       ),
       // `sid` leaks into RP logs and front-channel logout URLs, so knowing one must not be
       // enough to end that session.
@@ -288,13 +330,15 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           body = Body.fromString(s"""{"targetSessionId":"$foreignSessionId"}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.NoContent,
-        setup = (_, sessionService, _, _, _, _) =>
+        setup = (_, sessionService, _, _, _, _, _, _) =>
           sessionService.invalidateForUser.succeedsWith(false),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
             stubs._2.invalidateForUser.calls == List((foreignSessionId, userId)),
             stubs._2.listByUser.calls.isEmpty,
           )),
+        // nothing was ended, so nothing is said to have been
+        verifyAudit = drafts => assertTrue(drafts.isEmpty),
       ),
     ),
     suite("POST /settings/passkeys/register/start")(
@@ -305,7 +349,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           Body.fromString("{}"),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.Ok,
-        setup = (configuration, _, _, webAuthnService, userRepository, _) =>
+        setup = (configuration, _, _, webAuthnService, userRepository, _, _, _) =>
           configuration.getPasskeySettings.succeedsWith(Some(passkeySettings)) *>
             userRepository.find.succeedsWith(None) *>
             webAuthnService.startRegistration.succeedsWith(PasskeyCeremony("req-state", """{"publicKey":{}}""")),
@@ -314,8 +358,8 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
             body <- response.body.asString
             obj = body.fromJson[Json.Obj].toOption.get
           yield assertTrue(
-            stubs._4.startRegistration.calls.map((settings, user, _) => (settings, user)) ==
-              List((passkeySettings, userId)),
+            stubs._4.startRegistration.calls.map((settings, user, accountName, _) => (settings, user, accountName)) ==
+              List((passkeySettings, userId, passkeySettings.rpName)),
             obj.fields.exists((key, value) => key == "publicKeyOptions" && value == Json.Str("""{"publicKey":{}}""")),
             obj.fields.exists((key, _) => key == "ticket"),
           ),
@@ -327,7 +371,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           Body.fromString("{}"),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.BadRequest,
-        setup = (configuration, _, _, _, _, _) => configuration.getPasskeySettings.succeedsWith(None),
+        setup = (configuration, _, _, _, _, _, _, _) => configuration.getPasskeySettings.succeedsWith(None),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(stubs._4.startRegistration.calls.isEmpty)),
       ),
@@ -340,7 +384,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           Body.fromString(s"""{"credentialId":"${Base64.urlEncode(passkeyId)}","name":"Renamed"}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.NoContent,
-        setup = (_, _, passkeyRepository, _, _, _) => passkeyRepository.rename.succeedsWith(()),
+        setup = (_, _, passkeyRepository, _, _, _, _, _) => passkeyRepository.rename.succeedsWith(()),
         // CredentialId is a byte array, so the calls are compared by encoded value.
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
@@ -356,12 +400,19 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           body = Body.fromString(s"""{"credentialId":"${Base64.urlEncode(passkeyId)}"}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.NoContent,
-        setup = (_, _, passkeyRepository, _, _, _) => passkeyRepository.deleteByUser.succeedsWith(()),
+        setup = (_, _, passkeyRepository, _, _, _, _, _) => passkeyRepository.deleteByUser.succeedsWith(()),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
             stubs._3.deleteByUser.calls.map((id, user) => (Base64.urlEncode(id), user)) ==
               List((Base64.urlEncode(passkeyId), userId)),
           )),
+        verifyAudit = drafts =>
+          assertTrue(
+            drafts.map(_.kind) == List(AuthAuditKinds.AccountPasskeyRemoved),
+            drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
+            // a prefix of the credential id, enough to tell passkeys apart and not the id
+            !drafts.head.details.toJson.toString.contains(Base64.urlEncode(passkeyId)),
+          ),
       ),
       controllerTestCase(
         description = "completes enrollment and returns the created passkey",
@@ -370,7 +421,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           Body.fromString(s"""{"ticket":"${ticketFor(userId)}","response":{},"name":"My device"}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.Ok,
-        setup = (_, _, _, webAuthnService, _, _) => webAuthnService.finishRegistration.succeedsWith(passkey),
+        setup = (_, _, _, webAuthnService, _, _, _, _) => webAuthnService.finishRegistration.succeedsWith(passkey),
         verify = (response, stubs) =>
           for
             body <- response.body.asString
@@ -380,6 +431,15 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
               List((clientId, userId, Some(PasskeyName("My device")))),
             obj.fields.exists((key, value) => key == "id" && value == Json.Str(Base64.urlEncode(passkeyId))),
           ),
+        verifyAudit = drafts =>
+          assertTrue(
+            drafts.map(_.kind) == List(AuthAuditKinds.AccountPasskeyEnrolled),
+            drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
+            drafts.head.details == AuthAuditDetails.Passkey(
+              credentialPrefix = Some(passkey.id.toString.take(9)),
+              deviceType = Some(passkey.deviceType.toString),
+            ),
+          ),
       ),
       controllerTestCase(
         description = "maps a failed enrollment ceremony to BadRequest",
@@ -388,10 +448,11 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           Body.fromString(s"""{"ticket":"${ticketFor(userId)}","response":{},"name":"My device"}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.BadRequest,
-        setup = (_, _, _, webAuthnService, _, _) =>
+        setup = (_, _, _, webAuthnService, _, _, _, _) =>
           webAuthnService.finishRegistration.failsWith(WebAuthnError.CeremonyFailed("verification failed")),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(stubs._4.finishRegistration.calls.nonEmpty)),
+        verifyAudit = drafts => assertTrue(drafts.isEmpty),
       ),
       controllerTestCase(
         description = "requires a non-empty passkey name for enrollment",
@@ -474,5 +535,75 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         val spliced = s"${forged.takeWhile(_ != '.')}.${serialized.dropWhile(_ != '.').drop(1)}"
         assertTrue(PasskeyEnrollmentTicket.parse(spliced, secret, Instant.EPOCH) == Left("invalid signature"))
       },
+    ),
+    suite("PATCH /settings/password")(
+      controllerTestCase(
+        description = "changes the password for the caller and answers 204",
+        request = changePassword,
+        expectedStatus = Status.NoContent,
+        setup = (_, _, _, _, _, _, _, accountSettingsService) => accountSettingsService.changePassword.succeedsWith(()),
+        verify = (_, stubs) =>
+          ZIO.succeed(assertTrue(stubs._8.changePassword.calls == List((userId, clientId, "OldPass1!", "NewPass1!")))),
+      ),
+      controllerTestCase(
+        description = "does not change a password without resource credentials",
+        request = changePassword,
+        expectedStatus = Status.Unauthorized,
+        authenticate = false,
+        verify = (_, stubs) => ZIO.succeed(assertTrue(stubs._8.changePassword.calls.isEmpty)),
+      ),
+      controllerTestCase(
+        description = "refuses a body that is not a password change",
+        request = Request.patch(URL.empty / "settings" / "password", Body.fromString("""{"currentPassword":"OldPass1!"}"""))
+          .addHeader(Header.ContentType(MediaType.application.json)),
+        expectedStatus = Status.BadRequest,
+        verify = (_, stubs) => ZIO.succeed(assertTrue(stubs._8.changePassword.calls.isEmpty)),
+      ),
+      suite("refusals carry a code the page can translate")(
+        List(
+          (ChangePasswordError.IncorrectCurrentPassword, Status.BadRequest, "current_password_incorrect"),
+          (ChangePasswordError.NewPasswordNotAllowed, Status.BadRequest, "password_not_allowed"),
+          (ChangePasswordError.PasswordReused, Status.BadRequest, "password_reused"),
+        ).map((error, status, code) =>
+          controllerTestCase(
+            description = s"$code answers $status",
+            request = changePassword,
+            expectedStatus = status,
+            setup = (_, _, _, _, _, _, _, accountSettingsService) => accountSettingsService.changePassword.failsWith(error),
+            verify = (response, _) =>
+              response.body.asString.map(body => assertTrue(body == s"""{"error":"$code"}""")),
+          ),
+        )*,
+      ),
+      controllerTestCase(
+        description = "a rate limit answers 429 with the wait in the body and in Retry-After",
+        request = changePassword,
+        expectedStatus = Status.TooManyRequests,
+        setup = (_, _, _, _, _, _, _, accountSettingsService) =>
+          accountSettingsService.changePassword.failsWith(ChangePasswordError.TooManyAttempts(Some(30L))),
+        verify = (response, _) =>
+          response.body.asString.map: body =>
+            assertTrue(
+              body == """{"error":"too_many_attempts","retryAfterSeconds":30}""",
+              response.header(Header.RetryAfter).map(_.renderedValue) == Some("30"),
+            ),
+      ),
+      controllerTestCase(
+        description = "a ban answers 429 without a wait",
+        request = changePassword,
+        expectedStatus = Status.TooManyRequests,
+        setup = (_, _, _, _, _, _, _, accountSettingsService) =>
+          accountSettingsService.changePassword.failsWith(ChangePasswordError.TooManyAttempts(None)),
+        verify = (response, _) =>
+          response.body.asString.map: body =>
+            assertTrue(body == """{"error":"too_many_attempts"}""", response.header(Header.RetryAfter).isEmpty),
+      ),
+      controllerTestCase(
+        description = "an infrastructure failure is not reported as a refusal",
+        request = changePassword,
+        expectedStatus = Status.InternalServerError,
+        setup = (_, _, _, _, _, _, _, accountSettingsService) =>
+          accountSettingsService.changePassword.failsWith(RuntimeException("db down")),
+      ),
     ),
   )

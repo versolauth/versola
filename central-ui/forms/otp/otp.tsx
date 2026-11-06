@@ -1,50 +1,16 @@
 import { render } from 'solid-js/web';
 import { createSignal, onCleanup, onMount, Show } from 'solid-js';
+import { PageBrand, ClientBadge } from '../shared/brand';
+import { LocaleSelector, createTranslations } from '../shared/locale';
+import type { BaseFormConfig } from '../shared/config';
+import { canSubmitInline, submitInline, type InlineStep } from '../shared/inline';
+import { getAssertionResponse, isPasskeyCancellation, passkeysSupported, submitViaForm } from '../passkey/webauthn';
 
-function LocaleDropdown(props: { locales: string[]; current: string; onChange: (l: string) => void }) {
-  const [open, setOpen] = createSignal(false);
-  return (
-    <div class="locale-dropdown">
-      <button
-        type="button"
-        class="locale-trigger"
-        onClick={() => setOpen(!open())}
-        onBlur={() => setTimeout(() => setOpen(false), 120)}
-      >
-        {props.current}
-        <svg class="locale-chevron" viewBox="0 0 10 6" fill="none" aria-hidden="true">
-          <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </button>
-      <Show when={open()}>
-        <div class="locale-options">
-          {props.locales.map((loc) => (
-            <button
-              type="button"
-              class={`locale-option${loc === props.current ? ' locale-option-active' : ''}`}
-              onMouseDown={() => { props.onChange(loc); setOpen(false); }}
-            >
-              {loc}
-            </button>
-          ))}
-        </div>
-      </Show>
-    </div>
-  );
-}
+type OtpStep = { type: 'otp'; length?: number; resendAfter?: number; lockedSeconds?: number; destination: string; pending?: boolean; resendInterval?: number; alternatives?: string[] };
 
-type OtpStep = { type: 'otp'; length?: number; resendAfter?: number; lockedSeconds?: number; destination: string };
-
-interface FormConfig {
+interface FormConfig extends BaseFormConfig {
   step: OtpStep;
-  t: Record<string, string>;
-  locale?: string;
-  locales?: string[];
-  allT?: Record<string, Record<string, string>>;
   error?: string;
-  previewId?: string;
-  csrf?: string;
-  logo?: string;
 }
 
 declare global {
@@ -56,25 +22,64 @@ declare global {
 
 
 function OtpForm(props: { config: FormConfig }) {
-  const allT = props.config.allT ?? {};
-  const baseT = props.config.t;
-  const [currentLocale, setCurrentLocale] = createSignal(props.config.locale ?? 'en');
-  const changeLocale = (loc: string) => {
-    setCurrentLocale(loc);
-    try { window.parent.postMessage({ type: 'versola:locale-change', locale: loc, previewId: props.config.previewId }, '*'); } catch (_) {}
-  };
-  const t = () => {
-    const loc = currentLocale();
-    const locT = allT[loc] ?? {};
-    return { ...baseT, ...locT };
-  };
-  const locales = props.config.locales ?? [];
+  const { t, locale: currentLocale, changeLocale } = createTranslations(props.config);
   const otpLength = props.config.step.length ?? 6;
   const description = () => {
-    const destination = props.config.step.destination;
-    return t().description.replace('{destination}', destination);
+    const [before, ...rest] = t().description.split('{destination}');
+    return (
+      <>
+        {before}
+        <span class="otp-destination">{props.config.step.destination}</span>
+        {rest.join('{destination}')}
+      </>
+    );
+  };
+  let resending = false;
+  const resendAction = () => `/challenge/otp/resend?ui_locale=${currentLocale()}`;
+  /** Asks for a code, from script, answering a proof the server wants unseen. */
+  const requestCode = async () => {
+    if (resending) return;
+    resending = true;
+    await submitInline(resendAction(), new URLSearchParams({ csrf: props.config.csrf ?? '' }), shownSent);
+  };
+  /** The code was sent: show it as the page shows one that was sent before it loaded, without leaving. */
+  const shownSent = (step: InlineStep): boolean => {
+    if (!step.otp) return false;
+    resending = false;
+    setErrorShown(false);
+    setOtp('');
+    setRemaining(props.config.step.resendInterval ?? props.config.step.resendAfter ?? 60);
+    inputRef.focus();
+    return true;
+  };
+  // A passkey submitted from this page in place of the code, as the credential form submits one: the options of a ceremony,
+  // the authenticator's answer posted to `/challenge/passkey`. A cancellation only closes the prompt; a failure, here or on
+  // the server (`passkey_failed`), is told in the same dialog the credential form uses.
+  const passkeyOffered = () => !!props.config.step.alternatives?.includes('passkey') && passkeysSupported();
+  const [passkeyBusy, setPasskeyBusy] = createSignal(false);
+  const [passkeyErrorShown, setPasskeyErrorShown] = createSignal(props.config.error === 'passkey_failed');
+  const handlePasskey = async () => {
+    if (passkeyBusy()) return;
+    setPasskeyBusy(true);
+    setPasskeyErrorShown(false);
+    try {
+      const optionsResponse = await fetch(`/challenge/passkey/options?ui_locale=${currentLocale()}`);
+      // Conversation expired (410) or the auth service failed (500): reload the conversation page itself so the server
+      // renders the proper terminal screen instead of a passkey dialog on top of a stale form.
+      if (optionsResponse.status === 410 || optionsResponse.status === 500) {
+        window.location.href = '/challenge';
+        return;
+      }
+      if (!optionsResponse.ok) throw new Error('options request failed');
+      const response = await getAssertionResponse(await optionsResponse.text());
+      submitViaForm(`/challenge/passkey?ui_locale=${currentLocale()}`, { response, csrf: props.config.csrf ?? '' });
+    } catch (error) {
+      setPasskeyBusy(false);
+      if (!isPasskeyCancellation(error)) setPasskeyErrorShown(true);
+    }
   };
   const [otp, setOtp] = createSignal('');
+  const [errorShown, setErrorShown] = createSignal(true);
   let inputRef!: HTMLInputElement;
   let submitRef!: HTMLButtonElement;
 
@@ -96,24 +101,27 @@ function OtpForm(props: { config: FormConfig }) {
 
   onMount(() => {
     if (!props.config.previewId && lockRemaining() <= 0) inputRef.focus();
+    // Left here with no code sent because the request had to prove itself where it could not: ask for it as a resend, at
+    // once. A page with script is given the proof to solve and solves it, so it pays with work and waits for nothing; the
+    // `pause` the step tells is the price of a client without script (a plain post), which this page is not.
+    if (props.config.step.pending && canSubmitInline(props.config)) requestCode().catch(() => { resending = false; });
   });
 
   return (
+    <>
+      <PageBrand logo={props.config.logo} />
     <div class="container">
-      <Show when={locales.length > 1}>
-        <div class="locale-selector">
-          <LocaleDropdown locales={locales} current={currentLocale()} onChange={changeLocale} />
-        </div>
-      </Show>
+      <LocaleSelector config={props.config} current={currentLocale()} onChange={changeLocale} />
+      <ClientBadge client={props.config.client} locale={currentLocale()} defaultLocale={props.config.defaultLocale} />
       <h1>{t().title}</h1>
       <p class="otp-description">{description()}</p>
       <Show when={lockRemaining() > 0}>
-        <div class="error-text" style="margin-bottom: 8px;">
+        <div class="error-text error-text-block" role="alert">
           {(t().locked_for ?? 'Input locked. Try again in {seconds}s.').replace('{seconds}', String(lockRemaining()))}
         </div>
       </Show>
-      <Show when={props.config.error && lockRemaining() <= 0}>
-        <div class="error-text" style="margin-bottom: 8px;">{t()[props.config.error!] ?? props.config.error}</div>
+      <Show when={props.config.error && props.config.error !== 'passkey_failed' && errorShown() && lockRemaining() <= 0}>
+        <div class="error-text error-text-block" role="alert">{t()[props.config.error!] ?? props.config.error}</div>
       </Show>
         <form method="post">
         <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
@@ -123,7 +131,7 @@ function OtpForm(props: { config: FormConfig }) {
               const digit = otp()[i];
               return (
                 <div class={`otp-cell${digit !== undefined ? ' otp-cell-filled' : ''}${i === otp().length && lockRemaining() <= 0 ? ' otp-cell-active' : ''}`}>
-                  <span class={`otp-cell-dot${digit !== undefined ? ' otp-cell-dot-filled' : ''}`} />
+                  {digit ?? ''}
                 </div>
               );
             })}
@@ -147,7 +155,6 @@ function OtpForm(props: { config: FormConfig }) {
           {t().verify_button}
         </button>
       </form>
-      <div class="divider"><span>{t().divider}</span></div>
       <Show
         when={remaining() <= 0}
         fallback={
@@ -156,14 +163,52 @@ function OtpForm(props: { config: FormConfig }) {
           </p>
         }
       >
-        <form method="post" action={`/challenge/otp/resend?ui_locale=${currentLocale()}`}>
+        <form
+          method="post"
+          action={resendAction()}
+          onSubmit={(e) => {
+            // From script, so that a proof the server asks for is solved unseen (see shared/inline).
+            if (!canSubmitInline(props.config)) return;
+            e.preventDefault();
+            const form = e.currentTarget;
+            requestCode().catch(() => {
+              HTMLFormElement.prototype.submit.call(form);
+            });
+          }}
+        >
           <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
-          <button type="submit" class="btn btn-secondary">
-            {t().resend_button}
-          </button>
+          {/* A line, not a button: the code is the way in and asking for another is the exception, so it does not weigh as
+              much as the one alternative below. */}
+          <p class="resend-line">
+            {t().resend_prompt}{' '}
+            <button type="submit" class="link-button">{t().resend_link}</button>
+          </p>
         </form>
       </Show>
+      {/* Another way to pass this step, as the server says it may be passed now and this browser can: last, under the code
+          and its resend, which stay the way in; from this page, with no page in between. */}
+      <Show when={passkeyOffered()}>
+        <div class="divider"><span>{t().divider}</span></div>
+        <div class="otp-alternative" data-alternative="passkey">
+          <button type="button" class="btn btn-secondary" disabled={passkeyBusy()} onClick={handlePasskey}>
+            <span class="passkey-icon" aria-hidden="true" />
+            <span>{t().passkey_button}</span>
+          </button>
+        </div>
+      </Show>
+      <Show when={passkeyErrorShown()}>
+        <div class="passkey-dialog-overlay" onClick={() => setPasskeyErrorShown(false)}>
+          <div class="passkey-dialog" role="alertdialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <h2 class="passkey-dialog-title">{t().passkey_error_title}</h2>
+            <p class="passkey-dialog-message">{t().passkey_failed}</p>
+            <button type="button" class="btn btn-primary" onClick={() => setPasskeyErrorShown(false)}>
+              {t().close}
+            </button>
+          </div>
+        </div>
+      </Show>
     </div>
+    </>
   );
 }
 

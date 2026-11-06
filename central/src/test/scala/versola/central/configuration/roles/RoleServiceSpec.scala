@@ -1,6 +1,14 @@
 package versola.central.configuration.roles
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.configuration.challenges.{
+  ChallengeSettingsRecord,
+  ChallengeSettingsService,
+  EmailRegistration,
+  PasskeySettings,
+  SecurityProfile,
+  SubmissionLimits,
+}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.sync.SyncEvent
@@ -28,6 +36,7 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
     id = adminRoleId,
     description = Map("en" -> "Admin"),
     permissions = Set(readPermission, writePermission),
+    active = false,
   )
 
   private val updateRequest = UpdateRoleRequest(
@@ -35,13 +44,41 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
     id = adminRoleId,
     description = PatchDescription(add = Map("ru" -> "Админ"), delete = Set.empty),
     permissions = PatchPermissions(add = Set(writePermission), remove = Set(readPermission)),
+    active = Some(true),
+  )
+
+  private val settings = ChallengeSettingsRecord(
+    tenantId = tenantId,
+    phoneRegions = List.empty,
+    emailRegistration = EmailRegistration.Closed,
+    defaultRoles = Set(adminRoleId),
+    submissionLimits = SubmissionLimits.empty,
+    otpLength = 6,
+    otpResendAfter = 60,
+    passkeySettings = PasskeySettings("localhost", "Test", List("http://localhost"), "preferred"),
+    authConversationTtlSeconds = 900,
+    sessionTtlSeconds = 86400,
+    sessionIdleTtlSeconds = None,
+    userAgentTtlSeconds = 15552000,
+    ipHeader = "X-Real-IP",
+    acrVocabulary = None,
+    postLogoutRedirectUris = List.empty,
+    requireDpopNonce = false,
+    mtlsCertificateHeader = None,
+    mtlsCertificateEncoding = None,
+    signingKeyId = None,
+    clientAssertionMaxLifetimeSeconds = 300,
+    securityProfile = SecurityProfile.fapi2,
+    logoLight = None,
+    logoDark = None,
   )
 
   class Env(initial: Vector[RoleRecord] = Vector.empty):
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initial)))
     val repository = stub[RoleRepository]
     val tenantRepository = stub[TenantRepository]
-    val service = RoleService.Impl(cache, repository, tenantRepository)
+    val challengeSettings = stub[ChallengeSettingsService]
+    val service = RoleService.Impl(cache, repository, tenantRepository, challengeSettings)
 
   def spec = suite("RoleService")(
     test("getTenantRoles filters cache by tenant") {
@@ -65,7 +102,7 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.createRole.succeedsWith(())
         _ <- env.service.createRole(createRequest)
       yield assertTrue(
-        env.repository.createRole.calls === List((tenantId, adminRoleId, createRequest.description, createRequest.permissions.toList)),
+        env.repository.createRole.calls === List((tenantId, adminRoleId, createRequest.description, createRequest.permissions.toList, false)),
       )
     },
     test("updateRole delegates request fields to repository") {
@@ -75,7 +112,7 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.updateRole.succeedsWith(())
         _ <- env.service.updateRole(updateRequest)
       yield assertTrue(
-        env.repository.updateRole.calls == List((tenantId, adminRoleId, updateRequest.description, updateRequest.permissions)),
+        env.repository.updateRole.calls == List((tenantId, adminRoleId, updateRequest.description, updateRequest.permissions, Some(true))),
       )
     },
     test("markRoleInactive delegates tenant and id to repository") {
@@ -90,9 +127,30 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env()
 
       for
+        _ <- env.challengeSettings.getSettings.succeedsWith(None)
         _ <- env.repository.deleteRole.succeedsWith(())
         _ <- env.service.deleteRole(tenantId, adminRoleId)
       yield assertTrue(env.repository.deleteRole.calls === List((tenantId, adminRoleId)))
+    },
+    test("deleteRole refuses a role that is one of the tenant's default roles") {
+      val env = new Env()
+
+      for
+        _ <- env.challengeSettings.getSettings.succeedsWith(Some(settings))
+        exit <- env.service.deleteRole(tenantId, adminRoleId).exit
+      yield assertTrue(
+        exit.causeOption.flatMap(_.failureOption).exists(_.isInstanceOf[RoleService.RoleInUseError]),
+        env.repository.deleteRole.calls.isEmpty,
+      )
+    },
+    test("deleteRole deletes a role the tenant's settings do not name") {
+      val env = new Env()
+
+      for
+        _ <- env.challengeSettings.getSettings.succeedsWith(Some(settings))
+        _ <- env.repository.deleteRole.succeedsWith(())
+        _ <- env.service.deleteRole(tenantId, operatorRoleId)
+      yield assertTrue(env.repository.deleteRole.calls === List((tenantId, operatorRoleId)))
     },
     test("sync removes cached role on delete event") {
       val env = new Env(Vector(adminRole, otherTenantRole))
