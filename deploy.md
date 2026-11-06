@@ -483,8 +483,8 @@ who is a user (the `actorId` and `actorTenantId` edge adds to each call from the
 - `POST /configuration/roles` creates a role with a permission the administrator does not hold; `PUT` changes, or `DELETE` removes,
   a role that holds one, or adds one.
 
-What the administrator holds is the permissions of their **active** roles in the tenant of their token. Before, `users:manage`
-alone was enough to assign the role that holds everything, and `access:manage` to add any permission to a role.
+What the administrator holds is the permissions of their **active** roles in the tenant of their token. Before, the permission of
+the route (`users:manage`, `access:manage`) was the only check.
 
 - **Who is not checked.** A call that names no administrator (direct callers of central: the load emulator, scripts, an edge that
   has not yet read the new inject rules) and a client credentials token (its `actorId` is its client) behave as before. The shared
