@@ -64,7 +64,7 @@ object SessionServiceSpec extends UnitSpecBase:
   /** What the longest-lived client's access tokens last, which bounds the ones issued under a session. */
   private val clientTtls = Map(ClientId("short") -> 5.minutes, ClientId("long") -> 15.minutes)
   private val widestTtl = 15.minutes
-  private def termsOf(cause: RevocationCause) = RevocationTerms(cause, widestTtl, clientTtls)
+  private def termsOf(cause: RevocationCause) = RevocationTerms(cause, widestTtl, None, clientTtls)
 
   class Env:
     val repository = stub[SessionRepository]

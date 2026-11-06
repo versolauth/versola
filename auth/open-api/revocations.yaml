@@ -1,0 +1,130 @@
+openapi: 3.1.0
+info:
+  title: Versola Auth — Revocation feed (internal)
+  version: 1.0.0
+  x-internal: true
+  description: |
+    **Internal.** Not part of the public API of an authorization server: it is how a first-party `edge`
+    learns what `auth` has revoked, and is documented here so that the two stay in step. It is served on
+    `auth`'s **mutual-TLS listener only** (`MPORT`, the origin the metadata document publishes under
+    `mtls_endpoint_aliases`), never on the main listener and never under `/service`; on a deployment
+    without the `mutual-tls` block it does not exist.
+
+    `auth` writes a row for every access token it revokes (`/revoke`, a replayed code or refresh token, a
+    logout, a user ended or signed out everywhere) in the transaction that causes it. An edge pulls those
+    rows with a cursor, about once a second, instead of relying on the fire-and-forget event sent to
+    `back_channel_logout_uri` (which stays as the faster, unguaranteed signal): an edge that was down or is
+    new reads what it missed from where its cursor stands.
+
+    **Who may call.** Only an edge. The caller is recognised from the certificate of the TLS handshake the
+    listener validated (the same recognition `/userinfo` applies, `EdgeCertificateTrust`): a certificate of
+    an edge that central still lists, signed by `mutual-tls.edge-trusted-certificates`. A certificate in a
+    header is never read. A client's certificate, an edge central no longer lists, or a connection with no
+    certificate is answered `403`.
+
+    **What is returned.** The revocations that have not expired, of the tenants central assigned the calling
+    edge **and** of those no tenant owns (a session or a user: `sid:` and `sub:` keys, which are not
+    tenant-scoped), in the order `(revoked_at, key)` after the cursor. An edge learns nothing about tokens
+    of tenants it is not assigned to. The key encoding is the one of the notifications on the
+    `auth_revocation` channel: `jti:<id>`, `fam:<id>`, `sid:<id>`, `sub:<id>`; a consumer skips a prefix it
+    does not know.
+
+    **Reading it.** The cursor is opaque; hand back what the last response carried. A page shorter than
+    the limit asked for is the end of what there is now. Rows are written when their transaction commits,
+    which can be after a row with a later `revoked_at`, so a reader starts a little behind its cursor and
+    applies the overlap idempotently (the edge rewinds by `revocation.overlap`, 30 s by default, and rereads
+    everything every `revocation.reload-interval`).
+  license:
+    name: Versola Community License v1.0
+    url: https://github.com/versolauth/versola/blob/main/LICENCE.md
+
+servers:
+  - url: https://auth-mtls.example.com
+    description: Auth's mutual-TLS listener
+
+paths:
+  /revocations:
+    get:
+      operationId: listRevocations
+      summary: Revocations after a cursor, for the calling edge
+      tags: [Internal]
+      parameters:
+        - name: after
+          in: query
+          required: false
+          description: |
+            The `cursor` of an earlier response. Absent or empty reads from the beginning of the list. A value
+            this endpoint did not issue is `400`.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: Most rows in the page. Default 5000; a larger value is served as 10000. Not a positive integer is `400`.
+          schema:
+            type: integer
+            minimum: 1
+            default: 5000
+      responses:
+        "200":
+          description: A page, possibly empty. An empty page returns the cursor it was given.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevocationPage"
+              example:
+                revocations:
+                  - key: "jti:3yJq0xk1y5s0d9mO3Zn5Rg"
+                    exp: 1793980000
+                  - key: "sub:1c2f9c3e-8f4e-4c4e-9a6a-0f3a2b1c4d5e"
+                    exp: 1793983600
+                    before: 1793980000
+                cursor: "MjAyNi0xMS0wNlQxMDowMDowMC4xMjM0NTZafHN1YjoxYzJmLi4u"
+        "400":
+          description: '`after` is not a cursor this endpoint issued, or `limit` is not a positive integer.'
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: The certificate of the handshake is not that of an edge central lists, or there was none.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  schemas:
+    RevocationPage:
+      type: object
+      required: [revocations, cursor]
+      properties:
+        revocations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Revocation"
+        cursor:
+          type: string
+          description: Where the next read resumes. Opaque. Empty only while nothing has been read.
+    Revocation:
+      type: object
+      required: [key, exp]
+      properties:
+        key:
+          type: string
+          description: "`jti:<id>`, `fam:<id>`, `sid:<id>` or `sub:<id>`."
+        exp:
+          type: integer
+          format: int64
+          description: Unix seconds. When the entry stops mattering, because the token would have expired by then.
+        before:
+          type: integer
+          format: int64
+          description: Unix seconds. Only tokens issued at or before this instant are revoked; absent revokes every token the key names. Set for `sub:` keys.
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum: [access_denied, invalid_request]

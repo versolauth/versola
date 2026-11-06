@@ -85,7 +85,7 @@ object SessionService:
       * widest of every client (see [[RevocationTerms.ttlOfSession]]). */
     private def sessionTerms(cause: RevocationCause): UIO[RevocationTerms] =
       configuration.accessTokenTtls.map: ttls =>
-        RevocationTerms(cause, ttls.values.maxOption.getOrElse(1.hour), ttls)
+        RevocationTerms(cause = cause, ttl = ttls.values.maxOption.getOrElse(1.hour), tenantId = None, ttlByClient = ttls)
 
     override def find(rawId: SessionId): Task[Option[SessionInfo]] =
       for

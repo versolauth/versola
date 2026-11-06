@@ -224,6 +224,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
             issuedBefore = Some(now),
           ),
           revocation.cause,
+          revocation.tenantId,
         )
         sql"""
           WITH expired AS (
@@ -270,6 +271,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
         issuedBefore = None,
       ),
       revocation.cause,
+      revocation.tenantId,
     )
     ()
 
@@ -551,6 +553,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
         issuedBefore = None,
       ),
       revocation.cause,
+      revocation.tenantId,
     )
     ()
 

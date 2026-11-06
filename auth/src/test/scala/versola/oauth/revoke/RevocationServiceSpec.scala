@@ -174,7 +174,7 @@ object RevocationServiceSpec extends UnitSpecBase:
           // The whole family goes, recorded with the client's own TTL as the bound, in the one
           // repository call that expires it; not just the row that was presented.
           env.tokenRepository.deleteByFamily.calls ==
-            List((familyId1, RevocationTerms(RevocationCause.Revoke, testClient.accessTokenTtl, Map.empty))),
+            List((familyId1, RevocationTerms(RevocationCause.Revoke, testClient.accessTokenTtl, Some(testClient.tenantId), Map.empty))),
           // No access token was presented and none is recorded against the chain, so the push
           // names the family and bounds it by the client's own TTL from now.
           env.accessTokenRevocationService.announceFamily.calls ==
