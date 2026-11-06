@@ -120,6 +120,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     resources = Nil,
     authorizationDetails = None,
     dpopJkt = None,
+    ip = None,
   )
 
   val rawSessionId = SessionId(Array.fill(32)(5.toByte))
@@ -294,7 +295,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           conversation.amr.keySet == Set(PassedAuthFactor.password),
           conversation.needsPasswordChange,
           // only the hash is looked up, never the token itself
-          Arrays.equals(spent, OneTimeLink.hash("the-token")),
+          Arrays.equals(spent._1, OneTimeLink.hash("the-token")),
+          spent._2 == Set(OneTimeLinkPurpose.FirstLogin),
           advanceTimes == 1,
         )
       },
@@ -1027,6 +1029,80 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield assertTrue(result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)))
     },
     // ── id_token_hint without an active session ──────────────────────────────
+    // An id_token_hint identifies the user and verifies nothing. With no session, the credential card it would skip
+    // is the only place a flow with an inline password and no further factor authenticates anyone, so the card is
+    // shown, as for a re-authentication of a session's user above, and nothing advances on the hint's strength.
+    test("show the credential card for an id_token_hint without session when no verifying factor would be left") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val hintUserId = versola.user.model.UserId(UUID.randomUUID())
+      val inlinePasswordFlow = otpFlow.copy(
+        primary = otpFlow.primary.copy(
+          credentials = List(PrimaryCredential.email),
+          inlinePassword = true,
+          factors = Nil,
+        ),
+      )
+      val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+        .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
+        .build()
+      val hintClaims = new JWTClaimsSet.Builder()
+        .subject(hintUserId.toString)
+        .audience(clientId.toString)
+        .issuer("https://versolauth.com")
+        .build()
+      val jwtToken = new SignedJWT(header, hintClaims)
+      jwtToken.sign(new RSASSASigner(TestEnvConfig.privateKey))
+      val idTokenHintStr = jwtToken.serialize()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow.copy(authFlow = Some(inlinePasswordFlow))))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(idTokenHintStr)))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        createCalls.head._2.userId.isEmpty,
+        createCalls.head._2.step.isInstanceOf[versola.oauth.conversation.model.ConversationStep.Credential],
+        env.conversationRouter.advance.calls.isEmpty,
+        env.userRepository.find.calls.isEmpty,
+      )
+    },
+    test("skip the credential card for an id_token_hint without session when a required factor is still asked") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val hintUserId = versola.user.model.UserId(UUID.randomUUID())
+      val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+        .keyID("test-key-id")
+        .`type`(JOSEObjectType.JWT)
+        .build()
+      val hintClaims = new JWTClaimsSet.Builder()
+        .subject(hintUserId.toString)
+        .audience(clientId.toString)
+        .issuer("https://versolauth.com")
+        .build()
+      val jwtToken = new SignedJWT(header, hintClaims)
+      jwtToken.sign(new RSASSASigner(TestEnvConfig.privateKey))
+      val idTokenHintStr = jwtToken.serialize()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(hintUserId)))
+        _ <- env.conversationRouter.advance.succeedsWith(())
+        result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(idTokenHintStr)))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        createCalls.head._2.userId == Some(hintUserId),
+        env.conversationRouter.advance.calls.nonEmpty,
+      )
+    },
     test("fail with AccessDenied when id_token_hint is provided without session and ACR not achievable") {
       val env = Env()
       val hintUserId = versola.user.model.UserId(UUID.randomUUID())

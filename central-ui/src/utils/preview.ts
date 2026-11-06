@@ -45,6 +45,20 @@ export function scenarioTitle(scenario: FormPreviewScenario, locale = 'en'): str
   return scenario.title[locale] ?? scenario.title.en ?? scenario.id;
 }
 
+/** The HTML parser ends a `<script>` block at the first `</script` and a `<style>` block at the first `</style`, whatever
+ *  the JSON, JavaScript or CSS around it says: a text or a stylesheet an operator typed could otherwise end the block and
+ *  continue as markup of its own. `\u003c` is `<` to JSON and nothing to HTML; `\3c ` is the CSS escape of `<`, honoured in
+ *  strings and identifiers, the only places `<` can stand in a stylesheet; `<\/` is `</` to JavaScript. Mirrors
+ *  `escapeJsonForScript` and `escapeCssForStyle` in util, which protect the pages auth serves. */
+export const escapeJsonForScript = (json: string): string => json.replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
+export const escapeCssForStyle = (css: string): string => css.replace(/</g, '\\3c ');
+export const escapeScriptForScript = (js: string): string => js.replace(/<\/(script)/gi, '<\\/$1');
+
+/** The `sandbox` of every preview iframe. `allow-scripts` runs the form; `allow-same-origin` is deliberately absent, so the
+ *  document gets an opaque origin: a script in a form or a theme runs with no access to the console's cookies, storage or
+ *  API, however it got there. The form talks to the console with `postMessage` only, which needs no origin. */
+export const PREVIEW_SANDBOX = 'allow-scripts';
+
 // Builds the full iframe `srcdoc` HTML for a form preview. Shared by the form
 // edit screen and the forms list version cards so both render previews
 // identically.
@@ -61,7 +75,8 @@ export function buildPreviewSrcdoc(params: PreviewSrcdocParams): string {
     // Every preview, whichever screen shows it (previewId is set by the forms list only).
     preview: true,
   });
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${params.themeCss}\n${params.style}</style><script>window.__VERSOLA_FORM__=${configJson};</script></head><body><div id="versola-form-root"></div><script>${params.jsCompiled}</script></body></html>`;
+  const css = escapeCssForStyle(`${params.themeCss}\n${params.style}`);
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${css}</style><script>window.__VERSOLA_FORM__=${escapeJsonForScript(configJson)};</script></head><body><div id="versola-form-root"></div><script>${escapeScriptForScript(params.jsCompiled)}</script></body></html>`;
 }
 
 /** The stylesheet each theme gives a page, for previews. A theme stored with CSS only is its own CSS; any other (the

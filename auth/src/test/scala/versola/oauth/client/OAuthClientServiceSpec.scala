@@ -436,7 +436,14 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     ),
     test("getSubmissionLimits returns limits from challenge settings") {
       val limits =
-        SubmissionLimits(otpRequest = List(RateLimit(5, 60)), otpSubmit = Nil, passwordSubmit = Nil, passkeyAssertion = Nil, banDurationSeconds = 0)
+        SubmissionLimits(
+          otpRequest = List(RateLimit(5, 60)),
+          otpSubmit = Nil,
+          passwordSubmit = Nil,
+          passkeyAssertion = Nil,
+          banDurationSeconds = 0,
+          stepUp = None,
+        )
       val settings = ChallengeSettingsRecord(
         tenantId = TenantId("default"),
         phoneRegions = Nil,

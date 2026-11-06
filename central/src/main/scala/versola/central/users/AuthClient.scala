@@ -2,17 +2,21 @@ package versola.central.users
 
 import versola.central.CentralConfig
 import versola.central.antifraud.*
+import versola.central.audit.{AuthAuditError, CentralAudit, UserAuditEventsQuery, UserAuditEventsResponse}
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
+import versola.util.audit.AuditContext
 import versola.util.http.EntityVersion
 import versola.util.{Email, PageLimit, Patch, Phone}
+import zio.Duration
 import zio.http.{Body, Client, Header, MediaType, Method, QueryParams, Request, Response, Status, URL}
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder}
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
 import zio.{Chunk, IO, Schedule, Scope, Task, ZIO, ZLayer, durationInt}
 
+import java.io.IOException
 import java.time.Instant
 import java.util.UUID
 
@@ -88,6 +92,13 @@ trait AuthClient:
   /** Forces auth to reload all configuration caches from central (non-prod only). */
   def syncConfiguration(): Task[Unit]
 
+  /** A page of the user's audit events from auth, newest first (`GET /users/audit-events?id=`). */
+  def getUserAuditEvents(userId: UserId, query: UserAuditEventsQuery): IO[AuthAuditError | Throwable, UserAuditEventsResponse]
+
+  /** Auth's summary of the user's audit events over the window (`GET /users/audit-summary?id=`), as it answers it: central
+    * adds to it and does not read into it. */
+  def getUserAuditSummary(userId: UserId, from: Option[Instant], to: Option[Instant]): IO[AuthAuditError | Throwable, Json.Obj]
+
   /** The antifraud lists live in auth, which validates the entries: its refusals are [[AntifraudListError]]s, not
     * failures of the call. `userId` is the admin who asked, recorded by auth as who made the change. `caller` is whose scope
     * the call is made in; auth enforces it, and it is sent as the call's own fields (`scope` and `callerTenantId`), never taken
@@ -131,6 +142,15 @@ object AuthClient:
   val live: ZLayer[Scope & Client & CentralConfig, Throwable, AuthClient] =
     AuthTokenService.live >>> ZLayer.fromFunction(Impl(_, _, _))
 
+  /** The name of the query parameter, and of the optional field of a body, that names the administrator on whose behalf central
+    * calls auth: auth records it as the actor of what the call changes (an absent one is central itself). It is taken from the
+    * audit context of the request, which the audit hook fills from what edge added to the request, so no controller has to pass it
+    * on. The antifraud calls do not carry it: the administrator travels in their `userId`. */
+  val ActorParam = "actorId"
+
+  /** Auth's answer to an audit read that it had no place for (`503`, `Retry-After`): not a failure of the report, asked again. */
+  private case class AuditBusy(after: Duration) extends Exception("auth is busy with other audit reads")
+
   private[users] case object TokenExpiredError extends Exception("central→auth token expired; retrying with fresh token")
 
   private case class UpsertUserPayload(
@@ -150,7 +170,7 @@ object AuthClient:
 
   private case class UserClaimsResponse(claims: Json.Obj) derives JsonCodec
 
-  private case class PatchUserClaimsPayload(id: UserId, claims: Json.Obj) derives JsonCodec
+  private case class PatchUserClaimsPayload(id: UserId, claims: Json.Obj, actorId: Option[UserId]) derives JsonCodec
 
   private case class UserRolesResponse(roles: List[RoleId]) derives JsonCodec
 
@@ -211,23 +231,27 @@ object AuthClient:
       tenantId: TenantId,
       email: Option[Email],
       phone: Option[Phone],
+      actorId: Option[UserId],
   ) derives JsonCodec
 
   private case class RenamePasskeyPayload(
       userId: UserId,
       credentialId: String,
       name: Option[String],
+      actorId: Option[UserId],
   ) derives JsonCodec
 
   private case class ResetPasswordPayload(
       userId: UserId,
       expiresInSeconds: Long,
       channel: Option[DeliveryChannel],
+      actorId: Option[UserId],
   ) derives JsonCodec
 
   private case class SetPasswordPayload(
       userId: UserId,
       password: String,
+      actorId: Option[UserId],
   ) derives JsonCodec
 
   class Impl(
@@ -251,6 +275,8 @@ object AuthClient:
     private val antifraudRulesUrl: URL = config.auth.url / "antifraud" / "rules"
     private val antifraudStatusUrl: URL = config.auth.url / "antifraud" / "status"
     private val configSyncUrl: URL = config.auth.url / "service" / "configuration" / "sync"
+    private val auditEventsUrl: URL = usersUrl / "audit-events"
+    private val auditSummaryUrl: URL = usersUrl / "audit-summary"
 
     override def upsertUser(
         id: UserId,
@@ -287,13 +313,14 @@ object AuthClient:
       ).map(_.map(_.claims))
 
     override def patchUserClaims(id: UserId, patch: Json.Obj): Task[Unit] =
-      send(
-        Request(
-          method = Method.PATCH,
-          url = claimsUrl,
-          body = Body.from(PatchUserClaimsPayload(id, patch)),
-        ),
-      )
+      admin.flatMap: actorId =>
+        send(
+          Request(
+            method = Method.PATCH,
+            url = claimsUrl,
+            body = Body.from(PatchUserClaimsPayload(id, patch, actorId)),
+          ),
+        )
 
     override def getUserRoles(id: UserId, tenantId: TenantId): Task[List[RoleId]] =
       sendReceive[UserRolesResponse](
@@ -364,13 +391,14 @@ object AuthClient:
         email: Option[Email],
         phone: Option[Phone],
     ): Task[Unit] =
-      send(
-        Request(
-          method = Method.POST,
-          url = limitsResetUrl,
-          body = Body.from(ResetUserLimitsPayload(userId, tenantId, email, phone)),
-        ),
-      )
+      admin.flatMap: actorId =>
+        send(
+          Request(
+            method = Method.POST,
+            url = limitsResetUrl,
+            body = Body.from(ResetUserLimitsPayload(userId, tenantId, email, phone, actorId)),
+          ),
+        )
 
     override def listPasskeys(userId: UserId): Task[List[PasskeyInfo]] =
       sendReceive[ListPasskeysResponse](
@@ -378,13 +406,14 @@ object AuthClient:
       ).map(_.passkeys)
 
     override def renamePasskey(userId: UserId, credentialId: String, name: Option[String]): Task[Unit] =
-      send(
-        Request(
-          method = Method.PATCH,
-          url = passkeysUrl,
-          body = Body.from(RenamePasskeyPayload(userId, credentialId, name)),
-        ),
-      )
+      admin.flatMap: actorId =>
+        send(
+          Request(
+            method = Method.PATCH,
+            url = passkeysUrl,
+            body = Body.from(RenamePasskeyPayload(userId, credentialId, name, actorId)),
+          ),
+        )
 
     override def deletePasskey(userId: UserId, credentialId: String): Task[Unit] =
       send(
@@ -401,22 +430,24 @@ object AuthClient:
         expiresInSeconds: Long,
         channel: Option[DeliveryChannel],
     ): Task[Option[String]] =
-      sendReceiveOptional[ResetPasswordResponse](
-        Request(
-          method = Method.POST,
-          url = passwordResetUrl,
-          body = Body.from(ResetPasswordPayload(userId, expiresInSeconds, channel)),
-        ),
-      ).map(_.map(_.password))
+      admin.flatMap: actorId =>
+        sendReceiveOptional[ResetPasswordResponse](
+          Request(
+            method = Method.POST,
+            url = passwordResetUrl,
+            body = Body.from(ResetPasswordPayload(userId, expiresInSeconds, channel, actorId)),
+          ),
+        ).map(_.map(_.password))
 
     override def setPassword(userId: UserId, password: String): Task[Unit] =
-      send(
-        Request(
-          method = Method.POST,
-          url = passwordSetUrl,
-          body = Body.from(SetPasswordPayload(userId, password)),
-        ),
-      )
+      admin.flatMap: actorId =>
+        send(
+          Request(
+            method = Method.POST,
+            url = passwordSetUrl,
+            body = Body.from(SetPasswordPayload(userId, password, actorId)),
+          ),
+        )
 
     /** The call's own scope fields: what auth enforces, from the route central served. */
     private def scopeParams(caller: AntifraudCaller): List[(String, String)] = caller match
@@ -534,18 +565,73 @@ object AuthClient:
     override def syncConfiguration(): Task[Unit] =
       send(Request(method = Method.POST, url = configSyncUrl, body = Body.empty))
 
+    override def getUserAuditEvents(userId: UserId, query: UserAuditEventsQuery): IO[AuthAuditError | Throwable, UserAuditEventsResponse] =
+      val params = List(
+        query.from.map("from" -> _.toString),
+        query.to.map("to" -> _.toString),
+        query.cursor.map("cursor" -> _),
+        Some("limit" -> query.limit.toString),
+      ).flatten
+      auditAnswer[UserAuditEventsResponse](Request.get(auditEventsUrl.addQueryParams(("id" -> userId.toString) :: params)))
+
+    override def getUserAuditSummary(userId: UserId, from: Option[Instant], to: Option[Instant]): IO[AuthAuditError | Throwable, Json.Obj] =
+      val params = List(from.map("from" -> _.toString), to.map("to" -> _.toString)).flatten
+      auditAnswer[Json.Obj](Request.get(auditSummaryUrl.addQueryParams(("id" -> userId.toString) :: params)))
+
+    /** Auth's 400 is its refusal of the window or the cursor; a 5xx, a 404 (an auth without the endpoint) and a connection that
+      * cannot be made are auth not answering. */
+    private def auditAnswer[A: JsonDecoder](request: Request): IO[AuthAuditError | Throwable, A] =
+      attemptAudit[A](request)
+        // Auth says it is busy with other reads (503 and how long to wait): asked once more after that, and then it is not answering.
+        .catchSome { case AuthClient.AuditBusy(after) => ZIO.sleep(after) *> attemptAudit[A](request) }
+        .catchSome { case _: AuthClient.AuditBusy => ZIO.succeed(Left(AuthAuditError.Unavailable("auth answered 503"))) }
+        .catchSome:
+          case _: IOException => ZIO.succeed(Left(AuthAuditError.Unavailable("auth could not be reached")))
+        .flatMap(ZIO.fromEither(_))
+
+    private def attemptAudit[A: JsonDecoder](request: Request): Task[Either[AuthAuditError, A]] =
+      execute(request): response =>
+        response.status match
+          case status if status.isSuccess =>
+            response.body.asString.flatMap: body =>
+              ZIO.fromEither(body.fromJson[A]).mapBoth(msg => new RuntimeException(s"Auth response decode failed: $msg"), Right(_))
+          case Status.BadRequest => response.body.asString.map(message => Left(AuthAuditError.Invalid(message)))
+          case Status.ServiceUnavailable =>
+            val seconds = response.headers.get("Retry-After").flatMap(_.trim.toLongOption).getOrElse(1L)
+            ZIO.fail(AuthClient.AuditBusy(Duration.fromSeconds(seconds.max(1L).min(2L))))
+          case Status.NotFound => ZIO.succeed(Left(AuthAuditError.EndpointMissing))
+          case status if status.isServerError =>
+            ZIO.succeed(Left(AuthAuditError.Unavailable(s"auth answered ${status.code}")))
+          case status => ZIO.fail(new RuntimeException(s"Auth call failed: ${status.code}"))
+
+    /** The administrator the request being served came from: a call central makes on its own (the outbox) or for a provisioning
+      * client names nobody, and auth records central. */
+    private val admin: ZIO[Any, Nothing, Option[UserId]] =
+      AuditContext.current.map(
+        _.actor.collect { case (actorType, Some(id)) if actorType == CentralAudit.Actors.Admin => id }.flatMap(UserId.parse(_).toOption),
+      )
+
+    /** A `GET` or a `DELETE` to the user or the audit endpoints of auth. Their calls with a body have the field in it. */
+    private def carriesActorInQuery(request: Request): Boolean =
+      (request.method == Method.GET || request.method == Method.DELETE) &&
+        request.url.path.startsWith(usersUrl.path)
+
     private def execute[A](request: Request)(handle: Response => Task[A]): Task[A] =
-      def attemptWithToken(token: String): Task[A] =
+      def attemptWithToken(request: Request)(token: String): Task[A] =
         withConnectionRetry:
           ZIO.scoped:
             httpClient.request(authorized(request, token)).flatMap: response =>
               if response.status == Status.Unauthorized then ZIO.fail(AuthClient.TokenExpiredError)
               else handle(response)
       for
+        actor <- admin
+        // On behalf of the administrator the request came from, when it is one: a call that has no body carries it in its query.
+        onBehalf =
+          actor.filter(_ => carriesActorInQuery(request)).fold(request)(id => request.updateURL(_.addQueryParam(AuthClient.ActorParam, id.toString)))
         token <- tokenService.getToken
-        result <- attemptWithToken(token).catchSome:
+        result <- attemptWithToken(onBehalf)(token).catchSome:
           case AuthClient.TokenExpiredError =>
-            tokenService.refreshToken().flatMap(attemptWithToken)
+            tokenService.refreshToken().flatMap(attemptWithToken(onBehalf))
       yield result
 
     private def authorized(request: Request, token: String): Request =

@@ -1,8 +1,11 @@
 package versola.antifraud
 
+import versola.audit.AuditSupport.*
+import versola.audit.{AuthActors, AuthAuditDetails, AuthAuditKinds}
 import versola.user.authorizeInternal
 import versola.user.model.UserId
 import versola.util.CoreConfig
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{Controller, Observability}
 import zio.*
 import zio.http.{Method, Request, Response, Routes, Status, handler}
@@ -12,7 +15,7 @@ import zio.json.{EncoderOps, JsonCodec}
   * internal token, and `userId` is the admin who asked, which edge put in central's request from the verified token. It
   * is recorded with the reset. */
 object AntifraudCountersController extends Controller:
-  type Env = Tracing & CoreConfig & AntifraudCounters
+  type Env = Tracing & CoreConfig & AntifraudCounters & AuditEvents
 
   def routes: Routes[Env, Throwable] = Routes(resetEndpoint)
 
@@ -23,7 +26,26 @@ object AntifraudCountersController extends Controller:
         _ <- authorizeInternal(request)
         body <- request.bodyAs[ResetPayload]
         counters <- ZIO.service[AntifraudCounters]
+        events <- ZIO.service[AuditEvents]
         response <- counters.reset(body.scope, body.valueType, body.value, body.userId.toString)
+          // The value (a phone, an address) is not in the event: its kind is.
+          .tap(generation =>
+            events.log(
+              AuditDraft(
+                kind = AuthAuditKinds.AntifraudCountersReset,
+                outcome = AuditOutcome.success,
+                reason = None,
+                actor = Some((AuthActors.admin, Some(body.userId.toString))),
+                userId = None,
+                target = None,
+                details = AuthAuditDetails.AntifraudCountersReset(
+                  scope = body.scope.toString,
+                  valueType = body.valueType.map(_.toString),
+                  generation = generation,
+                ),
+              ),
+            ),
+          )
           .map(generation => Response.json(ResetResponse(generation).toJson).status(Status.Accepted))
           .catchSome:
             case e: InvalidCounterReset =>

@@ -2,6 +2,7 @@ package versola.central
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.audit.AuditReportService
 import versola.central.configuration.edges.EdgeGroup
 import versola.central.configuration.edges.EdgeGroupKind
 import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeService}
@@ -123,6 +124,7 @@ object EdgeCallerRefusalSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[CentralConfig](config) ++
                 ZEnvironment[EnvName](EnvName.Test("test")) ++
+                ZEnvironment[AuditReportService](stub[AuditReportService]) ++
                 tracing,
             ),
           ),

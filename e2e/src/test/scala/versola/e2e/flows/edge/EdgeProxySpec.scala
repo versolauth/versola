@@ -20,15 +20,115 @@ object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
     resourceId = "e2e-edge-proxy",
     resourceUri = UpstreamStub.uri,
     endpoints = List(
-      EdgeFixture.Endpoint(name = "list", method = "GET", path = "/items"),
-      EdgeFixture.Endpoint(name = "create", method = "POST", path = "/items"),
-      EdgeFixture.Endpoint(name = "one", method = "GET", path = "/items/{id}"),
-      EdgeFixture.Endpoint(name = "replace", method = "PUT", path = "/items/{id}"),
-      EdgeFixture.Endpoint(name = "amend", method = "PATCH", path = "/items/{id}"),
-      EdgeFixture.Endpoint(name = "remove", method = "DELETE", path = "/items/{id}"),
-      EdgeFixture.Endpoint(name = "secret", method = "GET", path = "/secret", permitted = false),
+      EdgeFixture.Endpoint(
+        name = "list",
+        method = "GET",
+        path = "/items",
+        permitted = true,
+        fetchUserInfo = false,
+        allow = None,
+        inject = Nil,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
+      EdgeFixture.Endpoint(
+        name = "create",
+        method = "POST",
+        path = "/items",
+        permitted = true,
+        fetchUserInfo = false,
+        allow = None,
+        inject = Nil,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
+      EdgeFixture.Endpoint(
+        name = "one",
+        method = "GET",
+        path = "/items/{id}",
+        permitted = true,
+        fetchUserInfo = false,
+        allow = None,
+        inject = Nil,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
+      EdgeFixture.Endpoint(
+        name = "replace",
+        method = "PUT",
+        path = "/items/{id}",
+        permitted = true,
+        fetchUserInfo = false,
+        allow = None,
+        inject = Nil,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
+      EdgeFixture.Endpoint(
+        name = "amend",
+        method = "PATCH",
+        path = "/items/{id}",
+        permitted = true,
+        fetchUserInfo = false,
+        allow = None,
+        inject = Nil,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
+      EdgeFixture.Endpoint(
+        name = "remove",
+        method = "DELETE",
+        path = "/items/{id}",
+        permitted = true,
+        fetchUserInfo = false,
+        allow = None,
+        inject = Nil,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
+      EdgeFixture.Endpoint(
+        name = "parts",
+        method = "GET",
+        path = "/items/{id}/parts",
+        permitted = true,
+        fetchUserInfo = false,
+        allow = None,
+        inject = Nil,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
+      EdgeFixture.Endpoint(
+        name = "secret",
+        method = "GET",
+        path = "/secret",
+        permitted = false,
+        fetchUserInfo = false,
+        allow = None,
+        inject = Nil,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
     ),
+    scopes = Set("openid", "email", "offline_access"),
+    presetScope = Set("openid"),
+    postLogoutRedirectUri = None,
+    cookiePath = None,
     awaitProxyReady = true,
+    privateKeyJwt = false,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
+    mutualTls = false,
+    nativeApp = false,
+    issuedCertificate = false,
+    enrolledCertificate = false,
   )
 
   override val bootstrap
@@ -199,6 +299,32 @@ object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
       yield assertTrue(response.status == Status.Ok) &&
         assertTrue(seen.map(_.path).contains("/items/42"))
           .label("the endpoint is registered as /items/{id}; upstream needs the id, not the template")
+    },
+    test("a segment that holds an encoded separator is not found, so the endpoint matched is the one the upstream routes to") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        stub <- upstream
+        _ <- stub.reset
+        established <- session
+        responses <- ZIO.foreach(List("/items/a%2Fparts", "/items/a%2fparts", "/items/a%5Cparts", "/items/..;x/parts", "/items/%252e%252e/parts")):
+          path =>
+            edgeApi.proxy(Method.GET, f.resourceId, path, established.auth)
+        seen <- stub.requests
+      yield assertTrue(responses.forall(_.status == Status.NotFound)) &&
+        assertTrue(seen.isEmpty)
+          .label("one segment `a/parts` would be matched as two, an endpoint the upstream does not see")
+    },
+    test("a templated path of several segments still forwards each concrete segment") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        stub <- upstream
+        _ <- stub.reset
+        established <- session
+        response <- edgeApi.proxy(Method.GET, f.resourceId, "/items/a.b/parts", established.auth)
+        seen <- stub.lastRequest
+      yield assertTrue(response.status == Status.Ok) && assertTrue(seen.map(_.path).contains("/items/a.b/parts"))
     },
     test("query parameters reach the upstream") {
       for

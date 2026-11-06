@@ -71,7 +71,10 @@ object SSOClientSpec extends ZIOSpecDefault:
     credential = ClientCredential.ClientSecret(Secret("s3cret".getBytes("UTF-8").nn)),
     permissions = Set.empty,
     accessTokenTtl = 15.minutes,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
     applicationType = ApplicationType.web,
+    redirectUris = Set.empty,
   )
 
   /** Stands in for the directory the real one writes to. What a certificate is written to is

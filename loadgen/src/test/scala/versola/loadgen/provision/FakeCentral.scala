@@ -165,6 +165,7 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
               redirectUris = strings(spec, "redirectUris").toSet,
               scopes = strings(spec, "allowedScopes").toSet,
               permissions = strings(spec, "permissions").toSet,
+              rotations = 0,
             )
             (response, s.copy(clients = s.clients.updated(clientId, stored)))
         create
@@ -562,10 +563,10 @@ object FakeCentral:
       kind: String,
       spec: Json.Obj,
       secret: Option[String],
-      redirectUris: Set[String] = Set.empty,
-      scopes: Set[String] = Set.empty,
-      permissions: Set[String] = Set.empty,
-      rotations: Int = 0,
+      redirectUris: Set[String],
+      scopes: Set[String],
+      permissions: Set[String],
+      rotations: Int,
   ):
     /** Applies the update's patch sets the way central's repository does, removals before
       * additions, so a client whose configuration was narrowed really does lose what the
@@ -587,7 +588,7 @@ object FakeCentral:
 
   case class StoredTenant(description: String, edgeId: Option[String], profile: String)
 
-  case class StoredResource(spec: Json.Obj, endpointIds: Set[UUID], audience: Set[String] = Set.empty):
+  case class StoredResource(spec: Json.Obj, endpointIds: Set[UUID], audience: Set[String]):
     /** Applies the audience patch the way central's `PatchAudience.patch` does: remove before
       * add, so a client moved from one resource's audience to another in the same run is not
       * dropped by whichever write central happens to apply first.

@@ -6,7 +6,7 @@ import { statusIcon } from './status-icon';
 import type { NavItem, VersolaNavigation } from './navigation';
 import { configureCentralApi, fetchMyPermissions, resolveBaseUrl } from '../utils/central-api';
 import { watchSystemTheme } from '../utils/theme';
-import { EMPTY_RECORD_ROUTE, type RecordRoute } from '../utils/record-route';
+import { EMPTY_RECORD_ROUTE, RESERVED_ROUTE_PARAMS, type RecordRoute } from '../utils/record-route';
 
 import './navigation';
 // Imported directly (not just transitively via navigation) because the splash
@@ -92,6 +92,8 @@ export class VersolaAdmin extends LitElement {
   /** The record a section has open (`id`), the group it edits, whether it is creating one, and
     * whether the panel is shown as a page: mirrored in the URL so a reload restores the panel. */
   @state() private recordRoute: RecordRoute = EMPTY_RECORD_ROUTE;
+  /** The query parameters the selected tab's `recordRoute.params` put in the URL, so they can be taken out again. */
+  private routeParamKeys = new Set<string>();
 
   // Permission state resolved from /permissions/me
   @state() private adminPermissions: Set<string> = new Set();
@@ -490,7 +492,11 @@ export class VersolaAdmin extends LitElement {
   /** A section opened, edited, created or closed a record: the URL follows. A field the event
     * leaves out keeps its value, so a section can set `edit` without repeating `id`. */
   private handleRecordRoute = (e: CustomEvent<Partial<RecordRoute>>) => {
-    this.recordRoute = { ...this.recordRoute, ...e.detail };
+    const next = { ...this.recordRoute, ...e.detail };
+    // Another record (or none) does not keep the tab of the one before it, and another tab does not keep the view state of the last.
+    if (e.detail.id !== undefined && e.detail.id !== this.recordRoute.id && !('tab' in e.detail)) next.tab = null;
+    if (!('params' in e.detail) && (('tab' in e.detail && e.detail.tab !== this.recordRoute.tab) || !next.tab)) next.params = {};
+    this.recordRoute = next;
   };
 
   private applyApiConfig() {
@@ -528,7 +534,16 @@ export class VersolaAdmin extends LitElement {
       edit: params.get('edit'),
       create: params.get('new') === '1',
       layout: params.get('layout') === 'page' ? 'page' : null,
+      tab: params.get('tab'),
+      params: this.tabParams(params),
     };
+    this.routeParamKeys = new Set(Object.keys(this.recordRoute.params));
+  }
+
+  /** A tab's own parameters: every one that `admin-app` does not own, while a tab is selected. */
+  private tabParams(params: URLSearchParams): Record<string, string> {
+    if (!params.get('tab')) return {};
+    return Object.fromEntries([...params.entries()].filter(([key]) => !RESERVED_ROUTE_PARAMS.has(key)));
   }
 
   private persistLocationState() {
@@ -545,10 +560,16 @@ export class VersolaAdmin extends LitElement {
     url.searchParams.delete('expandEdge');
 
     const route = this.recordRoute;
-    for (const [key, value] of [['id', route.id], ['edit', route.edit], ['new', route.create ? '1' : null], ['layout', route.layout]] as const) {
+    for (const [key, value] of [['id', route.id], ['edit', route.edit], ['new', route.create ? '1' : null], ['layout', route.layout], ['tab', route.tab]] as const) {
       if (value) url.searchParams.set(key, value);
       else url.searchParams.delete(key);
     }
+    // A tab's own parameters are replaced as a set: the ones it had and no longer has leave the URL; others are not ours.
+    for (const key of this.routeParamKeys) {
+      if (!(key in route.params)) url.searchParams.delete(key);
+    }
+    this.routeParamKeys = new Set(Object.keys(route.params).filter(key => !RESERVED_ROUTE_PARAMS.has(key)));
+    for (const key of this.routeParamKeys) url.searchParams.set(key, route.params[key]);
 
     window.history.replaceState({}, '', url);
   }
@@ -610,7 +631,7 @@ export class VersolaAdmin extends LitElement {
       case 'edges':
         return html`<versola-edges-list .canManage=${this.canManage('edges')} .route=${this.recordRoute}></versola-edges-list>`;
       case 'users':
-        return html`<versola-users-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('users')} .canRevealPassword=${!this.isProd} .route=${this.recordRoute}></versola-users-list>`;
+        return html`<versola-users-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('users')} .canRevealPassword=${!this.isProd} .canReadAudit=${this.adminPermissions.has('audit:read')} .route=${this.recordRoute}></versola-users-list>`;
       case 'forms':
         return html`<versola-forms-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('forms')} .route=${this.recordRoute}></versola-forms-list>`;
       case 'themes':

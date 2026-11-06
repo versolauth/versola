@@ -3,6 +3,7 @@ package versola.oauth.session
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.{AuthMethodRef, ClientId, ScopeToken}
 import versola.oauth.model.UserAgentData
+import versola.oauth.revocation.{RevocationCause, RevocationTerms}
 import versola.oauth.session.model.{
   ClientEntry,
   PublicSessionId,
@@ -213,7 +214,7 @@ trait UserAgentRepositorySpec extends DatabaseSpecBase[UserAgentRepositorySpec.E
           _ <- env.repository.create(userAgentId1, data1, ttl)
           _ <- env.sessions.create(sessionMac1, session(userId1, userAgentId1, "ended"), 1.hour, None, None)
           _ <- env.sessions.createRefreshToken(tokenMac1, None, refreshToken(userId1, sessionMac1, "ended", now, "family-ended"), None)
-          _ <- env.sessions.invalidate(sessionMac1)
+          _ <- env.sessions.invalidate(sessionMac1, RevocationTerms(RevocationCause.Logout, 10.minutes, Map.empty))
           _ <- env.repository.forget(userAgentId1, userId1)
           token <- env.sessions.findToken(tokenMac1)
           after <- Clock.instant

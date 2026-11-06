@@ -69,6 +69,19 @@ trait OAuthConfigurationService:
 
   def findByTenant(tenantId: TenantId): UIO[Vector[OAuthClientRecord]]
 
+  /** The longest `accessTokenTtl` of any client, which bounds how long a token issued under a
+    * session or to a user can still be valid when the clients it was issued to are not known.
+    * Over-retains when the session never touched the longest-lived client, never under-retains.
+    * Across tenants rather than the session's own: which tenant's clients a session reached is
+    * not recorded in the session's row, and reading it would cost a query on the logout path to
+    * narrow a bound whose only cost when too wide is holding an entry a few minutes longer.
+    */
+  def widestAccessTokenTtl: UIO[Duration]
+
+  /** Every client's `accessTokenTtl`, so that a session's revocation can be bounded by the clients
+    * the session served rather than by [[widestAccessTokenTtl]]. */
+  def accessTokenTtls: UIO[Map[ClientId, Duration]]
+
   def verifySecret(
       id: ClientId,
       providedSecret: Option[Secret],
@@ -351,6 +364,15 @@ object OAuthConfigurationService:
 
     override def findByTenant(tenantId: TenantId): UIO[Vector[OAuthClientRecord]] =
       clientCache.get.map(_.values.filter(_.tenantId == tenantId).toVector)
+
+    // Used only when this auth knows of no client at all, which means it has yet to sync one and no
+    // token it could be asked about was issued by it. Long enough to cover a plausible token rather
+    // than tuned: getting it wrong only makes an entry outlive its usefulness.
+    override def widestAccessTokenTtl: UIO[Duration] =
+      clientCache.get.map(_.values.map(_.accessTokenTtl).maxOption.getOrElse(1.hour))
+
+    override def accessTokenTtls: UIO[Map[ClientId, Duration]] =
+      clientCache.get.map(_.view.mapValues(_.accessTokenTtl).toMap)
 
     private def verifyOneSecret(
         secret: Secret,

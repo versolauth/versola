@@ -1,5 +1,8 @@
 package versola.oauth.account
 
+import versola.audit.AuditSupport.*
+import versola.audit.AuthAuditDetails
+import versola.audit.AuthAuditKinds
 import versola.auth.model.{CredentialId, PasskeyName}
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
@@ -7,10 +10,12 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.ConversationRenderService.StepView
 import versola.oauth.conversation.{ConversationRenderService, UiLocales}
+import versola.oauth.revocation.RevocationCause
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.PublicSessionId
 import versola.user.UserRepository
 import versola.user.model.UserId
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{BadRequest, Controller, Observability, Unauthorized}
 import versola.util.{Base64, CoreConfig, Secret}
 import zio.*
@@ -28,7 +33,7 @@ import java.security.MessageDigest
 object AccountSettingsController extends Controller:
   type Env = Tracing & CoreConfig & OAuthConfigurationService & SessionService &
     PasskeyRepository & WebAuthnService & UserRepository & ConversationRenderService &
-    PasswordService & AccountSettingsService
+    PasswordService & AccountSettingsService & AuditEvents
 
   /** How long an unfinished enrollment ceremony stays usable. */
   private val enrollmentTtl = 5.minutes
@@ -67,8 +72,22 @@ object AccountSettingsController extends Controller:
       for
         _ <- authorizeResource(request)
         body <- request.bodyAs[RevokeSessionRequest]
-        response <- ZIO.serviceWithZIO[SessionService](_.invalidateForUser(body.targetSessionId, body.userId)).flatMap:
-          case true => ZIO.succeed(Response.status(Status.NoContent))
+        response <- ZIO.serviceWithZIO[SessionService](_.invalidateForUser(body.targetSessionId, body.userId, RevocationCause.UserRevoked)).flatMap:
+          case true =>
+            // The session's own record is gone with it, so the number of relying parties is not known here: 0 says "not known".
+            ZIO.serviceWithZIO[AuditEvents](
+              _.log(
+                AuditDraft(
+                  kind = AuthAuditKinds.SessionEnded,
+                  outcome = AuditOutcome.success,
+                  reason = None,
+                  actor = None,
+                  userId = Some(body.userId),
+                  target = None,
+                  details = AuthAuditDetails.SessionEnded(cause = "user_revoked", clients = 0),
+                ),
+              ),
+            ).as(Response.status(Status.NoContent))
           case false => Observability.setError("session_not_found").as(Response.status(Status.NoContent))
       yield response
     }
@@ -105,6 +124,19 @@ object AccountSettingsController extends Controller:
         _ <- authorizeResource(request)
         body <- request.bodyAs[DeletePasskeyRequest]
         _ <- ZIO.serviceWithZIO[PasskeyRepository](_.deleteByUser(body.credentialId, body.userId))
+        _ <- ZIO.serviceWithZIO[AuditEvents](
+          _.log(
+            AuditDraft(
+              kind = AuthAuditKinds.AccountPasskeyRemoved,
+              outcome = AuditOutcome.success,
+              reason = None,
+              actor = None,
+              userId = Some(body.userId),
+              target = None,
+              details = AuthAuditDetails.Passkey(credentialPrefix = Some(body.credentialId.toString.take(9)), deviceType = None),
+            ),
+          ),
+        )
       yield Response.status(Status.NoContent)
     }
 
@@ -140,6 +172,19 @@ object AccountSettingsController extends Controller:
           _.finishRegistration(body.clientId, body.userId, ticket.request, body.response.toJson, Some(body.name)),
         ).tapError(error => Observability.setError("enroll_failed", Some(error.getMessage)))
           .mapError(error => BadRequest(error.getMessage))
+        _ <- ZIO.serviceWithZIO[AuditEvents](
+          _.log(
+            AuditDraft(
+              kind = AuthAuditKinds.AccountPasskeyEnrolled,
+              outcome = AuditOutcome.success,
+              reason = None,
+              actor = None,
+              userId = Some(body.userId),
+              target = None,
+              details = AuthAuditDetails.Passkey(credentialPrefix = Some(record.id.toString.take(9)), deviceType = Some(record.deviceType.toString)),
+            ),
+          ),
+        )
       yield Response.json(passkeyView(record.id, record.name, record.backedUp, record.lastUsedAt, record.createdAt).toJson)
     }
 
@@ -149,7 +194,7 @@ object AccountSettingsController extends Controller:
     ZIO.serviceWithZIO[OAuthConfigurationService] { service =>
       service.accountResourceSecrets.flatMap:
         case Nil => ZIO.fail(Unauthorized)
-        case secrets => authorizeBasic(request, secrets)
+        case secrets => authorizeBasic(request, secrets) *> noteUserAgent(request)
     }
 
   private def parseAndValidatePasskeyTicket(

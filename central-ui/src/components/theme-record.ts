@@ -7,7 +7,7 @@ import { createTheme, deleteTheme as deleteThemeRequest, renderTheme, updateThem
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { confirmDiscardDraft } from '../utils/draft-guard';
 import { dispatchRecordRoute } from '../utils/record-route';
-import { buildPreviewSrcdoc, localeNamesOf } from '../utils/preview';
+import { buildPreviewSrcdoc, localeNamesOf, PREVIEW_SANDBOX } from '../utils/preview';
 import { joinNames, overrideKeys, presetHint, tokenLongName, unsavedNames, type ThemeEditState } from '../utils/theme-summary';
 import { PAGE_BG_VARIABLE, describe, groupTitle, isHexColour, pixels, trimmed, valueProblem, variableByName, type ThemeVariable, type ThemeVariableCatalog, type VariableValue } from '../utils/theme-variables';
 import { pickScenario, renderScenarioControl } from './preview-scenarios';
@@ -924,7 +924,7 @@ export class VersolaThemeRecord extends LitElement {
             </div>`}
         </div>
         ${this.renderError ? html`<p class="render-error" role="alert">${this.renderError}. The preview shows the last version that rendered.</p>` : nothing}
-        ${forms.length === 0 ? nothing : html`<iframe class="preview-iframe" title="Preview" .srcdoc=${this.previewSrcdoc()} sandbox="allow-same-origin allow-scripts"></iframe>`}
+        ${forms.length === 0 ? nothing : html`<iframe class="preview-iframe" title="Preview" .srcdoc=${this.previewSrcdoc()} sandbox=${PREVIEW_SANDBOX}></iframe>`}
         <div slot="note">Rendered by central from the values and the custom CSS as you change them. The width is the phone a client's users most likely hold.</div>
       </versola-preview-pane>`;
   }

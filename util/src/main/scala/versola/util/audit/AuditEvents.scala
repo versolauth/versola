@@ -175,12 +175,22 @@ object AuditEvents:
           // The size is read before the offer so that a request that had to wait is counted, whether or not it got room in time.
           queue.size.flatMap: size =>
             ZIO.when(size >= sizing.queueCapacity)(AuditMetrics.blocked(source)) *>
-              queue.offer(event).timeout(settings.blockTimeout).map(Right(_)).raceFirst(closing.await.as(Left(()))).flatMap:
+              waitForRoom(event).flatMap:
                 case Right(Some(_)) => AuditMetrics.recorded(source, event, catalog)
                 case Right(None) if bestEffort => AuditMetrics.dropped(source) *> report.noteAll(EventReport.WaitedForRoom, List(event))
                 case Right(None) => AuditMetrics.unavailable(source) *> ZIO.fail(AuditUnavailable)
                 case Left(_) if bestEffort => AuditMetrics.dropped(source) *> report.noteAll(EventReport.AfterStop, List(event))
                 case Left(_) => AuditMetrics.unavailable(source) *> ZIO.fail(AuditUnavailable)
+
+    /** The offer of `event`, for up to `blockTimeout` or until the service begins to stop. It runs in a daemon fiber of its own (a child
+      * would be interrupted along with a caller whose interruption is only deferred by its region), interruptible whatever the caller's region, so that the timeout can end it: a caller that hands its record over inside `ZIO.uninterruptible`
+      * (so that a client's disconnect cannot cancel it) would otherwise wait for room for ever, since neither `timeout` nor `raceFirst`
+      * can interrupt what runs in the caller's region. The caller waits for the fiber, which ends by its own bounds; a caller that can
+      * be interrupted is interrupted there, and takes the fiber with it before it returns, so that no event is queued after it. */
+    private def waitForRoom(event: AuditEvent): UIO[Either[Unit, Option[Boolean]]] =
+      ZIO.interruptible(
+        queue.offer(event).timeout(settings.blockTimeout).map(Right(_)).raceFirst(closing.await.as(Left(()))),
+      ).forkDaemon.flatMap(fiber => fiber.join.onInterrupt(fiber.interrupt))
 
     /** The event of a draft: ids and time, then the request's context, from [[AuditContext]] first and the `auth` log context
       * second, for what the draft does not say. */

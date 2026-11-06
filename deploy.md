@@ -473,6 +473,18 @@ dump and the rollback is lost. With extra replicas of `auth` or `edge`, remove t
 unfinished `versola rollout` is undone with `versola rollout --abort` instead; secrets the new
 version added stay in OpenBao either way.
 
+#### Behaviour change: edge refuses a resource path whose segments a resource could read differently
+
+A call to `/resources/{resourceId}/{path}` whose path has a segment that is a separator once decoded (`%2F`, `%5C`, a raw `\`), a
+control character, a dot segment in any encoding (`..;x` too) or one that is only a dot segment after another round of decoding is
+answered `404`, like a path no endpoint registers, after the caller has been authenticated. Before, an encoded slash was counted as
+two segments when the endpoint was chosen and sent as one, so the endpoint a permission was checked for could differ from the one the
+resource routed to.
+
+- **Who can notice.** A resource whose identifiers legitimately contain `/` or `\` in a path segment (an id such as `a/b` sent as
+  `a%2Fb`). Such an id has to be carried in a query parameter or the body. Ids with a dot, a space, `;` or `%` inside are unaffected.
+- **No setting, no migration.** Nothing is stored; a rollback restores the old matching.
+
 #### Behaviour change: edge binds a login to the browser that began it (login CSRF on `/complete`)
 
 `/login/{presetId}` now sets an `EDGE_LOGIN_<state>` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`, `Path` =
@@ -491,6 +503,17 @@ the secret, in `pending_logins.browser_binding_hash` (migration `V2008`, nullabl
   (a script, a load generator without a cookie jar), now gets `400` on `/complete`.
 - The native flow (`/native/*`) never used the pending login and is unaffected.
 
+#### Behaviour change: a one-time code is good for 10 minutes after it was sent
+
+A code used to be accepted for as long as its sign-in lived (`authConversationTtlSeconds` of the tenant, 15 minutes by default, more where
+raised), however long ago it was sent. It is now accepted for 10 minutes from the moment it was sent (a resend starts a new count), and
+the sign-in's own expiry still applies. After that the right code is answered like a wrong one and the user asks for a new one. The comparison
+no longer stops at the first digit that differs. The 10 minutes is fixed, not a setting.
+
+- **Migration.** None: no schema or setting; the code is still kept in the sign-in as before. A sign-in in progress at the upgrade whose code
+  was sent more than 10 minutes ago needs a new code.
+- **What to check.** A tenant whose conversation TTL is below 10 minutes is unaffected; one above it now has the shorter limit for codes.
+
 #### Breaking change (2026-10-25): the access log is set per edge in central, not by environment
 
 `HTTP_ACCESS_LOG`, `HTTP_ACCESS_LOG_SLOW_MS` and `HTTP_ACCESS_LOG_SAMPLE_RATE` are no longer read by any service; a value left
@@ -504,6 +527,41 @@ in a compose file or a Helm `env` block is ignored. See [Access log](#access-log
   upgrading if you want the lines back.
 - Schema: migration `V1028` adds the nullable `edges.access_log_policy` column; additive, the previous release runs on it.
   `LOG_LEVEL` is unchanged.
+
+#### Behaviour change: `auth` keeps its own list of revoked access tokens (migration `V0032`)
+
+`auth` stores no access tokens, but it now stores what was revoked, in the new `auth_revocations` table, and refuses
+a revoked access token at `/userinfo` and `/introspect` (#729). Before, a revoked token was reported to the client's
+`back_channel_logout_uri` and nowhere else: `/introspect` answered `active: true` until `exp` and `/userinfo` kept
+serving it, and a client without that URI heard nothing at all. A row is written in the same transaction as what
+causes it: a client's `/revoke` (of an access token: `jti`; of a refresh token: the whole refresh-token family), an
+authorization code or refresh token replayed (the family), a logout, an administrator ending a session or forgetting
+a device, the user ending one of their sessions (the session), a user deleted or signed out everywhere (the user,
+bounded at that instant, so a login afterwards works). A row lives for one access token lifetime of the longest-lived
+client, then the cleanup manager removes it (`auth_revocations`, hourly, in the generated `cleanup` block). Password change,
+role change and `DELETE /users/refresh-tokens` do not write one yet.
+
+- **Migration.** Additive (one new table, an index pair, a trigger), so the previous release keeps serving on the new
+  schema and a rollback works; the old release ignores the table. Everything it creates at database level is
+  prefixed `auth_` (table, indexes, trigger, function and the `auth_revocation` notification channel), because `edge` has
+  a `revocations` table and a `revocation` channel of its own and a setup that runs the services in one schema (the
+  generated dev configs, the e2e stack) would otherwise collide. Nothing to backfill: tokens revoked before the upgrade
+  are not in it and stay valid until `exp`.
+- **Behaviour you will see.** `/introspect` returns `{"active": false}` and `/userinfo` returns `401 invalid_token` for
+  a revoked token. A revocation reaches each replica by `LISTEN`/`NOTIFY`, normally within a second; the replica
+  reconciles with the table every `revocation.reload-interval` as a backstop. The `revocation` block of the config is
+  optional: `reload-interval` (600 seconds), `purge-interval` (60 seconds), `overlap` (30 seconds), `batch-size` (50000).
+  Metrics: `revocation_cache_entries`, `revocation_cache_staleness_seconds`, `revocation_cache_reload_failures_total`.
+- **Startup.** A replica loads the whole list before it serves and does not start if it cannot, and it now holds a
+  connection parked on `LISTEN` like `central` and `edge` do: behind a pooler in transaction mode `auth` needs
+  `postgres.notifications-url` (see [Behind a connection pooler](#run_migrations)). `auth` refuses to start, naming that
+  setting, when it cannot receive its own notification.
+- **Back channel.** The signed `versola:event:access-token-revocation` event still goes to `back_channel_logout_uri`,
+  now through the retrying outbox instead of a single attempt. Delivery stays best effort; the table is the record.
+- **`/revoke` changes.** The check that a token belongs to the calling client is now an exact comparison of client ids.
+  Revoking a refresh token now ends its whole family, not only the presented row.
+- Components that verify a JWT on its signature alone (a resource server without `edge`, without introspection and
+  without the event) still accept a revoked token until `exp`.
 
 #### Behaviour change: edge syncs through `/edge/sync/*`, on central's mutual-TLS port
 
@@ -664,6 +722,11 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   is lost (users mid-login start over, unused codes are rejected and the client retries); sessions,
   tokens, consents and users are unaffected. Flipping a table's logging mode takes an
   `ACCESS EXCLUSIVE` lock and rewrites it: run such a migration at low traffic.
+- **Revocations** (`auth_revocations`, `V0032`). The list of access tokens `auth` refuses before their `exp`: one row per revoked
+  token, refresh-token family, session or user, with an expiry of one access token lifetime. It is small by construction, the
+  last few minutes of revocations rather than a history. `revoked_at` is stamped with the database's clock, and the pair
+  `(revoked_at, revoked_key)` is the cursor every replica resumes its reconciliation from. Rows are collected by the cleanup
+  manager once `expires_at` has passed.
 - **Configuration snapshots.** `auth` and `edge` keep the last configuration sync from `central`
   (signed with a key the node already holds) and start from it when `central` is unreachable or
   failing, retrying in the background and reporting `config_snapshot_age_seconds`. The tables fill on
@@ -677,6 +740,56 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   select it as the tenant's signing key (tenant security settings, "Signing key"). Every verifier
   learns the new key before anything signs with it; keep the old key published until tokens issued
   under it have expired.
+
+- **Central's audit log.** `central_audit_event` (V1034) holds what administrators did through central's API (`admin.<resource>.<operation>`,
+  a look at a user, a query of the audit report, every response that hands a secret back) and what bootstrap created
+  (`system.bootstrap`). It is partitioned by day like the antifraud event log, and the service keeps the partitions: it creates
+  14 days ahead and drops a day once the whole day is older than `audit.retention`. Dropping a partition is the retention; nothing is
+  vacuumed. A row whose day had no partition lands in `central_audit_event_default`; those rows are **never moved** into the day's partition
+  (an insert-only logical replication of the table would see them twice), a day that has rows in the default is not attached and
+  central reports it (`audit_events_in_default`), and the rows leave the default when they age out of the retention. A trigger
+  refuses `UPDATE`, `DELETE` and `TRUNCATE` unless the transaction sets `versola.audit_maintenance` to `on`, which only
+  central's own prune of the default partition does. Creating and dropping partitions needs the role central connects as to own the
+  table (or be a member of the owner); otherwise central logs that the partitions are not maintained and `audit_partition_owner_mismatch`
+  is set. Long-term keeping is the operator's logical replication of `central_audit_event` (a publication with `publish_via_partition_root = true`
+  and `publish = 'insert'`, an unpartitioned table on the subscriber; the publisher needs PostgreSQL 13 or later).
+  The `audit` block of central's `env.conf` is optional, every key has a default, and a deployment that sets none records admin actions
+  for 7 days:
+
+  ```hocon
+  audit {
+    retention     = "7 days"      # 1 to 14 days, any other value stops the start; about 37 GB a day per 1 000 events a second (see below)
+    overflow      = "drop"        # drop | block: what a full writer queue does to an event (drop does not wait, block waits up to block-timeout for room)
+    block-timeout = "2 seconds"
+    events { admin-user-viewed = true }   # whether a look at a user (GET /users) is an event: the one read that is many
+  }
+  ```
+
+  **Disk.** `audit.retention` is from 1 to 14 days, and central refuses to start with another value. A row is about 430 bytes on disk,
+  indexes included, so at 1 000 events a second the log takes about 37 GB a day: about 260 GB for 7 days and about 520 GB for 14 days;
+  at 100 events a second a tenth of that. Events a second equal requests a second only if every request records an event, and
+  `audit.events.admin-user-viewed` changes that. The per-user report asks auth, which keeps its log as long, for the same window. This is a
+  design estimate, to be replaced with the figure measured under load.
+
+  A call that reaches central without the query parameters edge adds (`actorId`, `actorTenantId`, `actorClientId`, `actorSessionId`) is
+  not refused: it is recorded as made by a `service` with no id, and counted in `audit_actor_missing_total{reason}` (an alert is in
+  `dashboards/alerts/versola-audit-central.rules.yaml`). Edge adds them to every admin route since this release, and central's
+  bootstrap brings the registrations of the existing `central` resource up to date at start (it adds those inject rules to endpoints
+  an earlier release registered, removes the header rules an earlier form of this feature registered, and leaves what an operator added
+  alone); until edge has synced them, admin actions are recorded without an actor. Edge's sync is the refresh interval (5 minutes by
+  default).
+
+  The `ip` of an `admin.*` row is empty: the address of the administrator's browser is not passed on to central yet, so an empty `ip`
+  there means "not recorded", not an unknown source. The log is the hot window of 7 days; keeping it as the record of what was done
+  needs the replication described above.
+
+  `audit:read` is not tenant-scoped, like `users:read`: a holder reads the report of any user.
+
+  Where an action is made in auth (sessions, refresh tokens, passkeys, passwords, claims, limits, the antifraud settings), central records
+  its outcome and auth records its effect; the two rows carry the same trace id. The per-user report shows both as they are. A report
+  served without auth's part is counted in `audit_report_partial_total{reason}`. A page holds at most `limit` events of the two logs together
+  (100 by default), and its `nextCursor` is the key of its last event; the changes administrators made, in the summary of the first page, are
+  bounded at 100 and `truncated: true` says when they were more.
 
 - **Antifraud configuration.** Each antifraud key has exactly one home. What is tuned during an attack (the mode,
   thresholds, weights, limits, the SMS budget's limits, the proof-of-work difficulty, shadow rules) is stored settings,
@@ -934,6 +1047,94 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `dashboards/alerts/README.md` says; both use metrics that exist only from the release that added them. What to alert on
   is in the Antifraud rollout playbook (`antifraud/rollout`).
 
+- **Audit log (`auth_audit_event`, migration `V0031`; #469).** `auth` records every authentication, token, consent,
+  account, antifraud administration and refused certificate enrolment event (the kinds are the closed vocabulary `AuthAuditKinds` of `auth`; the per-user report
+  reads them through `central`) into `auth_audit_event`, partitioned by day like `af_event` and maintained by the service
+  the same way (today and 14 days ahead, at start-up and every hour; a day older than `audit.retention` is dropped,
+  which is the retention: nothing is deleted row by row except from the default partition). Its keys are the `audit`
+  block of `auth`'s `env.conf`, **every key required**, written by `scripts/gen-env.scala` (a config written before
+  the block existed makes `auth` refuse to start naming the missing key, as for `antifraud`):
+
+  ```hocon
+  audit {
+    retention     = "7 days"      # the hot window, 1 to 14 days, any other value stops the start; the long-term copy is the replication below
+    overflow      = "drop"        # drop: an event that finds no room in the writer's queue is counted in audit_events_dropped_total
+                                  #   and the request goes on;
+                                  # block: the event waits up to block-timeout for room first, then it is counted as dropped
+                                  #   (the request goes on in both cases)
+    block-timeout = "2 seconds"
+    events { token-refresh = false, authorize-success = true, par-success = true }   # the high-volume kinds; refusals, reuse detection and failures are always recorded
+  }
+  ```
+
+  **What the trigger covers.** `auth_audit_event_immutable` is a row trigger on the table and every partition, and a
+  `BEFORE TRUNCATE` statement trigger on the parent table. It refuses an `UPDATE` or `DELETE` of a row of any partition and a
+  `TRUNCATE` of `auth_audit_event` itself unless the transaction has set `versola.audit_maintenance = 'on'`. A `TRUNCATE` of a
+  single partition is not covered (a statement trigger of a partitioned table is not cloned to its partitions). The
+  service's own prune of the default partition sets the mark; an operator who must delete (a legal erasure) sets it the
+  same way, `SET LOCAL`, in the transaction. Any session can set it, and the table's owner can drop the trigger or a
+  partition. Dropping a partition is DDL and is not refused. A row of a day that had no partition goes to `auth_audit_event_default`
+  and stays there (it is never moved into the day's partition, unlike the antifraud log, because the replication
+  below is insert-only and a move is a delete and an insert): the gauge `audit_events_in_default` counts such days,
+  the day gets no partition while they are there, and they leave with the retention. The owner of the table must be
+  the service's role, as for `af_event` (`audit_partition_owner_mismatch`).
+
+  **Disk.** A row is about 430 bytes on disk, indexes included, so at 1 000 events a second `auth_audit_event` takes about 37 GB a day:
+  about 260 GB for the 7 days of the default and about 520 GB for the 14 days that are the most `audit.retention` takes; at 100 events a
+  second a tenth of that. Events a second equal requests a second only if every request writes an event: `audit.events.token-refresh`
+  (off by default), `authorize-success` and `par-success` are what changes it. This is a design estimate, to be replaced with the figure
+  measured under load.
+
+  **Facts to plan for.** The hot window is 7 days (`audit.retention`) unless you change it. A replication slot that is
+  not read keeps the WAL it has not sent on the primary's disk until the slot is read or dropped; the alert
+  `AuditReplicationSlotRetainsWal` watches the WAL each slot holds back (there is no metric of whether the subscription
+  exists). `auth_audit_event.at` is the clock of the node that records the event, so the nodes need synchronised clocks (NTP
+  or the cloud's time service), and the per-user report compares its window with the clock of the node that serves it.
+  `auth` reads the report of one user for at most 4 requests at once; another waits up to 2 seconds for its turn and is
+  answered `503` with `Retry-After: 1` and the code `audit_report_busy`.
+
+  **What is recorded, and how often.** Refusals reachable without signing in (`client.auth_failed`, `token.refused`, a
+  failed `authorize.request`, a refused `par.request`) are counted in memory per (kind, client, address, reason) and written
+  as one row a minute with `details.count`; the table of keys holds at most 10 000, past which new keys are counted
+  together in one more row. The `token.issued` of a refresh-token grant is off by default (`events.token-refresh = false`); `token.refused` and
+  `token.reuse_detected` are always recorded. `PUT /users` records `account.updated` (actor `service`, `details.changed`
+  names `email`, `phone` or `login` and never a value, only when one changed); `DELETE /users` ends the user's sessions with
+  `session.ended` and the cause `user_deleted`.
+
+  **Long-term storage is your logical replication** of `auth_audit_event` to another database, which the hot window's
+  drops never reach. PostgreSQL 13 or later on both sides (`publish_via_partition_root` is 13+; the minimum of this
+  schema otherwise stays 12). On the source:
+
+  ```sql
+  CREATE PUBLICATION versola_audit FOR TABLE auth_audit_event WITH (publish = 'insert', publish_via_partition_root = true);
+  ```
+
+  On the subscriber, an **unpartitioned** table of the same name and columns (the same `CREATE TABLE` without `PARTITION BY`
+  and with the primary key `(id, at)`, no trigger needed: nothing but the subscription writes it), then
+  `CREATE SUBSCRIPTION ... PUBLICATION versola_audit`. `publish = 'insert'` means a drop of a day on the source
+  (`DETACH` and `DROP` of the partition, which is not replicated) leaves the subscriber's rows in place, and the
+  prune of the default partition is a `DELETE` that is not published either. The subscriber's retention and access
+  control are the operator's.
+
+  **Metrics and alerts** (`source` label `auth`; `central` writes its own table, `central_audit_event`, with the same metric names):
+  `audit_events_total{source,kind,outcome}`, `audit_events_dropped_total`, `audit_events_blocked_total` (requests
+  that waited for room), `audit_events_failed_total` (best-effort inserts that failed), `audit_queue_size`,
+  `audit_partitions_ahead`, `audit_events_in_default`, `audit_partition_owner_mismatch`, `audit_events_unavailable_total`
+  (`central`'s requests refused with 503 `audit_unavailable`; `auth` does not refuse a request for it) and `audit_events_rejected_total`
+  (events the database refused one by one; a text with U+0000 and an address that is none are cleaned before the insert, so this
+  stays at zero) and `audit_events_failed_total`. The alert rules are `dashboards/alerts/versola-audit.rules.yaml`
+  (`AuditEventsDropped`, `AuditEventsRejected`, `AuditEventsFailed`, `AuditEventsUnavailable`, `AuditQueueHigh`, `AuditEventsBlocked`,
+  `AuditPartitionsRunningOut`, `AuditEventsInDefault`, `AuditPartitionOwnerMismatch`, `AuditReplicationSlotRetainsWal`), loaded like the antifraud ones. **The rows are personal data** (an address, a user agent, a user id): the hot window and the replica's
+  retention must not exceed what you promise for such data; deleting a user does not delete their events.
+
+  The per-user report shows the country of an address (a `country` on an event and on an entry of `ips`, and a `countries` list in the summary) only when `antifraud.geo` is configured; it is looked up when the report is read and is not stored. With no database loaded the field is absent. The database's attribution requirement is described with `antifraud.geo`.
+
+  Central reads auth's rows through two internal endpoints (`GET /users/audit-events` and `GET /users/audit-summary`, the user the query parameter `id` as for the other `/users` routes,
+  authenticated with the service token like `/users/*`; not public, not in the OpenAPI specs), and tells auth which
+  administrator acts with the optional `actorId` of the call it makes for one (a query parameter of a `GET` or `DELETE`, a field of the
+  body of a `POST`, `PUT` or `PATCH`; the antifraud calls carry the administrator as `userId`); a call without it is recorded
+  as the `central` service's.
+
 The Helm chart (`k8s/versola`) does the same and migrates with a Job on every install and upgrade
 (`migrations.*`); see [`k8s/README.md` §5](k8s/README.md#5-applying-migrations).
 
@@ -1049,7 +1250,7 @@ records query parameters only if listed in `logQuery`. Auth does not keep the ra
 holds its hash. The one exception is a client that requires **PAR** or a signed request object (JAR):
 there the token travels inside the pushed or signed request, and `pushed_authorization_requests`
 holds it until the request is consumed or expires. Without `first-login-url` no token is issued. The
-migration `V0031` adds the `one_time_links` table; the `cleanup.tables` entry for it is written by
+migration `V0033` adds the `one_time_links` table; the `cleanup.tables` entry for it is written by
 `gen-env` into a newly generated `auth.conf`, an existing one needs it added by hand (without it an
 expired row just stays until the next bootstrap, a password change or a purge replaces it).
 
@@ -1696,13 +1897,19 @@ The access log has no variables: auth and central always log every request, and 
 Everything else — secrets, keys, database credentials, bootstrap data — is in the HOCON file and
 OpenBao, not in environment variables.
 
+**`env`** in the HOCON file names the environment. `prod`, and any name ending in it (`eu-prod`, what
+`versola configure vps` writes from `ENV_NAME`, default `prod`), is production. **Any other name is a test
+environment**: one-time codes are fixed and not delivered, an admin's password reset can show the password,
+`/service/` is served and Postgres TLS need not verify. Nothing warns about the name, so a deployment that
+serves users is named for what it is, never `qa`, `k8s` or a misspelling.
+
 <a id="run_migrations"></a>
 **`RUN_MIGRATIONS`**: unset → migrations do not run; the service *validates* the schema and fails to
 start if migrations are missing (applying them is the separate `versola migrate` step). `true` /
 `false` (lowercase) → as specified. Anything else → the service fails to start, deliberately. The
 generated `compose.yml` sets `"false"` on all three services.
 
-**Behind a connection pooler.** `central` and `edge` keep a connection parked on `LISTEN` (that is
+**Behind a connection pooler.** `central`, `edge` and, since `V0032`, `auth` keep a connection parked on `LISTEN` (that is
 how config changes and token revocations reach every replica). A pooler in transaction mode cannot
 carry it, so when `postgres.url` points at one, set `postgres.notifications-url` to a **direct**
 Postgres URL in the same block. Each service checks at startup that it receives its own
@@ -1737,6 +1944,18 @@ notification and refuses to start, naming this setting, if it cannot.
     or an address that is not valid) fails the sync. A running `auth` keeps what it has and logs a warning; an `auth` that
     starts while such a block is saved fails to start, also on a deployment that sends through `auth.conf` only. Correct or
     remove the record in the console (or `DELETE /configuration/delivery-settings`) and start it again.
+  - An SMTP block with `startTls` on now **requires** the upgrade and verifies the server's certificate against
+    `host`: a server that does not offer STARTTLS, or whose certificate is not for its name or not signed by a CA
+    the JVM trusts, is refused and nothing is sent in clear. Before, the session quietly went on without TLS.
+  - Every HTTPS call the services make themselves (the SMS provider, a relying party's back-channel logout URI, the
+    ASN/geo range databases) now trusts the JVM's trust store, as any HTTPS client does; before, any certificate was
+    accepted. The CAs the image ships cover a public certificate. A private CA goes into the trust store:
+    mount it and pass `JAVA_TOOL_OPTIONS=-Djavax.net.ssl.trustStore=/path/truststore.p12 -Djavax.net.ssl.trustStorePassword=…`
+    to the service, or bake it into the image with `keytool -importcert -cacerts`. A refused peer shows as
+    `PKIX path building failed` in the `send-http` line. Edge's calls to central pin a certificate and are not
+    affected; its calls to auth over `versola-internal-url` use the `versola-internal-trusted-certificates` pin
+    when it is set (as `gen-env` writes for a terminator) and the trust store otherwise, so an `https` internal
+    URL with a private certificate and no pin needs either the pin or the trust store entry.
 - **`central` has one replica.** `auth` and `edge` can run several (`versola replica add`), and
   `versola rollout` moves all three without an outage when the release is compatible (see
   [Without stopping](#without-stopping-versola-rollout)); an incompatible release still means the short

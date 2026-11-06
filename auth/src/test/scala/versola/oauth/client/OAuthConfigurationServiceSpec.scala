@@ -418,7 +418,8 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       yield assertTrue(result == OtpSettings.default)
     },
     test("getSubmissionLimits returns limits from challenge settings for known client") {
-      val limits = SubmissionLimits(banDurationSeconds = 30, otpRequest = Nil, otpSubmit = Nil, passwordSubmit = Nil, passkeyAssertion = Nil)
+      val limits =
+        SubmissionLimits(banDurationSeconds = 30, otpRequest = Nil, otpSubmit = Nil, passwordSubmit = Nil, passkeyAssertion = Nil, stepUp = None)
       for
         env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(submissionLimits = limits)))
         result <- env.getSubmissionLimits(clientId1)

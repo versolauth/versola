@@ -25,7 +25,7 @@ case class ConversationCookie(
     responseMode: Option[ResponseMode],
     /** Superseded by [[responseMode]]. Only cookies issued by an earlier release still carry
       * it, and only until they expire; nothing writes it. */
-    useFragment: Option[Boolean] = None,
+    useFragment: Option[Boolean],
 ) derives JsonCodec:
 
   /** The mode the response is returned in, falling back to what a cookie from before

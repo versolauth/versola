@@ -127,6 +127,12 @@ object AuthorizeEndpointService:
                       missingUser = MissingUserBehavior.Fallback,
                     )
               case None =>
+                // The hint identifies the user but verifies nothing (OIDC Core §3.1.2.1 calls it a hint; its
+                // expiry is not even checked). Skipping the credential card on its strength is sound only when
+                // a required factor is still asked after the card: a flow that takes its password on the card
+                // and asks no further factor would otherwise finish the moment it was created, with nobody
+                // authenticated -- a code for any user whose ID token was ever leaked. The card is shown then,
+                // as for a re-authentication below.
                 createConversation(
                   authId,
                   request,
@@ -134,7 +140,7 @@ object AuthorizeEndpointService:
                   registrationAvailable,
                   uiLocales,
                   Map.empty,
-                  knownUserId = Some(userId),
+                  knownUserId = Some(userId).filter(_ => leavesSomethingToVerify(flow)),
                   missingUser = MissingUserBehavior.Fallback,
                 )
 
@@ -152,9 +158,9 @@ object AuthorizeEndpointService:
                 // does not tell a guesser whether a token ever existed. Only reached with no session and no
                 // id_token_hint: a browser that is already signed in, or one that names a user, is never turned
                 // into someone else by a query parameter.
-                passwordRepository.consumeLink(OneTimeLink.hash(token)).flatMap:
+                passwordRepository.consumeLink(OneTimeLink.hash(token), accepted = Set(OneTimeLinkPurpose.FirstLogin)).flatMap:
                   case None => ordinaryLogin
-                  // A new purpose is a new case here.
+                  // A purpose is accepted here only together with its case: add both.
                   case Some(ConsumedLink(userId, OneTimeLinkPurpose.FirstLogin)) =>
                     createConversation(
                       authId,
@@ -236,8 +242,6 @@ object AuthorizeEndpointService:
                       // was created -- a re-authentication in which nobody authenticated, and a
                       // /challenge that then finds no conversation (ConversationExpired). In that case
                       // the card is shown again, as for any login.
-                      val leavesSomethingToVerify = flow.primary.factors.exists: factor =>
-                        factor.required && PassedAuthFactor.fromFactorType(factor.`type`).isDefined
                       createConversation(
                         authId,
                         request,
@@ -250,7 +254,7 @@ object AuthorizeEndpointService:
                         // would identify them and, for a flow with no factor after the card, finish
                         // the login without anything having verified them.
                         applyHint = false,
-                        knownUserId = targetUserId.filter(_ => leavesSomethingToVerify),
+                        knownUserId = targetUserId.filter(_ => leavesSomethingToVerify(flow)),
                         missingUser = reauthMissingUser,
                         priorSessionId = Some(id),
                         priorSessionUserId = Some(session.userId),
@@ -564,6 +568,13 @@ object AuthorizeEndpointService:
           signature = signingKey,
         )
       yield Some(token)
+
+    /** Whether a user the conversation already knows (from a session or an `id_token_hint`) is still verified by
+      * something once the credential card is skipped: a required factor the flow asks after the card.
+      */
+    private def leavesSomethingToVerify(flow: AuthFlow): Boolean =
+      flow.primary.factors.exists: factor =>
+        factor.required && PassedAuthFactor.fromFactorType(factor.`type`).isDefined
 
     private def extractHintSub(request: AuthorizeRequest): Task[Option[UserId]] =
       request.idTokenHint match

@@ -1,11 +1,11 @@
 package versola.central.configuration.jwks
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.JWT
-import versola.util.http.Controller
-import zio.http.{Method, Request, Response, Routes, Status, handler}
+import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec}
 import zio.{Task, ZIO}
@@ -26,10 +26,10 @@ import zio.{Task, ZIO}
   *     carrying the encrypted private halves it signs with. An edge token is refused on
   *     every `/configuration` route (#554), so edge is never sent key material it cannot need.
   */
-object JwksController extends Controller:
+object JwksController extends AuditedController:
   type Env = Tracing & JwksService & CentralConfig & EdgeService & ResourceService
 
-  def routes: Routes[Env, Throwable] = Routes(
+  def endpoints = List(
     getJwksEndpoint,
     listKeysEndpoint,
     createJwkEndpoint,
@@ -41,7 +41,7 @@ object JwksController extends Controller:
   )
 
   val getJwksEndpoint =
-    Method.GET / "configuration" / "jwks" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "jwks").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[JwksService]
@@ -50,7 +50,7 @@ object JwksController extends Controller:
     }
 
   val listKeysEndpoint =
-    Method.GET / "configuration" / "jwks" / "keys" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "jwks" / "keys").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[JwksService]
@@ -62,47 +62,50 @@ object JwksController extends Controller:
     * published under. `HS256` is refused by the service -- a shared secret is not a JWKS key.
     */
   val generateKeyEndpoint =
-    Method.POST / "configuration" / "jwks" / "generate" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[JwksService]
-        algorithm <- request.url.queryZIO[JWT.Algorithm]("alg")
-        response <- service.generateKey(algorithm)
-          .map(kid => Response.json(GeneratedKey(kid, algorithm.toString).toJson).status(Status.Created))
-          .catchSome { case error: JwksService.Error =>
-            ZIO.succeed(Response.text(error.message).status(Status.BadRequest))
-          }
-      yield response
+    (Method.POST / "configuration" / "jwks" / "generate").audited(Audit.change("jwks", Audit.action("generate"))) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          service <- ZIO.service[JwksService]
+          algorithm <- request.url.queryZIO[JWT.Algorithm]("alg")
+          response <- service.generateKey(algorithm)
+            .tap(kid => Audit.targetByText(kid))
+            .map(kid => Response.json(GeneratedKey(kid, algorithm.toString).toJson).status(Status.Created))
+            .catchSome { case error: JwksService.Error =>
+              ZIO.succeed(Response.text(error.message).status(Status.BadRequest))
+            }
+        yield response
     }
 
   val createJwkEndpoint =
-    Method.POST / "configuration" / "jwks" -> handler { (request: Request) =>
+    (Method.POST / "configuration" / "jwks").audited(Audit.change("jwks", Audit.create)) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[JwksService]
         response <- withValidJwk(request)((kid, jwk) =>
-          service.createKey(kid, jwk).as(Response.status(Status.Created)),
+          Audit.targetByText(kid) *> service.createKey(kid, jwk).as(Response.status(Status.Created)),
         )
       yield response
     }
 
   val updateJwkEndpoint =
-    Method.PUT / "configuration" / "jwks" -> handler { (request: Request) =>
+    (Method.PUT / "configuration" / "jwks").audited(Audit.change("jwks", Audit.update)) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[JwksService]
         response <- withValidJwk(request)((kid, jwk) =>
-          service.updateKey(kid, jwk).as(Response.status(Status.NoContent)),
+          Audit.targetByText(kid) *> service.updateKey(kid, jwk).as(Response.status(Status.NoContent)),
         )
       yield response
     }
 
   val deleteJwkEndpoint =
-    Method.DELETE / "configuration" / "jwks" -> handler { (request: Request) =>
+    (Method.DELETE / "configuration" / "jwks").audited(Audit.change("jwks", Audit.delete)) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[JwksService]
         kid <- request.url.queryZIO[String]("kid")
+        _ <- Audit.targetByText(kid)
         // A key a tenant still signs with is refused, not a server error: the operator has
         // to move that tenant to another key first.
         response <- service.deleteKey(kid)
@@ -114,7 +117,7 @@ object JwksController extends Controller:
     }
 
   val getJwksSyncEndpoint =
-    Method.GET / "configuration" / "jwks" / "sync" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "jwks" / "sync").audited(Audit.Internal) -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
         service <- ZIO.service[JwksService]
@@ -126,7 +129,7 @@ object JwksController extends Controller:
     * one, and it has no use for a private key. What it never receives, it cannot leak.
     */
   val getSigningKeysSyncEndpoint =
-    Method.GET / "configuration" / "jwks" / "signing-keys" / "sync" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "jwks" / "signing-keys" / "sync").audited(Audit.Internal) -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
         service <- ZIO.service[JwksService]

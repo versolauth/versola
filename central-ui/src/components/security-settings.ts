@@ -3,7 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, iconButtonStyles, recordStyles, tagStyles } from '../styles/components';
 import type {
-  ChallengeSettingsChanges, ChallengeSettingsRecord, EmailRegistration, EmailRegistrationMode, JwksKeySummary, MtlsCertificateEncoding, PasskeySettings, PhoneRegion, RateLimit, Role, SecurityProfile, SubmissionLimits,
+  ChallengeSettingsChanges, ChallengeSettingsRecord, EmailRegistration, EmailRegistrationMode, JwksKeySummary, MtlsCertificateEncoding, PasskeySettings, PhoneRegion, RateLimit, Role, SecurityProfile, StepUpLimits, SubmissionLimits,
 } from '../types';
 import { fetchChallengeSettings, fetchJwksKeys, getRoles, patchChallengeSettings, upsertChallengeSettings } from '../utils/central-api';
 import { confirmDiscardDraft } from '../utils/draft-guard';
@@ -51,12 +51,14 @@ const MTLS_PRESETS: Array<{ value: string; header: string; encoding: MtlsCertifi
   { value: 'nginx', header: 'ssl-client-cert', encoding: 'urlEncodedPem', label: 'ssl-client-cert (nginx / ingress-nginx)' },
   { value: 'traefik', header: 'X-Forwarded-Tls-Client-Cert', encoding: 'base64Der', label: 'X-Forwarded-Tls-Client-Cert (Traefik)' },
 ];
-const LIMIT_ACTIONS: Array<{ id: keyof Omit<SubmissionLimits, 'banDurationSeconds'>; label: string }> = [
+const LIMIT_ACTIONS: Array<{ id: keyof Omit<StepUpLimits, 'banDurationSeconds'>; label: string }> = [
   { id: 'otpRequest', label: 'OTP request' },
   { id: 'otpSubmit', label: 'OTP submit' },
   { id: 'passwordSubmit', label: 'Password submit' },
   { id: 'passkeyAssertion', label: 'Passkey assertion' },
 ];
+/** "Step-up passkey assertion", "Step-up OTP request": the action's label after a prefix, its first word lower-cased unless it is an acronym. */
+const afterPrefix = (label: string) => label.startsWith('OTP') ? label : label.charAt(0).toLowerCase() + label.slice(1);
 const ACR_FACTORS = ['otp', 'password', 'passkey'] as const;
 
 /** What a tenant that has never saved settings gets: the values central applies on its own. */
@@ -656,6 +658,8 @@ export class VersolaSecuritySettings extends LitElement {
     this.acrRows = Object.entries(draft.acrVocabulary ?? {}).map(([acr, factors]) => ({ key: ++this.entryKey, acr, factors: [...factors] }));
     this.mtlsEnabled = draft.mtlsCertificateHeader != null;
     this.idleEnabled = draft.sessionIdleTtlSeconds != null;
+    // Step-up has limits of its own, always. A tenant that never set them follows sign-in until now, so the editor starts from its values.
+    draft.submissionLimits.stepUp ??= this.stepUpFrom(draft.submissionLimits);
     this.durations = {
       otpResendAfter: splitDuration(draft.otpResendAfter),
       authConversationTtlSeconds: splitDuration(draft.authConversationTtlSeconds),
@@ -663,6 +667,7 @@ export class VersolaSecuritySettings extends LitElement {
       sessionIdleTtlSeconds: splitDuration(draft.sessionIdleTtlSeconds ?? 7200),
       userAgentTtlSeconds: splitDuration(draft.userAgentTtlSeconds),
       banDurationSeconds: splitDuration(draft.submissionLimits.banDurationSeconds),
+      stepUpBanDurationSeconds: splitDuration((draft.submissionLimits.stepUp ?? draft.submissionLimits).banDurationSeconds),
       clientAssertionMaxLifetimeSeconds: splitDuration(draft.clientAssertionMaxLifetimeSeconds ?? 300),
     };
     this.fieldErrors = {};
@@ -796,11 +801,19 @@ export class VersolaSecuritySettings extends LitElement {
         break;
       }
       case 'limits': {
-        const limits = draft.submissionLimits;
-        for (const action of LIMIT_ACTIONS) {
-          if (limits[action.id].some(limit => limit.maxAttempts < 1 || limit.windowSeconds < 1)) errors[action.id] = 'Attempts and the window are at least 1.';
+        const { stepUp, ...signIn } = draft.submissionLimits;
+        const invalid = (limits: StepUpLimits, prefix: string) => {
+          for (const action of LIMIT_ACTIONS) {
+            if (limits[action.id].some(limit => limit.maxAttempts < 1 || limit.windowSeconds < 1)) errors[`${prefix}${action.id}`] = 'Attempts and the window are at least 1.';
+          }
+        };
+        invalid(signIn, '');
+        const submissionLimits: SubmissionLimits = { ...signIn, banDurationSeconds: this.seconds('banDurationSeconds') };
+        if (stepUp) {
+          invalid(stepUp, 'stepUp-');
+          submissionLimits.stepUp = { ...stepUp, banDurationSeconds: this.seconds('stepUpBanDurationSeconds') };
         }
-        changes.submissionLimits = { ...limits, banDurationSeconds: this.seconds('banDurationSeconds') };
+        changes.submissionLimits = submissionLimits;
         break;
       }
       case 'branding': {
@@ -875,6 +888,8 @@ export class VersolaSecuritySettings extends LitElement {
     const signupRegions = settings.phoneRegions.filter(region => region.registration).map(region => region.region);
     const signingKey = settings.signingKeyId ? this.keys.find(key => key.kid === settings.signingKeyId) : null;
     const limits = settings.submissionLimits;
+    // A tenant that never set step-up limits is throttled by its sign-in ones, so that is what the card reads.
+    const stepUp = limits.stepUp ?? limits;
     return html`
       ${this.card('methods', 'Which identifiers a user may sign in with on this tenant.', html`
         ${this.row('Phone numbers', settings.phoneRegions.length ? html`
@@ -946,6 +961,10 @@ export class VersolaSecuritySettings extends LitElement {
           ? limits[action.id].map((limit, index) => html`${index ? ', ' : ''}${limit.maxAttempts} per ${formatDurationShort(limit.windowSeconds)}`)
           : html`<span class="muted">No limit</span>`))}
         ${this.row('Ban duration', limits.banDurationSeconds > 0 ? this.duration(limits.banDurationSeconds) : html`<span class="muted">No ban</span>`)}
+        ${LIMIT_ACTIONS.map(action => this.row(`Step-up ${afterPrefix(action.label)}`, stepUp[action.id].length
+          ? stepUp[action.id].map((limit, index) => html`${index ? ', ' : ''}${limit.maxAttempts} per ${formatDurationShort(limit.windowSeconds)}`)
+          : html`<span class="muted">No limit</span>`))}
+        ${this.row('Step-up ban duration', stepUp.banDurationSeconds > 0 ? this.duration(stepUp.banDurationSeconds) : html`<span class="muted">No ban</span>`)}
       `)}
 
       <versola-record-card id="profile" heading="Security profile" fixedLabel="Fixed" .body=${html`
@@ -1364,30 +1383,52 @@ export class VersolaSecuritySettings extends LitElement {
     `;
   }
 
-  private renderLimitsEditor() {
-    const limits = this.draft!.submissionLimits;
-    const setLimits = (changes: Partial<SubmissionLimits>) => this.patch({ submissionLimits: { ...limits, ...changes } });
+  /** The windows of one scope: the sign-in ones, or the step-up ones when they are separate. */
+  private renderLimitWindows(scope: 'signIn' | 'stepUp') {
+    const prefix = scope === 'stepUp' ? 'stepUp-' : '';
+    const title = (label: string) => scope === 'stepUp' ? `Step-up ${afterPrefix(label)}` : label;
+    const limits = (scope === 'stepUp' ? this.draft!.submissionLimits.stepUp! : this.draft!.submissionLimits) as StepUpLimits;
+    const setLimits = (changes: Partial<StepUpLimits>) => this.patch({
+      submissionLimits: scope === 'stepUp'
+        ? { ...this.draft!.submissionLimits, stepUp: { ...limits, ...changes } }
+        : { ...this.draft!.submissionLimits, ...changes },
+    });
     return html`
       ${LIMIT_ACTIONS.map(action => html`
         <div class="editor-box">
-          <h3>${action.label}</h3>
+          <h3>${title(action.label)}</h3>
           <p class="editor-sub">Windows of attempts; only the longest one triggers a ban, the others are immediate rate limits.</p>
           ${limits[action.id].map((limit: RateLimit, index: number) => html`
             <div class="limit-row">
-              <input type="number" class="compact-input" min="1" aria-label=${`${action.label} max attempts`} .value=${String(limit.maxAttempts)}
+              <input type="number" class="compact-input" min="1" aria-label=${`${title(action.label)} max attempts`} .value=${String(limit.maxAttempts)}
                 @input=${(e: Event) => setLimits({ [action.id]: limits[action.id].map((other, i) => i === index ? { ...other, maxAttempts: parseInt((e.target as HTMLInputElement).value) || 0 } : other) })} />
-              <input type="number" class="compact-input" min="1" aria-label=${`${action.label} window in seconds`} .value=${String(limit.windowSeconds)}
+              <input type="number" class="compact-input" min="1" aria-label=${`${title(action.label)} window in seconds`} .value=${String(limit.windowSeconds)}
                 @input=${(e: Event) => setLimits({ [action.id]: limits[action.id].map((other, i) => i === index ? { ...other, windowSeconds: parseInt((e.target as HTMLInputElement).value) || 0 } : other) })} />
-              <span class="hint" style="margin: 0">per ${formatDurationShort(limit.windowSeconds)} <button type="button" class="icon-button" aria-label=${`Remove ${action.label} window ${index + 1}`} title="Remove"
+              <span class="hint" style="margin: 0">per ${formatDurationShort(limit.windowSeconds)} <button type="button" class="icon-button" aria-label=${`Remove ${title(action.label)} window ${index + 1}`} title="Remove"
                 @click=${() => setLimits({ [action.id]: limits[action.id].filter((_, i) => i !== index) })}>${statusIcon('x', 'icon')}</button></span>
             </div>`)}
-          ${this.error(action.id)}
+          ${this.error(`${prefix}${action.id}`)}
           <button type="button" class="btn btn-secondary btn-sm" @click=${() => setLimits({ [action.id]: [...limits[action.id], { maxAttempts: 5, windowSeconds: 60 }] })}>+ Add window</button>
         </div>`)}
       <div class="editor-box">
-        <h3>Ban</h3>
-        ${this.durationInput('banDurationSeconds', 'Ban duration', 'How long a user is banned after exceeding the longest window; 0 bans nobody.')}
+        <h3>${scope === 'stepUp' ? 'Step-up ban' : 'Ban'}</h3>
+        ${this.durationInput(scope === 'stepUp' ? 'stepUpBanDurationSeconds' : 'banDurationSeconds', 'Ban duration', 'How long a user is banned after exceeding the longest window; 0 bans nobody.')}
       </div>
+    `;
+  }
+
+  private stepUpFrom({ otpRequest, otpSubmit, passwordSubmit, passkeyAssertion, banDurationSeconds }: StepUpLimits): StepUpLimits {
+    return structuredClone({ otpRequest, otpSubmit, passwordSubmit, passkeyAssertion, banDurationSeconds });
+  }
+
+  private renderLimitsEditor() {
+    return html`
+      ${this.renderLimitWindows('signIn')}
+      <div class="editor-box">
+        <h3>Step-up</h3>
+        <p class="editor-sub">A step-up asks a signed-in user to prove a stronger factor. Its attempts are counted apart from sign-in and use the limits below, so a ban on one never bans the other.</p>
+      </div>
+      ${this.renderLimitWindows('stepUp')}
     `;
   }
 

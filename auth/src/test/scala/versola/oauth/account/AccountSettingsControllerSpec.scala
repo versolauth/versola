@@ -1,6 +1,7 @@
 package versola.oauth.account
 
 import org.scalamock.stubs.Stub
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
 import versola.auth.model.{CredentialId, PasskeyName, PasskeyRecord}
 import versola.oauth.challenge.passkey.{PasskeyCeremony, PasskeyRepository, WebAuthnError, WebAuthnService}
@@ -8,10 +9,12 @@ import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PasskeySettings}
 import versola.oauth.conversation.ConversationRenderService
+import versola.oauth.revocation.RevocationCause
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionUnderUserAgent}
 import versola.user.UserRepository
 import versola.user.model.UserId
+import versola.util.audit.{AuditDraft, AuditEvents}
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.{Base64, Secret, UnitSpecBase}
 import zio.*
@@ -150,6 +153,8 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
       callerSessionId: PublicSessionId = ownSessionId,
       resourceSecrets: List[Secret] = List(accountResourceSecret),
       callerSecret: Secret = accountResourceSecret,
+      verifyAudit: List[AuditDraft] => TestResult = _ => assertCompletes,
+      auditEvents: CapturingAuditEvents = CapturingAuditEvents.shared(),
   ) =
     test(description) {
       for
@@ -187,6 +192,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
                   ZEnvironment(passwordService) ++
                   ZEnvironment(accountSettingsService) ++
                   ZEnvironment(TestEnvConfig.coreConfig) ++
+                  ZEnvironment[AuditEvents](auditEvents) ++
                   tracing,
               ),
           ),
@@ -197,7 +203,8 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         routedRequest <- if authenticate then withCaller(request, userId, callerSessionId, callerSecret) else ZIO.succeed(request)
         response <- httpClient.batched(routedRequest)
         verifyResult <- verify(response, stubs)
-      yield assertTrue(response.status == expectedStatus) && verifyResult
+        drafts <- auditEvents.recorded
+      yield assertTrue(response.status == expectedStatus) && verifyResult && verifyAudit(drafts)
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   val spec = suite("AccountSettingsController")(
@@ -303,9 +310,16 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           sessionService.invalidateForUser.succeedsWith(true),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
-            stubs._2.invalidateForUser.calls == List((otherDeviceSession.publicId, userId)),
+            stubs._2.invalidateForUser.calls == List((otherDeviceSession.publicId, userId, RevocationCause.UserRevoked)),
             stubs._2.listByUser.calls.isEmpty,
           )),
+        // session.ended by the user themself: the subject is the caller, and the cause says it was their own doing
+        verifyAudit = drafts =>
+          assertTrue(
+            drafts.map(_.kind) == List(AuthAuditKinds.SessionEnded),
+            drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
+            drafts.head.details == AuthAuditDetails.SessionEnded(cause = "user_revoked", clients = 0),
+          ),
       ),
       // `sid` leaks into RP logs and front-channel logout URLs, so knowing one must not be
       // enough to end that session.
@@ -321,9 +335,11 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           sessionService.invalidateForUser.succeedsWith(false),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
-            stubs._2.invalidateForUser.calls == List((foreignSessionId, userId)),
+            stubs._2.invalidateForUser.calls == List((foreignSessionId, userId, RevocationCause.UserRevoked)),
             stubs._2.listByUser.calls.isEmpty,
           )),
+        // nothing was ended, so nothing is said to have been
+        verifyAudit = drafts => assertTrue(drafts.isEmpty),
       ),
     ),
     suite("POST /settings/passkeys/register/start")(
@@ -391,6 +407,13 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
             stubs._3.deleteByUser.calls.map((id, user) => (Base64.urlEncode(id), user)) ==
               List((Base64.urlEncode(passkeyId), userId)),
           )),
+        verifyAudit = drafts =>
+          assertTrue(
+            drafts.map(_.kind) == List(AuthAuditKinds.AccountPasskeyRemoved),
+            drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
+            // a prefix of the credential id, enough to tell passkeys apart and not the id
+            !drafts.head.details.toJson.toString.contains(Base64.urlEncode(passkeyId)),
+          ),
       ),
       controllerTestCase(
         description = "completes enrollment and returns the created passkey",
@@ -409,6 +432,15 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
               List((clientId, userId, Some(PasskeyName("My device")))),
             obj.fields.exists((key, value) => key == "id" && value == Json.Str(Base64.urlEncode(passkeyId))),
           ),
+        verifyAudit = drafts =>
+          assertTrue(
+            drafts.map(_.kind) == List(AuthAuditKinds.AccountPasskeyEnrolled),
+            drafts.head.userId == Some(userId.asInstanceOf[java.util.UUID]),
+            drafts.head.details == AuthAuditDetails.Passkey(
+              credentialPrefix = Some(passkey.id.toString.take(9)),
+              deviceType = Some(passkey.deviceType.toString),
+            ),
+          ),
       ),
       controllerTestCase(
         description = "maps a failed enrollment ceremony to BadRequest",
@@ -421,6 +453,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           webAuthnService.finishRegistration.failsWith(WebAuthnError.CeremonyFailed("verification failed")),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(stubs._4.finishRegistration.calls.nonEmpty)),
+        verifyAudit = drafts => assertTrue(drafts.isEmpty),
       ),
       controllerTestCase(
         description = "requires a non-empty passkey name for enrollment",

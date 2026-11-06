@@ -16,7 +16,7 @@ case class ResourceEndpoint(
     stepUpAcr: Option[String],
     maxAge: Option[Int],
     /** A limit on how often this endpoint is called, applied at R3 together with the edge's own policies. */
-    rateLimit: Option[DeclaredRateLimit] = None,
+    rateLimit: Option[DeclaredRateLimit],
 ) derives JsonCodec:
   /** The registered route, never the concrete path: what R3 keys its buckets on and what a limit declared here is found by. */
   def template(resourceId: ResourceId): String = s"$method /resources/$resourceId$path"

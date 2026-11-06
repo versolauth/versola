@@ -294,6 +294,17 @@ cp .local/env/"$TARGET"/edge.conf    "$OUT_DIR"/edge.conf
 rm -f "$OUT_DIR"/secrets.schema.json
 cp .local/env/"$TARGET"/secrets.schema.json "$OUT_DIR"/secrets.schema.json
 
+# The compatibility manifest (versolauth/versola#823), both targets: one entry per release, each saying
+# from which running versions that release can be rolled to without stopping (`rollingFrom`) and from
+# which there is no way in at all (`freshDatabaseFrom`). versola-cli reads the entry of the version it
+# is deploying instead of asking the operator for --assume-compatible; a version with no entry, or one
+# in neither list, is "unknown" and keeps today's behaviour (so a test build, whose VERSION is no
+# release, claims nothing). Copied as it is: CI keeps the file well-formed and its newest entry equal
+# to the release tag (.github/scripts/check-release-manifest.sh). The rm first: a reused OUT_DIR must
+# not keep a stale copy.
+rm -f "$OUT_DIR"/release.json
+cp release.json "$OUT_DIR"/release.json
+
 # Bake this image's own version (and IMAGE_REGISTRY, validated above) into the compose fragment so
 # it pulls the matching auth/central/edge/gateway images. sed instead of envsubst: fewer
 # assumptions about what's installed in the base image, and there are no
@@ -389,7 +400,7 @@ cp -R central-ui "$OUT_DIR"/central-ui
 if [ "$TARGET" != "vps" ]; then
   cp nginx.conf.template "$OUT_DIR"/nginx.conf
   cp proxy_params.conf.template "$OUT_DIR"/proxy_params.conf
-  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, secrets.schema.json, compose.fragment.yml, nginx.conf, proxy_params.conf, openbao.hcl, central-ui/ to $OUT_DIR"
+  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, secrets.schema.json, release.json, compose.fragment.yml, nginx.conf, proxy_params.conf, openbao.hcl, central-ui/ to $OUT_DIR"
 else
-  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, secrets.schema.json, compose.fragment.yml, openbao.hcl, mtls-init.sh, step-ca-intermediates.sh, central-ui/ to $OUT_DIR"
+  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, secrets.schema.json, release.json, compose.fragment.yml, openbao.hcl, mtls-init.sh, step-ca-intermediates.sh, central-ui/ to $OUT_DIR"
 fi

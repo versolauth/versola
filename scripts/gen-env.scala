@@ -1173,8 +1173,8 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   // versolauth/versola#176: "vps is not an env ... if you need
   // customization, you need a separate param").
   //
-  // VersolaApp.envName (see util/http/VersolaApp.scala) treats exactly
-  // one string, "prod", as EnvName.Prod; every other value becomes
+  // EnvName.parse (see util/EnvName.scala) treats "prod" and every name
+  // ending in it as EnvName.Prod; every other value becomes
   // EnvName.Test(value), which gates test-only behavior (e.g.
   // deterministic OTP codes instead of real delivery, per
   // BootstrapService.adminAuthFactors/adminPhone) that must never run
@@ -1185,14 +1185,24 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   // ENV_NAME instead of hardcoding "prod": entrypoint.sh's caller
   // (versola-cli, non-interactively) sets that explicitly, so it's a
   // param this script is handed, not one it guesses from target -- see
-  // versola-cli's pullAndRunTools for where that's set. Everything else
-  // (isLocal, and real interactive deployments where a human just types
-  // the name at the prompt above) keeps using target verbatim, same as
-  // always -- typing "prod" here still works exactly like it did before
-  // vps existed as a non-interactive target.
+  // versola-cli's pullAndRunTools for where that's set. k8s is a target
+  // too, not an environment (the chart deploys a production as readily as
+  // a campaign stand), so it asks, defaulting to production: writing the
+  // target's name here used to turn every k8s deployment into a test
+  // environment with fixed one-time codes. Everything else (isLocal, and
+  // real interactive deployments where a human just types the name at the
+  // prompt above) keeps using target verbatim, same as always -- typing
+  // "prod" here still works exactly like it did before vps existed as a
+  // non-interactive target.
   val env =
     if isDockerLocal then "docker-local"
     else if isVps then sys.env.getOrElse("ENV_NAME", "prod")
+    else if isKubernetes then
+      prompt(
+        "  Environment name (a name ending in \"prod\" is production, anything else a test environment with fixed one-time codes) [prod]: ",
+        "prod",
+        flag = "env",
+      )
     else target
   // Every secret field this script generates becomes a `${VAR}` HOCON
   // placeholder (resolved via OpenBao by versola-cli) in both
@@ -1944,6 +1954,25 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |  max-request-size = 8192
        |}
        |
+       |# Audit log (deploy.md, "Audit log"): the hot window of `auth_audit_event` (a day older than `retention` is dropped; the
+       |# long-term copy is the operator's logical replication), what recording an event does when the writer's queue is full
+       |# (`drop`: the event is not queued and is counted in audit_events_dropped_total; `block`: it waits up to `block-timeout` for
+       |# room and then is not queued and is counted), and the high-volume kinds that may be switched off. All keys are required.
+       |# `retention` is from 1 to 14 days; any other value stops the start. What it stores: about 430 bytes an event on disk, indexes
+       |# included, so at 1 000 events a second about 37 GB a day, about 260 GB for 7 days and about 520 GB for 14 days; at 100 events a
+       |# second a tenth of that. Events a second equal requests a second only if every request records an event: `events` (`token-refresh`
+       |# is off by default) is what changes it. A design estimate, to be replaced with the figure measured under load.
+       |audit {
+       |  retention     = "7 days"      # 1 to 14 days
+       |  overflow      = "drop"           # drop | block
+       |  block-timeout = "2 seconds"
+       |  events {
+       |    token-refresh     = false      # token.issued for the refresh_token grant
+       |    authorize-success = true       # authorize.request that succeeded (failures are always recorded)
+       |    par-success       = true       # par.request that succeeded (failures are always recorded)
+       |  }
+       |}
+       |
        |# Antifraud (deploy.md, "Antifraud configuration"): the switches, the retention that bounds how long personal data is
        |# kept, and the intervals. All keys are required, except the `asn` and `geo` blocks, which a config written before they existed
        |# may leave out. Everything is off: thresholds, weights and limits are not here,
@@ -2046,6 +2075,12 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |      table-name = "auth_conversations"
        |      batch-size = 1000
        |      interval   = "5 minutes"
+       |    }
+       |    {
+       |      table-name = "auth_revocations"
+       |      batch-size = 1000
+       |      interval   = "1 hour"
+       |      key-column = "revoked_key"
        |    }
        |    {
        |      table-name = "authorization_codes"

@@ -62,17 +62,17 @@ object FirstLoginLinkSpec extends ZIOSpec[EdgeApi & OAuthClient]:
         finally connection.close()
     yield result
 
-  /** Stores the token for the bootstrap admin, replacing any row it has (one per user), and removes it when the test is
-    * over, whether or not the link was opened. */
+  /** Stores the token for the bootstrap admin and removes it when the test is over, whether or not the link was
+    * opened. A plain insert: if the admin already holds a `first_login` link (a stack that was just bootstrapped and
+    * is not a throwaway one) the insert fails and the real link is left alone, instead of being replaced and then
+    * deleted. */
   private def issued(login: String, token: String): ZIO[Scope, Throwable, Unit] =
     val hash = MessageDigest.getInstance("SHA-256").digest(token.getBytes(StandardCharsets.UTF_8))
     val store = database { connection =>
       val now = Instant.now()
       val statement = connection.prepareStatement(
         """INSERT INTO one_time_links (user_id, purpose, token_hash, created_at, expires_at)
-          |SELECT id, 'first_login', ?, ?, ? FROM users WHERE login = ?
-          |ON CONFLICT (user_id, purpose) DO UPDATE
-          |  SET token_hash = EXCLUDED.token_hash, created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at""".stripMargin,
+          |SELECT id, 'first_login', ?, ?, ? FROM users WHERE login = ?""".stripMargin,
       ).nn
       try
         statement.setBytes(1, hash)

@@ -8,7 +8,7 @@ import org.scalamock.stubs.ZIOStubs
 import versola.edge.dpop.{DpopPolicyService, DpopReplayGuard, DpopVerifier}
 import versola.edge.login.LoginRepository
 import versola.edge.model.*
-import versola.edge.revocation.{RevocationKey, TokenRevocationService}
+import versola.edge.revocation.TokenRevocationService
 import versola.util.cel.CelEvaluator
 import versola.util.http.{
   Checkpoint,
@@ -24,6 +24,7 @@ import versola.util.http.{
   RateLimitWindow,
   RateLimiter,
 }
+import versola.util.revocation.RevocationKey
 import versola.util.{
   DpopNonce,
   EcKeyPair,
@@ -87,14 +88,20 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))),
     permissions = Set.empty,
     accessTokenTtl = 15.minutes,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
     applicationType = ApplicationType.web,
+    redirectUris = Set.empty,
   )
   private val svcClient = OAuthClient(
     id = ClientId("svc-1"),
     credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(3.toByte))),
     permissions = Set.empty,
     accessTokenTtl = 15.minutes,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
     applicationType = ApplicationType.web,
+    redirectUris = Set.empty,
   )
 
   /** A client that authenticates by certificate (RFC 8705 §2), which is what makes the tokens
@@ -419,6 +426,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = stepUpCondition,
       stepUpAcr = stepUpAcr,
       maxAge = maxAge,
+      rateLimit = None,
     )
 
   private def userByIdEndpoint(allow: Option[String] = None, inject: Vector[InjectRule] = Vector.empty) =
@@ -432,6 +440,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = None,
       stepUpAcr = None,
       maxAge = None,
+      rateLimit = None,
     )
 
   private def currentUserEndpoint(inject: Vector[InjectRule] = Vector.empty) =
@@ -445,6 +454,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = None,
       stepUpAcr = None,
       maxAge = None,
+      rateLimit = None,
     )
 
   private def tenantOrderEndpoint(allow: Option[String] = None, inject: Vector[InjectRule] = Vector.empty) =
@@ -458,6 +468,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = None,
       stepUpAcr = None,
       maxAge = None,
+      rateLimit = None,
     )
 
   private def createUserEndpoint(
@@ -476,6 +487,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = stepUpCondition,
       stepUpAcr = stepUpAcr,
       maxAge = None,
+      rateLimit = None,
     )
 
   private def usersResource(endpoints: ResourceEndpoint*): Resource = usersResourceNamed(ResourceId("users-api"), endpoints*)
@@ -494,6 +506,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = None,
       stepUpAcr = None,
       maxAge = None,
+      rateLimit = None,
     )
 
   private val centralResourceSecret = Secret(Array.fill(48)(2.toByte))
@@ -524,6 +537,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       stepUpCondition = None,
       stepUpAcr = None,
       maxAge = None,
+      rateLimit = None,
     )
 
   /** The "auth" alias proxies Account Settings to auth's additional listener. Like "central" it is
@@ -1438,6 +1452,63 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         upstream.exists(_.headers.get("x-tenant").contains("acme")),
         upstream.exists(_.headers.get("x-order").contains("123")),
       )
+    },
+    // A segment is decoded before the route hands it over: an encoded slash would add a segment to what is matched while the resource is
+    // sent one segment fewer, so the endpoint the permissions were checked for is not the one it routes to.
+    test("refuses a path whose segment holds a separator, so the segments matched are the segments sent") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(tenantOrderEndpoint(), userByIdEndpoint()))
+        token <- env.signToken()
+        service = env.buildService(client, security)
+        responses <- ZIO.foreach(
+          List(
+            Path.root / "tenants" / "acme/orders" / "123",
+            Path.root / "tenants" / "acme\\orders" / "123",
+            Path.root / "tenants" / "acme%2Forders" / "123",
+            Path.root / "users" / "..;x",
+            Path.root / "users" / "%2e%2e",
+            Path.root / "users" / "a\u0000b",
+          ),
+        ): path =>
+          service.proxy(ResourceId("users-api"), path, Request.get(URL.empty).addCookie(sessionCookie(token)))
+        upstream <- capture.get
+      yield assertTrue(responses.forall(_.status == Status.NotFound), upstream.isEmpty)
+    },
+    test("answers a caller without a valid token 401 for a path it refuses, like any other path") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(userByIdEndpoint()))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.root / "users" / "a/b", Request.get(URL.empty))
+      yield assertTrue(response.status == Status.Unauthorized)
+    },
+    test("still matches a segment that merely contains a dot, a space or a semicolon") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(userByIdEndpoint(inject =
+          Vector(InjectRule(InjectTarget.header, "x-resource-id", "request.path.params.id")),
+        )))
+        token <- env.signToken()
+        service = env.buildService(client, security)
+        response <- service.proxy(
+          ResourceId("users-api"),
+          Path.root / "users" / "a.b c;d",
+          Request.get(URL.empty).addCookie(sessionCookie(token)),
+        )
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.Ok, upstream.exists(_.headers.get("x-resource-id").contains("a.b c;d")))
     },
     test("reports the registered template, not the concrete path, as the metric route") {
       val env = new Env
@@ -2783,7 +2854,10 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
         permissions = Set.empty,
         accessTokenTtl = 15.minutes,
+        requireSignedRequestObject = false,
+        requirePushedAuthorizationRequests = false,
         applicationType = ApplicationType.web,
+        redirectUris = Set.empty,
       )
       for
         _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
@@ -2819,7 +2893,10 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
         permissions = Set.empty,
         accessTokenTtl = 15.minutes,
+        requireSignedRequestObject = false,
+        requirePushedAuthorizationRequests = false,
         applicationType = ApplicationType.web,
+        redirectUris = Set.empty,
       )
       for
         _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
@@ -2855,7 +2932,10 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
         permissions = Set.empty,
         accessTokenTtl = 15.minutes,
+        requireSignedRequestObject = false,
+        requirePushedAuthorizationRequests = false,
         applicationType = ApplicationType.web,
+        redirectUris = Set.empty,
       )
       for
         _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)

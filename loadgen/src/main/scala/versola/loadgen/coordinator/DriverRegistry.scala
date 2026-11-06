@@ -108,9 +108,9 @@ object CarriedTotals:
 final case class DriverObservation(
     latest: DriverReport,
     previous: Option[DriverReport],
-    carried: CarriedTotals = CarriedTotals.empty,
-    peakCpu: Option[Double] = None,
-    peakScheduleLagMicros: Option[Long] = None,
+    carried: CarriedTotals,
+    peakCpu: Option[Double],
+    peakScheduleLagMicros: Option[Long],
 ):
   /** The worst readings this driver has reported so far, `report` included. A campaign is judged on its worst
     * moment, not on the last report: a driver that saturated for a minute (and drove the failures with it) is idle again
@@ -181,10 +181,16 @@ final class DriverRegistry private (
           // in. `previous` is cleared with them, so the achieved rate re-baselines on the next
           // report rather than differencing two different processes' counters.
           case Some(existing) if restarted(existing.latest, report) =>
-            current.updated(report.driverId, existing.copy(latest = report, previous = None, carried = existing.carried.plus(existing.latest)).peaks(report))
+            current.updated(
+              report.driverId,
+              existing.copy(latest = report, previous = None, carried = existing.carried.plus(existing.latest)).peaks(report),
+            )
           case Some(existing) =>
             current.updated(report.driverId, existing.copy(latest = report, previous = Some(existing.latest)).peaks(report))
-          case None => current.updated(report.driverId, DriverObservation(report, None).peaks(report))
+          case None => current.updated(
+              report.driverId,
+              DriverObservation(report, None, carried = CarriedTotals.empty, peakCpu = None, peakScheduleLagMicros = None).peaks(report),
+            )
 
   def view(now: Instant, epoch: Long): UIO[FleetView] =
     observations.get.map: current =>

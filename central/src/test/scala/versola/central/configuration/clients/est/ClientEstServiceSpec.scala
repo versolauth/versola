@@ -7,11 +7,13 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.bouncycastle.pkcs.PKCS10CertificationRequest
 import org.bouncycastle.pkcs.jcajce.{JcaPKCS10CertificationRequest, JcaPKCS10CertificationRequestBuilder}
 import org.scalamock.stubs.ZIOStubs
+import versola.central.audit.{CentralAudit, RecordedAudit}
 import versola.central.configuration.CreateClientRequest
 import versola.central.configuration.clients.*
 import versola.central.configuration.clients.certificates.{CertificateSigningRequest, ClientCertificateIssuer, ClientCertificateRequests}
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestCentralConfig}
+import versola.util.audit.ActorType
 import versola.util.{CertificateSubject, SecureRandom, TestCertificates}
 import zio.*
 import zio.test.*
@@ -199,6 +201,7 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
       renewWindow: Double = 1.0,
   ):
     val repository = InMemoryEst()
+    val audit = RecordedAudit.unsafe
     repository.enabled = enabled.map(_ -> registeredAt).toMap
     val clientService = stub[OAuthClientService]
     val service: URIO[SecureRandom, ClientEstService] =
@@ -206,7 +209,7 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- clientService.findClient.returnsZIO(id => ZIO.succeed(clients.find(_.id == id)))
         _ <- clientService.getAllClients.succeedsWith(clients.toVector)
         random <- ZIO.service[SecureRandom]
-      yield ClientEstService.Impl(repository, clientService, issuer, random, config(autoExtend, renewWindow))
+      yield ClientEstService.Impl(repository, clientService, issuer, random, config(autoExtend, renewWindow), audit)
 
   private def keyPair(algorithm: String = "EC", size: Int = 2048): KeyPair =
     val generator = KeyPairGenerator.getInstance(algorithm)
@@ -276,6 +279,23 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           env.repository.chains.contains(clientId),
           identity.chainEndsAt.isDefined,
           !states(clientId).pending,
+        )
+      },
+      test("an enrolment records cert.enrolled by the client, and a refused one records nothing") {
+        val env = Env()
+        for
+          _ <- realTime
+          service <- env.service
+          issued <- service.issueEnrollmentToken(clientId)
+          _ <- service.enroll("not-a-token", None, csr()).flip
+          none <- env.audit.drafts
+          _ <- service.enroll(issued.token, None, csr())
+          recorded <- env.audit.drafts
+        yield assertTrue(
+          none.isEmpty,
+          recorded.map(_.kind) == Vector(CentralAudit.CertEnrolled),
+          recorded.head.actor == Some((CentralAudit.Actors.Client, Some(clientId.toString))),
+          recorded.head.target == Some(("client", clientId.toString)),
         )
       },
       test("a token is good once") {
@@ -420,6 +440,26 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- TestClock.adjust(1.minute)
           again <- service.renew(first.chain, csr())
         yield assertTrue(again.chain.contains("BEGIN CERTIFICATE"))
+      },
+      test("a renewal records cert.renewed by the client, and a chain closed as forked records cert.revoked by the system") {
+        val env = Env()
+        for
+          _ <- realTime
+          service <- env.service
+          first <- enrol(env, service)
+          second <- service.renew(first.chain, csr())
+          afterRenewal <- env.audit.drafts
+          _ <- TestClock.adjust(ClientEstService.ForkGrace + 1.minute)
+          _ <- service.renew(first.chain, csr()).flip
+          _ <- service.renew(second.chain, csr()).flip
+          all <- env.audit.drafts
+        yield assertTrue(
+          afterRenewal.map(_.kind) == Vector(CentralAudit.CertEnrolled, CentralAudit.CertRenewed),
+          afterRenewal.last.actor == Some((CentralAudit.Actors.Client, Some(clientId.toString))),
+          // the refused renewals add the revocation and nothing else
+          all.map(_.kind) == Vector(CentralAudit.CertEnrolled, CentralAudit.CertRenewed, CentralAudit.CertRevoked),
+          all.last.actor == Some((ActorType.system, None)),
+        )
       },
       test("a certificate that was replaced and renews again after the grace closes the chain, for both holders of the key") {
         val env = Env()

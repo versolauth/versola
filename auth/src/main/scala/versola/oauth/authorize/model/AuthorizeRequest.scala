@@ -41,11 +41,10 @@ private[authorize] case class AuthorizeRequest(
       * code against. `None` when the parameter was absent, which leaves redemption open to
       * any key (or none). */
     dpopJkt: Option[String],
-    ip: Option[String] = None,
-    /** The one-time first-login token of the bootstrap admin (issue #824), as it came on the query string.
-      * A secret: it is spent in [[versola.oauth.authorize.AuthorizeEndpointService]] and kept nowhere else,
-      * not on the conversation. Absent, malformed or repeated, it is simply `None`: an unknown token must
-      * look like no token at all.
+    ip: Option[String],
+    /** The token of a one-time link (issue #824), as it came on the query string. A secret: it is spent in
+      * [[versola.oauth.authorize.AuthorizeEndpointService]] and kept nowhere else, not on the conversation.
+      * Absent, malformed or repeated, it is simply `None`: an unknown token must look like no token at all.
       */
     linkToken: Option[String] = None,
 ):

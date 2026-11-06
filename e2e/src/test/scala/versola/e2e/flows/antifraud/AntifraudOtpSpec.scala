@@ -93,7 +93,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
   private def seededOn(instances: List[AntifraudInstance], s: Flows.Setup)(entries: ListEntry*): Task[Unit] =
     val bits = UUID.randomUUID().getLeastSignificantBits
     val network = s"10.${(bits >>> 8) & 0xff}.${bits & 0xff}"
-    AntifraudFixture.seed(ListEntry("deny", "cidr", s"$network.0/24") :: entries.toList) *>
+    AntifraudFixture.seed(ListEntry("deny", "cidr", s"$network.0/24", expiresAt = None, shadow = false, phone = None) :: entries.toList) *>
       ZIO.foreachDiscard(instances): instance =>
         awaited(s"${instance.name} to reload the lists", timeout = 30.seconds, every = 500.millis)(
           attempt(instance, s, s"$network.${1 + scala.util.Random.nextInt(250)}").map(a =>
@@ -113,7 +113,14 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         central,
         // The probe entry goes last: a reload that sees it has every entry made before it, whereas one that falls between two
         // of the requests would show the probe's rule with the entries after it still missing.
-        entries.toList :+ ListEntry("deny", "cidr", s"$network.0/24", expiresAt = Some(java.time.Instant.now().plusSeconds(3600))),
+        entries.toList :+ ListEntry(
+          "deny",
+          "cidr",
+          s"$network.0/24",
+          expiresAt = Some(java.time.Instant.now().plusSeconds(3600)),
+          shadow = false,
+          phone = None,
+        ),
       )
       _ <- awaited("the lists to be reloaded", timeout = 30.seconds, every = 500.millis)(
         attempt(instance, s, s"$network.${1 + scala.util.Random.nextInt(250)}").map(a => Option.when(a.decision.rules.contains("deny_list:cidr"))(())),
@@ -180,7 +187,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         f <- ZIO.service[AntifraudFixture]
         s <- f.nextSetup
         ip = randomIp()
-        _ <- seededThroughApi(f.a, s)(ListEntry("deny", "ip", ip))
+        _ <- seededThroughApi(f.a, s)(ListEntry("deny", "ip", ip, expiresAt = None, shadow = false, phone = None))
         onA <- attempt(f.a, s, ip)
         onB <- awaited("instance B to reload the lists")(attempt(f.b, s, ip).map(a => Option.when(a.refused)(a)))
       yield assertTrue(
@@ -197,7 +204,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         f <- ZIO.service[AntifraudFixture]
         s <- f.nextSetup
         ip = randomIp()
-        _ <- seeded(f.a, s)(ListEntry("deny", "ip", ip))
+        _ <- seeded(f.a, s)(ListEntry("deny", "ip", ip, expiresAt = None, shadow = false, phone = None))
         onA <- attempt(f.a, s, ip)
         onB <- awaited("instance B to reload the lists")(attempt(f.b, s, ip).map(a => Option.when(a.refused)(a)))
       yield assertTrue(
@@ -212,7 +219,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         f <- ZIO.service[AntifraudFixture]
         s <- f.nextSetup
         ip = randomIp()
-        _ <- seeded(f.a, s)(ListEntry("fake", "ip", ip))
+        _ <- seeded(f.a, s)(ListEntry("fake", "ip", ip, expiresAt = None, shadow = false, phone = None))
         faked <- attempt(f.a, s, ip)
         control <- attempt(f.a, s, randomIp())
       yield assertTrue(
@@ -230,7 +237,10 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         f <- ZIO.service[AntifraudFixture]
         s <- f.nextSetup
         ip = randomIp()
-        _ <- seeded(f.a, s)(ListEntry("allow", "ip", ip), ListEntry("deny", "ip", ip))
+        _ <- seeded(f.a, s)(
+          ListEntry("allow", "ip", ip, expiresAt = None, shadow = false, phone = None),
+          ListEntry("deny", "ip", ip, expiresAt = None, shadow = false, phone = None),
+        )
         denied <- attempt(f.a, s, ip)
       yield assertTrue(
         denied.refused,
@@ -245,7 +255,10 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
       for
         f <- ZIO.service[AntifraudFixture]
         s <- f.nextSetup
-        _ <- seeded(f.a, s)(ListEntry("deny", "cidr", s"$network.0/24"), ListEntry("allow", "ip", s"$network.7"))
+        _ <- seeded(f.a, s)(
+          ListEntry("deny", "cidr", s"$network.0/24", expiresAt = None, shadow = false, phone = None),
+          ListEntry("allow", "ip", s"$network.7", expiresAt = None, shadow = false, phone = None),
+        )
         allowed <- attempt(f.a, s, s"$network.7")
         denied <- attempt(f.a, s, s"$network.8")
       yield assertTrue(
@@ -264,7 +277,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         s <- f.nextSetup
         ip = randomIp()
         until <- Clock.instant.map(_.plusSeconds(10))
-        _ <- seeded(f.a, s)(ListEntry("deny", "ip", ip, expiresAt = Some(until)))
+        _ <- seeded(f.a, s)(ListEntry("deny", "ip", ip, expiresAt = Some(until), shadow = false, phone = None))
         before <- attempt(f.a, s, ip)
         // The entry stays in the snapshot until the next reload, but the lookup ignores it once its time has passed.
         after <- awaited("the entry to expire", timeout = 40.seconds, every = 1.second)(
@@ -286,7 +299,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         f <- ZIO.service[AntifraudFixture]
         s <- f.nextSetup
         ip = randomIp()
-        _ <- seeded(f.a, s)(ListEntry("deny", "ip", ip, shadow = true))
+        _ <- seeded(f.a, s)(ListEntry("deny", "ip", ip, shadow = true, expiresAt = None, phone = None))
         shadowed <- attempt(f.a, s, ip)
       yield assertTrue(
         shadowed.answeredWithCodeStep,
@@ -348,7 +361,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         gone <- f.nextSetup
         result <- (for
           until <- Clock.instant.map(_.plusSeconds(120))
-          _ <- seeded(f.a, probe)(ListEntry("deny", "asn", AsnDatabase.HostingAsn.toString, expiresAt = Some(until)))
+          _ <- seeded(f.a, probe)(ListEntry("deny", "asn", AsnDatabase.HostingAsn.toString, expiresAt = Some(until), shadow = false, phone = None))
           denied <- attempt(f.a, s, hostingIp())
           onB <- awaited("instance B to reload the lists")(attempt(f.b, s, hostingIp()).map(a => Option.when(a.refused)(a)))
           carrier <- attempt(f.a, s, carrierIp())
@@ -416,7 +429,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         gone <- f.nextSetup
         result <- (for
           until <- Clock.instant.map(_.plusSeconds(120))
-          _ <- seeded(f.a, probe)(ListEntry("deny", "country", GeoDatabase.HostingCountry, expiresAt = Some(until)))
+          _ <- seeded(f.a, probe)(ListEntry("deny", "country", GeoDatabase.HostingCountry, expiresAt = Some(until), shadow = false, phone = None))
           denied <- attempt(f.a, s, hostingIp())
           onB <- awaited("instance B to reload the lists")(attempt(f.b, s, hostingIp()).map(a => Option.when(a.refused)(a)))
           carrier <- attempt(f.a, s, carrierIp())
@@ -454,7 +467,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         s <- f.nextSetup
         // a watch entry on a network of its own: 20 by default, which is a challenge at the fixture's challengeAt (15).
         // Both instances answer before the change, so both must have the entry first.
-        _ <- seededOn(List(f.a, f.b), s)(ListEntry("watch", "cidr", s"$network.0/24"))
+        _ <- seededOn(List(f.a, f.b), s)(ListEntry("watch", "cidr", s"$network.0/24", expiresAt = None, shadow = false, phone = None))
         read <- operator.get("/antifraud/settings")
         etag <- ZIO.fromOption(read.response.headers.get("ETag")).orElseFail(RuntimeException("no ETag on the read"))
         json <- read.obj
@@ -594,7 +607,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         f <- ZIO.service[AntifraudFixture]
         s <- f.nextSetup
         ip = randomIp()
-        _ <- seeded(f.a, s)(ListEntry("watch", "ip", ip))
+        _ <- seeded(f.a, s)(ListEntry("watch", "ip", ip, expiresAt = None, shadow = false, phone = None))
         auth = f.a.auth
         authorize <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
         cookie = authorize.conversationCookie.get
@@ -628,7 +641,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         f <- ZIO.service[AntifraudFixture]
         s <- f.nextSetup
         ip = randomIp()
-        _ <- seeded(f.a, s)(ListEntry("watch", "ip", ip))
+        _ <- seeded(f.a, s)(ListEntry("watch", "ip", ip, expiresAt = None, shadow = false, phone = None))
         auth = f.a.auth
         authorize <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
         cookie = authorize.conversationCookie.get
@@ -660,7 +673,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         // a number of their own, so that the one under test starts with none.
         probe <- f.nextSetup
         ip = randomIp()
-        _ <- seeded(f.a, probe)(ListEntry("watch", "ip", ip))
+        _ <- seeded(f.a, probe)(ListEntry("watch", "ip", ip, expiresAt = None, shadow = false, phone = None))
         auth = f.a.auth
         before <- AntifraudFixture.otpRequestSteps(s.phone.get)
         authorize <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
@@ -687,7 +700,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         f <- ZIO.service[AntifraudFixture]
         s <- f.nextSetup
         ip = randomIp()
-        _ <- seeded(f.a, s)(ListEntry("watch", "ip", ip))
+        _ <- seeded(f.a, s)(ListEntry("watch", "ip", ip, expiresAt = None, shadow = false, phone = None))
         auth = f.a.auth
         authorize <- auth.authorizeRaw(clientId = s.clientId, redirectUri = s.redirectUri, loginHint = s.phone, ip = Some(ip))
         cookie = authorize.conversationCookie.get
@@ -715,7 +728,10 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         probe <- f.nextSetup
         directIp = randomIp()
         pendingIp = randomIp()
-        _ <- seeded(f.a, probe)(ListEntry("watch", "ip", directIp), ListEntry("watch", "ip", pendingIp))
+        _ <- seeded(f.a, probe)(
+          ListEntry("watch", "ip", directIp, expiresAt = None, shadow = false, phone = None),
+          ListEntry("watch", "ip", pendingIp, expiresAt = None, shadow = false, phone = None),
+        )
         auth = f.a.auth
         before <- AntifraudFixture.otpRequestSteps(direct.phone.get) <*> AntifraudFixture.otpRequestSteps(viaPending.phone.get)
         // The credential form: asked, then answered.
@@ -750,7 +766,7 @@ object AntifraudOtpSpec extends ZIOSpec[AntifraudFixture & E2EConfig & Client & 
         f <- ZIO.service[AntifraudFixture]
         s <- f.nextSetup
         ip = randomIp()
-        _ <- seeded(f.a, s)(ListEntry("watch", "ip", ip))
+        _ <- seeded(f.a, s)(ListEntry("watch", "ip", ip, expiresAt = None, shadow = false, phone = None))
         auth = f.a.auth
         wrong <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
         cookie = wrong.conversationCookie.get

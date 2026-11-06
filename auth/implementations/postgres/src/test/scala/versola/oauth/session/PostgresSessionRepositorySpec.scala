@@ -2,6 +2,7 @@ package versola.oauth.session
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
+import versola.oauth.revocation.PostgresAuthRevocationRepository
 import versola.util.postgres.PostgresSpec
 import zio.*
 import zio.test.*
@@ -14,13 +15,13 @@ object PostgresSessionRepositorySpec extends PostgresSpec, SessionRepositorySpec
     ZLayer:
       for
         xa <- ZIO.service[TransactorZIO]
-      yield SessionRepositorySpec.Env(PostgresSessionRepository(xa))
+      yield SessionRepositorySpec.Env(PostgresSessionRepository(xa), PostgresAuthRevocationRepository(xa))
 
   override def beforeEach(env: SessionRepositorySpec.Env) =
     for
       xa <- ZIO.service[TransactorZIO]
       _ <- xa.connect:
-        sql"TRUNCATE TABLE users, user_agents, sso_sessions, refresh_tokens CASCADE".update.run()
+        sql"TRUNCATE TABLE users, user_agents, sso_sessions, refresh_tokens, auth_revocations CASCADE".update.run()
         sql"""INSERT INTO users (id, claims) VALUES (${(userId1: UUID)}, '{}'::jsonb), (${(userId2: UUID)}, '{}'::jsonb)""".update.run()
         sql"""
           INSERT INTO user_agents (id, user_id, platform, created_at, expires_at)

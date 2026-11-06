@@ -1,20 +1,21 @@
 package versola.central.configuration.challenges
 
+import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.roles.RoleRepository
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Patch.applyTo
-import versola.util.http.{BadRequest, Controller}
+import versola.util.http.BadRequest
 import zio.ZIO
-import zio.http.{Method, Request, Response, Routes, Status, handler}
+import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
 
-object OtpChallengeController extends Controller:
+object OtpChallengeController extends AuditedController:
   type Env = Tracing & OtpChallengeService & ChallengeSettingsService & ResourceService & CentralConfig & EdgeService & RoleRepository
 
-  def routes: Routes[Env, Throwable] = Routes(
+  def endpoints = List(
     getTemplatesEndpoint,
     syncTemplatesEndpoint,
     upsertTemplateEndpoint,
@@ -26,7 +27,7 @@ object OtpChallengeController extends Controller:
   )
 
   val getTemplatesEndpoint =
-    Method.GET / "configuration" / "challenges" / "otp-templates" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "challenges" / "otp-templates").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
@@ -36,7 +37,7 @@ object OtpChallengeController extends Controller:
     }
 
   val syncTemplatesEndpoint =
-    Method.GET / "configuration" / "challenges" / "otp-templates" / "sync" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "challenges" / "otp-templates" / "sync").audited(Audit.Internal) -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
         service <- ZIO.service[OtpChallengeService]
@@ -45,27 +46,36 @@ object OtpChallengeController extends Controller:
     }
 
   val upsertTemplateEndpoint =
-    Method.PUT / "configuration" / "challenges" / "otp-templates" -> handler { (request: Request) =>
-      for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[OtpChallengeService]
-        body <- request.bodyAs[UpsertOtpTemplateRequest]
-        _ <- service.upsertTemplate(OtpTemplateRecord(body.id, body.tenantId, body.localizations, body.purpose, body.channel))
-      yield Response.status(Status.NoContent)
+    (Method.PUT / "configuration" / "challenges" / "otp-templates").audited(Audit.change("otp-template", Audit.update)) -> handler {
+      (request: Request) =>
+        for
+          _ <- authorizeBasic(request)
+          service <- ZIO.service[OtpChallengeService]
+          body <- request.bodyAs[UpsertOtpTemplateRequest]
+          _ <- Audit.targetByText(body.id)
+          _ <- Audit.tenant(body.tenantId)
+          _ <- Audit.changed(body, "id", "tenantId")
+          _ <- service.upsertTemplate(OtpTemplateRecord(body.id, body.tenantId, body.localizations, body.purpose, body.channel))
+        yield Response.status(Status.NoContent)
     }
 
   val deleteTemplateEndpoint =
-    Method.DELETE / "configuration" / "challenges" / "otp-templates" -> handler { (request: Request) =>
+    (Method.DELETE / "configuration" / "challenges" / "otp-templates").audited(Audit.change(
+      "otp-template",
+      Audit.delete,
+    )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OtpChallengeService]
         body <- request.bodyAs[DeleteOtpTemplateRequest]
+        _ <- Audit.targetByText(body.id)
+        _ <- Audit.tenant(body.tenantId)
         _ <- service.deleteTemplate(body.id, body.tenantId, body.purpose, body.channel)
       yield Response.status(Status.NoContent)
     }
 
   val getChallengeSettingsEndpoint =
-    Method.GET / "configuration" / "challenges" / "challenge-settings" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "challenges" / "challenge-settings").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
@@ -75,7 +85,7 @@ object OtpChallengeController extends Controller:
     }
 
   val syncChallengeSettingsEndpoint =
-    Method.GET / "configuration" / "challenges" / "challenge-settings" / "sync" -> handler { (request: Request) =>
+    (Method.GET / "configuration" / "challenges" / "challenge-settings" / "sync").audited(Audit.Internal) -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
         service <- ZIO.service[ChallengeSettingsService]
@@ -84,11 +94,18 @@ object OtpChallengeController extends Controller:
     }
 
   val upsertChallengeSettingsEndpoint =
-    Method.PUT / "configuration" / "challenges" / "challenge-settings" -> handler { (request: Request) =>
+    (Method.PUT / "configuration" / "challenges" / "challenge-settings").audited(Audit.change(
+      "challenge-settings",
+      Audit.update,
+      Some("tenant"),
+    )) -> handler { (request: Request) =>
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ChallengeSettingsService]
         body <- request.bodyAs[UpsertChallengeSettingsRequest]
+        _ <- Audit.target(body.tenantId)
+        _ <- Audit.changed(body, "tenantId")
+        _ <- Audit.tenant(body.tenantId)
         existing <- service.getSettings(body.tenantId)
         mtlsCertificateHeader = body.mtlsCertificateHeader.applyTo(existing.flatMap(_.mtlsCertificateHeader))
         mtlsCertificateEncoding = body.mtlsCertificateEncoding.applyTo(existing.flatMap(_.mtlsCertificateEncoding))
@@ -157,11 +174,18 @@ object OtpChallengeController extends Controller:
   /** The merge patch of the record, see [[PatchChallengeSettingsRequest]]: the members named are replaced, the others
     * keep what is stored. 404 when the tenant has no settings yet -- the first write is a `PUT`. */
   val patchChallengeSettingsEndpoint =
-    Method.PATCH / "configuration" / "challenges" / "challenge-settings" -> handler { (request: Request) =>
+    (Method.PATCH / "configuration" / "challenges" / "challenge-settings").audited(Audit.change(
+      "challenge-settings",
+      Audit.update,
+      Some("tenant"),
+    )) -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ChallengeSettingsService]
         body <- request.bodyAs[PatchChallengeSettingsRequest]
+        _ <- Audit.target(body.tenantId)
+        _ <- Audit.changed(body, "tenantId")
+        _ <- Audit.tenant(body.tenantId)
         _ <- service.patchSettings(body)
       yield Response.status(Status.NoContent))
         .catchAll:

@@ -44,6 +44,12 @@ object SmtpEmailSenderSpec extends ZIOSpecDefault:
         message <- ZIO.fromOption(smtp.messages.headOption).orElseFail(RuntimeException("the server received nothing"))
       yield assertTrue(message.user.isEmpty, message.password.isEmpty)
     },
+    test("refuses to go on in clear when STARTTLS is on and the server does not offer it") {
+      for
+        smtp <- server
+        result <- EmailSender.smtp(settings(smtp.port).copy(startTls = true)).send(Email("user@example.com"), "hello").either
+      yield assertTrue(result.isLeft, smtp.messages.isEmpty)
+    },
     test("fails when the server cannot be reached") {
       for
         smtp <- server

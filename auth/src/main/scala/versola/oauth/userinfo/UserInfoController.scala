@@ -10,6 +10,7 @@ import versola.oauth.dpop.DpopService
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.AccessTokenPayload
 import versola.oauth.mtls.EdgeCertificateTrust
+import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
 import versola.util.http.{Controller, Observability}
 import versola.util.{CoreConfig, Dpop, JWT}
@@ -39,7 +40,7 @@ import scala.jdk.CollectionConverters.*
 object UserInfoController extends Controller:
   type Env = Tracing & UserInfoService & JwksService & CoreConfig & DpopService & EdgeCertificateTrust &
     OAuthConfigurationService &
-    ClientAuthentication
+    ClientAuthentication & AccessTokenRevocationService
 
   private val DpopHeader = "DPoP"
 
@@ -74,6 +75,12 @@ object UserInfoController extends Controller:
         token <- JWT.deserialize[AccessTokenPayload](tokenString, publicKeys, JWT.Type.AccessToken)
           .orElseFail(UserInfoError.InvalidToken)
         _ <- Observability.setToken(token.id.encoded) *> Observability.setClientId(token.clientId)
+
+        // A revoked token is refused as an expired one is, before anything about its holder is
+        // checked: whoever presents it, and whichever of the bindings below it carries, it no longer
+        // grants anything. Answered from the replica's in-memory list, no query.
+        revoked <- ZIO.serviceWithZIO[AccessTokenRevocationService](_.isRevoked(token))
+        _ <- ZIO.fail(UserInfoError.InvalidToken).when(revoked)
 
         userId <- ZIO.fromOption(token.userId).orElseFail(UserInfoError.InvalidToken)
         _ <- Observability.setUserId(userId.toString)

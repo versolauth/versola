@@ -69,7 +69,8 @@ object PostgresAuditChunkSpec extends PostgresSpec:
       .map(_.get[AuditEvents])
       .provideSome[Scope](ZLayer.succeed[AuditEventRepository](CopyRepository(xa)), ZLayer.succeed(settings), tracingLayer, SecureRandom.live)
 
-  private def draft = AuditDraft(kind = kind, outcome = AuditOutcome.success)
+  private def draft =
+    AuditDraft(kind = kind, outcome = AuditOutcome.success, reason = None, actor = None, userId = None, target = None, details = AuditDetails.empty)
 
   private def stored(xa: TransactorZIO): Task[Long] = table.count(xa, Table)
 

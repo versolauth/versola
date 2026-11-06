@@ -469,9 +469,7 @@ object VersolaApp:
 
   private def envName: ZLayer[ConfigProvider, Config.Error, EnvName] =
     ZLayer.fromZIO:
-      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.string("env"))).map:
-        case "prod" => EnvName.Prod
-        case value => EnvName.Test(value)
+      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.string("env"))).map(EnvName.parse)
 
   private def configProvider: TaskLayer[ConfigProvider] =
     ZLayer.fromZIO:

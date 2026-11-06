@@ -1,5 +1,6 @@
 package versola.util
 
+import versola.util.revocation.RevocationConfig
 import zio.Duration
 import zio.http.{Method, URL}
 
@@ -21,12 +22,16 @@ case class CoreConfig(
     est: Option[CoreConfig.EstConfig] = None,
     // Limits on the channel that is not mutual TLS (#745); absent, the defaults of [[ClientAuthThrottle.Settings]] apply.
     limits: Option[versola.oauth.clientauth.ClientAuthThrottle.Settings] = None,
+    // The in-memory list of revoked access tokens (#729); absent, the defaults of [[RevocationConfig]] apply.
+    revocation: Option[RevocationConfig] = None,
 ):
   def parOrDefault: CoreConfig.ParConfig = par.getOrElse(CoreConfig.ParConfig.default)
 
   def dpopOrDefault: CoreConfig.DpopConfig = dpop.getOrElse(CoreConfig.DpopConfig.default)
 
   def argon2OrDefault: Argon2Config = argon2.getOrElse(Argon2Config.default)
+
+  def revocationOrDefault: RevocationConfig = revocation.getOrElse(RevocationConfig())
 
   /** The address this deployment answers `path` on, for whichever of its two listeners a
     * request arrived at -- RFC 9449 §4.3's `htu` is the one thing that has to know the

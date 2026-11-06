@@ -8,10 +8,11 @@ import org.scalamock.stubs.ZIOStubs
 import versola.edge.EdgeServiceSpec.Fixtures
 import versola.edge.login.{BrowserBinding, LoginRecord, LoginRepository}
 import versola.edge.model.*
-import versola.edge.revocation.{Revocation, RevocationKey, TokenRevocationService}
+import versola.edge.revocation.TokenRevocationService
 import versola.edge.session.EdgeSessionRecord
 import versola.util.cel.CelEvaluator
 import versola.util.http.RateLimiter
+import versola.util.revocation.{Revocation, RevocationKey}
 import versola.util.{Base64, EnvName, JWT, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*
@@ -57,7 +58,10 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))),
       permissions = Set.empty,
       accessTokenTtl = 15.minutes,
+      requireSignedRequestObject = false,
+      requirePushedAuthorizationRequests = false,
       applicationType = ApplicationType.web,
+      redirectUris = Set.empty,
     )
 
     val codeVerifierBytes = Array.fill[Byte](32)(7)
@@ -71,6 +75,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       codeVerifier = CodeVerifier.fromBytes(codeVerifierBytes),
       presetId = presetId,
       state = state,
+      returnTo = None,
       browserBindingHash = Some(BrowserBinding.hash(binding)),
     )
 
@@ -358,6 +363,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             codeVerifier = CodeVerifier.fromBytes(Fixtures.codeVerifierBytes),
             presetId = Fixtures.presetId,
             state = Fixtures.state,
+            returnTo = None,
+            browserBindingHash = None,
           )))
           _ <- env.loginRepository.deleteByState.succeedsWith(())
           _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
@@ -398,6 +405,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             codeVerifier = CodeVerifier.fromBytes(Fixtures.codeVerifierBytes),
             presetId = Fixtures.presetId,
             state = Fixtures.state,
+            returnTo = None,
+            browserBindingHash = None,
           )))
           _ <- env.loginRepository.deleteByState.succeedsWith(())
           security <- ZIO.service[SecurityService]
@@ -500,6 +509,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             presetId = Fixtures.presetId,
             state = Fixtures.state,
             returnTo = Some("/resources/auth/settings"),
+            browserBindingHash = None,
           )))
           _ <- env.loginRepository.deleteByState.succeedsWith(())
           security <- ZIO.service[SecurityService]
@@ -540,6 +550,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             codeVerifier = CodeVerifier.fromBytes(Fixtures.codeVerifierBytes),
             presetId = Fixtures.presetId,
             state = Fixtures.state,
+            returnTo = None,
+            browserBindingHash = None,
           )))
           security <- ZIO.service[SecurityService]
           client <- ZIO.service[Client]
@@ -561,6 +573,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             codeVerifier = CodeVerifier.fromBytes(Fixtures.codeVerifierBytes),
             presetId = Fixtures.presetId,
             state = Fixtures.state,
+            returnTo = None,
+            browserBindingHash = None,
           )))
           _ <- env.loginRepository.deleteByState.succeedsWith(())
           security <- ZIO.service[SecurityService]
@@ -586,6 +600,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             codeVerifier = CodeVerifier.fromBytes(Fixtures.codeVerifierBytes),
             presetId = Fixtures.presetId,
             state = Fixtures.state,
+            returnTo = None,
+            browserBindingHash = None,
           )))
           security <- ZIO.service[SecurityService]
           client <- ZIO.service[Client]
@@ -601,6 +617,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             codeVerifier = CodeVerifier.fromBytes(Fixtures.codeVerifierBytes),
             presetId = Fixtures.otherPresetId,
             state = Fixtures.state,
+            returnTo = None,
+            browserBindingHash = None,
           )))
           security <- ZIO.service[SecurityService]
           client <- ZIO.service[Client]
@@ -621,6 +639,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             codeVerifier = CodeVerifier.fromBytes(Fixtures.codeVerifierBytes),
             presetId = Fixtures.presetId,
             state = Fixtures.state,
+            returnTo = None,
+            browserBindingHash = None,
           )))
           _ <- env.loginRepository.deleteByState.succeedsWith(())
           _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
@@ -665,6 +685,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             codeVerifier = CodeVerifier.fromBytes(Fixtures.codeVerifierBytes),
             presetId = Fixtures.presetId,
             state = Fixtures.state,
+            returnTo = None,
+            browserBindingHash = None,
           )))
           _ <- env.loginRepository.deleteByState.succeedsWith(())
           _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
@@ -698,6 +720,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             codeVerifier = CodeVerifier.fromBytes(Fixtures.codeVerifierBytes),
             presetId = Fixtures.presetId,
             state = Fixtures.state,
+            returnTo = None,
+            browserBindingHash = None,
           )))
           _ <- env.loginRepository.deleteByState.succeedsWith(())
           _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
@@ -1358,6 +1382,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         stepUpCondition = None,
         stepUpAcr = None,
         maxAge = None,
+        rateLimit = None,
       )),
       secret = None,
       audienceRateLimits = Nil,
@@ -1383,6 +1408,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = Some(ClientId("central-admin")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("oauth-admin"))),
+          sid = None,
+          family = None,
           confirmation = None,
         )
         prod <- env.buildService(client, security, EnvName.Prod).getMyPermissions(claims, Nil)
@@ -1405,6 +1432,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = Some(ClientId("central-admin")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("oauth-admin"))),
+          sid = None,
+          family = None,
           confirmation = None,
         )
         response <- service.getMyPermissions(claims, List(ResourceId("central")))
@@ -1430,6 +1459,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = Some(ClientId("central-admin")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("operator"))),
+          sid = None,
+          family = None,
           confirmation = None,
         )
         response <- service.getMyPermissions(claims, List(ResourceId("central")))
@@ -1455,6 +1486,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = Some(ClientId("web-app")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("oauth-admin"))),
+          sid = None,
+          family = None,
           confirmation = None,
         )
         response <- service.getMyPermissions(claims, List(ResourceId("central")))
@@ -1483,6 +1516,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = Some(ClientId("web-app")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("member"))),
+          sid = None,
+          family = None,
           confirmation = None,
         )
         response <- service.getMyPermissions(claims, List(ResourceId("orders"), ResourceId("billing")))
@@ -1513,6 +1548,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = Some(ClientId("central-admin")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("operator"))),
+          sid = None,
+          family = None,
           confirmation = None,
         )
         response <- service.getMyPermissions(claims, List(ResourceId("central"), ResourceId("orders")))
@@ -1537,6 +1574,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = Some(ClientId("central-admin")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("oauth-admin"))),
+          sid = None,
+          family = None,
           confirmation = None,
         )
         response <- service.getMyPermissions(claims, Nil)
@@ -1560,6 +1599,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = None,
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("member"))),
+          sid = None,
+          family = None,
           confirmation = None,
         )
         response <- service.getMyPermissions(claims, List(ResourceId("central"), ResourceId("orders")))
@@ -1585,6 +1626,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = Some(ClientId("central-admin")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("editor"))),
+          sid = None,
+          family = None,
           confirmation = None,
         )
         response <- service.getMyPermissions(claims, List(ResourceId("central")))
@@ -1609,6 +1652,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = Some(ClientId("web-app")),
           tenantId = None,
           roles = None,
+          sid = None,
+          family = None,
           confirmation = None,
         )
         response <- service.getMyPermissions(claims, List(ResourceId("orders")))

@@ -2,8 +2,9 @@ package versola.edge
 
 import versola.edge.dpop.DpopVerifier
 import versola.edge.model.{AccessTokenId, ClientId, Confirmation, RefreshTokenFamilyId, RoleId, SessionId, TenantId}
-import versola.edge.revocation.{RevocationKey, TokenRevocationService}
+import versola.edge.revocation.{EdgeRevocationKeys, TokenRevocationService}
 import versola.util.JWT
+import versola.util.revocation.RevocationKey
 import zio.ZIO
 import zio.http.{Header, Request}
 import zio.json.{JsonCodec, jsonField}
@@ -56,7 +57,7 @@ def authorize(
         // one must not be accepted here either.
         revocationService <- ZIO.service[TokenRevocationService]
         revoked <- revocationService.isRevoked(
-          RevocationKey.of(claims.jti, claims.family, claims.sid, claims.subject),
+          EdgeRevocationKeys.of(claims.jti, claims.family, claims.sid, claims.subject),
           Instant.ofEpochSecond(claims.issuedAt),
         )
         _ <- ZIO.fail(AuthorizeOutcome.Denied).when(revoked)
@@ -114,7 +115,7 @@ case class PermissionsClaims(
     @jsonField("client_id") clientId: Option[ClientId],
     @jsonField("tenant_id") tenantId: Option[TenantId],
     roles: Option[List[RoleId]],
-    @jsonField("sid") sid: Option[SessionId] = None,
-    @jsonField("fam") family: Option[RefreshTokenFamilyId] = None,
+    @jsonField("sid") sid: Option[SessionId],
+    @jsonField("fam") family: Option[RefreshTokenFamilyId],
     @jsonField("cnf") confirmation: Option[Confirmation],
 ) derives JsonCodec

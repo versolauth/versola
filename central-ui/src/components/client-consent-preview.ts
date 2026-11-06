@@ -4,7 +4,7 @@ import { theme } from '../styles/theme';
 import type { FormPreviewScenario, FormRecord, Locale, ThemeOverrides, ThemeTokens } from '../types';
 import { renderTheme } from '../utils/central-api';
 import { consentStepFor } from '../utils/consent-preview';
-import { buildPreviewSrcdoc, localeNamesOf } from '../utils/preview';
+import { buildPreviewSrcdoc, localeNamesOf, PREVIEW_SANDBOX } from '../utils/preview';
 
 /**
  * A real render of the Consent form with the look a client would have: central composes the theme's stylesheet with the
@@ -161,7 +161,7 @@ export class VersolaClientConsentPreview extends LitElement {
       ${this.renderError ? html`<div class="error" role="alert">${this.renderError}.${srcdoc ? ' The preview shows the last version that rendered.' : ''}</div>` : nothing}
       ${srcdoc ? html`
         <div class="stage" aria-busy=${this.rendering ? 'true' : 'false'}>
-          <iframe title="Preview of the consent screen for this app" style=${`width:${this.width}px`} .srcdoc=${srcdoc} sandbox="allow-same-origin allow-scripts"></iframe>
+          <iframe title="Preview of the consent screen for this app" style=${`width:${this.width}px`} .srcdoc=${srcdoc} sandbox=${PREVIEW_SANDBOX}></iframe>
         </div>
       ` : nothing}
     `;

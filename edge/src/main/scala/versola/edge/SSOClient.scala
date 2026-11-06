@@ -171,7 +171,7 @@ object SSOClient:
 
   private case class ErrorResponse(
       error: String,
-      @jsonField("error_description") errorDescription: Option[String] = None,
+      @jsonField("error_description") errorDescription: Option[String],
   ) derives JsonCodec
 
   val live: URLayer[Client & EdgeConfig & ClientCertificateFiles & EdgeIdentity, SSOClient] =
@@ -242,6 +242,15 @@ object SSOClient:
 
     private def internalTrustOf(pins: Set[String]): Option[ClientSSLConfig] =
       Option.when(pins.nonEmpty)(EdgeConfig.pinnedTrust(pins))
+
+    /** The client every call to `internalUrl` is made with when nothing on the connection authenticates this
+      * side: a secret or an assertion goes in the request, so the connection only has to authenticate auth. An
+      * operator who pinned the internal endpoint (`versola-internal-trusted-certificates`) named the certificate
+      * that answers there, usually a terminator's private one, and the pin is what authenticates it; with no pin
+      * the shared client's own trust does, the JVM's CAs, which is what auth's public https name carries. Before
+      * the shared client verified anything, these calls went to whatever answered the address. */
+    private val internalClient: Client =
+      internalTrustOf(config.versolaInternalTrustedCertificates).fold(httpClient)(httpClient.ssl)
 
     /** `path` on the route the credential's calls take: the listener or terminator for a
       * certificate, `internalUrl` for everything else. */
@@ -378,6 +387,7 @@ object SSOClient:
           ZIO.succeed(Authenticated(
             form,
             Headers(Header.Authorization.Basic(clientId, Base64.urlEncode(secret))),
+            ssl = None,
           ))
 
         case ClientCredential.PrivateKeyJwt(signing) =>
@@ -403,6 +413,7 @@ object SSOClient:
                 .append(FormField.simpleField("client_assertion_type", ClientAssertion.Type))
                 .append(FormField.simpleField("client_assertion", assertion)),
               Headers.empty,
+              ssl = None,
             )
 
         case ClientCredential.MutualTls(certificate) =>
@@ -454,10 +465,10 @@ object SSOClient:
     private case class CertificateRoute(base: URL, trust: Option[ClientSSLConfig])
 
     /** @param ssl how the connection this is sent over authenticates, for the one method that
-      *            authenticates there rather than in the request. `None` leaves the client's
-      *            own configuration alone -- every other call this edge makes shares it. */
-    private case class Authenticated(form: Form, headers: Headers, ssl: Option[ClientSSLConfig] = None):
-      def over(client: Client): Client = ssl.fold(client)(client.ssl)
+      *            authenticates there rather than in the request. `None` sends the call over
+      *            [[internalClient]], which authenticates auth and nothing else. */
+    private case class Authenticated(form: Form, headers: Headers, ssl: Option[ClientSSLConfig]):
+      def over(client: Client): Client = ssl.fold(internalClient)(client.ssl)
 
     override def warmUp(client: OAuthClient): Task[Unit] =
       client.credential match
@@ -564,7 +575,7 @@ object SSOClient:
           .get(userInfo)
           .addHeader(Header.Authorization.Bearer(accessToken.toString))
 
-        response <- ZIO.scoped(connection.fold(httpClient)(httpClient.ssl).request(request))
+        response <- ZIO.scoped(connection.fold(internalClient)(httpClient.ssl).request(request))
 
         result <-
           if response.status.isSuccess then

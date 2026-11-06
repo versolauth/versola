@@ -1,13 +1,21 @@
 package versola.oauth.revoke
 
+import versola.audit.AuditSupport.*
+import versola.audit.AuthAuditDetails
+import versola.audit.{AuthActors, AuthAuditKinds}
 import versola.oauth.client.model.{ClientCredentials, OAuthClientRecord}
 import versola.oauth.clientauth.{AuthenticatedEndpoint, ClientAuthentication}
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.mtls.ClientCertificate
+import versola.oauth.revocation.{RevocationCause, RevocationTerms}
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
-import versola.util.{CoreConfig, Secret, SecurityService}
-import zio.{Clock, IO, NonEmptyChunk, Task, ZIO, ZLayer}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
+import versola.util.{Base64, CoreConfig, Secret, SecurityService}
+import zio.{Clock, IO, Task, ZIO, ZLayer}
+
+import java.util.UUID
+import scala.util.Try
 
 trait RevocationService:
   def revokeRefreshToken(
@@ -34,10 +42,10 @@ trait RevocationService:
 
 object RevocationService:
   def live: ZLayer[
-    ClientAuthentication & SessionRepository & AccessTokenRevocationService & SecurityService & CoreConfig,
+    ClientAuthentication & SessionRepository & AccessTokenRevocationService & SecurityService & CoreConfig & AuditEvents,
     Nothing,
     RevocationService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _, _))
+  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   private class Impl(
       clientAuthentication: ClientAuthentication,
@@ -45,7 +53,21 @@ object RevocationService:
       accessTokenRevocationService: AccessTokenRevocationService,
       securityService: SecurityService,
       config: CoreConfig,
+      audit: AuditEvents,
   ) extends RevocationService:
+
+    private def audited(client: OAuthClientRecord, userId: Option[UUID], details: AuthAuditDetails.TokenRevoked): IO[Throwable, Unit] =
+      audit.log(
+        AuditDraft(
+          kind = AuthAuditKinds.TokenRevoked,
+          outcome = AuditOutcome.success,
+          reason = None,
+          actor = Some((AuthActors.client, Some(client.id))),
+          userId = userId,
+          target = None,
+          details = details,
+        ),
+      )
 
     override def revokeRefreshToken(
         token: RefreshToken,
@@ -64,17 +86,30 @@ object RevocationService:
           case None =>
             ZIO.unit
           case Some(record) =>
-            // No access token was presented here, and none is recorded against the chain, so
-            // the push names the family every token this grant issued carries. The bound is
-            // the client's current `accessTokenTtl` from now: an approximation, and the only
-            // one available once the tokens themselves are not being named.
+            // No access token was presented here, and none is recorded against the chain, so the
+            // revocation names the family every token this grant issued carries. The whole family
+            // goes, retired generations included, not only the presented row: any of them could be
+            // the one in the wrong hands. The bound is the client's current `accessTokenTtl` from
+            // now: an approximation, and the only one available once the tokens themselves are not
+            // being named. The revocation is recorded in the same transaction as the expiry; the
+            // push to the client's back channel follows.
             Clock.instant.flatMap: revokedAt =>
-              sessionRepository.delete(tokenMac) *>
-                accessTokenRevocationService.revokeFamily(
+              sessionRepository.deleteByFamily(record.familyId, RevocationTerms.forFamily(client, RevocationCause.Revoke)) *>
+                accessTokenRevocationService.announceFamily(
                   client = client,
                   family = record.familyId,
                   subject = record.userId.toString,
                   expiresAt = revokedAt.plus(client.accessTokenTtl),
+                ) *> audited(
+                  client,
+                  Some(record.userId),
+                  AuthAuditDetails.TokenRevoked(
+                    tokenType = "refresh_token",
+                    jti = None,
+                    refreshPrefix = Some(Base64.urlEncode(token).take(9)),
+                    cause = "rfc7009",
+                    count = None,
+                  ),
                 )
       yield ()
 
@@ -85,15 +120,23 @@ object RevocationService:
     ): IO[Throwable | RevocationError, Unit] =
       for
         client <- authenticateClient(credentials, certificate)
+        // The owner is compared as a whole id, not as a substring of one.
         _ <- ZIO.fail(RevocationError.InvalidClient)
-          .when(!token.clientId.contains(client.id))
+          .when(token.clientId != client.id)
 
-        // The token was presented and parsed, so its own `exp` is exact.
-        _ <- accessTokenRevocationService.revoke(
-          client = client,
-          tokens = NonEmptyChunk(token.id),
-          subject = token.subject,
-          expiresAt = token.expiresAt,
+        // The token was presented and parsed, so its own `exp` is exact: recorded for exactly that
+        // long, and pushed to the client's back channel.
+        _ <- accessTokenRevocationService.revoke(client, token)
+        _ <- audited(
+          client,
+          Try(UUID.fromString(token.subject)).toOption,
+          AuthAuditDetails.TokenRevoked(
+            tokenType = "access_token",
+            jti = Some(Base64.urlEncode(token.id)),
+            refreshPrefix = None,
+            cause = "rfc7009",
+            count = None,
+          ),
         )
       yield ()
 

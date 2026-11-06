@@ -62,8 +62,9 @@ trait PasswordRepository:
   def resetBootstrapCredential(userId: UserId): Task[Boolean]
 
   /** Spends a one-time link: deletes the row and returns whose it was and what it was for when the hash matches
-    * an unexpired link of a purpose this release knows, `None` otherwise. One statement, so two concurrent opens
+    * an unexpired link of one of the `accepted` purposes, `None` otherwise: a link of any other purpose is neither
+    * spent nor reported, so a caller never burns a link it cannot act on. One statement, so two concurrent opens
     * of the same link cannot both succeed. A `first_login` link is also refused for a user who has a permanent
     * password.
     */
-  def consumeLink(tokenHash: Array[Byte]): Task[Option[ConsumedLink]]
+  def consumeLink(tokenHash: Array[Byte], accepted: Set[OneTimeLinkPurpose]): Task[Option[ConsumedLink]]

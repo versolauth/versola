@@ -249,8 +249,16 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
         for
           _ <- TestClock.setTime(baseInstant)
           _ <- bootstrap(env, userId1, token(1))
-          spent <- env.repository.consumeLink(token(1))
+          spent <- env.repository.consumeLink(token(1), Set(OneTimeLinkPurpose.FirstLogin))
         yield assertTrue(spent == Some(ConsumedLink(userId1, OneTimeLinkPurpose.FirstLogin)))
+      },
+      test("a link of a purpose the caller does not accept is neither spent nor reported") {
+        for
+          _ <- TestClock.setTime(baseInstant)
+          _ <- bootstrap(env, userId1, token(1))
+          refused <- env.repository.consumeLink(token(1), Set.empty)
+          stillThere <- env.repository.consumeLink(token(1), Set(OneTimeLinkPurpose.FirstLogin))
+        yield assertTrue(refused.isEmpty, stillThere.map(_.userId) == Some(userId1))
       },
       test("a token is bound to its user: another user's reset leaves it alone") {
         for
@@ -266,7 +274,7 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
 
   /** Whose link was spent, leaving out what it was for (the purpose has its own test). */
   def consume(env: PasswordRepositorySpec.Env, tokenHash: Array[Byte]) =
-    env.repository.consumeLink(tokenHash).map(_.map(_.userId))
+    env.repository.consumeLink(tokenHash, Set(OneTimeLinkPurpose.FirstLogin)).map(_.map(_.userId))
 
   /** What auth's bootstrap does on start: a temporary password good for 24 hours and a token valid as long. */
   def bootstrap(env: PasswordRepositorySpec.Env, userId: UserId, tokenHash: Array[Byte]) =

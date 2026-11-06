@@ -399,7 +399,14 @@ object Observability:
               ),
               s"${request.method.name} $pattern",
               SpanKind.SERVER,
-            )).withAuditContext(AuditContext.State(userAgent = request.rawHeader(Header.UserAgent.name)))
+            )).withAuditContext(AuditContext.State(
+              tenantId = None,
+              actor = None,
+              userId = None,
+              target = None,
+              changed = Set.empty,
+              userAgent = request.rawHeader(Header.UserAgent.name),
+            ))
 
   /** Outbound connection pool of the shared client, chosen by environment (all optional, an invalid
     * value falls back to its default):
@@ -482,8 +489,17 @@ object Observability:
     case ConnectionPoolConfig.Fixed(size) => size
     case _ => defaultClientPoolSize
 
+  /** The trust every HTTPS call of the shared client starts from. zio-http's own default (`ClientSSLConfig.Default`) is
+    * Netty's `InsecureTrustManagerFactory`, which accepts any server certificate: whoever answered on the route could pose
+    * as the message provider, a relying party's back-channel logout URI or the range database's host. The JVM's trust store
+    * (the CAs the image ships, plus whatever `javax.net.ssl.trustStore` adds) is what every other HTTPS client on the
+    * machine trusts, and Netty checks the certificate's name against the host the connection was opened to. A caller that
+    * pins a certificate instead (edge towards auth and central) overrides this per request with `client.ssl(...)`.
+    */
+  val clientTrust: ClientSSLConfig = ClientSSLConfig.FromSystemTrustStore
+
   def clientConfig(pool: ConnectionPoolConfig): ZClient.Config =
-    ZClient.Config.default.copy(connectionPool = pool)
+    ZClient.Config.default.copy(connectionPool = pool, ssl = Some(clientTrust))
 
   def clientConfig(poolSize: Int): ZClient.Config = clientConfig(ConnectionPoolConfig.Fixed(poolSize))
 
@@ -716,28 +732,40 @@ object Observability:
 
   @jsonMemberNames(SnakeCase)
   case class AuthDetails(
-      id: Option[String] = None,
+      id: Option[String],
       /** `sid` of the session the request arrived with. */
-      priorSessionId: Option[String] = None,
+      priorSessionId: Option[String],
       /** `sid` of the session issued by the request, when it establishes a new one. */
-      sessionId: Option[String] = None,
-      clientId: Option[String] = None,
+      sessionId: Option[String],
+      clientId: Option[String],
       /** Conversation step (`credential`, `otp`, `password`, ...) the request is currently on. */
-      step: Option[String] = None,
-      userId: Option[String] = None,
+      step: Option[String],
+      userId: Option[String],
       /** Id of the device/browser (`SSO_USER_AGENT_ID` cookie), stable across sessions. */
-      userAgentId: Option[String] = None,
-      ip: Option[String] = None,
+      userAgentId: Option[String],
+      ip: Option[String],
       /** `jti` of the access token issued by the request. */
-      token: Option[String] = None,
+      token: Option[String],
       /** Prefix of the refresh token issued by the request. */
-      refreshToken: Option[String] = None,
+      refreshToken: Option[String],
       /** Prefix of the refresh token consumed by a `refresh_token` grant. */
-      previousRefreshToken: Option[String] = None,
+      previousRefreshToken: Option[String],
   ) derives JsonEncoder
 
   object AuthDetails:
-    val empty: AuthDetails = AuthDetails()
+    val empty: AuthDetails = AuthDetails(
+      id = None,
+      priorSessionId = None,
+      sessionId = None,
+      clientId = None,
+      step = None,
+      userId = None,
+      userAgentId = None,
+      ip = None,
+      token = None,
+      refreshToken = None,
+      previousRefreshToken = None,
+    )
 
   /** The antifraud check of a request. `decision` is the action taken (`Allow`, `Block`, `Fake`, ...), `rules` the
     * names of the rules that fired; `outcome` is how the step ended and is set once it did. */
@@ -754,13 +782,13 @@ object Observability:
       /** How hard it was, as the kind measures it (zero bits for `pow`). */
       challengeLevel: Option[Int],
       /** What the engine decided, which is not what `decision` says in `shadow` mode. */
-      wouldAction: Option[String] = None,
+      wouldAction: Option[String],
       /** The autonomous system the request's address belongs to, and the class of its network (`hosting`, `other`), when
         * the ASN database is on and has the address. The AS number is no personal data; the address is not repeated. */
-      asn: Option[Int] = None,
-      asnClass: Option[String] = None,
+      asn: Option[Int],
+      asnClass: Option[String],
       /** The ISO 3166-1 alpha-2 country of the request's address, when the country database is on and has one. Not personal data; the address is not repeated. */
-      country: Option[String] = None,
+      country: Option[String],
   ) derives JsonEncoder
 
   /** Outcome of a request that ended in an error. `code` is a stable machine-readable key
@@ -769,7 +797,7 @@ object Observability:
   @jsonMemberNames(SnakeCase)
   case class ErrorDetails(
       code: String,
-      description: Option[String] = None,
+      description: Option[String],
   ) derives JsonEncoder
 
   val logCause = zio.logging.LogAnnotation[Throwable](

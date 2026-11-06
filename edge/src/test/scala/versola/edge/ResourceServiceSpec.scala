@@ -19,6 +19,7 @@ object ResourceServiceSpec extends ZIOSpecDefault:
     stepUpCondition = None,
     stepUpAcr = None,
     maxAge = None,
+    rateLimit = None,
   )
 
   private val alpha = Resource(

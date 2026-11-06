@@ -1,12 +1,14 @@
 package versola.oauth.authorize
 
 import org.scalamock.stubs.Stub
+import versola.audit.{AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures, ImmediateClientAuthFailures}
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{PushedAuthorizationError, PushedAuthorizationResponse}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
 import versola.oauth.model.{RequestUri, RequestUriReference}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.{Base64, UnitSpecBase}
 import zio.*
@@ -61,6 +63,9 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
       configureClient: Stub[OAuthConfigurationService] => UIO[Unit] = _ => ZIO.unit,
       verifyService: Stub[PushedAuthorizationService] => UIO[TestResult] =
         (_: Stub[PushedAuthorizationService]) => ZIO.succeed(assertTrue(true)),
+      verifyAudit: List[AuditDraft] => TestResult = _ => assertCompletes,
+      tiers: AuthAudit.Tiers = CapturingAuditEvents.tiers,
+      audit: CapturingAuditEvents = CapturingAuditEvents.shared(),
   ) =
     test(description) {
       for
@@ -70,12 +75,15 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
         // The controller looks the client up only to decide whether reading a client
         // certificate could matter to it; an unknown client never needs one.
         _ = clientService.find.returnsWith(ZIO.none)
-        clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], config)
+        clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], config, ClientAuthFailures.noop)
         tracing <- NoopTracing.layer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             PushedAuthorizationController.routes
-              .provideEnvironment(ZEnvironment(service) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(config) ++ tracing),
+              .provideEnvironment(
+                ZEnvironment(service) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(config) ++ ZEnvironment[AuditEvents](audit) ++
+                  ZEnvironment(tiers) ++ ZEnvironment[ClientAuthFailures](ImmediateClientAuthFailures(audit)) ++ tracing,
+              ),
           ),
         )
         _ <- setup(service)
@@ -83,7 +91,8 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
         response <- client.batched(request)
         verifyResult <- verify(response)
         verifyServiceResult <- verifyService(service)
-      yield assertTrue(response.status == expectedStatus) && verifyResult && verifyServiceResult
+        drafts <- audit.recorded
+      yield assertTrue(response.status == expectedStatus) && verifyResult && verifyServiceResult && verifyAudit(drafts)
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   val spec = suite("PushedAuthorizationController")(
@@ -261,6 +270,62 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
           ),
         verifyService = service =>
           ZIO.succeed(assertTrue(service.push.calls.isEmpty)),
+      ),
+    ),
+    suite("audit log (par.request)")(
+      controllerTestCase(
+        description = "a push records par.request success with the scope and whether it was a request object; the client is the actor",
+        request = parRequest(validForm()),
+        expectedStatus = Status.Created,
+        setup = _.push.succeedsWith(pushedResponse),
+        verifyAudit = drafts =>
+          assertTrue(
+            drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuthAuditKinds.ParRequest, AuditOutcome.success, None)),
+            drafts.head.actor == Some((AuthActors.client, Some(clientId: String))),
+            drafts.head.details == AuthAuditDetails.ParRequest(scope = List("openid"), requestObject = false, count = None),
+          ),
+      ),
+      controllerTestCase(
+        description = "a pushed request object is recorded as one",
+        request = parRequest(validForm("request" -> "a.b.c")),
+        expectedStatus = Status.Created,
+        setup = _.push.succeedsWith(pushedResponse),
+        verifyAudit = drafts => assertTrue(drafts.map(_.details).collect { case d: AuthAuditDetails.ParRequest => d.requestObject } == List(true)),
+      ),
+      controllerTestCase(
+        description = "a success is left out when the deployment turned audit.events.par-success off",
+        request = parRequest(validForm()),
+        expectedStatus = Status.Created,
+        tiers = CapturingAuditEvents.tiers.copy(parSuccess = false),
+        setup = _.push.succeedsWith(pushedResponse),
+        verifyAudit = drafts => assertTrue(drafts.isEmpty),
+      ),
+      controllerTestCase(
+        description = "a refused push is always recorded, with the OAuth error as the reason",
+        request = parRequest(validForm()),
+        expectedStatus = Status.BadRequest,
+        tiers = CapturingAuditEvents.tiers.copy(parSuccess = false),
+        setup = _.push.failsWith(PushedAuthorizationError.RequestUriNotAllowed),
+        verifyAudit = drafts =>
+          assertTrue(drafts.map(d => (d.kind, d.outcome, d.reason)) == List((
+            AuthAuditKinds.ParRequest,
+            AuditOutcome.failure,
+            Some(PushedAuthorizationError.RequestUriNotAllowed.error),
+          ))),
+      ),
+      controllerTestCase(
+        description = "invalid_client is not recorded here: it is client.auth_failed, coalesced",
+        request = parRequest(validForm()),
+        expectedStatus = Status.Unauthorized,
+        setup = _.push.failsWith(PushedAuthorizationError.InvalidClient),
+        verifyAudit = drafts => assertTrue(drafts.isEmpty),
+      ),
+      controllerTestCase(
+        description = "a push is accepted whatever the state of the audit queue",
+        request = parRequest(validForm()),
+        expectedStatus = Status.Created,
+        audit = CapturingAuditEvents.shared(unavailable = true),
+        setup = _.push.succeedsWith(pushedResponse),
       ),
     ),
   )

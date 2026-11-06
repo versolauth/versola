@@ -35,9 +35,9 @@ object AntifraudInstance:
       score: Int,
       rules: List[String],
       outcome: Option[String],
-      asn: Option[Int] = None,
-      asnClass: Option[String] = None,
-      country: Option[String] = None,
+      asn: Option[Int],
+      asnClass: Option[String],
+      country: Option[String],
   )
 
   private def decision(line: String): Option[Decision] =
@@ -398,10 +398,10 @@ object AntifraudFixture:
       listType: String,
       valueType: String,
       value: String,
-      expiresAt: Option[Instant] = None,
-      shadow: Boolean = false,
+      expiresAt: Option[Instant],
+      shadow: Boolean,
       /** For a `phone_hash` entry through the API: the number, which auth hashes (see [[seedThroughApi]]); `value` is then not used. */
-      phone: Option[String] = None,
+      phone: Option[String],
   )
 
   /** How many steps of the limit on codes asked for `credential` have been taken, as the throttle table has them. */

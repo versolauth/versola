@@ -172,11 +172,12 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
         true
     }
 
-  override def consumeLink(tokenHash: Array[Byte]): Task[Option[ConsumedLink]] =
+  override def consumeLink(tokenHash: Array[Byte], accepted: Set[OneTimeLinkPurpose]): Task[Option[ConsumedLink]] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("consume-one-time-link"):
-        // Only purposes this release knows are touched: a row of a purpose from a newer release is left for it.
-        val known = OneTimeLinkPurpose.values.map(_.value).toVector
+        // Only the purposes the caller handles are touched: a link meant for another endpoint, or of a purpose
+        // from a newer release, is left alone instead of being spent by a caller that cannot act on it.
+        val known = accepted.map(_.value).toVector
         sql"""
           DELETE FROM one_time_links
           WHERE token_hash = $tokenHash AND expires_at > $now AND purpose = ANY($known)

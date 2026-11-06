@@ -12,15 +12,29 @@ import versola.oauth.client.model.{AuthMethod, ClientId, OAuthClientRecord, Scop
 import versola.oauth.clientauth.ClientAuthentication
 import versola.oauth.dpop.DpopService
 import versola.oauth.jwks.JwksService
+import versola.oauth.logout.BackChannelOutbox
 import versola.oauth.mtls.{ClientCertificate, EdgeCertificateTrust}
+import versola.oauth.revocation.AuthRevocationRepository
+import versola.oauth.revoke.AccessTokenRevocationService
+import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId}
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
 import versola.user.model.UserId
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
+import versola.util.revocation.{
+  Revocation,
+  RevocationCache,
+  RevocationConfig,
+  RevocationKey,
+  RevocationNotifications,
+  RevocationPage,
+  RevocationRepository,
+}
 import versola.util.{CoreConfig, Dpop, EdgeIdentityNames, TestCertificates, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.json.*
 import zio.json.ast.Json
+import zio.stream.ZStream
 import zio.test.*
 
 import java.security.KeyPairGenerator
@@ -95,8 +109,11 @@ object UserInfoControllerSpec extends UnitSpecBase:
       config: CoreConfig,
       cnfJkt: Option[String] = None,
       cnfX5tS256: Option[String] = None,
+      family: Option[String] = None,
+      session: Option[String] = None,
+      issuedAt: Instant = Instant.now(),
   ): String =
-    val now = Instant.now()
+    val now = issuedAt
     val builder = new JWTClaimsSet.Builder()
       .subject(userId.toString)
       .claim("client_id", clientId.toString)
@@ -106,6 +123,8 @@ object UserInfoControllerSpec extends UnitSpecBase:
       .issuer(config.jwt.issuer)
       .issueTime(Date.from(now))
       .expirationTime(Date.from(now.plusSeconds(3600)))
+    family.foreach(fam => builder.claim("fam", fam))
+    session.foreach(sid => builder.claim("sid", sid))
     val confirmation = new java.util.LinkedHashMap[String, String]()
     cnfJkt.foreach(jkt => confirmation.put("jkt", jkt))
     cnfX5tS256.foreach(thumbprint => confirmation.put("x5t#S256", thumbprint))
@@ -152,6 +171,9 @@ object UserInfoControllerSpec extends UnitSpecBase:
       // request sent through it always reaches the handler with `remoteCertificate` empty. The
       // routes are identically wired either way.
       dispatchDirectly: Boolean = false,
+      // What the replica's list of revoked access tokens holds when the request arrives. The list and
+      // the service over it are the real ones; only the database behind the list is a stub.
+      revocations: List[Revocation] = Nil,
   ) =
     test(description) {
       for
@@ -162,6 +184,19 @@ object UserInfoControllerSpec extends UnitSpecBase:
         clientAuthentication = stub[ClientAuthentication]
         jwksService = TestEnvConfig.jwksService
         tracing <- NoopTracing.layer.build
+        revocationRepository = stub[AuthRevocationRepository]
+        _ <- revocationRepository.activeSince.succeedsWith(RevocationPage(revocations, None, hasMore = false))
+        revocationCache <- RevocationCache.live.build.provideSomeEnvironment[Scope](
+          _ ++ ZEnvironment[RevocationRepository, RevocationNotifications, RevocationConfig](
+            revocationRepository,
+            new RevocationNotifications:
+              override def notifications =
+                ZStream.empty
+            ,
+            config.revocationOrDefault,
+          ),
+        )
+        accessTokenRevocation = AccessTokenRevocationService.Impl(stub[BackChannelOutbox], revocationRepository, revocationCache.get)
 
         routes = Observability.handleErrors(
           UserInfoController.routes
@@ -169,6 +204,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
               ZEnvironment(userInfoService) ++ ZEnvironment(config) ++ ZEnvironment(jwksService) ++
                 ZEnvironment(dpopService) ++ ZEnvironment(edgeTrust) ++
                 ZEnvironment(oAuthConfigurationService) ++ ZEnvironment(clientAuthentication) ++
+                ZEnvironment[AccessTokenRevocationService](accessTokenRevocation) ++
                 tracing,
             ),
         )
@@ -954,4 +990,104 @@ object UserInfoControllerSpec extends UnitSpecBase:
         expectedStatus = Status.Unauthorized,
       ),
     ),
+    locally {
+      // A token revoked at auth is refused here as an expired one is, whatever the client that
+      // presents it registered: the list is auth's own, not something a back channel has to
+      // announce.
+      def refusedAsInvalidToken(description: String, request: Request, revocations: List[Revocation]) =
+        userInfoTestCase(
+          description = description,
+          request = request,
+          expectedStatus = Status.Unauthorized,
+          revocations = revocations,
+          verify = response =>
+            for
+              wwwAuth <- ZIO.fromOption(response.header(Header.WWWAuthenticate))
+                .orElseFail(new RuntimeException("Missing WWW-Authenticate header"))
+            yield assertTrue(wwwAuth.renderedValue.contains("invalid_token")),
+        )
+
+      def bearer(token: String) = Request.get(URL.empty / "userinfo").addHeader(Header.Authorization.Bearer(token))
+
+      val farFuture = Instant.EPOCH.plusSeconds(10_000_000)
+      val issuedAt = Instant.ofEpochSecond(1_000_000)
+
+      def token(family: Option[String] = None, session: Option[String] = None, at: Instant = issuedAt) =
+        createAccessToken(
+          userId1,
+          clientId1,
+          Set(ScopeToken.OpenId),
+          TestEnvConfig.coreConfig,
+          family = family,
+          session = session,
+          issuedAt = at,
+        )
+
+      suite("revoked tokens")(List(
+        refusedAsInvalidToken(
+          "refuse a token whose jti is revoked",
+          bearer(token()),
+          List(Revocation(RevocationKey.Jti("test-access-token-id"), farFuture, issuedBefore = None)),
+        ),
+        refusedAsInvalidToken(
+          "refuse a token whose refresh-token family is revoked",
+          bearer(token(family = Some("family-1"))),
+          List(Revocation(RevocationKey.Fam(RefreshTokenFamilyId("family-1")), farFuture, issuedBefore = None)),
+        ),
+        refusedAsInvalidToken(
+          "refuse a token whose session is revoked",
+          bearer(token(session = Some("session-1"))),
+          List(Revocation(RevocationKey.Sid(PublicSessionId("session-1")), farFuture, issuedBefore = None)),
+        ),
+        refusedAsInvalidToken(
+          "refuse a token issued to a user revoked after it was issued",
+          bearer(token()),
+          List(Revocation(RevocationKey.Sub(userId1.toString), farFuture, issuedBefore = Some(issuedAt.plusSeconds(60)))),
+        ),
+        refusedAsInvalidToken(
+          "refuse a token issued in the very second its user was revoked",
+          bearer(token()),
+          List(Revocation(RevocationKey.Sub(userId1.toString), farFuture, issuedBefore = Some(issuedAt))),
+        ),
+        // The negatives: what the revocation was not aimed at is left alone.
+        userInfoTestCase(
+          description = "serve a token its user logged in again to get after being revoked",
+          request = bearer(token()),
+          expectedStatus = Status.Ok,
+          revocations = List(Revocation(RevocationKey.Sub(userId1.toString), farFuture, issuedBefore = Some(issuedAt.minusSeconds(60)))),
+          setup = _.getUserInfo.succeedsWith(userInfoResponse),
+        ),
+        userInfoTestCase(
+          description = "serve a token when only another token, family, session and user are revoked",
+          request = bearer(token(family = Some("family-1"), session = Some("session-1"))),
+          expectedStatus = Status.Ok,
+          revocations = List(
+            Revocation(RevocationKey.Jti("another-token"), farFuture, issuedBefore = None),
+            Revocation(RevocationKey.Fam(RefreshTokenFamilyId("family-2")), farFuture, issuedBefore = None),
+            Revocation(RevocationKey.Sid(PublicSessionId("session-2")), farFuture, issuedBefore = None),
+            Revocation(RevocationKey.Sub("another-user"), farFuture, issuedBefore = Some(farFuture)),
+          ),
+          setup = _.getUserInfo.succeedsWith(userInfoResponse),
+        ),
+        // Checked before the proof of possession: a revoked token is not given the chance to
+        // fail for the lesser reason, which would tell its holder the wrong thing to fix.
+        userInfoTestCase(
+          description = "refuse a revoked DPoP-bound token as invalid_token, not for its missing proof",
+          request = Request.get(URL.empty / "userinfo").addHeader(
+            Header.Custom(
+              "Authorization",
+              s"DPoP ${createAccessToken(userId1, clientId1, Set(ScopeToken.OpenId), TestEnvConfig.coreConfig, cnfJkt = Some(boundJkt1), issuedAt = issuedAt)}",
+            ),
+          ),
+          expectedStatus = Status.Unauthorized,
+          revocations = List(Revocation(RevocationKey.Jti("test-access-token-id"), farFuture, issuedBefore = None)),
+          verify = response =>
+            for
+              wwwAuth <- ZIO.fromOption(response.header(Header.WWWAuthenticate))
+                .orElseFail(new RuntimeException("Missing WWW-Authenticate header"))
+            yield assertTrue(wwwAuth.renderedValue.contains("invalid_token")),
+          verifyDpop = dpop => ZIO.succeed(assertTrue(dpop.verify.calls.isEmpty)),
+        ),
+      )*)
+    },
   )

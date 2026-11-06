@@ -1,5 +1,6 @@
 package versola.oauth.conversation
 
+import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
 import versola.auth.model.Password
 import versola.oauth.authorize.AcrResolutionService
@@ -7,8 +8,8 @@ import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthFlow, ClientId, PassedAuthFactor, PrimaryCredential, ScopeToken}
-import versola.oauth.conversation.limit.{LimitStatus, SubmissionLimiter}
+import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PassedAuthFactor, PrimaryCredential, ScopeToken}
+import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
@@ -17,7 +18,8 @@ import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.model.{Login, UserId, UserRecord}
 import versola.user.{UserRepository, UserService}
-import versola.util.{AuthPropertyGenerator, Email, Phone, SecureRandom, SecurityService, UnitSpecBase}
+import versola.util.audit.AuditOutcome
+import versola.util.{AuthPropertyGenerator, Email, MAC, Phone, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
 import zio.json.ast
 import zio.test.*
@@ -72,7 +74,8 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     val secureRandom = stub[SecureRandom]
     val userService = stub[UserService]
     val consentService = stub[versola.oauth.consent.ConsentService]
-    val service = ConversationService.Impl(
+    val audit = CapturingAuditEvents.shared()
+    def serviceWith(events: versola.util.audit.AuditEvents) = ConversationService.Impl(
       otpService,
       passwordService,
       conversationRepository,
@@ -95,7 +98,13 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       versola.antifraud.AntifraudEvents.noop,
       versola.antifraud.ChallengeVerifier.off,
       stub[CodeAlternativeService],
+      events,
     )
+    val service = serviceWith(audit)
+
+  /** The details every `login.step` of this conversation carries: the step, the conversation and what kind of sign-in it is. */
+  private def step(name: String = "password") =
+    AuthAuditDetails.LoginStep(step = name, conversationId = authId.toString, kind = "login", subjectHash = None, afDecision = None)
 
   val baseRecord = ConversationRecord(
     clientId = clientId,
@@ -151,6 +160,9 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     None,
   )
 
+  private def stepUp(record: ConversationRecord) =
+    record.copy(priorSessionId = Some(MAC(Array.fill(32)(2.toByte))), targetAcr = Some(Acr("mfa")))
+
   val spec = suite("PasswordConversationService")(
     suite("prepareInitialPassword")(
       test("create password step when user exists and allowed") {
@@ -187,6 +199,14 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.prepareInitialPassword(authId, baseRecord.copy(userId = Some(userId)), Left(email), factorIndex = 0)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+      },
+      test("check the step-up ban under StepUpPasswordSubmit, not the sign-in one") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.prepareInitialPassword(authId, stepUp(baseRecord.copy(userId = Some(userId))), Left(email), factorIndex = 0)
+        yield assertTrue(env.submissionLimiter.statusForSubjects.calls.map(_._3) == List(ChallengeType.StepUpPasswordSubmit))
       },
       test("return AccessDenied when rate limited") {
         val env = Env()
@@ -455,6 +475,36 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           failureSubjects == Set(userId.toString, email.toString),
         )
       },
+      test("throttle a regular sign-in under the PasswordSubmit challenge type") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
+        yield assertTrue(
+          env.submissionLimiter.statusForSubjects.calls.map(_._3) == List(ChallengeType.PasswordSubmit),
+          env.submissionLimiter.recordLimitAll.calls.map(_._3) == List(ChallengeType.PasswordSubmit),
+        )
+      },
+      test("throttle a step-up under StepUpPasswordSubmit, apart from the regular sign-in budget") {
+        val env = Env()
+        val stepUpRecord = passwordRecord.copy(
+          priorSessionId = Some(MAC(Array.fill(32)(2.toByte))),
+          targetAcr = Some(Acr("mfa")),
+        )
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.checkPassword(stepUpRecord, passwordStep, password, authId)
+        yield assertTrue(
+          env.submissionLimiter.statusForSubjects.calls.map(_._3) == List(ChallengeType.StepUpPasswordSubmit),
+          env.submissionLimiter.recordLimitAll.calls.map(_._3) == List(ChallengeType.StepUpPasswordSubmit),
+        )
+      },
     ),
     suite("checkLoginPassword")(
       test("return BadRequest when step is not Credential") {
@@ -467,14 +517,30 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.userRepository.findByLogin.succeedsWith(None)
+          _ <- env.passwordService.verifyUnknownUser.succeedsWith(())
           _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkLoginPassword(authId, baseRecord, login, password)
           recordedSubjects = env.submissionLimiter.recordLimit.calls.map(_._2).toSet
+          hashed = env.passwordService.verifyUnknownUser.calls
         yield assertTrue(
           result == ConversationResult.RenderStep(credentialStep.copy(loginFailed = true)),
           recordedSubjects == Set(login),
+          // the password is hashed all the same, so the time of the answer does not say that the login does not exist
+          hashed == List(password),
         )
+      },
+      test("do not spend the unknown-login hash on a login that exists: its own check already costs one") {
+        val env = Env()
+        for
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.checkLoginPassword(authId, baseRecord, login, password)
+          hashed = env.passwordService.verifyUnknownUser.calls
+        yield assertTrue(hashed.isEmpty)
       },
       test("return StepPassed and set user fields when password is correct") {
         val env = Env()
@@ -525,6 +591,20 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.overwrite.succeedsWith(false)
           result <- env.service.checkLoginPassword(authId, baseRecord, login, password)
         yield assertTrue(result == ConversationResult.WriteConflict)
+      },
+      test("throttle a step-up login under StepUpPasswordSubmit") {
+        val env = Env()
+        for
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.checkLoginPassword(authId, stepUp(baseRecord), login, password)
+        yield assertTrue(
+          env.submissionLimiter.statusForSubjects.calls.map(_._3) == List(ChallengeType.StepUpPasswordSubmit),
+          env.submissionLimiter.recordLimitAll.calls.map(_._3) == List(ChallengeType.StepUpPasswordSubmit),
+        )
       },
       test("deny access when either subject is banned, checking both subjects in one query") {
         val env = Env()
@@ -613,6 +693,14 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.setNewPassword(baseRecord, setPasswordStep, password, authId)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+      },
+      test("throttles a step-up under StepUpPasswordSubmit when setting a new password") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Banned)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.setNewPassword(stepUp(passwordRecord), setPasswordStep, password, authId)
+        yield assertTrue(env.submissionLimiter.statusForSubjects.calls.map(_._3) == List(ChallengeType.StepUpPasswordSubmit))
       },
       test("denies access when the subject is banned") {
         val env = Env()
@@ -706,6 +794,122 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.setNewPassword(passwordRecord, setPasswordStep, password, authId).exit
         yield assertTrue(result.isFailure)
+      },
+    ),
+    suite("audit log")(
+      test("a correct password records login.step success, with the user and the conversation") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Success)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
+          drafts <- env.audit.recorded
+        yield assertTrue(
+          drafts.map(_.kind) == List(AuthAuditKinds.LoginStep),
+          drafts.head.outcome == AuditOutcome.success,
+          drafts.head.userId == passwordRecord.userId,
+          drafts.head.details == step(),
+          // the password is never in the event, nor any hash of it
+          !drafts.head.details.toJson.toString.contains(password),
+        )
+      },
+      test("a wrong password records login.step failure invalid_password") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
+          drafts <- env.audit.recorded
+        yield assertTrue(drafts.map(d => (d.kind, d.outcome, d.reason)) == List((
+          AuthAuditKinds.LoginStep,
+          AuditOutcome.failure,
+          Some("invalid_password"),
+        )))
+      },
+      test("a retired or expired temporary password is a failure with its own reason") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.TemporaryExpired)
+          _ <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.OldPassword(Instant.EPOCH))
+          _ <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
+          drafts <- env.audit.recorded
+        yield assertTrue(drafts.map(_.reason) == List(Some("temporary_expired"), Some("old_password")))
+      },
+      test("a banned subject records login.step denied locked, and a rate limited one denied throttled") {
+        val env = Env()
+        for
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Banned)
+          _ <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.RateLimited(30L))
+          _ <- env.service.checkPassword(passwordRecord, passwordStep, password, authId)
+          drafts <- env.audit.recorded
+        yield assertTrue(
+          drafts.map(d => (d.outcome, d.reason)) == List((AuditOutcome.denied, Some("locked")), (AuditOutcome.denied, Some("throttled"))),
+          // the password was not even looked at
+          env.passwordService.verifyPassword.calls.isEmpty,
+        )
+      },
+      test("login with a login and password records the same events, and an unknown login a failure with no user") {
+        val env = Env()
+        for
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.userRepository.findByLogin.succeedsWith(None)
+          _ <- env.passwordService.verifyUnknownUser.succeedsWith(())
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.service.checkLoginPassword(authId, baseRecord, login, password)
+          unknown <- env.audit.recorded
+          _ <- env.audit.clear
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Success)
+          _ <- env.service.checkLoginPassword(authId, baseRecord, login, password)
+          known <- env.audit.recorded
+        yield assertTrue(
+          unknown.map(d => (d.outcome, d.reason, d.userId)) == List((AuditOutcome.failure, Some("unknown_login"), None)),
+          // the user is the one the login named, though the conversation had none yet
+          known.map(d => (d.outcome, d.userId)) == List((AuditOutcome.success, Some(userId.asInstanceOf[java.util.UUID]))),
+          // the login the person typed is not in the event
+          !unknown.head.details.toJson.toString.contains(login),
+        )
+      },
+      test("a new password accepted at sign-in records account.password_set, and a reused one records nothing") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.passwordService.setPassword.succeedsWith(())
+          _ <- env.service.setNewPassword(passwordRecord.copy(needsPasswordChange = true), setPasswordStep, password, authId)
+          accepted <- env.audit.recorded
+          _ <- env.audit.clear
+          _ <- env.passwordService.setPassword.failsWith(versola.oauth.challenge.password.model.PasswordReuseError(5))
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
+          _ <- env.service.setNewPassword(passwordRecord.copy(needsPasswordChange = true), setPasswordStep, password, authId)
+          reused <- env.audit.recorded
+        yield assertTrue(
+          accepted.map(d => (d.kind, d.details)) == List((
+            AuthAuditKinds.AccountPasswordSet,
+            AuthAuditDetails.Account(via = "login_flow", detail = None),
+          )),
+          reused.isEmpty,
+        )
+      },
+      test("the step is completed whatever the state of the audit queue") {
+        val env = Env()
+        val refusing = CapturingAuditEvents.shared(unavailable = true)
+        for
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Success)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          result <- env.serviceWith(refusing).checkPassword(passwordRecord, passwordStep, password, authId).either
+        yield assertTrue(result.isRight, env.conversationRepository.overwrite.calls.size == 1)
       },
     ),
   )

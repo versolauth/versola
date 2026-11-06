@@ -43,7 +43,7 @@ object EdgeIdentityEnrollment:
 
   private case class EnrollRequest(edgeId: String, token: String, csr: String) derives JsonCodec
   private case class RenewRequest(csr: String) derives JsonCodec
-  private case class Issued(certificate: String, chainEndsAt: Option[Instant] = None) derives JsonCodec
+  private case class Issued(certificate: String, chainEndsAt: Option[Instant]) derives JsonCodec
 
   /** How long before the end of its certificate chain this edge starts saying so, once a day. */
   val ChainEndWarning: Duration = 30.days

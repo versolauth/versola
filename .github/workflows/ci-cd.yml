@@ -88,7 +88,7 @@ jobs:
           force-download: true
           distribution: 'temurin'
           cache: 'sbt'
-      - uses: sbt/setup-sbt@ecad189dd245444b9ae0a0cd5922fd938b88906f # v1
+      - uses: sbt/setup-sbt@b113b960ba361e87e08ce02a390d51871b7ee459 # v1
       - name: Set up Scala CLI
         if: github.event_name != 'release'
         uses: VirtusLab/scala-cli-setup@3f5bf11a33bb88343238780c18257c8fa43789e1 # v1
@@ -291,6 +291,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The manifest's newest entry has to be the tag being published (release.md: run the same script with
+      # the tag before Publish, a published tag cannot be reused). It is the first step of `build` so that a
+      # wrong manifest fails in seconds, before any image is pushed: every docker-* job needs this job, so
+      # auth, central, edge and the rest are not published under a tag whose versola-tools image never
+      # gets built (a release the CLI cannot configure, and a tag that cannot be reused). The operator
+      # deletes the release and the tag, adds the entry to release.json and publishes again.
+      # The tag goes through env:, like the "Extract version from tag" step in the docker-* jobs.
+      - name: Check the release manifest matches the tag
+        if: ${{ github.event_name == 'release' }}
+        env:
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+        run: bash .github/scripts/check-release-manifest.sh "$RELEASE_TAG_NAME"
+
       # test_tag's own description says it must never be "latest" or a real
       # version number, but a text input on the manual-run form doesn't
       # enforce that by itself -- someone could still type "latest" or an
@@ -355,7 +368,7 @@ jobs:
           force-download: true
           distribution: 'temurin'
           cache: 'sbt'
-      - uses: sbt/setup-sbt@ecad189dd245444b9ae0a0cd5922fd938b88906f # v1
+      - uses: sbt/setup-sbt@b113b960ba361e87e08ce02a390d51871b7ee459 # v1
       - name: Set up Scala CLI
         if: github.event_name != 'release'
         uses: VirtusLab/scala-cli-setup@3f5bf11a33bb88343238780c18257c8fa43789e1 # v1
@@ -1062,6 +1075,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The manifest's newest entry has to be the tag being published (release.md: run the same script with
+      # the tag before Publish, a published tag cannot be reused). Fails before the image is built and
+      # pushed (versola-tools only: the other images build in parallel jobs), so no versola-tools image says it is a version whose compatibility nobody wrote down.
+      # The tag goes through env:, like the "Extract version from tag" step below.
+      - name: Check the release manifest matches the tag
+        if: ${{ github.event_name == 'release' }}
+        env:
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+        run: bash .github/scripts/check-release-manifest.sh "$RELEASE_TAG_NAME"
+
       # Downloads the sbt-native-packager output that "Stage services for
       # release images" (in the build job) already produced and uploaded --
       # Dockerfile.tools compiles gen-env.scala ahead of time via this
@@ -1475,6 +1498,19 @@ jobs:
       # reaches the JVM and `docker stop` ends in exit code 137 after the grace period.
       - name: Check the service images start the JVM with exec
         run: .github/scripts/check-entrypoint-exec.sh
+
+      # The compatibility manifest versola-tools ships (release.json, versolauth/versola#823): well-formed,
+      # no version both "rolling" and "fresh database". The entrypoint tests next to it run
+      # entrypoint.sh with a stub java (no JVM, no docker needed; the postgres-mode one also uses
+      # Docker when the runner has it). jq is on the runner image. A loop over the glob, not a list
+      # of names: a new entrypoint-*.test.sh is run without anyone remembering to add it here.
+      - name: Check the release manifest and the tools entrypoint
+        run: |
+          bash .github/scripts/check-release-manifest.sh
+          for t in docker/versola-tools/test/entrypoint-*.test.sh; do
+            echo "== $t"
+            sh "$t"
+          done
 
   # Install-level checks (versolauth/versola#391): every other helm-* job asserts on `helm template`
   # output, and the failures the charts actually hit rendered cleanly and broke only once installed.

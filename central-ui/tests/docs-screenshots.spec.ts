@@ -38,6 +38,7 @@ async function consoleShot(page: Page, shot: Extract<DocsShot, { kind: 'frame' |
   // The tenant's logos are URLs the console previews; they are not reachable from the test run.
   await page.route(url => url.href in tenantLogoBodies, route =>
     route.fulfill({ contentType: 'image/svg+xml', body: tenantLogoBodies[route.request().url()] }));
+  if (shot.clock) await page.clock.install({ time: new Date(shot.clock) });
   await loadAdminApp(page, { path: shot.path, state: typeof shot.state === 'function' ? await shot.state() : shot.state });
   await shot.before?.(page);
   // Fonts and the theme's transitions settle before the capture.

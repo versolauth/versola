@@ -2,6 +2,7 @@ package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.zaxxer.hikari.HikariDataSource
+import versola.audit.PostgresAuditEventRepository
 import versola.central.antifraud.{
   AntifraudCountersController,
   AntifraudCountersService,
@@ -12,6 +13,7 @@ import versola.central.antifraud.{
   AntifraudStatusController,
   AntifraudStatusService,
 }
+import versola.central.audit.{AuditHook, AuditReportService, CentralAudit, CentralAuditRepository}
 import versola.central.configuration.challenges.{
   ChallengeSettingsRepository,
   ChallengeSettingsService,
@@ -97,6 +99,7 @@ import versola.configuration.themes.PostgresThemeRepository
 import versola.users.PostgresUserRepository
 import versola.util.*
 import versola.util.SequentialLayers.*
+import versola.util.audit.{AuditEventRepository, AuditEvents}
 import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp
 import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource, PostgresWalMetrics}
@@ -108,8 +111,11 @@ import zio.json.ast.Json
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.lang.System as JavaSystem
+import java.net.InetAddress
+import java.util.UUID
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
+import scala.util.Try
 
 object PostgresCentralApp extends VersolaApp("central"):
   override given Tag[Dependencies] = Tag[Dependencies]
@@ -167,6 +173,11 @@ object PostgresCentralApp extends VersolaApp("central"):
       AntifraudCountersService &
       AntifraudStatusService &
       AuthClient &
+      CentralAuditRepository &
+      AuditEventRepository &
+      AuditEvents.Settings &
+      AuditEvents &
+      AuditReportService &
       UserOutboxProcessor &
       ClientCertificateIssuanceRepository &
       EdgeCertificateEnrollmentRepository &
@@ -183,33 +194,39 @@ object PostgresCentralApp extends VersolaApp("central"):
     // and nothing else. Every other
     // controller is auth's or the admin console's and refuses an edge token here, as a group,
     // so a controller added to this list is auth-only without doing anything about it.
-    val authOnly = List(
-      TenantController.routes,
-      PermissionController.routes,
-      ResourceController.routes,
-      ClientController.routes,
-      ClientEstController.routes,
-      AuthorizationPresetController.routes,
-      ScopeController.routes,
-      AuthorizationDetailTypeController.routes,
-      RoleController.routes,
-      EdgeController.routes,
-      FormController.routes,
-      LocaleController.routes,
-      ThemeController.routes,
-      OtpChallengeController.routes,
-      SystemSettingsController.routes,
-      DeliverySettingsController.routes,
-      UserController.routes,
-      AntifraudListController.routes,
-      AntifraudSettingsController.routes,
-      AntifraudCountersController.routes,
-      AntifraudStatusController.routes,
-      JwksController.routes,
-      ServerMetadataController.routes,
-      ServiceController.routes,
-    ).reduce(_ ++ _)
-    authOnly @@ refuseEdgeCallers
+    // #469: what an administrator does is recorded on every one of these routes by one hook, which takes what each route means from
+    // the route's own declaration. The service surface is declared internal: the operator's tooling is not recorded.
+    Routes.fromIterable(adminEndpoints.map(AuditHook.wrap)) @@ refuseEdgeCallers
+
+  /** Every route of the main listener, each with the declaration the audit log takes its meaning from: a controller lists only
+    * [[AuditedRoute]]s, so there is none without one. */
+  val adminEndpoints =
+    List(
+      TenantController.endpoints,
+      PermissionController.endpoints,
+      ResourceController.endpoints,
+      ClientController.endpoints,
+      ClientEstController.endpoints,
+      AuthorizationPresetController.endpoints,
+      ScopeController.endpoints,
+      AuthorizationDetailTypeController.endpoints,
+      RoleController.endpoints,
+      EdgeController.endpoints,
+      FormController.endpoints,
+      LocaleController.endpoints,
+      ThemeController.endpoints,
+      OtpChallengeController.endpoints,
+      SystemSettingsController.endpoints,
+      DeliverySettingsController.endpoints,
+      UserController.endpoints,
+      AntifraudListController.endpoints,
+      AntifraudSettingsController.endpoints,
+      AntifraudCountersController.endpoints,
+      AntifraudStatusController.endpoints,
+      JwksController.endpoints,
+      ServerMetadataController.endpoints,
+      ServiceController.endpoints,
+    ).flatten
 
   /** The one route an edge reaches before it has a certificate (`POST /edge/enroll`), on the additional listener
     * (`APORT`): plain HTTP meant to sit behind the TLS terminator of the public name for central, which makes it the
@@ -276,12 +293,33 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresCacheSyncRepository.live >++>
           PostgresJwksRepository.live >++>
           PostgresServerMetadataRepository.live >++>
+          PostgresAuditEventRepository.live >++>
           PostgresUserRepository.live
       )
+
+  /** This process in the audit log: its host, which is what tells the instances of a deployment apart, and a part that is its own
+    * (a host can run more than one). */
+  private val nodeId: String =
+    val host = Try(InetAddress.getLocalHost.getHostName).getOrElse("central")
+    s"$host-${UUID.randomUUID().toString.take(8)}"
+
+  /** The audit log's writer (#469): it makes the partitions of `central_audit_event` and writes the events the services record, and writes
+    * what is queued once more when its scope closes. It is built on the transactor and the repository, before everything that records:
+    * bootstrap does. */
+  private[versola] def auditWriter(
+      sizing: AuditEvents.Sizing = AuditEvents.Sizing.standard,
+  ): ZLayer[AuditEventRepository & AuditEvents.Settings & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
+    AuditEvents.liveWith(sizing)(CentralAudit.Source, nodeId, CentralAudit.catalog, CentralAudit.Table)
+
+  /** The audit log: its settings from the `audit` block of the config, and the writer. */
+  private val auditEvents
+      : ZLayer[CentralConfig & AuditEventRepository & Tracing & SecureRandom & Scope, Nothing, AuditEvents.Settings & AuditEvents] =
+    ZLayer.fromFunction((config: CentralConfig) => config.audit.settings) >++> auditWriter()
 
   override val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     parseConfig[CentralConfig] >++>
       repositories >++>
+      auditEvents >++>
       SecurityService.live >++>
       CelEvaluator.live >++>
       JsonSchemaValidator.live >++>
@@ -316,6 +354,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       DeliverySettingsService.live >++>
       CacheSyncService.live >++>
       AuthClient.live >++>
+      AuditReportService.live >++>
       UserService.live >++>
       AntifraudListService.live >++>
       AntifraudSettingsService.live >++>
@@ -328,6 +367,15 @@ object PostgresCentralApp extends VersolaApp("central"):
 
   given DeriveConfig[Secret] = DeriveConfig[String]
     .mapOrFail(SecretConfig.secret)
+
+  given DeriveConfig[AuditEvents.Overflow] = DeriveConfig[String]
+    .mapOrFail(name =>
+      AuditEvents.Overflow.values.find(_.toString == name)
+        .toRight(zio.Config.Error.InvalidData(message = s"audit.overflow is 'block' or 'drop', not '$name'")),
+    )
+
+  given DeriveConfig[CentralConfig.AuditConfig] =
+    DeriveConfig.derived[CentralConfig.AuditConfig].mapOrFail(CentralConfig.AuditConfig.validated)
 
   given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
     .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))

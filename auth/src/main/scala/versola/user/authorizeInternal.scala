@@ -1,11 +1,22 @@
 package versola.user
 
+import versola.audit.{AuditSupport, AuthActors}
+import versola.user.model.UserId
+import versola.util.audit.AuditContext
 import versola.util.http.Unauthorized
 import versola.util.{CoreConfig, JWT}
-import zio.ZIO
 import zio.http.{Header, Request}
 import zio.json.JsonCodec
+import zio.{UIO, ZIO}
 
+/** The administrator behind a call from central, for the audit log: the user id edge verified, which central passes as the optional
+  * `actorId` of the call (a query parameter of a `GET` or `DELETE`, a field of the body of a `POST`, `PUT` or `PATCH`). A call without
+  * it is the `central` service's own. Call it after [[authorizeInternal]], so that only a verified caller names an actor. */
+def actedBy(actorId: Option[UserId]): UIO[Unit] =
+  ZIO.foreachDiscard(actorId)(id => AuditContext.setActor(AuthActors.admin, Some(id.toString)))
+
+/** Verifies the service token of a call from central. Also tells the audit log who acts: the `central` service itself, until the
+  * call names an administrator ([[actedBy]]). */
 def authorizeInternal(request: Request): ZIO[CoreConfig, Unauthorized.type, Unit] =
   request.header(Header.Authorization) match
     case Some(Header.Authorization.Bearer(token)) =>
@@ -14,6 +25,8 @@ def authorizeInternal(request: Request): ZIO[CoreConfig, Unauthorized.type, Unit
         _ <- JWT.deserialize[InternalAuthClaims](token.stringValue, config.central.secretKey, JWT.Type.JWT)
           .tapError(err => ZIO.logError(s"Internal auth failed: $err"))
           .orElseFail(Unauthorized)
+        _ <- AuditContext.setActor(AuthActors.service, Some("central"))
+        _ <- AuditSupport.noteUserAgent(request)
       yield ()
 
     case _ =>

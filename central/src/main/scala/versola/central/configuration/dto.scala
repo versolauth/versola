@@ -546,7 +546,7 @@ case class CreateClientRequest(
       * issues from the CA behind `client-certificates` and never with the client's key. Needs `tls_client_auth`; the
       * client is registered by [[mtlsAuth]] or, where it names none, by `CN=<client>,OU=<tenant>,O=Versola`. Mutually
       * exclusive with [[issueEdgeClientCertificate]], [[enrollEdgeClientCertificate]] and supplying a certificate. */
-    estEnrollment: Boolean = false,
+    estEnrollment: Boolean,
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
@@ -682,7 +682,7 @@ case class ResourceSyncResponse(
     endpoints: Vector[ResourceEndpointSyncResponse],
     secret: Option[String],
     /** The limits the resource sets for its audience clients, enforced by the edge at R3. */
-    audienceRateLimits: List[AudienceRateLimit] = Nil,
+    audienceRateLimits: List[AudienceRateLimit],
 ) derives Schema, JsonCodec
 
 case class GetResourcesSyncResponse(

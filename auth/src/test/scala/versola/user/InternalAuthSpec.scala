@@ -1,6 +1,9 @@
 package versola.user
 
+import versola.audit.AuthActors
 import versola.auth.TestEnvConfig
+import versola.user.model.UserId
+import versola.util.audit.AuditContext
 import versola.util.{CoreConfig, JWT}
 import zio.*
 import zio.json.*
@@ -67,6 +70,44 @@ object InternalAuthSpec extends ZIOSpecDefault:
             .addHeader(zio.http.Header.Authorization.Bearer(token))
           result <- authorizeInternal(request).exit
         yield assertTrue(result.isSuccess)
+      }.provide(configLayer),
+      test("a call is the central service's, until it names an administrator with actedBy") {
+        val admin = UserId(java.util.UUID.fromString("0192b3c0-0000-7000-8000-0000000000aa"))
+        for
+          token <- makeToken(List("central"))
+          authenticated = zio.http.Request.get(zio.http.URL.empty).addHeader(zio.http.Header.Authorization.Bearer(token))
+          anonymous <- AuditContext.reset(AuditContext.State.empty)(authorizeInternal(authenticated) *> actedBy(None) *> AuditContext.current)
+          named <- AuditContext.reset(AuditContext.State.empty)(authorizeInternal(authenticated) *> actedBy(Some(admin)) *> AuditContext.current)
+        yield assertTrue(
+          anonymous.actor == Some((AuthActors.service, Some("central"))),
+          named.actor == Some((AuthActors.admin, Some(admin.toString))),
+        )
+      }.provide(configLayer),
+      test("the user agent an event stores is the short form of the header, never the raw header") {
+        val raw =
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15 " + ("x" * 4000)
+        for
+          token <- makeToken(List("central"))
+          authenticated = zio.http.Request.get(zio.http.URL.empty).addHeader(zio.http.Header.Authorization.Bearer(token))
+          browser <-
+            AuditContext.reset(AuditContext.State.empty)(authorizeInternal(authenticated.addHeader("User-Agent", raw)) *> AuditContext.current)
+          unnamed <-
+            AuditContext.reset(AuditContext.State.empty)(authorizeInternal(authenticated.addHeader("User-Agent", "curl/8")) *> AuditContext.current)
+          none <- AuditContext.reset(AuditContext.State.empty)(authorizeInternal(authenticated) *> AuditContext.current)
+        yield assertTrue(
+          browser.userAgent.exists(ua => ua.length < 64 && !ua.contains("xxxx")),
+          unnamed.userAgent.nonEmpty && unnamed.userAgent.forall(_.length < 64),
+          none.userAgent.isEmpty,
+        )
+      }.provide(configLayer),
+      test("a call whose token does not verify names no actor") {
+        val wrongKey = SecretKeySpec(Array.fill(32)(99.toByte), "AES")
+        for
+          token <- JWT.serialize(JWT.Claims("auth", "auth", List("central"), Json.Obj()), 10.minutes, JWT.Signature.Symmetric(wrongKey))
+          request = zio.http.Request.get(zio.http.URL.empty).addHeader(zio.http.Header.Authorization.Bearer(token))
+          result <- AuditContext.reset(AuditContext.State.empty)(authorizeInternal(request).exit.zip(AuditContext.current))
+          (exit, context) = result
+        yield assertTrue(exit.isFailure, context.actor.isEmpty)
       }.provide(configLayer),
       test("fails when Authorization header is missing") {
         val request = zio.http.Request.get(zio.http.URL.empty)
