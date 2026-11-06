@@ -83,6 +83,9 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
           sql"""DELETE FROM user_passwords WHERE user_id = $userId AND expires_at IS NOT NULL
            """.update.run()
 
+          // A permanent password ends the first login: the link must not open an account that has one.
+          sql"""DELETE FROM one_time_links WHERE user_id = $userId AND purpose = ${PostgresPasswordRepository.FirstLogin}""".update.run()
+
           sql"""INSERT INTO user_passwords (user_id, password, salt, created_at, expires_at)
               VALUES ($userId, $password, $salt, $now, NULL)
            """.update.run()
@@ -108,18 +111,89 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
         sql"""DELETE FROM user_passwords WHERE user_id = $userId AND expires_at IS NOT NULL
            """.update.run()
 
+        // A reset replaces the credential the first-login link was issued with, so it revokes the link too:
+        // whoever resets because the link leaked must not leave it working for the rest of the 24 hours.
+        sql"""DELETE FROM one_time_links WHERE user_id = $userId AND purpose = ${PostgresPasswordRepository.FirstLogin}""".update.run()
+
         sql"""INSERT INTO user_passwords (user_id, password, salt, created_at, expires_at)
               VALUES ($userId, $passwordHash, $salt, $now, $expiresAt)
            """.update.run()
       }.unit
 
   override def deleteTemporary(userId: UserId): Task[Unit] =
-    xa.connectMeasured("delete-temporary-password"):
+    xa.transactMeasured("delete-temporary-password") {
       sql"""DELETE FROM user_passwords WHERE user_id = $userId AND expires_at IS NOT NULL
          """.update.run()
-    .unit
+      sql"""DELETE FROM one_time_links WHERE user_id = $userId AND purpose = ${PostgresPasswordRepository.FirstLogin}""".update.run()
+    }.unit
+
+  override def createBootstrapCredential(
+      userId: UserId,
+      passwordHash: Secret,
+      salt: Salt,
+      expiresAt: Instant,
+      linkTokenHash: Option[Array[Byte]],
+  ): Task[Boolean] =
+    Clock.instant.flatMap: now =>
+      xa.transactMeasured("create-bootstrap-credential") {
+        // Same per-user lock as `create`: replicas that bootstrap at the same moment queue here, and the
+        // later ones read the first one's committed rows and find a usable credential.
+        sql"SELECT 1 FROM pg_advisory_xact_lock(${PostgresPasswordRepository.PasswordHistoryLockNamespace}, hashtext(${userId.toString}))"
+          .query[Int].run()
+
+        val usable = sql"""
+          SELECT id FROM user_passwords
+          WHERE user_id = $userId AND (expires_at IS NULL OR expires_at > $now)
+        """.query[Long].run()
+
+        if usable.nonEmpty then false
+        else
+          // An expired temporary password (and its token) is replaced, not kept.
+          sql"""DELETE FROM user_passwords WHERE user_id = $userId AND expires_at IS NOT NULL""".update.run()
+          sql"""DELETE FROM one_time_links WHERE user_id = $userId AND purpose = ${PostgresPasswordRepository.FirstLogin}""".update.run()
+          sql"""INSERT INTO user_passwords (user_id, password, salt, created_at, expires_at)
+                VALUES ($userId, $passwordHash, $salt, $now, $expiresAt)""".update.run()
+          linkTokenHash.foreach: hash =>
+            sql"""INSERT INTO one_time_links (user_id, purpose, token_hash, created_at, expires_at)
+                  VALUES ($userId, ${PostgresPasswordRepository.FirstLogin}, $hash, $now, $expiresAt)""".update.run()
+          true
+      }
+
+  override def resetBootstrapCredential(userId: UserId): Task[Boolean] =
+    xa.transactMeasured("reset-bootstrap-credential") {
+      sql"SELECT 1 FROM pg_advisory_xact_lock(${PostgresPasswordRepository.PasswordHistoryLockNamespace}, hashtext(${userId.toString}))"
+        .query[Int].run()
+
+      val permanent = sql"SELECT id FROM user_passwords WHERE user_id = $userId AND expires_at IS NULL".query[Long].run()
+      if permanent.nonEmpty then false
+      else
+        sql"""DELETE FROM user_passwords WHERE user_id = $userId AND expires_at IS NOT NULL""".update.run()
+        sql"""DELETE FROM one_time_links WHERE user_id = $userId AND purpose = ${PostgresPasswordRepository.FirstLogin}""".update.run()
+        true
+    }
+
+  override def consumeLink(tokenHash: Array[Byte], accepted: Set[OneTimeLinkPurpose]): Task[Option[ConsumedLink]] =
+    Clock.instant.flatMap: now =>
+      xa.connectMeasured("consume-one-time-link"):
+        // Only the purposes the caller handles are touched: a link meant for another endpoint, or of a purpose
+        // from a newer release, is left alone instead of being spent by a caller that cannot act on it.
+        val known = accepted.map(_.value).toVector
+        sql"""
+          DELETE FROM one_time_links
+          WHERE token_hash = $tokenHash AND expires_at > $now AND purpose = ANY($known)
+            -- Belt and braces: a permanent password ends the first login even if a release that did not know
+            -- the table set it (rollback, then roll forward) and left the link behind.
+            AND (purpose <> ${PostgresPasswordRepository.FirstLogin} OR NOT EXISTS (
+              SELECT 1 FROM user_passwords p
+              WHERE p.user_id = one_time_links.user_id AND p.expires_at IS NULL
+            ))
+          RETURNING user_id, purpose
+        """.query[(UserId, String)].run().headOption.flatMap: (userId, purpose) =>
+          OneTimeLinkPurpose.fromValue(purpose).map(ConsumedLink(userId, _))
 
 object PostgresPasswordRepository:
+  private[password] val FirstLogin: String = OneTimeLinkPurpose.FirstLogin.value
+
   /** Namespace (first key) for the transaction-level advisory lock guarding password history
     * changes. Advisory-lock keys are global to the entire database — shared across every table,
     * feature, and service on it — so this value must be unique DB-wide, not just within this

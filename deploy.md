@@ -1219,15 +1219,72 @@ new path does not clear.
 #### First admin login
 
 `AuthBootstrapService` creates the `admin` user with the `oauth-admin` role and a **temporary**
-password, `ADMIN_BOOTSTRAP_PASSWORD`, generated once and kept in OpenBao. `versola up` prints which
-bundle file holds it:
+password, `ADMIN_BOOTSTRAP_PASSWORD`, generated once and kept in OpenBao. It is valid **24 hours**
+and forces a set-password step.
+
+The first-login link is the first use of a general mechanism, **one-time links**: a random token that
+someone is sent and that the first request carrying it spends, with a stored *purpose* that decides
+what opening it does (`first_login` today; an invitation or a password reset sent by email would be
+new purposes). They live in the `one_time_links` table, one row per user and purpose, and travel as
+the `link_token` query parameter. Delivering a link (the log line below, later an email) is separate
+from the link itself.
+
+When `auth.conf` has `bootstrap.first-login-url` (`versola-tools` writes it on vps:
+`<edge-url>/login/central-admin`), bootstrap also issues a **one-time link of purpose `first_login`**
+together with the temporary password and logs one line, once, by the replica that created it:
+
+```
+first-login link for admin: <edge-url>/login/central-admin?link_token=<token>
+```
+
+Opening it starts the console login (edge passes the token on to `auth`'s `/authorize`) with the
+password already passed, then the usual set-password step. The token is 256 random bits, stored only
+as a SHA-256, valid as long as the temporary password, **spent by the first request that presents it**
+and deleted when a permanent password is set, when the temporary password is replaced (Console →
+**Reset Password** of the admin) or deleted, and when the user is deleted. It is a secret until then.
+The link is the one place the token is printed: it is in that log line (so also in whatever ships
+`auth`'s logs, an `otel-exporter` log pipeline included) and in the request line of any reverse proxy
+in front of `edge`: **the nginx that `versola` runs on a vps logs the full request line, query string
+included**, so the token is in that proxy's access log until it is spent. `auth`'s own access log
+records query parameters only if listed in `logQuery`. Auth does not keep the raw token: the database
+holds its hash. The one exception is a client that requires **PAR** or a signed request object (JAR):
+there the token travels inside the pushed or signed request, and `pushed_authorization_requests`
+holds it until the request is consumed or expires. Without `first-login-url` no token is issued. The
+migration `V0033` adds the `one_time_links` table; the `cleanup.tables` entry for it is written by
+`gen-env` into a newly generated `auth.conf`, an existing one needs it added by hand (without it an
+expired row just stays until the next bootstrap, a password change or a purge replaces it).
+
+Open the link yourself, in the browser you will sign in with. Do not paste it into chat or mail: a
+link preview that follows it spends the token, and you are left with an ordinary sign-in page. The
+token is spent before the login is created, so an error at that moment (a database or `central`
+outage) burns it as well. A browser that already has a session ignores the token and does not spend it.
+If a link may have leaked, resetting is not instant protection: a login already opened from it stays
+open at the "set a permanent password" step until the conversation expires (15 minutes by default) and
+can still set a password in that time, so after a leak wait that long before relying on the new link.
+
+A spent or lost link does **not** take the temporary password with it: it is still valid for its 24
+hours, and the password path below is the immediate way in. To get a new link without waiting, start
+`auth` with `BOOTSTRAP_RESET=1` in its environment. This is a manual, operator-level step with no
+command of its own yet: the vps compose gives the container `auth.secrets.env` and an `environment:`
+block, the variable has to be in one of them, and `docker restart` does **not** re-read either, so the
+container has to be recreated (`docker compose up -d` on the bundle). `versola` rewrites
+`auth.secrets.env` from OpenBao, which drops a line added by hand, and replica containers read their
+own copy. Do it with a **single** `auth` replica running, and remove the variable afterwards. It drops
+the unused temporary password and token and bootstrap issues a new token and a new link line (the
+temporary password keeps its value, with a fresh 24 hours). Left set, it resets on every start and
+on every replica, so only the last replica's link works and the temporary password never expires. It is
+refused, with a warning in the log, once the admin has a permanent password. The password path stays
+for Kubernetes and for operators who prefer it: `versola up` still prints which bundle file holds
+`ADMIN_BOOTSTRAP_PASSWORD`:
 
 ```bash
 grep ADMIN_BOOTSTRAP_PASSWORD <bundle printed by versola up>/auth.secrets.env
 ```
 
-It is valid **24 hours** and forces a set-password step. If it expired, `docker restart
-versola-auth` makes bootstrap set a fresh one. More admin users: Console → **Users** → **Create
+If the temporary password expired without a first login, `docker restart versola-auth` makes
+bootstrap set a fresh one (and a new link). An environment upgraded to this release while its
+temporary password is still valid gets no link until that password expires; set `BOOTSTRAP_RESET=1`
+once to get one now. More admin users: Console → **Users** → **Create
 User**, **Edit Roles**, **Reset Password** — in prod the temporary password can only be delivered by
 email or SMS, and neither is configured yet ([5](#5-known-gaps)).
 

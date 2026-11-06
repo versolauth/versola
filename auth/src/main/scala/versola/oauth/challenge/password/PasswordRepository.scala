@@ -40,3 +40,31 @@ trait PasswordRepository:
 
   /** Deletes all temporary passwords for the user. */
   def deleteTemporary(userId: UserId): Task[Unit]
+
+  /** Creates the bootstrap admin's temporary password and, when `linkTokenHash` is given, its
+    * first-login token, but only if the user has no usable credential (a permanent password or a
+    * temporary one that has not expired). The check and the inserts run under the per-user lock, so
+    * of several auth replicas starting together exactly one gets `true`, and only that one prints a
+    * link. Replaces any earlier token of the user.
+    */
+  def createBootstrapCredential(
+      userId: UserId,
+      passwordHash: Secret,
+      salt: Salt,
+      expiresAt: Instant,
+      linkTokenHash: Option[Array[Byte]],
+  ): Task[Boolean]
+
+  /** Deletes the user's temporary password and first-login token so that the next bootstrap issues new
+    * ones. Refused (`false`, nothing deleted) when the user has a permanent password: reset exists for
+    * an admin who has not finished the first login, never as a way around a password that is set.
+    */
+  def resetBootstrapCredential(userId: UserId): Task[Boolean]
+
+  /** Spends a one-time link: deletes the row and returns whose it was and what it was for when the hash matches
+    * an unexpired link of one of the `accepted` purposes, `None` otherwise: a link of any other purpose is neither
+    * spent nor reported, so a caller never burns a link it cannot act on. One statement, so two concurrent opens
+    * of the same link cannot both succeed. A `first_login` link is also refused for a user who has a permanent
+    * password.
+    */
+  def consumeLink(tokenHash: Array[Byte], accepted: Set[OneTimeLinkPurpose]): Task[Option[ConsumedLink]]

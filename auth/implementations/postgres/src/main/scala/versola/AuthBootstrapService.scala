@@ -1,14 +1,14 @@
 package versola
 
-import versola.util.SequentialLayers.*
-import versola.oauth.challenge.password.PasswordRepository
+import versola.antifraud.{AntifraudSettingsRepository, Tuning}
+import versola.oauth.challenge.password.{OneTimeLink, PasswordRepository}
 import versola.oauth.client.model.TenantId
 import versola.role.model.RoleId
-import versola.antifraud.{AntifraudSettingsRepository, Tuning}
 import versola.user.UserRepository
 import versola.user.model.{Login, UserId}
+import versola.util.SequentialLayers.*
 import versola.util.{CoreConfig, EnvName, Phone, Salt, Secret, SecureRandom, SecurityService}
-import zio.{Clock, Task, ZIO, ZLayer}
+import zio.{Clock, System, Task, UIO, ZIO, ZLayer}
 
 import java.util.UUID
 
@@ -76,6 +76,14 @@ object AuthBootstrapService:
             add = Set(RoleId("oauth-admin")),
             remove = Set.empty,
           )
+          // BOOTSTRAP_RESET=1 on a restart drops the still-valid temporary password and its link so that
+          // new ones are issued below, instead of the admin waiting out the 24 hours. A permanent password
+          // is never touched: the repository refuses, and the normal recovery flows apply.
+          _ <- resetRequested.flatMap: requested =>
+            ZIO.when(requested):
+              passwordRepo.resetBootstrapCredential(userId).flatMap:
+                case true => ZIO.logInfo(s"BOOTSTRAP_RESET: dropped the temporary credential of admin user '${cfg.login}'")
+                case false => ZIO.logWarning(s"BOOTSTRAP_RESET ignored: admin user '${cfg.login}' already has a permanent password")
           now <- Clock.instant
           passwords <- passwordRepo.list(userId)
           // A usable credential is any permanent password or a still-valid temporary one.
@@ -83,12 +91,29 @@ object AuthBootstrapService:
           // stays locked out until cleanup removes the stale row.
           hasUsableCredential = passwords.exists: record =>
             record.expiresAt.forall(_.isAfter(now))
+          // Cheap pre-check to skip the Argon2 hash on every restart; the repository checks again under
+          // the per-user lock, which is what decides when replicas start together.
           _ <- ZIO.unless(hasUsableCredential):
             for
               salt <- secureRandom.nextBytes(16).map(Salt(_))
               hash <- securityService.hashPassword(Secret.fromString(cfg.password), salt, config.security.passwordsSecret)
               expiresAt = now.plusSeconds(BootstrapPasswordTtlSeconds)
-              _ <- passwordRepo.createTemporary(userId, Secret(hash), salt, expiresAt)
-              _ <- ZIO.logInfo(s"Set temporary bootstrap password for admin user '${cfg.login}'")
+              link <- ZIO.foreach(cfg.firstLoginUrl)(url => OneTimeLink.generate(secureRandom).map(url -> _))
+              created <- passwordRepo.createBootstrapCredential(
+                userId = userId,
+                passwordHash = Secret(hash),
+                salt = salt,
+                expiresAt = expiresAt,
+                linkTokenHash = link.map((_, token) => OneTimeLink.hash(token)),
+              )
+              _ <- ZIO.when(created):
+                ZIO.logInfo(s"Set temporary bootstrap password for admin user '${cfg.login}'") *>
+                  // The only place the token appears: whoever deploys (versola-cli, #82) reads this line. It is a secret for up to
+                  // 24 hours, single use, and bound to a password change; it is never written to a file.
+                  ZIO.foreachDiscard(link): (url, token) =>
+                    ZIO.logInfo(s"first-login link for admin: $url?${OneTimeLink.ParamName}=$token")
             yield ()
         yield ()
+
+    private val resetRequested: UIO[Boolean] =
+      System.env("BOOTSTRAP_RESET").map(_.contains("1")).orElseSucceed(false)

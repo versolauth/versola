@@ -2,6 +2,7 @@ package versola.oauth.authorize
 
 import versola.oauth.AuthMetrics
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
+import versola.oauth.challenge.password.{ConsumedLink, OneTimeLink, OneTimeLinkPurpose, PasswordRepository}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.consent.{ConsentDecision, ConsentService}
@@ -44,7 +45,7 @@ object AuthorizeEndpointService:
     case Ignore
 
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       conversationRepository: ConversationRepository,
@@ -61,6 +62,7 @@ object AuthorizeEndpointService:
       conversationRouter: ConversationRouter,
       acrResolutionService: AcrResolutionService,
       consentService: ConsentService,
+      passwordRepository: PasswordRepository,
   ) extends AuthorizeEndpointService:
 
     override def authorize(
@@ -145,7 +147,35 @@ object AuthorizeEndpointService:
           case (None, None) =>
             // ACR is voluntary (OIDC Core §3.1.2.1): without a known user we cannot verify
             // achievability, so we proceed with normal auth and omit the acr claim.
-            createConversation(authId, request, flow, registrationAvailable, uiLocales, Map.empty)
+            val ordinaryLogin = createConversation(authId, request, flow, registrationAvailable, uiLocales, Map.empty)
+            request.linkToken match
+              case None => ordinaryLogin
+              case Some(token) =>
+                // A one-time link (issue #824). The token is spent here, once, and what happens next is decided by
+                // the purpose stored with it. For the bootstrap admin's first-login link the conversation records
+                // only that the password step is passed and a permanent password is owed. A token that is unknown,
+                // expired or already spent is not an error: the request goes on as an ordinary login, so the answer
+                // does not tell a guesser whether a token ever existed. Only reached with no session and no
+                // id_token_hint: a browser that is already signed in, or one that names a user, is never turned
+                // into someone else by a query parameter.
+                passwordRepository.consumeLink(OneTimeLink.hash(token), accepted = Set(OneTimeLinkPurpose.FirstLogin)).flatMap:
+                  case None => ordinaryLogin
+                  // A purpose is accepted here only together with its case: add both.
+                  case Some(ConsumedLink(userId, OneTimeLinkPurpose.FirstLogin)) =>
+                    createConversation(
+                      authId,
+                      request,
+                      flow,
+                      registrationAvailable,
+                      uiLocales,
+                      amr = Map(PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
+                      applyHint = false,
+                      knownUserId = Some(userId),
+                      // Fail closed: a token whose user is gone must not leave a conversation that carries the
+                      // passed password factor and then asks for some other user's identifier.
+                      missingUser = MissingUserBehavior.Deny,
+                      needsPasswordChange = true,
+                    )
 
           case (Some(SessionInfo(id, session)), _) =>
             for
@@ -352,6 +382,7 @@ object AuthorizeEndpointService:
         missingUser: MissingUserBehavior = MissingUserBehavior.Ignore,
         priorSessionId: Option[MAC.Of[SessionId]] = None,
         priorSessionUserId: Option[UserId] = None,
+        needsPasswordChange: Boolean = false,
     ): Task[AuthorizeResponse] =
       for
         userOpt <- knownUserId match
@@ -414,7 +445,7 @@ object AuthorizeEndpointService:
           userAgentCookie = request.userAgentCookie,
           version = 0,
           amr = amr,
-          needsPasswordChange = false,
+          needsPasswordChange = needsPasswordChange,
           targetAcr = targetAcr,
           csrfToken = csrfToken,
           priorSessionId = priorSessionId,
