@@ -9,6 +9,7 @@ import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.model.{ClientId, TenantId}
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import versola.oauth.logout.LogoutService
+import versola.oauth.revocation.RevocationCause
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionUnderUserAgent, UserAgentId, UserAgentRecord, UserDevice}
 import versola.role.model.RoleId
@@ -229,7 +230,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         resp.status == Status.NoContent,
         seen == List("logout", "purge"),
-        logout.invalidateAllSessions.calls == List((passkeyUserId, "user_deleted")),
+        logout.invalidateAllSessions.calls == List((passkeyUserId, RevocationCause.UserDeleted)),
         repo.delete.calls == List(passkeyUserId),
       ).label("the relying parties are told while the sessions are still there to be read")
     },

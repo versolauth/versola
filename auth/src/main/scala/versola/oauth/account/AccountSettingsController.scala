@@ -10,6 +10,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.ConversationRenderService.StepView
 import versola.oauth.conversation.{ConversationRenderService, UiLocales}
+import versola.oauth.revocation.RevocationCause
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.PublicSessionId
 import versola.user.UserRepository
@@ -71,7 +72,7 @@ object AccountSettingsController extends Controller:
       for
         _ <- authorizeResource(request)
         body <- request.bodyAs[RevokeSessionRequest]
-        response <- ZIO.serviceWithZIO[SessionService](_.invalidateForUser(body.targetSessionId, body.userId)).flatMap:
+        response <- ZIO.serviceWithZIO[SessionService](_.invalidateForUser(body.targetSessionId, body.userId, RevocationCause.UserRevoked)).flatMap:
           case true =>
             // The session's own record is gone with it, so the number of relying parties is not known here: 0 says "not known".
             ZIO.serviceWithZIO[AuditEvents](

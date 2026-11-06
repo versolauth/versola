@@ -2,6 +2,7 @@ package versola.oauth.session
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.{AuthMethodRef, ClientId, ScopeToken}
+import versola.oauth.revocation.{Revocation, RevocationCause, RevocationCursor, RevocationKey, RevocationRepository, RevocationTerms}
 import versola.oauth.session.model.{
   ClientEntry,
   PriorSession,
@@ -43,6 +44,13 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
   val userId2 = UserId(UUID.fromString("a077fb08-9935-4a6d-8643-bf97c073bf0f"))
 
   val ttl = 5.minutes
+
+  /** What the methods that end a session are told about the revocation they record. */
+  val terms = RevocationTerms(RevocationCause.Logout, 10.minutes)
+
+  /** What the repository has recorded as revoked, by key: the whole list is small in a test. */
+  def recorded(env: SessionRepositorySpec.Env): Task[Map[RevocationKey, Revocation]] =
+    env.revocations.activeSince(RevocationCursor.Beginning, 100).map(_.revocations.map(r => r.key -> r).toMap)
 
   val userAgentId1 = UserAgentId(UUID.fromString("00000000-0000-0000-0000-0000000000b1"))
   val userAgentId2 = UserAgentId(UUID.fromString("00000000-0000-0000-0000-0000000000b2"))
@@ -239,7 +247,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
             None,
           )
           _ <- env.repository.create(atomicSessionId, session1.copy(publicId = atomicPublicId), ttl, None, None)
-          _ <- env.repository.invalidate(atomicSessionId)
+          _ <- env.repository.invalidate(atomicSessionId, terms)
           _ <- TestClock.adjust(1.second)
           ended <- env.repository.findEndedByUserId(userId1)
           otherUser <- env.repository.findEndedByUserId(userId2)
@@ -268,7 +276,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
             None,
           )
           before <- env.repository.findByUserId(userId1)
-          invalidated <- env.repository.invalidateByUserId(userId1)
+          invalidated <- env.repository.invalidateByUserId(userId1, terms)
           after <- env.repository.findByUserId(userId1)
         yield assertTrue(
           before.size == 2,
@@ -280,14 +288,14 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
         for
           _ <- env.repository.create(sessionId1, session1, 0.seconds, None, None)
           _ <- TestClock.adjust(1.second)
-          invalidated <- env.repository.invalidateByUserId(userId1)
+          invalidated <- env.repository.invalidateByUserId(userId1, terms)
         yield assertTrue(invalidated.isEmpty)
       },
       test("invalidateByUserId does not affect other users") {
         for
           _ <- env.repository.create(sessionId1, session1, ttl, None, None)
           _ <- env.repository.create(sessionId2, session2, ttl, None, None)
-          _ <- env.repository.invalidateByUserId(userId1)
+          _ <- env.repository.invalidateByUserId(userId1, terms)
           session1After <- env.repository.findSession(sessionId1)
           session2After <- env.repository.findSession(sessionId2)
         yield assertTrue(
@@ -319,7 +327,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           )
           _ <- env.repository.create(atomicSessionId, session1, 5.minutes, None, None)
           _ <- env.repository.createRefreshToken(atomicTokenId, None, record, None)
-          _ <- env.repository.invalidateByUserId(userId1)
+          _ <- env.repository.invalidateByUserId(userId1, terms)
           sessionAfter <- env.repository.findSession(atomicSessionId)
           tokenAfter <- env.repository.findToken(atomicTokenId)
         yield assertTrue(sessionAfter.isEmpty, tokenAfter.isEmpty)
@@ -354,7 +362,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           _ <- TestClock.adjust(1.second)
           sessionGone <- env.repository.findSession(atomicSessionId)
           tokenBefore <- env.repository.findToken(atomicTokenId)
-          _ <- env.repository.invalidateByUserId(userId1)
+          _ <- env.repository.invalidateByUserId(userId1, terms)
           tokenAfter <- env.repository.findToken(atomicTokenId)
         yield assertTrue(
           sessionGone.isEmpty,
@@ -448,22 +456,93 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           found.map(_.familyId).toSet == Set(liveFamily, rotatedFamily),
         )
       },
+      test("invalidate records the session as revoked, for as long as a token issued under it can live") {
+        for
+          now <- Clock.instant
+          _ <- env.repository.create(sessionId1, session1, ttl, None, None)
+          _ <- env.repository.invalidate(sessionId1, terms)
+          entries <- recorded(env)
+        yield assertTrue(
+          // The `sid` claim of an access token is the session's public id, and the entry ends
+          // nothing the user's other sessions hold: `sid`, no issuance bound.
+          entries.keySet == Set(RevocationKey.Sid(publicId1)),
+          entries.get(RevocationKey.Sid(publicId1)).exists(_.expiresAt == now.plus(terms.ttl)),
+          entries.get(RevocationKey.Sid(publicId1)).exists(_.issuedBefore.isEmpty),
+        )
+      },
+      test("invalidate records nothing for a session that is unknown or already over") {
+        for
+          _ <- env.repository.create(sessionId2, session2, 0.seconds, None, None)
+          _ <- TestClock.adjust(1.second)
+          _ <- env.repository.invalidate(sessionId1, terms)
+          _ <- env.repository.invalidate(sessionId2, terms)
+          entries <- recorded(env)
+        yield assertTrue(entries.isEmpty)
+      },
+      test("invalidateByPublicId records the session as revoked, and nothing for an unknown one") {
+        for
+          now <- Clock.instant
+          _ <- env.repository.create(sessionId1, session1, ttl, None, None)
+          _ <- env.repository.invalidateByPublicId(publicId2, terms)
+          none <- recorded(env)
+          _ <- env.repository.invalidateByPublicId(publicId1, terms)
+          entries <- recorded(env)
+        yield assertTrue(
+          none.isEmpty,
+          entries.keySet == Set(RevocationKey.Sid(publicId1)),
+          entries.get(RevocationKey.Sid(publicId1)).exists(_.expiresAt == now.plus(terms.ttl)),
+        )
+      },
+      test("invalidateByPublicIdForUser records the session of its owner, and nothing for another user's") {
+        for
+          _ <- env.repository.create(sessionId1, session1, ttl, None, None)
+          _ <- env.repository.create(sessionId2, session2, ttl, None, None)
+          // Knowing a session's id is not enough to end it, or to have it recorded as revoked.
+          _ <- env.repository.invalidateByPublicIdForUser(publicId2, userId1, terms)
+          refused <- recorded(env)
+          _ <- env.repository.invalidateByPublicIdForUser(publicId1, userId1, terms)
+          entries <- recorded(env)
+        yield assertTrue(refused.isEmpty, entries.keySet == Set(RevocationKey.Sid(publicId1)))
+      },
+      test("invalidateByUserId records the user as revoked up to the instant their sessions ended") {
+        for
+          now <- Clock.instant
+          _ <- env.repository.create(sessionId1, session1, ttl, None, None)
+          _ <- env.repository.invalidateByUserId(userId1, terms)
+          entries <- recorded(env)
+          entry = entries.get(RevocationKey.Sub(userId1.toString))
+        yield assertTrue(
+          // `sub`, bounded by issuance: a token the user obtains by logging in again afterwards is
+          // issued after `issuedBefore` and must keep working.
+          entries.keySet == Set(RevocationKey.Sub(userId1.toString)),
+          entry.exists(_.issuedBefore.contains(now)),
+          entry.exists(_.expiresAt == now.plus(terms.ttl)),
+        )
+      },
+      test("invalidateByUserId records the user even when no session of theirs is live") {
+        for
+          // A user can hold access tokens whose session has already ended; the revocation is what
+          // reaches them, so it does not depend on there being a session to end.
+          ended <- env.repository.invalidateByUserId(userId2, terms)
+          entries <- recorded(env)
+        yield assertTrue(ended.isEmpty, entries.keySet == Set(RevocationKey.Sub(userId2.toString)))
+      },
       test("invalidate returns the deleted session and removes it") {
         for
           _ <- env.repository.create(sessionId1, session1, ttl, None, None)
-          result <- env.repository.invalidate(sessionId1)
+          result <- env.repository.invalidate(sessionId1, terms)
           after <- env.repository.findSession(sessionId1)
         yield assertTrue(withoutExpiry(result).contains(session1), after.isEmpty)
       },
       test("invalidate returns None for a non-existent session") {
-        for result <- env.repository.invalidate(sessionId1)
+        for result <- env.repository.invalidate(sessionId1, terms)
         yield assertTrue(result.isEmpty)
       },
       test("invalidate returns None and is a no-op for an already expired session") {
         for
           _ <- env.repository.create(sessionId1, session1, 0.seconds, None, None)
           _ <- TestClock.adjust(1.second)
-          result <- env.repository.invalidate(sessionId1)
+          result <- env.repository.invalidate(sessionId1, terms)
         yield assertTrue(result.isEmpty)
       },
       test("invalidate removes associated refresh tokens") {
@@ -490,14 +569,14 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           )
           _ <- env.repository.create(atomicSessionId, session1, 5.minutes, None, None)
           _ <- env.repository.createRefreshToken(atomicTokenId, None, record, None)
-          _ <- env.repository.invalidate(atomicSessionId)
+          _ <- env.repository.invalidate(atomicSessionId, terms)
           tokenAfter <- env.repository.findToken(atomicTokenId)
         yield assertTrue(tokenAfter.isEmpty)
       },
       test("invalidateByPublicId returns the session id and record and removes it") {
         for
           _ <- env.repository.create(sessionId1, session1, ttl, None, None)
-          result <- env.repository.invalidateByPublicId(publicId1)
+          result <- env.repository.invalidateByPublicId(publicId1, terms)
           after <- env.repository.findSession(sessionId1)
         yield assertTrue(
           result.exists { case (id, record) => id.sameElements(sessionId1) && record.copy(expiresAt = Instant.EPOCH) == session1 },
@@ -505,27 +584,27 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
         )
       },
       test("invalidateByPublicId returns None for a non-existent public id") {
-        for result <- env.repository.invalidateByPublicId(publicId1)
+        for result <- env.repository.invalidateByPublicId(publicId1, terms)
         yield assertTrue(result.isEmpty)
       },
       test("invalidateByPublicId invalidates even an already expired session") {
         for
           _ <- env.repository.create(sessionId1, session1, 0.seconds, None, None)
           _ <- TestClock.adjust(1.second)
-          result <- env.repository.invalidateByPublicId(publicId1)
+          result <- env.repository.invalidateByPublicId(publicId1, terms)
         yield assertTrue(result.exists { case (id, record) => id.sameElements(sessionId1) && record.copy(expiresAt = Instant.EPOCH) == session1 })
       },
       test("invalidateByPublicIdForUser invalidates an expired session owned by the user") {
         for
           _ <- env.repository.create(sessionId1, session1, 0.seconds, None, None)
           _ <- TestClock.adjust(1.second)
-          revoked <- env.repository.invalidateByPublicIdForUser(publicId1, userId1)
+          revoked <- env.repository.invalidateByPublicIdForUser(publicId1, userId1, terms)
         yield assertTrue(revoked)
       },
       test("invalidateByPublicIdForUser does not invalidate another user's session") {
         for
           _ <- env.repository.create(sessionId2, session2, ttl, None, None)
-          revoked <- env.repository.invalidateByPublicIdForUser(publicId2, userId1)
+          revoked <- env.repository.invalidateByPublicIdForUser(publicId2, userId1, terms)
           after <- env.repository.findSession(sessionId2)
         yield assertTrue(!revoked, withoutExpiry(after).contains(session2))
       },
@@ -553,7 +632,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           )
           _ <- env.repository.create(atomicSessionId, session1.copy(publicId = atomicPublicId), 5.minutes, None, None)
           _ <- env.repository.createRefreshToken(atomicTokenId, None, record, None)
-          _ <- env.repository.invalidateByPublicId(atomicPublicId)
+          _ <- env.repository.invalidateByPublicId(atomicPublicId, terms)
           tokenAfter <- env.repository.findToken(atomicTokenId)
         yield assertTrue(tokenAfter.isEmpty)
       },
@@ -600,4 +679,4 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
     )
 
 object SessionRepositorySpec:
-  case class Env(repository: SessionRepository)
+  case class Env(repository: SessionRepository, revocations: RevocationRepository)

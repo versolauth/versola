@@ -18,8 +18,9 @@ import versola.oauth.client.model.{
   TenantId,
 }
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
-import versola.oauth.logout.BackChannelDispatcher
+import versola.oauth.logout.BackChannelOutbox
 import versola.oauth.model.{AccessToken, AccessTokenPayload, RefreshToken}
+import versola.oauth.revocation.{Revocation, RevocationCache, RevocationCause, RevocationKey, RevocationRepository, RevocationTerms}
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId, RefreshTokenRecord, SessionId}
@@ -120,6 +121,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     authorizationDetails = None,
     sessionId = None,
     confirmation = None,
+    familyId = None,
   )
 
   /** RFC 8705 §2.1: authenticates by certificate, so it holds no secret. */
@@ -160,17 +162,21 @@ object RevocationServiceSpec extends UnitSpecBase:
           _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.tokenRepository.findToken.succeedsWith(Some(tokenRecord(now)))
-          _ <- env.tokenRepository.delete.succeedsWith(())
-          _ <- env.accessTokenRevocationService.revokeFamily.succeedsWith(())
+          _ <- env.tokenRepository.deleteByFamily.succeedsWith(())
+          _ <- env.accessTokenRevocationService.announceFamily.succeedsWith(())
 
           service <- ZIO.service[RevocationService]
           result <- service.revokeRefreshToken(refreshToken1, credentials, None)
           drafts <- env.audit.recorded
         yield assertTrue(
           result == (),
+          // The whole family goes, recorded with the client's own TTL as the bound, in the one
+          // repository call that expires it; not just the row that was presented.
+          env.tokenRepository.deleteByFamily.calls ==
+            List((familyId1, RevocationTerms(RevocationCause.Revoke, testClient.accessTokenTtl))),
           // No access token was presented and none is recorded against the chain, so the push
           // names the family and bounds it by the client's own TTL from now.
-          env.accessTokenRevocationService.revokeFamily.calls ==
+          env.accessTokenRevocationService.announceFamily.calls ==
             List((testClient, familyId1, userId1.toString, now.plus(testClient.accessTokenTtl))),
           // RFC 7009: the client revoked it, and the log keeps who it was about and the prefix of the token, not the token.
           drafts.map(_.kind) == List(AuthAuditKinds.TokenRevoked),
@@ -211,7 +217,12 @@ object RevocationServiceSpec extends UnitSpecBase:
           service <- ZIO.service[RevocationService]
           result <- service.revokeRefreshToken(refreshToken1, credentials, None).either
           drafts <- env.audit.recorded
-        yield assertTrue(result == Left(RevocationError.InvalidClient), drafts.isEmpty)).provide(env.layer)
+        yield assertTrue(
+          result == Left(RevocationError.InvalidClient),
+          drafts.isEmpty,
+          // Another client's family is neither expired nor recorded as revoked.
+          env.tokenRepository.deleteByFamily.calls.isEmpty,
+        )).provide(env.layer)
       },
       test("succeed when token not found (idempotent)") {
         val env = Env()
@@ -221,13 +232,13 @@ object RevocationServiceSpec extends UnitSpecBase:
           _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.tokenRepository.findToken.succeedsWith(None)
-          _ <- env.tokenRepository.delete.succeedsWith(())
+          _ <- env.tokenRepository.deleteByFamily.succeedsWith(())
 
           service <- ZIO.service[RevocationService]
           result <- service.revokeRefreshToken(refreshToken1, credentials, None)
           drafts <- env.audit.recorded
-        // nothing was revoked, so nothing is said to have been
-        yield assertTrue(result == (), drafts.isEmpty)).provide(env.layer)
+        // nothing was revoked, so nothing is said to have been, or recorded
+        yield assertTrue(result == (), drafts.isEmpty, env.tokenRepository.deleteByFamily.calls.isEmpty)).provide(env.layer)
       },
     ),
     suite("revokeAccessToken")(
@@ -246,9 +257,9 @@ object RevocationServiceSpec extends UnitSpecBase:
           drafts <- env.audit.recorded
         yield assertTrue(
           result == (),
-          // The token was parsed here, so its own `exp` is used rather than an upper bound.
-          env.accessTokenRevocationService.revoke.calls ==
-            List((testClient, NonEmptyChunk(accessToken1), userId1.toString, payload.expiresAt)),
+          // The token was parsed here, so the service has its own `exp` to record rather than an
+          // upper bound.
+          env.accessTokenRevocationService.revoke.calls == List((testClient, payload)),
           drafts.map(_.kind) == List(AuthAuditKinds.TokenRevoked),
           drafts.head.userId == Some(userId1.asInstanceOf[java.util.UUID]),
           drafts.head.details == AuthAuditDetails.TokenRevoked("access_token", Some(Base64.urlEncode(accessToken1)), None, "rfc7009", count = None),
@@ -266,6 +277,44 @@ object RevocationServiceSpec extends UnitSpecBase:
           service <- ZIO.service[RevocationService]
           result <- service.revokeAccessToken(payload, credentials, None).either
         yield assertTrue(result == Left(RevocationError.InvalidClient))).provide(env.layer)
+      },
+      test("fail with InvalidClient when the token's client id merely contains the caller's") {
+        val env = Env()
+        val app = ClientId("app")
+        val webApp = ClientId("web-app")
+        (for
+          now <- Clock.instant
+          credentials = ClientIdWithSecret(app, Some(clientSecret1))
+          // A token of `web-app`, presented by `app`: a substring of its id, and not its owner.
+          payload = accessTokenPayload(now).copy(clientId = webApp)
+
+          _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient.copy(id = app)))
+
+          service <- ZIO.service[RevocationService]
+          result <- service.revokeAccessToken(payload, credentials, None).either
+          drafts <- env.audit.recorded
+        yield assertTrue(
+          result == Left(RevocationError.InvalidClient),
+          // Nothing was revoked, recorded or said to have been.
+          env.accessTokenRevocationService.revoke.calls.isEmpty,
+          drafts.isEmpty,
+        )).provide(env.layer)
+      },
+      test("revokes a token of a client whose id contains another's, when the caller is that client") {
+        val env = Env()
+        val webApp = ClientId("web-app")
+        (for
+          now <- Clock.instant
+          credentials = ClientIdWithSecret(webApp, Some(clientSecret1))
+          payload = accessTokenPayload(now).copy(clientId = webApp)
+          client = testClient.copy(id = webApp)
+
+          _ <- env.oauthClientService.verifySecret.succeedsWith(Some(client))
+          _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
+
+          service <- ZIO.service[RevocationService]
+          _ <- service.revokeAccessToken(payload, credentials, None)
+        yield assertTrue(env.accessTokenRevocationService.revoke.calls == List((client, payload)))).provide(env.layer)
       },
       test("fail with InvalidClient when token audience doesn't match client") {
         val env = Env()
@@ -290,8 +339,8 @@ object RevocationServiceSpec extends UnitSpecBase:
           _ <- env.oauthClientService.find.succeedsWith(Some(mtlsClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.tokenRepository.findToken.succeedsWith(Some(tokenRecord(now)))
-          _ <- env.tokenRepository.delete.succeedsWith(())
-          _ <- env.accessTokenRevocationService.revokeFamily.succeedsWith(())
+          _ <- env.tokenRepository.deleteByFamily.succeedsWith(())
+          _ <- env.accessTokenRevocationService.announceFamily.succeedsWith(())
 
           // No secret: the certificate is the credential.
           credentials = ClientIdWithSecret(clientId1, None)
@@ -301,7 +350,7 @@ object RevocationServiceSpec extends UnitSpecBase:
           )
         yield assertTrue(
           result == (),
-          env.tokenRepository.delete.calls.nonEmpty,
+          env.tokenRepository.deleteByFamily.calls.nonEmpty,
           env.oauthClientService.verifySecret.calls.isEmpty,
         )).provide(env.layer)
       },
@@ -318,7 +367,7 @@ object RevocationServiceSpec extends UnitSpecBase:
         yield assertTrue(
           result == Left(RevocationError.InvalidClient),
           // Nothing was revoked on the strength of a certificate that authenticates nobody.
-          env.tokenRepository.delete.calls.isEmpty,
+          env.tokenRepository.deleteByFamily.calls.isEmpty,
         )).provide(env.layer)
       },
       test("fails with InvalidClient when a certificate-authenticated client presents none") {
@@ -353,65 +402,108 @@ object RevocationServiceSpec extends UnitSpecBase:
       },
     ),
     suite("AccessTokenRevocationService")(
-      test("pushes a token-scoped event, not a session-scoped one, to the client's back channel") {
-        val dispatcher = stub[BackChannelDispatcher]
-        val backChannelUri = URL.decode("https://rp.example/backchannel").toOption.get
-        val client = testClient.copy(backChannelLogoutUri = Some(backChannelUri))
-        val service = AccessTokenRevocationService.Impl(dispatcher)
-        for
-          now <- Clock.instant
-          _ <- dispatcher.dispatch.succeedsWith(())
-          // Awaited, not forked: one client, one call, so there is nothing to fan out.
-          _ <- service.revoke(client, NonEmptyChunk(accessToken1), userId1.toString, now.plusSeconds(300))
-          calls = dispatcher.dispatch.calls
-        yield assertTrue(
-          calls.map((audience, tenantId, uri, subject, _) => (audience.toList, tenantId, uri, subject)) ==
-            List((List(client.id), client.tenantId, backChannelUri, userId1.toString)),
-          // No `sid`: this must not end the SSO session the token belongs to.
-          calls.head._5 == Json.Obj(
-            "revoked_jti" -> Json.Arr(Json.Str(accessToken1.encoded)),
-            "revoked_exp" -> Json.Num(now.plusSeconds(300).getEpochSecond),
-            "events" -> Json.Obj("versola:event:access-token-revocation" -> Json.Obj()),
-          ),
-        )
-      },
-      test("names the family, not the tokens, when a leaked chain is revoked") {
-        val dispatcher = stub[BackChannelDispatcher]
-        val backChannelUri = URL.decode("https://rp.example/backchannel").toOption.get
-        val client = testClient.copy(backChannelLogoutUri = Some(backChannelUri))
-        val service = AccessTokenRevocationService.Impl(dispatcher)
-        for
-          now <- Clock.instant
-          _ <- dispatcher.dispatch.succeedsWith(())
-          _ <- service.revokeFamily(client, familyId1, userId1.toString, now.plusSeconds(300))
-          calls = dispatcher.dispatch.calls
-        yield assertTrue(
-          // Same event as a jti-scoped revocation, under a different claim: what changes is
-          // which tokens it reaches, not what the recipient does about it.
-          calls.head._5 == Json.Obj(
-            "revoked_fam" -> Json.Arr(Json.Str(familyId1)),
-            "revoked_exp" -> Json.Num(now.plusSeconds(300).getEpochSecond),
-            "events" -> Json.Obj("versola:event:access-token-revocation" -> Json.Obj()),
-          ),
-        )
-      },
-      test("pushes nothing when the client registered no back-channel URI") {
-        val dispatcher = stub[BackChannelDispatcher]
-        val service = AccessTokenRevocationService.Impl(dispatcher)
-        for
-          now <- Clock.instant
-          _ <- service.revoke(testClient, NonEmptyChunk(accessToken1), userId1.toString, now.plusSeconds(300))
-        yield assertTrue(dispatcher.dispatch.calls.isEmpty)
-      },
-      test("still succeeds when the push fails, since the revocation itself is already done") {
-        val dispatcher = stub[BackChannelDispatcher]
-        val client = testClient.copy(backChannelLogoutUri = Some(URL.decode("https://rp.example/backchannel").toOption.get))
-        val service = AccessTokenRevocationService.Impl(dispatcher)
-        for
-          now <- Clock.instant
-          _ <- dispatcher.dispatch.failsWith(RuntimeException("connection refused"))
-          result <- service.revoke(client, NonEmptyChunk(accessToken1), userId1.toString, now.plusSeconds(300)).either
-        yield assertTrue(result == Right(()))
-      },
+      /** Everything a service under test is handed, and what it did with it. */
+      suite("revoke")(
+        test("records the token until its own exp, and pushes a token-scoped event through the outbox") {
+          val repository = stub[RevocationRepository]
+          val outbox = stub[BackChannelOutbox]
+          val backChannelUri = URL.decode("https://rp.example/backchannel").toOption.get
+          val client = testClient.copy(backChannelLogoutUri = Some(backChannelUri))
+          val service = AccessTokenRevocationService.Impl(outbox, repository, stub[RevocationCache])
+          for
+            now <- Clock.instant
+            payload = accessTokenPayload(now)
+            _ <- repository.revoke.succeedsWith(())
+            _ <- outbox.submit.succeedsWith(())
+            _ <- service.revoke(client, payload)
+            deliveries = outbox.submit.calls
+          yield assertTrue(
+            repository.revoke.calls == List(
+              (Revocation(RevocationKey.Jti(accessToken1.encoded), payload.expiresAt, issuedBefore = None), RevocationCause.Revoke),
+            ),
+            deliveries.map(d => (d.audience.toList, d.tenantId, d.uri, d.subject)) ==
+              List((List(client.id), client.tenantId, backChannelUri, userId1.toString)),
+            // No `sid`: this must not end the SSO session the token belongs to.
+            deliveries.head.customClaims == Json.Obj(
+              "revoked_jti" -> Json.Arr(Json.Str(accessToken1.encoded)),
+              "revoked_exp" -> Json.Num(payload.expiresAt.getEpochSecond),
+              "events" -> Json.Obj("versola:event:access-token-revocation" -> Json.Obj()),
+            ),
+          )
+        },
+        test("records the token even when the client registered no back-channel URI, and pushes nothing") {
+          val repository = stub[RevocationRepository]
+          val outbox = stub[BackChannelOutbox]
+          val service = AccessTokenRevocationService.Impl(outbox, repository, stub[RevocationCache])
+          for
+            now <- Clock.instant
+            _ <- repository.revoke.succeedsWith(())
+            _ <- service.revoke(testClient, accessTokenPayload(now))
+          yield assertTrue(
+            // The record is what refuses the token at `/userinfo` and `/introspect`, whether or
+            // not anyone can be told.
+            repository.revoke.calls.size == 1,
+            outbox.submit.calls.isEmpty,
+          )
+        },
+        test("pushes nothing and fails when the record could not be written") {
+          val repository = stub[RevocationRepository]
+          val outbox = stub[BackChannelOutbox]
+          val client = testClient.copy(backChannelLogoutUri = Some(URL.decode("https://rp.example/backchannel").toOption.get))
+          val service = AccessTokenRevocationService.Impl(outbox, repository, stub[RevocationCache])
+          for
+            now <- Clock.instant
+            _ <- repository.revoke.failsWith(RuntimeException("connection refused"))
+            result <- service.revoke(client, accessTokenPayload(now)).either
+          yield assertTrue(
+            // A revocation that was not recorded is not one the caller may be told succeeded, and
+            // not one a client's back channel is told about either.
+            result.isLeft,
+            outbox.submit.calls.isEmpty,
+          )
+        },
+      ),
+      suite("announceFamily")(
+        test("names the family, not the tokens, when a leaked chain is revoked") {
+          val outbox = stub[BackChannelOutbox]
+          val client = testClient.copy(backChannelLogoutUri = Some(URL.decode("https://rp.example/backchannel").toOption.get))
+          val service = AccessTokenRevocationService.Impl(outbox, stub[RevocationRepository], stub[RevocationCache])
+          for
+            now <- Clock.instant
+            _ <- outbox.submit.succeedsWith(())
+            _ <- service.announceFamily(client, familyId1, userId1.toString, now.plusSeconds(300))
+          yield assertTrue(
+            // Same event as a jti-scoped revocation, under a different claim: what changes is
+            // which tokens it reaches, not what the recipient does about it.
+            outbox.submit.calls.head.customClaims == Json.Obj(
+              "revoked_fam" -> Json.Arr(Json.Str(familyId1)),
+              "revoked_exp" -> Json.Num(now.plusSeconds(300).getEpochSecond),
+              "events" -> Json.Obj("versola:event:access-token-revocation" -> Json.Obj()),
+            ),
+          )
+        },
+        test("writes no record of its own, the repository method that ended the family did") {
+          val repository = stub[RevocationRepository]
+          val outbox = stub[BackChannelOutbox]
+          val service = AccessTokenRevocationService.Impl(outbox, repository, stub[RevocationCache])
+          for
+            now <- Clock.instant
+            _ <- service.announceFamily(testClient, familyId1, userId1.toString, now.plusSeconds(300))
+          yield assertTrue(repository.revoke.calls.isEmpty, outbox.submit.calls.isEmpty)
+        },
+      ),
+      suite("isRevoked")(
+        test("answers from the replica's list, with no query") {
+          val repository = stub[RevocationRepository]
+          val cache = stub[RevocationCache]
+          val service = AccessTokenRevocationService.Impl(stub[BackChannelOutbox], repository, cache)
+          for
+            now <- Clock.instant
+            payload = accessTokenPayload(now)
+            _ <- cache.isTokenRevoked.succeedsWith(true)
+            revoked <- service.isRevoked(payload)
+          yield assertTrue(revoked, cache.isTokenRevoked.calls == List(payload), repository.activeSince.calls.isEmpty)
+        },
+      ),
     ),
   )

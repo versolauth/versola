@@ -7,6 +7,7 @@ import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, ResourceUri, ScopeToken}
 import versola.oauth.model.{AccessToken, Cnf, Nonce, RefreshToken}
 import versola.oauth.model.{Nonce, RefreshToken}
+import versola.oauth.revocation.{PostgresRevocationRepository, Revocation, RevocationKey, RevocationTerms}
 import versola.oauth.session.model.{
   ClientEntry,
   EndedSession,
@@ -210,9 +211,19 @@ class PostgresSessionRepository(xa: TransactorZIO)
     * session's, so a token can still be live long after its session expired on its own, and
     * force-logout has to revoke those too, not only the ones under a still-active session.
     */
-  override def invalidateByUserId(userId: UserId): Task[List[SessionRecord]] =
+  override def invalidateByUserId(userId: UserId, revocation: RevocationTerms): Task[List[SessionRecord]] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("invalidate-sessions-by-user"):
+        // Bounded at this call's own `now`, the instant the sessions end: a token the user obtains by
+        // logging in again afterwards is issued after it and keeps working.
+        PostgresRevocationRepository.upsert(
+          Revocation(
+            key = RevocationKey.Sub(userId.toString),
+            expiresAt = now.plus(revocation.ttl),
+            issuedBefore = Some(now),
+          ),
+          revocation.cause,
+        )
         sql"""
           WITH expired AS (
             UPDATE sso_sessions
@@ -246,7 +257,19 @@ class PostgresSessionRepository(xa: TransactorZIO)
           ORDER BY issued_at DESC
         """.query[RefreshTokenRecord].run().toList
 
-  override def invalidate(id: MAC.Of[SessionId]): Task[Option[SessionRecord]] =
+  /** The `sid` claim of an access token is the session's public id, which is what the row names. */
+  private def revokeSession(publicId: PublicSessionId, now: Instant, revocation: RevocationTerms)(using DbCon): Unit =
+    PostgresRevocationRepository.upsert(
+      Revocation(
+        key = RevocationKey.Sid(publicId),
+        expiresAt = now.plus(revocation.ttl),
+        issuedBefore = None,
+      ),
+      revocation.cause,
+    )
+    ()
+
+  override def invalidate(id: MAC.Of[SessionId], revocation: RevocationTerms): Task[Option[SessionRecord]] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("invalidate-session"):
         val session = sql"""
@@ -260,9 +283,13 @@ class PostgresSessionRepository(xa: TransactorZIO)
         sql"""
           UPDATE refresh_tokens SET expires_at = $now WHERE session_id = $id
         """.update.run()
+        session.foreach(record => revokeSession(record.publicId, now, revocation))
         session
 
-  override def invalidateByPublicId(publicId: PublicSessionId): Task[Option[(MAC.Of[SessionId], SessionRecord)]] =
+  override def invalidateByPublicId(
+      publicId: PublicSessionId,
+      revocation: RevocationTerms,
+  ): Task[Option[(MAC.Of[SessionId], SessionRecord)]] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("invalidate-session-by-public-id"):
         val session = sql"""
@@ -271,12 +298,13 @@ class PostgresSessionRepository(xa: TransactorZIO)
           WHERE public_id = $publicId
           RETURNING id, user_id, clients, user_agent_id, created_at, amr, public_id, expires_at
         """.query[(MAC, SessionRecord)].run().headOption
-        session.foreach { case (id, _) =>
+        session.foreach { case (id, record) =>
           sql"""UPDATE refresh_tokens SET expires_at = $now WHERE session_id = $id""".update.run()
+          revokeSession(record.publicId, now, revocation)
         }
         session
 
-  override def invalidateByPublicIdForUser(publicId: PublicSessionId, userId: UserId): Task[Boolean] =
+  override def invalidateByPublicIdForUser(publicId: PublicSessionId, userId: UserId, revocation: RevocationTerms): Task[Boolean] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("invalidate-session-by-public-id-for-user"):
         val sessionId = sql"""
@@ -287,6 +315,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
         """.query[MAC].run().headOption
         sessionId.foreach: id =>
           sql"""UPDATE refresh_tokens SET expires_at = $now WHERE session_id = $id""".update.run()
+          revokeSession(publicId, now, revocation)
         sessionId.isDefined
 
   // ── refresh token methods ─────────────────────────────────────────────────
@@ -508,9 +537,23 @@ class PostgresSessionRepository(xa: TransactorZIO)
           .run()
           .headOption
 
+  /** `fam:<family>` is written under the same lock and in the same transaction as the expiry, so a
+    * family cannot end without the record that its access tokens must stop being accepted too. */
+  private def revokeFamilyTokens(family: RefreshTokenFamilyId, now: Instant, revocation: RevocationTerms)(using DbCon): Unit =
+    PostgresRevocationRepository.upsert(
+      Revocation(
+        key = RevocationKey.Fam(family),
+        expiresAt = now.plus(revocation.ttl),
+        issuedBefore = None,
+      ),
+      revocation.cause,
+    )
+    ()
+
   override def revokeFamily(
       token: MAC.Of[RefreshToken],
       clientId: ClientId,
+      revocation: RevocationTerms,
   ): Task[Option[RevokedFamily]] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("revoke-refresh-token-family") {
@@ -533,6 +576,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
               SET expires_at = $now
               WHERE family_id = $family AND expires_at > $now
             """.update.run()
+            revokeFamilyTokens(family, now, revocation)
 
             // The access tokens the family issued are not enumerated, because they cannot be:
             // the rows name no token, and a generation that has rotated away or been swept
@@ -579,13 +623,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
               WHERE id = $token AND rotated_at IS NULL AND expires_at > $now
             """.query[Int].run().nonEmpty
 
-  override def delete(token: MAC.Of[RefreshToken]): Task[Unit] =
-    Clock.instant.flatMap: now =>
-      xa.connectMeasured("delete-refresh-token"):
-        sql"""UPDATE refresh_tokens SET expires_at = $now WHERE id = $token""".update.run()
-      .unit
-
-  override def deleteByFamily(familyId: RefreshTokenFamilyId): Task[Unit] =
+  override def deleteByFamily(familyId: RefreshTokenFamilyId, revocation: RevocationTerms): Task[Unit] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("delete-refresh-token-family"):
         // The same lock rotation takes, for the same reason `revokeFamily` takes it: without
@@ -598,6 +636,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
           UPDATE refresh_tokens SET expires_at = $now
           WHERE family_id = $familyId AND expires_at > $now
         """.update.run()
+        revokeFamilyTokens(familyId, now, revocation)
       .unit
 
 object PostgresSessionRepository:

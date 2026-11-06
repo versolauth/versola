@@ -16,6 +16,7 @@ import versola.oauth.client.{AuthorizationDetailResolver, OAuthConfigurationServ
 import versola.oauth.clientauth.{AuthenticatedEndpoint, ClientAuthentication}
 import versola.oauth.model.{AccessToken, AuthorizationCodeRecord, Cnf, RefreshToken}
 import versola.oauth.mtls.ClientCertificate
+import versola.oauth.revocation.{RevocationCause, RevocationTerms}
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenFamilyId, RefreshTokenRecord, WithTtl}
@@ -256,16 +257,17 @@ object OAuthTokenService:
             for
               replayedAt <- zio.Clock.instant
               // What the first exchange issued is not in hand here, and is not recorded: the
-              // push names the family the code committed to, which every token that exchange
-              // and its rotations produced carries. Its lifetime is bounded by the client's
-              // TTL rather than read from any token, for want of one to read it from.
-              _ <- accessTokenRevocationService.revokeFamily(
+              // revocation names the family the code committed to, which every token that exchange
+              // and its rotations produced carries. Its lifetime is bounded by the client's TTL
+              // rather than read from any token, for want of one to read it from. Recorded in the
+              // transaction that ends the family; the push to the client's back channel follows.
+              _ <- sessionRepository.deleteByFamily(family, RevocationTerms.forFamily(client, RevocationCause.CodeReplay))
+              _ <- accessTokenRevocationService.announceFamily(
                 client = client,
                 family = family,
                 subject = codeRecord.userId.toString,
                 expiresAt = replayedAt.plus(client.accessTokenTtl),
               )
-              _ <- sessionRepository.deleteByFamily(family)
               _ <- auditReuse(client, "authorization_code", family, codeRecord.userId)
               _ <- ZIO.fail(TokenEndpointError.InvalidGrant.CodeReplayed)
             yield ()
@@ -548,19 +550,19 @@ object OAuthTokenService:
       * former is worth surfacing in the request's error context.
       */
     private def detectReplay(client: OAuthClientRecord, replayed: MAC.Of[RefreshToken]): Task[Boolean] =
-      sessionRepository.revokeFamily(replayed, client.id).flatMap:
+      sessionRepository.revokeFamily(replayed, client.id, RevocationTerms.forFamily(client, RevocationCause.RefreshReuse)).flatMap:
         case Some(family) =>
           // The access tokens the chain issued are not in hand, and are not recorded anywhere
-          // either: the push names the family they all carry as their `fam` claim, which
-          // reaches every generation -- including ones this table no longer holds a row for.
-          // The bound is the client's current accessTokenTtl from now, the only measure left
-          // once no token is being named individually. It is mutable, so a TTL lowered since a
-          // token was minted makes the entry expire before that token does; the alternative,
-          // recording every issued token's expiry against the chain, is what naming the family
-          // exists to avoid.
+          // either: the revocation, written with the family's expiry above, and the push name the
+          // family they all carry as their `fam` claim, which reaches every generation --
+          // including ones this table no longer holds a row for. The bound is the client's
+          // current accessTokenTtl from now, the only measure left once no token is being named
+          // individually. It is mutable, so a TTL lowered since a token was minted makes the
+          // entry expire before that token does; the alternative, recording every issued token's
+          // expiry against the chain, is what naming the family exists to avoid.
           zio.Clock.instant
             .flatMap: revokedAt =>
-              accessTokenRevocationService.revokeFamily(
+              accessTokenRevocationService.announceFamily(
                 client = client,
                 family = family.familyId,
                 subject = family.userId.toString,

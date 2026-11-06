@@ -75,6 +75,7 @@ import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
 import versola.oauth.metadata.{MetadataController, MetadataSyncClient}
 import versola.oauth.mtls.EdgeCertificateTrust
+import versola.oauth.revocation.{PostgresRevocationNotifications, PostgresRevocationRepository, RevocationCache}
 import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController, RevocationService}
 import versola.oauth.session.{PostgresSessionRepository, PostgresUserAgentRepository, SessionRepository, SessionService, UserAgentRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
@@ -280,6 +281,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresAuthorizationCodeRepository.live >++>
       PostgresPushedAuthorizationRepository.live >++>
       PostgresSessionRepository.live >++>
+      PostgresRevocationRepository.live >++>
       PostgresUserAgentRepository.live >++>
       PostgresPasswordRepository.live >++>
       PostgresPasskeyRepository.live >++>
@@ -438,6 +440,11 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       SessionService.live >++>
       BackChannelDispatcher.live >++>
       BackChannelOutbox.live >++>
+      // The list of revoked access tokens `/userinfo` and `/introspect` answer from: loaded before auth
+      // starts serving (it does not start without it), kept current over LISTEN/NOTIFY on its own
+      // connection, which needs `postgres.notifications-url` behind a transaction-mode pooler.
+      PostgresRevocationNotifications.live >++>
+      RevocationCache.live >++>
       AccessTokenRevocationService.live >++>
       OAuthTokenService.live >++>
       IntrospectionService.live >++>

@@ -505,6 +505,41 @@ in a compose file or a Helm `env` block is ignored. See [Access log](#access-log
 - Schema: migration `V1028` adds the nullable `edges.access_log_policy` column; additive, the previous release runs on it.
   `LOG_LEVEL` is unchanged.
 
+#### Behaviour change: `auth` keeps its own list of revoked access tokens (migration `V0032`)
+
+`auth` stores no access tokens, but it now stores what was revoked, in the new `auth_revocations` table, and refuses
+a revoked access token at `/userinfo` and `/introspect` (#729). Before, a revoked token was reported to the client's
+`back_channel_logout_uri` and nowhere else: `/introspect` answered `active: true` until `exp` and `/userinfo` kept
+serving it, and a client without that URI heard nothing at all. A row is written in the same transaction as what
+causes it: a client's `/revoke` (of an access token: `jti`; of a refresh token: the whole refresh-token family), an
+authorization code or refresh token replayed (the family), a logout, an administrator ending a session or forgetting
+a device, the user ending one of their sessions (the session), a user deleted or signed out everywhere (the user,
+bounded at that instant, so a login afterwards works). A row lives for one access token lifetime of the longest-lived
+client, then the cleanup manager removes it (`auth_revocations`, hourly, in the generated `cleanup` block). Password change,
+role change and `DELETE /users/refresh-tokens` do not write one yet.
+
+- **Migration.** Additive (one new table, an index pair, a trigger), so the previous release keeps serving on the new
+  schema and a rollback works; the old release ignores the table. Everything it creates at database level is
+  prefixed `auth_` (table, indexes, trigger, function and the `auth_revocation` notification channel), because `edge` has
+  a `revocations` table and a `revocation` channel of its own and a setup that runs the services in one schema (the
+  generated dev configs, the e2e stack) would otherwise collide. Nothing to backfill: tokens revoked before the upgrade
+  are not in it and stay valid until `exp`.
+- **Behaviour you will see.** `/introspect` returns `{"active": false}` and `/userinfo` returns `401 invalid_token` for
+  a revoked token. A revocation reaches each replica by `LISTEN`/`NOTIFY`, normally within a second; the replica
+  reconciles with the table every `revocation.reload-interval` as a backstop. The `revocation` block of the config is
+  optional: `reload-interval` (600 seconds), `purge-interval` (60 seconds), `overlap` (30 seconds), `batch-size` (50000).
+  Metrics: `revocation_cache_entries`, `revocation_cache_staleness_seconds`, `revocation_cache_reload_failures_total`.
+- **Startup.** A replica loads the whole list before it serves and does not start if it cannot, and it now holds a
+  connection parked on `LISTEN` like `central` and `edge` do: behind a pooler in transaction mode `auth` needs
+  `postgres.notifications-url` (see [Behind a connection pooler](#run_migrations)). `auth` refuses to start, naming that
+  setting, when it cannot receive its own notification.
+- **Back channel.** The signed `versola:event:access-token-revocation` event still goes to `back_channel_logout_uri`,
+  now through the retrying outbox instead of a single attempt. Delivery stays best effort; the table is the record.
+- **`/revoke` changes.** The check that a token belongs to the calling client is now an exact comparison of client ids.
+  Revoking a refresh token now ends its whole family, not only the presented row.
+- Components that verify a JWT on its signature alone (a resource server without `edge`, without introspection and
+  without the event) still accept a revoked token until `exp`.
+
 #### Behaviour change: edge syncs through `/edge/sync/*`, on central's mutual-TLS port
 
 Central serves edges on a surface of their own (#554): `GET /edge/sync/{clients,resources,roles,
@@ -664,6 +699,11 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   is lost (users mid-login start over, unused codes are rejected and the client retries); sessions,
   tokens, consents and users are unaffected. Flipping a table's logging mode takes an
   `ACCESS EXCLUSIVE` lock and rewrites it: run such a migration at low traffic.
+- **Revocations** (`auth_revocations`, `V0032`). The list of access tokens `auth` refuses before their `exp`: one row per revoked
+  token, refresh-token family, session or user, with an expiry of one access token lifetime. It is small by construction, the
+  last few minutes of revocations rather than a history. `revoked_at` is stamped with the database's clock, and the pair
+  `(revoked_at, revoked_key)` is the cursor every replica resumes its reconciliation from. Rows are collected by the cleanup
+  manager once `expires_at` has passed.
 - **Configuration snapshots.** `auth` and `edge` keep the last configuration sync from `central`
   (signed with a key the node already holds) and start from it when `central` is unreachable or
   failing, retrying in the background and reporting `config_snapshot_age_seconds`. The tables fill on
@@ -1771,7 +1811,7 @@ start if migrations are missing (applying them is the separate `versola migrate`
 `false` (lowercase) → as specified. Anything else → the service fails to start, deliberately. The
 generated `compose.yml` sets `"false"` on all three services.
 
-**Behind a connection pooler.** `central` and `edge` keep a connection parked on `LISTEN` (that is
+**Behind a connection pooler.** `central`, `edge` and, since `V0032`, `auth` keep a connection parked on `LISTEN` (that is
 how config changes and token revocations reach every replica). A pooler in transaction mode cannot
 carry it, so when `postgres.url` points at one, set `postgres.notifications-url` to a **direct**
 Postgres URL in the same block. Each service checks at startup that it receives its own

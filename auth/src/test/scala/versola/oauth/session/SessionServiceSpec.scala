@@ -1,7 +1,9 @@
 package versola.oauth.session
 
 import versola.auth.TestEnvConfig
+import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ClientId
+import versola.oauth.revocation.{RevocationCause, RevocationTerms}
 import versola.oauth.session.model.{
   ClientEntry,
   EndedSession,
@@ -59,11 +61,16 @@ object SessionServiceSpec extends UnitSpecBase:
       expiresAt = Instant.ofEpochSecond(2000),
     )
 
+  /** What the longest-lived client's access tokens last, which bounds the ones issued under a session. */
+  private val widestTtl = 15.minutes
+
   class Env:
     val repository = stub[SessionRepository]
     val security = stub[SecurityService]
     val userAgentRepository = stub[UserAgentRepository]
-    val service: SessionService = SessionService.Impl(repository, security, TestEnvConfig.coreConfig, userAgentRepository)
+    val configuration = stub[OAuthConfigurationService]
+    configuration.widestAccessTokenTtl.returnsWith(ZIO.succeed(widestTtl))
+    val service: SessionService = SessionService.Impl(repository, security, TestEnvConfig.coreConfig, userAgentRepository, configuration)
 
   def spec = suite("SessionService")(
     suite("invalidate")(
@@ -72,46 +79,71 @@ object SessionServiceSpec extends UnitSpecBase:
         for
           _ <- env.security.mac.succeedsWith(mac)
           _ <- env.repository.invalidate.succeedsWith(Some(record))
-          result <- env.service.invalidate(Right(rawId))
+          result <- env.service.invalidate(Right(rawId), RevocationCause.Logout)
         yield assertTrue(result.contains(SessionInfo(mac, record)))
+      },
+      test("ends a session with revocation terms that last as long as the widest access token of any client") {
+        val env = Env()
+        for
+          _ <- env.security.mac.succeedsWith(mac)
+          _ <- env.repository.invalidate.succeedsWith(Some(record))
+          _ <- env.repository.invalidateByPublicId.succeedsWith(Some((mac, record)))
+          _ <- env.service.invalidate(Right(rawId), RevocationCause.Logout)
+          _ <- env.service.invalidate(Left(publicId), RevocationCause.AdminRevoked)
+        yield assertTrue(
+          // Which clients the session's tokens went to is not looked up: a token of the
+          // longest-lived one is the longest a revocation has to outlive.
+          env.repository.invalidate.calls == List((mac, RevocationTerms(RevocationCause.Logout, widestTtl))),
+          env.repository.invalidateByPublicId.calls == List((publicId, RevocationTerms(RevocationCause.AdminRevoked, widestTtl))),
+        )
+      },
+      test("ends every session of a user with the cause it was given") {
+        val env = Env()
+        for
+          _ <- env.repository.invalidateByUserId.succeedsWith(List(record))
+          result <- env.service.invalidateAllByUser(userId, RevocationCause.UserDeleted)
+        yield assertTrue(
+          result == List(record),
+          env.repository.invalidateByUserId.calls == List((userId, RevocationTerms(RevocationCause.UserDeleted, widestTtl))),
+        )
       },
       test("Right(rawId) returns None when the repository finds nothing") {
         val env = Env()
         for
           _ <- env.security.mac.succeedsWith(mac)
           _ <- env.repository.invalidate.succeedsWith(None)
-          result <- env.service.invalidate(Right(rawId))
+          result <- env.service.invalidate(Right(rawId), RevocationCause.Logout)
         yield assertTrue(result.isEmpty)
       },
       test("Left(publicId) delegates to repository.invalidateByPublicId") {
         val env = Env()
         for
           _ <- env.repository.invalidateByPublicId.succeedsWith(Some((mac, record)))
-          result <- env.service.invalidate(Left(publicId))
+          result <- env.service.invalidate(Left(publicId), RevocationCause.Logout)
         yield assertTrue(result.contains(SessionInfo(mac, record)))
       },
       test("Left(publicId) returns None when the repository finds nothing") {
         val env = Env()
         for
           _ <- env.repository.invalidateByPublicId.succeedsWith(None)
-          result <- env.service.invalidate(Left(publicId))
+          result <- env.service.invalidate(Left(publicId), RevocationCause.Logout)
         yield assertTrue(result.isEmpty)
       },
       test("Left(publicId) never invokes SecurityService.mac") {
         val env = Env()
         for
           _ <- env.repository.invalidateByPublicId.succeedsWith(Some((mac, record)))
-          _ <- env.service.invalidate(Left(publicId))
+          _ <- env.service.invalidate(Left(publicId), RevocationCause.Logout)
         yield assertTrue(env.security.mac.calls.isEmpty)
       },
       test("invalidateForUser delegates the ownership check to the repository") {
         val env = Env()
         for
           _ <- env.repository.invalidateByPublicIdForUser.succeedsWith(true)
-          result <- env.service.invalidateForUser(publicId, userId)
+          result <- env.service.invalidateForUser(publicId, userId, RevocationCause.UserRevoked)
         yield assertTrue(
           result,
-          env.repository.invalidateByPublicIdForUser.calls == List((publicId, userId)),
+          env.repository.invalidateByPublicIdForUser.calls == List((publicId, userId, RevocationTerms(RevocationCause.UserRevoked, widestTtl))),
         )
       },
     ),

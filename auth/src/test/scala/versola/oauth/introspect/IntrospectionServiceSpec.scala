@@ -23,6 +23,7 @@ import versola.oauth.client.{OAuthConfigurationService, ResourceResolver}
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
 import versola.oauth.model.{AccessToken, AccessTokenPayload, Cnf, RefreshToken}
+import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId, RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
@@ -119,6 +120,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     authorizationDetails = None,
     sessionId = None,
     confirmation = None,
+    familyId = None,
   )
 
   val paymentDetail = AuthorizationDetail.parse(
@@ -133,7 +135,8 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, TestEnvConfig.clientCertificateDnsName)),
   )
 
-  class Env:
+  /** @param revoked what the revocation list answers for every token */
+  class Env(revoked: Boolean = false):
     val oauthClientService = stub[OAuthConfigurationService]
     // Authentication looks the client up first to see whether it registered an mTLS
     // subject; an unregistered one falls through to the secret it presented.
@@ -142,13 +145,16 @@ object IntrospectionServiceSpec extends UnitSpecBase:
       ClientAuthentication.Impl(oauthClientService, stub[ClientAssertionService], TestEnvConfig.coreConfig, ClientAuthFailures.noop)
     val tokenRepository = stub[SessionRepository]
     val securityService = stub[SecurityService]
+    val accessTokenRevocation = stub[AccessTokenRevocationService]
+    accessTokenRevocation.isRevoked.returnsWith(ZIO.succeed(revoked))
     val config = TestEnvConfig.coreConfig
 
     val layer = ZLayer.succeed(oauthClientService) ++
       ZLayer.succeed(clientAuthentication) ++
       ZLayer.succeed(tokenRepository) ++
       ZLayer.succeed(securityService) ++
-      ZLayer.succeed(config) >>> IntrospectionService.live
+      ZLayer.succeed(config) ++
+      ZLayer.succeed(accessTokenRevocation) >>> IntrospectionService.live
 
   val spec = suite("IntrospectionService")(
     suite("introspectAccessToken")(
@@ -173,6 +179,53 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           result <- service.introspectAccessToken(payload, credentials, None)
         yield assertTrue(
           result.authorizationDetails == Some(Json.Arr(paymentDetail.value)),
+        )).provide(env.layer)
+      },
+      test("reports a revoked access token as inactive, and nothing else about it") {
+        val env = Env(revoked = true)
+        val publicResource = ResourceUri("https://api.example.com")
+        (for
+          now <- Clock.instant
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+          payload = accessTokenPayload(now, audience = Vector(publicResource))
+
+          _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.oauthClientService.getResourcesForClient.succeedsWith(List(ResourceRecord(
+            ResourceId("api"),
+            testClient.tenantId,
+            publicResource,
+            List(testClient.id),
+            internal = false,
+          )))
+
+          service <- ZIO.service[IntrospectionService]
+          result <- service.introspectAccessToken(payload, credentials, None)
+          asked = env.accessTokenRevocation.isRevoked.calls
+        yield assertTrue(
+          // RFC 7662 says nothing more than `active: false` for a token that is not active, and
+          // the caller is never told why.
+          result == IntrospectionResponse.Inactive,
+          asked == List(payload),
+        )).provide(env.layer)
+      },
+      test("does not tell a caller with no right to the token whether it was revoked") {
+        val env = Env(revoked = true)
+        (for
+          now <- Clock.instant
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+          // Its audience is a resource the caller cannot reach, so the answer is the refusal a
+          // live token would get: a revoked token must not be distinguishable from a live one by
+          // anyone who is not entitled to ask about either.
+          payload = accessTokenPayload(now, audience = Vector(ResourceUri("https://other.example.com")))
+
+          _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.oauthClientService.getResourcesForClient.succeedsWith(Nil)
+
+          service <- ZIO.service[IntrospectionService]
+          result <- service.introspectAccessToken(payload, credentials, None).either
+        yield assertTrue(
+          result == Left(IntrospectionError.Unauthenticated),
+          env.accessTokenRevocation.isRevoked.calls.isEmpty,
         )).provide(env.layer)
       },
       test("successfully introspect active access token") {
