@@ -20,7 +20,7 @@ import versola.oauth.client.model.{
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
 import versola.oauth.logout.BackChannelOutbox
 import versola.oauth.model.{AccessToken, AccessTokenPayload, RefreshToken}
-import versola.oauth.revocation.{Revocation, RevocationCache, RevocationCause, RevocationKey, RevocationRepository, RevocationTerms}
+import versola.oauth.revocation.{AuthRevocationKeys, AuthRevocationRepository, RevocationCause, RevocationTerms}
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId, RefreshTokenRecord, SessionId}
@@ -28,6 +28,7 @@ import versola.user.model.UserId
 import versola.util.Base64
 import versola.util.audit.AuditEvents
 import versola.util.audit.AuditOutcome
+import versola.util.revocation.{Revocation, RevocationCache, RevocationKey}
 import versola.util.{CoreConfig, MAC, Secret, SecurityService, UnitSpecBase}
 import zio.*
 import zio.http.URL
@@ -405,7 +406,7 @@ object RevocationServiceSpec extends UnitSpecBase:
       /** Everything a service under test is handed, and what it did with it. */
       suite("revoke")(
         test("records the token until its own exp, and pushes a token-scoped event through the outbox") {
-          val repository = stub[RevocationRepository]
+          val repository = stub[AuthRevocationRepository]
           val outbox = stub[BackChannelOutbox]
           val backChannelUri = URL.decode("https://rp.example/backchannel").toOption.get
           val client = testClient.copy(backChannelLogoutUri = Some(backChannelUri))
@@ -432,7 +433,7 @@ object RevocationServiceSpec extends UnitSpecBase:
           )
         },
         test("records the token even when the client registered no back-channel URI, and pushes nothing") {
-          val repository = stub[RevocationRepository]
+          val repository = stub[AuthRevocationRepository]
           val outbox = stub[BackChannelOutbox]
           val service = AccessTokenRevocationService.Impl(outbox, repository, stub[RevocationCache])
           for
@@ -447,7 +448,7 @@ object RevocationServiceSpec extends UnitSpecBase:
           )
         },
         test("pushes nothing and fails when the record could not be written") {
-          val repository = stub[RevocationRepository]
+          val repository = stub[AuthRevocationRepository]
           val outbox = stub[BackChannelOutbox]
           val client = testClient.copy(backChannelLogoutUri = Some(URL.decode("https://rp.example/backchannel").toOption.get))
           val service = AccessTokenRevocationService.Impl(outbox, repository, stub[RevocationCache])
@@ -467,7 +468,7 @@ object RevocationServiceSpec extends UnitSpecBase:
         test("names the family, not the tokens, when a leaked chain is revoked") {
           val outbox = stub[BackChannelOutbox]
           val client = testClient.copy(backChannelLogoutUri = Some(URL.decode("https://rp.example/backchannel").toOption.get))
-          val service = AccessTokenRevocationService.Impl(outbox, stub[RevocationRepository], stub[RevocationCache])
+          val service = AccessTokenRevocationService.Impl(outbox, stub[AuthRevocationRepository], stub[RevocationCache])
           for
             now <- Clock.instant
             _ <- outbox.submit.succeedsWith(())
@@ -483,7 +484,7 @@ object RevocationServiceSpec extends UnitSpecBase:
           )
         },
         test("writes no record of its own, the repository method that ended the family did") {
-          val repository = stub[RevocationRepository]
+          val repository = stub[AuthRevocationRepository]
           val outbox = stub[BackChannelOutbox]
           val service = AccessTokenRevocationService.Impl(outbox, repository, stub[RevocationCache])
           for
@@ -494,15 +495,19 @@ object RevocationServiceSpec extends UnitSpecBase:
       ),
       suite("isRevoked")(
         test("answers from the replica's list, with no query") {
-          val repository = stub[RevocationRepository]
+          val repository = stub[AuthRevocationRepository]
           val cache = stub[RevocationCache]
           val service = AccessTokenRevocationService.Impl(stub[BackChannelOutbox], repository, cache)
           for
             now <- Clock.instant
             payload = accessTokenPayload(now)
-            _ <- cache.isTokenRevoked.succeedsWith(true)
+            _ <- cache.isRevoked.succeedsWith(true)
             revoked <- service.isRevoked(payload)
-          yield assertTrue(revoked, cache.isTokenRevoked.calls == List(payload), repository.activeSince.calls.isEmpty)
+          yield assertTrue(
+            revoked,
+            cache.isRevoked.calls == List((AuthRevocationKeys.of(payload), payload.issuedAt)),
+            repository.activeSince.calls.isEmpty,
+          )
         },
       ),
     ),

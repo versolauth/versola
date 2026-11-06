@@ -2,6 +2,7 @@ package versola.edge
 
 import versola.edge.model.EdgeId
 import versola.util.http.ClientIpSource
+import versola.util.revocation.RevocationConfig
 import versola.util.{EnvName, JWT, RsaKeyPair, Secret}
 import zio.config.magnolia.DeriveConfig
 import zio.http.{ClientSSLConfig, Scheme, URL}
@@ -67,7 +68,7 @@ case class EdgeConfig(
     // trusting them would let a hop choose the URI a proof is validated against.
     edgeUrl: URL,
     configurationCacheRefreshInterval: Duration,
-    revocation: EdgeConfig.Revocation = EdgeConfig.Revocation(),
+    revocation: RevocationConfig = RevocationConfig(),
     // RFC 9449 enforcement on proxied calls. Absent leaves it off entirely: a
     // `DPoP`-scheme request is then refused rather than half-checked, while a
     // token carrying `cnf.jkt` is still refused over `Bearer` regardless (see
@@ -361,29 +362,6 @@ object EdgeConfig:
   case class CentralEnrollment(
       url: URL,
       tokenFile: String,
-  )
-
-  /** @param reloadInterval how often the in-memory revocation list is reconciled with the
-    *                       database. Nothing depends on it in normal operation — revocations
-    *                       arrive by notification — so it is the backstop for a notification
-    *                       lost some way a reconnect doesn't cover.
-    * @param purgeInterval how often entries whose tokens have expired are dropped. Separate
-    *                      from `reloadInterval` because it is the only thing bounding what a
-    *                      replica holds and it needs no database, so it must not be tied to
-    *                      the cadence of something that talks to one.
-    * @param overlap how far back before the last row read a reconcile starts again.
-    *                `revoked_at` is set when a row is written but the row appears when its
-    *                transaction commits, so one that committed late would sit behind the
-    *                cursor and never be read. Re-reading the window costs nothing: applying
-    *                a revocation twice is applying it once.
-    * @param batchSize how many rows a single read returns. Bounds what one read holds, not
-    *                  what the replica ends up holding.
-    */
-  case class Revocation(
-      reloadInterval: Duration = Duration.fromSeconds(600),
-      purgeInterval: Duration = Duration.fromSeconds(60),
-      overlap: Duration = Duration.fromSeconds(30),
-      batchSize: Int = 50000,
   )
 
   /** RFC 9449 proof validation at the resource server: the parts that are facts about this

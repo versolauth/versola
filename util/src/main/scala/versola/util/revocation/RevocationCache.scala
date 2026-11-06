@@ -1,15 +1,16 @@
-package versola.oauth.revocation
+package versola.util.revocation
 
-import versola.oauth.model.AccessTokenPayload
-import versola.util.CoreConfig
 import zio.*
 
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 
-/** What auth answers `/userinfo` and `/introspect` from when asked whether an access token was
-  * revoked. Read-only: the rows are written by whatever ends the thing a token depends on, in its
-  * transaction, and reach this list through the database (see [[RevocationNotifications]]).
+/** What a service answers from when asked whether an access token was revoked. Read-only: the rows
+  * are written by whatever ends the thing a token depends on, and reach this list through the
+  * database (see [[RevocationNotifications]]).
+  *
+  * Shared by auth (`/userinfo`, `/introspect`) and edge (every proxied request), each over its own
+  * table and notification channel.
   */
 trait RevocationCache:
   /** Whether any of these keys revokes a token issued at `issuedAt`. Answered from memory, always:
@@ -17,14 +18,9 @@ trait RevocationCache:
     */
   def isRevoked(keys: List[RevocationKey], issuedAt: Instant): UIO[Boolean]
 
-  /** Whether anything that ends this token, or all of its kind, is on the list. */
-  def isTokenRevoked(token: AccessTokenPayload): UIO[Boolean]
-
-// Modelled on `versola.edge.revocation.TokenRevocationService`, which this is a copy of for the
-// read side; both move to `util` together (design-access-token-revocation.md §5, stage 2).
 object RevocationCache:
   def live: ZLayer[
-    RevocationRepository & RevocationNotifications & CoreConfig & Scope,
+    RevocationRepository & RevocationNotifications & RevocationConfig & Scope,
     Throwable,
     RevocationCache,
   ] =
@@ -32,7 +28,7 @@ object RevocationCache:
       for
         repository <- ZIO.service[RevocationRepository]
         notifications <- ZIO.service[RevocationNotifications]
-        config <- ZIO.service[CoreConfig].map(_.revocationOrDefault)
+        config <- ZIO.service[RevocationConfig]
         service <- make(repository, config)
         // Loaded before the layer completes, and allowed to fail it. A replica that cannot read
         // the list does not have a stale answer, it has no answer: an empty list accepts every
@@ -50,9 +46,9 @@ object RevocationCache:
         _ <- service.consume(notifications).forkScoped
       yield service
 
-  private[revocation] def make(
+  private[versola] def make(
       repository: RevocationRepository,
-      config: CoreConfig.RevocationConfig = CoreConfig.RevocationConfig(),
+      config: RevocationConfig = RevocationConfig(),
   ): UIO[Impl] =
     for
       now <- Clock.instant
@@ -87,7 +83,7 @@ object RevocationCache:
     */
   class Impl(
       repository: RevocationRepository,
-      config: CoreConfig.RevocationConfig,
+      config: RevocationConfig,
       // Plain and mutable, because every alternative pays for the read path to buy something this
       // has no use for: an immutable map behind a `Ref` rebuilds the whole thing to drop what
       // expired, and retries that rebuild whenever a revocation lands mid-flight, which is likeliest
@@ -108,9 +104,6 @@ object RevocationCache:
     override def isRevoked(keys: List[RevocationKey], issuedAt: Instant): UIO[Boolean] =
       Clock.instant.map: now =>
         keys.exists(key => Option(entries.get(key)).exists(applies(_, issuedAt, now)))
-
-    override def isTokenRevoked(token: AccessTokenPayload): UIO[Boolean] =
-      isRevoked(RevocationKey.of(token), token.issuedAt)
 
     /** A token issued after `issuedBefore` postdates what the entry was aimed at (the user logged
       * in again after an administrator ended their sessions) and is left alone.
@@ -155,7 +148,7 @@ object RevocationCache:
             case _ => None,
         )
 
-    private[revocation] def entryCount: UIO[Int] =
+    private[versola] def entryCount: UIO[Int] =
       ZIO.succeed(entries.size)
 
     /** Drops entries whose tokens have expired, and reports what is left.
@@ -166,7 +159,7 @@ object RevocationCache:
       * meantime changes no answer ([[applies]] rejects it on the way past), so this is
       * reclamation, not correctness.
       */
-    private[revocation] def purge: UIO[Unit] =
+    private[versola] def purge: UIO[Unit] =
       for
         now <- Clock.instant
         _ <- ZIO.succeed(entries.values.removeIf(revocation => !revocation.expiresAt.isAfter(now)))
@@ -180,7 +173,7 @@ object RevocationCache:
       * the gap is an ordinary catch-up (anything written during it sits past the cursor), so a
       * reconnect costs what was missed rather than a rebuild of the whole list.
       */
-    private[revocation] def consume(notifications: RevocationNotifications): UIO[Unit] =
+    private[versola] def consume(notifications: RevocationNotifications): UIO[Unit] =
       notifications.notifications
         .runForeach:
           case RevocationEvent.Resubscribed => backgroundSync
@@ -195,7 +188,7 @@ object RevocationCache:
       * whose cursor is still at the beginning, reads the whole list, and it does that a page at a
       * time.
       */
-    private[revocation] def sync: Task[Unit] =
+    private[versola] def sync: Task[Unit] =
       for
         now <- Clock.instant
         highWater <- cursor.get
@@ -214,7 +207,7 @@ object RevocationCache:
       * with it. The cursor is left where it was, so the next attempt asks for the same rows rather
       * than stepping over them.
       */
-    private[revocation] def backgroundSync: UIO[Unit] =
+    private[versola] def backgroundSync: UIO[Unit] =
       sync.catchAllCause: cause =>
         for
           now <- Clock.instant

@@ -3,9 +3,10 @@ package versola.oauth.session
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, ScopeToken}
 import versola.oauth.model.{AccessToken, Cnf, RefreshToken}
-import versola.oauth.revocation.{Revocation, RevocationCause, RevocationCursor, RevocationKey, RevocationRepository, RevocationTerms}
+import versola.oauth.revocation.{RevocationCause, RevocationTerms}
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId, RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
+import versola.util.revocation.{Revocation, RevocationCursor, RevocationKey, RevocationRepository}
 import versola.util.{DatabaseSpecBase, MAC}
 import zio.*
 import zio.json.*

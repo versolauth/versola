@@ -4,7 +4,7 @@ import versola.oauth.conversation.{ConversationRenderService, UiLocales}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{SessionCookie, State}
 import versola.oauth.session.SessionService
-import versola.oauth.session.model.{PublicSessionId, SessionId}
+import versola.oauth.session.model.{PublicSessionId, SessionId, SessionInfo}
 import versola.util.http.{Controller, Observability}
 import versola.util.{Base64, CoreConfig, FormDecoder, JWT}
 import zio.*
@@ -69,7 +69,10 @@ object LogoutController extends Controller:
             ZIO.serviceWithZIO[SessionService](_.find(rawId)).flatMap {
               case Some(info) if info.record.publicId == hintId =>
                 setSessionAuth(info) *> performLogout(Right(rawId), postLogoutRedirectUri, state, renderService, uiLocales)
-              case _ => Observability.setError("hint_mismatch") *> renderService.renderLogout(List.empty, None, state, uiLocales, None)
+              case Some(info) =>
+                confirmUnmatchedHint(rawId, info, postLogoutRedirectUri.map(_.encode), state, config, renderService, uiLocales)
+              // The cookie names a session that is gone: there is nothing left to end, and the page says so.
+              case None => Observability.setError("hint_mismatch") *> renderService.renderLogout(List.empty, None, state, uiLocales, None)
             }
           case (None, Some(hintId)) => performLogout(Left(hintId), postLogoutRedirectUri, state, renderService, uiLocales)
           case (None, None) => renderService.renderLogout(List.empty, None, state, uiLocales, None)
@@ -134,12 +137,34 @@ object LogoutController extends Controller:
             ZIO.serviceWithZIO[SessionService](_.find(rawId)).flatMap {
               case Some(info) if info.record.publicId == hintId =>
                 setSessionAuth(info) *> performLogout(Right(rawId), postLogoutRedirectUri, state, renderService, uiLocales)
-              case _ => Observability.setError("hint_mismatch") *> renderService.renderLogout(List.empty, None, state, uiLocales, None)
+              case Some(info) =>
+                confirmUnmatchedHint(rawId, info, postLogoutRedirectUri.map(_.encode), state, config, renderService, uiLocales)
+              // The cookie names a session that is gone: there is nothing left to end, and the page says so.
+              case None => Observability.setError("hint_mismatch") *> renderService.renderLogout(List.empty, None, state, uiLocales, None)
             }
           case (None, Some(hintId)) => performLogout(Left(hintId), postLogoutRedirectUri, state, renderService, uiLocales)
           case (None, None) => renderService.renderLogout(List.empty, None, state, uiLocales, None)
       yield response
     }
+
+  /** OIDC RP-Initiated Logout 1.0 §2: the OP MUST ask the End-User whether to log out if the supplied ID Token does not belong
+    * to the current OP session with the RP. The `sid` of an ID token the RP still holds is that of an earlier session once the
+    * user has stepped up (each step-up issues a new one), so the hint matches no live session, yet the session cookie names a
+    * live one: it is ended only on the End-User's confirmation, the way a logout request with no hint is. The signed-out page
+    * would say the user is logged out while the session and its cookie are untouched.
+    */
+  private def confirmUnmatchedHint(
+      rawId: SessionId,
+      info: SessionInfo,
+      redirect: Option[String],
+      state: Option[State],
+      config: CoreConfig,
+      renderService: ConversationRenderService,
+      uiLocales: Option[List[String]],
+  ): Task[Response] =
+    Observability.setError("hint_mismatch") *>
+      setSessionAuth(info) *>
+      renderService.renderLogoutConfirm(info, csrfToken(rawId, redirect, state, config), redirect, state, uiLocales)
 
   private def sessionIdFromCookie(request: Request, config: CoreConfig): Option[SessionId] =
     request.cookie(SessionCookie.name)
@@ -157,7 +182,7 @@ object LogoutController extends Controller:
       rendered <- render.renderLogout(result.logoutUris, result.postLogoutRedirectUri, result.state, uiLocales, result.clientId)
     yield rendered.addCookie(SessionCookie.expired)
 
-  private def setSessionAuth(info: versola.oauth.session.model.SessionInfo): UIO[Unit] =
+  private def setSessionAuth(info: SessionInfo): UIO[Unit] =
     Observability.setSessionId(info.record.publicId) *>
       Observability.setUserId(info.record.userId.toString) *>
       Observability.setUserAgentId(info.record.userAgentId.toString)

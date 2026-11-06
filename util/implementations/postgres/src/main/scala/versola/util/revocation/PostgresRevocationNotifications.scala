@@ -1,6 +1,6 @@
-package versola.oauth.revocation
+package versola.util.revocation
 
-import versola.util.postgres.{NotificationEvent, PostgresConfig, PostgresNotificationListener}
+import versola.util.postgres.{NotificationEvent, PostgresConfig, PostgresNotificationListener, TableName}
 import zio.json.{DecoderOps, JsonDecoder}
 import zio.stream.Stream
 import zio.{Scope, ZLayer}
@@ -19,21 +19,19 @@ class PostgresRevocationNotifications(listener: PostgresNotificationListener) ex
           .toList
 
 object PostgresRevocationNotifications:
-  // Not `revocation`, which edge listens on: see V0032 for why the names a database shares carry a prefix.
-  private val Channel = "auth_revocation"
 
   private case class RevocationPayload(key: String, exp: Long, before: Option[Long]) derives JsonDecoder
 
-  /** Total: a payload this version cannot make sense of is dropped rather than failing the
-    * stream. The periodic reload reads the same rows from the table, so nothing is lost
-    * permanently by ignoring one notification.
+  /** Total: a payload this version cannot make sense of is dropped rather than failing the stream.
+    * The periodic reload reads the same rows from the table, so nothing is lost permanently by
+    * ignoring one notification.
     */
-  private[revocation] def parseNotification(rawPayload: String): Option[Revocation] =
+  private[versola] def parseNotification(rawPayload: String): Option[Revocation] =
     for
       payload <- rawPayload.fromJson[RevocationPayload].toOption
       key <- RevocationKey.decode(payload.key)
     yield Revocation(key, Instant.ofEpochSecond(payload.exp), payload.before.map(Instant.ofEpochSecond))
 
-  def live: ZLayer[PostgresConfig & Scope, Throwable, RevocationNotifications] =
+  def live(table: RevocationTable): ZLayer[PostgresConfig & Scope, Throwable, RevocationNotifications] =
     ZLayer:
-      PostgresNotificationListener.make(List(Channel)).map(PostgresRevocationNotifications(_))
+      PostgresNotificationListener.make(List(TableName.validated(table.channel))).map(PostgresRevocationNotifications(_))
