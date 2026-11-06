@@ -3,7 +3,7 @@ package versola.oauth.delivery
 import versola.oauth.client.CentralSyncTokenService
 import versola.util.delivery.{SmsProviderSettings, SmtpSettings}
 import versola.util.{Base64, CacheSource, CoreConfig, Email, SecurityService}
-import zio.http.{Method, Request, Status, URL}
+import zio.http.{Method, Request, URL}
 import zio.json.JsonCodec
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
 import zio.{Task, URLayer, ZIO, ZLayer}
@@ -17,10 +17,9 @@ import java.nio.charset.StandardCharsets
   * A block central does not hold is absent, and auth then reads the matching block of its own `auth.conf`
   * (see [[DeliveryChannels]]). A block central holds but auth cannot read (a password that does not decrypt, an address
   * that is not one) fails the fetch: the cache then keeps what it has, or auth does not start if it has nothing yet.
-  *
-  * A central that is older than auth has no such endpoint and answers `404`. That is reported as
-  * [[DeliverySettingsSyncClient.EndpointMissing]], and it is [[DeliveryChannels]] that decides what it means: nothing is
-  * saved if it is the first answer auth ever got, a failed refresh if it is not.
+  * So does any answer of central that is not a success, a `404` from a central older than auth included: only a body
+  * that central sent as a success is read, so an error page that happens to be valid JSON is never taken for "nothing
+  * saved".
   */
 trait DeliverySettingsSyncClient extends CacheSource[DeliverySettingsSyncClient.Fetched]:
   def getAll: Task[DeliverySettingsSyncClient.Fetched]
@@ -35,9 +34,6 @@ object DeliverySettingsSyncClient:
   object Fetched:
     val empty: Fetched = Fetched(smtp = None, otpProvider = None)
 
-  /** Central answered `404`: it has no delivery settings endpoint. */
-  final class EndpointMissing extends RuntimeException("central has no delivery settings endpoint")
-
   val live: URLayer[CoreConfig & CentralSyncTokenService & SecurityService, DeliverySettingsSyncClient] =
     ZLayer.fromFunction(Impl(_, _, _))
 
@@ -51,8 +47,8 @@ object DeliverySettingsSyncClient:
     override def getAll: Task[Fetched] =
       ZIO.scoped:
         centralSyncTokenService.syncRequest(Request.get(SyncURL)).flatMap: response =>
-          if response.status == Status.NotFound then ZIO.fail(EndpointMissing())
-          else response.bodyAs[SyncWire].flatMap(toFetched)
+          if response.status.isSuccess then response.bodyAs[SyncWire].flatMap(toFetched)
+          else ZIO.fail(RuntimeException(s"central answered ${response.status.code} for configuration/delivery-settings/sync"))
 
     private def toFetched(wire: SyncWire): Task[Fetched] =
       for
