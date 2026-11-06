@@ -1,8 +1,8 @@
-package versola.oauth.revocation
+package versola.util.revocation
 
 import zio.stream.Stream
 
-/** Revocations as they are written, by any replica sharing this auth's database. This is what
+/** Revocations as they are written, by any replica sharing the service's database. This is what
   * keeps the in-memory list of every replica current without polling.
   */
 trait RevocationNotifications:
@@ -10,8 +10,8 @@ trait RevocationNotifications:
 
 enum RevocationEvent:
   /** The feed (re)connected, so revocations written while it was down were never delivered. The
-    * cache has to be caught up from the table before it can be trusted again: a catch-up from
-    * where it last left off, not a rebuild.
+    * cache has to be caught up from the table before it can be trusted again: a catch-up from where
+    * it last left off, not a rebuild: what it already holds stays valid.
     */
   case Resubscribed
 

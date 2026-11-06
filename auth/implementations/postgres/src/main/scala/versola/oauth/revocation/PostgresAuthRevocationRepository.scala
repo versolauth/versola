@@ -2,63 +2,27 @@ package versola.oauth.revocation
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.util.postgres.BasicCodecs
-import zio.{Clock, Task, ZLayer}
+import versola.util.revocation.{PostgresRevocationRepository, Revocation, RevocationRepository, RevocationTable}
+import zio.{Task, ZEnvironment, ZIO, ZLayer}
 
-import java.time.Instant
-
-/** @param revokedKey the encoded key rather than [[RevocationKey]]: a row written by a newer
-  *                   version of this service can carry a prefix this one has no case for, and
-  *                   skipping that row is better than failing the whole load.
-  */
-private case class RevocationRow(
-    revokedKey: String,
-    revokedAt: Instant,
-    expiresAt: Instant,
-    issuedBefore: Option[Instant],
-):
-  def decoded: Option[Revocation] =
-    RevocationKey.decode(revokedKey).map(Revocation(_, expiresAt, issuedBefore))
-
-  def cursor: RevocationCursor = RevocationCursor(revokedAt, revokedKey)
-
-class PostgresRevocationRepository(xa: TransactorZIO) extends RevocationRepository, BasicCodecs:
-
-  private given DbCodec[RevocationRow] = DbCodec.derived
+class PostgresAuthRevocationRepository(xa: TransactorZIO)
+  extends PostgresRevocationRepository(xa, PostgresAuthRevocationRepository.Table),
+    AuthRevocationRepository:
 
   override def revoke(revocation: Revocation, cause: RevocationCause): Task[Unit] =
     xa.transactMeasured("revoke-token"):
-      PostgresRevocationRepository.upsert(revocation, cause)
+      PostgresAuthRevocationRepository.upsert(revocation, cause)
     .unit
 
-  /** The row comparison is what makes the cursor a position rather than an offset: it resumes on
-    * the ordering itself, so rows written between two reads shift nothing and no row is counted
-    * twice or skipped. `auth_revocations_revoked_at_key_idx` is what keeps it a range scan of the rows
-    * being asked for instead of a sort of every unexpired one.
-    */
-  override def activeSince(cursor: RevocationCursor, limit: Int): Task[RevocationPage] =
-    Clock.instant.flatMap: now =>
-      xa.connectMeasured("list-active-revocations"):
-        val rows = sql"""
-          SELECT revoked_key, revoked_at, expires_at, issued_before
-          FROM auth_revocations
-          WHERE expires_at > $now
-            AND (revoked_at, revoked_key) > (${cursor.revokedAt}, ${cursor.revokedKey})
-          ORDER BY revoked_at, revoked_key
-          LIMIT $limit
-        """
-          .query[RevocationRow]
-          .run()
-          .toList
-        RevocationPage(
-          revocations = rows.flatMap(_.decoded),
-          last = rows.lastOption.map(_.cursor),
-          hasMore = rows.sizeIs == limit,
-        )
+object PostgresAuthRevocationRepository:
+  /** The table and channel of `V0032__revocations_table.sql`. */
+  val Table: RevocationTable = RevocationTable(name = "auth_revocations", channel = "auth_revocation")
 
-object PostgresRevocationRepository:
-  def live: ZLayer[TransactorZIO, Nothing, RevocationRepository] =
-    ZLayer.fromFunction(PostgresRevocationRepository(_))
+  def live: ZLayer[TransactorZIO, Nothing, AuthRevocationRepository & RevocationRepository] =
+    ZLayer.fromZIOEnvironment:
+      ZIO.serviceWith[TransactorZIO]: xa =>
+        val repository = PostgresAuthRevocationRepository(xa)
+        ZEnvironment[AuthRevocationRepository, RevocationRepository](repository, repository)
 
   /** Writes a revocation on the caller's connection, so that a repository method which ends a
     * session or a refresh family records it in the same transaction as the ending: the two commit

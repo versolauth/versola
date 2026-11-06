@@ -29,10 +29,11 @@ import versola.edge.model.{
   TenantId,
   TokenResponse,
 }
-import versola.edge.revocation.{RevocationKey, TokenRevocationService}
+import versola.edge.revocation.{EdgeRevocationKeys, TokenRevocationService}
 import versola.edge.session.{EdgeSessionRecord, EdgeSessionRepository}
 import versola.util.cel.CelEvaluator
 import versola.util.http.{Checkpoint, Observability, RateDecision, RateLimitKeys, RateLimiter}
+import versola.util.revocation.RevocationKey
 import versola.util.{Base64, Base64Url, EnvName, JWT, JsonJava, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.http.{Body, Client, Cookie, Header, Headers, MediaType, Path, Request, Response, Status, URL}
 import zio.json.ast.Json
@@ -882,7 +883,7 @@ object EdgeService:
     private def checkRevoked(claims: AccessTokenClaims): IO[Outcome, Unit] =
       revocationService
         .isRevoked(
-          RevocationKey.of(claims.jti, claims.family, claims.sid, claims.subject),
+          EdgeRevocationKeys.of(claims.jti, claims.family, claims.sid, claims.subject),
           Instant.ofEpochSecond(claims.issuedAt),
         )
         .flatMap(revoked => ZIO.fail(Outcome.Unauthorized).when(revoked))

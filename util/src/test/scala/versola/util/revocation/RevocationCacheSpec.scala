@@ -1,9 +1,6 @@
-package versola.oauth.revocation
+package versola.util.revocation
 
 import org.scalamock.stubs.ZIOStubs
-import versola.auth.TestEnvConfig
-import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId}
-import versola.util.CoreConfig
 import zio.*
 import zio.stream.ZStream
 import zio.test.*
@@ -13,10 +10,10 @@ import java.time.Instant
 object RevocationCacheSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val jti = RevocationKey.Jti("token-1")
-  private val sid = RevocationKey.Sid(PublicSessionId("session-1"))
+  private val sid = RevocationKey.Sid("session-1")
   private val sub = RevocationKey.Sub("user-1")
   private val otherJti = RevocationKey.Jti("token-2")
-  private val fam = RevocationKey.Fam(RefreshTokenFamilyId("family-1"))
+  private val fam = RevocationKey.Fam("family-1")
 
   private val farFuture = Instant.EPOCH.plusSeconds(3600)
 
@@ -102,6 +99,17 @@ object RevocationCacheSpec extends ZIOSpecDefault, ZIOStubs:
         afterNotified <- cache.isRevoked(List(jti), issuedAt)
       yield assertTrue(!beforeNotified, afterNotified)
     },
+    test("applies revocations announced by another replica") {
+      val repository = stub[RevocationRepository]
+      for
+        cache <- RevocationCache.make(repository)
+        _ <- repository.activeSince.succeedsWith(onePage())
+        _ <- cache.sync
+        before <- cache.isRevoked(List(jti), issuedAt)
+        _ <- cache.consume(notificationsOf(revocation(jti)))
+        after <- cache.isRevoked(List(jti), issuedAt)
+      yield assertTrue(!before, after)
+    },
     test("catches up when the notification feed reconnects") {
       val repository = stub[RevocationRepository]
       for
@@ -178,7 +186,7 @@ object RevocationCacheSpec extends ZIOSpecDefault, ZIOStubs:
     test("reads the list a page at a time") {
       val repository = stub[RevocationRepository]
       for
-        cache <- RevocationCache.make(repository, CoreConfig.RevocationConfig(batchSize = 1))
+        cache <- RevocationCache.make(repository, RevocationConfig(batchSize = 1))
         // A page that came back full is the only evidence there is another, so the read has to
         // continue past it rather than stop at what one query returned.
         _ <- repository.activeSince.returnsZIO: (cursor, _) =>
@@ -194,7 +202,7 @@ object RevocationCacheSpec extends ZIOSpecDefault, ZIOStubs:
     test("asks only for what has been written since the last catch-up") {
       val repository = stub[RevocationRepository]
       for
-        cache <- RevocationCache.make(repository, CoreConfig.RevocationConfig(overlap = 10.seconds))
+        cache <- RevocationCache.make(repository, RevocationConfig(overlap = 10.seconds))
         _ <- repository.activeSince.succeedsWith(onePage(revocation(jti)))
         _ <- cache.sync
         _ <- cache.sync
@@ -222,7 +230,7 @@ object RevocationCacheSpec extends ZIOSpecDefault, ZIOStubs:
     test("a catch-up that fails leaves the cursor where it was") {
       val repository = stub[RevocationRepository]
       for
-        cache <- RevocationCache.make(repository, CoreConfig.RevocationConfig(overlap = 10.seconds))
+        cache <- RevocationCache.make(repository, RevocationConfig(overlap = 10.seconds))
         _ <- repository.activeSince.succeedsWith(onePage(revocation(jti)))
         _ <- cache.sync
         _ <- repository.activeSince.failsWith(RuntimeException("connection refused"))
@@ -257,7 +265,7 @@ object RevocationCacheSpec extends ZIOSpecDefault, ZIOStubs:
             ZLayer.succeed(repository),
             ZLayer.succeed[RevocationNotifications](new RevocationNotifications:
               override def notifications = ZStream.empty),
-            ZLayer.succeed(TestEnvConfig.coreConfig),
+            ZLayer.succeed(RevocationConfig()),
           )
 
       val unreadable = stub[RevocationRepository]
@@ -288,7 +296,7 @@ object RevocationCacheSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- cache.sync
         // `iat` is whole seconds, so a token minted in the revocation's own second cannot be
         // ordered against it, and a tie is read as one of the revoked ones.
-        revoked <- cache.isRevoked(List(sub), issuedAt = revokedAt)
+        revoked <- cache.isRevoked(List(jti, sid, sub), issuedAt = revokedAt)
       yield assertTrue(revoked)
     },
     test("a user-wide revocation leaves alone a token issued after it") {
@@ -310,7 +318,18 @@ object RevocationCacheSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- repository.activeSince.succeedsWith(onePage(revocation(fam)))
         _ <- cache.sync
         revoked <- cache.isRevoked(List(jti, fam), issuedAt = Instant.EPOCH.plusSeconds(10_000))
-        other <- cache.isRevoked(List(jti, RevocationKey.Fam(RefreshTokenFamilyId("family-2"))), issuedAt)
+        other <- cache.isRevoked(List(jti, RevocationKey.Fam("family-2")), issuedAt)
       yield assertTrue(revoked, !other)
+    },
+    test("reports a token revoked when the family that issued it is listed") {
+      val repository = stub[RevocationRepository]
+      for
+        cache <- RevocationCache.make(repository)
+        _ <- repository.activeSince.succeedsWith(onePage(revocation(fam)))
+        _ <- cache.sync
+        // The chain leaked, so every token it ever issued goes, including this one, which the
+        // entry never names individually.
+        revoked <- cache.isRevoked(List(jti, fam, sid, sub), issuedAt)
+      yield assertTrue(revoked)
     },
   )

@@ -3,8 +3,9 @@ package versola.oauth.revoke
 import versola.oauth.client.model.OAuthClientRecord
 import versola.oauth.logout.BackChannelOutbox
 import versola.oauth.model.AccessTokenPayload
-import versola.oauth.revocation.{Revocation, RevocationCache, RevocationCause, RevocationKey, RevocationRepository}
+import versola.oauth.revocation.{AuthRevocationKeys, AuthRevocationRepository, RevocationCause}
 import versola.oauth.session.model.RefreshTokenFamilyId
+import versola.util.revocation.{Revocation, RevocationCache, RevocationKey}
 import zio.json.ast.Json
 import zio.{NonEmptyChunk, Task, UIO, ZIO, ZLayer}
 
@@ -57,12 +58,12 @@ object AccessTokenRevocationService:
     */
   private val AccessTokenRevocationEvent = "versola:event:access-token-revocation"
 
-  def live: ZLayer[BackChannelOutbox & RevocationRepository & RevocationCache, Nothing, AccessTokenRevocationService] =
+  def live: ZLayer[BackChannelOutbox & AuthRevocationRepository & RevocationCache, Nothing, AccessTokenRevocationService] =
     ZLayer.fromFunction(Impl(_, _, _))
 
   class Impl(
       outbox: BackChannelOutbox,
-      repository: RevocationRepository,
+      repository: AuthRevocationRepository,
       cache: RevocationCache,
   ) extends AccessTokenRevocationService:
 
@@ -116,4 +117,4 @@ object AccessTokenRevocationService:
         )
 
     override def isRevoked(token: AccessTokenPayload): UIO[Boolean] =
-      cache.isTokenRevoked(token)
+      cache.isRevoked(AuthRevocationKeys.of(token), token.issuedAt)
