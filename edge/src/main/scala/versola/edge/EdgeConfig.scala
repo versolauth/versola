@@ -40,12 +40,14 @@ case class EdgeConfig(
     versolaInternalUrl: Option[URL] = None,
     // Path to the PEM trust anchors the certificate auth's internal endpoint
     // presents is validated against. Required to authenticate a client by
-    // RFC 8705 mutual TLS and used for nothing else: that is the one call edge
-    // makes over a connection it must trust in both directions, since the
-    // credential is the handshake itself.
+    // RFC 8705 mutual TLS: that is the one call edge makes over a connection
+    // it must trust in both directions, since the credential is the handshake
+    // itself. Every other call to the internal endpoint (a secret or an
+    // assertion in the request) is made over the same pin when it is set, and
+    // over the JVM's trust store when it is not (SSOClient's `internalClient`).
     //
-    // Absent refuses that call rather than defaulting, because the default
-    // available is not a stricter one -- zio-http's ClientSSLConfig.Default is
+    // Absent refuses the certificate call rather than defaulting, because the
+    // default available is not a stricter one -- zio-http's ClientSSLConfig.Default is
     // Netty's InsecureTrustManagerFactory, which authenticates no server at
     // all. An internal endpoint rarely carries a publicly-trusted certificate,
     // so this names the one it presents -- a pin, not a CA: zio-http's client

@@ -1820,8 +1820,10 @@ notification and refuses to start, naming this setting, if it cannot.
     accepted. The CAs the image ships cover a public certificate. A private CA goes into the trust store:
     mount it and pass `JAVA_TOOL_OPTIONS=-Djavax.net.ssl.trustStore=/path/truststore.p12 -Djavax.net.ssl.trustStorePassword=…`
     to the service, or bake it into the image with `keytool -importcert -cacerts`. A refused peer shows as
-    `PKIX path building failed` in the `send-http` line. Edge's calls to auth and central pin a certificate and are
-    not affected.
+    `PKIX path building failed` in the `send-http` line. Edge's calls to central pin a certificate and are not
+    affected; its calls to auth over `versola-internal-url` use the `versola-internal-trusted-certificates` pin
+    when it is set (as `gen-env` writes for a terminator) and the trust store otherwise, so an `https` internal
+    URL with a private certificate and no pin needs either the pin or the trust store entry.
 - **`central` has one replica.** `auth` and `edge` can run several (`versola replica add`), and
   `versola rollout` moves all three without an outage when the release is compatible (see
   [Without stopping](#without-stopping-versola-rollout)); an incompatible release still means the short

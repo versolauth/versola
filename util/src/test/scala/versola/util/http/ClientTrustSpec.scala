@@ -43,7 +43,8 @@ object ClientTrustSpec extends ZIOSpecDefault:
             pair.getPublic,
           )
           builder.addExtension(Extension.subjectAlternativeName, false, GeneralNames(GeneralName(GeneralName.dNSName, "localhost")))
-          val certificate = JcaX509CertificateConverter().getCertificate(builder.build(JcaContentSignerBuilder("SHA256withRSA").build(pair.getPrivate)))
+          val certificate =
+            JcaX509CertificateConverter().getCertificate(builder.build(JcaContentSignerBuilder("SHA256withRSA").build(pair.getPrivate)))
           val directory = Files.createTempDirectory("client-trust")
           val certificatePath = Files.write(
             directory.resolve("server.crt"),
