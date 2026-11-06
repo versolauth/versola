@@ -1452,6 +1452,63 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         upstream.exists(_.headers.get("x-order").contains("123")),
       )
     },
+    // A segment is decoded before the route hands it over: an encoded slash would add a segment to what is matched while the resource is
+    // sent one segment fewer, so the endpoint the permissions were checked for is not the one it routes to.
+    test("refuses a path whose segment holds a separator, so the segments matched are the segments sent") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(tenantOrderEndpoint(), userByIdEndpoint()))
+        token <- env.signToken()
+        service = env.buildService(client, security)
+        responses <- ZIO.foreach(
+          List(
+            Path.root / "tenants" / "acme/orders" / "123",
+            Path.root / "tenants" / "acme\\orders" / "123",
+            Path.root / "tenants" / "acme%2Forders" / "123",
+            Path.root / "users" / "..;x",
+            Path.root / "users" / "%2e%2e",
+            Path.root / "users" / "a\u0000b",
+          ),
+        ): path =>
+          service.proxy(ResourceId("users-api"), path, Request.get(URL.empty).addCookie(sessionCookie(token)))
+        upstream <- capture.get
+      yield assertTrue(responses.forall(_.status == Status.NotFound), upstream.isEmpty)
+    },
+    test("answers a caller without a valid token 401 for a path it refuses, like any other path") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(userByIdEndpoint()))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.root / "users" / "a/b", Request.get(URL.empty))
+      yield assertTrue(response.status == Status.Unauthorized)
+    },
+    test("still matches a segment that merely contains a dot, a space or a semicolon") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(userByIdEndpoint(inject =
+          Vector(InjectRule(InjectTarget.header, "x-resource-id", "request.path.params.id")),
+        )))
+        token <- env.signToken()
+        service = env.buildService(client, security)
+        response <- service.proxy(
+          ResourceId("users-api"),
+          Path.root / "users" / "a.b c;d",
+          Request.get(URL.empty).addCookie(sessionCookie(token)),
+        )
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.Ok, upstream.exists(_.headers.get("x-resource-id").contains("a.b c;d")))
+    },
     test("reports the registered template, not the concrete path, as the metric route") {
       val env = new Env
       for
