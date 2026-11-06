@@ -7,7 +7,7 @@ import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, ResourceUri, ScopeToken}
 import versola.oauth.model.{AccessToken, Cnf, Nonce, RefreshToken}
 import versola.oauth.model.{Nonce, RefreshToken}
-import versola.oauth.revocation.{PostgresRevocationRepository, Revocation, RevocationKey, RevocationTerms}
+import versola.oauth.revocation.{PostgresAuthRevocationRepository, RevocationTerms}
 import versola.oauth.session.model.{
   ClientEntry,
   EndedSession,
@@ -37,6 +37,7 @@ import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.MAC
 import versola.util.postgres.BasicCodecs
+import versola.util.revocation.{Revocation, RevocationKey}
 import zio.json.*
 import zio.{Clock, Duration, IO, Task, ZIO, ZLayer}
 
@@ -216,7 +217,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
       xa.transactMeasured("invalidate-sessions-by-user"):
         // Bounded at this call's own `now`, the instant the sessions end: a token the user obtains by
         // logging in again afterwards is issued after it and keeps working.
-        PostgresRevocationRepository.upsert(
+        PostgresAuthRevocationRepository.upsert(
           Revocation(
             key = RevocationKey.Sub(userId.toString),
             expiresAt = now.plus(revocation.ttl),
@@ -261,7 +262,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
   private def revokeSession(publicId: PublicSessionId, clients: List[ClientEntry], now: Instant, revocation: RevocationTerms)(using
       DbCon,
   ): Unit =
-    PostgresRevocationRepository.upsert(
+    PostgresAuthRevocationRepository.upsert(
       Revocation(
         key = RevocationKey.Sid(publicId),
         // The clients the session served bound its tokens, not the longest-lived client there is.
@@ -543,7 +544,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
   /** `fam:<family>` is written under the same lock and in the same transaction as the expiry, so a
     * family cannot end without the record that its access tokens must stop being accepted too. */
   private def revokeFamilyTokens(family: RefreshTokenFamilyId, now: Instant, revocation: RevocationTerms)(using DbCon): Unit =
-    PostgresRevocationRepository.upsert(
+    PostgresAuthRevocationRepository.upsert(
       Revocation(
         key = RevocationKey.Fam(family),
         expiresAt = now.plus(revocation.ttl),

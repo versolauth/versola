@@ -8,7 +8,7 @@ import org.scalamock.stubs.ZIOStubs
 import versola.edge.dpop.{DpopPolicyService, DpopReplayGuard, DpopVerifier}
 import versola.edge.login.LoginRepository
 import versola.edge.model.*
-import versola.edge.revocation.{RevocationKey, TokenRevocationService}
+import versola.edge.revocation.TokenRevocationService
 import versola.util.cel.CelEvaluator
 import versola.util.http.{
   Checkpoint,
@@ -24,6 +24,7 @@ import versola.util.http.{
   RateLimitWindow,
   RateLimiter,
 }
+import versola.util.revocation.RevocationKey
 import versola.util.{
   DpopNonce,
   EcKeyPair,

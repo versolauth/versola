@@ -1,8 +1,6 @@
-package versola.oauth.revocation
+package versola.util.revocation
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.oauth.client.model.{ClientId, TenantId}
-import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId}
 import versola.util.DatabaseSpecBase
 import zio.*
 import zio.test.*
@@ -27,12 +25,12 @@ trait RevocationRepositorySpec extends DatabaseSpecBase[RevocationRepositorySpec
 
   private def jti(id: String) = RevocationKey.Jti(id)
 
-  private def fam(id: String) = RevocationKey.Fam(RefreshTokenFamilyId(id))
+  private def fam(id: String) = RevocationKey.Fam(id)
 
   private def sub(id: String) = RevocationKey.Sub(id)
 
   private def revoke(env: RevocationRepositorySpec.Env, revocation: Revocation) =
-    env.repository.revoke(revocation, RevocationCause.Revoke)
+    env.revoke(revocation)
 
   override def testCases(env: RevocationRepositorySpec.Env) =
     List(
@@ -60,10 +58,8 @@ trait RevocationRepositorySpec extends DatabaseSpecBase[RevocationRepositorySpec
       test("round-trips every kind of key through the durable list") {
         val keys = List(
           fam("family-1"),
-          RevocationKey.Sid(PublicSessionId("session-1")),
+          RevocationKey.Sid("session-1"),
           sub("user-1"),
-          RevocationKey.Tenant(TenantId("tenant-1")),
-          RevocationKey.Client(ClientId("client-1")),
           jti("token-1"),
         )
         for
@@ -126,21 +122,10 @@ trait RevocationRepositorySpec extends DatabaseSpecBase[RevocationRepositorySpec
           page.revocations.map(_.expiresAt) == List(firstAction.plusSeconds(3600)),
         )
       } @@ TestAspect.withLiveClock,
-      test("re-revoking a bounded key with no bound widens it to cover every token, and never the other way") {
-        // The cache's rule: no bound beats any instant. The write has to agree, or the two replicas
-        // that read the same row would answer differently for a key written both ways.
-        val bound = Instant.now().truncatedTo(ChronoUnit.MICROS)
-        val expiry = bound.plusSeconds(3600)
-        for
-          _ <- revoke(env, Revocation(sub("bounded"), expiry, Some(bound)))
-          _ <- revoke(env, Revocation(sub("bounded"), expiry, None))
-          _ <- revoke(env, Revocation(sub("unbounded"), expiry, None))
-          _ <- revoke(env, Revocation(sub("unbounded"), expiry, Some(bound)))
-          page <- env.repository.activeSince(RevocationCursor.Beginning, limit = 10)
-          byKey = page.revocations.map(r => r.key -> r.issuedBefore).toMap
-        yield assertTrue(byKey(sub("bounded")).isEmpty, byKey(sub("unbounded")).isEmpty)
-      } @@ TestAspect.withLiveClock,
     )
 
 object RevocationRepositorySpec:
-  case class Env(repository: RevocationRepository)
+  /** @param revoke writes through the storage's own writer, which is not part of the shared trait: each
+    *               service writes its table in its own way.
+    */
+  case class Env(repository: RevocationRepository, revoke: Revocation => Task[Unit])

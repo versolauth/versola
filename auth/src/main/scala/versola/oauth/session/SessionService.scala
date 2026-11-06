@@ -29,7 +29,7 @@ trait SessionService:
    *
    *  The three ways of ending sessions below also record the revocation of the access tokens
    *  issued under them, in the same transaction, with `cause` as the reason (see
-   *  [[versola.oauth.revocation.Revocation]]): ending a session is what makes the tokens issued
+   *  [[versola.util.revocation.Revocation]]): ending a session is what makes the tokens issued
    *  under it unacceptable, and the two must not come apart. */
   def invalidate(id: Either[PublicSessionId, SessionId], cause: RevocationCause): Task[Option[SessionInfo]]
 

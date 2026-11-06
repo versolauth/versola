@@ -1,4 +1,4 @@
-package versola.oauth.revocation
+package versola.util.revocation
 
 import zio.UIO
 import zio.metrics.Metric
@@ -10,8 +10,8 @@ import zio.metrics.Metric
   * replica should be holding in memory, and a replica quietly failing to catch up with the durable
   * copy, which is the only way it can under-reject.
   *
-  * The names are the ones edge publishes for its own list; the two services are told apart by
-  * the service resource attribute every metric carries.
+  * Auth and edge publish the same names for their own lists; the two are told apart by the service
+  * resource attribute every metric carries.
   */
 object RevocationMetrics:
 

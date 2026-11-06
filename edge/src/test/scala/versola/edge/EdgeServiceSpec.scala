@@ -8,10 +8,11 @@ import org.scalamock.stubs.ZIOStubs
 import versola.edge.EdgeServiceSpec.Fixtures
 import versola.edge.login.{BrowserBinding, LoginRecord, LoginRepository}
 import versola.edge.model.*
-import versola.edge.revocation.{Revocation, RevocationKey, TokenRevocationService}
+import versola.edge.revocation.TokenRevocationService
 import versola.edge.session.EdgeSessionRecord
 import versola.util.cel.CelEvaluator
 import versola.util.http.RateLimiter
+import versola.util.revocation.{Revocation, RevocationKey}
 import versola.util.{Base64, EnvName, JWT, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*

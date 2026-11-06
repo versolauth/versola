@@ -2,49 +2,32 @@ package versola.edge.revocation
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
-import org.scalamock.stubs.ZIOStubs
-import versola.edge.model.{AccessTokenId, AuthorizationPreset, PresetId}
-import versola.edge.{
-  AuthorizationPresetsSyncClient,
-  OAuthClientService,
-  OAuthClientsSyncClient,
-  PostgresRevocationNotifications,
-  PostgresRevocationRepository,
-}
-import versola.util.ReloadingCache
+import versola.edge.PostgresEdgeRevocationRepository
 import versola.util.postgres.{PostgresConfig, PostgresSpec}
+import versola.util.revocation.{PostgresRevocationNotifications, Revocation, RevocationCache, RevocationKey, RevocationNotifications}
 import zio.*
 import zio.test.*
 
 import java.time.Instant
 
-/** The one part of this service that cannot be tested against an abstract `RevocationRepository`:
+/** The one part of the cache that cannot be tested against an abstract `RevocationRepository`:
   * delivery over a real `LISTEN`/`NOTIFY` connection, and recovery from a connection Postgres
   * itself has torn down. Both are specific to how Postgres, not any database, delivers
   * notifications, which is why this has no backend-agnostic counterpart — see
-  * `PostgresRevocationRepositorySpec` and `PostgresTokenRevocationServiceSyncSpec` for the
-  * parts of this same service that *are* abstracted, over `RevocationRepositorySpec` and
-  * `TokenRevocationServiceSyncSpec`.
+  * `PostgresEdgeRevocationRepositorySpec` for the parts of the same cache that *are* abstracted,
+  * over `RevocationRepositorySpec` and `RevocationCacheSyncSpec`. It runs against edge's own table
+  * and channel, which is what pins them to the migration's.
   */
-object PostgresTokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
-
-  /** No clients configured: nothing here goes through the TTL-derived paths. */
-  private val clientService: OAuthClientService =
-    OAuthClientService.Impl(
-      ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[PresetId, AuthorizationPreset]))),
-      ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(Map.empty[versola.edge.model.ClientId, versola.edge.model.OAuthClient]))),
-      stub[AuthorizationPresetsSyncClient],
-      stub[OAuthClientsSyncClient],
-    )
+object PostgresRevocationCacheSpec extends ZIOSpecDefault:
 
   private def service =
     for
       xa <- ZIO.service[TransactorZIO]
-      impl <- TokenRevocationService.make(PostgresRevocationRepository(xa), clientService)
+      impl <- RevocationCache.make(PostgresEdgeRevocationRepository(xa))
     yield impl
 
   private def revocation(id: String) =
-    Revocation(RevocationKey.Jti(AccessTokenId(id)), Instant.now().plusSeconds(3600), issuedBefore = None)
+    Revocation(RevocationKey.Jti(id), Instant.now().plusSeconds(3600), issuedBefore = None)
 
   private def clean = ZIO.serviceWithZIO[TransactorZIO](_.connect(sql"DELETE FROM revocations".update.run()))
 
@@ -59,7 +42,7 @@ object PostgresTokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
       ZIO.acquireReleaseWith(
         xa.connect(sql"ALTER TABLE revocations DISABLE TRIGGER revocations_notify".update.run()),
       )(_ => xa.connect(sql"ALTER TABLE revocations ENABLE TRIGGER revocations_notify".update.run()).orDie)(_ =>
-        PostgresRevocationRepository(xa).revokeAll(List(revocation(id))),
+        PostgresEdgeRevocationRepository(xa).revokeAll(List(revocation(id))),
       )
 
   /** Ends the listener's session from the server side, which is what a pooler recycling an
@@ -83,10 +66,10 @@ object PostgresTokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
     condition.repeatUntil(identity).delay(25.millis)
       .timeoutFail(AssertionError(s"never became true: $label"))(15.seconds)
 
-  private def isRevoked(service: TokenRevocationService.Impl, id: String) =
-    service.isRevoked(List(RevocationKey.Jti(AccessTokenId(id))), Instant.now())
+  private def isRevoked(service: RevocationCache, id: String) =
+    service.isRevoked(List(RevocationKey.Jti(id)), Instant.now())
 
-  def spec = (suite("PostgresTokenRevocationService")(
+  def spec = (suite("PostgresRevocationCache")(
     test("a revocation written by another replica arrives over the notification feed") {
       (for
         service <- service
@@ -96,10 +79,10 @@ object PostgresTokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
         // Written through a second repository on its own connection: this is another replica
         // revoking, not this service revoking through itself.
         xa <- ZIO.service[TransactorZIO]
-        _ <- PostgresRevocationRepository(xa).revokeAll(List(revocation("from-peer")))
+        _ <- PostgresEdgeRevocationRepository(xa).revokeAll(List(revocation("from-peer")))
         _ <- eventually(isRevoked(service, "from-peer"), "peer revocation observed")
       yield assertCompletes)
-        .provideSome[TransactorZIO & PostgresConfig & Scope](PostgresRevocationNotifications.live)
+        .provideSome[TransactorZIO & PostgresConfig & Scope](PostgresRevocationNotifications.live(PostgresEdgeRevocationRepository.Table))
     },
     test("a reconnect recovers a revocation the feed never delivered") {
       (for
@@ -118,7 +101,7 @@ object PostgresTokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- killListener
         _ <- eventually(isRevoked(service, "missed"), "missed revocation recovered")
       yield assertTrue(!unnoticed))
-        .provideSome[TransactorZIO & PostgresConfig & Scope](PostgresRevocationNotifications.live)
+        .provideSome[TransactorZIO & PostgresConfig & Scope](PostgresRevocationNotifications.live(PostgresEdgeRevocationRepository.Table))
     },
   ) @@ TestAspect.before(clean) @@ TestAspect.after(clean)
     @@ TestAspect.withLiveClock @@ TestAspect.sequential)
