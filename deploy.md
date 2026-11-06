@@ -491,6 +491,20 @@ the secret, in `pending_logins.browser_binding_hash` (migration `V2008`, nullabl
   (a script, a load generator without a cookie jar), now gets `400` on `/complete`.
 - The native flow (`/native/*`) never used the pending login and is unaffected.
 
+#### Behaviour change: `auth` refuses a repeated request parameter and an invalid `max_age`
+
+RFC 6749 §3.1 and §3.2 say a request parameter must not be included more than once. `GET /authorize` already refused one; now
+`POST /authorize`, `POST /par` and `POST /token` do too, with `invalid_request` (a redirect at `/authorize`, `400` JSON at `/token`).
+Before, the form-body endpoints used one of the values (`/token`) or a comma-joined value (`/authorize`, `/par`). `resource`
+may still be repeated (RFC 8707). A `max_age` that is not a non-negative whole number (`abc`, `-1`, `1.5`) is now refused with
+`invalid_request` at `/authorize` and `/par`; before it was ignored, and a request that asked for a re-authentication got whatever session
+the browser held. An empty `max_age` is still treated as omitted.
+
+- **Migration.** None: no schema or setting. A client that sends the same field twice (a library that adds `client_id` to a form
+  that already has it, a hand-built `scope`) or a garbage `max_age` has to be fixed; there is no switch to keep the old reading.
+- **What to check.** `invalid_request` on `/token` from a client that worked before, with the request body in hand: look for a
+  field name that occurs twice.
+
 #### Breaking change (2026-10-25): the access log is set per edge in central, not by environment
 
 `HTTP_ACCESS_LOG`, `HTTP_ACCESS_LOG_SLOW_MS` and `HTTP_ACCESS_LOG_SAMPLE_RATE` are no longer read by any service; a value left

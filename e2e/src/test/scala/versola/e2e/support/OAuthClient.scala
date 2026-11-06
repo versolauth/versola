@@ -569,6 +569,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       codeChallengeMethod: Option[String] = Some("S256"),
       prompt: Option[String] = None,
       maxAge: Option[Long] = None,
+      /** The `max_age` exactly as sent, for a value that is not a number; wins over `maxAge`. */
+      maxAgeRaw: Option[String] = None,
       sessionCookie: Option[String] = None,
       acrValues: Option[String] = None,
       idTokenHint: Option[String] = None,
@@ -605,7 +607,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
           "code_challenge_method" -> (if omitCodeChallenge then None else codeChallengeMethod),
           "state" -> Some(state),
           "prompt" -> prompt,
-          "max_age" -> maxAge.map(_.toString),
+          "max_age" -> maxAgeRaw.orElse(maxAge.map(_.toString)),
           "acr_values" -> acrValues,
           "id_token_hint" -> idTokenHint,
           "ui_locales" -> uiLocales,
@@ -1907,6 +1909,14 @@ final class OAuthClient(client: Client, config: E2EConfig):
     */
   def tokenRaw(fields: Map[String, String], clientId: String, clientSecret: String): Task[Response] =
     val req = Request.post(s"${config.authUrl}/token", formBody(fields))
+      .addHeader(Authorization.Basic(clientId, clientSecret))
+      .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    Client.batched(req).provide(ZLayer.succeed(client))
+
+  /** POST /token with a form that repeats a field, which a `Map` cannot hold: the request RFC 6749 §3.2 forbids and §5.2 answers with
+    * `invalid_request`. */
+  def tokenRawRepeated(fields: List[(String, String)], clientId: String, clientSecret: String): Task[Response] =
+    val req = Request.post(s"${config.authUrl}/token", Body.fromString(fields.map((k, v) => s"${encode(k)}=${encode(v)}").mkString("&")))
       .addHeader(Authorization.Basic(clientId, clientSecret))
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
     Client.batched(req).provide(ZLayer.succeed(client))

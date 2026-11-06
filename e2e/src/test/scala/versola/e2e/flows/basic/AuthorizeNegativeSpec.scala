@@ -36,6 +36,22 @@ object AuthorizeNegativeSpec extends E2ESpec:
         ).assertErrorRedirect("unsupported_response_type")
       yield assertCompletes
     },
+    // OIDC Core §3.1.2.1: max_age is a number of seconds; RFC 6749 §4.1.2.1: an invalid parameter value is invalid_request.
+    test("a max_age that is not a number redirects with error=invalid_request instead of being ignored") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        _ <- auth.authorizeRaw(clientId = s.clientId, redirectUri = s.redirectUri, maxAgeRaw = Some("abc"))
+          .assertErrorRedirect("invalid_request")
+        _ <- auth.authorizeRaw(clientId = s.clientId, redirectUri = s.redirectUri, maxAgeRaw = Some("-1"))
+          .assertErrorRedirect("invalid_request")
+      yield assertCompletes
+    },
+    test("a numeric max_age is accepted") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        _ <- auth.authorizeRaw(clientId = s.clientId, redirectUri = s.redirectUri, maxAge = Some(300)).assertChallengeRedirect
+      yield assertCompletes
+    },
     test("missing code_challenge from a public client redirects with error=invalid_request") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)

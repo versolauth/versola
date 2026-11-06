@@ -1681,6 +1681,26 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         yield assertTrue(result.prompt == Set.empty)
       },
     ),
+    suite("repeated parameters in a POST body (RFC 6749 §3.1)")(
+      test("refuses a parameter that occurs twice, with the same value too") {
+        val env = Env()
+        val body = (validParams.map((k, v) => s"$k=${java.net.URLEncoder.encode(v, "UTF-8")}").toList :+ "state=other").mkString("&")
+        val request = Request.post(URL.root, Body.fromString(body))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result.left.exists(_.isInstanceOf[Error.MultipleValuesProvided]))
+      },
+      test("accepts the same request with each parameter once") {
+        val env = Env()
+        val body = validParams.map((k, v) => s"$k=${java.net.URLEncoder.encode(v, "UTF-8")}").mkString("&")
+        val request = Request.post(URL.root, Body.fromString(body))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.state == Some(State("test-state")))
+      },
+    ),
     suite("max_age")(
       test("parses a numeric max_age") {
         val env = Env()
@@ -1690,13 +1710,47 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           result <- env.parser.parse(request)
         yield assertTrue(result.maxAge == Some(3600L))
       },
-      test("silently drops a non-numeric max_age") {
+      test("accepts max_age=0, which is a re-authentication request (OIDC Core §3.1.2.1)") {
         val env = Env()
-        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("max_age" -> "not-a-number")))
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("max_age" -> "0")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.maxAge == Some(0L))
+      },
+      test("treats an empty max_age as omitted (RFC 6749 §3.1)") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("max_age" -> "")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request)
         yield assertTrue(result.maxAge == None)
+      },
+      suite("refuses a max_age that is not a non-negative whole number with invalid_request")(
+        List("not-a-number", "-1", "1.5", "1e3", "3600s").map(value =>
+          test(s"max_age=$value") {
+            val env = Env()
+            val request = Request.get(URL.root.addQueryParams(validParams ++ Map("max_age" -> value)))
+            for
+              _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+              result <- env.parser.parse(request).either
+            yield assertTrue(result == Left(Error.MaxAgeInvalid(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Query)))
+          },
+        )*,
+      ),
+      test("refuses a max_age sent more than once") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams).addQueryParam("max_age", "10").addQueryParam("max_age", "20"))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(
+          clientId,
+          redirectUri,
+          Some(State("test-state")),
+          "max_age",
+          responseMode = ResponseMode.Query,
+        )))
       },
     ),
     suite("acr_values")(
