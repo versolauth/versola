@@ -473,6 +473,18 @@ dump and the rollback is lost. With extra replicas of `auth` or `edge`, remove t
 unfinished `versola rollout` is undone with `versola rollout --abort` instead; secrets the new
 version added stay in OpenBao either way.
 
+#### Behaviour change: edge refuses a resource path whose segments a resource could read differently
+
+A call to `/resources/{resourceId}/{path}` whose path has a segment that is a separator once decoded (`%2F`, `%5C`, a raw `\`), a
+control character, a dot segment in any encoding (`..;x` too) or one that is only a dot segment after another round of decoding is
+answered `404`, like a path no endpoint registers, after the caller has been authenticated. Before, an encoded slash was counted as
+two segments when the endpoint was chosen and sent as one, so the endpoint a permission was checked for could differ from the one the
+resource routed to.
+
+- **Who can notice.** A resource whose identifiers legitimately contain `/` or `\` in a path segment (an id such as `a/b` sent as
+  `a%2Fb`). Such an id has to be carried in a query parameter or the body. Ids with a dot, a space, `;` or `%` inside are unaffected.
+- **No setting, no migration.** Nothing is stored; a rollback restores the old matching.
+
 #### Behaviour change: edge binds a login to the browser that began it (login CSRF on `/complete`)
 
 `/login/{presetId}` now sets an `EDGE_LOGIN_<state>` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`, `Path` =

@@ -1386,13 +1386,18 @@ object EdgeService:
         method: String,
         restPath: Path,
     ): IO[Outcome, ResourceEndpoint] =
-      ZIO.fromOption {
-        val pathSegments = normalizePath(restPath.encode)
-        endpoints
-          .filter: endpoint =>
-            endpoint.method.equalsIgnoreCase(method) && matchesSegments(normalizePath(endpoint.path), pathSegments)
-          .minByOption(endpoint => (specificity(normalizePath(endpoint.path)), endpoint.path))
-      }.orElseFail(Outcome.NotFound)
+      // Refused as not found, after the caller was authenticated like any other unknown route: the segments matched here are the ones
+      // the resource is sent, so a path the two could read differently has to match nothing (see ProxyPath).
+      ZIO.fromOption(ProxyPath.segments(restPath))
+        .tapError(_ => Observability.setError("path_rejected"))
+        .orElseFail(Outcome.NotFound)
+        .flatMap: pathSegments =>
+          ZIO.fromOption {
+            endpoints
+              .filter: endpoint =>
+                endpoint.method.equalsIgnoreCase(method) && matchesSegments(normalizePath(endpoint.path), pathSegments)
+              .minByOption(endpoint => (specificity(normalizePath(endpoint.path)), endpoint.path))
+          }.orElseFail(Outcome.NotFound)
 
     /** Placeholder mask of a template, one character per segment: candidates all have the
       * same segment count, so comparing masks lexicographically prefers the template whose
@@ -1409,7 +1414,7 @@ object EdgeService:
         case (a, b) => a == b
 
     private def extractPathParams(pattern: String, restPath: Path): Map[String, String] =
-      normalizePath(pattern).zip(normalizePath(restPath.encode)).collect:
+      normalizePath(pattern).zip(restPath.segments.filter(_.nonEmpty)).collect:
         case (s"{$name}", value) => name -> value
       .toMap
 
