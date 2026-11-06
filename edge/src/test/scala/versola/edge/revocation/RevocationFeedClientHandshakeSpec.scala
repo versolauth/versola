@@ -161,8 +161,12 @@ object RevocationFeedClientHandshakeSpec extends ZIOSpecDefault:
         page.cursor == "opaque-cursor",
         // a key of a kind this version does not know is skipped, the rest is read
         page.revocations == List(
-          Revocation(RevocationKey.Jti("token-1"), Instant.ofEpochSecond(2_000_000_000L), None),
-          Revocation(RevocationKey.Sub("user-1"), Instant.ofEpochSecond(2_000_000_100L), Some(Instant.ofEpochSecond(1_999_999_000L))),
+          Revocation(key = RevocationKey.Jti("token-1"), expiresAt = Instant.ofEpochSecond(2_000_000_000L), issuedBefore = None),
+          Revocation(
+            key = RevocationKey.Sub("user-1"),
+            expiresAt = Instant.ofEpochSecond(2_000_000_100L),
+            issuedBefore = Some(Instant.ofEpochSecond(1_999_999_000L)),
+          ),
         ),
       )
     },

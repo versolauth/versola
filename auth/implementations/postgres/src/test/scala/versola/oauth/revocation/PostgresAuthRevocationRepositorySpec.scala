@@ -92,9 +92,18 @@ object PostgresAuthRevocationRepositorySpec extends PostgresSpec, RevocationRepo
         for
           xa <- ZIO.service[TransactorZIO]
           repository = PostgresAuthRevocationRepository(xa)
-          _ <- repository.revoke(Revocation(RevocationKey.Jti("mine"), expiry, None), RevocationCause.Revoke, Some(TenantId("tenant-a")))
-          _ <- repository.revoke(Revocation(RevocationKey.Fam("theirs"), expiry, None), RevocationCause.Revoke, Some(TenantId("tenant-b")))
-          _ <- repository.revoke(Revocation(RevocationKey.Sid("session"), expiry, None), RevocationCause.Logout, None)
+          _ <- repository.revoke(
+            Revocation(key = RevocationKey.Jti("mine"), expiresAt = expiry, issuedBefore = None),
+            RevocationCause.Revoke,
+            Some(TenantId("tenant-a")),
+          )
+          _ <- repository.revoke(
+            Revocation(key = RevocationKey.Fam("theirs"), expiresAt = expiry, issuedBefore = None),
+            RevocationCause.Revoke,
+            Some(TenantId("tenant-b")),
+          )
+          _ <-
+            repository.revoke(Revocation(key = RevocationKey.Sid("session"), expiresAt = expiry, issuedBefore = None), RevocationCause.Logout, None)
           page <- repository.feedSince(RevocationCursor.Beginning, 10, Set(TenantId("tenant-a")))
           nobody <- repository.feedSince(RevocationCursor.Beginning, 10, Set.empty)
         yield assertTrue(
@@ -107,7 +116,9 @@ object PostgresAuthRevocationRepositorySpec extends PostgresSpec, RevocationRepo
         for
           xa <- ZIO.service[TransactorZIO]
           repository = PostgresAuthRevocationRepository(xa)
-          _ <- ZIO.foreachDiscard(1 to 3)(n => repository.revoke(Revocation(RevocationKey.Sid(s"s$n"), expiry, None), RevocationCause.Logout, None))
+          _ <- ZIO.foreachDiscard(1 to 3)(n =>
+            repository.revoke(Revocation(key = RevocationKey.Sid(s"s$n"), expiresAt = expiry, issuedBefore = None), RevocationCause.Logout, None),
+          )
           first <- repository.feedSince(RevocationCursor.Beginning, 2, Set.empty)
           second <- repository.feedSince(first.last.get, 2, Set.empty)
           third <- repository.feedSince(second.last.get, 2, Set.empty)
@@ -125,7 +136,11 @@ object PostgresAuthRevocationRepositorySpec extends PostgresSpec, RevocationRepo
         for
           xa <- ZIO.service[TransactorZIO]
           repository = PostgresAuthRevocationRepository(xa)
-          _ <- repository.revoke(Revocation(RevocationKey.Sid("old"), Instant.now().minusSeconds(5), None), RevocationCause.Logout, None)
+          _ <- repository.revoke(
+            Revocation(key = RevocationKey.Sid("old"), expiresAt = Instant.now().minusSeconds(5), issuedBefore = None),
+            RevocationCause.Logout,
+            None,
+          )
           page <- repository.feedSince(RevocationCursor.Beginning, 10, Set.empty)
         yield assertTrue(page.revocations.isEmpty)
       } @@ TestAspect.withLiveClock,

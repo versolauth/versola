@@ -13,7 +13,7 @@ import scala.util.Try
 
 /** `GET /revocations`: the revocations an edge pulls instead of waiting to be told (#560).
   *
-  * Served on auth's mutual-TLS listener only (`MPORT`, [[versola.PostgresOAuthApp.mutualTlsRoutes]]), never on the main
+  * Served on auth's mutual-TLS listener only (`MPORT`, `PostgresOAuthApp.mutualTlsRoutes`), never on the main
   * listener or `/service`. The caller is the edge whose certificate the handshake validated
   * ([[EdgeCertificateTrust.edgeOf]]): a certificate in a header is never read, so anything that can only speak HTTP to
   * this process is refused. A client's certificate, a certificate of an edge central no longer lists and a request on a
@@ -53,7 +53,10 @@ object RevocationFeedController extends Controller:
       yield Response.json(Page(page.revocations.map(entry), cursor).toJson))
         .catchAll:
           case Refusal.Forbidden =>
-            Observability.setError("access_denied", Some("not a trusted edge")).as(Response.json("""{"error":"access_denied"}""").status(Status.Forbidden))
+            Observability.setError(
+              "access_denied",
+              Some("not a trusted edge"),
+            ).as(Response.json("""{"error":"access_denied"}""").status(Status.Forbidden))
           case Refusal.BadRequest(reason) =>
             Observability.setError("invalid_request", Some(reason)).as(Response.json("""{"error":"invalid_request"}""").status(Status.BadRequest))
           case error: Throwable => ZIO.fail(error)

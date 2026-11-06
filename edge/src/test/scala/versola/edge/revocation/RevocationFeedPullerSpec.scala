@@ -4,8 +4,8 @@ import org.scalamock.stubs.Stub
 import versola.edge.EdgeConfig
 import versola.edge.model.EdgeId
 import versola.edge.revocation.RevocationFeedClient.Page
-import versola.util.{Secret, UnitSpecBase}
 import versola.util.revocation.{Revocation, RevocationConfig, RevocationCursor, RevocationKey}
+import versola.util.{Secret, UnitSpecBase}
 import zio.*
 import zio.http.URL
 import zio.test.*
@@ -34,7 +34,7 @@ object RevocationFeedPullerSpec extends UnitSpecBase:
   private def at(seconds: Long, key: String = "") = RevocationCursor(Instant.ofEpochSecond(seconds), key)
 
   private def sid(id: String) = RevocationKey.Sid(id)
-  private def revocation(id: String) = Revocation(sid(id), Instant.ofEpochSecond(100_000), None)
+  private def revocation(id: String) = Revocation(key = sid(id), expiresAt = Instant.ofEpochSecond(100_000), issuedBefore = None)
 
   private class Env:
     val cursors: Stub[RevocationCursorRepository] = stub[RevocationCursorRepository]

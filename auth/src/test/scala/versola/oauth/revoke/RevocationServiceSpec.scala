@@ -174,7 +174,15 @@ object RevocationServiceSpec extends UnitSpecBase:
           // The whole family goes, recorded with the client's own TTL as the bound, in the one
           // repository call that expires it; not just the row that was presented.
           env.tokenRepository.deleteByFamily.calls ==
-            List((familyId1, RevocationTerms(RevocationCause.Revoke, testClient.accessTokenTtl, Some(testClient.tenantId), Map.empty))),
+            List((
+              familyId1,
+              RevocationTerms(
+                cause = RevocationCause.Revoke,
+                ttl = testClient.accessTokenTtl,
+                tenantId = Some(testClient.tenantId),
+                ttlByClient = Map.empty,
+              ),
+            )),
           // No access token was presented and none is recorded against the chain, so the push
           // names the family and bounds it by the client's own TTL from now.
           env.accessTokenRevocationService.announceFamily.calls ==
@@ -420,7 +428,12 @@ object RevocationServiceSpec extends UnitSpecBase:
             deliveries = outbox.submit.calls
           yield assertTrue(
             repository.revoke.calls == List(
-              (Revocation(RevocationKey.Jti(accessToken1.encoded), payload.expiresAt, issuedBefore = None), RevocationCause.Revoke),
+              (
+                Revocation(RevocationKey.Jti(accessToken1.encoded), payload.expiresAt, issuedBefore = None),
+                RevocationCause.Revoke,
+                // the feed serves a revoked token to the edges of its client's tenant
+                Some(client.tenantId),
+              ),
             ),
             deliveries.map(d => (d.audience.toList, d.tenantId, d.uri, d.subject)) ==
               List((List(client.id), client.tenantId, backChannelUri, userId1.toString)),

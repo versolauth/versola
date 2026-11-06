@@ -540,6 +540,54 @@ role change and `DELETE /users/refresh-tokens` do not write one yet.
 - Components that verify a JWT on its signature alone (a resource server without `edge`, without introspection and
   without the event) still accept a revoked token until `exp`.
 
+#### New: `edge` can pull revocations from `auth` (migrations `V0033` for `auth`, `V2009` for `edge`; off by default)
+
+Until now a first-party `edge` learned of a revoked access token only from the event `auth` sent to the client's
+`back_channel_logout_uri`: one attempt (a few, through the outbox), nothing for a client with no such address, and nothing
+for an `edge` that was down at the time. With `revocation.feed.enabled = true` the `edge` also **asks** `auth` for what was
+revoked, about once a second, from a cursor it keeps, so a revocation reaches it whatever happened to the event. The event
+stays as the faster signal (#560). Nothing changes until the switch is turned on: an `edge` that does not set it behaves as
+before, an old `edge` against this `auth` and this `edge` against an old `auth` both keep working on the event alone.
+
+- **Migrations.** `V0033__auth_revocations_tenant.sql` adds the nullable `auth_revocations.tenant_id` (the client's tenant for
+  a revoked token or refresh-token family, `NULL` for a session or a user, which no tenant owns; rows written before the
+  upgrade are `NULL` and are served to every edge until they expire). `V2009__revocation_cursors.sql` creates edge's
+  `revocation_cursors` (where the `edge` has read up to, and which pod is reading). Both are additive, the previous release runs
+  on them and a rollback works; neither can be undone except by the pre-migration dump.
+- **New endpoint.** `GET /revocations?after=<cursor>&limit=<n>` on `auth`'s mutual-TLS listener (`MPORT`) and nowhere else (not the
+  main port, not `/service`): the `mutual-tls` block, with `edge-trusted-certificates`, must be configured, because the caller is
+  recognised from the certificate of the handshake. A client's certificate, an edge central does not list, or no certificate is
+  `403`. It serves the revocations of the tenants central assigned the calling edge, and the ones no tenant owns. See
+  `auth/open-api/revocations.yaml`.
+- **Turning it on.** The `edge` needs its `native` block (`auth-mutual-tls-url`, `trusted-certificates`: the feed is read over the same
+  channel and with the same certificate as its `/userinfo` calls); without one the feed does not start and a warning says so. In `edge`'s
+  config:
+
+  ```hocon
+  revocation {
+    feed {
+      enabled       = true
+      # poll-interval = 1 second   how often each pod looks
+      # lease         = 5 seconds  how long one pod owns the reading; longer than `timeout`
+      # page-size     = 5000       at most 10000
+      # timeout       = 3 seconds  one request to auth
+    }
+  }
+  ```
+
+  Several pods of one `edge` share one cursor row: the one that finds its lease free reads, writes what it read to the `revocations`
+  table (whose notification reaches every pod) and gives the lease back. A pod that dies hands the reading on after `lease`. A new `edge`
+  reads from the beginning of the list, a restarted one from its cursor. Every `revocation.reload-interval` (600 seconds) one pod
+  rereads the whole list, which bounds a revocation missed through a very late commit to minutes. The first deployment of the switch
+  reads everything unexpired once: a page of 5000 rows per request.
+- **What to watch.** `revocation_feed_lag_seconds` (seconds since the last cycle that read the feed to its end started; per pod, so alert
+  on the lowest across pods), `revocation_feed_cycles_total{outcome="ok|error|lease_not_acquired"}`, `revocation_feed_pages_total`,
+  `revocation_feed_rows_total`, `revocation_feed_lease_held`. A feed that stays down is logged as a warning, then at most once in five
+  minutes; it never fails readiness, and the `edge` carries on with the events.
+- **`edge` behaviour fix.** An expired cookie token that was revoked is no longer refreshed: the old token's `jti`, family, session and
+  user are checked first, and a revoked one sends the caller to log in with the cookie cleared, without presenting the refresh token to `auth`.
+- The `revocation` block of `edge` is the same one as before (`reload-interval`, `purge-interval`, `overlap`, `batch-size`) with `feed` inside it.
+
 #### Behaviour change: edge syncs through `/edge/sync/*`, on central's mutual-TLS port
 
 Central serves edges on a surface of their own (#554): `GET /edge/sync/{clients,resources,roles,
@@ -703,7 +751,10 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   token, refresh-token family, session or user, with an expiry of one access token lifetime. It is small by construction, the
   last few minutes of revocations rather than a history. `revoked_at` is stamped with the database's clock, and the pair
   `(revoked_at, revoked_key)` is the cursor every replica resumes its reconciliation from. Rows are collected by the cleanup
-  manager once `expires_at` has passed.
+  manager once `expires_at` has passed. `tenant_id` (`V0033`, nullable) says which tenant a key belongs to, for the feed edges pull.
+- **Revocation cursors** (`edge`, `revocation_cursors`, `V2009`). One row per source (auth's mutual-TLS URL): the position the `edge` has
+  read the feed up to, and the lease that lets one pod at a time read it. Compared on the database's clock; nothing is held open across
+  the call to `auth`.
 - **Configuration snapshots.** `auth` and `edge` keep the last configuration sync from `central`
   (signed with a key the node already holds) and start from it when `central` is unreachable or
   failing, retrying in the background and reporting `config_snapshot_age_seconds`. The tables fill on

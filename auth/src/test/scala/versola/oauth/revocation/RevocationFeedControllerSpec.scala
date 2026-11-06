@@ -42,9 +42,9 @@ object RevocationFeedControllerSpec extends UnitSpecBase:
   val unlistedEdge = EdgeCertificateTrust.Impl(List(edgeIssuer.certificate), ZIO.succeed(Map.empty))
 
   val expiry = Instant.ofEpochSecond(2_000_000_000L)
-  val sidRevocation = Revocation(RevocationKey.Sid("session-1"), expiry, None)
-  val subRevocation = Revocation(RevocationKey.Sub("user-1"), expiry, Some(Instant.ofEpochSecond(1_999_999_000L)))
-  val tokenRevocation = Revocation(RevocationKey.Jti("token-1"), expiry, None)
+  val sidRevocation = Revocation(key = RevocationKey.Sid("session-1"), expiresAt = expiry, issuedBefore = None)
+  val subRevocation = Revocation(key = RevocationKey.Sub("user-1"), expiresAt = expiry, issuedBefore = Some(Instant.ofEpochSecond(1_999_999_000L)))
+  val tokenRevocation = Revocation(key = RevocationKey.Jti("token-1"), expiresAt = expiry, issuedBefore = None)
   val lastRowAt = RevocationCursor(Instant.parse("2026-11-06T10:00:00.123456Z"), "sub:user-1")
 
   private def get(query: String, certificate: Option[X509Certificate]) =
