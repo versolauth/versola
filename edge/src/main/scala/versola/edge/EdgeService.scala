@@ -628,7 +628,8 @@ object EdgeService:
             {
               case JWT.Error.Expired(jti) =>
                 authSource match
-                  case AuthSource.Cookie(presetId) => refreshSession(AccessTokenId(jti), presetId, now)
+                  case AuthSource.Cookie(presetId) =>
+                    refuseIfRevoked(accessToken, publicKeys, presetId) *> refreshSession(AccessTokenId(jti), presetId, now)
                   case AuthSource.Header(_) =>
                     Observability.setError("token_expired") *> ZIO.fail(Outcome.Unauthorized)
               case _ =>
@@ -875,6 +876,35 @@ object EdgeService:
             case (None, None) => ZIO.succeed(SSOClient.TokenBinding.Unbound)
         info <- ssoClient.userInfo(accessToken, binding)
       yield info
+
+    /** An expired cookie token is refreshed with the session's refresh token, and the new token's claims are checked
+      * for revocation only afterwards -- which would let a token revoked on its own (its `jti`, or its refresh family
+      * or session gone from the deny list) come back to life through a refresh that auth, whose family and session
+      * may still be live, grants. So the old token is asked about first: when it is revoked, the refresh token is
+      * never presented to auth, and the caller is sent to log in with the cookie cleared.
+      *
+      * The token's signature has been checked already (that is how it came to be known as expired); only its
+      * expiry is waived here, to read the keys it was revoked under. One whose claims cannot be read is left to the
+      * refresh, which replaces it with a token that is judged as any other.
+      */
+    private def refuseIfRevoked(
+        accessToken: String,
+        publicKeys: JWT.PublicKeys,
+        cookiePresetId: PresetId,
+    ): IO[Throwable | Outcome, Unit] =
+      JWT.deserialize[AccessTokenClaims](accessToken, publicKeys, JWT.Type.AccessToken, validateExpiry = false)
+        .option
+        .flatMap:
+          case None => ZIO.unit
+          case Some(claims) =>
+            revocationService
+              .isRevoked(
+                EdgeRevocationKeys.of(claims.jti, claims.family, claims.sid, claims.subject),
+                Instant.ofEpochSecond(claims.issuedAt),
+              )
+              .flatMap: revoked =>
+                if revoked then Observability.setError("token_revoked") *> reauthenticateFromCookie(cookiePresetId)
+                else ZIO.unit
 
     /** A signed, unexpired token is not necessarily still valid: it may have been revoked on
       * its own, or its whole session logged out. Both are answered from memory, so this costs

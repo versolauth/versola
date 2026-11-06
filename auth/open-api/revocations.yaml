@@ -29,8 +29,9 @@ info:
     `auth_revocation` channel: `jti:<id>`, `fam:<id>`, `sid:<id>`, `sub:<id>`; a consumer skips a prefix it
     does not know.
 
-    **Reading it.** The cursor is opaque; hand back what the last response carried. A page shorter than
-    the limit asked for is the end of what there is now. Rows are written when their transaction commits,
+    **Reading it.** The cursor is the position `(revoked_at, key)` of the last row read, base64url, and is handed back
+    as received; it is the encoding of `RevocationCursor` in `util`, which the edge decodes only to start a read a
+    little behind it (below). A page shorter than the limit asked for is the end of what there is now. Rows are written when their transaction commits,
     which can be after a row with a later `revoked_at`, so a reader starts a little behind its cursor and
     applies the overlap idempotently (the edge rewinds by `revocation.overlap`, 30 s by default, and rereads
     everything every `revocation.reload-interval`).

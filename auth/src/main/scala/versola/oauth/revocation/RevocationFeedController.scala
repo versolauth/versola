@@ -8,10 +8,7 @@ import zio.http.*
 import zio.json.*
 import zio.telemetry.opentelemetry.tracing.Tracing
 
-import java.nio.charset.StandardCharsets
 import java.security.cert.X509Certificate
-import java.time.Instant
-import java.util.Base64
 import scala.util.Try
 
 /** `GET /revocations`: the revocations an edge pulls instead of waiting to be told (#560).
@@ -52,7 +49,7 @@ object RevocationFeedController extends Controller:
         page <- ZIO.serviceWithZIO[AuthRevocationRepository](_.feedSince(after, limit, edge.tenantIds))
         // An empty page hands back the cursor it was given, as received: the caller is already at the end
         // of what it may read, and the only position that cannot be wrong is the one it holds.
-        cursor = page.last.map(encode).getOrElse(request.queryParam("after").getOrElse(""))
+        cursor = page.last.map(_.encoded).getOrElse(request.queryParam("after").getOrElse(""))
       yield Response.json(Page(page.revocations.map(entry), cursor).toJson))
         .catchAll:
           case Refusal.Forbidden =>
@@ -85,18 +82,7 @@ object RevocationFeedController extends Controller:
       case Some(value) =>
         Try(value.toInt).toOption.filter(_ > 0).map(math.min(_, MaxLimit)).toRight(Refusal.BadRequest("limit is not a positive integer"))
 
-  /** The cursor is `<revoked_at>|<revoked_key>`, base64url, and opaque to the caller: it is handed back as received.
-    * Absent or empty is the beginning of the list. */
+  /** The cursor is the one [[RevocationCursor.encoded]] writes, handed back as received; absent or empty is the
+    * beginning of the list. */
   private def cursorOf(raw: Option[String]): Either[Refusal, RevocationCursor] =
-    raw.filter(_.nonEmpty) match
-      case None => Right(RevocationCursor.Beginning)
-      case Some(value) =>
-        Try:
-          val decoded = String(Base64.getUrlDecoder.decode(value), StandardCharsets.UTF_8)
-          val separator = decoded.indexOf('|')
-          RevocationCursor(Instant.parse(decoded.take(separator)), decoded.drop(separator + 1))
-        .toOption.toRight(Refusal.BadRequest("after is not a cursor this endpoint issued"))
-
-  private def encode(cursor: RevocationCursor): String =
-    if cursor == RevocationCursor.Beginning then ""
-    else Base64.getUrlEncoder.withoutPadding.encodeToString(s"${cursor.revokedAt}|${cursor.revokedKey}".getBytes(StandardCharsets.UTF_8))
+    RevocationCursor.decode(raw.getOrElse("")).toRight(Refusal.BadRequest("after is not a cursor this endpoint issued"))
