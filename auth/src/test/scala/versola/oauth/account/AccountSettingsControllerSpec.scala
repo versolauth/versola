@@ -9,6 +9,7 @@ import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PasskeySettings}
 import versola.oauth.conversation.ConversationRenderService
+import versola.oauth.revocation.RevocationCause
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionUnderUserAgent}
 import versola.user.UserRepository
@@ -309,7 +310,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           sessionService.invalidateForUser.succeedsWith(true),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
-            stubs._2.invalidateForUser.calls == List((otherDeviceSession.publicId, userId)),
+            stubs._2.invalidateForUser.calls == List((otherDeviceSession.publicId, userId, RevocationCause.UserRevoked)),
             stubs._2.listByUser.calls.isEmpty,
           )),
         // session.ended by the user themself: the subject is the caller, and the cause says it was their own doing
@@ -334,7 +335,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           sessionService.invalidateForUser.succeedsWith(false),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
-            stubs._2.invalidateForUser.calls == List((foreignSessionId, userId)),
+            stubs._2.invalidateForUser.calls == List((foreignSessionId, userId, RevocationCause.UserRevoked)),
             stubs._2.listByUser.calls.isEmpty,
           )),
         // nothing was ended, so nothing is said to have been

@@ -12,6 +12,7 @@ import versola.oauth.challenge.password.model.PasswordReuseError
 import versola.oauth.client.model.{ClientId, TenantId}
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import versola.oauth.logout.LogoutService
+import versola.oauth.revocation.RevocationCause
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionId, SessionUnderUserAgent, UserAgentId, UserAgentRecord}
 import versola.role.model.RoleId
@@ -113,7 +114,7 @@ object UserController extends Controller:
         logoutService <- ZIO.service[LogoutService]
         id <- request.url.queryZIO[UserId]("id")
         _ <- Observability.setUserId(id.toString)
-        _ <- logoutService.invalidateAllSessions(id, "user_deleted")
+        _ <- logoutService.invalidateAllSessions(id, RevocationCause.UserDeleted)
         _ <- repo.delete(id)
         _ <- audited(AuthAuditKinds.AccountDeleted, id, AuthAuditDetails.Account(via = "admin", detail = None), asService)
       yield Response.status(Status.NoContent)
@@ -302,7 +303,7 @@ object UserController extends Controller:
         actorId <- request.queryZIO[Option[UserId]]("actorId")
         _ <- actedBy(actorId)
         response <- sessionId match
-          case None => logoutService.invalidateAllSessions(userId, "admin_revoked").as(Response.status(Status.NoContent))
+          case None => logoutService.invalidateAllSessions(userId, RevocationCause.AdminRevoked).as(Response.status(Status.NoContent))
           case Some(publicId) =>
             logoutService.invalidateSession(publicId, userId).flatMap:
               case true => ZIO.succeed(Response.status(Status.NoContent))

@@ -5,6 +5,7 @@ import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.{AuthMethod, ClientId, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.revocation.RevocationCause
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{
   ClientEntry,
@@ -147,6 +148,13 @@ object LogoutServiceSpec extends UnitSpecBase:
           result == LogoutService.LogoutResult(Nil, None, Some("st-1"), clientId = None),
           env.configuration.find.calls.isEmpty,
         )
+      },
+      test("ends the session with the logout cause, which is what its access tokens are revoked for") {
+        val env = Env()
+        for
+          _ <- env.sessionService.invalidate.succeedsWith(None)
+          _ <- env.service.logout(Left(publicSessionId1), None, None)
+        yield assertTrue(env.sessionService.invalidate.calls == List((Left(publicSessionId1), RevocationCause.Logout)))
       },
       test("returns empty logoutUris when the session's client is not found") {
         val env = Env()
@@ -302,7 +310,7 @@ object LogoutServiceSpec extends UnitSpecBase:
           ended <- env.service.invalidateSession(publicSessionId1, userId)
         yield assertTrue(
           ended,
-          env.sessionService.invalidate.calls == List(Left(publicSessionId1)),
+          env.sessionService.invalidate.calls == List((Left(publicSessionId1), RevocationCause.AdminRevoked)),
           env.outbox.submit.calls.map(_.audience.toList) == List(List(withBackChannel.id)),
         )
       },
@@ -320,7 +328,7 @@ object LogoutServiceSpec extends UnitSpecBase:
           forgotten <- env.service.forgetUserAgent(userId, testUserAgentId)
         yield assertTrue(
           forgotten,
-          env.sessionService.invalidate.calls == List(Left(publicSessionId1)),
+          env.sessionService.invalidate.calls == List((Left(publicSessionId1), RevocationCause.UserAgentForgotten)),
           env.outbox.submit.calls.map(_.audience.toList) == List(List(withBackChannel.id)),
           env.sessionService.forgetUserAgent.calls == List((userId, testUserAgentId)),
         )
@@ -355,7 +363,7 @@ object LogoutServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.sessionService.invalidateAllByUser.succeedsWith(Nil)
-          _ <- env.service.invalidateAllSessions(userId, "admin_revoked")
+          _ <- env.service.invalidateAllSessions(userId, RevocationCause.AdminRevoked)
         yield assertTrue(env.configuration.find.calls.isEmpty)
       },
       test("resolves participants for every session the user had, not just one") {
@@ -366,7 +374,7 @@ object LogoutServiceSpec extends UnitSpecBase:
         for
           _ <- env.sessionService.invalidateAllByUser.succeedsWith(List(recordA, recordB))
           _ <- env.configuration.find.returnsZIO(id => ZIO.succeed(participants.get(id)))
-          _ <- env.service.invalidateAllSessions(userId, "admin_revoked")
+          _ <- env.service.invalidateAllSessions(userId, RevocationCause.AdminRevoked)
         yield assertTrue(env.configuration.find.calls.toSet == Set(clientA.id, clientB.id))
       },
       test("pushes one event per client naming the user, not one per session") {
@@ -382,7 +390,7 @@ object LogoutServiceSpec extends UnitSpecBase:
           _ <- env.sessionService.invalidateAllByUser.succeedsWith(sessions)
           _ <- env.configuration.find.succeedsWith(Some(withBackChannel))
           _ <- env.outbox.submit.succeedsWith(())
-          _ <- env.service.invalidateAllSessions(userId, "admin_revoked")
+          _ <- env.service.invalidateAllSessions(userId, RevocationCause.AdminRevoked)
           calls = env.outbox.submit.calls
         yield assertTrue(
           // Three sessions, one client, one delivery: a logout token carrying a subject and
@@ -406,7 +414,7 @@ object LogoutServiceSpec extends UnitSpecBase:
           _ <- env.configuration.find.returnsZIO(id => ZIO.succeed(participants.get(id)))
           _ <- env.outbox.submit.succeedsWith(())
           occurredAt <- Clock.instant
-          _ <- env.service.invalidateAllSessions(userId, "admin_revoked")
+          _ <- env.service.invalidateAllSessions(userId, RevocationCause.AdminRevoked)
           eventTimes = env.outbox.submit.calls.map(_.customClaims.get(JsonCursor.field("toe")))
         yield assertTrue(
           // One administrative action is one boundary. Signed per delivery instead, two
@@ -485,7 +493,7 @@ object LogoutServiceSpec extends UnitSpecBase:
         for
           _ <- env.sessionService.invalidateAllByUser.succeedsWith(List(recordA, recordB))
           _ <- env.configuration.find.succeedsWith(None)
-          _ <- env.service.invalidateAllSessions(userId, "admin_revoked")
+          _ <- env.service.invalidateAllSessions(userId, RevocationCause.AdminRevoked)
           drafts <- env.audit.recorded
         yield assertTrue(
           drafts.map(_.details) == List(
@@ -529,7 +537,7 @@ object LogoutServiceSpec extends UnitSpecBase:
           _ <- env.sessionService.invalidateAllByUser.succeedsWith(List(recordA))
           _ <- env.configuration.find.succeedsWith(Some(withBackChannel))
           _ <- env.outbox.submit.succeedsWith(())
-          _ <- full.invalidateAllSessions(userId, "user_deleted")
+          _ <- full.invalidateAllSessions(userId, RevocationCause.UserDeleted)
         yield assertTrue(env.outbox.submit.calls.map(_.audience.toList) == List(List(withBackChannel.id)))
       },
       test("a full audit queue does not undo forgetting a user agent: it is forgotten and the answer is true") {
@@ -552,9 +560,21 @@ object LogoutServiceSpec extends UnitSpecBase:
         for
           _ <- env.sessionService.invalidateAllByUser.succeedsWith(List(record1))
           _ <- env.configuration.find.succeedsWith(None)
-          _ <- env.service.invalidateAllSessions(userId, "user_deleted")
+          _ <- env.service.invalidateAllSessions(userId, RevocationCause.UserDeleted)
           drafts <- env.audit.recorded
-        yield assertTrue(drafts.map(_.details) == List(AuthAuditDetails.SessionEnded(cause = "user_deleted", clients = 1)))
+        yield assertTrue(
+          drafts.map(_.details) == List(AuthAuditDetails.SessionEnded(cause = "user_deleted", clients = 1)),
+          // The same cause reaches the repository, where the user's revocation is written in the
+          // transaction that ends their sessions.
+          env.sessionService.invalidateAllByUser.calls == List((userId, RevocationCause.UserDeleted)),
+        )
+      },
+      test("an administrator's sign-out everywhere is revoked for the cause admin_revoked") {
+        val env = Env()
+        for
+          _ <- env.sessionService.invalidateAllByUser.succeedsWith(Nil)
+          _ <- env.service.invalidateAllSessions(userId, RevocationCause.AdminRevoked)
+        yield assertTrue(env.sessionService.invalidateAllByUser.calls == List((userId, RevocationCause.AdminRevoked)))
       },
     ),
   )

@@ -2,7 +2,7 @@ package versola.oauth.model
 
 import com.nimbusds.jose.jwk.JWKSet
 import versola.oauth.client.model.{AuthorizationDetail, ClientId, ResourceUri, ScopeToken}
-import versola.oauth.session.model.PublicSessionId
+import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.{CoreConfig, JWT}
@@ -31,6 +31,9 @@ case class AccessTokenPayload(
       * server must check the accompanying DPoP proof's thumbprint against `cnf.jkt`, or the
       * client certificate on its TLS connection against `cnf.x5t#S256`. */
     @jsonField("cnf") confirmation: Option[Cnf],
+    /** The refresh-token family the grant belongs to, absent for a token with none
+      * (client_credentials). What a revocation of the family names every token of it by. */
+    @jsonField("fam") familyId: Option[RefreshTokenFamilyId],
 ):
   /** Parse userId from subject if it's a valid UUID, otherwise None (for client_credentials tokens) */
   def userId: Option[UserId] = UserId.parse(subject).toOption
@@ -38,6 +41,8 @@ case class AccessTokenPayload(
 object AccessTokenPayload:
 
   given JsonDecoder[ClientId] = JsonDecoder[String].map(ClientId(_))
+
+  given JsonDecoder[RefreshTokenFamilyId] = JsonDecoder[String].map(RefreshTokenFamilyId(_))
 
   given JsonDecoder[Set[ScopeToken]] = JsonDecoder[String].map: scopeString =>
     scopeString.split(" ").map(ScopeToken(_)).toSet

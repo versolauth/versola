@@ -6,6 +6,7 @@ import versola.oauth.clientauth.{AuthenticatedEndpoint, ClientAuthentication}
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.mtls.ClientCertificate
+import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.RefreshTokenRecord
 import versola.util.{CoreConfig, Secret, SecurityService}
@@ -27,10 +28,11 @@ trait IntrospectionService:
 
 object IntrospectionService:
   def live: ZLayer[
-    OAuthConfigurationService & ClientAuthentication & SessionRepository & SecurityService & CoreConfig,
+    OAuthConfigurationService & ClientAuthentication & SessionRepository & SecurityService & CoreConfig &
+      AccessTokenRevocationService,
     Nothing,
     IntrospectionService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _, _))
+  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   class Impl(
       oauthClientService: OAuthConfigurationService,
@@ -38,6 +40,7 @@ object IntrospectionService:
       sessionRepository: SessionRepository,
       securityService: SecurityService,
       config: CoreConfig,
+      accessTokenRevocation: AccessTokenRevocationService,
   ) extends IntrospectionService:
 
     override def introspectAccessToken(
@@ -49,7 +52,12 @@ object IntrospectionService:
         requester <- authenticateClient(credentials, certificate)
         audience <- resolveAudience(token, requester)
         _ <- ZIO.fail(IntrospectionError.Unauthenticated).when(audience.isEmpty)
-      yield buildJwtIntrospectionResponse(token, audience)
+        // RFC 7662 §2.2: a revoked token is `active: false`, with nothing to say why. After the
+        // caller's right to ask about this token is established, not before: otherwise a caller
+        // with no such right could tell a revoked token from a live one by the difference in
+        // answer. Answered from the replica's in-memory list, no query.
+        revoked <- accessTokenRevocation.isRevoked(token)
+      yield if revoked then IntrospectionResponse.Inactive else buildJwtIntrospectionResponse(token, audience)
 
     private def resolveAudience(
         token: AccessTokenPayload,

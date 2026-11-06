@@ -3,6 +3,7 @@ package versola.oauth.session
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, ScopeToken}
 import versola.oauth.model.{AccessToken, Cnf, RefreshToken}
+import versola.oauth.revocation.{Revocation, RevocationCause, RevocationCursor, RevocationKey, RevocationRepository, RevocationTerms}
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId, RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, MAC}
@@ -48,6 +49,13 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
 
   val idempotencyKey1 = MAC(Array.fill(32)(40.toByte))
   val idempotencyKey2 = MAC(Array.fill(32)(41.toByte))
+
+  /** What the family methods are told about the revocation they record. */
+  val terms = RevocationTerms(RevocationCause.RefreshReuse, 10.minutes, Map.empty)
+
+  /** What the repository has recorded as revoked, by key: the whole list is small in a test. */
+  def recorded(env: RefreshTokenRepositorySpec.Env): Task[Map[RevocationKey, Revocation]] =
+    env.revocations.activeSince(RevocationCursor.Beginning, 100).map(_.revocations.map(r => r.key -> r).toMap)
 
   def tokenRecord1(now: Instant, ttl: Duration) = RefreshTokenRecord(
     familyId = familyId1,
@@ -234,7 +242,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           now <- Clock.instant
           record1 = tokenRecord1(now, refreshTtl).copy(cnf = Some(Cnf.dpop("thumbprint-1")))
           _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
-          _ <- env.repository.delete(refreshToken1)
+          _ <- env.repository.deleteByFamily(familyId1, terms)
 
           // The no-write path still has to refuse: revocation is an `expires_at` write, and the
           // caller's own read can be older than it.
@@ -345,7 +353,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
 
           // The replayed token was retired two rotations ago, so a lookup that only knew the
           // immediately following generation would have missed it and left the tip live.
-          revoked <- env.repository.revokeFamily(refreshToken1, clientId1)
+          revoked <- env.repository.revokeFamily(refreshToken1, clientId1, terms)
           tipAfter <- env.repository.findToken(refreshToken3)
         yield assertTrue(
           revoked.exists(_.userId == userId1),
@@ -362,7 +370,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           now <- Clock.instant
           _ <- env.repository.createRefreshToken(refreshToken1, None, tokenRecord1(now, refreshTtl), None)
 
-          revoked <- env.repository.revokeFamily(refreshToken2, clientId1)
+          revoked <- env.repository.revokeFamily(refreshToken2, clientId1, terms)
         yield assertTrue(revoked.isEmpty)
       },
       test("revokeFamily ignores a token that is still live") {
@@ -372,7 +380,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
 
           // Presenting a token that was never rotated away is not a replay, whatever else is
           // wrong with the request.
-          revoked <- env.repository.revokeFamily(refreshToken1, clientId1)
+          revoked <- env.repository.revokeFamily(refreshToken1, clientId1, terms)
           stillLive <- env.repository.findToken(refreshToken1)
         yield assertTrue(
           revoked.isEmpty,
@@ -386,7 +394,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
           _ <- env.repository.createRefreshToken(refreshToken2, Some(refreshToken1), record1, None)
 
-          revoked <- env.repository.revokeFamily(refreshToken1, clientId2)
+          revoked <- env.repository.revokeFamily(refreshToken1, clientId2, terms)
           tipAfter <- env.repository.findToken(refreshToken2)
         yield assertTrue(
           revoked.isEmpty,
@@ -399,7 +407,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           record1 = tokenRecord1(now, refreshTtl)
           _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
           _ <- env.repository.createRefreshToken(refreshToken2, Some(refreshToken1), record1, None)
-          _ <- env.repository.revokeFamily(refreshToken1, clientId1)
+          _ <- env.repository.revokeFamily(refreshToken1, clientId1, terms)
 
           rotated <- env.repository.createRefreshToken(refreshToken3, Some(refreshToken2), record1, None).either
         yield assertTrue(rotated.isLeft)
@@ -415,7 +423,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           // first and its successor is expired by the revocation, or it finds the token it
           // meant to rotate already dead.
           _ <- env.repository.createRefreshToken(refreshToken3, Some(refreshToken2), record1, None).either
-            .zipPar(env.repository.revokeFamily(refreshToken1, clientId1))
+            .zipPar(env.repository.revokeFamily(refreshToken1, clientId1, terms))
 
           live <- ZIO.foreach(List(refreshToken1, refreshToken2, refreshToken3))(env.repository.findToken)
         yield assertTrue(live.forall(_.isEmpty))
@@ -429,16 +437,80 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
 
           // The path a replayed authorization code takes: nothing of the chain is presented,
           // only the family the code committed to.
-          _ <- env.repository.deleteByFamily(familyId1)
+          _ <- env.repository.deleteByFamily(familyId1, terms)
           tipAfter <- env.repository.findToken(refreshToken2)
         yield assertTrue(tipAfter.isEmpty)
+      },
+      test("revokeFamily records the family as revoked for the client's access token lifetime") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(refreshToken2, Some(refreshToken1), record1, None)
+
+          _ <- env.repository.revokeFamily(refreshToken1, clientId1, terms)
+          entries <- recorded(env)
+        yield assertTrue(
+          // `fam`, with no issuance bound: nothing can issue a token under a revoked family.
+          entries.get(RevocationKey.Fam(familyId1)).exists(_.issuedBefore.isEmpty),
+          entries.get(RevocationKey.Fam(familyId1)).exists(_.expiresAt == now.plus(terms.ttl)),
+          entries.size == 1,
+        )
+      },
+      test("revokeFamily records nothing for a token that is not a retired member of the client's family") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(refreshToken2, Some(refreshToken1), record1, None)
+
+          // Never issued, still live, and another client's family: each is refused, and none of
+          // them may leave a revocation behind that would reject the real owner's tokens.
+          _ <- env.repository.revokeFamily(refreshToken3, clientId1, terms)
+          _ <- env.repository.revokeFamily(refreshToken2, clientId1, terms)
+          _ <- env.repository.revokeFamily(refreshToken1, clientId2, terms)
+          entries <- recorded(env)
+        yield assertTrue(entries.isEmpty)
+      },
+      test("deleteByFamily records the family as revoked even when no row of it is left to expire") {
+        for
+          now <- Clock.instant
+          // The path of a replayed authorization code after the sweep took the chain's rows:
+          // the tokens the first exchange issued are still valid for their lifetime.
+          _ <- env.repository.deleteByFamily(familyId2, terms)
+          entries <- recorded(env)
+        yield assertTrue(
+          entries.keySet == Set(RevocationKey.Fam(familyId2)),
+          entries.get(RevocationKey.Fam(familyId2)).exists(_.expiresAt == now.plus(terms.ttl)),
+        )
+      },
+      test("deleteByFamily expires the retired generations of the family as well as its tip") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(refreshToken2, Some(refreshToken1), record1, None)
+          retiredBefore <- env.rowVersion(refreshToken1)
+
+          // What a client's `/revoke` of its refresh token does: the whole family, not the one row
+          // the client presented. The retired row names the family a later replay of it would
+          // resolve to, so it must not outlive the revocation.
+          _ <- env.repository.deleteByFamily(familyId1, terms)
+          retiredAfter <- env.rowVersion(refreshToken1)
+          tip <- env.repository.findToken(refreshToken2)
+        yield assertTrue(
+          tip.isEmpty,
+          // A new tuple version: the retired row was written to, and so expired.
+          retiredBefore.isDefined,
+          retiredAfter != retiredBefore,
+        )
       },
       test("deleteByFamily leaves a chain it does not name alone") {
         for
           now <- Clock.instant
           _ <- env.repository.createRefreshToken(refreshToken1, None, tokenRecord1(now, refreshTtl), None)
 
-          _ <- env.repository.deleteByFamily(familyId2)
+          _ <- env.repository.deleteByFamily(familyId2, terms)
           stillLive <- env.repository.findToken(refreshToken1)
         yield assertTrue(stillLive.isDefined)
       },
@@ -459,7 +531,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           // `zipPar` does not force that interleaving, so this pins the invariant rather than
           // reproducing the race: it passes against an unlocked implementation too.
           _ <- env.repository.createRefreshToken(refreshToken3, Some(refreshToken2), record1, None).either
-            .zipPar(env.repository.deleteByFamily(familyId1))
+            .zipPar(env.repository.deleteByFamily(familyId1, terms))
 
           live <- ZIO.foreach(List(refreshToken1, refreshToken2, refreshToken3))(env.repository.findToken)
         yield assertTrue(live.forall(_.isEmpty))
@@ -471,8 +543,8 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
           _ <- env.repository.createRefreshToken(refreshToken2, Some(refreshToken1), record1, None)
 
-          _ <- env.repository.revokeFamily(refreshToken1, clientId1)
-          second <- env.repository.revokeFamily(refreshToken1, clientId1)
+          _ <- env.repository.revokeFamily(refreshToken1, clientId1, terms)
+          second <- env.repository.revokeFamily(refreshToken1, clientId1, terms)
         // Still resolvable, and still the same family: the retired row the replay names
         // survives the revocation, so a second replay of it is answered rather than read as an
         // unknown token.
@@ -612,7 +684,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
             record1,
             Some(idempotencyKey1),
           )
-          _ <- env.repository.revokeFamily(refreshToken1, clientId1)
+          _ <- env.repository.revokeFamily(refreshToken1, clientId1, terms)
 
           // No live tip left to continue from, so there is nothing to hand back.
           retry <- env.repository.findIdempotentRetry(refreshToken1, clientId1, idempotencyKey1)
@@ -625,4 +697,4 @@ object RefreshTokenRepositorySpec:
     *   the row's physical tuple version (`xmin`): it changes on any UPDATE, so equal values
     *   before and after a call prove the call wrote nothing.
     */
-  case class Env(repository: SessionRepository, rowVersion: MAC => Task[Option[String]])
+  case class Env(repository: SessionRepository, rowVersion: MAC => Task[Option[String]], revocations: RevocationRepository)

@@ -7,7 +7,20 @@ info:
     before it would otherwise expire.
 
     Both token formats are accepted and detected automatically. Revoking a refresh token also
-    invalidates the tokens derived from it.
+    invalidates the tokens derived from it: the whole refresh-token family, retired generations
+    included, and every access token the family ever issued.
+
+    `auth` records the revocation itself, in the same transaction that ends the refresh-token
+    family where there is one, and refuses a revoked access token at `/userinfo` and
+    `/introspect` whether or not the client registered a `back_channel_logout_uri`. A client that
+    did register one is also sent a signed event (`versola:event:access-token-revocation`) so that
+    a component that checks JWTs on their signature alone can learn of it; unlike the record, that
+    event is a notification, retried a few times and not guaranteed. A revocation reaches each
+    `auth` replica when its notification arrives, normally within a second, and at the latest at
+    the replica's next reconciliation with the database (`revocation.reload-interval`, 600
+    seconds by default); until then that replica still honours the token. A token that is
+    verified on its signature alone, by a resource server that neither introspects it nor
+    receives the event, stays valid until it expires.
 
     Per RFC 7009 §2.2 the endpoint answers `200` for a token that is unknown, already expired,
     already revoked, or issued to a different client: the client's goal — that the token is no

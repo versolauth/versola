@@ -36,6 +36,7 @@ import versola.oauth.model.{
   RefreshToken,
 }
 import versola.oauth.mtls.ClientCertificate
+import versola.oauth.revocation.{RevocationCause, RevocationTerms}
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{PublicSessionId, RefreshAlreadyExchanged, RefreshTokenFamilyId, RefreshTokenRecord, RevokedFamily, SessionId}
@@ -571,7 +572,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.securityService.mac.succeedsWith(codeMac1)
           _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
           _ <- env.authCodeRepo.markAsUsed.succeedsWith(Left(familyId1))
-          _ <- env.accessTokenRevocationService.revokeFamily.succeedsWith(())
+          _ <- env.accessTokenRevocationService.announceFamily.succeedsWith(())
           _ <- env.tokenRepo.deleteByFamily.succeedsWith(())
 
           request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
@@ -581,11 +582,12 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result <- env.service.exchangeAuthorizationCode(request, credentials, None, None).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidGrant.CodeReplayed),
-          // What the first exchange issued is not in hand, so the push names the family the
-          // code committed to, bounded by the client's access token TTL.
-          env.accessTokenRevocationService.revokeFamily.calls ==
+          // What the first exchange issued is not in hand, so the family the code committed to is
+          // what is recorded, in the repository call that expires it, and then pushed; both
+          // bounded by the client's access token TTL.
+          env.accessTokenRevocationService.announceFamily.calls ==
             List((testClient, familyId1, userId1.toString, now.plus(testClient.accessTokenTtl))),
-          env.tokenRepo.deleteByFamily.calls == List(familyId1),
+          env.tokenRepo.deleteByFamily.calls == List((familyId1, RevocationTerms(RevocationCause.CodeReplay, testClient.accessTokenTtl, Map.empty))),
           env.tokenRepo.createRefreshToken.calls.isEmpty,
         )
       },
@@ -856,7 +858,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result <- env.service.refreshAccessToken(request, credentials, None, None, None).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidGrant.RefreshTokenNotFound),
-          env.accessTokenRevocationService.revokeFamily.calls.isEmpty,
+          env.accessTokenRevocationService.announceFamily.calls.isEmpty,
         )
       },
       test("fail with InvalidGrant and revoke the whole family when a rotated-away refresh token is replayed") {
@@ -867,7 +869,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.tokenRepo.findToken.succeedsWith(None)
           _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, familyId1)))
-          _ <- env.accessTokenRevocationService.revokeFamily.succeedsWith(())
+          _ <- env.accessTokenRevocationService.announceFamily.succeedsWith(())
 
           request = RefreshTokenRequest(refreshToken1, None, None, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
@@ -875,12 +877,13 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result <- env.service.refreshAccessToken(request, credentials, None, None, None).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
+          // Recorded in the repository call that expires the family, with the reuse as its cause.
           env.tokenRepo.revokeFamily.calls ==
-            List((refreshTokenMac1, clientId1)),
+            List((refreshTokenMac1, clientId1, RevocationTerms(RevocationCause.RefreshReuse, testClient.accessTokenTtl, Map.empty))),
           // Every access token the family issued goes, not just the tip's, and they are named
           // collectively: one push carrying the family, bounded by the client's current TTL,
           // since no token of the chain is in hand to read an expiry off.
-          env.accessTokenRevocationService.revokeFamily.calls == List(
+          env.accessTokenRevocationService.announceFamily.calls == List(
             (testClient, familyId1, userId1.toString, now.plus(testClient.accessTokenTtl)),
           ),
         )
@@ -932,7 +935,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           createCalls.head._2.exists(mac => java.util.Arrays.equals(mac, refreshTokenMac2)),
           // Nothing here looks like a leak, so the family stands.
           env.tokenRepo.revokeFamily.calls.isEmpty,
-          env.accessTokenRevocationService.revokeFamily.calls.isEmpty,
+          env.accessTokenRevocationService.announceFamily.calls.isEmpty,
         )
       },
       test("revoke the family when a rotated-away token is presented without a key") {
@@ -942,7 +945,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.tokenRepo.findToken.succeedsWith(None)
           _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, familyId1)))
-          _ <- env.accessTokenRevocationService.revokeFamily.succeedsWith(())
+          _ <- env.accessTokenRevocationService.announceFamily.succeedsWith(())
 
           request = RefreshTokenRequest(refreshToken1, None, None, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
@@ -965,7 +968,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // The chain moved on under a different key, so this is reuse of a retired token.
           _ <- env.tokenRepo.findIdempotentRetry.succeedsWith(None)
           _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, familyId1)))
-          _ <- env.accessTokenRevocationService.revokeFamily.succeedsWith(())
+          _ <- env.accessTokenRevocationService.announceFamily.succeedsWith(())
 
           request = RefreshTokenRequest(refreshToken1, None, None, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
@@ -1011,7 +1014,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(refreshToken2)
           _ <- env.tokenRepo.createRefreshToken.failsWith(RefreshAlreadyExchanged())
           _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, familyId1)))
-          _ <- env.accessTokenRevocationService.revokeFamily.succeedsWith(())
+          _ <- env.accessTokenRevocationService.announceFamily.succeedsWith(())
 
           request = RefreshTokenRequest(refreshToken1, None, None, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
@@ -1026,7 +1029,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // this same request -- and the family goes.
           result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
           env.tokenRepo.revokeFamily.calls.nonEmpty,
-          env.accessTokenRevocationService.revokeFamily.calls.nonEmpty,
+          env.accessTokenRevocationService.announceFamily.calls.nonEmpty,
           // The re-check asks about the tip that was just lost, not the token the client
           // presented -- that one's retirement row only ever records the first hop.
           retries.size == 2,
@@ -1149,7 +1152,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
           _ <- env.tokenRepo.createRefreshToken.failsWith(RefreshAlreadyExchanged())
           _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, familyId1)))
-          _ <- env.accessTokenRevocationService.revokeFamily.succeedsWith(())
+          _ <- env.accessTokenRevocationService.announceFamily.succeedsWith(())
 
           request = RefreshTokenRequest(refreshToken1, None, None, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
@@ -1159,9 +1162,10 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // Losing the race means the same token was presented twice at once: the winner's
           // successor is live, and the leak is as proven as a sequential replay.
           result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
+          // Recorded in the repository call that expires the family, with the reuse as its cause.
           env.tokenRepo.revokeFamily.calls ==
-            List((refreshTokenMac1, clientId1)),
-          env.accessTokenRevocationService.revokeFamily.calls ==
+            List((refreshTokenMac1, clientId1, RevocationTerms(RevocationCause.RefreshReuse, testClient.accessTokenTtl, Map.empty))),
+          env.accessTokenRevocationService.announceFamily.calls ==
             List((testClient, familyId1, userId1.toString, now.plus(testClient.accessTokenTtl))),
         )
       },
@@ -1206,7 +1210,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result <- env.service.refreshAccessToken(request, credentials, None, None, None).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged),
-          env.accessTokenRevocationService.revokeFamily.calls.isEmpty,
+          env.accessTokenRevocationService.announceFamily.calls.isEmpty,
         )
       },
       test("recognize a rotation-race loser as its own retry when the idempotency key matches") {
@@ -1265,7 +1269,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // is revoked, and the request still gets a token back.
           result.isRight,
           env.tokenRepo.revokeFamily.calls.isEmpty,
-          env.accessTokenRevocationService.revokeFamily.calls.isEmpty,
+          env.accessTokenRevocationService.announceFamily.calls.isEmpty,
           // Recovery continues the chain from the tip the winner left behind, not from the
           // token this request presented -- that one is already retired.
           createCalls.size == 2,
@@ -1332,7 +1336,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // family stands.
           result.isRight,
           env.tokenRepo.revokeFamily.calls.isEmpty,
-          env.accessTokenRevocationService.revokeFamily.calls.isEmpty,
+          env.accessTokenRevocationService.announceFamily.calls.isEmpty,
           createCalls.size == 3,
           createCalls(2)._2.exists(mac => java.util.Arrays.equals(mac, refreshTokenMac3)),
           // Each hop asks about the tip that hop just failed to rotate. Keyed on the presented
@@ -1385,7 +1389,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.tokenRepo.createRefreshToken.returnsZIOWith(ZIO.fail(RefreshAlreadyExchanged()))
           _ <- env.tokenRepo.findIdempotentRetry.succeedsWith(Some((refreshTokenMac2, tipRecord)))
           _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, familyId1)))
-          _ <- env.accessTokenRevocationService.revokeFamily.succeedsWith(())
+          _ <- env.accessTokenRevocationService.announceFamily.succeedsWith(())
 
           request = RefreshTokenRequest(refreshToken1, None, None, None)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
@@ -1396,7 +1400,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // it is no longer worth chasing on this request's behalf.
           result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
           env.tokenRepo.revokeFamily.calls.nonEmpty,
-          env.accessTokenRevocationService.revokeFamily.calls.nonEmpty,
+          env.accessTokenRevocationService.announceFamily.calls.nonEmpty,
           // The chase is bounded: eight recoveries, the ninth write giving up rather than
           // looking the tip up a ninth time.
           env.tokenRepo.findIdempotentRetry.calls.size == 8,
@@ -2451,7 +2455,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.securityService.mac.succeedsWith(codeMac1)
           _ <- env.authCodeRepo.find.succeedsWith(Some(authorizationCodeRecord))
           _ <- env.authCodeRepo.markAsUsed.succeedsWith(Left(familyId1))
-          _ <- env.accessTokenRevocationService.revokeFamily.succeedsWith(())
+          _ <- env.accessTokenRevocationService.announceFamily.succeedsWith(())
           _ <- env.tokenRepo.deleteByFamily.succeedsWith(())
           result <- env.service.exchangeAuthorizationCode(
             CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1)),
@@ -2475,7 +2479,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.tokenRepo.findToken.succeedsWith(None)
           _ <- env.tokenRepo.revokeFamily.succeedsWith(Some(RevokedFamily(userId1, familyId1)))
-          _ <- env.accessTokenRevocationService.revokeFamily.succeedsWith(())
+          _ <- env.accessTokenRevocationService.announceFamily.succeedsWith(())
           result <- env.service.refreshAccessToken(
             RefreshTokenRequest(refreshToken1, None, None, None),
             ClientIdWithSecret(clientId1, Some(clientSecret1)),

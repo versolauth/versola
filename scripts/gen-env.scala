@@ -2073,6 +2073,12 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |      interval   = "5 minutes"
        |    }
        |    {
+       |      table-name = "auth_revocations"
+       |      batch-size = 1000
+       |      interval   = "1 hour"
+       |      key-column = "revoked_key"
+       |    }
+       |    {
        |      table-name = "authorization_codes"
        |      batch-size = 1000
        |      interval   = "5 minutes"

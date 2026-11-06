@@ -2,6 +2,7 @@ package versola.oauth.session
 
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.model.RefreshToken
+import versola.oauth.revocation.RevocationTerms
 import versola.oauth.session.model.{
   EndedSession,
   PriorSession,
@@ -71,9 +72,13 @@ trait SessionRepository:
    *
    *  Reaches refresh_tokens by user_id directly rather than through the sessions just
    *  expired above -- a token can be live long after its session expired (see
-   *  [[findRefreshTokensByUserId]]), and force-logout has to revoke those too. */
+   *  [[findRefreshTokensByUserId]]), and force-logout has to revoke those too.
+   *
+   *  Records `sub:<user>` bounded at this call's own `now` in the same transaction, whether or
+   *  not a session was live: a user can hold access tokens whose session has already expired. */
   def invalidateByUserId(
       userId: UserId,
+      revocation: RevocationTerms,
   ): Task[List[SessionRecord]]
 
   /** Expires in place every live refresh token `clientId` holds for the user -- the client's
@@ -85,11 +90,17 @@ trait SessionRepository:
       clientId: ClientId,
   ): Task[Int]
 
-  def invalidate(id: MAC.Of[SessionId]): Task[Option[SessionRecord]]
+  /** The three ways of ending one session below record `sid:<its public id>` in the same
+    * transaction, and only when a session was actually ended: ending one that is gone already
+    * says nothing new about the tokens issued under it. */
+  def invalidate(id: MAC.Of[SessionId], revocation: RevocationTerms): Task[Option[SessionRecord]]
 
-  def invalidateByPublicId(publicId: PublicSessionId): Task[Option[(MAC.Of[SessionId], SessionRecord)]]
+  def invalidateByPublicId(
+      publicId: PublicSessionId,
+      revocation: RevocationTerms,
+  ): Task[Option[(MAC.Of[SessionId], SessionRecord)]]
 
-  def invalidateByPublicIdForUser(publicId: PublicSessionId, userId: UserId): Task[Boolean]
+  def invalidateByPublicIdForUser(publicId: PublicSessionId, userId: UserId, revocation: RevocationTerms): Task[Boolean]
 
   /** Issues `refreshToken`. With `previous` set this is a rotation: the presented token is
     * retired in place and the new one joins its family, both under the family's advisory
@@ -145,7 +156,8 @@ trait SessionRepository:
     * Every member is expired in place (collected by the cleanup manager's `expires_at` sweep
     * like any other expiry in this table, rather than deleted inline). The family's id comes
     * back with it, since that -- not a list of the access tokens its generations issued, which
-    * this table does not keep -- is what the caller pushes to the client's back channel.
+    * this table does not keep -- is what the revocation names: `fam:<family>`, recorded in the
+    * same transaction, and the caller's push to the client's back channel.
     *
     * Returns `None` when `token` is not a retired member of a family owned by `clientId`:
     * unknown, still live, or belonging to someone else. Scoping to `clientId` keeps one
@@ -154,6 +166,7 @@ trait SessionRepository:
   def revokeFamily(
       token: MAC.Of[RefreshToken],
       clientId: ClientId,
+      revocation: RevocationTerms,
   ): Task[Option[RevokedFamily]]
 
   /** Refreshes a sender-constrained (DPoP-bound) token in place: narrows `scope` to what this
@@ -179,11 +192,13 @@ trait SessionRepository:
       scope: Option[Set[ScopeToken]],
   ): Task[Boolean]
 
-  def delete(token: MAC.Of[RefreshToken]): Task[Unit]
-
   /** Revokes the chain the first exchange of a replayed authorization code started, named by
     * the family the code committed to. Nothing beyond the code row is needed to find it, which
     * is the point: the replaying caller presents no token of that chain, and the tokens it
     * issued are not recorded anywhere for the code to point at.
+    *
+    * Also what a client's `/revoke` of a refresh token ends: every row of the family, retired
+    * generations included, since any of them could be the one in the wrong hands. Records
+    * `fam:<family>` in the same transaction.
     */
-  def deleteByFamily(familyId: RefreshTokenFamilyId): Task[Unit]
+  def deleteByFamily(familyId: RefreshTokenFamilyId, revocation: RevocationTerms): Task[Unit]
