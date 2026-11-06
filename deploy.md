@@ -473,6 +473,23 @@ dump and the rollback is lost. With extra replicas of `auth` or `edge`, remove t
 unfinished `versola rollout` is undone with `versola rollout --abort` instead; secrets the new
 version added stay in OpenBao either way.
 
+#### Behaviour change: `/native/start` has a default limit per address when `client-ip = "forwarded"`
+
+`/native/start/{clientId}` takes no client credential, and every call that gets past the proof pushes a request to `auth` and records the
+proof. Until now nothing limited it unless an operator had installed an address policy. Now, on an edge with `client-ip = "forwarded"`
+(see [Rate limits](#rate-limits)), each address gets **60 calls a minute with bursts of 20**, per pod (IPv4 per address, IPv6 per `/64`),
+and a call above that is answered `429` with `Retry-After` in whole seconds and no body, before the proof is read and before `auth` is called.
+
+- **It stays out of the way** when `client-ip` is `socket` (behind a proxy every caller would have the proxy's address and the limit would
+  count the world as one caller, so there it does nothing, as before), when the header is missing or not an address, and as soon as the edge
+  has any policy at the address checkpoint, in any mode: such a policy already counts `/native/start` with the other entry points (R1), and
+  that is where to set a different number or to look at it in `shadow` first.
+- **Metrics.** `edge_native_start_rate_limit_decisions_total{policy="native-start-default",result}` and
+  `edge_native_start_rate_limit_tracked_keys`.
+- **Who can notice.** An app that starts more than 20 sign-ins at once from one address (a load test, a shared carrier address during a
+  campaign) and gets `429`. A real sign-in is one call.
+- **No setting, no migration.** The numbers are not configurable on their own: an address policy replaces them.
+
 #### Behaviour change: edge binds a login to the browser that began it (login CSRF on `/complete`)
 
 `/login/{presetId}` now sets an `EDGE_LOGIN_<state>` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`, `Path` =
