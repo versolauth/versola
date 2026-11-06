@@ -1497,6 +1497,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
         * None (the default) is no limit, and then nothing is recorded; a limit too high to be reached is what a spec that
         * counts the steps of it wants. */
       otpRequestLimits: String = "[]",
+      /** The tenant's limits on password attempts, in the same form; none by default. The ban applies when the longest
+        * window is exceeded and lasts `banDurationSeconds`. */
+      passwordSubmitLimits: String = "[]",
+      banDurationSeconds: Int = 0,
   ): Task[Unit] =
     val vocabJson =
       if acrVocabulary.isEmpty then "null"
@@ -1510,7 +1514,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
          |  "phoneRegions": $phoneRegions,
          |  "emailRegistration": $emailRegistration,
          |  "defaultRoles": $defaultRoles,
-         |  "submissionLimits": {"otpRequest":$otpRequestLimits,"otpSubmit":[],"passwordSubmit":[],"passkeyAssertion":[],"banDurationSeconds":0},
+         |  "submissionLimits": {"otpRequest":$otpRequestLimits,"otpSubmit":[],"passwordSubmit":$passwordSubmitLimits,"passkeyAssertion":[],"banDurationSeconds":$banDurationSeconds},
          |  "otpLength": 6,
          |  "otpResendAfter": 60,
          |  "passkeySettings": {"rpId":"localhost","rpName":"Versola","origins":["http://localhost:3000"],"userVerification":"preferred"},
