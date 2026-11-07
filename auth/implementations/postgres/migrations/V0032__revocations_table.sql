@@ -11,17 +11,15 @@
 -- One key column rather than a composite key, so the generic cleanup manager can batch on it:
 -- 'jti:<access token id>' ends one token, 'fam:<refresh token family id>' every token a refresh
 -- chain ever issued, 'sid:<public session id>' every token issued under that SSO session, and
--- 'sub:<user id>' every token a user holds. 'tenant:<id>' and 'client:<id>' are reserved for
--- tenant- and client-wide revocations; nothing writes them yet, and the key format is fixed here
--- so that it does not change when something does.
+-- 'sub:<user id>' every token a user holds.
 --
 -- Written in the transaction that ends the thing the token depends on (the session, the refresh
 -- family), so the record and its cause commit together or not at all. Keys are unique across
 -- tenants (ids are random), so the table needs no tenant column.
 --
--- issued_before belongs to the 'sub:', 'tenant:' and 'client:' entries, which differ from the
--- rest in that the user can log in again while the entry is still live: only tokens issued before
--- that instant are rejected. Null where nothing can issue a token under the key any more.
+-- issued_before belongs to the 'sub:' entries, which differ from the rest in that the user can log
+-- in again while the entry is still live: only tokens issued before that instant are rejected.
+-- Null where nothing can issue a token under the key any more.
 --
 -- cause says why the row exists ('revoke', 'code_replay', 'refresh_reuse', 'logout',
 -- 'admin_revoked', 'user_agent_forgotten', 'user_revoked', 'user_deleted'). It is for operators

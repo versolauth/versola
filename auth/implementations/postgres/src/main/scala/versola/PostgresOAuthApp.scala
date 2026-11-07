@@ -75,7 +75,7 @@ import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
 import versola.oauth.metadata.{MetadataController, MetadataSyncClient}
 import versola.oauth.mtls.EdgeCertificateTrust
-import versola.oauth.revocation.{PostgresRevocationNotifications, PostgresRevocationRepository, RevocationCache}
+import versola.oauth.revocation.{AuthRevocationRepository, PostgresAuthRevocationRepository, RevocationFeedController}
 import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController, RevocationService}
 import versola.oauth.session.{PostgresSessionRepository, PostgresUserAgentRepository, SessionRepository, SessionService, UserAgentRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
@@ -88,6 +88,7 @@ import versola.util.audit.{AuditEventRepository, AuditEvents}
 import versola.util.http.VersolaApp
 import versola.util.net.{AsnResolver, AsnSettings, GeoResolver, GeoSettings}
 import versola.util.postgres.{PostgresConfig, PostgresConfigSnapshotRepository, PostgresHikariDataSource, PostgresWalMetrics}
+import versola.util.revocation.{PostgresRevocationNotifications, RevocationCache}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.http.*
@@ -135,6 +136,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       IntrospectionService &
       RevocationService &
       AccessTokenRevocationService &
+      AuthRevocationRepository &
       BackChannelDispatcher &
       BackChannelOutbox &
       AuthorizeRequestParser &
@@ -219,8 +221,9 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   /** RFC 8705 §5: the endpoints a client certificate is relevant to, served a second time on
     * the listener that demands one.
     *
-    * Exactly the five the metadata advertises as aliases, and EST's `simplereenroll` (RFC 7030), which
-    * is authenticated by the certificate this listener validated and so can be served nowhere else.
+    * Exactly the five the metadata advertises as aliases, EST's `simplereenroll` (RFC 7030), which
+    * is authenticated by the certificate this listener validated and so can be served nowhere else, and the
+    * revocation feed edges pull (`GET /revocations`), which only an edge's certificate may read.
     * Not the whole route set: the
     * rest either authenticate nobody (`/jwks` and the discovery documents) or are the
     * browser's (`/authorize`, the conversation pages), and a browser arriving here is
@@ -236,6 +239,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
           RevocationController.routes,
           PushedAuthorizationController.routes,
           UserInfoController.routes,
+          RevocationFeedController.routes,
           EstController.reenrollmentRoutes,
         ).reduce(_ ++ _),
       ),
@@ -281,7 +285,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresAuthorizationCodeRepository.live >++>
       PostgresPushedAuthorizationRepository.live >++>
       PostgresSessionRepository.live >++>
-      PostgresRevocationRepository.live >++>
+      PostgresAuthRevocationRepository.live >++>
       PostgresUserAgentRepository.live >++>
       PostgresPasswordRepository.live >++>
       PostgresPasskeyRepository.live >++>
@@ -443,7 +447,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       // The list of revoked access tokens `/userinfo` and `/introspect` answer from: loaded before auth
       // starts serving (it does not start without it), kept current over LISTEN/NOTIFY on its own
       // connection, which needs `postgres.notifications-url` behind a transaction-mode pooler.
-      PostgresRevocationNotifications.live >++>
+      PostgresRevocationNotifications.live(PostgresAuthRevocationRepository.Table) >++>
+      ZLayer.fromFunction((config: CoreConfig) => config.revocationOrDefault) >++>
       RevocationCache.live >++>
       AccessTokenRevocationService.live >++>
       OAuthTokenService.live >++>
@@ -464,6 +469,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserInfoService.live >++>
       SubmissionLimiter.live >++>
       ClientAuthThrottle.live >++>
+      LogoutService.live >++>
       AccountSettingsService.live >++>
       AcrResolutionService.live >++>
       UserRegistrationSyncClient.live >++>
@@ -493,8 +499,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConversationRouter.live >++>
       AuthorizationResponseService.live >++>
       AuthorizeEndpointService.live >++>
-      ConversationRenderService.live >++>
-      LogoutService.live
+      ConversationRenderService.live
 
   given DeriveConfig[Secret.Bytes16] = DeriveConfig[String]
     .mapOrFail(SecretConfig.fixedLength(Secret.Bytes16))

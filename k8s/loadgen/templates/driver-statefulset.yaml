@@ -69,10 +69,18 @@ spec:
       # terminationGracePeriodSeconds: this has to cover the preStop sleep
       # below and VersolaApp's own gracefulShutdownTimeout.
       terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      {{- with (include "loadgen.podSecurityContext" (dict "root" $ "override" $driver.podSecurityContext) | trim) }}
+      securityContext:
+        {{- . | nindent 8 }}
+      {{- end }}
       containers:
         - name: driver
           image: {{ include "loadgen.image" (dict "global" $.Values.global "svc" $driver "chart" $.Chart) }}
           imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          {{- with (include "loadgen.containerSecurityContext" (dict "root" $ "override" $driver.containerSecurityContext) | trim) }}
+          securityContext:
+            {{- . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ $driver.port }}
@@ -130,8 +138,10 @@ spec:
           envFrom:
             {{- . | nindent 12 }}
           {{- end }}
-          {{- if or $driver.config.existingSecret $driver.extraVolumeMounts }}
           volumeMounts:
+            # Read-only root filesystem (global.containerSecurityContext): the JVM's scratch files.
+            - name: tmp
+              mountPath: /tmp
             {{- if $driver.config.existingSecret }}
             - name: config
               mountPath: /app/config
@@ -140,7 +150,6 @@ spec:
             {{- with $driver.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- end }}
           # /liveness and /readiness are served by the diagnostics server,
           # separate from application traffic on `http` -- see
           # VersolaApp.scala's serviceRoutes. A driver's own schema handling
@@ -165,8 +174,10 @@ spec:
                 command: ["sh", "-c", "sleep {{ $.Values.preStopSleepSeconds }}"]
           resources:
             {{- toYaml $driver.resources | nindent 12 }}
-      {{- if or $driver.config.existingSecret $driver.extraVolumes }}
       volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
         {{- if $driver.config.existingSecret }}
         - name: config
           secret:
@@ -178,5 +189,4 @@ spec:
         {{- with $driver.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- end }}
 {{- end }}

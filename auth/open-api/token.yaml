@@ -8,6 +8,9 @@ info:
     Three grant types are supported: `authorization_code`, `refresh_token` and
     `client_credentials`. The grant is selected by the `grant_type` field, which determines
     which of the remaining fields are read.
+
+    A parameter supplied more than once is refused with `invalid_request` (RFC 6749 §3.2 and
+    §5.2), except `resource`, which is repeatable (RFC 8707 §2).
   license:
     name: Versola Community License v1.0
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
@@ -395,7 +398,8 @@ components:
 
     TokenError:
       description: |
-        - `invalid_request` — a required field is missing or malformed.
+        - `invalid_request` — a required field is missing or malformed, or a field other than
+          `resource` is repeated.
         - `invalid_grant` — the code or refresh token is unknown, expired, already used, bound
           to a different client or redirect URI, PKCE verification failed, or the code was
           committed to a key with `dpop_jkt` and this request's proof is for another key

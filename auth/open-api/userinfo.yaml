@@ -18,9 +18,12 @@ info:
     A token that was revoked before it expired is refused with `invalid_token`, as an expired one
     is, and before the proof of possession or the certificate binding is checked. That covers a
     token revoked by name (`/revoke`), every token of a refresh-token family that was revoked or
-    replayed, every token of a session that ended (logout), and every token issued to a user
-    before they were deleted or signed out everywhere; a token issued to the same user afterwards
-    is not affected. The check is made against a list each `auth` replica keeps in memory, so it
+    replayed or whose offline access an administrator revoked, every token of a session that
+    ended (logout, or signing out of the other sessions when the user changed their password), and
+    every token issued to a user before they were deleted, signed out everywhere, had their
+    password set or reset by an administrator, or had a role removed; a token issued to the same
+    user afterwards is not affected. Adding a role revokes nothing, and a token minted in the same
+    second as a user-wide revocation counts as issued before it. The check is made against a list each `auth` replica keeps in memory, so it
     costs no database query. A revocation reaches a replica when its notification arrives,
     normally within a second, and at the latest at the replica's next reconciliation with the
     database (`revocation.reload-interval`, 600 seconds by default); until then that replica

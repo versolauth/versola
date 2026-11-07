@@ -205,6 +205,12 @@ private[authorize] object Error:
       errorDescription = "Invalid prompt parameter - none must not be combined with other values",
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
     )
+  case class MaxAgeInvalid(clientId: ClientId, uri: URL, state: Option[State], responseMode: ResponseMode) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "Invalid max_age parameter - it is a number of seconds, not negative",
+      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
+    )
+
   case class IdTokenHintInvalid(clientId: ClientId, uri: URL, state: Option[State], responseMode: ResponseMode) extends RedirectError(
       error = ErrorCode.InvalidRequest,
       errorDescription = "The id_token_hint could not be verified or is invalid (invalid signature, audience, or issuer)",

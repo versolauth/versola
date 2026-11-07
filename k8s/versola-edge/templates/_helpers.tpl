@@ -56,3 +56,15 @@ holds both to it). Key names follow the versola chart: kebab-case, prefixed `edg
 {{- printf "%s-enrollment" (include "versola-edge.fullname" .) -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Pod- and container-level securityContext (the YAML body, no key). Empty values render nothing, which is
+how a cluster whose admission policy sets these itself opts out. Defaults: values.yaml, `podSecurityContext`.
+*/}}
+{{- define "versola-edge.podSecurityContext" -}}
+{{- with .Values.podSecurityContext }}{{ toYaml . }}{{- end }}
+{{- end -}}
+
+{{- define "versola-edge.containerSecurityContext" -}}
+{{- with .Values.containerSecurityContext }}{{ toYaml . }}{{- end }}
+{{- end -}}

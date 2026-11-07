@@ -567,14 +567,30 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.userRepository.findByLogin.succeedsWith(None)
+          _ <- env.passwordService.verifyUnknownUser.succeedsWith(())
           _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkLoginPassword(authId, baseRecord, login, password)
           recordedSubjects = env.submissionLimiter.recordLimit.calls.map(_._2).toSet
+          hashed = env.passwordService.verifyUnknownUser.calls
         yield assertTrue(
           result == ConversationResult.RenderStep(credentialStep.copy(loginFailed = true)),
           recordedSubjects == Set(login),
+          // the password is hashed all the same, so the time of the answer does not say that the login does not exist
+          hashed == List(password),
         )
+      },
+      test("do not spend the unknown-login hash on a login that exists: its own check already costs one") {
+        val env = Env()
+        for
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
+          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.checkLoginPassword(authId, baseRecord, login, password)
+          hashed = env.passwordService.verifyUnknownUser.calls
+        yield assertTrue(hashed.isEmpty)
       },
       test("return StepPassed and set user fields when password is correct") {
         val env = Env()
@@ -789,7 +805,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
-          _ <- env.passwordService.setPassword.succeedsWith(())
+          _ <- env.passwordService.setPassword.succeedsWith(Nil)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.setNewPassword(
             passwordRecord.copy(needsPasswordChange = true),
@@ -808,7 +824,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
-          _ <- env.passwordService.setPassword.succeedsWith(())
+          _ <- env.passwordService.setPassword.succeedsWith(Nil)
           _ <- env.conversationRepository.overwrite.succeedsWith(false)
           result <- env.service.setNewPassword(passwordRecord, setPasswordStep, password, authId)
         yield assertTrue(result == ConversationResult.WriteConflict)
@@ -926,6 +942,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.userRepository.findByLogin.succeedsWith(None)
+          _ <- env.passwordService.verifyUnknownUser.succeedsWith(())
           _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
           _ <- env.service.checkLoginPassword(authId, baseRecord, login, password)
           unknown <- env.audit.recorded
@@ -949,7 +966,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          _ <- env.passwordService.setPassword.succeedsWith(())
+          _ <- env.passwordService.setPassword.succeedsWith(Nil)
           _ <- env.service.setNewPassword(passwordRecord.copy(needsPasswordChange = true), setPasswordStep, password, authId)
           accepted <- env.audit.recorded
           _ <- env.audit.clear

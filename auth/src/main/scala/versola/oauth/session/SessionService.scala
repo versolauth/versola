@@ -5,6 +5,7 @@ import versola.oauth.client.model.ClientId
 import versola.oauth.revocation.{RevocationCause, RevocationTerms}
 import versola.oauth.session.model.{
   PublicSessionId,
+  RefreshTokenFamilyId,
   RefreshTokenRecord,
   SessionId,
   SessionInfo,
@@ -17,7 +18,7 @@ import versola.oauth.session.model.{
 }
 import versola.user.model.UserId
 import versola.util.{CoreConfig, MAC, Secret, SecurityService}
-import zio.{Duration, Task, UIO, ZLayer, durationInt}
+import zio.{Duration, Task, UIO, ZLayer}
 
 trait SessionService:
   def find(rawId: SessionId): Task[Option[SessionInfo]]
@@ -29,7 +30,7 @@ trait SessionService:
    *
    *  The three ways of ending sessions below also record the revocation of the access tokens
    *  issued under them, in the same transaction, with `cause` as the reason (see
-   *  [[versola.oauth.revocation.Revocation]]): ending a session is what makes the tokens issued
+   *  [[versola.util.revocation.Revocation]]): ending a session is what makes the tokens issued
    *  under it unacceptable, and the two must not come apart. */
   def invalidate(id: Either[PublicSessionId, SessionId], cause: RevocationCause): Task[Option[SessionInfo]]
 
@@ -66,8 +67,10 @@ trait SessionService:
   def listRefreshTokensByUser(userId: UserId): Task[List[RefreshTokenRecord]]
 
   /** Revokes the offline access one client holds for a user (admin-panel action): every live
-   *  refresh token the client was issued for them expires now. The user's sessions stay. */
-  def revokeRefreshTokensByUserAndClient(userId: UserId, clientId: ClientId): Task[Int]
+   *  refresh token the client was issued for them expires now, and so do the access tokens those
+   *  grants issued (`fam:` is recorded with them). The user's sessions stay. Returns the families
+   *  ended. */
+  def revokeRefreshTokensByUserAndClient(userId: UserId, clientId: ClientId): Task[List[RefreshTokenFamilyId]]
 
 object SessionService:
   def live = ZLayer.fromFunction(Impl(_, _, _, _, _))
@@ -84,8 +87,7 @@ object SessionService:
       * repository reads off the session it ends; a user entry, whose clients are not known, by the
       * widest of every client (see [[RevocationTerms.ttlOfSession]]). */
     private def sessionTerms(cause: RevocationCause): UIO[RevocationTerms] =
-      configuration.accessTokenTtls.map: ttls =>
-        RevocationTerms(cause, ttls.values.maxOption.getOrElse(1.hour), ttls)
+      configuration.accessTokenTtls.map(RevocationTerms.widest(cause, _))
 
     override def find(rawId: SessionId): Task[Option[SessionInfo]] =
       for
@@ -169,5 +171,14 @@ object SessionService:
     override def listRefreshTokensByUser(userId: UserId): Task[List[RefreshTokenRecord]] =
       repository.findRefreshTokensByUserId(userId)
 
-    override def revokeRefreshTokensByUserAndClient(userId: UserId, clientId: ClientId): Task[Int] =
-      repository.revokeRefreshTokensByUserAndClient(userId, clientId)
+    override def revokeRefreshTokensByUserAndClient(userId: UserId, clientId: ClientId): Task[List[RefreshTokenFamilyId]] =
+      for
+        client <- configuration.find(clientId)
+        ttls <- configuration.accessTokenTtls
+        // The client's own TTL bounds what its grants issued; a client this deployment no longer knows could
+        // have had any, so the widest stands in for it.
+        terms = client match
+          case Some(client) => RevocationTerms.forFamily(client, RevocationCause.OfflineAccessRevoked)
+          case None => RevocationTerms.widest(RevocationCause.OfflineAccessRevoked, ttls)
+        families <- repository.revokeRefreshTokensByUserAndClient(userId, clientId, terms)
+      yield families
