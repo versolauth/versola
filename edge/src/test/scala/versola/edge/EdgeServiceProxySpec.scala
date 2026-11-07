@@ -1708,123 +1708,6 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
       yield assertTrue(response.status == Status.Forbidden)
     },
-    // `SameSite=Strict` lets another subdomain of the same site through, so a cookie call that changes state also has to come from an origin of ours.
-    suite("a state-changing call made with the session cookie")(
-      test("from an origin that is not ours is refused before anything is sent, even with the right cookie") {
-        val env = new Env
-        for
-          _ <- env.setupDefaults()
-          capture <- captureUpstream()
-          client <- ZIO.service[Client]
-          security <- ZIO.service[SecurityService]
-          _ <- env.withResources(usersResource(createUserEndpoint()))
-          _ <- env.withPresets(preset)
-          token <- env.signToken()
-          service = env.buildService(client, security)
-          responses <- ZIO.foreach(
-            List(
-              List("Origin" -> "https://evil.app.example"),
-              List("Origin" -> "null"),
-              List("Sec-Fetch-Site" -> "cross-site"),
-              List("Sec-Fetch-Site" -> "same-site"),
-              List("Origin" -> "https://evil.app.example", "Sec-Fetch-Site" -> "same-origin"),
-            ),
-          ): headers =>
-            val request = headers.foldLeft(Request.post(URL.empty / "users", Body.empty).addCookie(sessionCookie(token)))((r, h) =>
-              r.addHeader(h._1, h._2),
-            )
-            service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
-          upstream <- capture.get
-        yield assertTrue(responses.forall(_.status == Status.Forbidden), upstream.isEmpty)
-      },
-      test("from edge's own origin, the preset's app, or with no sign of where it comes from goes on") {
-        val env = new Env
-        for
-          _ <- env.setupDefaults()
-          _ <- captureUpstream()
-          client <- ZIO.service[Client]
-          security <- ZIO.service[SecurityService]
-          _ <- env.withResources(usersResource(createUserEndpoint()))
-          _ <- env.withPresets(preset)
-          token <- env.signToken()
-          service = env.buildService(client, security)
-          responses <- ZIO.foreach(
-            List(
-              List("Origin" -> "https://edge.example"),
-              List("Origin" -> "https://app.example"),
-              List("Origin" -> "https://app.example", "Sec-Fetch-Site" -> "same-site"),
-              List("Sec-Fetch-Site" -> "same-origin"),
-              List("Sec-Fetch-Site" -> "none"),
-              Nil,
-            ),
-          ): headers =>
-            val request = headers.foldLeft(Request.post(URL.empty / "users", Body.empty).addCookie(sessionCookie(token)))((r, h) =>
-              r.addHeader(h._1, h._2),
-            )
-            service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
-        yield assertTrue(responses.forall(_.status == Status.Ok))
-      },
-      test("is refused when the preset of the session no longer exists and the call comes from its app") {
-        val env = new Env
-        for
-          _ <- env.setupDefaults()
-          capture <- captureUpstream()
-          client <- ZIO.service[Client]
-          security <- ZIO.service[SecurityService]
-          _ <- env.withResources(usersResource(createUserEndpoint()))
-          token <- env.signToken()
-          request = Request.post(URL.empty / "users", Body.empty).addCookie(sessionCookie(token)).addHeader("Origin", "https://app.example")
-          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
-          upstream <- capture.get
-        yield assertTrue(response.status == Status.Forbidden, upstream.isEmpty)
-      },
-      test("with an invalid token is still refused as cross-origin, not told about the token") {
-        val env = new Env
-        for
-          _ <- env.setupDefaults()
-          client <- ZIO.service[Client]
-          security <- ZIO.service[SecurityService]
-          _ <- env.withResources(usersResource(createUserEndpoint()))
-          _ <- env.withPresets(preset)
-          request =
-            Request.post(URL.empty / "users", Body.empty).addCookie(sessionCookie("not-a-token")).addHeader("Origin", "https://evil.app.example")
-          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
-        yield assertTrue(response.status == Status.Forbidden)
-      },
-    ),
-    suite("a call that no cookie authenticated, or that only reads, is not checked for its origin")(
-      test("a bearer token goes on from any origin") {
-        val env = new Env
-        for
-          _ <- env.setupDefaults()
-          _ <- captureUpstream()
-          client <- ZIO.service[Client]
-          security <- ZIO.service[SecurityService]
-          _ <- env.withResources(usersResource(createUserEndpoint()))
-          _ <- env.withPresets(preset)
-          token <- env.signToken()
-          request = Request.post(URL.empty / "users", Body.empty)
-            .addHeader(Header.Authorization.Bearer(token))
-            .addHeader("Origin", "https://evil.app.example")
-            .addHeader("Sec-Fetch-Site", "cross-site")
-          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
-        yield assertTrue(response.status == Status.Ok)
-      },
-      test("a read with the cookie goes on from any origin") {
-        val env = new Env
-        for
-          _ <- env.setupDefaults()
-          _ <- captureUpstream()
-          client <- ZIO.service[Client]
-          security <- ZIO.service[SecurityService]
-          _ <- env.withResources(usersResource(usersEndpoint()))
-          _ <- env.withPresets(preset)
-          token <- env.signToken()
-          request = Request.get(URL.empty / "users").addCookie(sessionCookie(token)).addHeader("Origin", "https://evil.app.example")
-          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
-        yield assertTrue(response.status == Status.Ok)
-      },
-    ),
     test("accepts Authorization: Bearer header when EDGE_SESSION cookie is absent") {
       val env = new Env
       for
@@ -2102,6 +1985,123 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         upstream.isDefined,
       )
     },
+    // `SameSite=Strict` lets another subdomain of the same site through, so a cookie call that changes state also has to come from an origin of ours.
+    suite("a state-changing call made with the session cookie")(
+      test("from an origin that is not ours is refused before anything is sent, even with the right cookie") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          capture <- captureUpstream()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(createUserEndpoint()))
+          _ <- env.withPresets(preset)
+          token <- env.signToken()
+          service = env.buildService(client, security)
+          responses <- ZIO.foreach(
+            List(
+              List("Origin" -> "https://evil.app.example"),
+              List("Origin" -> "null"),
+              List("Sec-Fetch-Site" -> "cross-site"),
+              List("Sec-Fetch-Site" -> "same-site"),
+              List("Origin" -> "https://evil.app.example", "Sec-Fetch-Site" -> "same-origin"),
+            ),
+          ): headers =>
+            val request = headers.foldLeft(Request.post(URL.empty / "users", Body.empty).addCookie(sessionCookie(token)))((r, h) =>
+              r.addHeader(h._1, h._2),
+            )
+            service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+          upstream <- capture.get
+        yield assertTrue(responses.forall(_.status == Status.Forbidden), upstream.isEmpty)
+      },
+      test("from edge's own origin, the preset's app, or with no sign of where it comes from goes on") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          _ <- captureUpstream()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(createUserEndpoint()))
+          _ <- env.withPresets(preset)
+          token <- env.signToken()
+          service = env.buildService(client, security)
+          responses <- ZIO.foreach(
+            List(
+              List("Origin" -> "https://edge.example"),
+              List("Origin" -> "https://app.example"),
+              List("Origin" -> "https://app.example", "Sec-Fetch-Site" -> "same-site"),
+              List("Sec-Fetch-Site" -> "same-origin"),
+              List("Sec-Fetch-Site" -> "none"),
+              Nil,
+            ),
+          ): headers =>
+            val request = headers.foldLeft(Request.post(URL.empty / "users", Body.empty).addCookie(sessionCookie(token)))((r, h) =>
+              r.addHeader(h._1, h._2),
+            )
+            service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        yield assertTrue(responses.forall(_.status == Status.Ok))
+      },
+      test("is refused when the preset of the session no longer exists and the call comes from its app") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          capture <- captureUpstream()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(createUserEndpoint()))
+          token <- env.signToken()
+          request = Request.post(URL.empty / "users", Body.empty).addCookie(sessionCookie(token)).addHeader("Origin", "https://app.example")
+          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+          upstream <- capture.get
+        yield assertTrue(response.status == Status.Forbidden, upstream.isEmpty)
+      },
+      test("with an invalid token is still refused as cross-origin, not told about the token") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(createUserEndpoint()))
+          _ <- env.withPresets(preset)
+          request =
+            Request.post(URL.empty / "users", Body.empty).addCookie(sessionCookie("not-a-token")).addHeader("Origin", "https://evil.app.example")
+          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        yield assertTrue(response.status == Status.Forbidden)
+      },
+    ),
+    suite("a call that no cookie authenticated, or that only reads, is not checked for its origin")(
+      test("a bearer token goes on from any origin") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          _ <- captureUpstream()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(createUserEndpoint()))
+          _ <- env.withPresets(preset)
+          token <- env.signToken()
+          request = Request.post(URL.empty / "users", Body.empty)
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader("Origin", "https://evil.app.example")
+            .addHeader("Sec-Fetch-Site", "cross-site")
+          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        yield assertTrue(response.status == Status.Ok)
+      },
+      test("a read with the cookie goes on from any origin") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          _ <- captureUpstream()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(usersEndpoint()))
+          _ <- env.withPresets(preset)
+          token <- env.signToken()
+          request = Request.get(URL.empty / "users").addCookie(sessionCookie(token)).addHeader("Origin", "https://evil.app.example")
+          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        yield assertTrue(response.status == Status.Ok)
+      },
+    ),
     test("strips upstream Set-Cookie headers from the response") {
       val env = new Env
       for

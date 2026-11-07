@@ -404,6 +404,46 @@ object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         seen <- stub.lastRequest
       yield assertTrue(seen.flatMap(_.header("x-request-trace")).contains("e2e-proxy"))
     },
+    test("the upstream's status is handed back to the caller") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        stub <- upstream
+        _ <- stub.reset
+        _ <- stub.replyWith(status = Status.Conflict, body = """{"error":"taken"}""")
+        established <- session
+        response <- edgeApi.proxy(Method.POST, f.resourceId, "/items", established.auth, body = Some(Json.Obj()))
+        _ <- stub.reset
+      yield assertTrue(response.status == Status.Conflict) &&
+        assertTrue(response.body.contains("taken"))
+          .label("the proxy is transparent about the upstream's answer, not just about its own decisions")
+    },
+    test("an upstream failure is reported as the upstream reported it") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        stub <- upstream
+        _ <- stub.reset
+        _ <- stub.replyWith(status = Status.InternalServerError, body = "upstream broke")
+        established <- session
+        response <- edgeApi.proxy(Method.GET, f.resourceId, "/items", established.auth)
+        _ <- stub.reset
+      yield assertTrue(response.status == Status.InternalServerError)
+        .label("an upstream 500 must not be dressed up as a 200 with an empty body")
+    },
+    test("a Set-Cookie the upstream tries to set is stripped") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        stub <- upstream
+        _ <- stub.reset
+        _ <- stub.replyWith(headers = List("Set-Cookie" -> "upstream_session=abc; Path=/"))
+        established <- session
+        response <- edgeApi.proxy(Method.GET, f.resourceId, "/items", established.auth)
+        _ <- stub.reset
+      yield assertTrue(!response.response.headers.exists(_.headerName.equalsIgnoreCase("set-cookie")))
+        .label("an upstream must not be able to plant a cookie on edge's origin, where the session cookie lives")
+    },
     test("a state-changing call with the session cookie from another origin is refused and does not reach the upstream") {
       for
         edgeApi <- edge
@@ -468,46 +508,6 @@ object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
           ),
         )
       yield assertTrue(read.status == Status.Ok, bearer.status == Status.Ok)
-    },
-    test("the upstream's status is handed back to the caller") {
-      for
-        edgeApi <- edge
-        f <- fixture
-        stub <- upstream
-        _ <- stub.reset
-        _ <- stub.replyWith(status = Status.Conflict, body = """{"error":"taken"}""")
-        established <- session
-        response <- edgeApi.proxy(Method.POST, f.resourceId, "/items", established.auth, body = Some(Json.Obj()))
-        _ <- stub.reset
-      yield assertTrue(response.status == Status.Conflict) &&
-        assertTrue(response.body.contains("taken"))
-          .label("the proxy is transparent about the upstream's answer, not just about its own decisions")
-    },
-    test("an upstream failure is reported as the upstream reported it") {
-      for
-        edgeApi <- edge
-        f <- fixture
-        stub <- upstream
-        _ <- stub.reset
-        _ <- stub.replyWith(status = Status.InternalServerError, body = "upstream broke")
-        established <- session
-        response <- edgeApi.proxy(Method.GET, f.resourceId, "/items", established.auth)
-        _ <- stub.reset
-      yield assertTrue(response.status == Status.InternalServerError)
-        .label("an upstream 500 must not be dressed up as a 200 with an empty body")
-    },
-    test("a Set-Cookie the upstream tries to set is stripped") {
-      for
-        edgeApi <- edge
-        f <- fixture
-        stub <- upstream
-        _ <- stub.reset
-        _ <- stub.replyWith(headers = List("Set-Cookie" -> "upstream_session=abc; Path=/"))
-        established <- session
-        response <- edgeApi.proxy(Method.GET, f.resourceId, "/items", established.auth)
-        _ <- stub.reset
-      yield assertTrue(!response.response.headers.exists(_.headerName.equalsIgnoreCase("set-cookie")))
-        .label("an upstream must not be able to plant a cookie on edge's origin, where the session cookie lives")
     },
     test("every registered method reaches the upstream") {
       for
