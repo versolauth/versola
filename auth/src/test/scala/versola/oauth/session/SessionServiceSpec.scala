@@ -18,6 +18,7 @@ import versola.oauth.session.model.{
   UserAgentId,
   UserAgentRecord,
 }
+import versola.oauth.token.OAuthTokenServiceSpec
 import versola.user.model.UserId
 import versola.util.{MAC, SecurityService, UnitSpecBase}
 import zio.*
@@ -63,9 +64,10 @@ object SessionServiceSpec extends UnitSpecBase:
     )
 
   /** What the longest-lived client's access tokens last, which bounds the ones issued under a session. */
+  private val shortClient = OAuthTokenServiceSpec.testClient.copy(id = ClientId("short"), accessTokenTtl = 5.minutes)
   private val clientTtls = Map(ClientId("short") -> 5.minutes, ClientId("long") -> 15.minutes)
   private val widestTtl = 15.minutes
-  private def termsOf(cause: RevocationCause) = RevocationTerms(cause, widestTtl, clientTtls)
+  private def termsOf(cause: RevocationCause) = RevocationTerms(cause = cause, ttl = widestTtl, tenantId = None, ttlByClient = clientTtls)
 
   class Env:
     val repository = stub[SessionRepository]
@@ -154,18 +156,32 @@ object SessionServiceSpec extends UnitSpecBase:
       test("records the families under the client's own TTL, with the cause offline_access_revoked") {
         val env = Env()
         for
+          _ <- env.configuration.find.succeedsWith(Some(shortClient))
           _ <- env.repository.revokeRefreshTokensByUserAndClient.succeedsWith(List(RefreshTokenFamilyId("family-1")))
           families <- env.service.revokeRefreshTokensByUserAndClient(userId, ClientId("short"))
         yield assertTrue(
           families == List(RefreshTokenFamilyId("family-1")),
           // The short-lived client's grants issued nothing that outlives its own TTL: not the widest's.
           env.repository.revokeRefreshTokensByUserAndClient.calls ==
-            List((userId, ClientId("short"), RevocationTerms(RevocationCause.OfflineAccessRevoked, 5.minutes, Map.empty))),
+            List(
+              (
+                userId,
+                ClientId("short"),
+                RevocationTerms(
+                  cause = RevocationCause.OfflineAccessRevoked,
+                  ttl = 5.minutes,
+                  // The feed serves a family's record to the edges of the client's tenant.
+                  tenantId = Some(shortClient.tenantId),
+                  ttlByClient = Map.empty,
+                ),
+              ),
+            ),
         )
       },
       test("falls back to the widest TTL for a client the deployment no longer knows, never to a shorter one") {
         val env = Env()
         for
+          _ <- env.configuration.find.succeedsWith(None)
           _ <- env.repository.revokeRefreshTokensByUserAndClient.succeedsWith(Nil)
           _ <- env.service.revokeRefreshTokensByUserAndClient(userId, ClientId("removed"))
         yield assertTrue(

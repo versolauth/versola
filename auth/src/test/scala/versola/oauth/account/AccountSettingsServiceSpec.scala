@@ -27,7 +27,7 @@ object AccountSettingsServiceSpec extends UnitSpecBase:
   private val passwordRegex = "^(?=.*[A-Z])(?=.*[a-z])(?=.*\\d).{8,}$"
   private val currentSession = PublicSessionId("current-session")
   private val ttls = Map(clientId -> 5.minutes, ClientId("slow-client") -> 30.minutes)
-  private val terms = RevocationTerms(RevocationCause.PasswordChanged, 30.minutes, ttls)
+  private val terms = RevocationTerms(cause = RevocationCause.PasswordChanged, ttl = 30.minutes, tenantId = None, ttlByClient = ttls)
   private val endedSession = SessionRecord(
     userId = userId,
     clients = List(ClientEntry(clientId, Instant.EPOCH)),

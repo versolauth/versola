@@ -32,7 +32,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val differentHash = MAC("diff".getBytes)
   private val coreConfig = TestEnvConfig.coreConfig
   private val ttls = Map(ClientId("fast") -> 5.minutes, ClientId("slow") -> 45.minutes)
-  private val adminTerms = RevocationTerms(RevocationCause.PasswordChanged, 45.minutes, ttls)
+  private val adminTerms = RevocationTerms(cause = RevocationCause.PasswordChanged, ttl = 45.minutes, tenantId = None, ttlByClient = ttls)
 
   private val userRecord =
     UserRecord.empty(userId).copy(email = Some(email), phone = Some(phone))
@@ -44,6 +44,16 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
       password = Secret(hash),
       salt = testSalt,
       createdAt = createdAt,
+      expiresAt = None,
+    )
+
+  private def currentRecord(hash: MAC): PasswordRecord =
+    PasswordRecord(
+      id = 1L,
+      userId = userId,
+      password = Secret(hash),
+      salt = testSalt,
+      createdAt = Instant.EPOCH,
       expiresAt = None,
     )
 
@@ -141,6 +151,35 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.passwordRepo.list.succeedsWith(Vector.empty)
           result <- env.service.verifyPassword(userId, password)
         yield assertTrue(result == CheckPassword.Failure)
+      },
+    ),
+    suite("verifyUnknownUser")(
+      test("hashes the password once with the configured pepper, as one password of a known user costs, and keeps nothing") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom)
+          _ <- env.securityService.hashPassword.succeedsWith(testHash)
+          _ <- env.service.verifyUnknownUser(password)
+          calls = env.securityService.hashPassword.calls
+        yield assertTrue(
+          calls.size == 1,
+          calls.head._3 == coreConfig.security.passwordsSecret,
+          env.passwordRepo.list.calls.isEmpty,
+        )
+      },
+      test("costs the same number of hashes as verifying a wrong password against the one password a user has") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          known = Env(secureRandom)
+          unknown = Env(secureRandom)
+          _ <- known.passwordRepo.list.succeedsWith(Vector(currentRecord(differentHash)))
+          _ <- known.securityService.hashPassword.succeedsWith(testHash)
+          _ <- known.service.verifyPassword(userId, password)
+          _ <- unknown.securityService.hashPassword.succeedsWith(testHash)
+          _ <- unknown.service.verifyUnknownUser(password)
+          knownHashes = known.securityService.hashPassword.calls.size
+          unknownHashes = unknown.securityService.hashPassword.calls.size
+        yield assertTrue(knownHashes == 1, unknownHashes == 1)
       },
     ),
     suite("setPassword")(

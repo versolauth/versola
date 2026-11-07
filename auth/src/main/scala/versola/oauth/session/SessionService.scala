@@ -173,11 +173,12 @@ object SessionService:
 
     override def revokeRefreshTokensByUserAndClient(userId: UserId, clientId: ClientId): Task[List[RefreshTokenFamilyId]] =
       for
+        client <- configuration.find(clientId)
         ttls <- configuration.accessTokenTtls
         // The client's own TTL bounds what its grants issued; a client this deployment no longer knows could
         // have had any, so the widest stands in for it.
-        terms = ttls.get(clientId) match
-          case Some(ttl) => RevocationTerms(RevocationCause.OfflineAccessRevoked, ttl, Map.empty)
+        terms = client match
+          case Some(client) => RevocationTerms.forFamily(client, RevocationCause.OfflineAccessRevoked)
           case None => RevocationTerms.widest(RevocationCause.OfflineAccessRevoked, ttls)
         families <- repository.revokeRefreshTokensByUserAndClient(userId, clientId, terms)
       yield families

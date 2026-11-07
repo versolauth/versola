@@ -1038,7 +1038,9 @@ object ConversationService:
         case cred: ConversationStep.Credential =>
           userRepository.findByLogin(login).flatMap:
             case None =>
-              auditStep(authId, conversation, "password", AuditOutcome.failure, Some("unknown_login")) *>
+              // The password is hashed all the same: the time of the answer must not say that the login does not exist.
+              passwordService.verifyUnknownUser(password) *>
+                auditStep(authId, conversation, "password", AuditOutcome.failure, Some("unknown_login")) *>
                 recordLimitAndRender(authId, conversation, login, throttleType(conversation, ChallengeType.PasswordSubmit)): _ =>
                   cred.copy(loginFailed = true)
             case Some(user) =>

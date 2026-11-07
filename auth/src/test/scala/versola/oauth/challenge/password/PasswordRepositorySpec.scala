@@ -36,7 +36,12 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
   val clientId1 = ClientId("client-1")
 
   /** The widest TTL, which is all a password change knows about the tokens a user holds. */
-  val terms = RevocationTerms(RevocationCause.PasswordChanged, 10.minutes, Map(clientId1 -> 5.minutes))
+  val terms = RevocationTerms(
+    cause = RevocationCause.PasswordChanged,
+    ttl = 10.minutes,
+    tenantId = None,
+    ttlByClient = Map(clientId1 -> 5.minutes),
+  )
 
   def recorded(env: PasswordRepositorySpec.Env) =
     env.revocations.activeSince(RevocationCursor.Beginning, 100).map(_.revocations.map(r => r.key -> r).toMap)

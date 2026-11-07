@@ -6,7 +6,7 @@ import versola.cleanup.PostgresCleanupManager
 import versola.edge.dpop.{DpopPolicyService, DpopProofRepository, DpopReplayGuard, DpopVerifier}
 import versola.edge.login.LoginRepository
 import versola.edge.nativeapp.{NativeAuthClient, NativeController, NativeService}
-import versola.edge.revocation.{EdgeRevocationRepository, TokenRevocationService}
+import versola.edge.revocation.{EdgeRevocationRepository, RevocationFeedClient, RevocationFeedPuller, TokenRevocationService}
 import versola.edge.session.EdgeSessionRepository
 import versola.edge.{
   AccessLogPolicyService,
@@ -29,6 +29,7 @@ import versola.edge.{
   PostgresEdgeRevocationRepository,
   PostgresEdgeSessionRepository,
   PostgresLoginRepository,
+  PostgresRevocationCursorRepository,
   RateLimitPolicyService,
   RateLimitPolicySource,
   ResourceService,
@@ -159,6 +160,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
         (ZLayer.fromFunction(PostgresLoginRepository(_)) ++
           ZLayer.fromFunction(PostgresEdgeSessionRepository(_)) ++
           PostgresEdgeRevocationRepository.live ++
+          PostgresRevocationCursorRepository.live ++
           PostgresDpopProofRepository.live ++
           PostgresCleanupManager.live ++
           PostgresWalMetrics.live())) >++>
@@ -183,11 +185,13 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       EdgeRateLimiter.live >++>
       PermissionService.live >++>
       JwksService.live >++>
-      ZLayer.fromFunction((config: EdgeConfig) => config.revocation) >++>
+      ZLayer.fromFunction((config: EdgeConfig) => config.revocation.cache) >++>
       RevocationCache.live >++>
       TokenRevocationService.live >++>
       ClientCertificateFiles.live >++>
       SSOClient.live >++>
+      RevocationFeedClient.live >++>
+      RevocationFeedPuller.live >++>
       DpopReplayGuard.shared >++>
       DpopVerifier.live >++>
       EdgeService.live >++>

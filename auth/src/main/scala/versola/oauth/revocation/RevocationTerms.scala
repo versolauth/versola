@@ -1,6 +1,6 @@
 package versola.oauth.revocation
 
-import versola.oauth.client.model.{ClientId, OAuthClientRecord}
+import versola.oauth.client.model.{ClientId, OAuthClientRecord, TenantId}
 import zio.{Duration, durationInt}
 
 /** Why a revocation was written. Stored for operators and for whatever reads the table later;
@@ -27,11 +27,18 @@ enum RevocationCause(val code: String):
   *            `accessTokenTtl` for a family, the widest `accessTokenTtl` of any client for a
   *            user, whose tokens are not known, and for a session the fallback when the clients
   *            it served are not all known (see [[ttlOfSession]]).
+  * @param tenantId the tenant the key belongs to, for the feed that serves edges only their tenants' rows:
+  *                 the client's for a family, `None` for a session or a user, which no one tenant owns.
   * @param ttlByClient every client's `accessTokenTtl`, which a session's entry is bounded by the
   *                    clients that session served with, instead of by the longest-lived client
   *                    of the deployment. Empty where the key is not a session's.
   */
-case class RevocationTerms(cause: RevocationCause, ttl: Duration, ttlByClient: Map[ClientId, Duration]):
+case class RevocationTerms(
+    cause: RevocationCause,
+    ttl: Duration,
+    tenantId: Option[TenantId],
+    ttlByClient: Map[ClientId, Duration],
+):
   /** A session's tokens were issued to the clients it served and to no others, so the longest of
     * their TTLs bounds them. A client this deployment no longer knows could have had any TTL, so
     * one unknown client puts the whole bound back at [[ttl]]: over-retained, never under-retained.
@@ -46,8 +53,13 @@ object RevocationTerms:
     * hour is the answer that over-retains rather than under-retains.
     */
   def widest(cause: RevocationCause, accessTokenTtls: Map[ClientId, Duration]): RevocationTerms =
-    RevocationTerms(cause, accessTokenTtls.values.maxOption.getOrElse(1.hour), accessTokenTtls)
+    RevocationTerms(
+      cause = cause,
+      ttl = accessTokenTtls.values.maxOption.getOrElse(1.hour),
+      tenantId = None,
+      ttlByClient = accessTokenTtls,
+    )
 
   /** A refresh family: every token it issued was issued to this client, so its own TTL bounds them. */
   def forFamily(client: OAuthClientRecord, cause: RevocationCause): RevocationTerms =
-    RevocationTerms(cause, client.accessTokenTtl, Map.empty)
+    RevocationTerms(cause = cause, ttl = client.accessTokenTtl, tenantId = Some(client.tenantId), ttlByClient = Map.empty)

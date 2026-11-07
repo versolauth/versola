@@ -52,11 +52,11 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
   val idempotencyKey2 = MAC(Array.fill(32)(41.toByte))
 
   /** What the family methods are told about the revocation they record. */
-  val terms = RevocationTerms(RevocationCause.RefreshReuse, 10.minutes, Map.empty)
+  val terms = RevocationTerms(cause = RevocationCause.RefreshReuse, ttl = 10.minutes, tenantId = None, ttlByClient = Map.empty)
 
   /** What an administrator's revoking of a client's offline access is told about the revocation it records:
     * the client's own TTL, since every token the family issued went to that client. */
-  val offlineTerms = RevocationTerms(RevocationCause.OfflineAccessRevoked, 15.minutes, Map.empty)
+  val offlineTerms = RevocationTerms(cause = RevocationCause.OfflineAccessRevoked, ttl = 15.minutes, tenantId = None, ttlByClient = Map.empty)
 
   /** What the repository has recorded as revoked, by key: the whole list is small in a test. */
   def recorded(env: RefreshTokenRepositorySpec.Env): Task[Map[RevocationKey, Revocation]] =

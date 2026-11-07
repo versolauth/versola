@@ -28,6 +28,12 @@ import java.time.Instant
 trait PasswordService:
   def verifyPassword(userId: UserId, password: Password): Task[CheckPassword]
 
+  /** Does the work [[verifyPassword]] does for a user who has a password, for a login that names nobody: one hash of the submitted
+    * password, with the same cost and the same secret, whose result is thrown away. Without it an unknown login is answered in
+    * a fraction of the time a known one takes (the hash is what takes the time), and the time tells whether the login exists.
+    */
+  def verifyUnknownUser(password: Password): Task[Unit]
+
   /** Returns true if the user has at least one non-expired password on record. */
   def hasPassword(userId: UserId): Task[Boolean]
 
@@ -54,6 +60,9 @@ trait PasswordService:
 object PasswordService:
   def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _))
 
+  /** The salt of the hash [[PasswordService.verifyUnknownUser]] computes. It protects nothing: the result is discarded. */
+  private val UnknownUserSalt: Salt = Salt(Array.fill(16)(0.toByte))
+
   class Impl(
       passwordRepository: PasswordRepository,
       securityService: SecurityService,
@@ -65,6 +74,9 @@ object PasswordService:
       emailOtpProvider: EmailOtpProvider,
       smsOtpProvider: SmsOtpProvider,
   ) extends PasswordService:
+    override def verifyUnknownUser(password: Password): Task[Unit] =
+      securityService.hashPassword(Secret.fromString(password), UnknownUserSalt, config.security.passwordsSecret).unit
+
     override def hasPassword(userId: UserId): Task[Boolean] =
       Clock.instant.flatMap: now =>
         passwordRepository.list(userId).map(_.exists(_.expiresAt.forall(_.isAfter(now))))

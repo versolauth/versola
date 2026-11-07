@@ -314,6 +314,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
         issuedBefore = None,
       ),
       revocation.cause,
+      revocation.tenantId,
     )
     ()
 
@@ -595,6 +596,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
         issuedBefore = None,
       ),
       revocation.cause,
+      revocation.tenantId,
     )
     ()
 

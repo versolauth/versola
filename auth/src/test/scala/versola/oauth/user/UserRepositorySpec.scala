@@ -37,7 +37,7 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
 
   /** What a role removal is told about the revocation it records: the widest TTL, in the one place the
     * cases agree on. */
-  private val terms = RevocationTerms(RevocationCause.RolesChanged, 1.hour, Map.empty)
+  private val terms = RevocationTerms(cause = RevocationCause.RolesChanged, ttl = 1.hour, tenantId = None, ttlByClient = Map.empty)
 
   private def recorded(env: UserRepositorySpec.Env) =
     env.revocations.activeSince(RevocationCursor.Beginning, 100).map(_.revocations.map(r => r.key -> r).toMap)

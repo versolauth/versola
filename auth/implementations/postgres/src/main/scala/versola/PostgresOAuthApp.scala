@@ -75,7 +75,7 @@ import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
 import versola.oauth.metadata.{MetadataController, MetadataSyncClient}
 import versola.oauth.mtls.EdgeCertificateTrust
-import versola.oauth.revocation.PostgresAuthRevocationRepository
+import versola.oauth.revocation.{AuthRevocationRepository, PostgresAuthRevocationRepository, RevocationFeedController}
 import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController, RevocationService}
 import versola.oauth.session.{PostgresSessionRepository, PostgresUserAgentRepository, SessionRepository, SessionService, UserAgentRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
@@ -136,6 +136,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       IntrospectionService &
       RevocationService &
       AccessTokenRevocationService &
+      AuthRevocationRepository &
       BackChannelDispatcher &
       BackChannelOutbox &
       AuthorizeRequestParser &
@@ -220,8 +221,9 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   /** RFC 8705 §5: the endpoints a client certificate is relevant to, served a second time on
     * the listener that demands one.
     *
-    * Exactly the five the metadata advertises as aliases, and EST's `simplereenroll` (RFC 7030), which
-    * is authenticated by the certificate this listener validated and so can be served nowhere else.
+    * Exactly the five the metadata advertises as aliases, EST's `simplereenroll` (RFC 7030), which
+    * is authenticated by the certificate this listener validated and so can be served nowhere else, and the
+    * revocation feed edges pull (`GET /revocations`), which only an edge's certificate may read.
     * Not the whole route set: the
     * rest either authenticate nobody (`/jwks` and the discovery documents) or are the
     * browser's (`/authorize`, the conversation pages), and a browser arriving here is
@@ -237,6 +239,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
           RevocationController.routes,
           PushedAuthorizationController.routes,
           UserInfoController.routes,
+          RevocationFeedController.routes,
           EstController.reenrollmentRoutes,
         ).reduce(_ ++ _),
       ),

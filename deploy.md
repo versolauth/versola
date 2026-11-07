@@ -473,6 +473,18 @@ dump and the rollback is lost. With extra replicas of `auth` or `edge`, remove t
 unfinished `versola rollout` is undone with `versola rollout --abort` instead; secrets the new
 version added stay in OpenBao either way.
 
+#### Behaviour change: edge refuses a resource path whose segments a resource could read differently
+
+A call to `/resources/{resourceId}/{path}` whose path has a segment that is a separator once decoded (`%2F`, `%5C`, a raw `\`), a
+control character, a dot segment in any encoding (`..;x` too) or one that is only a dot segment after another round of decoding is
+answered `404`, like a path no endpoint registers, after the caller has been authenticated. Before, an encoded slash was counted as
+two segments when the endpoint was chosen and sent as one, so the endpoint a permission was checked for could differ from the one the
+resource routed to.
+
+- **Who can notice.** A resource whose identifiers legitimately contain `/` or `\` in a path segment (an id such as `a/b` sent as
+  `a%2Fb`). Such an id has to be carried in a query parameter or the body. Ids with a dot, a space, `;` or `%` inside are unaffected.
+- **No setting, no migration.** Nothing is stored; a rollback restores the old matching.
+
 #### Behaviour change: edge binds a login to the browser that began it (login CSRF on `/complete`)
 
 `/login/{presetId}` now sets an `EDGE_LOGIN_<state>` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`, `Path` =
@@ -490,6 +502,17 @@ the secret, in `pending_logins.browser_binding_hash` (migration `V2008`, nullabl
   from the `/login` redirect, or a client that does not keep cookies between `/login` and `/complete`
   (a script, a load generator without a cookie jar), now gets `400` on `/complete`.
 - The native flow (`/native/*`) never used the pending login and is unaffected.
+
+#### Behaviour change: a one-time code is good for 10 minutes after it was sent
+
+A code used to be accepted for as long as its sign-in lived (`authConversationTtlSeconds` of the tenant, 15 minutes by default, more where
+raised), however long ago it was sent. It is now accepted for 10 minutes from the moment it was sent (a resend starts a new count), and
+the sign-in's own expiry still applies. After that the right code is answered like a wrong one and the user asks for a new one. The comparison
+no longer stops at the first digit that differs. The 10 minutes is fixed, not a setting.
+
+- **Migration.** None: no schema or setting; the code is still kept in the sign-in as before. A sign-in in progress at the upgrade whose code
+  was sent more than 10 minutes ago needs a new code.
+- **What to check.** A tenant whose conversation TTL is below 10 minutes is unaffected; one above it now has the shorter limit for codes.
 
 #### Breaking change (2026-10-25): the access log is set per edge in central, not by environment
 
@@ -543,8 +566,7 @@ or reset by an administrator, a role removed and `DELETE /users/refresh-tokens` 
 
 #### Behaviour change: more changes revoke access tokens, and a password change can sign the user out elsewhere
 
-Four more causes now write the revocation record of the entry above, in the same transaction as the change (the table and
-the migration are the same: **no new migration**, nothing to run). Access tokens are refused at `/userinfo` and
+Four more causes now write the revocation record of the entry above, in the same transaction as the change (the table is the same: **no new migration**, nothing to run). Access tokens are refused at `/userinfo` and
 `/introspect` in each case; a resource server that verifies a JWT on its signature alone still accepts one until `exp`.
 
 | Change | What is refused | What is not touched |
@@ -567,8 +589,9 @@ What changes for a deployment that upgrades:
   is written only when a role was actually removed (not for one the user did not hold, nor one the same call adds back).
 - **The record is the whole of it in `auth`; `edge` learns of the user-wide ones later.** The `sub` records (password, role) are not
   pushed to `back_channel_logout_uri`: that event ends sessions, which these changes do not. An `edge` refuses such a token when it
-  next reads the revocation list from `auth`, not at once; until that feed is in the release, an edge accepts it until `exp` unless the
-  token is refreshed. The offline-access record is pushed to the client's `back_channel_logout_uri` as the existing
+  next reads the revocation list from `auth`, not at once: with `revocation.feed.enabled = true` (the entry above) that is about a
+  second; without it the `edge` accepts such a token until `exp` unless it is refreshed. These records carry no tenant, so the feed serves
+  them to every edge. The offline-access record is pushed to the client's `back_channel_logout_uri` as the existing
   `versola:event:access-token-revocation` event, by family.
 - **`revokeOtherSessions` needs edge to tell `auth` which session is the caller's.** Central's bootstrap now adds a body inject rule,
   `sessionId` = `has(token.sid) ? token.sid : ''`, to the `PATCH /settings/password` endpoint of the `auth` resource. Bootstrap
@@ -579,6 +602,55 @@ What changes for a deployment that upgrades:
   The old request, without the field, works with every combination of versions.
 - **API shape.** `PATCH /settings/password` is the self-service API behind edge, not a public endpoint, and has no OpenAPI file; the
   request gains the optional `revokeOtherSessions` (boolean, absent means `false`) and the edge-injected `sessionId`.
+
+#### New: `edge` can pull revocations from `auth` (migrations `V0033` for `auth`, `V2009` for `edge`; off by default)
+
+Until now a first-party `edge` learned of a revoked access token only from the event `auth` sent to the client's
+`back_channel_logout_uri`: one attempt (a few, through the outbox), nothing for a client with no such address, and nothing
+for an `edge` that was down at the time. With `revocation.feed.enabled = true` the `edge` also **asks** `auth` for what was
+revoked, about once a second, from a cursor it keeps, so a revocation reaches it whatever happened to the event. The event
+stays as the faster signal (#560). Nothing changes until the switch is turned on: an `edge` that does not set it behaves as
+before, an old `edge` against this `auth` and this `edge` against an old `auth` both keep working on the event alone.
+
+- **Migrations.** `V0033__auth_revocations_tenant.sql` adds the nullable `auth_revocations.tenant_id` (the client's tenant for
+  a revoked token or refresh-token family, `NULL` for a session or a user, which no tenant owns; rows written before the
+  upgrade are `NULL` and are served to every edge until they expire). `V2009__revocation_cursors.sql` creates edge's
+  `revocation_cursors` (where the `edge` has read up to, and which pod is reading). Both are additive, the previous release runs
+  on them and a rollback works; neither can be undone except by the pre-migration dump.
+- **New endpoint.** `GET /revocations?after=<cursor>&limit=<n>` on `auth`'s mutual-TLS listener (`MPORT`) and nowhere else (not the
+  main port, not `/service`): the `mutual-tls` block, with `edge-trusted-certificates`, must be configured, because the caller is
+  recognised from the certificate of the handshake. A client's certificate, an edge central does not list, or no certificate is
+  `403`. It serves the revocations of the tenants central assigned the calling edge, and the ones no tenant owns. See
+  `auth/open-api/revocations.yaml`.
+- **Turning it on.** The `edge` needs its `native` block (`auth-mutual-tls-url`, `trusted-certificates`: the feed is read over the same
+  channel and with the same certificate as its `/userinfo` calls); without one the feed does not start and a warning says so. In `edge`'s
+  config:
+
+  ```hocon
+  revocation {
+    feed {
+      enabled       = true
+      # poll-interval = 1 second   how often each pod looks
+      # lease         = 5 seconds  how long one pod owns the reading; longer than `timeout`
+      # page-size     = 5000       at most 10000
+      # timeout       = 3 seconds  one request to auth
+    }
+  }
+  ```
+
+  Several pods of one `edge` share one cursor row: the one that finds its lease free reads, writes what it read to the `revocations`
+  table (whose notification reaches every pod) and gives the lease back. A pod that dies hands the reading on after `lease`. A new `edge`
+  reads from the beginning of the list, a restarted one from its cursor. Every `revocation.reload-interval` (600 seconds) one pod
+  rereads the whole list, which bounds a revocation missed through a very late commit to minutes. The first deployment of the switch
+  reads everything unexpired once: a page of 5000 rows per request.
+- **What to watch.** `revocation_feed_lag_seconds` (seconds, by the database's clock, since a pod last read the feed to its end; read from
+  the cursor row, so every pod of the `edge` reports the same figure), `revocation_feed_cycles_total{outcome="ok|error|lease_not_acquired"}`, `revocation_feed_pages_total`,
+  `revocation_feed_rows_total`, `revocation_feed_lease_held`. `revocation_cursors` is updated about twice a second by the pod that
+  reads (taking and giving back the lease); the columns carry no index, so the updates are HOT. A feed that stays down is logged as a warning, then at most once in five
+  minutes; it never fails readiness, and the `edge` carries on with the events.
+- **`edge` behaviour fix.** An expired cookie token that was revoked is no longer refreshed: the old token's `jti`, family, session and
+  user are checked first, and a revoked one sends the caller to log in with the cookie cleared, without presenting the refresh token to `auth`.
+- The `revocation` block of `edge` is the same one as before (`reload-interval`, `purge-interval`, `overlap`, `batch-size`) with `feed` inside it.
 
 #### Behaviour change: edge syncs through `/edge/sync/*`, on central's mutual-TLS port
 
@@ -743,7 +815,10 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   token, refresh-token family, session or user, with an expiry of one access token lifetime. It is small by construction, the
   last few minutes of revocations rather than a history. `revoked_at` is stamped with the database's clock, and the pair
   `(revoked_at, revoked_key)` is the cursor every replica resumes its reconciliation from. Rows are collected by the cleanup
-  manager once `expires_at` has passed.
+  manager once `expires_at` has passed. `tenant_id` (`V0033`, nullable) says which tenant a key belongs to, for the feed edges pull.
+- **Revocation cursors** (`edge`, `revocation_cursors`, `V2009`). One row per source (auth's mutual-TLS URL): the position the `edge` has
+  read the feed up to, when a pod last read it to the end (`last_read_at`), and the lease that lets one pod at a time read it. Compared on the database's clock; nothing is held open across
+  the call to `auth`.
 - **Configuration snapshots.** `auth` and `edge` keep the last configuration sync from `central`
   (signed with a key the node already holds) and start from it when `central` is unreachable or
   failing, retrying in the background and reporting `config_snapshot_age_seconds`. The tables fill on

@@ -357,7 +357,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
             TenantId("t1"),
             Set(RoleId("r2")),
             Set(RoleId("r1")),
-            RevocationTerms(RevocationCause.RolesChanged, widest, ttls),
+            RevocationTerms(cause = RevocationCause.RolesChanged, ttl = widest, tenantId = None, ttlByClient = ttls),
           ),
         ),
       )
@@ -1253,7 +1253,12 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
             (
               passkeyUserId,
               Password("S3cret-Pass!"),
-              PasswordChangeEffect.RefuseEarlierTokens(RevocationTerms(RevocationCause.PasswordChanged, widest, ttls)),
+              PasswordChangeEffect.RefuseEarlierTokens(RevocationTerms(
+                cause = RevocationCause.PasswordChanged,
+                ttl = widest,
+                tenantId = None,
+                ttlByClient = ttls,
+              )),
             ),
           ),
           drafts.map(_.kind) == List(AuthAuditKinds.AccountPasswordSet),
