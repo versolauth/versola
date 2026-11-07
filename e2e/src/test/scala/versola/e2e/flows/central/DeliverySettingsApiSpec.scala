@@ -110,6 +110,30 @@ object DeliverySettingsApiSpec extends CentralApiSpec:
         read.obj("smtp").flatMap(_.str("subject")).contains("Before"),
       )
     },
+    test("a target on loopback or the cloud metadata address is refused, and nothing changes") {
+      for
+        central <- api
+        _ <- central.put(path, update("smtp" -> smtp("Before")))
+        _ <- settings(central)(_.obj("smtp").flatMap(_.str("subject")).contains("Before"))
+        loopbackMail <- central.put(path, update("smtp" -> withField(block = smtp("After"), name = "host", value = Json.Str("localhost"))))
+        metadataProvider <- central.put(
+          path,
+          update("otpProvider" -> withField(block = otpProvider, name = "url", value = Json.Str("https://169.254.169.254/latest/meta-data"))),
+        )
+        loopbackProvider <- central.put(
+          path,
+          update("otpProvider" -> withField(block = otpProvider, name = "url", value = Json.Str("https://127.0.0.1:8443/send"))),
+        )
+        read <- central.get(path).flatMap(_.obj)
+      yield assertTrue(
+        loopbackMail.status == Status.BadRequest,
+        loopbackMail.body.contains("smtp.host"),
+        metadataProvider.status == Status.BadRequest,
+        metadataProvider.body.contains("otpProvider.url"),
+        loopbackProvider.status == Status.BadRequest,
+        read.obj("smtp").flatMap(_.str("subject")).contains("Before"),
+      )
+    },
     test("an anonymous caller can neither read, save nor delete the settings") {
       for
         central <- api

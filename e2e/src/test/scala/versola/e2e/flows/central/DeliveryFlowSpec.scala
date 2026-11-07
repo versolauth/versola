@@ -20,7 +20,7 @@ object DeliveryFlowSpec extends CentralApiSpec:
 
   private def smtpBlock(port: Int): Json.Obj =
     Json.Obj(
-      "host" -> Json.Str("localhost"),
+      "host" -> Json.Str("mail.example.test"),
       "port" -> Json.Num(port),
       "username" -> Json.Str("mailer"),
       "from" -> Json.Str("noreply@example.test"),

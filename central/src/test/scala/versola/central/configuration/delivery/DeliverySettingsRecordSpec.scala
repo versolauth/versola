@@ -9,6 +9,11 @@ import zio.test.*
   */
 object DeliverySettingsRecordSpec extends UnitSpecBase:
 
+  /** A test environment, a production one, and a production one where the operator allows private targets. */
+  private val nonProd = DeliveryRules(production = false, allowPrivateTargets = false)
+  private val prod = DeliveryRules(production = true, allowPrivateTargets = false)
+  private val prodPrivate = DeliveryRules(production = true, allowPrivateTargets = true)
+
   private val smtp = SmtpDeliverySettings(
     host = "smtp.example.com",
     port = 587,
@@ -52,27 +57,102 @@ object DeliverySettingsRecordSpec extends UnitSpecBase:
     ("an empty body key", otpProvider.copy(body = Map("" -> "{{phone}}")), "otpProvider.body"),
   )
 
+  private val refusedSmtpTargets: List[(String, String)] = List(
+    ("localhost", "loopback"),
+    ("127.0.0.1", "loopback"),
+    ("[::1]", "loopback"),
+    ("2130706433", "loopback"),
+    ("169.254.169.254", "link-local"),
+    ("metadata.google.internal", "link-local"),
+    ("0.0.0.0", "unspecified"),
+  )
+
+  private val alwaysRefusedUrls: List[String] = List(
+    "https://localhost/send",
+    "https://127.0.0.1:8443/send",
+    "https://[::1]/send",
+    "https://169.254.169.254/latest/meta-data",
+    "https://metadata.google.internal/computeMetadata/v1/",
+    "https://2130706433/send",
+  )
+
+  private val privateUrls: List[String] =
+    List("https://10.0.0.5/send", "https://172.16.1.1/send", "https://192.168.0.10/send", "https://[fd00::1]/send")
+
   def spec = suite("DeliverySettingsRecord")(
+    suite("the target of a saved block")(
+      test("a mail server on loopback, link-local or an unspecified address is refused, with or without private targets allowed") {
+        assertTrue(
+          refusedSmtpTargets.forall((host, _) => SmtpDeliverySettings.validate(smtp.copy(host = host), nonProd).exists(_.startsWith("smtp.host"))),
+          refusedSmtpTargets.forall((host, _) => SmtpDeliverySettings.validate(smtp.copy(host = host), prodPrivate).exists(_.startsWith("smtp.host"))),
+        )
+      },
+      test("a mail server on a private address is refused unless the operator allows private targets, and the message says how") {
+        val refused = SmtpDeliverySettings.validate(smtp.copy(host = "10.1.2.3"), prod)
+        assertTrue(
+          refused.exists(_.contains("allow-private-delivery-targets")),
+          SmtpDeliverySettings.validate(smtp.copy(host = "10.1.2.3"), prodPrivate).isEmpty,
+        )
+      },
+      test("a mail server in production is on a mail port only, in a test environment on any") {
+        assertTrue(
+          List(25, 465, 587, 2525).forall(port => SmtpDeliverySettings.validate(smtp.copy(port = port), prod).isEmpty),
+          List(
+            22, 5432, 8080, 6379, 9200,
+          ).forall(port => SmtpDeliverySettings.validate(smtp.copy(port = port), prod).exists(_.startsWith("smtp.port"))),
+          SmtpDeliverySettings.validate(smtp.copy(port = 1025), nonProd).isEmpty,
+        )
+      },
+      test("a provider on loopback, link-local or metadata is refused, however the address is written") {
+        assertTrue(
+          alwaysRefusedUrls.forall(url =>
+            OtpProviderDeliverySettings.validate(otpProvider.copy(url = url), nonProd).exists(_.startsWith("otpProvider.url")),
+          ),
+          alwaysRefusedUrls.forall(url =>
+            OtpProviderDeliverySettings.validate(otpProvider.copy(url = url), prodPrivate).exists(_.startsWith("otpProvider.url")),
+          ),
+        )
+      },
+      test("a provider on a private address follows the operator's setting") {
+        assertTrue(
+          privateUrls.forall(url => OtpProviderDeliverySettings.validate(otpProvider.copy(url = url), prod).exists(_.contains("private network"))),
+          privateUrls.forall(url => OtpProviderDeliverySettings.validate(otpProvider.copy(url = url), prodPrivate).isEmpty),
+        )
+      },
+      test("a provider in production is called over https; in a test environment http is accepted") {
+        val plain = otpProvider.copy(url = "http://sms.example.com/send")
+        assertTrue(
+          OtpProviderDeliverySettings.validate(plain, prod).exists(_.contains("https")),
+          OtpProviderDeliverySettings.validate(plain.copy(username = None), prod).exists(_.contains("https")),
+          OtpProviderDeliverySettings.validate(plain, nonProd).isEmpty,
+          OtpProviderDeliverySettings.validate(otpProvider, prod).isEmpty,
+        )
+      },
+      test("the refusal names the field and the class, never the address") {
+        val message = OtpProviderDeliverySettings.validate(otpProvider.copy(url = "https://169.254.169.254/latest"), prod).getOrElse("")
+        assertTrue(message.startsWith("otpProvider.url"), !message.contains("169.254"))
+      },
+    ),
     suite("SmtpDeliverySettings.validate")(
       (test("accepts a complete block") {
-        assertTrue(SmtpDeliverySettings.validate(smtp).isEmpty)
+        assertTrue(SmtpDeliverySettings.validate(smtp, nonProd).isEmpty)
       } :: refusedSmtp.map { (what, block, field) =>
         test(s"refuses $what, naming $field") {
-          assertTrue(SmtpDeliverySettings.validate(block).exists(_.startsWith(field)))
+          assertTrue(SmtpDeliverySettings.validate(block, nonProd).exists(_.startsWith(field)))
         }
       })*,
     ),
     suite("OtpProviderDeliverySettings.validate")(
       (test("accepts a complete block, with or without a username") {
         assertTrue(
-          OtpProviderDeliverySettings.validate(otpProvider).isEmpty,
-          OtpProviderDeliverySettings.validate(otpProvider.copy(username = None)).isEmpty,
-          OtpProviderDeliverySettings.validate(otpProvider.copy(url = "http://sms-gateway.internal:8080/send")).isEmpty,
-          OtpProviderDeliverySettings.validate(otpProvider.copy(url = "https://sms.example.com:65535/send")).isEmpty,
+          OtpProviderDeliverySettings.validate(otpProvider, nonProd).isEmpty,
+          OtpProviderDeliverySettings.validate(otpProvider.copy(username = None), nonProd).isEmpty,
+          OtpProviderDeliverySettings.validate(otpProvider.copy(url = "http://sms-gateway.internal:8080/send"), nonProd).isEmpty,
+          OtpProviderDeliverySettings.validate(otpProvider.copy(url = "https://sms.example.com:65535/send"), nonProd).isEmpty,
         )
       } :: refusedOtpProvider.map { (what, block, field) =>
         test(s"refuses $what, naming $field") {
-          assertTrue(OtpProviderDeliverySettings.validate(block).exists(_.startsWith(field)))
+          assertTrue(OtpProviderDeliverySettings.validate(block, nonProd).exists(_.startsWith(field)))
         }
       })*,
     ),

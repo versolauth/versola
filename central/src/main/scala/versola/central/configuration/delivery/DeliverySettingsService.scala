@@ -1,7 +1,7 @@
 package versola.central.configuration.delivery
 
 import versola.central.CentralConfig
-import versola.util.{CacheSource, ReloadingCache, Secret, SecurityService}
+import versola.util.{CacheSource, EnvName, ReloadingCache, Secret, SecurityService}
 import zio.json.JsonDecoder
 import zio.{Scope, Task, ZIO, ZLayer}
 
@@ -39,17 +39,19 @@ object DeliverySettingsService:
   /** Names the field and the rule, never a value, so the message is safe in a response and in the error context. */
   case class ValidationError(message: String)
 
-  def live: ZLayer[DeliverySettingsRepository & SecurityService & CentralConfig & Scope, Throwable, DeliverySettingsService] =
+  def live: ZLayer[DeliverySettingsRepository & SecurityService & CentralConfig & EnvName & Scope, Throwable, DeliverySettingsService] =
     ZLayer:
       for
         repository <- ZIO.service[DeliverySettingsRepository]
         securityService <- ZIO.service[SecurityService]
         config <- ZIO.service[CentralConfig]
+        envName <- ZIO.service[EnvName]
         source = decryptingSource(repository = repository, securityService = securityService, config = config)
         cache <- ReloadingCache
           .make[Option[DeliverySettingsRecord]](config.configurationCacheRefreshInterval)
           .provideSomeLayer[Scope](ZLayer.succeed(source))
-      yield Impl(cache = cache, source = source, repository = repository, securityService = securityService, config = config)
+        rules = DeliveryRules(production = envName.isProd, allowPrivateTargets = config.allowPrivateDeliveryTargets)
+      yield Impl(cache = cache, source = source, repository = repository, securityService = securityService, config = config, rules = rules)
 
   private def secretsKey(config: CentralConfig): SecretKey =
     SecretKeySpec(config.clientSecretsSecret, "AES")
@@ -78,6 +80,7 @@ object DeliverySettingsService:
       repository: DeliverySettingsRepository,
       securityService: SecurityService,
       config: CentralConfig,
+      rules: DeliveryRules,
   ) extends DeliverySettingsService:
     private val key = secretsKey(config)
 
@@ -85,7 +88,10 @@ object DeliverySettingsService:
       cache.get
 
     override def upsertSettings(update: Update): Task[Either[ValidationError, Unit]] =
-      update.smtp.flatMap(SmtpDeliverySettings.validate).orElse(update.otpProvider.flatMap(OtpProviderDeliverySettings.validate)) match
+      update.smtp.flatMap(SmtpDeliverySettings.validate(
+        _,
+        rules,
+      )).orElse(update.otpProvider.flatMap(OtpProviderDeliverySettings.validate(_, rules))) match
         case Some(reason) => ZIO.left(ValidationError(reason))
         case None => store(update).asRight
 
