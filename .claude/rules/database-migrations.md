@@ -66,4 +66,6 @@ Name: `V<next number in that range>__snake_case_description.sql`. One schema per
 ## Docs
 
 A change that alters what an operator must do (a new schema, a data step before upgrade, a break
-like the squash) updates `deploy.md` in the same change.
+like the squash) says so in the PR description, which the release notes are written from. `deploy.md`
+changes only when a command or a step of the standing procedure changes (for instance a new step in
+the order of `configure`, `migrate`, `up`), not to log that a release behaves differently.
