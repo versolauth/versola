@@ -110,6 +110,19 @@ object PasswordAttemptLimitSpec extends E2ESpec:
           page.html.contains("\"login_failed\""),
         )
     },
+    test("a burst of wrong current passwords on the account password change is checked no more often than the limit allows") {
+      withLimitedUser: (s, auth) =>
+        val caller = AccountCaller(s.userId, s.clientId, sessionId = "unused")
+        for
+          results <- ZIO.foreachPar(1 to burst)(i => auth.changeAccountPassword(caller, s"Wrong-$i-9!x", "Brand-New-1!aa"))
+          // the same budget as the sign-in form's password step: once it is used up, the right password is refused here too
+          refusedRight <- auth.changeAccountPassword(caller, s.password, "Brand-New-1!aa")
+        yield assertTrue(
+          results.count(_.status == Status.BadRequest) == 3,
+          results.count(_.status == Status.TooManyRequests) == burst - 3,
+          refusedRight.status == Status.TooManyRequests,
+        )
+    },
     test("a right password spends none of the budget: more successful sign-ins than the limit allows all succeed") {
       withLimitedUser: (s, auth) =>
         for

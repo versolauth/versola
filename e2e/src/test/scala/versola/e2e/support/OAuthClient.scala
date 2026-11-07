@@ -1723,6 +1723,21 @@ final class OAuthClient(client: Client, config: E2EConfig):
       credentials,
     )
 
+  /** PATCH /settings/password — changes the caller's password, proving the current one. */
+  def changeAccountPassword(
+      caller: AccountCaller,
+      currentPassword: String,
+      newPassword: String,
+      credentials: Option[(String, String)] = Some(accountCredentials),
+  ): Task[AccountResult] =
+    accountRequest(
+      Method.PATCH,
+      "/settings/password",
+      Nil,
+      Some(caller.bodyWith("currentPassword" -> Json.Str(currentPassword), "newPassword" -> Json.Str(newPassword))),
+      credentials,
+    )
+
   /** POST /settings/passkeys/register/start — obtains creation options plus the ceremony ticket. */
   def startPasskeyEnrollment(
       caller: AccountCaller,

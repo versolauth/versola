@@ -1004,7 +1004,7 @@ object ConversationService:
         password: Password,
     ): Task[ConversationResult] =
       conversation.step match
-        case cred: ConversationStep.Credential =>
+        case cred: ConversationStep.Credential if !cred.passkeyOnly =>
           userRepository.findByLogin(login).flatMap:
             case None =>
               // The password is hashed all the same: the time of the answer must not say that the login does not exist.
@@ -1027,13 +1027,13 @@ object ConversationService:
                     passwordService.verifyPassword(user.id, password).tap(auditPasswordCheck(authId, conversation, user.id, _)).flatMap:
                       case CheckPassword.Success =>
                         submissionLimiter.refund(charges) *> Clock.instant.flatMap: now =>
-                          val updated = conversation.copy(
+                          val updated = conversation.withoutIdentityState.copy(
                             userId = Some(user.id),
                             userEmail = user.email,
                             userPhone = user.phone,
                             userLogin = user.login,
                             userClaims = Some(user.claims),
-                            amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
+                            amr = Map(PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
                           )
                           conversationRepository.overwrite(authId, updated).flatMap:
                             case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
@@ -1043,13 +1043,13 @@ object ConversationService:
                         // Temporary password accepted – set user context, mark password as passed,
                         // and flag that the user must set a new password after all remaining factors.
                         submissionLimiter.refund(charges) *> Clock.instant.flatMap: now =>
-                          val updated = conversation.copy(
+                          val updated = conversation.withoutIdentityState.copy(
                             userId = Some(user.id),
                             userEmail = user.email,
                             userPhone = user.phone,
                             userLogin = user.login,
                             userClaims = Some(user.claims),
-                            amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
+                            amr = Map(PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
                             needsPasswordChange = true,
                           )
                           conversationRepository.overwrite(authId, updated).flatMap:
@@ -1061,8 +1061,8 @@ object ConversationService:
                           case LimitStatus.Banned => accessDenied(authId, conversation)
                           case _ => renderStep(authId, conversation, cred.copy(loginFailed = true))
         case _ =>
-          // A login+password submission arrived while the conversation isn't on the credential
-          // step, e.g. a stale form or a tampered request.
+          // A login+password submission arrived while the conversation isn't on a credential card that takes one
+          // (another step, or the passkey-only card), e.g. a stale form or a tampered request.
           Observability.setError("step_mismatch").as(ConversationResult.BadRequest)
 
     override def offerSetPassword(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
