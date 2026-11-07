@@ -2,7 +2,7 @@ package versola.e2e.flows.central
 
 import versola.e2e.support.*
 import zio.*
-import zio.http.{Client, Method, Status}
+import zio.http.{Body, Client, Header, MediaType, Method, Path, QueryParams, Request, Status, URL}
 import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
@@ -58,6 +58,8 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
       .someOrElseZIO(CentralDatabase.auditEvents(targetId))
 
   /** What Postgres prints for an `inet` without its mask: an IPv4 address or an IPv6 one. */
+  private val forgedAddress = "198.51.100.77"
+
   private val addressText = raw"([0-9]{1,3}(\.[0-9]{1,3}){3}|[0-9a-f:]+)".r
 
   private def detail(row: CentralDatabase.AuditRow): Json.Obj = row.details.fromJson[Json.Obj].getOrElse(Json.Obj())
@@ -157,6 +159,35 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
         stored.forall(row => row.actorType == "client" && row.actorId.contains(c.provisionerClientId)),
         stored.forall(row => !row.actorId.contains(spoof) && !row.tenantId.contains("someone-elses")),
         stored.forall(row => !row.ip.contains(forgedIp)),
+      )
+    },
+    test("a call that reaches central around edge and states an actor is recorded as a service's: only what an edge signed is believed") {
+      for
+        c <- ZIO.service[E2EConfig]
+        client <- ZIO.service[Client]
+        id <- CentralApi.id("audit-forged")
+        forged = "00000000-0000-0000-0000-00000000f0f0"
+        base <- ZIO.fromEither(URL.decode(s"${c.centralUrl}/configuration/clients/service")).mapError(RuntimeException(_))
+        request = Request
+          .post(
+            base.addQueryParams(QueryParams("actorId" -> forged, "actorTenantId" -> "someone-elses", "actorIp" -> forgedAddress)),
+            Body.fromString(serviceBody(id).toJson),
+          )
+          .addHeader(Header.ContentType(MediaType.application.json))
+          .addHeader(Header.Authorization.Basic("central", c.resourceSecret))
+        created <- client.batched(request)
+        _ <- client.batched(
+          Request.delete(base.copy(path = Path.decode("/configuration/clients")).addQueryParams(QueryParams("clientId" -> id, "actorId" -> forged)))
+            .addHeader(Header.Authorization.Basic("central", c.resourceSecret)),
+        )
+        stored <- rows(id)(_.exists(_.kind == "admin.client.delete"))
+      yield assertTrue(
+        // the call is served: nothing is refused unless the deployment asks for it (`audit.require-actor`)
+        created.status == Status.Created,
+        stored.nonEmpty,
+        // but whoever it says it is, it is a service with no id, no tenant and no address
+        stored.forall(row => row.actorType == "service" && row.actorId.isEmpty && !row.tenantId.contains("someone-elses")),
+        stored.forall(row => !row.ip.contains(forgedAddress)),
       )
     },
     test("rotating a client secret is of high severity and reveals a secret once more") {

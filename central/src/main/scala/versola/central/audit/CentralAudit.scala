@@ -60,14 +60,15 @@ object CentralAudit:
 
   /** A call of an administrator's API that edge did not say the caller of (`absent`), or whose caller it named is no user or client
     * (`invalid`): recorded as a service's. Nothing is counted for a call that has an actor. A call whose address is none is counted
-    * (`invalid_ip`) and recorded without one. */
+    * (`invalid_ip`) and recorded without one. A call that states an actor no edge signed is counted (`unsigned`, or `invalid_signature` for
+    * a signature that does not verify) and is a service's. */
   def actorMissing(reason: Option[String]): UIO[Unit] =
     ZIO.foreachDiscard(reason)(reason => actorMissing.tagged(Set(MetricLabel("reason", reason))).increment)
 
   private val actorRefused = Metric.counter("audit_actor_refused_total")
 
   /** A call of an administrator's route refused because `audit.require-actor` is on and it named no valid actor: `absent` (edge added
-    * none) or `invalid` (what it named is no user and no client). */
+    * none), `invalid` (what it named is no user and no client), `unsigned` or `invalid_signature`. */
   def actorRefused(reason: String): UIO[Unit] = actorRefused.tagged(Set(MetricLabel("reason", reason))).increment
 
   private val targetMissingCounter = Metric.counter("audit_event_without_target_total")

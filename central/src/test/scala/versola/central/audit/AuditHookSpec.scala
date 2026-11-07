@@ -1,6 +1,7 @@
 package versola.central.audit
 
 import versola.central.configuration.clients.ClientId
+import versola.central.configuration.edges.{EdgeGroupKind, EdgeId, EdgeService}
 import versola.central.configuration.tenants.TenantId
 import versola.central.users.UserId
 import versola.central.{CentralConfig, TestCentralConfig}
@@ -52,21 +53,28 @@ object AuditHookSpec extends ZIOSpecDefault:
         .addQueryParam(AuditHook.ActorClientParam, client),
     )
 
+  /** Serves `request` as central gets it from edge: a call that states an actor carries the signature of the registered edge, unless the
+    * case is about one that does not (`signing = false`, or a request that was signed by hand). */
   private def serve(
       routes: Routes[Any, Response],
       request: Request,
       tiers: CentralConfig = settings(),
+      edges: EdgeService = TestActor.registered,
+      signing: Boolean = true,
   ): ZIO[Client & TestClient, Nothing, (Response, List[Recorded])] =
+    val statesActor = ActorParams.stated.exists(name => request.url.queryParams.map.contains(name))
     // `Observability.middleware` gives each request a log context of its own; this is that, so that an error code one request set
     // is not the next one's
     logContext.locallyWith(identity)(for
       seen <- Ref.make(List.empty[Recorded])
       client <- ZIO.service[Client]
-      _ <- TestClient.addRoutes((routes @@ TestAuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig](
+      _ <- TestClient.addRoutes((routes @@ TestAuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig, EdgeService](
         Capture(seen),
         tiers,
+        edges,
       )))
-      response <- client.batched(request).orDie
+      sent <- if signing && statesActor then TestActor.signed(request) else ZIO.succeed(request)
+      response <- client.batched(sent).orDie
       recorded <- seen.get
     yield (response, recorded))
 
@@ -92,6 +100,103 @@ object AuditHookSpec extends ZIOSpecDefault:
   private def refusedCount(reason: String) =
     Metric.counter("audit_actor_refused_total").tagged(Set(MetricLabel("reason", reason))).value.map(_.count)
   private def ran = Ref.make(0).map(counter => (counter, handler((_: Request) => counter.update(_ + 1).as(Response.text("")))))
+
+  private val signedRequest =
+    asAdmin(post("/configuration/clients/web", """{"id":"c"}""")).updateURL(_.addQueryParam(AuditHook.ActorIpParam, "203.0.113.7"))
+
+  private def missingCount(reason: String) =
+    Metric.counter("audit_actor_missing_total").tagged(Set(MetricLabel("reason", reason))).value.map(_.count)
+
+  /** `recorded` is of a call that was taken for a service's: no actor, tenant, client, session or address of the ones it stated. */
+  private def asService(recorded: List[Recorded]) =
+    recorded.head.draft.actor.contains((CentralAudit.Actors.Service, None)) &&
+      recorded.head.context.tenantId.isEmpty && recorded.head.clientId.isEmpty && recorded.head.ip.isEmpty
+
+  private def signatureSuite =
+    suite("the signature of the edge")(
+      test("a call that edge signed is recorded with the actor, the tenant, the client and the address it states") {
+        for
+          before <- missingCount("unsigned")
+          (response, recorded) <- serve(Routes(createClient -> ok()), signedRequest)
+          after <- missingCount("unsigned")
+        yield assertTrue(
+          response.status == Status.Ok,
+          recorded.head.draft.actor.contains((CentralAudit.Actors.Admin, Some(admin))),
+          recorded.head.context.tenantId.contains("default"),
+          recorded.head.clientId.contains("central-admin"),
+          recorded.head.ip.contains("203.0.113.7"),
+          after == before,
+        )
+      },
+      test("a call that states an actor and is not signed is a service's, whatever it states, and is counted as unsigned") {
+        for
+          before <- missingCount("unsigned")
+          (response, recorded) <- serve(Routes(createClient -> ok()), signedRequest, signing = false)
+          after <- missingCount("unsigned")
+        yield assertTrue(response.status == Status.Ok, asService(recorded), after == before + 1)
+      },
+      test("a parameter changed after the call was signed makes the signature invalid: the call is a service's") {
+        def tampered(name: String, value: String) =
+          for
+            signed <- TestActor.signed(signedRequest)
+            changed = signed.updateURL(url => url.setQueryParams(url.queryParams.addQueryParam(name, value)))
+            (_, recorded) <- serve(Routes(createClient -> ok()), changed, signing = false)
+          yield recorded
+        for
+          before <- missingCount("invalid_signature")
+          other <- tampered(AuditHook.ActorIdParam, "00000000-0000-0000-0000-0000000000f2")
+          added <- tampered("clientId", "someone-elses")
+          address <- tampered(AuditHook.ActorIpParam, "198.51.100.66")
+          after <- missingCount("invalid_signature")
+        yield assertTrue(List(other, added, address).forall(asService), after == before + 3)
+      },
+      test("a signature made with a key the edge's registration does not hold, or by an edge that is not registered, is invalid") {
+        for
+          before <- missingCount("invalid_signature")
+          wrongKey <- TestActor.signed(signedRequest, keys = TestActor.otherKeys)
+          stranger <- TestActor.signed(signedRequest, edge = EdgeId("edge-z"))
+          (_, forged) <- serve(Routes(createClient -> ok()), wrongKey, signing = false)
+          (_, unknown) <- serve(Routes(createClient -> ok()), stranger, signing = false)
+          after <- missingCount("invalid_signature")
+        yield assertTrue(asService(forged), asService(unknown), after == before + 2)
+      },
+      test("the signature of an edge that is a partner's is not one: what a partner's edge says is not for central to take") {
+        for
+          before <- missingCount("invalid_signature")
+          (_, recorded) <- serve(Routes(createClient -> ok()), signedRequest, edges = TestActor.edges(Some(TestActor.record(EdgeGroupKind.Partner))))
+          after <- missingCount("invalid_signature")
+        yield assertTrue(asService(recorded), after == before + 1)
+      },
+      test("a signature that has expired is invalid") {
+        for
+          before <- missingCount("invalid_signature")
+          signed <- TestActor.signed(signedRequest)
+          _ <- TestClock.adjust(ActorSignature.Lifetime + 1.second)
+          (_, expired) <- serve(Routes(createClient -> ok()), signed, signing = false)
+          after <- missingCount("invalid_signature")
+        yield assertTrue(asService(expired), after == before + 1)
+      },
+      test("a signature is of one call: it does not hold for another route, another method or a query that is another's") {
+        for
+          before <- missingCount("invalid_signature")
+          signed <- TestActor.signed(signedRequest)
+          (_, otherRoute) <- serve(
+            Routes(Method.POST / "configuration" / "clients" / "native" -> ok()),
+            signed.updateURL(url => url.copy(path = Path.decode("/configuration/clients/native"))),
+            signing = false,
+          )
+          (_, otherMethod) <- serve(Routes(updateClient -> ok()), signed.copy(method = Method.PUT), signing = false)
+          after <- missingCount("invalid_signature")
+        yield assertTrue(asService(otherRoute), asService(otherMethod), after == before + 2)
+      },
+      test("a call that names no actor and carries no signature is absent, as before") {
+        for
+          before <- missingCount("absent")
+          (_, recorded) <- serve(Routes(createClient -> ok()), post("/configuration/clients/web", """{"id":"c"}"""))
+          after <- missingCount("absent")
+        yield assertTrue(asService(recorded), after == before + 1)
+      },
+    )
 
   private def requireActorSuite =
     suite("audit.require-actor")(
@@ -125,6 +230,20 @@ object AuditHookSpec extends ZIOSpecDefault:
           runs == 0,
           userRecorded.isEmpty,
           listedRecorded.isEmpty,
+        )
+      },
+      test("an actor that is stated and not signed is refused as unsigned: a direct caller cannot be an administrator") {
+        for
+          before <- refusedCount("unsigned")
+          (counter, run) <- ran
+          (response, recorded) <- serve(Routes(createClient -> run), asAdmin(bare), strict, signing = false)
+          runs <- counter.get
+          after <- refusedCount("unsigned")
+        yield assertTrue(
+          response.status == Status.Unauthorized,
+          runs == 0,
+          recorded.head.draft.reason.contains("actor_required"),
+          after == before + 1,
         )
       },
       test("an actor that is no user and no client is refused as invalid") {
@@ -362,6 +481,7 @@ object AuditHookSpec extends ZIOSpecDefault:
         userAgent.head.context.userAgent.contains("Console/1"),
       )
     },
+    signatureSuite,
     requireActorSuite,
     test("the client and the session of the token are the client and the session of the event's context") {
       val session = "sess-1"
@@ -410,11 +530,13 @@ object AuditHookSpec extends ZIOSpecDefault:
         client <- ZIO.service[Client]
         // the change has happened; the handler then waits, as a response that is still being written would
         routes = Routes(createClient -> handler((_: Request) => started.succeed(()) *> ZIO.never))
-        _ <- TestClient.addRoutes((routes @@ TestAuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig](
+        _ <- TestClient.addRoutes((routes @@ TestAuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig, EdgeService](
           Capture(seen),
           settings(),
+          TestActor.registered,
         )))
-        fiber <- client.batched(asAdmin(post("/configuration/clients/web", """{"id":"c"}"""))).fork
+        sent <- TestActor.signed(asAdmin(post("/configuration/clients/web", """{"id":"c"}""")))
+        fiber <- client.batched(sent).fork
         _ <- started.await
         _ <- fiber.interrupt
         recorded <- seen.get.repeatUntil(_.nonEmpty).timeoutFail(RuntimeException("not recorded"))(5.seconds).orDie.withClock(Clock.ClockLive)

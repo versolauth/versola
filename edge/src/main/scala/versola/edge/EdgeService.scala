@@ -31,6 +31,7 @@ import versola.edge.model.{
 }
 import versola.edge.revocation.{EdgeRevocationKeys, TokenRevocationService}
 import versola.edge.session.{EdgeSessionRecord, EdgeSessionRepository}
+import versola.util.audit.{ActorParams, ActorSignature}
 import versola.util.cel.CelEvaluator
 import versola.util.http.{Checkpoint, Observability, RateDecision, RateLimitKeys, RateLimiter}
 import versola.util.revocation.RevocationKey
@@ -1330,7 +1331,10 @@ object EdgeService:
         case None => baseHeaders
 
       val authHeader = resolveAuthHeader(resource, accessToken)
-      val strippedQuery = queryInjects.foldLeft(baseUrl) { (acc, rule) =>
+      // An endpoint that says who the caller is (the actor parameters of central's registration) has what edge says signed by this
+      // edge's key, so that central can tell it from what a caller that reaches it directly says; one the caller sent is removed.
+      val signsActor = queryInjects.exists(rule => ActorParams.stated.contains(rule.name))
+      val strippedQuery = queryInjects.foldLeft(if signsActor then baseUrl.removeQueryParam(ActorParams.Signature) else baseUrl) { (acc, rule) =>
         acc.removeQueryParam(rule.name)
       }
       for
@@ -1345,8 +1349,20 @@ object EdgeService:
         finalUrl = injectedQuery.foldLeft(strippedQuery) {
           case (acc, (name, value)) => acc.removeQueryParam(name).addQueryParam(name, value)
         }
+        signedUrl <-
+          if !signsActor then ZIO.succeed(finalUrl)
+          else
+            ActorSignature.sign(
+              edgeId = config.id,
+              keyId = config.keyId,
+              privateKey = config.privateKey,
+              method = request.method.name,
+              path = ActorSignature.pathOf(finalUrl.path.segments),
+              query = finalUrl.queryParams,
+            ).map(token => finalUrl.addQueryParam(ActorParams.Signature, token))
+              .tapError(_ => Observability.setError("actor_signature_failed", Some("the actor of the call could not be signed")))
         body <- applyBodyInjects(request, parsedBody, bodyInjects, celContext)
-      yield request.copy(url = finalUrl, headers = finalHeaders, body = body)
+      yield request.copy(url = signedUrl, headers = finalHeaders, body = body)
 
     /** An inject rule that produces nothing is not forwarded as a request with the value simply
       * missing: upstream has no way to tell an absent header from one it was never meant to

@@ -9,6 +9,7 @@ import versola.edge.dpop.{DpopPolicyService, DpopReplayGuard, DpopVerifier}
 import versola.edge.login.LoginRepository
 import versola.edge.model.*
 import versola.edge.revocation.TokenRevocationService
+import versola.util.audit.ActorSignature
 import versola.util.cel.CelEvaluator
 import versola.util.http.{
   Checkpoint,
@@ -463,6 +464,86 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       test("a connection with no address sends nothing") {
         for (_, ips) <- upstreamActorIp(identity, identity)
         yield assertTrue(ips.contains(Chunk.empty))
+      },
+    )
+
+  /** What reaches upstream when the endpoint carries the actor rules of central's registration, as the request the upstream got. */
+  private def upstreamOf(inject: Vector[InjectRule], request: Request => Request) =
+    val env = new Env
+    for
+      _ <- env.setupDefaults()
+      capture <- captureUpstream()
+      client <- ZIO.service[Client]
+      security <- ZIO.service[SecurityService]
+      _ <- env.withResources(usersResource(usersEndpoint(inject = inject)))
+      token <- env.signToken()
+      service = env.buildService(client, security)
+      _ <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request(Request.get(URL.empty / "users").addCookie(sessionCookie(token))))
+      upstream <- capture.get
+    yield (upstream, env.publicKeys)
+
+  private val actorRules = Vector(
+    InjectRule(InjectTarget.query, "actorId", "token.sub"),
+    InjectRule(InjectTarget.query, "actorTenantId", "has(token.tenant_id) ? token.tenant_id : ''"),
+    actorIpRule,
+  )
+
+  private def signedActorSuite =
+    suite("what edge says of the caller is signed (actorSignature)")(
+      test(
+        "an endpoint that states the actor gets a signature of this edge over the call as upstream receives it, which verifies with the edge's key",
+      ) {
+        for
+          (upstream, keys) <- upstreamOf(actorRules, peer("203.0.113.7"))
+          call = upstream.get
+          token = call.url.queryParams.getAll("actorSignature").headOption
+          edge <- token.fold(ZIO.none)(t => ActorSignature.edgeOf(t).option)
+          verified <- token.fold(ZIO.succeed(false))(t =>
+            ActorSignature.verify(t, keys, call.method.name, ActorSignature.pathOf(call.url.path.segments), call.url.queryParams).isSuccess,
+          )
+        yield assertTrue(
+          call.url.queryParams.getAll("actorId") == Chunk("user-1"),
+          call.url.queryParams.getAll("actorIp") == Chunk("203.0.113.7"),
+          token.nonEmpty,
+          edge.contains("edge-1"),
+          verified,
+        )
+      },
+      test("what the caller sent as an actor parameter or a signature is replaced, so the signature is of what edge says") {
+        for
+          (upstream, keys) <- upstreamOf(
+            actorRules,
+            request =>
+              peer("203.0.113.7")(request.updateURL(_.addQueryParam("actorId", "forged").addQueryParam("actorSignature", "forged.forged.forged"))),
+          )
+          call = upstream.get
+          tokens = call.url.queryParams.getAll("actorSignature")
+          verified <- ZIO.foreach(tokens.headOption)(t =>
+            ActorSignature.verify(t, keys, call.method.name, ActorSignature.pathOf(call.url.path.segments), call.url.queryParams).isSuccess,
+          )
+        yield assertTrue(call.url.queryParams.getAll("actorId") == Chunk("user-1"), tokens.size == 1, verified.contains(true))
+      },
+      test("a parameter changed after edge signed the call no longer verifies") {
+        for
+          (upstream, keys) <- upstreamOf(actorRules, peer("203.0.113.7"))
+          call = upstream.get
+          changed = call.url.queryParams.addQueryParam("actorIp", "198.51.100.66")
+          verified <- ActorSignature.verify(
+            call.url.queryParams.getAll("actorSignature").head,
+            keys,
+            call.method.name,
+            ActorSignature.pathOf(call.url.path.segments),
+            changed,
+          ).isSuccess
+        yield assertTrue(!verified)
+      },
+      test("an endpoint that states no actor is not signed, and a signature a caller sent to it is not touched") {
+        for
+          (upstream, _) <- upstreamOf(
+            Vector(InjectRule(InjectTarget.query, "other", "token.sub")),
+            request => request.updateURL(_.addQueryParam("actorSignature", "from-the-caller")),
+          )
+        yield assertTrue(upstream.get.url.queryParams.getAll("actorSignature") == Chunk("from-the-caller"))
       },
     )
 
@@ -2019,6 +2100,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     clientAddressSuite,
+    signedActorSuite,
     // Mirrors "returns 500 when an allow expression cannot be evaluated at all", but for the
     // inject-rule evaluator: a rule that cannot be evaluated is a configuration error, so
     // it fails the whole request with 500 rather than silently omitting the header.

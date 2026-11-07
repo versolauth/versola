@@ -190,7 +190,9 @@ final class CentralApi(
       withType = callerBody(method, path, body).fold(request)(_ => request.addHeader(Header.ContentType(MediaType.application.json)))
       withHeaders = extraHeaders.foldLeft(withType)((r, header) => r.addHeader(Header.Custom(header._1, header._2)))
       withBasic = credentials.fold(withHeaders)((user, secret) => withHeaders.addHeader(Authorization.Basic(user, secret)))
-      authorized = bearer.fold(withBasic)(token => withBasic.addHeader(Authorization.Bearer(token)))
+      authorized0 = bearer.fold(withBasic)(token => withBasic.addHeader(Authorization.Bearer(token)))
+      // what edge does to a call that states who made it: signs it, which is what lets central take it as said by edge
+      authorized <- EdgeSigning.forwarded(config, authorized0)
       connection = edgeSurface.flatten.fold(client)(client.ssl(_))
       // Without a certificate the connection still has to trust central's own, or it would fail on that
       // instead of on the missing certificate this exists to show.

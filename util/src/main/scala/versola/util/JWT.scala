@@ -131,6 +131,10 @@ object JWT:
     case JWT extends Type(JOSEObjectType.JWT)
     case AccessToken extends Type(JOSEObjectType("at+jwt"))
 
+    /** What an edge signs about the actor of a call it forwards ([[versola.util.audit.ActorSignature]]): a type of its own, so that it is
+      * not taken for another JWT the same edge key signs (the token it syncs with), and none of those for it. */
+    case ActorSignature extends Type(JOSEObjectType("versola-actor+jwt"))
+
   /** `PS256` and `ES256` are the two FAPI 2.0 permits for signed objects; `RS256` predates
     * them here and stays for deployments already issuing under it.
     */

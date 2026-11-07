@@ -14,7 +14,7 @@ groups:
           severity: warning
         annotations:
           summary: "Administrators' actions are recorded without an actor in {{ $labels.namespace }}"
-          description: "Calls to central's admin API reached it without the actor edge adds (reason=absent), or with one that is no user and no client (reason=invalid), for an hour: the audit rows say 'service' with no id. With reason=invalid_ip the actor is right and the address is not an address: the row has no ip. Either an edge has not read the registrations of the central resource yet (it syncs every few minutes after central's start), or something calls central around edge, or the inject rules of the central resource were changed."
+          description: "Calls to central's admin API reached it without the actor edge adds (reason=absent), or with one that is no user and no client (reason=invalid), for an hour: the audit rows say 'service' with no id. With reason=invalid_ip the actor is right and the address is not an address: the row has no ip. With reason=unsigned the call states an actor and carries no signature of an edge (an edge that does not sign yet, or a caller around edge), with reason=invalid_signature the signature does not verify (another key, a changed parameter or route, expired, clocks apart). Either an edge has not read the registrations of the central resource yet (it syncs every few minutes after central's start), or something calls central around edge, or the inject rules of the central resource were changed."
 
       - alert: AuditActorRefused
         expr: sum by (namespace, reason) (increase(audit_actor_refused_total[15m])) > 0

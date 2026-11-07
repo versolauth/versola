@@ -3,6 +3,7 @@ package versola.central.audit
 import versola.central.CentralConfig
 import versola.central.audit.AuditRoutes.Entry
 import versola.central.configuration.clients.ClientId
+import versola.central.configuration.edges.{EdgeGroupKind, EdgeId, EdgeService}
 import versola.central.configuration.tenants.TenantId
 import versola.central.users.UserId
 import versola.util.audit.*
@@ -35,6 +36,12 @@ import zio.logging.logContext
   * type it names (an `actorId` that is no user id, an `actorIp` that is no address) is treated as absent and counted too. The service of the request also finds the
   * actor in the [[AuditContext]], which is how `AuthClient` tells auth on whose behalf it calls.
   *
+  * ==Only what an edge signed is believed==
+  * A direct caller of central can write any query parameter, so what is stated of the actor counts only when edge says it: besides the
+  * parameters edge adds `actorSignature` ([[ActorSignature]]), a signature under its own key over the method, the path and the whole query,
+  * which central checks against the registration of the first-party edge it names. A call that states an actor and has none is
+  * `unsigned`, one that does not verify `invalid_signature`; both are a service's, with none of what they state, and are counted.
+  *
   * ==Requiring an actor==
   * With `audit.require-actor` on, a call of an administrator's route (any route that is not declared [[Entry.Internal]], the one
   * declaration that says a route has no administrator) that names no valid actor is refused with `401` and counted in
@@ -44,30 +51,33 @@ import zio.logging.logContext
 object AuditHook:
 
   /** The `sub` of the caller's token. */
-  val ActorIdParam = "actorId"
+  val ActorIdParam = ActorParams.Id
 
   /** The tenant of the caller's token. */
-  val ActorTenantParam = "actorTenantId"
+  val ActorTenantParam = ActorParams.Tenant
 
   /** The client the caller's token was issued to: equal to the actor for a client credentials token, whose subject is the client. */
-  val ActorClientParam = "actorClientId"
+  val ActorClientParam = ActorParams.Client
 
   /** The session the caller's token belongs to, when it carries one. */
-  val ActorSessionParam = "actorSessionId"
+  val ActorSessionParam = ActorParams.Session
 
   /** The address the call came from, as the edge that took it found it (its `client-ip` setting); absent where the edge does not
     * trust one. */
-  val ActorIpParam = "actorIp"
+  val ActorIpParam = ActorParams.Ip
+
+  /** The signature edge adds over what it says of the caller and the call ([[ActorSignature]]). */
+  val ActorSignatureParam = ActorParams.Signature
 
   /** Longest value of a header, a query parameter or a body field the log keeps. */
   private val MaxLength = 256
 
   /** The route with its record: what the route's own declaration says is written after it ran. */
-  def wrap[Env](route: AuditedRoute[Env]): Route[Env & AuditEvents & CentralConfig, Throwable] =
+  def wrap[Env](route: AuditedRoute[Env]): Route[Env & AuditEvents & CentralConfig & EdgeService, Throwable] =
     val pattern = route.route.routePattern.pathCodec.render
-    route.route.transform[Env & AuditEvents & CentralConfig](handler => audited(route.entry, pattern)(handler))
+    route.route.transform[Env & AuditEvents & CentralConfig & EdgeService](handler => audited(route.entry, pattern)(handler))
 
-  private def audited[Env1 <: AuditEvents & CentralConfig](entry: Entry, pattern: String)(
+  private def audited[Env1 <: AuditEvents & CentralConfig & EdgeService](entry: Entry, pattern: String)(
       handler: Handler[Env1, Response, Request, Response],
   ): Handler[Env1, Response, Request, Response] =
     entry match
@@ -92,16 +102,55 @@ object AuditHook:
 
   private def clipped(value: String): String = value.take(MaxLength)
 
-  /** The caller, from the parameters edge injected; a call that has none, or an `actorId` that is no user id and no client, is a
-    * service's and is counted. */
-  private def actorOf(request: Request): UIO[Actor] =
+  /** The caller: what edge says of them, if edge said it. A call that states an actor and carries no signature of an edge, or one that
+    * does not verify, is a service's whatever it states, and is counted (`unsigned`, `invalid_signature`), as is one that states none
+    * (`absent`), an `actorId` that is no user id and no client (`invalid`) and an address that is none (`invalid_ip`). */
+  private def actorOf(request: Request): URIO[EdgeService, Actor] =
+    val signature = queryValue(request, ActorSignatureParam).map(_.trim).filter(_.nonEmpty)
+    val statesActor = ActorParams.stated.exists(name => queryValue(request, name).exists(_.trim.nonEmpty))
+    val vouched: URIO[EdgeService, Option[String]] = signature match
+      case None => ZIO.succeed(Option.when(statesActor)("unsigned"))
+      case Some(token) => verified(request, token).fold(_ => Some("invalid_signature"), _ => None)
+    vouched.flatMap:
+      case Some(reason) =>
+        val actor = Actor(
+          actorType = CentralAudit.Actors.Service,
+          id = None,
+          tenantId = None,
+          clientId = None,
+          sessionId = None,
+          ip = None,
+          missing = Some(reason),
+        )
+        CentralAudit.actorMissing(actor.missing).as(actor)
+      case None => stated(request)
+
+  /** Whether `token` is the signature of a registered first-party edge over exactly this call. */
+  private def verified(request: Request, token: String): ZIO[EdgeService, ActorSignature.Invalid, Unit] =
+    for
+      edgeId <- ActorSignature.edgeOf(token)
+      edge <- ZIO.serviceWithZIO[EdgeService](_.find(EdgeId(edgeId))).someOrFail(ActorSignature.Invalid("unknown edge"))
+      // What a partner's edge may say is not decided by anything it presents (see `authorizeEdge`).
+      _ <- ZIO.fail(ActorSignature.Invalid("not a first-party edge")).unless(edge.groupKind == EdgeGroupKind.FirstParty)
+      keys <- ZIO.attempt(edge.asPublicKeys).orElseFail(ActorSignature.Invalid("keys"))
+      _ <- ActorSignature.verify(
+        token = token,
+        keys = keys,
+        method = request.method.name,
+        path = ActorSignature.pathOf(request.url.path.segments),
+        query = request.url.queryParams,
+      )
+    yield ()
+
+  /** The caller, from the parameters of a call that edge vouched for. */
+  private def stated(request: Request): UIO[Actor] =
     def param(name: String): Option[String] = queryValue(request, name).map(_.trim).filter(_.nonEmpty).map(clipped)
     val sub = param(ActorIdParam)
     val tenant = param(ActorTenantParam).map(TenantId(_))
     val client = param(ActorClientParam).map(ClientId(_))
     val session = param(ActorSessionParam)
-    val stated = param(ActorIpParam)
-    val ip = stated.flatMap(IpAddress.literal)
+    val said = param(ActorIpParam)
+    val ip = said.flatMap(IpAddress.literal)
     // A client credentials token's subject is the client itself.
     val isClient = sub.exists(id => client.contains(ClientId(id)))
     val admin = sub.filterNot(_ => isClient).flatMap(UserId.parse(_).toOption)
@@ -119,7 +168,7 @@ object AuditHook:
       missing = missing,
     )
     // An address that is no address is not recorded, and is counted as an actor that is not one is.
-    CentralAudit.actorMissing(missing) *> CentralAudit.actorMissing(Option.when(stated.isDefined && ip.isEmpty)("invalid_ip")).as(actor)
+    CentralAudit.actorMissing(missing) *> CentralAudit.actorMissing(Option.when(said.isDefined && ip.isEmpty)("invalid_ip")).as(actor)
 
   /** What a call that names no valid actor gets where `audit.require-actor` is on: the status of any unauthenticated call. The error
     * code is the request's, so a recorded call says why it was denied. */
@@ -132,7 +181,7 @@ object AuditHook:
 
   /** An administrator's route that is not recorded: served as it is, unless `audit.require-actor` is on and the call has no actor. With
     * it off (the default) nothing is read from the request. */
-  private def requiringActor[Env1 <: CentralConfig](
+  private def requiringActor[Env1 <: CentralConfig & EdgeService](
       handler: Handler[Env1, Response, Request, Response],
   ): Handler[Env1, Response, Request, Response] =
     Handler.scoped[Env1]:
@@ -143,7 +192,7 @@ object AuditHook:
             actorOf(request).flatMap: actor =>
               requiresActor(actor).flatMap(if _ then refusal(actor) else handler(request))
 
-  private def recording[Env1 <: AuditEvents & CentralConfig](
+  private def recording[Env1 <: AuditEvents & CentralConfig & EdgeService](
       handler: Handler[Env1, Response, Request, Response],
       pattern: String,
       change: Option[Entry.Change],
