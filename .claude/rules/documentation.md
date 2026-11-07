@@ -30,7 +30,7 @@ substitute for the PR.
 | Security profile rules (`standard`, `fapi2`) | `concepts/security-profiles` and the profile table in the affected `rfc/` pages |
 | Sender-constrained tokens, token lifetimes, session or cookie behaviour | `concepts/sender-constrained-tokens`, and `concepts/compromises` if a trade-off is added or removed |
 | `edge`: policies (CEL variables, effects), routes, native-app endpoints, configuration, certificates | `edge/*`, and `how-to/protect-an-api-with-edge`, `how-to/native-mobile-app` when their steps change |
-| A config key, env var, CLI flag, default, secret, migration or deployment step | `operations/*`, `getting-started/*` when the first-run path changes, and `deploy.md` or `develop.md` here |
+| A config key, env var, CLI flag, default, secret, migration or deployment step | `operations/*`, `getting-started/*` when the first-run path changes, and `deploy.md` or `develop.md` here only when a command or step of the standing procedure changes (a per-change upgrade note goes in the PR description, not in `deploy.md`) |
 | A public endpoint, parameter, status or error code | The OpenAPI YAML here (`openapi-specs.md`). The site only links to those files, so also check `reference/openapi` if a spec is added, moved or renamed |
 | A known limitation, trade-off or unsupported case appears or disappears | The affected page, and `concepts/compromises` for a deliberate trade-off |
 | A release (version, key changes) | `about/changelog` (key changes only, link to the GitHub release); the install and Kubernetes pages if image tags or the chart version are named there |

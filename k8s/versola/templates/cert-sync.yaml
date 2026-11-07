@@ -20,6 +20,10 @@ spec:
       labels:
         {{- include "versola.componentSelectorLabels" (dict "component" "cert-sync" "context" $) | nindent 8 }}
     spec:
+      {{- with (include "versola.podSecurityContext" (dict "root" $ "override" $sync.podSecurityContext) | trim) }}
+      securityContext:
+        {{- . | nindent 8 }}
+      {{- end }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -28,6 +32,10 @@ spec:
         - name: cert-sync
           image: {{ include "versola.image" (dict "global" .Values.global "svc" $sync "chart" .Chart) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- with (include "versola.containerSecurityContext" (dict "root" $ "override" $sync.containerSecurityContext) | trim) }}
+          securityContext:
+            {{- . | nindent 12 }}
+          {{- end }}
           args: ["cert-sync"]
           env:
             - name: CENTRAL_URL
@@ -45,9 +53,14 @@ spec:
             - name: certs
               mountPath: /certs
               readOnly: true
+            - name: tmp
+              mountPath: /tmp
           resources:
             {{- toYaml $sync.resources | nindent 12 }}
       volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
         - name: certs
           projected:
             sources:

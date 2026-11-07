@@ -286,8 +286,15 @@ object BootstrapService:
     InjectRule(InjectTarget.body, "clientId", "token.client_id"),
   )
 
+  /** A password change can ask to end the user's other sessions, and "other" needs the session the request
+    * came from: edge fills it from the token, so the browser cannot name another one. Empty when the token has
+    * no `sid`, which auth reads as "unknown" and refuses to end sessions on. */
+  private val accountPasswordBodyInjects = accountCallerBodyInjects :+
+    InjectRule(InjectTarget.body, "sessionId", "has(token.sid) ? token.sid : ''")
+
   private[versola] def accountCallerInjects(method: String, path: String) =
     if method == "GET" then accountCallerQueryInjects
+    else if method == "PATCH" && path == "/settings/password" then accountPasswordBodyInjects
     else accountCallerBodyInjects
 
   /** The caller may not revoke the session the page is being viewed from: edge compares the

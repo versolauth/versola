@@ -11,6 +11,16 @@ enum LimitStatus:
   case RateLimited(retryAfterSeconds: Long) // Short-window limit exceeded; resolves on its own when the window slides
   case Banned                               // Persistent ban applied (longest window exceeded)
 
+/** The outcome of [[SubmissionLimiter.acquireAll]]. */
+enum Acquisition:
+  /** One of the subjects is banned or over a window; no attempt was charged to any of them. `status` is never `Allowed`. */
+  case Denied(status: LimitStatus)
+
+  /** An attempt was charged to every subject. `after` is the worst status including it (the one a wrong answer is
+    * shown); `charges` is what [[SubmissionLimiter.refund]] takes back when the answer turns out to be right.
+    */
+  case Granted(after: LimitStatus, charges: List[Reservation.Granted])
+
 trait SubmissionLimiter:
   /** Returns the current limit status for the subject. */
   def isBanned(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus]
@@ -44,6 +54,24 @@ trait SubmissionLimiter:
     * denied rather than padding their counter for as long as it lasts.
     */
   def tryAcquire(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus]
+
+  /** Checks the limits of every subject and charges an attempt to each, atomically per subject, before the caller
+    * looks at the answer: [[Acquisition.Denied]] when any subject is already banned or over a window (the attempts
+    * already charged to the others are taken back), [[Acquisition.Granted]] otherwise.
+    *
+    * This is the gate for checking a secret. Reading the status first and recording a failure afterwards lets a
+    * burst of requests all pass the read, and each of them checks its guess; here the burst is cut off at the
+    * configured number of attempts. A caller that finds the answer right takes the charges back with [[refund]],
+    * so a correct password or code spends none of the budget; a wrong answer leaves the charge, and a request that
+    * fails in between leaves it too (the safe side). With no windows configured, or an unknown client, nothing is
+    * charged and the result is `Granted(Allowed, Nil)`.
+    */
+  def acquireAll(clientId: ClientId, subjects: List[String], challengeType: ChallengeType): Task[Acquisition]
+
+  /** Takes back the attempts charged by [[acquireAll]], for an answer that turned out to be right. Best effort: a failure is logged and
+    * leaves the attempts charged, it does not fail the caller.
+    */
+  def refund(charges: List[Reservation.Granted]): Task[Unit]
 
   /** Records an attempt for each subject via its own atomic read-modify-write, and returns the worst status. */
   def recordLimitAll(clientId: ClientId, subjects: List[String], challengeType: ChallengeType): Task[LimitStatus]
@@ -160,23 +188,23 @@ object SubmissionLimiter:
 
     /** Shared preamble for the write paths: resolves the windows configured for the challenge type,
       * the owning tenant, and the current instant, and hands them to `f`. Short-circuits to
-      * `Allowed` when no windows are configured or the client is unknown, matching the read-only
-      * checks above.
+      * `whenOff` (`Allowed`, for the callers that report a status) when no windows are configured or
+      * the client is unknown, matching the read-only checks above.
       */
-    private def withWindows(clientId: ClientId, challengeType: ChallengeType)(
-        f: (TenantId, SubmissionLimits, NonEmptyChunk[RateLimit], Instant) => Task[LimitStatus],
-    ): Task[LimitStatus] =
+    private def withWindows[A](clientId: ClientId, challengeType: ChallengeType, whenOff: => A)(
+        f: (TenantId, SubmissionLimits, NonEmptyChunk[RateLimit], Instant) => Task[A],
+    ): Task[A] =
       configService.getSubmissionLimits(clientId).flatMap: limits =>
         windowLimits(limits, challengeType) match
-          case None => ZIO.succeed(LimitStatus.Allowed)
+          case None => ZIO.succeed(whenOff)
           case Some(wLimits) =>
             configService.find(clientId).flatMap:
-              case None => ZIO.succeed(LimitStatus.Allowed)
+              case None => ZIO.succeed(whenOff)
               case Some(client) =>
                 Clock.instant.flatMap(now => f(client.tenantId, limitsFor(limits, challengeType), wLimits, now))
 
     override def recordLimit(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus] =
-      withWindows(clientId, challengeType): (tenantId, limits, wLimits, now) =>
+      withWindows[LimitStatus](clientId, challengeType, LimitStatus.Allowed): (tenantId, limits, wLimits, now) =>
         throttleRepo.recordAttempt(tenantId, subject, challengeType, now, wLimits, limits.banDurationSeconds)
 
     /** Claims one attempt: returns the status as of *before* this attempt, and only records it when
@@ -190,14 +218,36 @@ object SubmissionLimiter:
       * once denied rather than padding their counter for as long as it lasts.
       */
     override def tryAcquire(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus] =
-      withWindows(clientId, challengeType): (tenantId, limits, wLimits, now) =>
-        throttleRepo.find(tenantId, subject, challengeType).flatMap: existing =>
-          existing.fold(LimitStatus.Allowed)(ThrottlePolicy.evaluate(_, wLimits, now)) match
-            case LimitStatus.Allowed =>
-              throttleRepo.recordAttempt(tenantId, subject, challengeType, now, wLimits, limits.banDurationSeconds)
-            // Уже превышен лимит — сообщаем без записи, чтобы флуд по чужому credential
-            // не мог держать счётчик над порогом бесконечно.
-            case denied => ZIO.succeed(denied)
+      acquireAll(clientId, List(subject), challengeType).map:
+        case Acquisition.Denied(status) => status
+        // A granted attempt is an allowed request, as the contract above says: the status as of before this attempt. `after`,
+        // which counts it, would refuse the maxAttempts-th request (it is the one that reaches the limit) although it fits.
+        case Acquisition.Granted(_, _) => LimitStatus.Allowed
+
+    // The subjects are charged one after another, in one fixed order, and the first refusal stops it: a request that loses the first
+    // subject never touches the second. Charged in parallel, two requests of a burst could each win a last slot on a different subject, each
+    // find the other subject full and give its slot back, and the burst would be cut off below the configured number of attempts. In one order
+    // the winners of the first subject are the only ones to reach the second, so exactly the configured number get through.
+    override def acquireAll(clientId: ClientId, subjects: List[String], challengeType: ChallengeType): Task[Acquisition] =
+      withWindows[Acquisition](clientId, challengeType, Acquisition.Granted(LimitStatus.Allowed, Nil)): (tenantId, limits, wLimits, now) =>
+        def charge(remaining: List[String], granted: List[Reservation.Granted]): Task[Acquisition] =
+          remaining match
+            case Nil =>
+              val charges = granted.reverse
+              ZIO.succeed(Acquisition.Granted(charges.map(_.after).foldLeft(LimitStatus.Allowed)(worstStatus), charges))
+            case subject :: rest =>
+              throttleRepo.reserveAttempt(tenantId, subject, challengeType, now, wLimits, limits.banDurationSeconds).flatMap:
+                case charged: Reservation.Granted => charge(rest, charged :: granted)
+                // Charged to the subjects before this one and refused here: the request will not check anything, so it must not cost them.
+                case Reservation.Denied(status) => refund(granted).as(Acquisition.Denied(status))
+        charge(subjects.distinct.sorted, Nil)
+
+    // Best effort, on purpose: the answer was right and the user is signed in; a failed give-back leaves the attempt charged, which is the
+    // safe side, whereas failing here would answer a correct password or code with an error. Nothing an attacker can trigger.
+    override def refund(charges: List[Reservation.Granted]): Task[Unit] =
+      ZIO
+        .foreachParDiscard(charges)(throttleRepo.refundAttempt)
+        .catchAllCause(cause => ZIO.logWarningCause("Could not give back a throttle attempt for a right answer; it stays charged", cause))
 
     /** Batch variant of [[recordLimit]]: records a failed attempt for every subject via its own
       * atomic [[ChallengeThrottleRepository.recordAttempt]] call. Used to charge related subjects
@@ -208,7 +258,7 @@ object SubmissionLimiter:
       * row, so running them in parallel can't deadlock.
       */
     override def recordLimitAll(clientId: ClientId, subjects: List[String], challengeType: ChallengeType): Task[LimitStatus] =
-      withWindows(clientId, challengeType): (tenantId, limits, wLimits, now) =>
+      withWindows[LimitStatus](clientId, challengeType, LimitStatus.Allowed): (tenantId, limits, wLimits, now) =>
         ZIO
           .foreachPar(subjects)(throttleRepo.recordAttempt(tenantId, _, challengeType, now, wLimits, limits.banDurationSeconds))
           .map(_.foldLeft(LimitStatus.Allowed)(worstStatus))

@@ -1,5 +1,6 @@
 package versola.util
 
+import versola.util.revocation.RevocationConfig
 import zio.Duration
 import zio.http.{Method, URL}
 
@@ -21,8 +22,8 @@ case class CoreConfig(
     est: Option[CoreConfig.EstConfig] = None,
     // Limits on the channel that is not mutual TLS (#745); absent, the defaults of [[ClientAuthThrottle.Settings]] apply.
     limits: Option[versola.oauth.clientauth.ClientAuthThrottle.Settings] = None,
-    // The in-memory list of revoked access tokens (#729); absent, the defaults of [[CoreConfig.RevocationConfig]] apply.
-    revocation: Option[CoreConfig.RevocationConfig] = None,
+    // The in-memory list of revoked access tokens (#729); absent, the defaults of [[RevocationConfig]] apply.
+    revocation: Option[RevocationConfig] = None,
 ):
   def parOrDefault: CoreConfig.ParConfig = par.getOrElse(CoreConfig.ParConfig.default)
 
@@ -30,7 +31,7 @@ case class CoreConfig(
 
   def argon2OrDefault: Argon2Config = argon2.getOrElse(Argon2Config.default)
 
-  def revocationOrDefault: CoreConfig.RevocationConfig = revocation.getOrElse(CoreConfig.RevocationConfig())
+  def revocationOrDefault: RevocationConfig = revocation.getOrElse(RevocationConfig())
 
   /** The address this deployment answers `path` on, for whichever of its two listeners a
     * request arrived at -- RFC 9449 §4.3's `htu` is the one thing that has to know the
@@ -55,30 +56,6 @@ case class CoreConfig(
     s"${origin.stripSuffix("/")}$path"
 
 object CoreConfig:
-  /** How a replica keeps its in-memory list of revoked access tokens (`revocation` block). The
-    * defaults are those of edge's own list, which this one is modelled on.
-    *
-    * @param reloadInterval how often the list is reconciled with the database. Revocations normally
-    *                       arrive by notification, so this is the backstop for one that was lost.
-    * @param purgeInterval how often entries whose tokens have expired are dropped. Separate from
-    *                      the reload because it is the only thing that bounds what the replica
-    *                      holds and it needs no database, so it must not be tied to the cadence
-    *                      of something that can be slowed down or stopped by one.
-    * @param overlap how far back before the last row read a reconcile starts again. `revoked_at`
-    *                is set when a row is written but the row appears when its transaction
-    *                commits, so one that committed late would sit behind the cursor and never be
-    *                read. Re-reading the window costs nothing: applying a revocation twice is
-    *                applying it once.
-    * @param batchSize how many rows a single read returns. Bounds what one read holds, not what
-    *                  the replica ends up holding.
-    */
-  case class RevocationConfig(
-      reloadInterval: Duration = Duration.fromSeconds(600),
-      purgeInterval: Duration = Duration.fromSeconds(60),
-      overlap: Duration = Duration.fromSeconds(30),
-      batchSize: Int = 50000,
-  )
-
   case class BootstrapConfig(
       login: String,
       password: String,

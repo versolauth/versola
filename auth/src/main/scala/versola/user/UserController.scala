@@ -8,11 +8,13 @@ import versola.auth.model.CredentialId
 import versola.auth.model.Password
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
-import versola.oauth.challenge.password.model.PasswordReuseError
+import versola.oauth.challenge.password.model.{PasswordChangeEffect, PasswordReuseError}
+import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, TenantId}
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import versola.oauth.logout.LogoutService
-import versola.oauth.revocation.RevocationCause
+import versola.oauth.revocation.{RevocationCause, RevocationTerms}
+import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionId, SessionUnderUserAgent, UserAgentId, UserAgentRecord}
 import versola.role.model.RoleId
@@ -32,7 +34,7 @@ import java.time.Instant
 object UserController extends Controller:
   type Env =
     Tracing & UserRepository & CoreConfig & LogoutService & SessionService & ChallengeThrottleRepository & PasskeyRepository & PasswordService &
-      AuditEvents & AuditReportService
+      AuditEvents & AuditReportService & OAuthConfigurationService & AccessTokenRevocationService
 
   /** What an administrator did to an account, as central told auth: the actor is the administrator the call names (`actorId`) or the
     * `central` service, as noted in the request's context, the subject the user. `actor` says it is the service whatever the call names:
@@ -138,7 +140,11 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         repo <- ZIO.service[UserRepository]
         body <- request.body.asJsonFromCodec[UpdateUserRolesPayload]
-        _ <- repo.updateRoles(body.userId, body.tenantId, body.add, body.remove)
+        // A role in a token is a right, not a hint: taking one away refuses the tokens that still carry it, in the
+        // transaction that removes it. Adding one revokes nothing, and the refresh token is not touched either, which is
+        // how the user gets a token with the roles they hold now.
+        terms <- ZIO.serviceWithZIO[OAuthConfigurationService](_.accessTokenTtls).map(RevocationTerms.widest(RevocationCause.RolesChanged, _))
+        _ <- repo.updateRoles(body.userId, body.tenantId, body.add, body.remove, terms)
         _ <- audited(
           AuthAuditKinds.AccountRolesUpdated,
           body.userId,
@@ -312,7 +318,8 @@ object UserController extends Controller:
     }
 
   /** Revokes the offline access one client holds for the user: its live refresh tokens expire
-    * now, the user's sessions stay, and access tokens already issued run out on their own. */
+    * now, and so do the access tokens those grants already issued (`fam:` is recorded with each family, and the client's
+    * back channel is told). The user's sessions stay, so this is not a logout. */
   val revokeRefreshTokensEndpoint =
     Method.DELETE / "users" / "refresh-tokens" -> handler { (request: Request) =>
       for
@@ -324,7 +331,17 @@ object UserController extends Controller:
         _ <- actedBy(actorId)
         _ <- Observability.setUserId(userId.toString)
         _ <- Observability.setClientId(clientId)
-        revoked <- sessionService.revokeRefreshTokensByUserAndClient(userId, clientId)
+        families <- sessionService.revokeRefreshTokensByUserAndClient(userId, clientId)
+        revoked = families.size
+        client <- ZIO.serviceWithZIO[OAuthConfigurationService](_.find(clientId))
+        now <- Clock.instant
+        // The record is already committed; the push is for what checks a JWT on its own signature. A client this
+        // deployment no longer knows has no back channel to tell.
+        _ <- ZIO.foreachDiscard(client): client =>
+          ZIO.foreachDiscard(families): family =>
+            ZIO.serviceWithZIO[AccessTokenRevocationService](
+              _.announceFamily(client, family, subject = userId.toString, expiresAt = now.plus(client.accessTokenTtl)),
+            )
         _ <- audited(
           AuthAuditKinds.TokenRevoked,
           userId,
@@ -422,13 +439,16 @@ object UserController extends Controller:
             Observability.setError("invalid_expires_in").as(Response.text(TemporaryPasswordTtl.violation).status(Status.BadRequest))
           else
             for
-              password <- passwordService.resetPassword(body.userId, body.expiresInSeconds, body.channel)
+              // A reset ends every session of the user with the temporary password (see `PasswordService.resetPassword`);
+              // the relying parties of those sessions are told afterwards, best effort, as after any logout.
+              reset <- passwordService.resetPassword(body.userId, body.expiresInSeconds, body.channel)
+              _ <- ZIO.serviceWithZIO[LogoutService](_.announceEnded(reset.endedSessions, RevocationCause.PasswordChanged))
               _ <- audited(
                 AuthAuditKinds.AccountPasswordReset,
                 body.userId,
                 AuthAuditDetails.Account(via = "admin", detail = body.channel.map(_.toString)),
               )
-            yield password match
+            yield reset.password match
               case Some(plaintext) => Response.json(ResetPasswordResponse(plaintext).toJson)
               case None => Response.status(Status.NoContent)
       yield response
@@ -441,7 +461,9 @@ object UserController extends Controller:
         body <- request.body.asJsonFromCodec[SetPasswordPayload]
         _ <- actedBy(body.actorId)
         passwordService <- ZIO.service[PasswordService]
-        _ <- passwordService.setPassword(body.userId, Password(body.password))
+        // The tokens issued before the change are refused, recorded with the password; sessions and refresh tokens stay.
+        terms <- ZIO.serviceWithZIO[OAuthConfigurationService](_.accessTokenTtls).map(RevocationTerms.widest(RevocationCause.PasswordChanged, _))
+        _ <- passwordService.setPassword(body.userId, Password(body.password), PasswordChangeEffect.RefuseEarlierTokens(terms))
           .mapError:
             case PasswordReuseError(n) => RuntimeException(s"Password reuse: must differ from last $n passwords")
             case t: Throwable => t

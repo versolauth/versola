@@ -51,10 +51,18 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with (include "versola-edge.podSecurityContext" . | trim) }}
+      securityContext:
+        {{- . | nindent 8 }}
+      {{- end }}
       containers:
         - name: edge
           image: {{ printf "%s/%s/%s:%s" .Values.global.imageRegistry .Values.global.imageRepository .Values.image.repository (default .Chart.AppVersion .Values.image.tag) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- with (include "versola-edge.containerSecurityContext" . | trim) }}
+          securityContext:
+            {{- . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.port }}
@@ -89,6 +97,10 @@ spec:
               mountPath: /var/lib/versola-edge
             - name: diagnostics
               mountPath: /diagnostics
+            # The root filesystem is read-only; the JVM's scratch files and the certificate
+            # files the edge assembles before it hands them to the TLS stack go here.
+            - name: tmp
+              mountPath: /tmp
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -129,6 +141,9 @@ spec:
         - name: diagnostics
           emptyDir:
             sizeLimit: 1Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
         {{- if not $p.enabled }}
         # No persistence: the identity is lost with the pod. See values.yaml.
         - name: identity

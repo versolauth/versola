@@ -88,8 +88,10 @@ for c, svc in zip(pod["containers"], ["auth", "central", "edge"]):
     check(f"{svc}: its own database password", pw == {"name": "sec", "key": f"{svc}-postgres-password"})
     check(f"{svc}: no secret but the database password",
           [n for n, e in env.items() if "valueFrom" in e] == ["POSTGRES_PASSWORD"])
-    check(f"{svc}: only its own env.conf",
-          [(m["name"], m["mountPath"]) for m in c["volumeMounts"]] == [(f"config-{svc}", "/opt/versola-tools/config")])
+    # Plus the pod's scratch /tmp: the root filesystem is read-only (global.containerSecurityContext), and the
+    # JVM keeps its scratch files there. An emptyDir of the pod, it carries nothing of any service's.
+    check(f"{svc}: only its own env.conf (and /tmp)",
+          [(m["name"], m["mountPath"]) for m in c["volumeMounts"]] == [(f"config-{svc}", "/opt/versola-tools/config"), ("tmp", "/tmp")])
 
 vols = {v["name"]: v for v in pod["volumes"]}
 check("each env.conf is mounted as <service>.conf from the service's own Secret",
