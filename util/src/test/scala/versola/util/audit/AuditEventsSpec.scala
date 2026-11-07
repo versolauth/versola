@@ -481,13 +481,18 @@ object AuditEventsSpec extends UnitSpecBase:
             _ <- events.record(draft())
             _ <- f.started.take
             _ <- events.record(draft()) *> events.record(draft())
+            blockedBefore <- counter("audit_events_blocked_total", central)
             waiting <- events.record(draft()).fork
-            _ <- settle
+            // Interrupted the moment the caller is counted as blocked, which is as close as a test gets to the instant before it
+            // is waiting: the window between handing the offer to its own fiber and being able to take that fiber along is there.
+            _ <- eventually(counter("audit_events_blocked_total", central))(_ > blockedBefore)
             _ <- waiting.interrupt
             _ <- f.gate.succeed(())
             written <- until(f, 2).map(_.flatten)
-          yield assertTrue(written.size == 3)
-      },
+            _ <- settle *> TestClock.adjust(1.second) *> settle
+            later <- f.written.get.map(_.flatten)
+          yield assertTrue(written.size == 3, later.size == 3)
+      } @@ TestAspect.nonFlaky(200),
       test(
         "an interruption of a caller that waits inside an uninterruptible region does not lose its event: the wait goes on and the event is queued",
       ) {
