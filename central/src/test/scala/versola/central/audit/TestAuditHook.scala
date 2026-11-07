@@ -8,6 +8,7 @@ import versola.central.configuration.clients.{AuthorizationPresetController, Cli
 import versola.central.configuration.delivery.DeliverySettingsController
 import versola.central.configuration.details.AuthorizationDetailTypeController
 import versola.central.configuration.edges.EdgeController
+import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.forms.FormController
 import versola.central.configuration.jwks.JwksController
 import versola.central.configuration.locales.LocaleController
@@ -54,8 +55,8 @@ object TestAuditHook:
       ServiceController.endpoints,
     ).flatten.map(e => (e.route.routePattern.method, e.route.routePattern.pathCodec.render) -> e.entry).toMap
 
-  val middleware: Middleware[AuditEvents & CentralConfig] = new Middleware[AuditEvents & CentralConfig]:
-    def apply[Env1 <: AuditEvents & CentralConfig, Err](routes: Routes[Env1, Err]): Routes[Env1, Err] =
+  val middleware: Middleware[AuditEvents & CentralConfig & EdgeService] = new Middleware[AuditEvents & CentralConfig & EdgeService]:
+    def apply[Env1 <: AuditEvents & CentralConfig & EdgeService, Err](routes: Routes[Env1, Err]): Routes[Env1, Err] =
       Routes.fromIterable(
         routes.routes.map: route =>
           val key = (route.routePattern.method, route.routePattern.pathCodec.render)

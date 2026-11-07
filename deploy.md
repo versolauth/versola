@@ -832,10 +832,22 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   alone); until edge has synced them, admin actions are recorded without an actor. Edge's sync is the refresh interval (5 minutes by
   default).
 
+  What edge states of the caller is taken only from an edge: besides the parameters it adds `actorSignature`, a compact JWS under the
+  edge's own key (the one whose public half central holds in the edge's registration, `rotate-key` included: a signature by the previous
+  key verifies until `DELETE /configuration/edges/old-key`), over the method, the path and every query parameter of the call, valid
+  for 60 seconds. Central verifies it against the registration of the first-party edge it names; a call that states an actor and carries
+  none (`unsigned`), or one that does not verify (`invalid_signature`: another key, another edge, a parameter or the route changed, expired,
+  a partner's edge), is recorded as made by a `service` with no id, tenant, client, session or address, and counted in
+  `audit_actor_missing_total{reason}`; with `audit.require-actor` it is refused. So anything that reaches central around edge can no
+  longer say who it is. Central must be reached by the path edge signed, and edge and central need clocks within about 30 seconds of
+  each other. During an upgrade an edge that does not sign yet makes central record its calls as a service's (`unsigned`) until it is
+  upgraded; upgrade the edges first, or accept that window. The signature covers who edge says the caller is and the call's query, not
+  its body.
+
   `audit.require-actor` (optional; absent or `false` keeps the behaviour above) makes central refuse such a call with `401` instead of
   recording it as a service's: every route of the admin API except the ones that are not an administrator's call (auth's syncs, the
   certificate flows `/est/*` and `/users/registrations`, the `/service/*` tooling) needs a valid `actorId` (a user, or the client a
-  client-credentials token was issued to). The refusal is counted in `audit_actor_refused_total{reason}` (`absent`, `invalid`) and, for a
+  client-credentials token was issued to). The refusal is counted in `audit_actor_refused_total{reason}` (`absent`, `invalid`, `unsigned`, `invalid_signature`) and, for a
   change, recorded as a denial with the reason `actor_required`. Turn it on once every edge has synced the registrations of the `central`
   resource and nothing calls central around edge; a script that holds the central resource secret and calls central directly is refused.
 

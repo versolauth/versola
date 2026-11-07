@@ -76,8 +76,11 @@ info:
     The administrator is the one edge has authenticated. Edge adds query parameters to every call and removes
     any a client sent under the same names: `actorId` (the `sub` of the access token), `actorTenantId` (its tenant),
     `actorClientId` (the client it was issued to), `actorSessionId` (the session, when the token has one) and `actorIp`
-    (the address the call came from, where the edge's own `client-ip` setting finds one; it is the `ip` of the row). A call that
-    carries none, from a caller that reaches central without edge, is recorded as made by a service, unless the deployment sets
+    (the address the call came from, where the edge's own `client-ip` setting finds one; it is the `ip` of the row), and signs them:
+    `actorSignature` is a compact JWS under the edge's own key (the public half is in the edge's registration) over the method,
+    the path and every other query parameter of the call, valid for 60 seconds. Only what a registered first-party edge signed is
+    taken as said by an edge: a call that states an actor without a signature, or with one that does not verify, is treated as one
+    that states none. A call that carries none, from a caller that reaches central without edge, is recorded as made by a service, unless the deployment sets
     `audit.require-actor`: then every route of this API except the ones that are not an administrator's call (auth's syncs, the
     certificate flows, the `/service` tooling) refuses it with `401`. Central passes the administrator on to auth
     as `actorId` (a query parameter, or a field of the body) and the address as `actorIp` (a query parameter) on the calls it

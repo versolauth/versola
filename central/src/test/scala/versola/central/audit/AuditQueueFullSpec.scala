@@ -2,6 +2,7 @@ package versola.central.audit
 
 import io.opentelemetry.api
 import versola.central.audit.CentralAudit
+import versola.central.configuration.edges.EdgeService
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.SecureRandom
 import versola.util.audit.*
@@ -68,11 +69,12 @@ object AuditQueueFullSpec extends ZIOSpecDefault:
       ran <- Ref.make(0)
       client <- ZIO.service[Client]
       routes = Routes(createClient -> handler((_: Request) => ran.update(_ + 1).as(Response.text("ok"))))
-      _ <- TestClient.addRoutes((routes @@ TestAuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig](
+      _ <- TestClient.addRoutes((routes @@ TestAuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig, EdgeService](
         events,
         TestCentralConfig.config,
+        TestActor.registered,
       )))
-      statuses <- ZIO.foreach(1 to 10)(n => client.batched(changeRequest(s"c$n")).orDie.map(_.status))
+      statuses <- ZIO.foreach(1 to 10)(n => TestActor.signed(changeRequest(s"c$n")).flatMap(client.batched(_).orDie.map(_.status)))
       handled <- ran.get
     yield (statuses, handled)
 
