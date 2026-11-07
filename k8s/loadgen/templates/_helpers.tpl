@@ -147,3 +147,16 @@ is `kubectl get pods -o wide`.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Pod- and container-level securityContext (the YAML body, no key), for every pod this chart renders. A
+component's own value, when non-empty, REPLACES `global.podSecurityContext` / `global.containerSecurityContext`,
+the same rule as placement. Empty global values render nothing. Defaults: values.yaml, `global`.
+*/}}
+{{- define "loadgen.podSecurityContext" -}}
+{{- with (.override | default .root.Values.global.podSecurityContext) }}{{ toYaml . }}{{- end }}
+{{- end -}}
+
+{{- define "loadgen.containerSecurityContext" -}}
+{{- with (.override | default .root.Values.global.containerSecurityContext) }}{{ toYaml . }}{{- end }}
+{{- end -}}

@@ -1459,6 +1459,14 @@ jobs:
         if: ${{ !cancelled() }}
         run: .github/scripts/check-chart-ingress.sh
 
+      # A securityContext is the one thing a chart template can lose silently: a workload copied from an old one, a
+      # helper refactored, a `{}` left in values each render a valid manifest that runs as root. The script renders
+      # the three charts and fails if any container of any pod lacks runAsNonRoot, a read-only root filesystem, dropped
+      # capabilities, the default seccomp profile or its /tmp volume. PyYAML and helm only, no cluster.
+      - name: Check chart pod security contexts
+        if: ${{ !cancelled() }}
+        run: .github/scripts/check-chart-security-context.sh
+
   # Separate from helm-checks on purpose. That job installs only Helm and
   # reports in seconds; this one runs gen-env.scala through scala-cli, which
   # has to compile it first, so folding the two together would slow the fast

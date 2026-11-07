@@ -1545,6 +1545,32 @@ move together and `configure` is re-run)
 - CAs are split by role (server, edge, client). Whether the server role is its own intermediate is not
   decided.
 
+### Containers run as an unprivileged user
+
+The `versola-auth`, `versola-central`, `versola-edge`, `versola-loadgen` and `versola-mockapi` images run as uid/gid
+`10001` (`USER` in `docker/Dockerfile.*`), not root. The application tree stays root-owned and read-only to that user. What
+the services write is `/diagnostics` (heap dump, GC log and JVM crash log: `-XX:HeapDumpPath`, `-Xlog`, `-XX:ErrorFile`), `/tmp` (the
+JVM's performance file and the native library of the crypto provider, which the JVM maps from there, so it must allow execution)
+and, for an edge, its identity directory (`/var/lib/versola-edge`, a volume). `/diagnostics` and `/var/lib/versola-edge` exist in
+the image owned by `10001`, so a *new* named volume mounted there takes that owner; a volume that already exists keeps the owner it has.
+
+**Compose (`versola-cli`).** The generated `central`, `auth` and `edge` set `user: "0:0"` explicitly (the mutual-TLS keys that
+`mtls-init` writes `0600`, step-ca's output and the diagnostics volumes belong to root), together with `cap_drop: [ALL]` and
+`DAC_OVERRIDE` added back, `no-new-privileges`, `read_only: true` with `/tmp` as an `exec` tmpfs, and `pids_limit: 4096`. No
+`mem_limit` is set: the heap and non-heap ceilings are in `JAVA_OPTS` (see `Dockerfile.auth`). Replicas (`replicas.yml`) inherit
+all of it through `extends`. A compose file that starts these images without `user:` runs them as `10001`.
+
+**Helm charts.** Every pod the charts render (`k8s/versola` including the console, certificate sync and migration Job,
+`k8s/versola-edge`, `k8s/loadgen`) gets, from `global.podSecurityContext` / `global.containerSecurityContext` (`podSecurityContext` /
+`containerSecurityContext` in `k8s/versola-edge`): `runAsNonRoot`, uid/gid `10001` (the console runs as nginx's `101`),
+`fsGroup` the same, `seccompProfile: RuntimeDefault`, `allowPrivilegeEscalation: false`, all capabilities dropped and a read-only
+root filesystem, with `emptyDir` volumes at `/tmp` (and, for nginx, `/run` and `/var/cache/nginx`). Set the blocks to `null` (in a
+values file: `global.podSecurityContext: null`) to render no context, for a cluster whose admission policy sets one itself; `{}` does
+not do it, because Helm merges maps and keeps the defaults. A component's own value replaces the global one. Whether the edge's
+`identity` volume is writable to `10001` rests on the cluster's storage: `fsGroup` is applied by the kubelet to volumes of drivers
+that support it, and not to others (`hostPath`, and so the default `local-path` class of a kind cluster, NFS, a CSI driver with
+`fsGroupPolicy: None`); on those, own the files by `10001:10001` yourself.
+
 ### Request bodies state every field (breaking for API clients)
 
 `central`'s admin API no longer fills in values a caller leaves out. A field that has no meaning when missing used to
