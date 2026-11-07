@@ -12,16 +12,23 @@ import java.util.concurrent.atomic.AtomicLong
   * time, the hook gives up part-way and the drains after it never run. Summing a number per finalizer has to be redone for each one
   * that is added; a shared deadline does not.
   *
-  * [[begin]] is the first thing the shutdown does (it is registered last, so it runs first); a drain then waits for at most
-  * `min(its own bound, what is left)`. The drains keep the order they already had, so the ones that run first get their whole bound
+  * [[begin]] is the first thing the shutdown does: [[VersolaApp]] calls it when the fiber that holds the application server open is
+  * interrupted, which is before that server stops and waits for its requests in flight ([[VersolaApp.ServerDrainTimeout]], so that
+  * wait is inside the budget); a drain then waits for at most `min(its own bound, what is left)`. The drains keep the order they already had, so the ones that run first get their whole bound
   * and the last ones what remains, down to nothing: a drain with no time left does not start.
   *
   * Without [[begin]], which is how every unit spec and a service that was not started through [[VersolaApp]] runs, [[allowed]]
   * returns the drain's own bound unchanged.
+  *
+  * The clock is one per JVM, not per [[VersolaApp]]: a second app started in the same JVM inherits a clock the first one started
+  * (every service here is one app per process, and the specs call `reset`).
   */
 object ShutdownBudget:
 
-  /** Left unspent: the JVM needs to flush and halt after the finalizers, and a timer is not exact. */
+  /** Left unspent: the JVM needs to flush and halt after the finalizers, and a timer is not exact. It also covers what is outside the
+    * budget: the audit writer's stop wait (`AuditEvents.WriterStopWait`, 1 s) and the secondary servers' waits
+    * ([[VersolaApp.SecondaryServerDrainTimeout]], 250 ms each).
+    */
   val Margin: Duration = 2.seconds
 
   /** The time the finalizers share. */

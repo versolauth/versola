@@ -1,5 +1,6 @@
 package versola.util.http
 
+import versola.util.audit.AuditEvents
 import zio.*
 import zio.test.*
 
@@ -30,7 +31,7 @@ object ShutdownBudgetSpec extends ZIOSpecDefault:
       yield assertTrue(
         first == 5.seconds,
         second == 3.seconds, // 13 s are shared; 10 s have passed
-        third == 1.second, // not 5: 12 s have passed
+        third == 1.second,   // not 5: 12 s have passed
         last == Duration.Zero,
       )
     } @@ TestAspect.after(ZIO.succeed(ShutdownBudget.reset())),
@@ -60,5 +61,17 @@ object ShutdownBudgetSpec extends ZIOSpecDefault:
       // (BackChannelOutbox 10 s, the audit stop 1 s + 5 s, the antifraud events, lists and counters 5 s each).
       val own = 10.seconds + 1.second + 5.seconds + 5.seconds + 5.seconds + 5.seconds
       assertTrue(own > VersolaApp.GracefulShutdownTimeout, ShutdownBudget.Total <= VersolaApp.GracefulShutdownTimeout)
+    },
+    test(
+      "what is outside the shared budget fits the margin: the server's wait is inside it, the writer's stop wait and the secondary servers' are not",
+    ) {
+      // The main server's wait comes out of Total (the clock starts before the server stops), so the drains see Total less ServerDrainTimeout.
+      val worstCase = ShutdownBudget.Total
+        .plus(AuditEvents.WriterStopWait)
+        .plus(VersolaApp.SecondaryServerDrainTimeout.multipliedBy(3))
+      assertTrue(
+        VersolaApp.ServerDrainTimeout < ShutdownBudget.Total,
+        worstCase <= VersolaApp.GracefulShutdownTimeout,
+      )
     },
   ) @@ TestAspect.sequential
