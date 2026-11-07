@@ -96,7 +96,7 @@ object JwksService:
       .map(privateKey => record.copy(privateKey = privateKey))
 
   private def toJwks(records: Vector[JwksRecord]): Json.Obj =
-    Json.Obj("keys" -> Json.Arr(records.map(_.jwk)*))
+    Json.Obj("keys" -> Json.Arr(records.map(record => JwkValidation.publicProjection(record.jwk))*))
 
   case class Impl(
       cache: ReloadingCache[Vector[JwksRecord]],

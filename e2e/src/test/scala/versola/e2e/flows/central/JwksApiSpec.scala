@@ -6,6 +6,8 @@ import zio.http.Status
 import zio.json.ast.Json
 import zio.test.*
 
+import scala.jdk.CollectionConverters.*
+
 /** The central-owned JWKS: generating a keypair, reading back which keys can sign, choosing a
   * tenant's signing key, and refusing to delete a key still in use.
   *
@@ -115,6 +117,28 @@ object JwksApiSpec extends CentralApiSpec:
           .label(s"the published JWK leaks private parameters ${leaked.mkString(", ")}") &&
         assertTrue(generated.forall(key => List("kty", "use", "kid", "alg").forall(key.has)))
           .label("a generated JWK must be published with kty/use/kid/alg")
+    },
+    test("a public key can be imported and is published as given, a private one is refused and stored nowhere") {
+      val full = com.nimbusds.jose.jwk.gen.RSAKeyGenerator(2048).generate()
+      def jwk(key: com.nimbusds.jose.jwk.JWK, kid: String): Json.Obj =
+        Json.Obj(key.toJSONObject.nn.asScala.toList.map((name, value) => name -> Json.Str(String.valueOf(value))).filter(_._1 != "kid")*)
+          .add("kid", Json.Str(kid))
+      for
+        central <- api
+        suffix <- Random.nextUUID.map(_.toString.take(8))
+        publicKid = s"import-pub-$suffix"
+        privateKid = s"import-prv-$suffix"
+        privateRefused <- central.post(jwksPath, jwk(full, privateKid))
+        publicAccepted <- central.post(jwksPath, jwk(full.toPublicJWK.nn, publicKid).add("alg", Json.Str("PS256")))
+        listed <- central.get(jwksPath).flatMap(_.items("keys"))
+        _ <- central.delete(jwksPath, "kid" -> publicKid)
+        imported = listed.filter(_.str("kid").contains(publicKid))
+        leaked = imported.flatMap(_.fields.collect { case (name, _) if privateKeyMembers(name) => name })
+      yield assertTrue(privateRefused.status == Status.BadRequest)
+        .label("a JWK that carries private members must be refused, since the document is published") &&
+        assertTrue(!listed.exists(_.str("kid").contains(privateKid)))
+          .label("a refused key must not be stored") &&
+        assertTrue(publicAccepted.status == Status.Created, imported.nonEmpty, leaked.isEmpty)
     },
     test("an unsupported alg is rejected and generates nothing") {
       for
