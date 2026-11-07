@@ -1,14 +1,14 @@
 package versola.central.configuration.roles
 
 import versola.central.audit.AuditHook
-import versola.central.configuration.PatchPermissions
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.{CreateRoleRequest, UpdateRoleRequest}
 import versola.central.users.{UpdateUserRolesRequest, UserId, UserService}
 import versola.util.http.Observability
 import zio.http.{Request, Response, Status}
-import zio.{IO, ZIO}
+import zio.{IO, UIO, ZIO}
 
 import scala.util.control.NoStackTrace
 
@@ -35,6 +35,9 @@ import scala.util.control.NoStackTrace
   */
 object RoleGrantGuard:
 
+  /** What the checks read. */
+  type Env = RoleService & UserService
+
   /** An administrator who is a user. `tenantId` is the tenant of their token; it is absent only when edge did not send it, which
     * is refused, since their permissions cannot then be known. */
   case class Actor(userId: UserId, tenantId: Option[TenantId])
@@ -54,15 +57,15 @@ object RoleGrantGuard:
       .flatMap(UserId.parse(_).toOption)
       .map(userId => Actor(userId, param(request, AuditHook.ActorTenantParam).map(TenantId(_))))
 
-  /** Runs `check` for the administrator behind the request; a call that is not an administrator's is not checked. */
-  def enforce(request: Request)(
-      check: Actor => ZIO[RoleService & UserService, Denied | Throwable, Unit],
-  ): ZIO[RoleService & UserService, Denied | Throwable, Unit] =
-    actorOf(request).fold(ZIO.unit)(check)
+  /** The routes' answer to a refused change: `403` with the reason, recorded as the request's error (the audit log records it as
+    * denied). Used as `.catchSome(RoleGrantGuard.refused)` on the handler. */
+  val refused: PartialFunction[Throwable, UIO[Response]] =
+    case denied: Denied =>
+      Observability.setError("role_grant_refused", Some(denied.message)).as(Response.text(denied.message).status(Status.Forbidden))
 
-  /** The answer to a refused change: `403` with the reason, recorded as the request's error. The audit log records it as denied. */
-  def refusal(denied: Denied): ZIO[Any, Nothing, Response] =
-    Observability.setError("role_grant_refused", Some(denied.message)).as(Response.text(denied.message).status(Status.Forbidden))
+  /** Runs `check` for the administrator behind the request; a call that is not an administrator's is not checked. */
+  private def forActor(request: Request)(check: Actor => ZIO[Env, Throwable, Unit]): ZIO[Env, Throwable, Unit] =
+    actorOf(request).fold(ZIO.unit)(check)
 
   /** What `needed` holds that `held` does not. */
   def missing(held: Set[Permission], needed: Set[Permission]): Set[Permission] = needed -- held
@@ -70,7 +73,7 @@ object RoleGrantGuard:
   private def describe(permissions: Set[Permission]): String = permissions.toList.sorted.mkString(", ")
 
   /** The permissions the administrator holds now. */
-  private def held(actor: Actor): ZIO[RoleService & UserService, Denied | Throwable, Set[Permission]] =
+  private def held(actor: Actor): ZIO[Env, Throwable, Set[Permission]] =
     for
       tenantId <-
         ZIO.fromOption(actor.tenantId).orElseFail(Denied("the tenant of the caller's token is unknown, so what they hold cannot be checked"))
@@ -79,14 +82,14 @@ object RoleGrantGuard:
     yield permissions
 
   /** `PATCH /users/roles`. */
-  def checkAssignment(actor: Actor, request: UpdateUserRolesRequest): ZIO[RoleService & UserService, Denied | Throwable, Unit] =
-    val changed = request.add ++ request.remove
+  def checkAssignment(request: Request, body: UpdateUserRolesRequest): ZIO[Env, Throwable, Unit] = forActor(request): actor =>
+    val changed = body.add ++ body.remove
     for
-      _ <- ZIO.fail(Denied("a user may not change their own roles")).when(request.userId == actor.userId && changed.nonEmpty)
+      _ <- ZIO.fail(Denied("a user may not change their own roles")).when(body.userId == actor.userId && changed.nonEmpty)
       _ <- ZIO.unless(changed.isEmpty):
         for
           actorHeld <- held(actor)
-          roles <- ZIO.foreach(changed.toList)(id => ZIO.serviceWithZIO[RoleService](_.findRole(request.tenantId, id)).map(id -> _))
+          roles <- ZIO.foreach(changed.toList)(id => ZIO.serviceWithZIO[RoleService](_.findRole(body.tenantId, id)).map(id -> _))
           beyond = roles.flatMap((id, role) => role.map(r => id -> missing(actorHeld, r.permissions))).filter(_._2.nonEmpty)
           _ <- ZIO.fail(
             Denied(
@@ -98,30 +101,29 @@ object RoleGrantGuard:
     yield ()
 
   /** `POST /configuration/roles`: a role is created with permissions the caller holds. */
-  def checkCreate(actor: Actor, permissions: Set[Permission]): ZIO[RoleService & UserService, Denied | Throwable, Unit] =
-    held(actor).flatMap(actorHeld => refuseBeyond(actorHeld, permissions, "a role may be created only with permissions the caller holds"))
+  def checkCreate(request: Request, body: CreateRoleRequest): ZIO[Env, Throwable, Unit] = forActor(request): actor =>
+    held(actor).flatMap(actorHeld => refuseBeyond(actorHeld, body.permissions, "a role may be created only with permissions the caller holds"))
 
   /** `PUT /configuration/roles`: the permissions added are held by the caller, and so is everything the role holds now. */
-  def checkUpdate(
-      actor: Actor,
-      tenantId: TenantId,
-      id: RoleId,
-      patch: PatchPermissions,
-  ): ZIO[RoleService & UserService, Denied | Throwable, Unit] =
+  def checkUpdate(request: Request, body: UpdateRoleRequest): ZIO[Env, Throwable, Unit] = forActor(request): actor =>
     for
       actorHeld <- held(actor)
-      current <- ZIO.serviceWithZIO[RoleService](_.findRole(tenantId, id)).map(_.fold(Set.empty[Permission])(_.permissions))
+      current <- currentPermissions(body.tenantId, body.id)
       _ <- refuseBeyond(actorHeld, current, "a role may be changed only if it holds nothing the caller does not hold")
-      _ <- refuseBeyond(actorHeld, patch.add, "a role may be given only permissions the caller holds")
+      _ <- refuseBeyond(actorHeld, body.permissions.add, "a role may be given only permissions the caller holds")
     yield ()
 
   /** `DELETE /configuration/roles`. */
-  def checkDelete(actor: Actor, tenantId: TenantId, id: RoleId): ZIO[RoleService & UserService, Denied | Throwable, Unit] =
+  def checkDelete(request: Request, tenantId: TenantId, id: RoleId): ZIO[Env, Throwable, Unit] = forActor(request): actor =>
     for
       actorHeld <- held(actor)
-      current <- ZIO.serviceWithZIO[RoleService](_.findRole(tenantId, id)).map(_.fold(Set.empty[Permission])(_.permissions))
+      current <- currentPermissions(tenantId, id)
       _ <- refuseBeyond(actorHeld, current, "a role may be deleted only if it holds nothing the caller does not hold")
     yield ()
+
+  /** What the role holds now, read from the repository; a role nobody has defined holds nothing. */
+  private def currentPermissions(tenantId: TenantId, id: RoleId): ZIO[Env, Throwable, Set[Permission]] =
+    ZIO.serviceWithZIO[RoleService](_.findRole(tenantId, id)).map(_.fold(Set.empty[Permission])(_.permissions))
 
   private def refuseBeyond(actorHeld: Set[Permission], needed: Set[Permission], rule: String): IO[Denied, Unit] =
     val beyond = missing(actorHeld, needed)

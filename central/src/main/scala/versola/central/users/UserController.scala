@@ -240,10 +240,10 @@ object UserController extends AuditedController:
         _ <- Audit.target(body.userId)
         _ <- Audit.tenant(body.tenantId)
         _ <- Audit.changed(body, "userId", "tenantId")
-        _ <- RoleGrantGuard.enforce(request)(RoleGrantGuard.checkAssignment(_, body))
+        _ <- RoleGrantGuard.checkAssignment(request, body)
         _ <- service.updateRoles(body)
       yield Response.status(Status.Accepted))
-        .catchSome { case denied: RoleGrantGuard.Denied => RoleGrantGuard.refusal(denied) }
+        .catchSome(RoleGrantGuard.refused)
     }
 
   /** `userId` alone ends every session, as it always did; `id` with `sessionId` ends that

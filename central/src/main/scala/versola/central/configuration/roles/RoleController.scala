@@ -32,10 +32,10 @@ object RoleController extends AuditedController:
         body <- request.bodyAs[CreateRoleRequest]
         _ <- Audit.target(body.id)
         _ <- Audit.tenant(body.tenantId)
-        _ <- RoleGrantGuard.enforce(request)(RoleGrantGuard.checkCreate(_, body.permissions))
+        _ <- RoleGrantGuard.checkCreate(request, body)
         role <- service.createRole(body)
       yield Response.status(Status.Created))
-        .catchSome { case denied: RoleGrantGuard.Denied => RoleGrantGuard.refusal(denied) }
+        .catchSome(RoleGrantGuard.refused)
     }
 
   val updateRoleEndpoint =
@@ -47,10 +47,10 @@ object RoleController extends AuditedController:
         _ <- Audit.target(body.id)
         _ <- Audit.tenant(body.tenantId)
         _ <- Audit.changed(body, "tenantId", "id")
-        _ <- RoleGrantGuard.enforce(request)(RoleGrantGuard.checkUpdate(_, body.tenantId, body.id, body.permissions))
+        _ <- RoleGrantGuard.checkUpdate(request, body)
         _ <- service.updateRole(body)
       yield Response.status(Status.NoContent))
-        .catchSome { case denied: RoleGrantGuard.Denied => RoleGrantGuard.refusal(denied) }
+        .catchSome(RoleGrantGuard.refused)
     }
 
   val deleteRoleEndpoint =
@@ -62,13 +62,13 @@ object RoleController extends AuditedController:
         _ <- Audit.tenant(tenantId)
         roleId <- request.url.queryZIO[RoleId]("roleId")
         _ <- Audit.target(roleId)
-        _ <- RoleGrantGuard.enforce(request)(RoleGrantGuard.checkDelete(_, tenantId, roleId))
+        _ <- RoleGrantGuard.checkDelete(request, tenantId, roleId)
         _ <- service.deleteRole(tenantId, roleId)
       yield Response.status(Status.NoContent))
         .catchSome:
-          case denied: RoleGrantGuard.Denied => RoleGrantGuard.refusal(denied)
-          case error: RoleService.RoleInUseError =>
-            ZIO.succeed(Response.json(Json.Obj("message" -> Json.Str(error.getMessage)).toJson).status(Status.Conflict))
+          RoleGrantGuard.refused.orElse:
+            case error: RoleService.RoleInUseError =>
+              ZIO.succeed(Response.json(Json.Obj("message" -> Json.Str(error.getMessage)).toJson).status(Status.Conflict))
     }
 
   val getAllRolesEndpoint =
