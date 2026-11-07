@@ -7,7 +7,10 @@ import versola.oauth.conversation.model.{AuthId, ConversationStep}
 import versola.oauth.conversation.otp.model.{SendOtpResult, SubmitOtpResult}
 import versola.user.model.UserId
 import versola.util.{Email, EnvName, Phone}
-import zio.{Task, UIO, ZIO, ZLayer}
+import zio.{Clock, Duration, Task, UIO, ZIO, ZLayer, durationInt}
+
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 
 trait OtpService:
   def prepareOtp(
@@ -29,6 +32,9 @@ trait OtpService:
   def checkOtp(otp: ConversationStep.Otp, code: OtpCode): UIO[SubmitOtpResult]
 
 object OtpService:
+  /** How long a code is good for after it was sent. */
+  val Lifetime: Duration = 10.minutes
+
   def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   class Impl(
@@ -84,10 +90,15 @@ object OtpService:
           ZIO.unit
 
     override def checkOtp(otp: ConversationStep.Otp, code: OtpCode): UIO[SubmitOtpResult] =
-      otp.real match
-        case None =>
-          ZIO.succeed(SubmitOtpResult.Failure)
-        case Some(real) if real.code == code =>
-          ZIO.succeed(SubmitOtpResult.Success)
-        case _ =>
-          ZIO.succeed(SubmitOtpResult.Failure)
+      Clock.instant.map: now =>
+        otp.real match
+          // A code is good for `Lifetime` from the moment it was sent, not for as long as the conversation lives (15 minutes by
+          // default, and more where a tenant raised it); one with no send time was never sent. The comparison does not stop at the
+          // first digit that differs.
+          case Some(real) if otp.lastSentAt.exists(sentAt => !now.isAfter(sentAt.plus(Lifetime))) && sameCode(real.code, code) =>
+            SubmitOtpResult.Success
+          case _ =>
+            SubmitOtpResult.Failure
+
+    private def sameCode(expected: OtpCode, submitted: OtpCode): Boolean =
+      MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8), submitted.getBytes(StandardCharsets.UTF_8))

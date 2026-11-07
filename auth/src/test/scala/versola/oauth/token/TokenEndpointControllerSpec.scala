@@ -817,6 +817,44 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             body.contains("unsupported_grant_type"),
           ),
       ),
+      // RFC 6749 §3.2: request parameters MUST NOT be included more than once; §5.2 answers it with invalid_request.
+      tokenEndpointTestCase(
+        description = "fail with invalid_request, and redeem nothing, when a parameter is repeated",
+        request = Request.post(
+          url = URL.empty / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "authorization_code",
+              "code" -> Base64.urlEncode(authCode1),
+              "code" -> Base64.urlEncode(Array.fill(16)(9.toByte)),
+              "redirect_uri" -> redirectUri,
+              "code_verifier" -> codeVerifier1,
+            ),
+          ),
+        ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+        expectedStatus = Status.BadRequest,
+        verify = response =>
+          for
+            body <- response.body.asString
+          yield assertTrue(body.contains("invalid_request")),
+      ),
+      tokenEndpointTestCase(
+        description = "fail with invalid_request when grant_type is repeated, even with the same value",
+        request = Request.post(
+          url = URL.empty / "token",
+          body = Body.fromURLEncodedForm(
+            Form.fromStrings(
+              "grant_type" -> "client_credentials",
+              "grant_type" -> "client_credentials",
+            ),
+          ),
+        ).addHeader(authHeader(clientId1, Some(clientSecret1))),
+        expectedStatus = Status.BadRequest,
+        verify = response =>
+          for
+            body <- response.body.asString
+          yield assertTrue(body.contains("invalid_request")),
+      ),
     ),
     suite("ID Token Issuance")(
       tokenEndpointTestCase(

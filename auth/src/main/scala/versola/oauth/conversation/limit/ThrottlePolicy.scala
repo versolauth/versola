@@ -4,6 +4,7 @@ import versola.oauth.client.model.{RateLimit, TenantId}
 import zio.NonEmptyChunk
 
 import java.time.Instant
+import java.time.temporal.ChronoUnit
 
 /** Pure rate-limiting policy: decides whether a subject is allowed, rate-limited or banned, and
   * what their throttle record should look like after an attempt.
@@ -140,3 +141,43 @@ object ThrottlePolicy:
           else LimitStatus.Allowed
 
         (record, status)
+
+  /** The decision of [[ChallengeThrottleRepository.reserveAttempt]], applied inside its atomic read-modify-write:
+    * `Left` with the status when the existing record already denies the subject (nothing is to be written), else
+    * `Right` with what [[nextState]] makes of the attempt.
+    */
+  def reserve(
+      recordOpt: Option[ChallengeThrottleRecord],
+      tenantId: TenantId,
+      subject: String,
+      challengeType: ChallengeType,
+      now: Instant,
+      wLimits: NonEmptyChunk[RateLimit],
+      banDurationSeconds: Long,
+  ): Either[LimitStatus, (ChallengeThrottleRecord, LimitStatus)] =
+    recordOpt.fold[LimitStatus](LimitStatus.Allowed)(evaluate(_, wLimits, now)) match
+      case LimitStatus.Allowed =>
+        Right(nextState(recordOpt, tenantId, subject, challengeType, now, wLimits, banDurationSeconds))
+      case denied => Left(denied)
+
+  /** Whether `current` is still what a charge wrote. Compared on what a charge decides, the attempts and the ban, the ban
+    * to within a microsecond: a timestamp column keeps microseconds, so the row read back is not quite the instant the
+    * charge computed.
+    */
+  private def unchangedSince(current: ChallengeThrottleRecord, applied: ChallengeThrottleRecord): Boolean =
+    val sameBan = (current.bannedUntil, applied.bannedUntil) match
+      case (Some(a), Some(b)) => math.abs(ChronoUnit.NANOS.between(a, b)) <= 1000
+      case (a, b) => a == b
+    current.attempts == applied.attempts && sameBan
+
+  /** What [[ChallengeThrottleRepository.refundAttempt]] writes back for `current`: `Some(row)`, or `None` to delete it.
+    * The row as it was before the charge when `current` is still exactly what the charge wrote; otherwise one
+    * occurrence of the charge's timestamp is dropped from the attempts, the rest is kept.
+    */
+  def refund(current: ChallengeThrottleRecord, granted: Reservation.Granted): Option[ChallengeThrottleRecord] =
+    if unchangedSince(current, granted.applied) then granted.previous
+    else
+      val at = granted.reservedAt.getEpochSecond
+      val index = current.attempts.indexOf(at)
+      if index < 0 then Some(current)
+      else Some(current.copy(attempts = current.attempts.patch(index, Nil, 1)))

@@ -29,10 +29,11 @@ import versola.edge.model.{
   TenantId,
   TokenResponse,
 }
-import versola.edge.revocation.{RevocationKey, TokenRevocationService}
+import versola.edge.revocation.{EdgeRevocationKeys, TokenRevocationService}
 import versola.edge.session.{EdgeSessionRecord, EdgeSessionRepository}
 import versola.util.cel.CelEvaluator
 import versola.util.http.{Checkpoint, Observability, RateDecision, RateLimitKeys, RateLimiter}
+import versola.util.revocation.RevocationKey
 import versola.util.{Base64, Base64Url, EnvName, JWT, JsonJava, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.http.{Body, Client, Cookie, Header, Headers, MediaType, Path, Request, Response, Status, URL}
 import zio.json.ast.Json
@@ -628,7 +629,8 @@ object EdgeService:
             {
               case JWT.Error.Expired(jti) =>
                 authSource match
-                  case AuthSource.Cookie(presetId) => refreshSession(AccessTokenId(jti), presetId, now)
+                  case AuthSource.Cookie(presetId) =>
+                    refuseIfRevoked(accessToken, publicKeys, presetId) *> refreshSession(AccessTokenId(jti), presetId, now)
                   case AuthSource.Header(_) =>
                     Observability.setError("token_expired") *> ZIO.fail(Outcome.Unauthorized)
               case _ =>
@@ -888,6 +890,35 @@ object EdgeService:
         info <- ssoClient.userInfo(accessToken, binding)
       yield info
 
+    /** An expired cookie token is refreshed with the session's refresh token, and the new token's claims are checked
+      * for revocation only afterwards -- which would let a token revoked on its own (its `jti`, or its refresh family
+      * or session gone from the deny list) come back to life through a refresh that auth, whose family and session
+      * may still be live, grants. So the old token is asked about first: when it is revoked, the refresh token is
+      * never presented to auth, and the caller is sent to log in with the cookie cleared.
+      *
+      * The token's signature has been checked already (that is how it came to be known as expired); only its
+      * expiry is waived here, to read the keys it was revoked under. One whose claims cannot be read is left to the
+      * refresh, which replaces it with a token that is judged as any other.
+      */
+    private def refuseIfRevoked(
+        accessToken: String,
+        publicKeys: JWT.PublicKeys,
+        cookiePresetId: PresetId,
+    ): IO[Throwable | Outcome, Unit] =
+      JWT.deserialize[AccessTokenClaims](accessToken, publicKeys, JWT.Type.AccessToken, validateExpiry = false)
+        .option
+        .flatMap:
+          case None => ZIO.unit
+          case Some(claims) =>
+            revocationService
+              .isRevoked(
+                EdgeRevocationKeys.of(claims.jti, claims.family, claims.sid, claims.subject),
+                Instant.ofEpochSecond(claims.issuedAt),
+              )
+              .flatMap: revoked =>
+                if revoked then Observability.setError("token_revoked") *> reauthenticateFromCookie(cookiePresetId)
+                else ZIO.unit
+
     /** A signed, unexpired token is not necessarily still valid: it may have been revoked on
       * its own, or its whole session logged out. Both are answered from memory, so this costs
       * no I/O on the hot path.
@@ -895,7 +926,7 @@ object EdgeService:
     private def checkRevoked(claims: AccessTokenClaims): IO[Outcome, Unit] =
       revocationService
         .isRevoked(
-          RevocationKey.of(claims.jti, claims.family, claims.sid, claims.subject),
+          EdgeRevocationKeys.of(claims.jti, claims.family, claims.sid, claims.subject),
           Instant.ofEpochSecond(claims.issuedAt),
         )
         .flatMap(revoked => ZIO.fail(Outcome.Unauthorized).when(revoked))
@@ -1398,13 +1429,18 @@ object EdgeService:
         method: String,
         restPath: Path,
     ): IO[Outcome, ResourceEndpoint] =
-      ZIO.fromOption {
-        val pathSegments = normalizePath(restPath.encode)
-        endpoints
-          .filter: endpoint =>
-            endpoint.method.equalsIgnoreCase(method) && matchesSegments(normalizePath(endpoint.path), pathSegments)
-          .minByOption(endpoint => (specificity(normalizePath(endpoint.path)), endpoint.path))
-      }.orElseFail(Outcome.NotFound)
+      // Refused as not found, after the caller was authenticated like any other unknown route: the segments matched here are the ones
+      // the resource is sent, so a path the two could read differently has to match nothing (see ProxyPath).
+      ZIO.fromOption(ProxyPath.segments(restPath))
+        .tapError(_ => Observability.setError("path_rejected"))
+        .orElseFail(Outcome.NotFound)
+        .flatMap: pathSegments =>
+          ZIO.fromOption {
+            endpoints
+              .filter: endpoint =>
+                endpoint.method.equalsIgnoreCase(method) && matchesSegments(normalizePath(endpoint.path), pathSegments)
+              .minByOption(endpoint => (specificity(normalizePath(endpoint.path)), endpoint.path))
+          }.orElseFail(Outcome.NotFound)
 
     /** Placeholder mask of a template, one character per segment: candidates all have the
       * same segment count, so comparing masks lexicographically prefers the template whose
@@ -1421,7 +1457,7 @@ object EdgeService:
         case (a, b) => a == b
 
     private def extractPathParams(pattern: String, restPath: Path): Map[String, String] =
-      normalizePath(pattern).zip(normalizePath(restPath.encode)).collect:
+      normalizePath(pattern).zip(restPath.segments.filter(_.nonEmpty)).collect:
         case (s"{$name}", value) => name -> value
       .toMap
 

@@ -132,12 +132,31 @@ EXPOSE 8080 8082 9345
 # file makes every OOM overwrite the same one, so the volume holds at most the
 # most recent incident -- the GC log's filecount=5 rotation bounds the other
 # artifact the same way, for the same reason.
-ENV JAVA_OPTS="-XX:+UseG1GC -Xms512m -Xmx512m -XX:MaxDirectMemorySize=64m -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=64m -Xss512k -XX:NativeMemoryTracking=summary -XX:+UseCompactObjectHeaders -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/diagnostics/heap.hprof -XX:+ExitOnOutOfMemoryError -Xlog:gc*:file=/diagnostics/gc.log:time,uptime,level,tags:filecount=5,filesize=20M --enable-native-access=ALL-UNNAMED"
+#
+# ErrorFile does for a JVM crash what HeapDumpPath does for an OOM: by default the crash log goes to the
+# working directory (/app, read-only now), then to /tmp (a tmpfs or emptyDir in both deployments that does
+# not outlive a restart of the container in compose). Fixed name for the same reason as the heap dump: a
+# crash loop overwrites one file instead of filling the volume.
+ENV JAVA_OPTS="-XX:+UseG1GC -Xms512m -Xmx512m -XX:MaxDirectMemorySize=64m -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=64m -Xss512k -XX:NativeMemoryTracking=summary -XX:+UseCompactObjectHeaders -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/diagnostics/heap.hprof -XX:ErrorFile=/diagnostics/hs_err.log -XX:+ExitOnOutOfMemoryError -Xlog:gc*:file=/diagnostics/gc.log:time,uptime,level,tags:filecount=5,filesize=20M --enable-native-access=ALL-UNNAMED"
 
 # Present so the JVM can always write its dump and GC log even when nothing is
 # mounted here (a bare `docker run`); both deployments mount a volume over it.
-RUN mkdir -p /diagnostics
+#
+# The service runs as an unprivileged user (uid/gid 10001, fixed so a Kubernetes
+# securityContext and a compose `user:` can name it without the image's /etc/passwd).
+# The application tree stays root-owned and world-readable: the service only reads
+# it, so a compromised process cannot rewrite its own code. /diagnostics is the one
+# place it writes in the image; a *new* named volume mounted over it is initialised
+# from this directory's owner, an existing one keeps the owner it already has
+# (deploy.md, "Containers run as an unprivileged user"). The JVM's own scratch files
+# (hsperfdata, extracted native libraries) go to /tmp.
+RUN groupadd --system --gid 10001 versola \
+ && useradd --system --uid 10001 --gid versola --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin versola \
+ && mkdir -p /diagnostics \
+ && chown 10001:10001 /diagnostics
 ENV CONFIG_PATH="/app/config/env.conf"
+
+USER 10001:10001
 
 # Run the application with config path. JAVA_OPTS is not repeated on the
 # command line here -- sbt-native-packager's launcher script already reads

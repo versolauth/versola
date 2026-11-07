@@ -142,6 +142,29 @@ object PasskeyStepUpSpec extends E2ESpec:
       yield assertTrue(noCode.isFailure).label("no authorization code") &&
         assertTrue(again.step.contains(ConversationStep.Credential), again.html.contains("\"passkeyOnly\":true"))
     },
+    test("another user's login and password cannot be submitted to the step-up: it stays the first user's, whose passkey still completes it") {
+      for
+        (s, auth) <- setup(Flows.Id.PasskeyLogin)
+        enrolled <- enroll(s, auth)
+        (other, _) <- freshUser
+        (cookie, challenge, verifier) <- startStepUp(s, auth, enrolled.idToken)
+        swapped <- auth.submitLoginPassword(cookie, other.login.get, other.password, challenge.csrf)
+        noCode <- swapped.assertRedirect.exit
+        options <- auth.getPasskeyOptions(cookie).flatMap(_.body.asString)
+        response <- TestAuthenticator.get(enrolled.credential, options, passkeyOrigin, s.userId)
+        code <- auth.submitPasskeyAssertion(cookie, response.toJson, challenge.csrf).assertRedirect
+        token <- auth.token(
+          code,
+          verifier,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+          redirectUri = Some(s.redirectUri),
+        ).success
+        claims <- claimsOf(token.idToken.get)
+      yield assertTrue(noCode.isFailure).label("no authorization code for the other user's password") &&
+        assertTrue(claims.contains(s""""sub":"${s.userId}"""")).label(s"the code is the first user's: $claims") &&
+        assertTrue(!claims.contains(other.userId.toString)).label(s"nothing of the other user in $claims")
+    },
     test("a one-time code or a phone number cannot be submitted to leave the passkey step") {
       for
         (s, auth) <- setup(Flows.Id.PasskeyLogin)

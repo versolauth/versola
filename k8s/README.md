@@ -398,6 +398,17 @@ auth, central and edge share one outbound HTTP client (calls to each other, and 
 | `HTTP_CLIENT_POOL_MIN` | `dynamic` only: connections kept open when idle (not above the maximum) | `0` |
 | `HTTP_CLIENT_POOL_TTL` | `dynamic` only: how long the pool must be unused before it shrinks to the minimum, a duration such as `30s` or `2m` | `30s` |
 
+### Outbound timeouts: `HTTP_CLIENT_CONNECT_TIMEOUT`, `HTTP_CLIENT_BODY_READ_TIMEOUT`
+
+The same client bounds how long a connection may take to open and how long a response body may take to read. Set them like the pool variables; a duration such as `10s` or `2m` replaces the default, `off` removes the bound, an invalid value falls back to the default.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `HTTP_CLIENT_CONNECT_TIMEOUT` | opening a connection (zio-http's own default is no bound) | `5s` |
+| `HTTP_CLIENT_BODY_READ_TIMEOUT` | reading a response body, counted from its headers; **a total, not an idle time**: a body that keeps dripping is cut at it | `30s` |
+
+Before these, the only bound on a response body was the client's 50 s idle timeout, which every received byte restarts, so a peer sending one byte every 40 seconds held the call for as long as it liked; the guard's `requestTimeout` (`HTTP_CLIENT_GUARD_REQUEST_TIMEOUT`, `enforce` only) bounds the wait for the headers, not the body. **Changed behaviour:** a body that takes longer than `HTTP_CLIENT_BODY_READ_TIMEOUT` to arrive after its headers now fails the call (`edge` answers `502` for a proxied resource). `edge` collects a proxied resource's whole body in memory through this client, so a resource that legitimately answers slower than 30 s needs the variable raised, or `off`.
+
 An HTTP/1.1 connection serves one request at a time, so the pool bounds a pod's throughput towards one backend at `size / backend latency`: with 10 connections and a 13 ms backend, ~780 requests/s however idle the CPU, and past that the requests queue (seen in the step-load test as a ~1 s p99 on one edge pod). Size it for `peak requests/s per pod x backend p99 latency`, with headroom. Neither kind fails when it is exhausted: the request waits for a free connection with no timeout of its own, so a pool that is too small shows as latency, never as errors. `http_client_active_requests{peer}` is the number of outbound requests in flight, queued ones included: it climbs first where a pool is too small.
 
 What the kinds do (read from zio-http 3.11.6 and zio 2.1.26):

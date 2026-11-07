@@ -12,6 +12,18 @@ object ReadinessServiceSpec extends ZIOSpecDefault:
         ready <- service.isReady
       yield assertTrue(!ready)
     },
+    test("a shutdown takes a ready service out of rotation, and nothing but setReady puts it back") {
+      for
+        service <- ReadinessService.make
+        _ <- service.setReady
+        _ <- service.setNotReady
+        notReady <- service.isReady
+        _ <- service.setNotReady
+        stillNotReady <- service.isReady
+        _ <- service.setReady
+        ready <- service.isReady
+      yield assertTrue(!notReady, !stillNotReady, ready)
+    },
     test("becomes ready after setReady and stays ready") {
       for
         service <- ReadinessService.make
