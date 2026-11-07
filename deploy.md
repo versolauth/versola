@@ -823,17 +823,21 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `audit.events.admin-user-viewed` changes that. The per-user report asks auth, which keeps its log as long, for the same window. This is a
   design estimate, to be replaced with the figure measured under load.
 
-  A call that reaches central without the query parameters edge adds (`actorId`, `actorTenantId`, `actorClientId`, `actorSessionId`) is
-  not refused: it is recorded as made by a `service` with no id, and counted in `audit_actor_missing_total{reason}` (an alert is in
+  A call that reaches central without the query parameters edge adds (`actorId`, `actorTenantId`, `actorClientId`, `actorSessionId`,
+  and `actorIp`, the address of the caller) is not refused: it is recorded as made by a `service` with no id, and counted in `audit_actor_missing_total{reason}` (an alert is in
   `dashboards/alerts/versola-audit-central.rules.yaml`). Edge adds them to every admin route since this release, and central's
   bootstrap brings the registrations of the existing `central` resource up to date at start (it adds those inject rules to endpoints
   an earlier release registered, removes the header rules an earlier form of this feature registered, and leaves what an operator added
   alone); until edge has synced them, admin actions are recorded without an actor. Edge's sync is the refresh interval (5 minutes by
   default).
 
-  The `ip` of an `admin.*` row is empty: the address of the administrator's browser is not passed on to central yet, so an empty `ip`
-  there means "not recorded", not an unknown source. The log is the hot window of 7 days; keeping it as the record of what was done
-  needs the replication described above.
+  The `ip` of an `admin.*` row is the address edge found for the caller by its own `client-ip` setting (`socket`, the peer of the
+  connection, or `forwarded`, the header named by `client-ip-header`), so it is only as right as that setting: with `socket` behind a
+  proxy or load balancer it is the proxy's address. Edge sends none on its mutual-TLS listener, and none under `forwarded` when the
+  header is missing or not an address; an empty `ip` there means "not recorded". An `actorIp` that is not an address is not recorded and
+  is counted in `audit_actor_missing_total{reason="invalid_ip"}`. Central passes the address on to auth, which records it in the rows of
+  the changes it makes for the call. The log is the hot window of 7 days; keeping it as the record of what was done needs the
+  replication described above.
 
   `audit:read` is not tenant-scoped, like `users:read`: a holder reads the report of any user.
 

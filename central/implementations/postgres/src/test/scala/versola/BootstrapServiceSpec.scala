@@ -437,6 +437,8 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
           (InjectTarget.query, "actorClientId", "token.client_id"),
           // a token without a session sends none: the rule evaluates to nothing and edge does not forward it
           (InjectTarget.query, "actorSessionId", "has(token.sid) ? token.sid : ''"),
+          // an edge that finds no address for the caller (or has none to offer) sends none
+          (InjectTarget.query, "actorIp", "has(request.clientIp) ? request.clientIp : ''"),
         ),
         prod.nonEmpty,
         // reads and changes alike, a call without a body as well as one with: a query parameter needs neither
