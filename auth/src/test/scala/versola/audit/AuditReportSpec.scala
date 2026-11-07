@@ -6,8 +6,10 @@ import versola.audit.AuditReportService.{EventsPage, SummaryReport}
 import versola.auth.TestEnvConfig
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
+import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import versola.oauth.logout.LogoutService
+import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionService
 import versola.user.UserController
 import versola.user.UserRepository
@@ -417,12 +419,14 @@ object AuditReportSpec extends ZIOSpecDefault, ZIOStubs:
 
   /** What the other routes of the controller need and the report never touches: a call of one of them would fail the test. */
   private val unused: ZEnvironment[
-    UserRepository & LogoutService & SessionService & ChallengeThrottleRepository & PasskeyRepository & PasswordService & AuditEvents,
+    UserRepository & LogoutService & SessionService & ChallengeThrottleRepository & PasskeyRepository & PasswordService & AuditEvents &
+      OAuthConfigurationService & AccessTokenRevocationService,
   ] =
     ZEnvironment[UserRepository](stub[UserRepository]) ++ ZEnvironment[LogoutService](stub[LogoutService]) ++
       ZEnvironment[SessionService](stub[SessionService]) ++ ZEnvironment[ChallengeThrottleRepository](stub[ChallengeThrottleRepository]) ++
       ZEnvironment[PasskeyRepository](stub[PasskeyRepository]) ++ ZEnvironment[PasswordService](stub[PasswordService]) ++
-      ZEnvironment[AuditEvents](stub[AuditEvents])
+      ZEnvironment[AuditEvents](stub[AuditEvents]) ++ ZEnvironment[OAuthConfigurationService](stub[OAuthConfigurationService]) ++
+      ZEnvironment[AccessTokenRevocationService](stub[AccessTokenRevocationService])
 
   private val key: SecretKey = TestEnvConfig.coreConfig.central.secretKey
   private val wrongKey: SecretKey = javax.crypto.spec.SecretKeySpec(Array.fill(32)(99.toByte), "AES")

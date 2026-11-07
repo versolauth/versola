@@ -1,7 +1,7 @@
 package versola.oauth.revocation
 
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, TenantId}
-import zio.Duration
+import zio.{Duration, durationInt}
 
 /** Why a revocation was written. Stored for operators and for whatever reads the table later;
   * nothing in auth decides on it.
@@ -15,6 +15,9 @@ enum RevocationCause(val code: String):
   case UserAgentForgotten extends RevocationCause("user_agent_forgotten")
   case UserRevoked extends RevocationCause("user_revoked")
   case UserDeleted extends RevocationCause("user_deleted")
+  case PasswordChanged extends RevocationCause("password_changed")
+  case OfflineAccessRevoked extends RevocationCause("offline_access_revoked")
+  case RolesChanged extends RevocationCause("roles_changed")
 
 /** What a repository method that ends a session or a refresh family needs to write the revocation
   * in the same transaction: the method knows the key (it is what the method ends) and the instant
@@ -45,6 +48,18 @@ case class RevocationTerms(
     if clients.nonEmpty && known.sizeIs == clients.size then known.max else ttl
 
 object RevocationTerms:
+  /** For a key that names a user, whose tokens went to clients that are not known: bounded by the widest
+    * `accessTokenTtl` of any client. With no client configured nothing could have been issued, and an
+    * hour is the answer that over-retains rather than under-retains.
+    */
+  def widest(cause: RevocationCause, accessTokenTtls: Map[ClientId, Duration]): RevocationTerms =
+    RevocationTerms(
+      cause = cause,
+      ttl = accessTokenTtls.values.maxOption.getOrElse(1.hour),
+      tenantId = None,
+      ttlByClient = accessTokenTtls,
+    )
+
   /** A refresh family: every token it issued was issued to this client, so its own TTL bounds them. */
   def forFamily(client: OAuthClientRecord, cause: RevocationCause): RevocationTerms =
     RevocationTerms(cause = cause, ttl = client.accessTokenTtl, tenantId = Some(client.tenantId), ttlByClient = Map.empty)

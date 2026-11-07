@@ -20,7 +20,7 @@ import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.authorize.model.{Prompt, ResponseTypeEntry}
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnError, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
-import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
+import versola.oauth.challenge.password.model.{CheckPassword, PasswordChangeEffect, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{
   Acr,
@@ -1694,7 +1694,7 @@ object ConversationService:
             case LimitStatus.RateLimited(_) =>
               renderStep(authId, conversation, setPasswordStep.copy(rateLimitExceeded = true))
             case LimitStatus.Allowed =>
-              passwordService.setPassword(userId, newPassword).foldZIO(
+              passwordService.setPassword(userId, newPassword, PasswordChangeEffect.Untouched).foldZIO(
                 {
                   case _: versola.oauth.challenge.password.model.PasswordReuseError =>
                     submissionLimiter.recordLimitAll(conversation.clientId, subjects, throttleType(conversation, ChallengeType.PasswordSubmit)).flatMap:

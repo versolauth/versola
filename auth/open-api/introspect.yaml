@@ -16,7 +16,9 @@ info:
     Revocation is checked against the list of revoked access tokens that every `auth` replica
     keeps in memory, so a request costs no database query. A revocation (a client's `/revoke`, a
     replayed authorization code or refresh token, a logout, a user deleted or signed out
-    everywhere) reaches a replica when its notification arrives, normally within a second, and at
+    everywhere, a password set or reset by an administrator, an administrator revoking a client's
+    offline access, a role removed from the user, other sessions ended by the user's password
+    change) reaches a replica when its notification arrives, normally within a second, and at
     the latest at that replica's next reconciliation with the database
     (`revocation.reload-interval`, 600 seconds by default). In that window a replica that has not
     heard of it still reports the token as active. A token a caller has no right to introspect is

@@ -3,6 +3,7 @@ package versola.oauth.revocation
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.TenantId
+import versola.user.model.UserId
 import versola.util.postgres.TableName
 import versola.util.revocation.{
   PostgresRevocationRepository,
@@ -75,6 +76,17 @@ object PostgresAuthRevocationRepository:
         val repository = PostgresAuthRevocationRepository(xa)
         ZEnvironment[AuthRevocationRepository, RevocationRepository](repository, repository)
 
+  /** `sub:<user>`, bounded at `now`: every token the user holds that was issued before this instant is refused,
+    * and one issued after it, which the user obtained by signing in or refreshing again, is not. Written by
+    * whatever changes the user in a way their old tokens no longer reflect, in the same transaction as the
+    * change. */
+  def upsertUser(userId: UserId, now: Instant, terms: RevocationTerms)(using DbCon): Int =
+    upsert(
+      Revocation(key = RevocationKey.Sub(userId.toString), expiresAt = now.plus(terms.ttl), issuedBefore = Some(now)),
+      terms.cause,
+      terms.tenantId,
+    )
+
   /** Writes a revocation on the caller's connection, so that a repository method which ends a
     * session or a refresh family records it in the same transaction as the ending: the two commit
     * together or not at all, and a revocation can never be missing for a session that ended.
@@ -103,6 +115,17 @@ object PostgresAuthRevocationRepository:
     * comparable across replicas at all.
     */
   def upsert(revocation: Revocation, cause: RevocationCause, tenantId: Option[TenantId])(using DbCon): Int =
+    upsertStatement(revocation, cause, tenantId).run()
+
+  /** [[upsert]] for several keys of one cause at once, as one batch on the caller's connection: a method that ends
+    * several families or sessions in one transaction writes their records in one round trip rather than one each.
+    */
+  def upsertAll(revocations: List[Revocation], cause: RevocationCause, tenantId: Option[TenantId])(using DbCon): Unit =
+    if revocations.nonEmpty then
+      batchUpdate(revocations)(upsertStatement(_, cause, tenantId))
+      ()
+
+  private def upsertStatement(revocation: Revocation, cause: RevocationCause, tenantId: Option[TenantId]): Update =
     val tenant: Option[String] = tenantId.map(identity[String])
     sql"""
       INSERT INTO auth_revocations (revoked_key, revoked_at, expires_at, issued_before, cause, tenant_id)
@@ -118,4 +141,4 @@ object PostgresAuthRevocationRepository:
       WHERE auth_revocations.expires_at < EXCLUDED.expires_at
          OR (auth_revocations.issued_before IS NOT NULL
              AND (EXCLUDED.issued_before IS NULL OR auth_revocations.issued_before < EXCLUDED.issued_before))
-    """.update.run()
+    """.update

@@ -1144,7 +1144,14 @@ final class OAuthClient(client: Client, config: E2EConfig):
         resp.body.asString.flatMap: body =>
           ZIO.fail(RuntimeException(s"invalidateUserSessions failed: status=${resp.status} body=$body"))
 
-  /** POST /users/password/set — sets a permanent password for a user (non-prod only). */
+  /** POST /users/password/set — sets a permanent password for a user (non-prod only).
+    *
+    * An administrator's set refuses the access tokens the user holds from before it (`sub:` bounded at the
+    * change), and `iat` is whole seconds, so a token issued in the second of the change cannot be told
+    * from one issued before it and is refused too. A test that signs the user in right after would see its
+    * own token refused at `/userinfo` about half the time; the call therefore returns once that second is
+    * over. This is a clock boundary, not a propagation delay.
+    */
   def setUserPassword(userId: java.util.UUID, password: String): Task[Unit] =
     val body = Body.fromString(
       Json.Obj("userId" -> Json.Str(userId.toString), "password" -> Json.Str(password)).toJson,
@@ -1153,10 +1160,29 @@ final class OAuthClient(client: Client, config: E2EConfig):
       .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
-      if resp.status.isSuccess then ZIO.unit
+      if resp.status.isSuccess then ZIO.sleep(1.second).withClock(Clock.ClockLive)
       else
         resp.body.asString.flatMap: bodyStr =>
           ZIO.fail(RuntimeException(s"setUserPassword failed: status=${resp.status} body=$bodyStr"))
+
+  /** POST /users/password/reset on the `show` channel (non-prod only) — issues a temporary password and
+    * returns it. Refuses the user's earlier access tokens like [[setUserPassword]], and the caller waits
+    * out the second of the change for the same reason. */
+  def resetUserPassword(userId: java.util.UUID): Task[String] =
+    val body =
+      Body.fromString(Json.Obj("userId" -> Json.Str(userId.toString), "expiresInSeconds" -> Json.Num(3600), "channel" -> Json.Str("show")).toJson)
+    val req = Request.post(s"${config.centralUrl}/users/password/reset", body)
+      .addHeader(centralAuthorization)
+      .addHeader(Header.ContentType(MediaType.application.json))
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      resp.body.asString.flatMap: bodyStr =>
+        if !resp.status.isSuccess then ZIO.fail(RuntimeException(s"resetUserPassword failed: status=${resp.status} body=$bodyStr"))
+        else
+          ZIO.fromEither(bodyStr.fromJson[Json.Obj]).mapError(error => RuntimeException(s"unparsable reset response [$error]: $bodyStr"))
+            .flatMap(obj =>
+              ZIO.fromOption(obj.fields.collectFirst { case ("password", Json.Str(value)) => value })
+                .orElseFail(RuntimeException(s"no password in the reset response: $bodyStr")),
+            ) <* ZIO.sleep(1.second).withClock(Clock.ClockLive)
 
   /** PATCH /users/roles — grants tenant roles to a user. The update travels through the
     * Central user outbox, so call [[flushUserOutbox]] before signing the user in.
@@ -1178,6 +1204,27 @@ final class OAuthClient(client: Client, config: E2EConfig):
       else
         resp.body.asString.flatMap: bodyStr =>
           ZIO.fail(RuntimeException(s"assignUserRoles failed: status=${resp.status} body=$bodyStr"))
+
+  /** PATCH /users/roles — takes tenant roles away from a user. Travels through the Central user outbox like
+    * [[assignUserRoles]], so call [[flushUserOutbox]] for auth to apply it.
+    */
+  def removeUserRoles(userId: java.util.UUID, roles: Set[String], tenantId: String = Fixtures.suiteTenant): Task[Unit] =
+    val body = Body.fromString(
+      Json.Obj(
+        "userId" -> Json.Str(userId.toString),
+        "tenantId" -> Json.Str(tenantId),
+        "add" -> Json.Arr(),
+        "remove" -> Json.Arr(Chunk.fromIterable(roles.map(Json.Str(_)))),
+      ).toJson,
+    )
+    val req = Request.patch(s"${config.centralUrl}/users/roles", body)
+      .addHeader(centralAuthorization)
+      .addHeader(Header.ContentType(MediaType.application.json))
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      if resp.status.isSuccess then ZIO.unit
+      else
+        resp.body.asString.flatMap: bodyStr =>
+          ZIO.fail(RuntimeException(s"removeUserRoles failed: status=${resp.status} body=$bodyStr"))
 
   /** POST /configuration/clients/{web,native,service} — registers a new OAuth client via the Central API,
     * at the endpoint of the kind the arguments describe (see [[ClientEndpoints]]).
@@ -1772,14 +1819,17 @@ final class OAuthClient(client: Client, config: E2EConfig):
       accessToken: Option[String],
       currentPassword: String,
       newPassword: String,
+      revokeOtherSessions: Option[Boolean] = None,
   ): Task[AccountResult] =
     edgeAccountRequest(
       Method.PATCH,
       "/settings/password",
       Some(
         Json.Obj(
-          "currentPassword" -> Json.Str(currentPassword),
-          "newPassword" -> Json.Str(newPassword),
+          Chunk[(String, Json)](
+            "currentPassword" -> Json.Str(currentPassword),
+            "newPassword" -> Json.Str(newPassword),
+          ) ++ Chunk.fromIterable(revokeOtherSessions.map(flag => "revokeOtherSessions" -> Json.Bool(flag))),
         ),
       ),
       accessToken,
