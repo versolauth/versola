@@ -817,6 +817,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   }
   ```
 
+  The block may also hold `writer { user, password }`, an optional insert-only role for the batch insert; its keys and the SQL that
+  creates the role are under "An insert-only role for the writer" in the audit log of `auth` below, with `central_audit_event` as the table.
+
   **Disk.** `audit.retention` is from 1 to 14 days, and central refuses to start with another value. A row is about 430 bytes on disk,
   indexes included, so at 1 000 events a second the log takes about 37 GB a day: about 260 GB for 7 days and about 520 GB for 14 days;
   at 100 events a second a tenth of that. Events a second equal requests a second only if every request records an event, and
@@ -1131,6 +1134,57 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   the day gets no partition while they are there, and they leave with the retention. The owner of the table must be
   the service's role, as for `af_event` (`audit_partition_owner_mismatch`).
 
+  **An insert-only role for the writer (optional).** By default the audit writer inserts through the connection pool of the role `auth`
+  connects as, which owns `auth_audit_event`. With `audit.writer` set, the batch insert goes through a pool of its own that connects as
+  another role, which can insert into the table and do nothing else to it. Only that insert uses it: creating, attaching and dropping
+  partitions, the prune of the default partition, the ownership check and the reads of the per-user report stay on the role `auth`
+  connects as. The keys are optional; a config without the block behaves as before, so an existing `env.conf` keeps starting:
+
+  ```hocon
+  audit {
+    writer {
+      user              = "versola_auth_audit_writer"   # a role other than postgres.user, else the start is refused
+      password          = "..."                         # a plain string, as postgres.password
+      maximum-pool-size = 2                             # optional; 2 when left out
+    }
+  }
+  ```
+
+  `user` and `password` are set together (one without the other stops the start naming the keys, and does not fall back to the other
+  role); `maximum-pool-size` needs both. The URL, the TLS settings and the timeouts of the pool are those of the `postgres` block. The
+  operator creates the role and its grants before setting the keys (the names are the deployment's own), as the role that owns the table:
+
+  ```sql
+  CREATE ROLE versola_auth_audit_writer LOGIN PASSWORD '...';
+  GRANT USAGE ON SCHEMA public TO versola_auth_audit_writer;   -- the schema the tables are in
+  GRANT INSERT ON auth_audit_event TO versola_auth_audit_writer;
+  GRANT SELECT (id, at) ON auth_audit_event TO versola_auth_audit_writer;
+  ```
+
+  The role has INSERT plus SELECT on the key columns `(id, at)`, which is what the insert's `ON CONFLICT (id, at) DO NOTHING` reads;
+  without that SELECT the insert is refused, and the SELECT gives no other column. INSERT on the parent table is enough for the
+  rows routed to every day partition, to `auth_audit_event_default` and to partitions the owner makes later: there is no grant on a
+  partition. The role cannot `UPDATE`, `DELETE` or `TRUNCATE` the table or a partition, detach or drop a partition or the table, drop or
+  disable the triggers, create a table or read a column other than `id` and `at`; setting `versola.audit_maintenance` in its session
+  changes none of that, since the privileges are checked before the trigger. It must not be a member of the role that owns the table
+  or hold other privileges on these tables. This was checked on PostgreSQL 17. What it does not cover: the role that owns the table and
+  a superuser can still change the table, and the pool of the role `auth` connects as is one of them. Behind a connection pooler the role
+  has to be known to the pooler as well.
+
+  **Connection budget.** The extra pool is `maximum-pool-size` connections (2 when left out) per instance, on top of the pool of the
+  `postgres` block. They count against the database's `max_connections` and, behind a pooler, against the pooler's pool for the writer's
+  role, which is a role of its own there.
+
+  **Checked at start.** With the block set, `auth` reads once, through the writer's own pool, what the role holds on the table. A login
+  the database refuses, a table the role cannot see (no `USAGE` on its schema) and a missing `INSERT` or `SELECT` on `id` or `at` each
+  stop the start with a message that names the role and the missing grant, never the password. A role that also holds `UPDATE`,
+  `DELETE` or `TRUNCATE` on the table, or owns it or is a member of its owner, does start: `auth` logs one warning naming what it holds
+  and sets the gauge `audit_writer_role_restricted{source}` to 0 (1 when the role holds nothing beyond INSERT and SELECT on the key
+  columns; the series exists only where `audit.writer` is set, and is read once, at start). The check reads the grants on the table itself. A password changed
+  or a grant removed after the start makes the insert fail; the writer's usual warning for a failed write then names the exception
+  `AuditWriterAccessDenied` and the SQLSTATE (`42501`, or one beginning `28`), and nothing the database said. `central` has the same
+  keys under its own `audit` block, the same checks and the same grants on `central_audit_event`.
+
   **Disk.** A row is about 430 bytes on disk, indexes included, so at 1 000 events a second `auth_audit_event` takes about 37 GB a day:
   about 260 GB for the 7 days of the default and about 520 GB for the 14 days that are the most `audit.retention` takes; at 100 events a
   second a tenth of that. Events a second equal requests a second only if every request writes an event: `audit.events.token-refresh`
@@ -1171,7 +1225,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   **Metrics and alerts** (`source` label `auth`; `central` writes its own table, `central_audit_event`, with the same metric names):
   `audit_events_total{source,kind,outcome}`, `audit_events_dropped_total`, `audit_events_blocked_total` (requests
   that waited for room), `audit_events_failed_total` (best-effort inserts that failed), `audit_queue_size`,
-  `audit_partitions_ahead`, `audit_events_in_default`, `audit_partition_owner_mismatch`, `audit_events_unavailable_total`
+  `audit_partitions_ahead`, `audit_events_in_default`, `audit_partition_owner_mismatch`, `audit_writer_role_restricted` (only with `audit.writer`), `audit_events_unavailable_total`
   (`central`'s requests refused with 503 `audit_unavailable`; `auth` does not refuse a request for it) and `audit_events_rejected_total`
   (events the database refused one by one; a text with U+0000 and an address that is none are cleaned before the insert, so this
   stays at zero) and `audit_events_failed_total`. The alert rules are `dashboards/alerts/versola-audit.rules.yaml`

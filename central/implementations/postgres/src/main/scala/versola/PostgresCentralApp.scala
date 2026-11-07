@@ -102,7 +102,7 @@ import versola.util.SequentialLayers.*
 import versola.util.audit.{AuditEventRepository, AuditEvents}
 import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp
-import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource, PostgresWalMetrics}
+import versola.util.postgres.{AuditWriterPool, PostgresConfig, PostgresHikariDataSource, PostgresWalMetrics}
 import zio.*
 import zio.config.magnolia.DeriveConfig
 import zio.http.*
@@ -293,6 +293,7 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresCacheSyncRepository.live >++>
           PostgresJwksRepository.live >++>
           PostgresServerMetadataRepository.live >++>
+          AuditWriterPool.live("central", CentralAudit.Source, CentralAudit.Table) >++>
           PostgresAuditEventRepository.live >++>
           PostgresUserRepository.live
       )

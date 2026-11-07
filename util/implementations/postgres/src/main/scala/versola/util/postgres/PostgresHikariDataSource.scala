@@ -66,6 +66,10 @@ object PostgresHikariDataSource:
     * @param requireVerifiedTls
     *   Refuse to start when `url` or `notifications-url` does not verify the database's certificate
     *   (see [[PostgresTls]]) instead of only logging a warning. `transactor` sets it in prod.
+    * @param checkSchema
+    *   Whether to run Flyway at all (`migrate` or, when it is false, `validate`). False for a pool of a
+    *   role that has no business with the schema's history table (the audit writer's insert-only role),
+    *   whose schema the service's own pool has already checked.
     * @return
     *   A ZLayer that provides HikariDataSource
     */
@@ -75,6 +79,7 @@ object PostgresHikariDataSource:
       validateOnMigrate: Boolean = true,
       migrationLocations: Option[Seq[String]] = None,
       requireVerifiedTls: Boolean = false,
+      checkSchema: Boolean = true,
   ): ZLayer[Scope & PostgresConfig, Throwable, HikariDataSource] =
     ZLayer:
       ZIO.acquireRelease(
@@ -157,7 +162,9 @@ object PostgresHikariDataSource:
             // this only listed `*:missing`, which silently dropped the `*:future` ignore and made
             // every rollback deploy fail validate() the moment a newer build's migration had been
             // applied (flagged in review).
-            if migrate then flyway.migrate() else flyway.validate()
+            if !checkSchema then ()
+            else if migrate then flyway.migrate()
+            else flyway.validate()
         yield (dataSource, poolMetrics),
       )((dataSource, _) => ZIO.attemptBlocking(dataSource.close()).orDie)
         .flatMap: (dataSource, poolMetrics) =>

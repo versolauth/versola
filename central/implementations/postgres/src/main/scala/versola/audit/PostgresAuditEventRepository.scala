@@ -5,7 +5,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.audit.{CentralAudit, CentralAuditRepository}
 import versola.util.audit.*
 import versola.util.partitions.{PartitionReport, TableOwnership}
-import versola.util.postgres.{AuditInsert, BasicCodecs, DailyPartitions}
+import versola.util.postgres.{AuditInsert, AuditWriterPool, BasicCodecs, DailyPartitions}
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps}
 import zio.{Task, ZEnvironment, ZIO, ZLayer, durationInt}
@@ -13,10 +13,11 @@ import zio.{Task, ZEnvironment, ZIO, ZLayer, durationInt}
 import java.time.{Instant, LocalDate, ZoneOffset}
 import java.util.UUID
 
-/** `central_audit_event` of central (V1034). The partitions are [[DailyPartitions]]'; a day whose rows sit in the default partition is
+/** `central_audit_event` of central (V1034). The batch insert goes through `writer`, the pool of the insert-only role, when the deployment
+  * set `audit.writer` ([[AuditWriterPool]]), else through `xa`, whose role owns the table; everything else uses `xa`. The partitions are [[DailyPartitions]]'; a day whose rows sit in the default partition is
   * reported and not attached, since the audit log's rows are never moved (an insert-only replication would see them twice), and
   * the default partition is pruned under `versola.audit_maintenance`, which the table's trigger asks for. */
-class PostgresAuditEventRepository(xa: TransactorZIO) extends CentralAuditRepository, BasicCodecs:
+class PostgresAuditEventRepository(xa: TransactorZIO, writer: Option[TransactorZIO] = None) extends CentralAuditRepository, BasicCodecs:
   import PostgresAuditEventRepository.*
 
   private given DbCodec[Instant] = DbCodec.InstantCodec
@@ -34,10 +35,11 @@ class PostgresAuditEventRepository(xa: TransactorZIO) extends CentralAuditReposi
   override def insertBatch(events: List[AuditEvent]): Task[Unit] =
     if events.isEmpty then ZIO.unit
     else
-      xa.transactMeasured("insert-audit-events"):
+      val insert = writer.getOrElse(xa).transactMeasured("insert-audit-events"):
         timed()
         AuditInsert.insertBatch(events, CentralAudit.Table)
-      .unit
+      // A refusal of the writer's own role is named as such; the owner's pool is left as it was.
+      (if writer.isEmpty then insert else insert.mapError(AuditWriterPool.classify)).unit
 
   override def maintainPartitions(from: LocalDate, days: Int, keepFrom: LocalDate): Task[PartitionReport] =
     partitions.maintain(xa, from, days, keepFrom)
@@ -103,10 +105,10 @@ object PostgresAuditEventRepository:
   /** The longest one statement of the writer, the report or the maintenance may take. */
   private val StatementTimeoutMillis = 30.seconds.toMillis
 
-  val live: ZLayer[TransactorZIO, Nothing, CentralAuditRepository & AuditEventRepository] =
+  val live: ZLayer[TransactorZIO & AuditWriterPool, Nothing, CentralAuditRepository & AuditEventRepository] =
     ZLayer.fromZIOEnvironment:
-      ZIO.service[TransactorZIO].map: xa =>
-        val repository = PostgresAuditEventRepository(xa)
+      (ZIO.service[TransactorZIO] <*> ZIO.service[AuditWriterPool]).map: (xa, pool) =>
+        val repository = PostgresAuditEventRepository(xa, pool.transactor)
         ZEnvironment[CentralAuditRepository, AuditEventRepository](repository, repository)
 
   /** A row as it is read: the closed sets as text, the payload as JSON text; [[toEvent]] makes the event of it. */

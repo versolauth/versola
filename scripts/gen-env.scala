@@ -1967,6 +1967,13 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |    authorize-success = true       # authorize.request that succeeded (failures are always recorded)
        |    par-success       = true       # par.request that succeeded (failures are always recorded)
        |  }
+       |  # Optional (deploy.md, "An insert-only role for the writer"): the batch insert connects as a role that can only insert into
+       |  # `auth_audit_event`, which the operator creates first. Without this block the writer uses the role `postgres.user` names.
+       |  # writer {
+       |  #   user              = "versola_auth_audit_writer"   # not postgres.user
+       |  #   password          = "<its password>"
+       |  #   maximum-pool-size = 2
+       |  # }
        |}
        |
        |# Antifraud (deploy.md, "Antifraud configuration"): the switches, the retention that bounds how long personal data is

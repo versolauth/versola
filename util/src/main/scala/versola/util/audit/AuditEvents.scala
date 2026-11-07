@@ -715,6 +715,7 @@ object AuditMetrics:
   private val partitionsAheadGauge = Metric.gauge("audit_partitions_ahead")
   private val inDefaultGauge = Metric.gauge("audit_events_in_default")
   private val ownerMismatchGauge = Metric.gauge("audit_partition_owner_mismatch")
+  private val writerRoleRestrictedGauge = Metric.gauge("audit_writer_role_restricted")
 
   private def sourceLabel(source: AuditSource) = Set(MetricLabel("source", source.value))
 
@@ -765,3 +766,9 @@ object AuditMetrics:
   /** 1 while the service's role may not alter the table: no partition can be created or dropped. The log line says what to run. */
   def partitionOwnerMismatch(source: AuditSource, mismatch: Boolean): UIO[Unit] =
     ownerMismatchGauge.tagged(sourceLabel(source)).set(if mismatch then 1.0 else 0.0)
+
+  /** Set once, at start, and only where the deployment gave the writer a role of its own (`audit.writer`): 1 while that role holds nothing
+    * on the audit table beyond INSERT and SELECT on the key columns, 0 when it can also update, delete or truncate, or is the table's
+    * owner or a member of the owner role. */
+  def writerRoleRestricted(source: AuditSource, restricted: Boolean): UIO[Unit] =
+    writerRoleRestrictedGauge.tagged(sourceLabel(source)).set(if restricted then 1.0 else 0.0)

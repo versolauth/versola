@@ -5,7 +5,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.audit.AuditReadRepository.*
 import versola.util.audit.*
 import versola.util.partitions.{PartitionReport, TableOwnership}
-import versola.util.postgres.{AuditInsert, BasicCodecs, DailyPartitions}
+import versola.util.postgres.{AuditInsert, AuditWriterPool, BasicCodecs, DailyPartitions}
 import zio.json.*
 import zio.json.ast.Json
 import zio.{Duration, Task, ZIO, ZLayer, durationInt}
@@ -19,11 +19,14 @@ import java.util.UUID
   *
   * @param statementTimeout the longest one statement may take: a statement that hangs (a partition being locked, a slow disk)
   *                         would otherwise hold the single writer while the queue fills and requests block
+  * @param writer           the pool of the insert-only role the batch insert goes through when the deployment set `audit.writer`
+  *                         ([[AuditWriterPool]]); without it the insert uses `xa`, whose role owns the table
   */
 class PostgresAuditEventRepository(
     xa: TransactorZIO,
     partitions: DailyPartitions,
     statementTimeout: Duration = 30.seconds,
+    writer: Option[TransactorZIO] = None,
 ) extends AuditEventRepository,
     AuditReadRepository,
     BasicCodecs:
@@ -37,10 +40,11 @@ class PostgresAuditEventRepository(
   override def insertBatch(events: List[AuditEvent]): Task[Unit] =
     if events.isEmpty then ZIO.unit
     else
-      xa.transactMeasured("insert-audit-events"):
+      val insert = writer.getOrElse(xa).transactMeasured("insert-audit-events"):
         timed()
         AuditInsert.insertBatch(events, table = PostgresAuditEventRepository.Table)
-      .unit
+      // A refusal of the writer's own role is named as such; the owner's pool is left as it was.
+      (if writer.isEmpty then insert else insert.mapError(AuditWriterPool.classify)).unit
 
   override def maintainPartitions(from: LocalDate, days: Int, keepFrom: LocalDate): Task[PartitionReport] =
     partitions.maintain(xa, from, days, keepFrom)
@@ -186,8 +190,10 @@ object PostgresAuditEventRepository:
       label = Some("audit"),
     )
 
-  val live: ZLayer[TransactorZIO, Nothing, AuditEventRepository & AuditReadRepository] =
-    ZLayer.fromFunction((xa: TransactorZIO) => PostgresAuditEventRepository(xa, partitions)).flatMap: env =>
+  val live: ZLayer[TransactorZIO & AuditWriterPool, Nothing, AuditEventRepository & AuditReadRepository] =
+    ZLayer.fromFunction((xa: TransactorZIO, pool: AuditWriterPool) =>
+      PostgresAuditEventRepository(xa, partitions, writer = pool.transactor),
+    ).flatMap: env =>
       ZLayer.succeedEnvironment(
         zio.ZEnvironment[AuditEventRepository, AuditReadRepository](env.get, env.get),
       )

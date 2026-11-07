@@ -87,7 +87,7 @@ import versola.util.SequentialLayers.*
 import versola.util.audit.{AuditEventRepository, AuditEvents}
 import versola.util.http.VersolaApp
 import versola.util.net.{AsnResolver, AsnSettings, GeoResolver, GeoSettings}
-import versola.util.postgres.{PostgresConfig, PostgresConfigSnapshotRepository, PostgresHikariDataSource, PostgresWalMetrics}
+import versola.util.postgres.{AuditWriterPool, PostgresConfig, PostgresConfigSnapshotRepository, PostgresHikariDataSource, PostgresWalMetrics}
 import versola.util.revocation.{PostgresRevocationNotifications, RevocationCache}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
@@ -291,6 +291,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresPasskeyRepository.live >++>
       PostgresChallengeThrottleRepository.live >++>
       PostgresAntifraudEventRepository.live >++>
+      AuditWriterPool.live("auth", AuthAudit.source, PostgresAuditEventRepository.Table) >++>
       PostgresAuditEventRepository.live >++>
       PostgresVelocityRepository.live >++>
       PostgresAntifraudCounterResetRepository.live >++>
