@@ -7,7 +7,7 @@ import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.ConversationRenderService
-import versola.oauth.model.SessionCookie
+import versola.oauth.model.{SessionCookie, State}
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentId}
 import versola.user.model.UserId
@@ -79,6 +79,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       sub: String = "user-1",
       expiresInSeconds: Long = 3600,
       issuer: String = TestEnvConfig.coreConfig.jwt.issuer,
+      audience: String = "test-client",
       signingKey: RSAPrivateKey = TestEnvConfig.privateKey,
   ): String =
     val header = new JWSHeader.Builder(JWSAlgorithm.RS256).keyID("test-key-id").`type`(JOSEObjectType.JWT).build()
@@ -86,7 +87,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       .subject(sub)
       .claim("sid", sid)
       .issuer(issuer)
-      .audience("test-client")
+      .audience(audience)
       .jwtID(UUID.randomUUID().toString)
       .expirationTime(java.util.Date.from(Instant.now().plusSeconds(expiresInSeconds)))
       .build()
@@ -329,6 +330,49 @@ object LogoutControllerSpec extends UnitSpecBase:
             Some("st-9"),
             None,
           )),
+        )),
+    ),
+    controllerTestCase(
+      description =
+        "GET /logout with a stale id_token_hint of another user and another client still asks for confirmation and ends nothing",
+      request = Request.get(
+        (URL.root / "logout").addQueryParam(
+          "id_token_hint",
+          idTokenHint(sid = "other-sid", sub = "00000000-0000-0000-0000-00000000dead", audience = "another-client"),
+        ),
+      ).addHeader(sessionCookieHeader()),
+      expectedStatus = Status.Ok,
+      setup = (_, renderService, sessionService) =>
+        sessionService.find.succeedsWith(Some(sessionInfo)) *>
+          renderService.renderLogoutConfirm.succeedsWith(Response.text("<html>confirm</html>")),
+      verify = (response, logoutService, renderService, _) =>
+        ZIO.succeed(assertTrue(
+          logoutService.logout.calls.isEmpty,
+          renderService.renderLogout.calls.isEmpty,
+          renderService.renderLogoutConfirm.calls == List((sessionInfo, csrfToken(rawSessionId), None, None, None)),
+          response.headers.get(Header.SetCookie).isEmpty,
+        )),
+    ),
+    controllerTestCase(
+      description =
+        "POST /logout confirming after a hint mismatch passes the post_logout_redirect_uri and state to LogoutService, and clears the cookie",
+      request = Request.post(
+        URL.root / "logout",
+        Body.fromURLEncodedForm(Form.fromStrings(
+          "csrf_token" -> csrfToken(rawSessionId, Some(redirectUri.encode), Some("st-9")),
+          "post_logout_redirect_uri" -> redirectUri.encode,
+          "state" -> "st-9",
+        )),
+      ).addHeader(sessionCookieHeader()),
+      expectedStatus = Status.Ok,
+      setup = (logoutService, renderService, sessionService) =>
+        sessionService.find.succeedsWith(Some(sessionInfo)) *>
+          logoutService.logout.succeedsWith(logoutResult) *>
+          renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
+      verify = (response, logoutService, _, _) =>
+        ZIO.succeed(assertTrue(
+          logoutService.logout.calls === List((Right(rawSessionId), Some(redirectUri), Some(State("st-9")))),
+          response.headers.get(Header.SetCookie).exists(_.renderedValue.contains("Max-Age=0")),
         )),
     ),
     controllerTestCase(
