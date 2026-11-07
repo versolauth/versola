@@ -2,8 +2,9 @@ package versola.oauth.revocation
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
+import org.postgresql.PGConnection
 import versola.oauth.client.model.TenantId
-import versola.util.postgres.PostgresSpec
+import versola.util.postgres.{PostgresConfig, PostgresSpec}
 import versola.util.revocation.{
   PostgresRevocationNotifications,
   Revocation,
@@ -15,6 +16,8 @@ import versola.util.revocation.{
 import zio.*
 import zio.test.*
 
+import java.nio.charset.StandardCharsets
+import java.sql.DriverManager
 import java.time.Instant
 
 /** Binds [[RevocationRepositorySpec]] to auth's `auth_revocations` table. The cases below are what
@@ -68,6 +71,35 @@ object PostgresAuthRevocationRepositorySpec extends PostgresSpec, RevocationRepo
             )
         yield assertTrue(PostgresRevocationNotifications.parseNotification(payload).contains(written))
       } @@ TestAspect.withLiveClock,
+      // Read off the channel by a session of its own, as a replica does: the trigger's real output, not the same expression rebuilt here.
+      // The config is provided around the suite, not inside the test: a test reads the environment through `TestSystem`, which has no
+      // `POSTGRES_HOST`, and would open its own session on the default host instead of the one the transactor uses.
+      suite("the notification of a write")(
+        test("carries the bound truncated to its second, not rounded up to the next one") {
+          // A fraction past a half: `::bigint` of the epoch rounds, which put every token minted in the second after the revocation
+          // on the revoked side of the bound (`iat` is whole seconds and the boundary second belongs to the revocation).
+          val written = Revocation(
+            RevocationKey.Sub("user-2"),
+            Instant.ofEpochSecond(2_000_000_000L),
+            Some(Instant.ofEpochSecond(1_999_999_000L, 700_000_000L)),
+          )
+          ZIO.scoped:
+            for
+              config <- ZIO.service[PostgresConfig]
+              xa <- ZIO.service[TransactorZIO]
+              listener <- ZIO.acquireRelease(
+                ZIO.attemptBlocking(DriverManager.getConnection(config.url, config.user, new String(config.password, StandardCharsets.UTF_8))),
+              )(connection => ZIO.attemptBlocking(connection.close()).ignore)
+              _ <- ZIO.attemptBlocking(listener.createStatement().execute(s"LISTEN ${PostgresAuthRevocationRepository.Table.channel}"))
+              _ <- PostgresAuthRevocationRepository(xa).revoke(written, RevocationCause.UserDeleted, None)
+              payload <- ZIO.attemptBlocking:
+                listener.unwrap(classOf[PGConnection]).getNotifications(5000).map(_.getParameter).find(_.contains("user-2"))
+            yield assertTrue(
+              payload.flatMap(PostgresRevocationNotifications.parseNotification(_)).flatMap(_.issuedBefore) ==
+                Some(Instant.ofEpochSecond(1_999_999_000L)),
+            )
+        } @@ TestAspect.withLiveClock,
+      ).provideSomeLayer[RevocationRepositorySpec.Env & TransactorZIO & Scope](PostgresSpec.config),
       // The feed an edge pulls (GET /revocations): the tenant column exists only in this table, so these are
       // this storage's to promise rather than the trait's.
       test("the feed serves a tenant's rows and the rows of no tenant, and not another tenant's") {
