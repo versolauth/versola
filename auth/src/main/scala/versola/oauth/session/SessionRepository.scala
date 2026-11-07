@@ -84,11 +84,16 @@ trait SessionRepository:
   /** Expires in place every live refresh token `clientId` holds for the user -- the client's
     * offline access, revoked by an administrator. Sessions are left alone: the user stays
     * signed in, and the client can obtain a new grant by sending them through `/authorize`
-    * again. Returns how many tokens were live. */
+    * again.
+    *
+    * Records `fam:<family>` for every family it ends, in the same transaction and under the family's
+    * lock, so the access tokens those grants already issued stop being accepted too. Returns the
+    * families, for the caller to tell the client's back channel; none when nothing was live. */
   def revokeRefreshTokensByUserAndClient(
       userId: UserId,
       clientId: ClientId,
-  ): Task[Int]
+      revocation: RevocationTerms,
+  ): Task[List[RefreshTokenFamilyId]]
 
   /** The three ways of ending one session below record `sid:<its public id>` in the same
     * transaction, and only when a session was actually ended: ending one that is gone already

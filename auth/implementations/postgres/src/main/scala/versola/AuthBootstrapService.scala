@@ -1,12 +1,14 @@
 package versola
 
-import versola.util.SequentialLayers.*
-import versola.oauth.challenge.password.PasswordRepository
-import versola.oauth.client.model.TenantId
-import versola.role.model.RoleId
 import versola.antifraud.{AntifraudSettingsRepository, Tuning}
+import versola.oauth.challenge.password.PasswordRepository
+import versola.oauth.challenge.password.model.PasswordChangeEffect
+import versola.oauth.client.model.TenantId
+import versola.oauth.revocation.{RevocationCause, RevocationTerms}
+import versola.role.model.RoleId
 import versola.user.UserRepository
 import versola.user.model.{Login, UserId}
+import versola.util.SequentialLayers.*
 import versola.util.{CoreConfig, EnvName, Phone, Salt, Secret, SecureRandom, SecurityService}
 import zio.{Clock, Task, ZIO, ZLayer}
 
@@ -75,6 +77,8 @@ object AuthBootstrapService:
             tenantId = TenantId.default,
             add = Set(RoleId("oauth-admin")),
             remove = Set.empty,
+            // Only adds a role, which revokes nothing: the terms are never written.
+            revocation = RevocationTerms.widest(RevocationCause.RolesChanged, Map.empty),
           )
           now <- Clock.instant
           passwords <- passwordRepo.list(userId)
@@ -88,7 +92,7 @@ object AuthBootstrapService:
               salt <- secureRandom.nextBytes(16).map(Salt(_))
               hash <- securityService.hashPassword(Secret.fromString(cfg.password), salt, config.security.passwordsSecret)
               expiresAt = now.plusSeconds(BootstrapPasswordTtlSeconds)
-              _ <- passwordRepo.createTemporary(userId, Secret(hash), salt, expiresAt)
+              _ <- passwordRepo.createTemporary(userId, Secret(hash), salt, expiresAt, change = PasswordChangeEffect.Untouched)
               _ <- ZIO.logInfo(s"Set temporary bootstrap password for admin user '${cfg.login}'")
             yield ()
         yield ()

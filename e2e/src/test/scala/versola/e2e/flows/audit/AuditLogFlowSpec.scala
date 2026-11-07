@@ -95,12 +95,19 @@ object AuditLogFlowSpec extends E2ESpec:
 
   private def kinds(rows: List[Row]): List[String] = rows.map(_.kind)
 
+  /** The rows of a whole case that signs in and logs out: waited for together, not the logout alone. The writer batches, and a wait that is
+    * satisfied by the last row alone returns while the sign-in's rows are still in the batch before it, or satisfied by a row of the previous
+    * case, which shares the user, before this case's own rows exist at all. */
+  private def signedInAndOut(rows: List[Row]): Boolean =
+    List("login.completed", "token.issued", "session.ended").forall(kinds(rows).contains)
+
   def spec = suite("Audit log")(
     test("a sign-in, its tokens, a revocation and a logout are stored in order and served per user") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
-        // the stack runs on this machine, so the clocks agree; the user is shared by the cases of this spec, so only what follows this instant is theirs
-        started = Instant.now.minusMillis(200)
+        // the stack runs on this machine, so the clocks agree; the user is shared by the cases of this spec, so only what follows this instant is theirs.
+        // Not backdated: a margin would reach back into the previous case, whose last rows (its logout) would then be in this case's window
+        started = Instant.now
         userId = s.userId.toString
         session <- login(s, auth)
         // RFC 6749 §6: the refresh grant (not an event by default, `audit.events.token-refresh = false`), then RFC 7009: the refresh token revoked, then OIDC RP-Initiated Logout
@@ -108,7 +115,7 @@ object AuditLogFlowSpec extends E2ESpec:
         refreshedRefresh <- ZIO.fromOption(refreshed.refreshToken).orElseFail(RuntimeException("expected the rotated refresh token"))
         revoked <- auth.revoke(refreshedRefresh, s.clientId, s.clientSecret, tokenTypeHint = Some("refresh_token"))
         logout <- auth.logoutWithIdTokenHint(session.idToken)
-        rows <- awaitRows(auth, userId, started)(r => kinds(r).contains("session.ended") && kinds(r).contains("token.revoked"))
+        rows <- awaitRows(auth, userId, started)(r => signedInAndOut(r) && kinds(r).contains("token.revoked"))
         // oldest first, the order things happened in
         story = rows.reverse
       yield assertTrue(
@@ -137,11 +144,11 @@ object AuditLogFlowSpec extends E2ESpec:
     test("the summary counts the same session: by kind and client, with the address and user agent, sessions and the factors") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
-        started = Instant.now.minusMillis(200)
+        started = Instant.now
         userId = s.userId.toString
         session <- login(s, auth)
         _ <- auth.logoutWithIdTokenHint(session.idToken)
-        _ <- awaitRows(auth, userId, started)(r => kinds(r).contains("session.ended"))
+        _ <- awaitRows(auth, userId, started)(signedInAndOut)
         response <- auth.auditGet(s"/users/audit-summary?id=$userId&from=$started")
         body <- response.body.asString
         json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
@@ -167,11 +174,11 @@ object AuditLogFlowSpec extends E2ESpec:
     test("pages by cursor without repeating or missing a row") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
-        started = Instant.now.minusMillis(200)
+        started = Instant.now
         userId = s.userId.toString
         session <- login(s, auth)
         _ <- auth.logoutWithIdTokenHint(session.idToken)
-        all <- awaitRows(auth, userId, started)(r => kinds(r).contains("session.ended"))
+        all <- awaitRows(auth, userId, started)(signedInAndOut)
         first <- page(auth, userId, s"&from=$started&limit=2")
         second <- page(auth, userId, s"&from=$started&limit=2&cursor=${first.nextCursor.getOrElse("")}")
         rest <- ZIO.iterate((second.nextCursor, List.empty[Row]))(_._1.isDefined): (cursor, acc) =>

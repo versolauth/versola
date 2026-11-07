@@ -8,7 +8,7 @@ import org.scalamock.stubs.ZIOStubs
 import versola.edge.dpop.{DpopPolicyService, DpopReplayGuard, DpopVerifier}
 import versola.edge.login.LoginRepository
 import versola.edge.model.*
-import versola.edge.revocation.{RevocationKey, TokenRevocationService}
+import versola.edge.revocation.TokenRevocationService
 import versola.util.cel.CelEvaluator
 import versola.util.http.{
   Checkpoint,
@@ -24,6 +24,7 @@ import versola.util.http.{
   RateLimitWindow,
   RateLimiter,
 }
+import versola.util.revocation.RevocationKey
 import versola.util.{
   DpopNonce,
   EcKeyPair,
@@ -1452,6 +1453,63 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         upstream.exists(_.headers.get("x-order").contains("123")),
       )
     },
+    // A segment is decoded before the route hands it over: an encoded slash would add a segment to what is matched while the resource is
+    // sent one segment fewer, so the endpoint the permissions were checked for is not the one it routes to.
+    test("refuses a path whose segment holds a separator, so the segments matched are the segments sent") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(tenantOrderEndpoint(), userByIdEndpoint()))
+        token <- env.signToken()
+        service = env.buildService(client, security)
+        responses <- ZIO.foreach(
+          List(
+            Path.root / "tenants" / "acme/orders" / "123",
+            Path.root / "tenants" / "acme\\orders" / "123",
+            Path.root / "tenants" / "acme%2Forders" / "123",
+            Path.root / "users" / "..;x",
+            Path.root / "users" / "%2e%2e",
+            Path.root / "users" / "a\u0000b",
+          ),
+        ): path =>
+          service.proxy(ResourceId("users-api"), path, Request.get(URL.empty).addCookie(sessionCookie(token)))
+        upstream <- capture.get
+      yield assertTrue(responses.forall(_.status == Status.NotFound), upstream.isEmpty)
+    },
+    test("answers a caller without a valid token 401 for a path it refuses, like any other path") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(userByIdEndpoint()))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.root / "users" / "a/b", Request.get(URL.empty))
+      yield assertTrue(response.status == Status.Unauthorized)
+    },
+    test("still matches a segment that merely contains a dot, a space or a semicolon") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(userByIdEndpoint(inject =
+          Vector(InjectRule(InjectTarget.header, "x-resource-id", "request.path.params.id")),
+        )))
+        token <- env.signToken()
+        service = env.buildService(client, security)
+        response <- service.proxy(
+          ResourceId("users-api"),
+          Path.root / "users" / "a.b c;d",
+          Request.get(URL.empty).addCookie(sessionCookie(token)),
+        )
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.Ok, upstream.exists(_.headers.get("x-resource-id").contains("a.b c;d")))
+    },
     test("reports the registered template, not the concrete path, as the metric route") {
       val env = new Env
       for
@@ -2221,6 +2279,60 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response.header(Header.Location).exists(_.url.encode == s"/login/${presetId}"),
         setCookieHeader.exists(c => c.name == EdgeSessionCookie.name && c.content.isEmpty),
         setCookieHeader.flatMap(_.maxAge).contains(Duration.Zero),
+      )
+    },
+    // A token revoked on its own would otherwise come back through the refresh: auth, whose family and session are
+    // still live, grants it, and only the new token's claims were checked.
+    test("does not refresh an expired cookie token that was revoked, and never presents the refresh token to auth") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.withClients(oauthClient)
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        _ <- env.revocationService.isRevoked.returnsZIO((keys, _) => ZIO.succeed(keys.contains(RevocationKey.Jti(AccessTokenId("old-jti")))))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        setCookieHeader = response.header(Header.SetCookie).map(_.value)
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        response.header(Header.Location).exists(_.url.encode == s"/login/${presetId}"),
+        setCookieHeader.exists(c => c.name == EdgeSessionCookie.name && c.content.isEmpty),
+        env.sessionRepository.claimRefresh.calls.isEmpty,
+        env.ssoClient.exchangeRefreshToken.calls.isEmpty,
+        // asked about the keys of the old token's claims
+        env.revocationService.isRevoked.calls.map(_._1).headOption.contains(
+          List(
+            RevocationKey.Jti(AccessTokenId("old-jti")),
+            RevocationKey.Sid(SessionId("sso-session-1")),
+            RevocationKey.Sub("user-1"),
+          ),
+        ),
+      )
+    },
+    test("does not refresh an expired cookie token whose session was revoked") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.withClients(oauthClient)
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        _ <- env.revocationService.isRevoked.returnsZIO((keys, _) => ZIO.succeed(keys.contains(RevocationKey.Sid(SessionId("sso-session-1")))))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        env.sessionRepository.claimRefresh.calls.isEmpty,
+        env.ssoClient.exchangeRefreshToken.calls.isEmpty,
       )
     },
     unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token was sealed under another key")((security, _) =>

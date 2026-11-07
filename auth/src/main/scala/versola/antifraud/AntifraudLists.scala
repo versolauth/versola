@@ -1,6 +1,7 @@
 package versola.antifraud
 
 import versola.oauth.client.model.TenantId
+import versola.util.http.ShutdownBudget
 import zio.*
 import zio.metrics.{Metric, MetricLabel}
 
@@ -435,7 +436,7 @@ object AntifraudLists:
           .when(!loaded.contains(true))
         _ <- (ZIO.sleep(if loaded.contains(true) then settings.refreshInterval else 1.second) *> refresh).forever.forkScoped
         _ <- (ZIO.sleep(policy.hitFlushInterval) *> flushHits *> cleanUp).forever.forkScoped
-        _ <- ZIO.addFinalizer(flushHits.timeout(5.seconds))
+        _ <- ZIO.addFinalizer(ShutdownBudget.within(5.seconds)(flushHits))
       yield ()
 
 object AntifraudListMetrics:

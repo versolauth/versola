@@ -35,6 +35,32 @@ object ThrottlePolicySpec extends UnitSpecBase:
       banDuration: Long = banDurationSeconds,
   ) = ThrottlePolicy.nextState(recordOpt, tenantId, subject, ChallengeType.OtpSubmit, at, limits, banDuration)
 
+  private def reserveAt(recordOpt: Option[ChallengeThrottleRecord]) =
+    ThrottlePolicy.reserve(
+      recordOpt = recordOpt,
+      tenantId = tenantId,
+      subject = subject,
+      challengeType = ChallengeType.OtpSubmit,
+      now = now,
+      wLimits = wLimits,
+      banDurationSeconds = banDurationSeconds,
+    )
+
+  /** The charge `ThrottlePolicy.reserve` makes against `previous`, as the repository would report it. */
+  private def charge(previous: Option[ChallengeThrottleRecord]): Reservation.Granted =
+    reserveAt(previous) match
+      case Right((applied, status)) =>
+        Reservation.Granted(
+          tenantId = tenantId,
+          subject = subject,
+          challengeType = ChallengeType.OtpSubmit,
+          after = status,
+          reservedAt = now,
+          previous = previous,
+          applied = applied,
+        )
+      case Left(status) => throw new IllegalStateException(s"expected the attempt to be granted, got $status")
+
   val spec = suite("ThrottlePolicy")(
     suite("nextState")(
       test("first attempt for a new key appends a single entry and returns Allowed") {
@@ -142,6 +168,89 @@ object ThrottlePolicySpec extends UnitSpecBase:
         val bad = NonEmptyChunk(RateLimit(maxAttempts = -1, windowSeconds = 60))
         val rec = record(Nil, None, now)
         assertTrue(scala.util.Try(ThrottlePolicy.evaluate(rec, bad, now)).isFailure)
+      },
+    ),
+    suite("reserve")(
+      test("charges the attempt, like nextState, when no record exists") {
+        val reserved = reserveAt(None)
+        assertTrue(reserved == Right(next(None)))
+      },
+      test("charges the attempt that reaches the short window: the status is reported, the attempt is not refused") {
+        val reserved = reserveAt(Some(record(List(nowEpoch - 2, nowEpoch - 1), None, now.plusSeconds(3600))))
+        assertTrue(
+          reserved.exists(_._1.attempts == List(nowEpoch - 2, nowEpoch - 1, nowEpoch)),
+          reserved.exists(_._2.isInstanceOf[LimitStatus.RateLimited]),
+        )
+      },
+      test("refuses with RateLimited, writing nothing, once the short window is full") {
+        val reserved = reserveAt(Some(record(List.fill(3)(nowEpoch - 1), None, now.plusSeconds(3600))))
+        assertTrue(reserved.left.exists(_.isInstanceOf[LimitStatus.RateLimited]))
+      },
+      test("refuses with Banned while a ban is active") {
+        val reserved = reserveAt(Some(record(Nil, Some(now.plusSeconds(600)), now.plusSeconds(600))))
+        assertTrue(reserved == Left(LimitStatus.Banned))
+      },
+      test("charges again after the short window has slid past the old attempts") {
+        val reserved = reserveAt(Some(record(List.fill(3)(nowEpoch - 61), None, now.plusSeconds(3600))))
+        assertTrue(reserved.exists(_._2 == LimitStatus.Allowed))
+      },
+    ),
+    suite("refund")(
+      test("restores the previous row when the row is still exactly what the charge wrote") {
+        val previous = record(List(nowEpoch - 5), None, now.plusSeconds(3600))
+        val charged = charge(Some(previous))
+        assertTrue(ThrottlePolicy.refund(charged.applied, charged) == Some(previous))
+      },
+      test("deletes the row when the charge created it") {
+        val charged = charge(None)
+        assertTrue(ThrottlePolicy.refund(charged.applied, charged).isEmpty)
+      },
+      test("lifts a ban that the charge itself applied") {
+        val tight = NonEmptyChunk(RateLimit(maxAttempts = 1, windowSeconds = 3600))
+        val (applied, status) = ThrottlePolicy.nextState(None, tenantId, subject, ChallengeType.OtpSubmit, now, tight, banDurationSeconds)
+        val charged = Reservation.Granted(
+          tenantId = tenantId,
+          subject = subject,
+          challengeType = ChallengeType.OtpSubmit,
+          after = status,
+          reservedAt = now,
+          previous = None,
+          applied = applied,
+        )
+        assertTrue(status == LimitStatus.Banned, ThrottlePolicy.refund(applied, charged).isEmpty)
+      },
+      test("lifts the ban although storage kept the ban time to the nearest microsecond only") {
+        val tight = NonEmptyChunk(RateLimit(maxAttempts = 1, windowSeconds = 3600))
+        val at = now.plusNanos(123_456_789)
+        val (applied, status) = ThrottlePolicy.nextState(None, tenantId, subject, ChallengeType.OtpSubmit, at, tight, banDurationSeconds)
+        // as Postgres stores it: rounded to the microsecond (…123456789 ns becomes …123457 µs)
+        val stored = applied.copy(bannedUntil = applied.bannedUntil.map(at => at.truncatedTo(java.time.temporal.ChronoUnit.MICROS).plusNanos(1000)))
+        val charged = Reservation.Granted(
+          tenantId = tenantId,
+          subject = subject,
+          challengeType = ChallengeType.OtpSubmit,
+          after = status,
+          reservedAt = at,
+          previous = None,
+          applied = applied,
+        )
+        assertTrue(stored.bannedUntil != applied.bannedUntil, ThrottlePolicy.refund(stored, charged).isEmpty)
+      },
+      test("drops only its own attempt from a row that has moved on") {
+        val charged = charge(Some(record(List(nowEpoch - 5), None, now.plusSeconds(3600))))
+        val moved = charged.applied.copy(attempts = charged.applied.attempts :+ (nowEpoch + 1))
+        val refunded = ThrottlePolicy.refund(moved, charged)
+        assertTrue(refunded.exists(_.attempts == List(nowEpoch - 5, nowEpoch + 1)))
+      },
+      test("drops one occurrence when two attempts share the timestamp") {
+        val charged = charge(Some(record(List(nowEpoch), None, now.plusSeconds(3600))))
+        val moved = charged.applied.copy(attempts = charged.applied.attempts :+ nowEpoch)
+        assertTrue(ThrottlePolicy.refund(moved, charged).exists(_.attempts == List(nowEpoch, nowEpoch)))
+      },
+      test("leaves a row alone that no longer holds the attempt") {
+        val charged = charge(None)
+        val expired = charged.applied.copy(attempts = Nil)
+        assertTrue(ThrottlePolicy.refund(expired, charged) == Some(expired))
       },
     ),
   )
