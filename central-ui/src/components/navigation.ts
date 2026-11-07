@@ -6,7 +6,7 @@ import './tenant-selector';
 import './theme-switcher';
 
 export type NavItem = 'security' | 'clients' | 'resources' | 'scopes' | 'permissions' | 'roles' | 'otp-templates' | 'authorization-details'
-  | 'tenants' | 'edges' | 'users' | 'keys' | 'system-settings' | 'delivery' | 'forms' | 'themes';
+  | 'tenants' | 'edges' | 'users' | 'keys' | 'system-settings' | 'delivery' | 'forms' | 'themes' | 'preferences';
 
 @customElement('versola-navigation')
 export class VersolaNavigation extends LitElement {
@@ -350,6 +350,8 @@ export class VersolaNavigation extends LitElement {
       case 'forms':
       case 'themes':
         return p.has('forms:read');
+      case 'preferences':
+        return p.has('preferences:manage');
       default:
         return false;
     }
@@ -424,6 +426,7 @@ export class VersolaNavigation extends LitElement {
             <span>Theme</span>
             <versola-theme-switcher></versola-theme-switcher>
           </div>
+          ${this.navItem('preferences', 'Preferences')}
           <a class="nav-item" href=${this.accountSettingsUrl}>My Security</a>
           <a class="nav-item" href=${this.logoutUrl}>Log out</a>
         </div>

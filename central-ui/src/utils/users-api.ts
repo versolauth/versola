@@ -459,3 +459,33 @@ export async function fetchUserAudit(userId: string, query: UserAuditQuery = {},
   }
   return parseUserAuditReport(await response.json());
 }
+
+/** The calling administrator's own preferences (`GET /users/preferences`): the `zoneinfo` of their profile, `null` when none is stored. */
+export type MyPreferences = { zoneinfo: string | null };
+
+export async function fetchMyPreferences(): Promise<MyPreferences> {
+  const response = await fetch(proxyUrl('/users/preferences').toString(), {
+    headers: { Accept: 'application/json' },
+    credentials: 'include',
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body.trim() || `Failed to load your preferences (${response.status})`);
+  }
+  const data = (await response.json()) as { zoneinfo?: unknown };
+  return { zoneinfo: typeof data.zoneinfo === 'string' ? data.zoneinfo : null };
+}
+
+/** Sets the time zone of the caller's own profile, or clears it with `null`. Central refuses a name that is not in the time zone database (400). */
+export async function saveMyZoneinfo(zoneinfo: string | null): Promise<void> {
+  const response = await fetch(proxyUrl('/users/preferences').toString(), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ zoneinfo }),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body.trim() || `Failed to save the time zone (${response.status})`);
+  }
+}

@@ -964,6 +964,20 @@ const consoleShots: DocsShot[] = [
     },
   },
 
+  // Preferences (the signed-in administrator's own settings)
+  {
+    name: 'console/preferences', kind: 'frame', path: '/?view=preferences', state: { myZoneinfo: 'Asia/Almaty' },
+    before: async page => { await expect(page.getByRole('region', { name: 'Time zone' })).toContainText('Asia/Almaty'); },
+  },
+  {
+    name: 'console/preferences-edit', kind: 'frame', path: '/?view=preferences', state: { myZoneinfo: 'Asia/Almaty' },
+    before: async page => {
+      await page.getByRole('button', { name: 'Edit time zone' }).click();
+      await page.getByRole('combobox', { name: 'Time zone' }).fill('almaty');
+      await expect(page.getByRole('option', { name: 'Asia/Almaty (UTC+5)' })).toBeVisible();
+    },
+  },
+
   // System settings
   {
     name: 'console/system-settings', kind: 'frame', path: '/?view=system-settings', state: systemSettingsState,

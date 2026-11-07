@@ -79,13 +79,13 @@ object AuditHook:
   /** The caller, from the parameters edge injected; a call that has none, or an `actorId` that is no user id and no client, is a
     * service's and is counted. */
   private def actorOf(request: Request): UIO[Actor] =
-    def param(name: String): Option[String] = queryValue(request, name).map(_.trim).filter(_.nonEmpty).map(clipped)
+    def param(name: String): Option[String] = actorParam(request, name)
     val sub = param(ActorIdParam)
     val tenant = param(ActorTenantParam).map(TenantId(_))
     val client = param(ActorClientParam).map(ClientId(_))
     val session = param(ActorSessionParam)
     // A client credentials token's subject is the client itself.
-    val isClient = sub.exists(id => client.contains(ClientId(id)))
+    val isClient = isClientSubject(sub, client)
     val admin = sub.filterNot(_ => isClient).flatMap(UserId.parse(_).toOption)
     val actor =
       if isClient then Actor(CentralAudit.Actors.Client, sub, tenant, client, session)
@@ -200,6 +200,19 @@ object AuditHook:
       logContext.get.map(_.get(Observability.error).map(_.code)).map: code =>
         val reason = Some(code.getOrElse(s"http_${status.code}"))
         if status == Status.Unauthorized || status == Status.Forbidden then (AuditOutcome.denied, reason) else (AuditOutcome.failure, reason)
+
+  private def actorParam(request: Request, name: String): Option[String] =
+    queryValue(request, name).map(_.trim).filter(_.nonEmpty).map(clipped)
+
+  private def isClientSubject(sub: Option[String], client: Option[ClientId]): Boolean = sub.exists(id => client.contains(ClientId(id)))
+
+  /** The administrator a call is made by, as the audit log reads it: the user the `sub` of the caller's token names. Nobody for a call
+    * edge did not tell the actor of, for one of a client credentials token, and for a `sub` that is no user id. A route that acts on
+    * the caller's own record (`GET`/`PATCH /users/preferences`) takes the user from here and from nowhere else, so what the caller sent
+    * in a body or under another name is never the subject. */
+  def administrator(request: Request): Option[UserId] =
+    val sub = actorParam(request, ActorIdParam)
+    sub.filterNot(_ => isClientSubject(sub, actorParam(request, ActorClientParam).map(ClientId(_)))).flatMap(UserId.parse(_).toOption)
 
   private def queryValue(request: Request, name: String): Option[String] =
     request.url.queryParams.map.get(name).flatMap(_.headOption)

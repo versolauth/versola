@@ -28,7 +28,7 @@ import {
   type SummaryCard,
   type UserAuditReport,
 } from '../utils/user-audit';
-import { getStoredZoneChoice, resolveZone, setStoredZoneChoice, type ZoneChoice } from '../utils/zone-preference';
+import { effectiveZoneChoice, getProfileZone, getStoredZoneChoice, onProfileZoneChange, resolveZone, setStoredZoneChoice, type ZoneChoice } from '../utils/zone-preference';
 import { resultBadge, resultBadgeStyles, countryLabel } from './activity-shared';
 import { statusIcon } from './status-icon';
 import type { VersolaActivityTimeline, TimelineState } from './activity-timeline';
@@ -61,7 +61,11 @@ export class VersolaUserActivity extends LitElement {
   @state() private loadState: TimelineState = 'loading';
   @state() private errorMessage = '';
   @state() private forbidden = false;
-  @state() private zoneChoice: ZoneChoice = getStoredZoneChoice();
+  /** What this browser remembers of an explicit switch; `null` leaves the choice to the profile zone. */
+  @state() private storedZoneChoice: ZoneChoice | null = getStoredZoneChoice();
+  /** The administrator's own zone (the `zoneinfo` of their profile), `null` when there is none. */
+  @state() private profileZone: string | null = getProfileZone();
+  private stopProfileZone?: () => void;
   @state() private updatedAt: Date | null = null;
   @state() private rangeOpen = false;
   @state() private rangeProblem = '';
@@ -322,8 +326,27 @@ export class VersolaUserActivity extends LitElement {
   }
 
   private setZone(choice: ZoneChoice) {
-    this.zoneChoice = choice;
+    this.storedZoneChoice = choice;
     setStoredZoneChoice(choice);
+  }
+
+  private get zoneChoice(): ZoneChoice {
+    return effectiveZoneChoice(this.storedZoneChoice, this.profileZone);
+  }
+
+  override connectedCallback() {
+    super.connectedCallback();
+    // The zone saved under Preferences shows without a reload, and so does a zone cleared there.
+    this.stopProfileZone = onProfileZoneChange(() => {
+      this.profileZone = getProfileZone();
+      this.storedZoneChoice = getStoredZoneChoice();
+    });
+    this.profileZone = getProfileZone();
+  }
+
+  override disconnectedCallback() {
+    this.stopProfileZone?.();
+    super.disconnectedCallback();
   }
 
   private applyCard(card: SummaryCard) {
@@ -387,8 +410,17 @@ export class VersolaUserActivity extends LitElement {
 
   // ── drawing ───────────────────────────────────────────────────────────
 
+  /** Which zone the times are in and why, for the line under the report. */
+  private get zoneNote(): string {
+    switch (this.zoneChoice) {
+      case 'utc': return 'Times are shown in UTC.';
+      case 'zone': return `Times are shown in your time zone from Preferences (${this.zone}).`;
+      default: return `Times are shown in your browser's time zone (${this.zone}).`;
+    }
+  }
+
   private get zone(): string {
-    return resolveZone(this.zoneChoice);
+    return resolveZone(this.zoneChoice, this.profileZone);
   }
 
   private when(at: string): string {
@@ -546,6 +578,7 @@ export class VersolaUserActivity extends LitElement {
         .errorMessage=${this.errorMessage}
         .zone=${this.zone}
         .zoneChoice=${this.zoneChoice}
+        .profileZone=${this.profileZone}
         .filters=${view.filters}
         .limit=${view.limit}
         .cursors=${view.cursors}
@@ -565,7 +598,7 @@ export class VersolaUserActivity extends LitElement {
       ></versola-activity-timeline>
 
       <p class="footnote">
-        ${this.zoneChoice === 'utc' ? 'Times are shown in UTC.' : `Times are shown in your browser's time zone (${this.zone}).`} Hover a time to see both.
+        ${this.zoneNote} Hover a time to see both.
         Opening this report is recorded in the audit log.${showsCountry ? html` Countries are looked up when the report is opened. IP Geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a>.` : nothing}
       </p>
 

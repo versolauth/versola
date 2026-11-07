@@ -273,6 +273,10 @@ object BootstrapService:
 
   private val accountPermission: Permission = Permission("auth-settings:manage")
 
+  /** The administrator's own console preferences (the time zone the console shows times in). Like the account page it belongs to whoever
+    * holds the account, so every seeded role has it; the calls act on the caller alone (`users.UserController`). */
+  private val preferencesPermission: Permission = Permission("preferences:manage")
+
   /** Query/body parameter names edge injects the caller's token claims under. Must match
     * what `AccountSettingsController` in auth reads them back as. */
   private val accountCallerQueryInjects = Vector(
@@ -631,6 +635,11 @@ object BootstrapService:
       serviceEndpointIds,
     ),
     (accountPermission, localized("Manage own account", "Управление своим аккаунтом"), accountEndpointIds),
+    (
+      preferencesPermission,
+      localized("Manage own console preferences", "Управление своими настройками консоли"),
+      Set(endpointId("GET", "/users/preferences"), endpointId("PATCH", "/users/preferences")),
+    ),
   )
 
   private val allPermissions: List[Permission] = permissionCatalog.map(_._1)
@@ -657,28 +666,35 @@ object BootstrapService:
           "antifraud:read",
           "antifraud:manage",
           "audit:read",
-        ).map(Permission(_)) :+ accountPermission,
+        ).map(Permission(_)) :+ accountPermission :+ preferencesPermission,
       ),
       (
         RoleId("support"),
         localized("Support Engineer", "Инженер поддержки"),
-        List("users:read", "users:manage", "oauth:read", "access:read", "security:read", "resources:read").map(Permission(_)) :+ accountPermission,
+        List(
+          "users:read",
+          "users:manage",
+          "oauth:read",
+          "access:read",
+          "security:read",
+          "resources:read",
+        ).map(Permission(_)) :+ accountPermission :+ preferencesPermission,
       ),
       (
         RoleId("frontend-developer"),
         localized("Frontend Developer", "Фронтенд-разработчик"),
         // the audit report is PII of every user and what was done to them: not for a role that builds forms
-        readOnly.filter(_ != "audit:read") ++ List(Permission("forms:manage"), accountPermission),
+        readOnly.filter(_ != "audit:read") ++ List(Permission("forms:manage"), accountPermission, preferencesPermission),
       ),
       (
         RoleId("auditor"),
         localized("Auditor", "Аудитор"),
-        readOnly :+ accountPermission,
+        readOnly :+ accountPermission :+ preferencesPermission,
       ),
       (
         RoleId("viewer"),
         localized("Read-only Viewer (No PII)", "Наблюдатель (без ПДн)"),
-        readOnly.filter(p => p != "users:read" && p != "antifraud:read" && p != "audit:read") :+ accountPermission,
+        readOnly.filter(p => p != "users:read" && p != "antifraud:read" && p != "audit:read") :+ accountPermission :+ preferencesPermission,
       ),
     )
 
@@ -1067,6 +1083,8 @@ object BootstrapService:
     "GET" -> "/antifraud/rules",
     "GET" -> "/antifraud/status",
     "GET" -> "/users/audit",
+    "GET" -> "/users/preferences",
+    "PATCH" -> "/users/preferences",
   )
 
   /** The routes that act in the scope of a tenant, the tenant of the token (the lists' `/antifraud/lists/...`; the

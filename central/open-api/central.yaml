@@ -1181,6 +1181,55 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /users/preferences:
+    get:
+      tags: [Users]
+      summary: The calling administrator's own preferences
+      description: |
+        The `zoneinfo` claim of the caller's own profile: the IANA time zone the console shows times in for them. There is no user
+        parameter: the user is the administrator whose token edge verified (edge adds the actor to the call), so an administrator
+        reads only their own. A call that no administrator stands behind (a client credentials token, a call edge did not tell the
+        actor of) is `400`. A stored value that is not a name of the time zone database reads as `null`.
+
+        Needs `preferences:manage`, which every seeded role has.
+      operationId: getUserPreferences
+      responses:
+        '200':
+          description: The preferences.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPreferencesResponse' }
+              example: { zoneinfo: Asia/Almaty }
+        '400':
+          description: No administrator is behind the call (`administrator_required`).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    patch:
+      tags: [Users]
+      summary: Change the calling administrator's own preferences
+      description: |
+        Sets or clears the `zoneinfo` claim of the caller's own profile (a merge patch, RFC 7396: a member left out keeps what is
+        stored, `null` clears it). The name must be one of the IANA time zone database as the JVM's tzdata spells it
+        (`Asia/Almaty`, `UTC`, case as written); an offset such as `+05:00` is not a zone. The claim is also released in `/userinfo`
+        with the `profile` scope. As a change of the user's claims it is recorded as `admin.user-claims.update`, with `changed:
+        ["zoneinfo"]`, the administrator being both actor and target.
+
+        The user is the administrator whose token edge verified; a `userId` or `id` sent in the query or the body is ignored. Needs
+        `preferences:manage`.
+      operationId: patchUserPreferences
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PatchUserPreferencesRequest' }
+      responses:
+        '204':
+          description: Stored, cleared, or nothing to change.
+        '400':
+          description: "`zoneinfo` is not a name of the time zone database (`invalid_zoneinfo`), or no administrator is behind the call (`administrator_required`)."
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /users/roles:
     get:
       tags: [Users]
@@ -5497,6 +5546,22 @@ components:
           type: object
           additionalProperties: true
       required: [id, claims]
+    UserPreferencesResponse:
+      type: object
+      properties:
+        zoneinfo:
+          type: [string, 'null']
+          description: The IANA time zone name, or `null` when none is stored.
+          example: Asia/Almaty
+      required: [zoneinfo]
+    PatchUserPreferencesRequest:
+      type: object
+      properties:
+        zoneinfo:
+          type: [string, 'null']
+          maxLength: 64
+          description: The IANA time zone name to store. `null` clears it; leaving it out changes nothing.
+          example: Asia/Almaty
     UserSearchResponse:
       type: object
       properties:

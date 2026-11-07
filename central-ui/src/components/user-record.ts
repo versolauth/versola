@@ -7,7 +7,9 @@ import type { OAuthClient, PasskeyInfo, Role, User, UserDevice, UserRefreshToken
 import { fetchAllClients, getRoles } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard, getLocalizedDescription } from '../utils/helpers';
+import { formatDate, formatDateTime, formatShortDateTime, wallClock } from '../utils/date-format';
 import { dispatchRecordRoute } from '../utils/record-route';
+import { currentZone, onProfileZoneChange } from '../utils/zone-preference';
 import { buildDevices, deviceLabel, platformLabel, relativeTime, userDisplayName, userLabel, type Device } from '../utils/user-display';
 import {
   DEFAULT_TEMPORARY_PASSWORD_TTL_HOURS,
@@ -70,17 +72,16 @@ function failed<T>(data: T, error: unknown, fallback: string): Part<T> {
   return { status: 'error', data, error: error instanceof Error ? error.message : fallback };
 }
 
+/** A time in the zone the console is on (the administrator's own, else the browser's; the Activity tab's switch can make it UTC), in
+ *  the same English text on every browser: `Nov 4, 14:41`, with the year when it is not this one, and the date alone without the time. */
 function when(value: string | undefined | null, withTime = true): string {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  const sameYear = date.getFullYear() === new Date().getFullYear();
-  return date.toLocaleString(undefined, {
-    day: 'numeric',
-    month: 'short',
-    ...(sameYear && withTime ? {} : { year: 'numeric' }),
-    ...(withTime ? { hour: '2-digit', minute: '2-digit' } : {}),
-  });
+  const zone = currentZone();
+  if (!withTime) return formatDate(date, zone);
+  const sameYear = wallClock(date, zone).year === wallClock(new Date(), zone).year;
+  return sameYear ? formatShortDateTime(date, zone, { seconds: false }) : formatDateTime(date, zone, { seconds: false });
 }
 
 /**
@@ -134,6 +135,19 @@ export class VersolaUserRecord extends LitElement {
 
   private loadSeq = 0;
   private editorFor: string | null = null;
+
+  private stopProfileZone?: () => void;
+
+  connectedCallback() {
+    super.connectedCallback();
+    // The zone loads after the page may already be drawn, and changes under Preferences: the times follow it.
+    this.stopProfileZone = onProfileZoneChange(() => this.requestUpdate());
+  }
+
+  disconnectedCallback() {
+    this.stopProfileZone?.();
+    super.disconnectedCallback();
+  }
 
   static styles = [
     theme,

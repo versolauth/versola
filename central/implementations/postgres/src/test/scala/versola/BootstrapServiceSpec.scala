@@ -471,6 +471,26 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         BootstrapService.permissionCatalog.filter(_._3.contains(endpointId("GET", "/users/audit"))).map(_._1.toString) == List("audit:read"),
       )
     },
+    test(
+      "preferences:manage is the administrator's own time zone, seeded to every role that is a person, and its endpoints are registered with the actor",
+    ) {
+      val permission = versola.central.configuration.permissions.Permission("preferences:manage")
+      val endpoints = BootstrapService.permissionCatalog.find(_._1 == permission).map(_._3)
+      val holders = BootstrapService.roleCatalog.collect { case (role, _, permissions) if permissions.contains(permission) => role.toString }.toSet
+      val prod = BootstrapService.centralEndpoints(EnvName.Prod).toSet
+      assertTrue(
+        endpoints.contains(Set(endpointId("GET", "/users/preferences"), endpointId("PATCH", "/users/preferences"))),
+        holders == BootstrapService.roleCatalog.map(_._1.toString).toSet,
+        prod.contains("GET" -> "/users/preferences"),
+        prod.contains("PATCH" -> "/users/preferences"),
+        // no other permission grants them, and the self-registration role of end users is not among the holders
+        BootstrapService.permissionCatalog.filter(_._3.contains(endpointId(
+          "PATCH",
+          "/users/preferences",
+        ))).map(_._1.toString) == List("preferences:manage"),
+        BootstrapService.centralInjects("PATCH", "/users/preferences") == BootstrapService.actorInjects,
+      )
+    },
     test("a deployment that registered the endpoints with older inject rules gets the current ones, and nothing but the inject rules is rewritten") {
       def record(method: String, path: String, inject: Vector[InjectRule], allow: Option[String] = None) =
         versola.central.configuration.resources.ResourceEndpointRecord(

@@ -2,7 +2,7 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, query } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, chipStyles, formStyles, iconButtonStyles, segmentedStyles } from '../styles/components';
-import { dayKey, formatDate, formatTime, formatWithOffset, offsetLabel } from '../utils/date-format';
+import { dayKey, formatDate, formatTime, formatWithOffset, localZone, offsetLabel } from '../utils/date-format';
 import { countryName } from '../utils/country-flag';
 import {
   CATEGORY_LABELS,
@@ -39,6 +39,8 @@ export class VersolaActivityTimeline extends LitElement {
   @property({ type: String }) errorMessage = '';
   @property({ type: String }) zone = 'UTC';
   @property({ type: String }) zoneChoice: ZoneChoice = 'local';
+  /** The zone of the administrator's profile; offered as its own button when it is not the browser's. */
+  @property({ attribute: false }) profileZone: string | null = null;
   @property({ attribute: false }) filters!: Filters;
   @property({ type: Number }) limit: PageSize = 100;
   @property({ attribute: false }) cursors: CursorStack = [];
@@ -426,7 +428,10 @@ export class VersolaActivityTimeline extends LitElement {
           <div class="ctrl-group" role="group" aria-label="Time zone">
             <span class="ctrl-label" aria-hidden="true">Time zone</span>
             <div class="seg-control">
-              <button type="button" class="seg-btn ${this.zoneChoice === 'local' ? 'seg-active' : ''}" aria-pressed=${this.zoneChoice === 'local'} title=${this.zone}
+              ${this.profileZone && this.profileZone !== localZone() ? html`
+                <button type="button" class="seg-btn ${this.zoneChoice === 'zone' ? 'seg-active' : ''}" aria-pressed=${this.zoneChoice === 'zone'} title=${this.profileZone}
+                  @click=${() => this.fire('zone-change', { choice: 'zone' })}>My zone</button>` : nothing}
+              <button type="button" class="seg-btn ${this.zoneChoice === 'local' ? 'seg-active' : ''}" aria-pressed=${this.zoneChoice === 'local'} title=${localZone()}
                 @click=${() => this.fire('zone-change', { choice: 'local' })}>Local</button>
               <button type="button" class="seg-btn ${this.zoneChoice === 'utc' ? 'seg-active' : ''}" aria-pressed=${this.zoneChoice === 'utc'}
                 @click=${() => this.fire('zone-change', { choice: 'utc' })}>UTC</button>

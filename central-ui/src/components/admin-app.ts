@@ -5,6 +5,8 @@ import { bannerStyles, buttonStyles } from '../styles/components';
 import { statusIcon } from './status-icon';
 import type { NavItem, VersolaNavigation } from './navigation';
 import { configureCentralApi, fetchMyPermissions, resolveBaseUrl } from '../utils/central-api';
+import { fetchMyPreferences } from '../utils/users-api';
+import { setProfileZone } from '../utils/zone-preference';
 import { watchSystemTheme } from '../utils/theme';
 import { EMPTY_RECORD_ROUTE, RESERVED_ROUTE_PARAMS, type RecordRoute } from '../utils/record-route';
 
@@ -18,6 +20,7 @@ import './content-header';
 import './clients-list';
 import './scopes-list';
 import './permissions-list';
+import './preferences';
 import './resources-list';
 import './roles-list';
 import './tenants-list';
@@ -311,6 +314,7 @@ export class VersolaAdmin extends LitElement {
       this.adminPermissions = new Set(central?.permissions ?? []);
       this.allowedTenantIds = this.adminPermissions.size > 0 ? null : [];
       this.isProd = response.isProd;
+      void this.loadProfileZone();
     } catch {
       this.adminPermissions = new Set();
       this.allowedTenantIds = [];
@@ -321,6 +325,17 @@ export class VersolaAdmin extends LitElement {
       // so the splash below stays up until the browser leaves for the login
       // page — instead of briefly swapping in the console and an Access Denied.
       this.permissionsLoaded = true;
+    }
+  }
+
+  /** The administrator's own time zone, which the Activity tab shows times in. Not waited for: a screen reads it when it opens and
+    * follows a change, and a zone that cannot be loaded leaves every screen on the browser's zone, which is what it did before. */
+  private async loadProfileZone() {
+    if (!this.adminPermissions.has('preferences:manage')) return;
+    try {
+      setProfileZone((await fetchMyPreferences()).zoneinfo);
+    } catch {
+      setProfileZone(null);
     }
   }
 
@@ -352,6 +367,8 @@ export class VersolaAdmin extends LitElement {
       case 'forms':
       case 'themes':
         return p.has('forms:read');
+      case 'preferences':
+        return p.has('preferences:manage');
       default:
         return false;
     }
@@ -476,7 +493,7 @@ export class VersolaAdmin extends LitElement {
     locales: { view: 'system-settings', notice: 'Locales live under System settings.' },
   };
 
-  private static readonly VIEWS: ReadonlySet<NavItem> = new Set<NavItem>(['security', 'clients', 'resources', 'scopes', 'permissions', 'roles', 'otp-templates', 'authorization-details', 'tenants', 'edges', 'users', 'keys', 'system-settings', 'delivery', 'forms', 'themes']);
+  private static readonly VIEWS: ReadonlySet<NavItem> = new Set<NavItem>(['security', 'clients', 'resources', 'scopes', 'permissions', 'roles', 'otp-templates', 'authorization-details', 'tenants', 'edges', 'users', 'keys', 'system-settings', 'delivery', 'forms', 'themes', 'preferences']);
 
   /** The views whose records belong to the selected tenant: switching it closes the open record.
     * A global view keeps its record (the selector also fires on load, picking the first tenant). */
@@ -647,6 +664,8 @@ export class VersolaAdmin extends LitElement {
       case 'system-settings':
         return html`<versola-system-settings .canManage=${this.canManage('system-settings')} .route=${this.recordRoute}
           .canReadLocales=${this.adminPermissions.has('locales:read')} .canManageLocales=${this.adminPermissions.has('locales:manage')}></versola-system-settings>`;
+      case 'preferences':
+        return html`<versola-preferences></versola-preferences>`;
       case 'delivery':
         return html`<versola-delivery-settings .canManage=${this.canManage('delivery')} .route=${this.recordRoute}></versola-delivery-settings>`;
       default:

@@ -1,17 +1,17 @@
 package versola.central.users
 
-import versola.central.audit.{Audit, AuditCursor, AuditReportError, AuditReportService, AuditedController, audited}
+import versola.central.audit.{Audit, AuditCursor, AuditHook, AuditReportError, AuditReportService, AuditedController, audited}
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.http.Observability
-import versola.util.{Email, EnvName, PageLimit, Phone}
-import zio.ZIO
+import versola.util.{Email, EnvName, PageLimit, Patch, Phone}
 import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
 import zio.telemetry.opentelemetry.tracing.Tracing
+import zio.{UIO, ZIO}
 
 import java.time.Instant
 
@@ -32,6 +32,8 @@ object UserController extends AuditedController:
     patchUserEndpoint,
     deleteUserEndpoint,
     patchUserClaimsEndpoint,
+    getUserPreferencesEndpoint,
+    patchUserPreferencesEndpoint,
     patchRolesEndpoint,
     invalidateSessionEndpoint,
     resetUserLimitsEndpoint,
@@ -229,6 +231,50 @@ object UserController extends AuditedController:
         _ <- service.patchClaims(body.id, body.claims)
       yield Response.status(Status.Accepted)
     }
+
+  /** The calling administrator's own preferences. The user is the one the token names (`AuditHook.administrator`), never one the request
+    * names: there is no `id` to send, so an administrator can read and change only their own. A call with no administrator behind it (a
+    * client credentials token, a service, a call edge did not tell the actor of) is refused. */
+  val getUserPreferencesEndpoint =
+    (Method.GET / "users" / "preferences").audited(Audit.Unrecorded) -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        response <- AuditHook.administrator(request) match
+          case None => noAdministrator
+          case Some(id) =>
+            ZIO.serviceWithZIO[UserService](_.getZoneinfo(id)).map(zone => Response.json(UserPreferencesResponse(zone).toJson))
+      yield response
+    }
+
+  /** `zoneinfo` is a name of the IANA time zone database, checked here; it is stored as the `zoneinfo` claim of the administrator's own
+    * profile, which is also what their `/userinfo` releases with the `profile` scope. */
+  val patchUserPreferencesEndpoint =
+    (Method.PATCH / "users" / "preferences").audited(Audit.user("user-claims", Audit.update)) -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        response <- AuditHook.administrator(request) match
+          case None => noAdministrator
+          case Some(id) =>
+            for
+              body <- request.bodyAs[PatchUserPreferencesRequest]
+              _ <- Audit.target(id)
+              _ <- Audit.changed(body)
+              response <- body.zoneinfo match
+                case Some(Patch.Modified(name)) if !Zoneinfo.isValid(name) =>
+                  Observability.setError(
+                    "invalid_zoneinfo",
+                  ).as(Response.text("zoneinfo is not a name of the IANA time zone database").status(Status.BadRequest))
+                case Some(Patch.Modified(name)) =>
+                  ZIO.serviceWithZIO[UserService](_.setZoneinfo(id, Some(name))).as(Response.status(Status.NoContent))
+                case Some(Patch.Deleted) =>
+                  ZIO.serviceWithZIO[UserService](_.setZoneinfo(id, None)).as(Response.status(Status.NoContent))
+                case None => ZIO.succeed(Response.status(Status.NoContent))
+            yield response
+      yield response
+    }
+
+  private val noAdministrator: UIO[Response] =
+    Observability.setError("administrator_required").as(Response.text("the call is not made by an administrator").status(Status.BadRequest))
 
   val patchRolesEndpoint =
     (Method.PATCH / "users" / "roles").audited(Audit.user("user-roles", Audit.update)) -> handler { (request: Request) =>

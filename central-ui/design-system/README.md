@@ -192,7 +192,7 @@ the same inset), the nav (`Tenant Scoped`, `Global` as kickers in `--accent`; it
 with `aria-current="page"` on the active one; hover is a `--sidebar-hover-bg` fill, active is
 `--accent-subtle` with a 3px `--accent` bar on the left edge, the weight never changes so the
 label's width never shifts; 44px tall in the drawer), and a footer that stays put:
-the `Theme` row with the switcher, `My Security`, `Log out`. The brand, tenant and nav scroll as
+the `Theme` row with the switcher, `Preferences` (for an admin who holds `preferences:manage`, which every seeded role has), `My Security`, `Log out`. The brand, tenant and nav scroll as
 one block with a thin, always-reserved scrollbar when they are taller than the viewport; with
 every permission the whole list fits at 1440×900.
 
@@ -306,6 +306,13 @@ once, asking before the operator leaves without saving it. Create is a single fo
 on the record, where the permissions that guard them are visible). Reference: `resources-list.ts`,
 `resource-record.ts`, `resource-endpoints-editor.ts`.
 
+**Preferences** (`preferences.ts`, `?view=preferences`, a footer item of the sidebar). The signed-in administrator's own settings, the same on every browser:
+one record card, *Time zone*, with its Edit that opens the group as a page (`versola-record-header` crumbs `Preferences › Time zone`, one `editor-box`
+with a `versola-typeahead-select` of the browser's IANA names, each with its offset in force now, Cancel / `Save time zone`). Empty means each browser's own
+zone, and the card names it. It is stored by central as the `zoneinfo` claim of the administrator's profile (`GET`/`PATCH /users/preferences`, the caller's
+own record only); saving also forgets an earlier Local or UTC switch in this browser so the saved zone shows. The shell reads the zone once after
+`/permissions/me` and a screen follows changes (`onProfileZoneChange`); when it cannot be read every screen stays on the browser's zone. Tests `tests/preferences.spec.ts`.
+
 **The Activity tab of a user (a long, live view in a tab).** The last tab of the user record, `?view=users&id=<id>&tab=activity`,
 in the bar only for an admin who holds `audit:read` (a link to it without the permission opens Profile; a report that answers 403
 says so inside the tab). Its view state, the interval, filters, cursors and open event, is the route's `params`, which `admin-app` writes
@@ -314,8 +321,8 @@ tab (`user-activity.ts`, `activity-timeline.ts`, `activity-event-panel.ts`, `act
 the report is not asked for before: period pills (`segmentedStyles`, `aria-pressed`) with the window in words and the copy-link icon
 button; a custom range popover (explicit `1 Nov 2026` and 24-hour `14:30` fields read in the zone shown, inline errors tied to the
 field, focus held inside, Esc back to its button); four summary cards that are buttons and set the timeline's filters; a *Needs
-attention* list; two small tables; and the timeline card: refresh icon button with the time it was read, the Local / UTC switch
-(remembered in `localStorage['versola-time-zone']`; `utils/zone-preference.ts`, times by `utils/date-format.ts`), search, Result and Client
+attention* list; two small tables; and the timeline card: refresh icon button with the time it was read, the My zone / Local / UTC switch
+(the choice is remembered in `localStorage['versola-time-zone']`; with nothing remembered the times read in the administrator's own zone, the `zoneinfo` of their profile, set under Preferences, else the browser's; `My zone` is offered only when that zone is not the browser's; `utils/zone-preference.ts`, times by `utils/date-format.ts`), search, Result and Client
 selects, `versola-filter-bar` category pills, removable filter chips with *Clear all*, a `<table>` grouped by day whose rows are selectable
 (`aria-selected`, a real button in the row, focus returns to it), and a pager of Newer / Older (the API's `nextCursor`, a stack of cursors
 for Newer, no jump to a page number; a page change is announced in an `aria-live` region). A time says its zone in the column header and

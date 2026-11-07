@@ -51,6 +51,13 @@ trait UserService:
 
   def patchClaims(id: UserId, patch: Json.Obj): Task[Unit]
 
+  /** The user's `zoneinfo` claim, `None` when it is not stored or is not a name of the time zone database (the claim can be written
+    * with any value through [[patchClaims]], and a reader must not be handed what it cannot use). */
+  def getZoneinfo(id: UserId): Task[Option[String]]
+
+  /** Stores the name as the user's `zoneinfo` claim, or clears the claim. The name is checked by the caller ([[Zoneinfo.isValid]]). */
+  def setZoneinfo(id: UserId, zone: Option[String]): Task[Unit]
+
   /** Hard-deletes the user: everything auth holds for them first -- sessions, refresh tokens,
     * passkeys, passwords, roles, throttling, pending conversations -- then the index row. Fails
     * with [[UserNotFound]] when the id is not indexed, and leaves the index row in place when
@@ -199,6 +206,13 @@ object UserService:
 
     override def patchClaims(id: UserId, patch: Json.Obj): Task[Unit] =
       authClient.patchUserClaims(id, patch)
+
+    override def getZoneinfo(id: UserId): Task[Option[String]] =
+      authClient.getUserClaims(id).map: claims =>
+        claims.flatMap(_.get("zoneinfo")).collect { case Json.Str(name) => name }.filter(Zoneinfo.isValid)
+
+    override def setZoneinfo(id: UserId, zone: Option[String]): Task[Unit] =
+      patchClaims(id, Json.Obj("zoneinfo" -> zone.fold[Json](Json.Null)(Json.Str(_))))
 
     override def delete(id: UserId): IO[UserNotFound | Throwable, Unit] =
       for
