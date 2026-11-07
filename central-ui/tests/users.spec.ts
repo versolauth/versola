@@ -760,7 +760,7 @@ test.describe('security actions', () => {
       await field.fill(value);
       await expect(page.getByRole('alert')).toHaveText(reason);
       await expect(field).toHaveAttribute('aria-invalid', 'true');
-      await expect(field).toHaveAccessibleDescription(new RegExp(reason.replace(/[.()]/g, '\\$&')));
+      await expect(field).toHaveAccessibleDescription(new RegExp(reason.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
       await expect(confirm).toBeDisabled();
     }
     expect(api.requests.filter(r => r.method === 'POST' && r.pathname === '/users/password/reset')).toHaveLength(0);
