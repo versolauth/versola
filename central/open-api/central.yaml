@@ -2079,7 +2079,12 @@ paths:
     post:
       tags: [JWKS]
       summary: Add a JWK
-      description: The body is a raw JWK object; its `kid` becomes the key id.
+      description: |
+        The body is a raw JWK object; its `kid` becomes the key id. Only a public key is accepted:
+        `kty` is `RSA` (with `n`, `e`) or `EC` on `P-256` (with `crv`, `x`, `y`), `alg` if present is `RS256`,
+        `PS256` or `ES256` and fits the key type, and a key that carries a private or secret member
+        (`d`, `p`, `q`, `dp`, `dq`, `qi`, `oth`, `k`) is refused. A key given without `alg` is stored
+        as a verify-only key.
       operationId: createJwk
       requestBody:
         required: true
@@ -2091,7 +2096,10 @@ paths:
         '201':
           description: Key added.
         '400':
-          description: The body is not valid JSON, or has no `kid` member.
+          description: |
+            The body is not valid JSON, has no `kid` member, or is not a valid public key (a private or
+            secret member, an unsupported `kty` or `alg`, a missing required member). The text names the
+            rule, never a value.
           content:
             text/plain:
               schema:
@@ -2101,7 +2109,9 @@ paths:
     put:
       tags: [JWKS]
       summary: Replace a JWK
-      description: Replaces the stored key whose `kid` matches the one in the body.
+      description: |
+        Replaces the stored key whose `kid` matches the one in the body. The same rules as for adding
+        a key apply: a public key only.
       operationId: updateJwk
       requestBody:
         required: true
@@ -2113,7 +2123,10 @@ paths:
         '204':
           description: Key replaced.
         '400':
-          description: The body is not valid JSON, or has no `kid` member.
+          description: |
+            The body is not valid JSON, has no `kid` member, or is not a valid public key (a private or
+            secret member, an unsupported `kty` or `alg`, a missing required member). The text names the
+            rule, never a value.
           content:
             text/plain:
               schema:
@@ -3556,7 +3569,10 @@ components:
     Jwk:
       type: object
       additionalProperties: true
-      description: An RFC 7517 JSON Web Key. Must contain a `kid` member.
+      description: |
+        An RFC 7517 JSON Web Key. Must contain a `kid` member. Written as a public key only; what central
+        returns and publishes is limited to the public members (`kty`, `kid`, `use`, `alg`, `key_ops`,
+        `n`, `e`, `crv`, `x`, `y`, `x5c`, `x5t`, `x5t#S256`, `x5u`), whatever the stored row holds.
       required: [kid]
       properties:
         kid:
