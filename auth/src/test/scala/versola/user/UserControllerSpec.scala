@@ -5,8 +5,8 @@ import versola.audit.{AuditReportService, AuthActors, AuthAuditDetails, AuthAudi
 import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord, Password}
 import versola.oauth.challenge.passkey.PasskeyRepository
-import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.PasswordChangeEffect
+import versola.oauth.challenge.password.{PasswordReset, PasswordService}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ApplicationType, AuthMethod, ClientId, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
@@ -18,6 +18,7 @@ import versola.oauth.session.model.{
   ClientEntry,
   PublicSessionId,
   RefreshTokenFamilyId,
+  SessionRecord,
   SessionUnderUserAgent,
   UserAgentId,
   UserAgentRecord,
@@ -926,7 +927,8 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token <- validToken(secretKey)
-        _ <- passwordSvc.resetPassword.succeedsWith(None)
+        _ <- passwordSvc.resetPassword.succeedsWith(PasswordReset(password = None, endedSessions = Nil))
+        _ <- logoutService.announceEnded.succeedsWith(())
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             UserController.routes
@@ -963,7 +965,8 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token <- validToken(secretKey)
-        _ <- passwordSvc.resetPassword.succeedsWith(None)
+        _ <- passwordSvc.resetPassword.succeedsWith(PasswordReset(password = None, endedSessions = Nil))
+        _ <- logoutService.announceEnded.succeedsWith(())
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             UserController.routes
@@ -999,7 +1002,8 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
         token <- validToken(secretKey)
-        _ <- passwordSvc.resetPassword.succeedsWith(Some(Password("Temp1234!")))
+        _ <- passwordSvc.resetPassword.succeedsWith(PasswordReset(password = Some(Password("Temp1234!")), endedSessions = Nil))
+        _ <- logoutService.announceEnded.succeedsWith(())
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             UserController.routes
@@ -1026,6 +1030,36 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         respBody.contains("Temp1234!"),
         passwordSvc.resetPassword.calls.head._3
           .contains(versola.oauth.challenge.password.model.DeliveryChannel.show),
+      )
+    },
+    test("POST /users/password/reset tells the relying parties of the sessions the reset ended, and nothing else ends them") {
+      val passwordSvc = stub[PasswordService]
+      val logout = stub[LogoutService]
+      val targetUserId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000005"))
+      val ended = SessionRecord(
+        userId = targetUserId,
+        clients = List(ClientEntry(ClientId("app"), Instant.parse("2026-01-02T10:00:00Z"))),
+        userAgentId = agentId,
+        createdAt = Instant.parse("2026-01-02T10:00:00Z"),
+        amr = Map.empty,
+        publicId = PublicSessionId("c2lk"),
+        expiresAt = Instant.parse("2026-01-02T10:00:00Z"),
+      )
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        // The sessions end in the repository, with the temporary password; the controller only announces them.
+        _ <- passwordSvc.resetPassword.succeedsWith(PasswordReset(password = None, endedSessions = List(ended)))
+        _ <- logout.announceEnded.succeedsWith(())
+        _ <- TestClient.addRoutes(routes(tracing, logout = logout, password = passwordSvc))
+        resp <- client.batched(
+          json(Method.POST, List("users", "password", "reset"), s"""{"userId":"$targetUserId","expiresInSeconds":null,"channel":"email"}""", token),
+        )
+      yield assertTrue(
+        resp.status == Status.NoContent,
+        logout.announceEnded.calls == List((List(ended), RevocationCause.PasswordChanged)),
+        logout.invalidateAllSessions.calls.isEmpty,
       )
     },
     suite("audit log")(
@@ -1225,7 +1259,8 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       test("POST /users/password/reset records account.password_reset with the channel and never the password") {
         val passwordSvc = stub[PasswordService]
         for
-          _ <- passwordSvc.resetPassword.succeedsWith(Some(Password("Temp1234!")))
+          _ <- passwordSvc.resetPassword.succeedsWith(PasswordReset(password = Some(Password("Temp1234!")), endedSessions = Nil))
+          _ <- logoutService.announceEnded.succeedsWith(())
           (resp, drafts) <- audited(
             json(Method.POST, List("users", "password", "reset"), s"""{"userId":"$passkeyUserId","expiresInSeconds":null,"channel":"show"}""", _),
             password = passwordSvc,
@@ -1280,7 +1315,8 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       test("a full audit queue does not take the temporary password from the administrator who reset it") {
         val passwordSvc = stub[PasswordService]
         for
-          _ <- passwordSvc.resetPassword.succeedsWith(Some(Password("Temp1234!")))
+          _ <- passwordSvc.resetPassword.succeedsWith(PasswordReset(password = Some(Password("Temp1234!")), endedSessions = Nil))
+          _ <- logoutService.announceEnded.succeedsWith(())
           (resp, drafts) <- audited(
             json(Method.POST, List("users", "password", "reset"), s"""{"userId":"$passkeyUserId","expiresInSeconds":null,"channel":"show"}""", _),
             password = passwordSvc,

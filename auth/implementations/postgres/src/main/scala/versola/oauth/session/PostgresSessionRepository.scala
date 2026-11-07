@@ -44,6 +44,7 @@ import zio.{Clock, Duration, IO, Task, ZIO, ZLayer}
 import java.sql.{Connection, SQLException}
 import java.time.Instant
 import java.util.UUID
+import scala.annotation.tailrec
 
 class PostgresSessionRepository(xa: TransactorZIO)
   extends SessionRepository, BasicCodecs:
@@ -215,22 +216,28 @@ class PostgresSessionRepository(xa: TransactorZIO)
   override def invalidateByUserId(userId: UserId, revocation: RevocationTerms): Task[List[SessionRecord]] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("invalidate-sessions-by-user"):
-        // Bounded at this call's own `now`, the instant the sessions end: a token the user obtains by
-        // logging in again afterwards is issued after it and keeps working.
-        PostgresAuthRevocationRepository.upsertUser(userId, now, revocation)
-        sql"""
-          WITH expired AS (
-            UPDATE sso_sessions
-            SET expires_at = $now
-            WHERE user_id = $userId AND expires_at > $now
-            RETURNING user_id, clients, user_agent_id, created_at, amr, public_id, expires_at
-          ),
-          revoked_tokens AS (
-            UPDATE refresh_tokens SET expires_at = $now
-            WHERE user_id = $userId AND expires_at > $now
-          )
-          SELECT user_id, clients, user_agent_id, created_at, amr, public_id, expires_at FROM expired
-        """.query[SessionRecord].run().toList
+        endAllSessions(userId, now, revocation)
+
+  /** The statements of [[invalidateByUserId]] on the caller's connection, so that a change which has to sign the
+    * user out everywhere (an administrator's password reset) runs them in its own transaction: the change and
+    * the sessions ending commit together or not at all. Returns the sessions ended. */
+  private[versola] def endAllSessions(userId: UserId, now: Instant, revocation: RevocationTerms)(using DbCon): List[SessionRecord] =
+    // Bounded at this call's own `now`, the instant the sessions end: a token the user obtains by
+    // logging in again afterwards is issued after it and keeps working.
+    PostgresAuthRevocationRepository.upsertUser(userId, now, revocation)
+    sql"""
+      WITH expired AS (
+        UPDATE sso_sessions
+        SET expires_at = $now
+        WHERE user_id = $userId AND expires_at > $now
+        RETURNING user_id, clients, user_agent_id, created_at, amr, public_id, expires_at
+      ),
+      revoked_tokens AS (
+        UPDATE refresh_tokens SET expires_at = $now
+        WHERE user_id = $userId AND expires_at > $now
+      )
+      SELECT user_id, clients, user_agent_id, created_at, amr, public_id, expires_at FROM expired
+    """.query[SessionRecord].run().toList
 
   override def revokeRefreshTokensByUserAndClient(
       userId: UserId,
@@ -239,21 +246,41 @@ class PostgresSessionRepository(xa: TransactorZIO)
   ): Task[List[RefreshTokenFamilyId]] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("revoke-refresh-tokens-by-user-and-client"):
+        def liveFamilies: Set[RefreshTokenFamilyId] =
+          sql"""
+            SELECT DISTINCT family_id FROM refresh_tokens
+            WHERE user_id = $userId AND client_id = $clientId AND expires_at > $now AND rotated_at IS NULL
+          """.query[RefreshTokenFamilyId].run().toSet
+
+        def expireLive: Set[RefreshTokenFamilyId] =
+          sql"""
+            UPDATE refresh_tokens SET expires_at = $now
+            WHERE user_id = $userId AND client_id = $clientId AND expires_at > $now AND rotated_at IS NULL
+            RETURNING family_id
+          """.query[RefreshTokenFamilyId].run().toSet
+
         // Every family is locked before the update, in a fixed order so two of these cannot wait on each
         // other: a rotation in flight either commits first, and has its successor expired below, or waits and
         // finds its token dead. Without it the family could end up refused at `/userinfo` through `fam:` and
         // still refreshable, which is the state the lock exists to rule out (see `deleteByFamily`).
-        val live = sql"""
-          SELECT DISTINCT family_id FROM refresh_tokens
-          WHERE user_id = $userId AND client_id = $clientId AND expires_at > $now AND rotated_at IS NULL
-        """.query[RefreshTokenFamilyId].run().toList.sortBy(identity[String])
-        live.foreach(lockFamilyById)
-        val families = sql"""
-          UPDATE refresh_tokens SET expires_at = $now
-          WHERE user_id = $userId AND client_id = $clientId AND expires_at > $now AND rotated_at IS NULL
-          RETURNING family_id
-        """.query[RefreshTokenFamilyId].run().toList.distinct
-        families.foreach(revokeFamilyTokens(_, now, revocation))
+        //
+        // A family whose first row landed between the lookup and the update is expired without having been
+        // locked, and a rotation racing it could still leave a successor; so the update is read back, and a
+        // round is run again for every family it ended that was not locked, which locks it and expires what
+        // may have been added since. Each round can only find families newer than the last, so it ends; the
+        // bound is for a grant storm that keeps creating them, after which the remainder is left to the
+        // family-level `fam:` record alone.
+        @tailrec
+        def revokeLocked(locked: Set[RefreshTokenFamilyId], ended: Set[RefreshTokenFamilyId], roundsLeft: Int): Set[RefreshTokenFamilyId] =
+          val toLock = (liveFamilies -- locked).toList.sortBy(identity[String])
+          toLock.foreach(lockFamilyById)
+          val expired = expireLive
+          val unlocked = expired -- locked -- toLock
+          if unlocked.isEmpty || roundsLeft == 0 then ended ++ expired
+          else revokeLocked(locked ++ toLock, ended ++ expired, roundsLeft - 1)
+
+        val families = revokeLocked(Set.empty, Set.empty, roundsLeft = PostgresSessionRepository.MaxRevokeRounds).toList.sortBy(identity[String])
+        revokeFamiliesTokens(families, now, revocation)
         families
 
   /** What a user's own password change does when they ask to be signed out elsewhere: ends every session of
@@ -286,7 +313,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
       UPDATE refresh_tokens SET expires_at = $now
       WHERE user_id = $userId AND public_session_id <> $keep AND expires_at > $now
     """.update.run()
-    ended.foreach(record => revokeSession(record.publicId, record.clients, now, revocation))
+    revokeSessions(ended, now, revocation)
     ended
 
   override def findRefreshTokensByUserId(userId: UserId): Task[List[RefreshTokenRecord]] =
@@ -306,17 +333,24 @@ class PostgresSessionRepository(xa: TransactorZIO)
   private def revokeSession(publicId: PublicSessionId, clients: List[ClientEntry], now: Instant, revocation: RevocationTerms)(using
       DbCon,
   ): Unit =
-    PostgresAuthRevocationRepository.upsert(
-      Revocation(
-        key = RevocationKey.Sid(publicId),
-        // The clients the session served bound its tokens, not the longest-lived client there is.
-        expiresAt = now.plus(revocation.ttlOfSession(clients.map(_.clientId))),
-        issuedBefore = None,
-      ),
+    PostgresAuthRevocationRepository.upsert(sessionRevocation(publicId, clients, now, revocation), revocation.cause, revocation.tenantId)
+    ()
+
+  /** [[revokeSession]] for every session ended at once, in one batch. */
+  private def revokeSessions(ended: List[SessionRecord], now: Instant, revocation: RevocationTerms)(using DbCon): Unit =
+    PostgresAuthRevocationRepository.upsertAll(
+      ended.map(record => sessionRevocation(record.publicId, record.clients, now, revocation)),
       revocation.cause,
       revocation.tenantId,
     )
-    ()
+
+  private def sessionRevocation(publicId: PublicSessionId, clients: List[ClientEntry], now: Instant, revocation: RevocationTerms): Revocation =
+    Revocation(
+      key = RevocationKey.Sid(publicId),
+      // The clients the session served bound its tokens, not the longest-lived client there is.
+      expiresAt = now.plus(revocation.ttlOfSession(clients.map(_.clientId))),
+      issuedBefore = None,
+    )
 
   override def invalidate(id: MAC.Of[SessionId], revocation: RevocationTerms): Task[Option[SessionRecord]] =
     Clock.instant.flatMap: now =>
@@ -589,16 +623,19 @@ class PostgresSessionRepository(xa: TransactorZIO)
   /** `fam:<family>` is written under the same lock and in the same transaction as the expiry, so a
     * family cannot end without the record that its access tokens must stop being accepted too. */
   private def revokeFamilyTokens(family: RefreshTokenFamilyId, now: Instant, revocation: RevocationTerms)(using DbCon): Unit =
-    PostgresAuthRevocationRepository.upsert(
-      Revocation(
-        key = RevocationKey.Fam(family),
-        expiresAt = now.plus(revocation.ttl),
-        issuedBefore = None,
-      ),
-      revocation.cause,
-      revocation.tenantId,
-    )
+    PostgresAuthRevocationRepository.upsert(familyRevocation(family, now, revocation), revocation.cause, revocation.tenantId)
     ()
+
+  /** [[revokeFamilyTokens]] for every family ended at once, in one batch. */
+  private def revokeFamiliesTokens(families: List[RefreshTokenFamilyId], now: Instant, revocation: RevocationTerms)(using DbCon): Unit =
+    PostgresAuthRevocationRepository.upsertAll(families.map(familyRevocation(_, now, revocation)), revocation.cause, revocation.tenantId)
+
+  private def familyRevocation(family: RefreshTokenFamilyId, now: Instant, revocation: RevocationTerms): Revocation =
+    Revocation(
+      key = RevocationKey.Fam(family),
+      expiresAt = now.plus(revocation.ttl),
+      issuedBefore = None,
+    )
 
   override def revokeFamily(
       token: MAC.Of[RefreshToken],
@@ -706,6 +743,11 @@ object PostgresSessionRepository:
     * the same server for the same value at the same time.
     */
   private val RefreshTokenFamilyLockNamespace: Int = 237
+
+  /** How many times `revokeRefreshTokensByUserAndClient` locks and expires again after finding a family it had not
+    * locked. One round is the normal case; a second one happens only when a grant for the same user and client
+    * was being created at that very moment. */
+  private val MaxRevokeRounds: Int = 3
 
   /** Signals a rotation that lost its race, from inside the transaction body. */
   private case object RotationLost extends RuntimeException("refresh token already exchanged")

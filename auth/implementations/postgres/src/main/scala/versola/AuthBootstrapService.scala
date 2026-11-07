@@ -2,6 +2,7 @@ package versola
 
 import versola.antifraud.{AntifraudSettingsRepository, Tuning}
 import versola.oauth.challenge.password.PasswordRepository
+import versola.oauth.challenge.password.model.PasswordChangeEffect
 import versola.oauth.client.model.TenantId
 import versola.oauth.revocation.{RevocationCause, RevocationTerms}
 import versola.role.model.RoleId
@@ -91,7 +92,7 @@ object AuthBootstrapService:
               salt <- secureRandom.nextBytes(16).map(Salt(_))
               hash <- securityService.hashPassword(Secret.fromString(cfg.password), salt, config.security.passwordsSecret)
               expiresAt = now.plusSeconds(BootstrapPasswordTtlSeconds)
-              _ <- passwordRepo.createTemporary(userId, Secret(hash), salt, expiresAt, refuseEarlierTokens = None)
+              _ <- passwordRepo.createTemporary(userId, Secret(hash), salt, expiresAt, change = PasswordChangeEffect.Untouched)
               _ <- ZIO.logInfo(s"Set temporary bootstrap password for admin user '${cfg.login}'")
             yield ()
         yield ()

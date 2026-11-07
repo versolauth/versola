@@ -115,6 +115,17 @@ object PostgresAuthRevocationRepository:
     * comparable across replicas at all.
     */
   def upsert(revocation: Revocation, cause: RevocationCause, tenantId: Option[TenantId])(using DbCon): Int =
+    upsertStatement(revocation, cause, tenantId).run()
+
+  /** [[upsert]] for several keys of one cause at once, as one batch on the caller's connection: a method that ends
+    * several families or sessions in one transaction writes their records in one round trip rather than one each.
+    */
+  def upsertAll(revocations: List[Revocation], cause: RevocationCause, tenantId: Option[TenantId])(using DbCon): Unit =
+    if revocations.nonEmpty then
+      batchUpdate(revocations)(upsertStatement(_, cause, tenantId))
+      ()
+
+  private def upsertStatement(revocation: Revocation, cause: RevocationCause, tenantId: Option[TenantId]): Update =
     val tenant: Option[String] = tenantId.map(identity[String])
     sql"""
       INSERT INTO auth_revocations (revoked_key, revoked_at, expires_at, issued_before, cause, tenant_id)
@@ -130,4 +141,4 @@ object PostgresAuthRevocationRepository:
       WHERE auth_revocations.expires_at < EXCLUDED.expires_at
          OR (auth_revocations.issued_before IS NOT NULL
              AND (EXCLUDED.issued_before IS NULL OR auth_revocations.issued_before < EXCLUDED.issued_before))
-    """.update.run()
+    """.update

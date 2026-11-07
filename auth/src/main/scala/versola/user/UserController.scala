@@ -434,13 +434,16 @@ object UserController extends Controller:
         body <- request.body.asJsonFromCodec[ResetPasswordPayload]
         _ <- actedBy(body.actorId)
         passwordService <- ZIO.service[PasswordService]
-        password <- passwordService.resetPassword(body.userId, body.expiresInSeconds, body.channel)
+        // A reset ends every session of the user with the temporary password (see `PasswordService.resetPassword`);
+        // the relying parties of those sessions are told afterwards, best effort, as after any logout.
+        reset <- passwordService.resetPassword(body.userId, body.expiresInSeconds, body.channel)
+        _ <- ZIO.serviceWithZIO[LogoutService](_.announceEnded(reset.endedSessions, RevocationCause.PasswordChanged))
         _ <- audited(
           AuthAuditKinds.AccountPasswordReset,
           body.userId,
           AuthAuditDetails.Account(via = "admin", detail = body.channel.map(_.toString)),
         )
-      yield password match
+      yield reset.password match
         case Some(plaintext) => Response.json(ResetPasswordResponse(plaintext).toJson)
         case None => Response.status(Status.NoContent)
     }

@@ -99,12 +99,7 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
           if toDelete.nonEmpty then
             val ids = toDelete.map(_.id)
             sql"""DELETE FROM user_passwords WHERE id = ANY($ids)""".update.run()
-          Right(change match
-            case PasswordChangeEffect.Untouched => Nil
-            case PasswordChangeEffect.RefuseEarlierTokens(terms) =>
-              PostgresAuthRevocationRepository.upsertUser(userId, now, terms)
-              Nil
-            case PasswordChangeEffect.EndOtherSessions(keep, terms) => sessions.endOtherSessions(userId, keep, now, terms))
+          Right(apply(userId, now, change))
         }
       }.absolve
     yield result
@@ -114,8 +109,8 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
       passwordHash: Secret,
       salt: Salt,
       expiresAt: Instant,
-      refuseEarlierTokens: Option[RevocationTerms],
-  ): Task[Unit] =
+      change: PasswordChangeEffect,
+  ): Task[List[SessionRecord]] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("create-temporary-password") {
         // Remove any existing temporary for this user (at most one temp at a time)
@@ -126,8 +121,18 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
               VALUES ($userId, $passwordHash, $salt, $now, $expiresAt)
            """.update.run()
 
-        refuseEarlierTokens.foreach(PostgresAuthRevocationRepository.upsertUser(userId, now, _))
-      }.unit
+        apply(userId, now, change)
+      }
+
+  /** What the password being stored does to the user's tokens and sessions, in the password's transaction. */
+  private def apply(userId: UserId, now: Instant, change: PasswordChangeEffect)(using DbCon): List[SessionRecord] =
+    change match
+      case PasswordChangeEffect.Untouched => Nil
+      case PasswordChangeEffect.RefuseEarlierTokens(terms) =>
+        PostgresAuthRevocationRepository.upsertUser(userId, now, terms)
+        Nil
+      case PasswordChangeEffect.EndAllSessions(terms) => sessions.endAllSessions(userId, now, terms)
+      case PasswordChangeEffect.EndOtherSessions(keep, terms) => sessions.endOtherSessions(userId, keep, now, terms)
 
   override def deleteTemporary(userId: UserId): Task[Unit] =
     xa.connectMeasured("delete-temporary-password"):

@@ -315,15 +315,15 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
-          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
           _ <- env.service.resetPassword(userId, None, None)
           createCalls = env.passwordRepo.createTemporary.calls
         yield assertTrue(
           createCalls.length == 1,
           createCalls.head._1 == userId,
           !createCalls.head._4.isBefore(now.plusSeconds(11 * 60 * 60)),
-          // The tokens the user holds from before the reset stop being accepted, recorded with the reset.
-          createCalls.head._5 == Some(adminTerms),
+          // A reset signs the user out everywhere and refuses the tokens issued before it, in the transaction that stores it.
+          createCalls.head._5 == PasswordChangeEffect.EndAllSessions(adminTerms),
           env.emailProvider.send.calls.isEmpty,
           env.smsProvider.send.calls.isEmpty,
         )
@@ -335,12 +335,12 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
-          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
           revealed <- env.service.resetPassword(userId, None, Some(DeliveryChannel.show))
           logged <- ZTestLogger.logOutput.map(_.map(_.message()))
         yield assertTrue(
-          revealed.isDefined,
-          !logged.exists(message => revealed.exists(password => message.contains(password.toString))),
+          revealed.password.isDefined,
+          !logged.exists(message => revealed.password.exists(password => message.contains(password.toString))),
           !logged.exists(_.contains("temporary password")),
         )
       },
@@ -353,7 +353,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordTemplate.succeedsWith(OtpTemplate("Pass: {{password}}, hours: {{expiresHours}}"))
           _ <- env.userRepo.find.succeedsWith(Some(userRecord))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
-          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
           _ <- env.emailProvider.send.succeedsWith(())
           _ <- env.service.resetPassword(userId, Some(3600L), Some(DeliveryChannel.email))
           sendCalls = env.emailProvider.send.calls
@@ -374,7 +374,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordTemplate.succeedsWith(OtpTemplate("Pass: {{password}}"))
           _ <- env.userRepo.find.succeedsWith(Some(userRecord))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
-          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
           _ <- env.smsProvider.send.succeedsWith(())
           _ <- env.service.resetPassword(userId, None, Some(DeliveryChannel.sms))
           sendCalls = env.smsProvider.send.calls
@@ -392,7 +392,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
-          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
           _ <- env.service.resetPassword(userId, None, None)
         yield assertTrue(
           env.emailProvider.send.calls.isEmpty,
@@ -406,7 +406,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
-          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
           _ <- env.service.resetPassword(userId, Some(3600L), Some(DeliveryChannel.email))
         yield assertTrue(
           env.passwordRepo.createTemporary.calls.length == 1,
@@ -421,10 +421,10 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
-          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
           result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.show))
         yield assertTrue(
-          result.exists(_.nonEmpty),
+          result.password.exists(_.nonEmpty),
           env.passwordRepo.createTemporary.calls.length == 1,
           env.userRepo.find.calls.isEmpty,
           env.emailProvider.send.calls.isEmpty,
@@ -438,15 +438,15 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
-          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
           result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.email))
-        yield assertTrue(result.isEmpty)
+        yield assertTrue(result.password.isEmpty)
       },
       test("fails without storing a credential when show is requested in prod") {
         for
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom, EnvName.Prod)
-          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
           result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.show)).exit
         yield assert(result)(fails(equalTo(PasswordRevealForbidden(userId)))) &&
           assertTrue(env.passwordRepo.createTemporary.calls.isEmpty)
@@ -461,7 +461,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordTemplate.succeedsWith(OtpTemplate("{{password}}"))
           _ <- env.userRepo.find.succeedsWith(Some(userRecord))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
-          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
           _ <- env.emailProvider.send.succeedsWith(())
           _ <- env.service.resetPassword(userId, None, Some(DeliveryChannel.email))
           delivered = env.emailProvider.send.calls.head._2
@@ -474,7 +474,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           env = Env(secureRandom, EnvName.Prod)
           _ <- env.configuration.getPasswordRegex.succeedsWith(impossibleRegex)
           _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
-          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
           result <- env.service.resetPassword(userId, None, None).exit
         yield assert(result)(fails(isSubtype[TemporaryPasswordGenerationFailed](anything))) &&
           assertTrue(env.passwordRepo.createTemporary.calls.isEmpty)
@@ -486,7 +486,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.userRepo.find.succeedsWith(Some(UserRecord.empty(userId).copy(phone = Some(phone))))
-          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
           result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.email)).exit
         yield assert(result)(fails(equalTo(PasswordDeliveryUnavailable(userId, DeliveryChannel.email)))) &&
           assertTrue(
@@ -501,7 +501,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.userRepo.find.succeedsWith(Some(UserRecord.empty(userId).copy(email = Some(email))))
-          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
           result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.sms)).exit
         yield assert(result)(fails(equalTo(PasswordDeliveryUnavailable(userId, DeliveryChannel.sms)))) &&
           assertTrue(
@@ -516,7 +516,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.userRepo.find.succeedsWith(None)
-          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
           result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.email)).exit
         yield assert(result)(fails(equalTo(PasswordDeliveryUnavailable(userId, DeliveryChannel.email)))) &&
           assertTrue(env.passwordRepo.createTemporary.calls.isEmpty)
@@ -530,7 +530,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordTemplate.succeedsWith(OtpTemplate("Pass: {{password}}"))
           _ <- env.userRepo.find.succeedsWith(Some(userRecord))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
-          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
           _ <- env.passwordRepo.deleteTemporary.succeedsWith(())
           _ <- env.emailProvider.send.failsWith(new RuntimeException("smtp down"))
           result <- env.service.resetPassword(userId, None, Some(DeliveryChannel.email)).exit

@@ -37,17 +37,17 @@ trait PasswordRepository:
   /** Creates a temporary password (not counted in history, not checked for reuse).
     * Deletes any existing temporary passwords for the user before inserting.
     *
-    * A temporary password is set by an administrator's reset (`refuseEarlierTokens` is then the terms of
-    * [[PasswordChangeEffect.RefuseEarlierTokens]], recorded in this transaction) or by the bootstrap
-    * (`None`); it is never the user's own change, so there are no sessions of theirs to keep or end.
+    * A temporary password is set by an administrator's reset ([[PasswordChangeEffect.EndAllSessions]], applied
+    * in this transaction) or by the bootstrap ([[PasswordChangeEffect.Untouched]]). The sessions `change` ended
+    * come back, for the caller to tell their relying parties.
     */
   def createTemporary(
       userId: UserId,
       passwordHash: Secret,
       salt: Salt,
       expiresAt: Instant,
-      refuseEarlierTokens: Option[RevocationTerms],
-  ): Task[Unit]
+      change: PasswordChangeEffect,
+  ): Task[List[SessionRecord]]
 
   /** Deletes all temporary passwords for the user. */
   def deleteTemporary(userId: UserId): Task[Unit]

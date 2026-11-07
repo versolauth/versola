@@ -155,19 +155,27 @@ object UserChangeRevocationFlowSpec extends E2ESpec:
       },
     ),
     suite("password reset")(
-      test("refuses the tokens issued before it, and lets the user refresh into one that works") {
+      test("refuses the tokens issued before it and signs the user out everywhere, while another user is not affected") {
         for
           (s, auth) <- setup(Flows.Id.EmailOtp)
           (userId, email) <- freshUser(auth)
+          (bystanderId, bystanderEmail) <- freshUser(auth)
           held <- login(s, auth, email)
+          bystander <- login(s, auth, bystanderEmail)
           refreshToken <- refreshTokenOf(held)
           before <- userinfoStatus(auth, held.tokens.accessToken)
           _ <- auth.resetUserPassword(userId)
           after <- awaitRefused(auth, held.tokens.accessToken)
-          refreshed <- refreshUntilAccepted(s, auth, refreshToken)
+          // A reset is what an administrator does when the account may be in someone else's hands, so unlike a
+          // password set it ends the sessions and the refresh tokens too: nothing the user held before it still works.
+          refreshError <- refresh(s, auth, refreshToken).flatMap(rejection)
+          signedIn <- silentlyAuthorizes(s, auth, held.sessionCookie)
+          bystanderAfter <- userinfoStatus(auth, bystander.tokens.accessToken)
         yield assertTrue(before == Status.Ok) &&
           assertTrue(after == Status.Unauthorized).label("a token issued before an administrator reset the password is refused") &&
-          assertTrue(refreshed.response.status == Status.Ok).label("the refresh token still redeems")
+          assertTrue(refreshError == "invalid_grant").label("the refresh token is ended by the reset") &&
+          assertTrue(!signedIn).label("the session is ended by the reset") &&
+          assertTrue(bystanderAfter == Status.Ok).label("another user's token is not affected")
       },
     ),
     suite("offline access")(

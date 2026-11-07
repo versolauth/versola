@@ -1539,9 +1539,11 @@ paths:
         Omitting `channel` still creates the temporary password but delivers it nowhere and
         returns nothing — always pass a channel, or the request silently locks the user out.
 
-        The access tokens the user holds that were issued before the reset are refused at auth's
-        `/userinfo` and `/introspect`, as for `POST /users/password/set`; refresh tokens and sessions
-        are not touched.
+        A reset is what an administrator does when the account may be in someone else's hands, so it
+        signs the user out everywhere: every session and refresh token of the user ends, the relying
+        parties of those sessions receive a back-channel logout, and the access tokens issued before
+        the reset are refused at auth's `/userinfo` and `/introspect`. The user signs in again with the
+        temporary password. (`POST /users/password/set` refuses the earlier access tokens only.)
       operationId: resetUserPassword
       requestBody:
         required: true

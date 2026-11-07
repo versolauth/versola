@@ -292,17 +292,35 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
           entries <- recorded(env)
         yield assertTrue(ended.isEmpty, entries.isEmpty)
       },
-      test("an administrator's reset records the user with the temporary password, and the bootstrap's records nothing") {
+      test("an administrator's reset ends every session and refresh token of the user with the temporary password, and records the user") {
         for
           now <- Clock.instant
-          _ <- env.repository.createTemporary(userId1, pass(1), salt(1), now.plusSeconds(3600), Some(terms))
-          _ <- env.repository.createTemporary(userId2, pass(2), salt(2), now.plusSeconds(3600), None)
+          first <- seedSession(env, userId1, userAgentId1, 1)
+          second <- seedSession(env, userId1, userAgentId1, 2)
+          someoneElses <- seedSession(env, userId2, userAgentId2, 3)
+          ended <- env.repository.createTemporary(userId1, pass(1), salt(1), now.plusSeconds(3600), PasswordChangeEffect.EndAllSessions(terms))
           entries <- recorded(env)
+          sessions <- ZIO.foreach(List(first, second, someoneElses))(seeded => env.sessions.findSession(seeded.mac))
+          tokens <- ZIO.foreach(List(first, second, someoneElses))(seeded => env.sessions.findToken(seeded.token))
           mine = entries.get(RevocationKey.Sub(userId1.toString))
         yield assertTrue(
+          // every session of the user and nobody else's, with the refresh tokens held under them
+          ended.map(_.publicId).toSet == Set(first.publicId, second.publicId),
+          sessions.map(_.isDefined) == List(false, false, true),
+          tokens.map(_.isDefined) == List(false, false, true),
+          // the user, bounded at the reset: a token issued before it is refused, one issued by the next sign-in is not
           entries.keySet == Set(RevocationKey.Sub(userId1.toString)),
           mine.exists(_.issuedBefore.contains(now)),
         )
+      },
+      test("the bootstrap's temporary password ends nothing and records nothing") {
+        for
+          now <- Clock.instant
+          session <- seedSession(env, userId1, userAgentId1, 1)
+          ended <- env.repository.createTemporary(userId1, pass(1), salt(1), now.plusSeconds(3600), PasswordChangeEffect.Untouched)
+          entries <- recorded(env)
+          after <- env.sessions.findSession(session.mac)
+        yield assertTrue(ended.isEmpty, entries.isEmpty, after.isDefined)
       },
       test("a change refused because the history moved on records nothing") {
         for

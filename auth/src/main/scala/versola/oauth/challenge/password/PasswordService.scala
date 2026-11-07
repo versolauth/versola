@@ -41,21 +41,30 @@ trait PasswordService:
     * sessions it ended, which is none unless `change` is [[PasswordChangeEffect.EndOtherSessions]]. */
   def setPassword(userId: UserId, password: Password, change: PasswordChangeEffect): IO[Throwable | PasswordReuseError, List[SessionRecord]]
 
-  /** `refuseEarlierTokens` as in [[PasswordRepository.createTemporary]]. */
-  def setTemporaryPassword(userId: UserId, password: Password, expiresAt: Instant, refuseEarlierTokens: Option[RevocationTerms]): Task[Unit]
+  /** Stores a temporary password and applies `change` in the same transaction, as [[PasswordRepository.createTemporary]]
+    * does. Returns the sessions it ended. */
+  def setTemporaryPassword(userId: UserId, password: Password, expiresAt: Instant, change: PasswordChangeEffect): Task[List[SessionRecord]]
 
   /** Issues a temporary password and delivers it over the requested channel.
     * Returns the plaintext only for [[DeliveryChannel.show]], which is rejected
     * with [[PasswordRevealForbidden]] in production.
     *
-    * The access tokens the user holds from before the reset stop being accepted, recorded with the password
-    * (cause `password_changed`); their sessions and refresh tokens are left alone.
+    * A reset is what an administrator does when the account may be in someone else's hands, so it ends every
+    * session and refresh token of the user and refuses the access tokens issued before it
+    * ([[PasswordChangeEffect.EndAllSessions]], in the transaction that stores the temporary password). The
+    * sessions it ended are returned, for the caller to tell their relying parties. A delivery that fails
+    * afterwards removes the temporary password again but leaves the sessions ended: the user is signed out
+    * and the administrator repeats the reset, which is the safe side.
     */
   def resetPassword(
       userId: UserId,
       expiresInSeconds: Option[Long],
       channel: Option[DeliveryChannel],
-  ): Task[Option[Password]]
+  ): Task[PasswordReset]
+
+/** The outcome of [[PasswordService.resetPassword]]: the plaintext when the channel was `show`, and the sessions the
+  * reset ended. */
+case class PasswordReset(password: Option[Password], endedSessions: List[SessionRecord])
 
 object PasswordService:
   def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _))
@@ -164,19 +173,19 @@ object PasswordService:
         userId: UserId,
         password: Password,
         expiresAt: Instant,
-        refuseEarlierTokens: Option[RevocationTerms],
-    ): Task[Unit] =
+        change: PasswordChangeEffect,
+    ): Task[List[SessionRecord]] =
       for
         salt <- secureRandom.nextBytes(16).map(Salt(_))
         hash <- securityService.hashPassword(Secret.fromString(password), salt, config.security.passwordsSecret)
-        _ <- passwordRepository.createTemporary(userId, Secret(hash), salt, expiresAt, refuseEarlierTokens)
-      yield ()
+        ended <- passwordRepository.createTemporary(userId, Secret(hash), salt, expiresAt, change)
+      yield ended
 
     override def resetPassword(
         userId: UserId,
         expiresInSeconds: Option[Long],
         channel: Option[DeliveryChannel],
-    ): Task[Option[Password]] =
+    ): Task[PasswordReset] =
       val reveal = channel.contains(DeliveryChannel.show)
       for
         _ <- ZIO.fail(PasswordRevealForbidden(userId)).when(reveal && env.isProd)
@@ -189,11 +198,11 @@ object PasswordService:
         ttlSeconds = expiresInSeconds.getOrElse(DefaultTtlSeconds)
         expiresAt <- Clock.instant.map(_.plusSeconds(ttlSeconds))
         terms <- configuration.accessTokenTtls.map(RevocationTerms.widest(RevocationCause.PasswordChanged, _))
-        _ <- setTemporaryPassword(userId, plaintext, expiresAt, Some(terms))
+        ended <- setTemporaryPassword(userId, plaintext, expiresAt, PasswordChangeEffect.EndAllSessions(terms))
         _ <- deliverPassword(plaintext, ttlSeconds, recipient)
           .tapError(_ => passwordRepository.deleteTemporary(userId).ignore)
           .when(env.isProd)
-      yield Option.when(reveal)(plaintext)
+      yield PasswordReset(password = Option.when(reveal)(plaintext), endedSessions = ended)
 
     /** Resolves the concrete contact for the requested delivery channel, failing with
       * [[PasswordDeliveryUnavailable]] when the user has no matching contact on record.

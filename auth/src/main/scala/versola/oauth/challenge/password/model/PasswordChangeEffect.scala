@@ -12,11 +12,17 @@ enum PasswordChangeEffect:
     * administrator. */
   case Untouched
 
-  /** An administrator set or reset the password. Records `sub:<user>` bounded at the instant of the change,
-    * so an access token issued before it is refused and one the user obtains afterwards is not. Sessions
-    * and refresh tokens are left alone: the user refreshes, or signs in again, and gets a token that
-    * postdates the boundary. */
+  /** An administrator set the password (the non-production `POST /users/password/set`). Records `sub:<user>`
+    * bounded at the instant of the change, so an access token issued before it is refused and one the user
+    * obtains afterwards is not. Sessions and refresh tokens are left alone: the user refreshes, or signs in
+    * again, and gets a token that postdates the boundary. */
   case RefuseEarlierTokens(terms: RevocationTerms)
+
+  /** An administrator reset the password, which is what an administrator does when the account may be in
+    * someone else's hands. Ends every session and every refresh token of the user and records `sub:<user>`
+    * bounded at the instant of the reset, as "sign out everywhere" does: a record alone would cost the
+    * intruder one refresh, since a live refresh token mints a token that postdates the boundary. */
+  case EndAllSessions(terms: RevocationTerms)
 
   /** The user changed their own password and asked to be signed out everywhere else. Ends every other
     * session of the user with its refresh tokens and records `sid:` for each, so tokens issued under the
