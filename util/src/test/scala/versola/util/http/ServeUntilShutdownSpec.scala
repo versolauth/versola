@@ -39,7 +39,8 @@ object ServeUntilShutdownSpec extends ZIOSpecDefault:
         stopping <- app.interrupt.fork
         _ <- readiness.isReady.repeatUntil(!_)
         stillStopping <- stopping.poll
-        duringBudget <- ShutdownBudget.allowed(1.hour)
+        // Not ready comes first and the budget begins a moment later, in the same release: wait for it rather than read between them.
+        duringBudget <- ShutdownBudget.allowed(1.hour).repeatUntil(_ < 1.hour)
         _ <- stopping.join
       yield assertTrue(
         beforeBudget == 1.hour,              // not begun while it serves
