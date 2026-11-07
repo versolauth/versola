@@ -2,8 +2,8 @@ package versola.central.users
 
 import io.opentelemetry.api
 import org.scalamock.stubs.ZIOStubs
-import versola.central.audit.AuditReportService
 import versola.central.audit.AuditHook
+import versola.central.audit.AuditReportService
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
@@ -88,7 +88,7 @@ object UserPreferencesEndpointSpec extends ZIOSpecDefault, ZIOStubs:
           notAUser <- run(Request.get(client), service)
           credentials <- run(Request.get(asClient), service)
         yield assertTrue(
-          List(none, notAUser, credentials).forall(_.status == Status.BadRequest),
+          List(none, notAUser, credentials).forall(_.status == Status.Unauthorized),
           service.getZoneinfo.calls.isEmpty,
         )
       },
@@ -140,7 +140,7 @@ object UserPreferencesEndpointSpec extends ZIOSpecDefault, ZIOStubs:
       test("a call with no administrator behind it stores nothing") {
         val service = stub[UserService]
         for response <- run(patch(path, """{"zoneinfo":"UTC"}"""), service)
-        yield assertTrue(response.status == Status.BadRequest, service.setZoneinfo.calls.isEmpty)
+        yield assertTrue(response.status == Status.Unauthorized, service.setZoneinfo.calls.isEmpty)
       },
       test("a user named in the body or the query is not the subject: only the actor is changed") {
         val service = stub[UserService]

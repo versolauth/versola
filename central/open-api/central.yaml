@@ -1189,7 +1189,7 @@ paths:
         The `zoneinfo` claim of the caller's own profile: the IANA time zone the console shows times in for them. There is no user
         parameter: the user is the administrator whose token edge verified (edge adds the actor to the call), so an administrator
         reads only their own. A call that no administrator stands behind (a client credentials token, a call edge did not tell the
-        actor of) is `400`. A stored value that is not a name of the time zone database reads as `null`.
+        actor of) is `401`, like a call without the central credential. A stored value that is not a name of the time zone database reads as `null`.
 
         Needs `preferences:manage`, which every seeded role has.
       operationId: getUserPreferences
@@ -1200,10 +1200,8 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/UserPreferencesResponse' }
               example: { zoneinfo: Asia/Almaty }
-        '400':
-          description: No administrator is behind the call (`administrator_required`).
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          description: No administrator is behind the call (`administrator_required`), or the central credential is missing.
     patch:
       tags: [Users]
       summary: Change the calling administrator's own preferences
@@ -1226,9 +1224,9 @@ paths:
         '204':
           description: Stored, cleared, or nothing to change.
         '400':
-          description: "`zoneinfo` is not a name of the time zone database (`invalid_zoneinfo`), or no administrator is behind the call (`administrator_required`)."
+          description: "`zoneinfo` is not a name of the time zone database (`invalid_zoneinfo`)."
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          description: No administrator is behind the call (`administrator_required`), or the central credential is missing.
 
   /users/roles:
     get:

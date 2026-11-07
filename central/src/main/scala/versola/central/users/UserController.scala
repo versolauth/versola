@@ -234,7 +234,7 @@ object UserController extends AuditedController:
 
   /** The calling administrator's own preferences. The user is the one the token names (`AuditHook.administrator`), never one the request
     * names: there is no `id` to send, so an administrator can read and change only their own. A call with no administrator behind it (a
-    * client credentials token, a service, a call edge did not tell the actor of) is refused. */
+    * client credentials token, a service, a call edge did not tell the actor of) is refused with `401`, as a call without the central credential is. */
   val getUserPreferencesEndpoint =
     (Method.GET / "users" / "preferences").audited(Audit.Unrecorded) -> handler { (request: Request) =>
       for
@@ -274,7 +274,7 @@ object UserController extends AuditedController:
     }
 
   private val noAdministrator: UIO[Response] =
-    Observability.setError("administrator_required").as(Response.text("the call is not made by an administrator").status(Status.BadRequest))
+    Observability.setError("administrator_required").as(Response.status(Status.Unauthorized))
 
   val patchRolesEndpoint =
     (Method.PATCH / "users" / "roles").audited(Audit.user("user-roles", Audit.update)) -> handler { (request: Request) =>

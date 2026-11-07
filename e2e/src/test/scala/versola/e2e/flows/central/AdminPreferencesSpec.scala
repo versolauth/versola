@@ -6,7 +6,6 @@ import zio.http.Status
 import zio.json.ast.Json
 import zio.test.*
 
-
 /** The administrator's own time zone: `GET` and `PATCH /users/preferences` as central serves them to an administrator whom edge has
   * identified (the `actorId` query parameter, which `asAdmin` adds as edge does). The zone is the `zoneinfo` claim of the administrator's
   * profile, so it is read back from auth's claims through central's user lookup, and no call names another user.
@@ -86,7 +85,7 @@ object AdminPreferencesSpec extends E2ESpec:
       yield assertTrue(
         theirZone.isEmpty,
         myZone.contains("Asia/Tokyo"),
-        noActor.status == Status.BadRequest,
+        noActor.status == Status.Unauthorized,
         anonymous.status == Status.Unauthorized,
       )
     },

@@ -311,6 +311,23 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
           found <- env.userRepository.find(userId1)
         yield assertTrue(found.map(_.claims) == Some(Json.Obj()))
       },
+      test("a null value clears that claim alone and leaves the user's other claims as they were (the time zone is cleared this way)") {
+        for
+          _ <- seed(env, userId1)
+          _ <- env.userRepository.patchClaims(
+            userId1,
+            Json.Obj("name" -> Json.Str("Ada"), "locale" -> Json.Str("en"), "zoneinfo" -> Json.Str("Asia/Almaty")),
+          )
+          _ <- env.userRepository.patchClaims(userId1, Json.Obj("zoneinfo" -> Json.Null))
+          cleared <- env.userRepository.find(userId1)
+          _ <- env.userRepository.patchClaims(userId1, Json.Obj("zoneinfo" -> Json.Str("Europe/Berlin")))
+          set <- env.userRepository.find(userId1)
+        yield assertTrue(
+          cleared.map(_.claims) == Some(Json.Obj("name" -> Json.Str("Ada"), "locale" -> Json.Str("en"))),
+          set.map(_.claims.fields.toMap.get("zoneinfo")) == Some(Some(Json.Str("Europe/Berlin"))),
+          set.map(_.claims.fields.toMap.get("name")) == Some(Some(Json.Str("Ada"))),
+        )
+      },
       test("patching an unknown user is a no-op") {
         for
           _ <- env.userRepository.patchClaims(userId1, Json.Obj("name" -> Json.Str("Ada")))
