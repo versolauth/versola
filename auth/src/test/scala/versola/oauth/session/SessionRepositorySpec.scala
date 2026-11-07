@@ -2,7 +2,7 @@ package versola.oauth.session
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.{AuthMethodRef, ClientId, ScopeToken}
-import versola.oauth.revocation.{Revocation, RevocationCause, RevocationCursor, RevocationKey, RevocationRepository, RevocationTerms}
+import versola.oauth.revocation.{RevocationCause, RevocationTerms}
 import versola.oauth.session.model.{
   ClientEntry,
   PriorSession,
@@ -14,6 +14,7 @@ import versola.oauth.session.model.{
   UserAgentId,
 }
 import versola.user.model.UserId
+import versola.util.revocation.{Revocation, RevocationCursor, RevocationKey, RevocationRepository}
 import versola.util.{DatabaseSpecBase, MAC}
 import zio.*
 import zio.test.*
@@ -49,6 +50,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
   val terms = RevocationTerms(
     RevocationCause.Logout,
     ttl = 10.minutes,
+    tenantId = None,
     ttlByClient = Map(clientId1 -> 5.minutes, clientId2 -> 30.minutes),
   )
 

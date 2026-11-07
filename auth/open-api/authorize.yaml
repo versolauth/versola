@@ -224,7 +224,9 @@ components:
       required: false
       description: |
         Maximum acceptable age of the existing authentication, in seconds. An older
-        authentication forces re-authentication. Non-numeric values are ignored.
+        authentication forces re-authentication. A value that is not a non-negative whole
+        number is refused with `invalid_request` (RFC 6749 §4.1.2.1); an empty value is
+        treated as omitted (RFC 6749 §3.1).
       schema:
         type: integer
         format: int64

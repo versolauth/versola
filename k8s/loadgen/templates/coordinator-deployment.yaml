@@ -68,10 +68,18 @@ spec:
       # See values.yaml's top-level comment on preStopSleepSeconds /
       # terminationGracePeriodSeconds.
       terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      {{- with (include "loadgen.podSecurityContext" (dict "root" $ "override" $coordinator.podSecurityContext) | trim) }}
+      securityContext:
+        {{- . | nindent 8 }}
+      {{- end }}
       containers:
         - name: coordinator
           image: {{ include "loadgen.image" (dict "global" $.Values.global "svc" $coordinator "chart" $.Chart) }}
           imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          {{- with (include "loadgen.containerSecurityContext" (dict "root" $ "override" $coordinator.containerSecurityContext) | trim) }}
+          securityContext:
+            {{- . | nindent 12 }}
+          {{- end }}
           ports:
             # Named `http` and not `api`: it is VersolaApp's PORT, the same
             # application listener the driver binds, and the plan API is what
@@ -103,8 +111,10 @@ spec:
           envFrom:
             {{- . | nindent 12 }}
           {{- end }}
-          {{- if or $coordinator.config.existingSecret $coordinator.extraVolumeMounts }}
           volumeMounts:
+            # Read-only root filesystem (global.containerSecurityContext): the JVM's scratch files.
+            - name: tmp
+              mountPath: /tmp
             {{- if $coordinator.config.existingSecret }}
             - name: config
               mountPath: /app/config
@@ -113,7 +123,6 @@ spec:
             {{- with $coordinator.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- end }}
           # As the driver's: the diagnostics server serves these, separately
           # from the plan API on `http`.
           livenessProbe:
@@ -134,8 +143,10 @@ spec:
                 command: ["sh", "-c", "sleep {{ $.Values.preStopSleepSeconds }}"]
           resources:
             {{- toYaml $coordinator.resources | nindent 12 }}
-      {{- if or $coordinator.config.existingSecret $coordinator.extraVolumes }}
       volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
         {{- if $coordinator.config.existingSecret }}
         - name: config
           secret:
@@ -147,5 +158,4 @@ spec:
         {{- with $coordinator.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- end }}
 {{- end }}

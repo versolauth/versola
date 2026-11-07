@@ -161,6 +161,15 @@ object ConversationRouter:
               case other: ConversationResult.Render =>
                 ZIO.succeed(other)
 
+        // A login and password say who the user is; a conversation that already knows (a step-up, a re-authentication of a known
+        // session) is not asked, and one that took them would swap the user in while keeping the factors the first one passed
+        // (`amr`), crediting the second user with them. Like any submission that does not belong to the step: refused, and the
+        // conversation stays where it is.
+        case (_: LoginPasswordSubmission, _) if conversation.userId.isDefined =>
+          (Observability.setError("step_mismatch") *>
+            AuthMetrics.stepFailed(stepName(conversation.step)))
+            .as(ConversationResult.BadRequest)
+
         case (submitted: LoginPasswordSubmission, _) =>
           conversationService.checkLoginPassword(authId, conversation, submitted.login, submitted.password)
             .tap(observeDecision("credential"))
