@@ -11,7 +11,7 @@ import versola.oauth.challenge.password.model.CheckPassword
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.consent.ConsentDecision
-import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
+import versola.oauth.conversation.limit.{Acquisition, ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
@@ -416,7 +416,8 @@ object ConversationServiceSpec extends UnitSpecBase:
 
         for
           _ <- TestClock.setTime(now)
-          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.acquireAll.succeedsWith(Acquisition.Granted(LimitStatus.Allowed, Nil))
+          _ <- env.submissionLimiter.refund.succeedsWith(())
           _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkOtp(record, otpStep, OtpCode("123456"), authId)
@@ -431,9 +432,8 @@ object ConversationServiceSpec extends UnitSpecBase:
         val record = conversationRecord.copy(credential = Some(Left(email)))
 
         for
-          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.acquireAll.succeedsWith(Acquisition.Granted(LimitStatus.Allowed, Nil))
           _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Failure)
-          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkOtp(record, otpStep, OtpCode("wrong"), authId)
         yield result match
@@ -451,7 +451,8 @@ object ConversationServiceSpec extends UnitSpecBase:
 
         for
           _ <- TestClock.setTime(now)
-          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.acquireAll.succeedsWith(Acquisition.Granted(LimitStatus.Allowed, Nil))
+          _ <- env.submissionLimiter.refund.succeedsWith(())
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Success)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkPassword(record, passStep, Password("secret"), authId)
@@ -1034,7 +1035,8 @@ object ConversationServiceSpec extends UnitSpecBase:
         for
           _ <- TestClock.setTime(now)
           _ <- env.userRepository.findByLogin.succeedsWith(Some(userRecord))
-          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.acquireAll.succeedsWith(Acquisition.Granted(LimitStatus.Allowed, Nil))
+          _ <- env.submissionLimiter.refund.succeedsWith(())
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Success)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkLoginPassword(authId, conversationRecord, Login("testuser"), Password("secret"))
