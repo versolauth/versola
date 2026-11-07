@@ -717,6 +717,72 @@ test.describe('security actions', () => {
     await expect(card(page, 'Security actions').getByRole('status')).toContainText('sent');
   });
 
+  test('Reset password says how long the lifetime may be and starts at the default', async ({ page }) => {
+    await openRecord(page);
+    await page.getByRole('button', { name: 'Reset password…' }).click();
+    const field = page.getByLabel('Temporary password lifetime (hours)');
+    await expect(field).toHaveValue('12');
+    await expect(field).toHaveAttribute('min', '1');
+    await expect(field).toHaveAttribute('max', '168');
+    await expect(page.getByText('From 1 hour to 168 hours (7 days).')).toBeVisible();
+    await expect(field).toHaveAttribute('aria-invalid', 'false');
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Confirm' })).toBeEnabled();
+  });
+
+  test('Reset password accepts the shortest and the longest lifetime and sends them in seconds', async ({ page }) => {
+    const api = await openRecord(page);
+    for (const [hours, seconds] of [['1', 3600], ['168', 604800]] as const) {
+      await page.getByRole('button', { name: 'Reset password…' }).click();
+      await page.getByLabel('Temporary password lifetime (hours)').fill(hours);
+      await expect(page.getByRole('alert')).toHaveCount(0);
+      await page.getByRole('button', { name: 'Confirm' }).click();
+      await expect.poll(() => api.requests.filter(r => r.method === 'POST' && r.pathname === '/users/password/reset').length)
+        .toBe(hours === '1' ? 1 : 2);
+      const sent = api.requests.filter(r => r.method === 'POST' && r.pathname === '/users/password/reset').at(-1)!;
+      expect(sent.body).toMatchObject({ expiresInSeconds: seconds });
+    }
+  });
+
+  test('Reset password refuses a lifetime outside the range with the reason, and sends nothing', async ({ page }) => {
+    const api = await openRecord(page);
+    await page.getByRole('button', { name: 'Reset password…' }).click();
+    const field = page.getByLabel('Temporary password lifetime (hours)');
+    const confirm = page.getByRole('button', { name: 'Confirm' });
+    const cases = [
+      ['169', 'The lifetime is at most 168 hours (7 days).'],
+      ['200', 'The lifetime is at most 168 hours (7 days).'],
+      ['0', 'The lifetime is at least 1 hour.'],
+      ['-5', 'The lifetime is at least 1 hour.'],
+      ['1.5', 'Use a whole number of hours.'],
+    ] as const;
+    for (const [value, reason] of cases) {
+      await field.fill(value);
+      await expect(page.getByRole('alert')).toHaveText(reason);
+      await expect(field).toHaveAttribute('aria-invalid', 'true');
+      await expect(field).toHaveAccessibleDescription(new RegExp(reason.replace(/[.()]/g, '\\$&')));
+      await expect(confirm).toBeDisabled();
+    }
+    expect(api.requests.filter(r => r.method === 'POST' && r.pathname === '/users/password/reset')).toHaveLength(0);
+    await field.fill('24');
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(confirm).toBeEnabled();
+  });
+
+  test('Reset password lets the lifetime be emptied and retyped, and says it is missing meanwhile', async ({ page }) => {
+    await openRecord(page);
+    await page.getByRole('button', { name: 'Reset password…' }).click();
+    const field = page.getByLabel('Temporary password lifetime (hours)');
+    await field.fill('');
+    await expect(field).toHaveValue('');
+    await expect(page.getByRole('alert')).toHaveText('Enter the lifetime in hours.');
+    await expect(page.getByRole('button', { name: 'Confirm' })).toBeDisabled();
+    await field.pressSequentially('48');
+    await expect(field).toHaveValue('48');
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Confirm' })).toBeEnabled();
+  });
+
   test('Reset password hides show in production and can be cancelled with Escape', async ({ page }) => {
     const api = await openRecord(page, { state: { ...state, myPermissions: { ...defaultMyPermissions, isProd: true } } });
     await page.getByRole('button', { name: 'Reset password…' }).click();
