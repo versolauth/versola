@@ -40,8 +40,10 @@ object AuditHookSpec extends ZIOSpecDefault:
         _ <- seen.update(_ :+ Recorded(draft, state, auth.flatMap(_.clientId), auth.flatMap(_.sessionId), auth.flatMap(_.ip)))
       yield ()
 
-  private def settings(adminUserViewed: Boolean = true) =
-    TestCentralConfig.config.copy(audit = CentralConfig.AuditConfig(events = CentralConfig.AuditConfig.Events(adminUserViewed = adminUserViewed)))
+  private def settings(adminUserViewed: Boolean = true, requireActor: Boolean = false) =
+    TestCentralConfig.config.copy(audit =
+      CentralConfig.AuditConfig(events = CentralConfig.AuditConfig.Events(adminUserViewed = adminUserViewed), requireActor = requireActor),
+    )
 
   private def asAdmin(request: Request, tenant: String = "default", client: String = "central-admin"): Request =
     request.updateURL(
@@ -83,6 +85,96 @@ object AuditHookSpec extends ZIOSpecDefault:
   private val listClients = Method.GET / "configuration" / "clients"
 
   private def post(path: String, body: String) = Request.post(URL(Path.decode(path)), Body.fromString(body))
+
+  private val bare = post("/configuration/clients/web", """{"id":"c"}""")
+  private val strict = settings(requireActor = true)
+  private val syncClients = Method.GET / "configuration" / "clients" / "sync"
+  private def refusedCount(reason: String) =
+    Metric.counter("audit_actor_refused_total").tagged(Set(MetricLabel("reason", reason))).value.map(_.count)
+  private def ran = Ref.make(0).map(counter => (counter, handler((_: Request) => counter.update(_ + 1).as(Response.text("")))))
+
+  private def requireActorSuite =
+    suite("audit.require-actor")(
+      test("a change without an actor is answered 401 and the handler does not run; it is recorded as a denial and counted") {
+        for
+          before <- refusedCount("absent")
+          (counter, run) <- ran
+          (response, recorded) <- serve(Routes(createClient -> run), bare, strict)
+          runs <- counter.get
+          after <- refusedCount("absent")
+        yield assertTrue(
+          response.status == Status.Unauthorized,
+          runs == 0,
+          recorded.map(_.kind) == List("admin.client.create"),
+          recorded.head.draft.outcome == AuditOutcome.denied,
+          recorded.head.draft.reason.contains("actor_required"),
+          recorded.head.draft.actor.contains((CentralAudit.Actors.Service, None)),
+          after == before + 1,
+        )
+      },
+      test("a read that is an event, and a read nobody records, are refused the same way, and nothing is recorded of the first") {
+        val viewed = Request.get(URL(Path.decode("/users")).addQueryParam("id", targetUser))
+        for
+          (counter, run) <- ran
+          (user, userRecorded) <- serve(Routes(findUsers -> run), viewed, strict)
+          (listed, listedRecorded) <- serve(Routes(listClients -> run), Request.get(URL(Path.decode("/configuration/clients"))), strict)
+          runs <- counter.get
+        yield assertTrue(
+          user.status == Status.Unauthorized,
+          listed.status == Status.Unauthorized,
+          runs == 0,
+          userRecorded.isEmpty,
+          listedRecorded.isEmpty,
+        )
+      },
+      test("an actor that is no user and no client is refused as invalid") {
+        for
+          before <- refusedCount("invalid")
+          (counter, run) <- ran
+          (response, _) <- serve(Routes(createClient -> run), bare.updateURL(_.addQueryParam(AuditHook.ActorIdParam, "someone")), strict)
+          runs <- counter.get
+          after <- refusedCount("invalid")
+        yield assertTrue(response.status == Status.Unauthorized, runs == 0, after == before + 1)
+      },
+      test("a call with a valid actor, an administrator or a client, is served and recorded as before") {
+        for
+          (counter, run) <- ran
+          (byAdmin, adminRecorded) <- serve(Routes(createClient -> run), asAdmin(bare), strict)
+          (byClient, clientRecorded) <- serve(Routes(createClient -> run), asAdmin(bare, client = admin), strict)
+          (listed, _) <- serve(Routes(listClients -> run), asAdmin(Request.get(URL(Path.decode("/configuration/clients")))), strict)
+          runs <- counter.get
+        yield assertTrue(
+          byAdmin.status == Status.Ok,
+          byClient.status == Status.Ok,
+          listed.status == Status.Ok,
+          runs == 3,
+          adminRecorded.head.draft.outcome == AuditOutcome.success,
+          adminRecorded.head.draft.actor.contains((CentralAudit.Actors.Admin, Some(admin))),
+          clientRecorded.head.draft.actor.contains((CentralAudit.Actors.Client, Some(admin))),
+        )
+      },
+      test("a route declared internal is served without an actor: it has no administrator") {
+        for
+          (counter, run) <- ran
+          (response, recorded) <- serve(Routes(syncClients -> run), Request.get(URL(Path.decode("/configuration/clients/sync"))), strict)
+          runs <- counter.get
+        yield assertTrue(response.status == Status.Ok, runs == 1, recorded.isEmpty)
+      },
+      test("with it off, which is the default, a call without an actor is served and recorded as a service's, as it always was") {
+        for
+          (counter, run) <- ran
+          (response, recorded) <- serve(Routes(createClient -> run), bare)
+          (listed, _) <- serve(Routes(listClients -> run), Request.get(URL(Path.decode("/configuration/clients"))))
+          runs <- counter.get
+        yield assertTrue(
+          response.status == Status.Ok,
+          listed.status == Status.Ok,
+          runs == 2,
+          recorded.head.draft.actor.contains((CentralAudit.Actors.Service, None)),
+          recorded.head.draft.outcome == AuditOutcome.success,
+        )
+      },
+    )
 
   def spec = suite("AuditHook")(
     test("a change is recorded as admin.<resource>.<operation> with its actor, tenant, target and the route it came by") {
@@ -270,6 +362,7 @@ object AuditHookSpec extends ZIOSpecDefault:
         userAgent.head.context.userAgent.contains("Console/1"),
       )
     },
+    requireActorSuite,
     test("the client and the session of the token are the client and the session of the event's context") {
       val session = "sess-1"
       for

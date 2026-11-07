@@ -100,6 +100,34 @@ object AuditRoutesSpec extends ZIOSpecDefault:
         ),
       )
     },
+    test("the routes that are exempt from audit.require-actor are exactly these: a new one is a decision, made here") {
+      val internal = entries.collect { case ((method, path), Entry.Internal) => method.name -> path }.toSet
+      assertTrue(
+        internal == Set(
+          "GET" -> "/configuration/authorization-detail-types/sync",
+          "GET" -> "/configuration/challenges/challenge-settings/sync",
+          "GET" -> "/configuration/challenges/otp-templates/sync",
+          "GET" -> "/configuration/clients/sync",
+          "GET" -> "/configuration/delivery-settings/sync",
+          "GET" -> "/configuration/edges/registry",
+          "GET" -> "/configuration/forms/sync",
+          "GET" -> "/configuration/jwks/signing-keys/sync",
+          "GET" -> "/configuration/jwks/sync",
+          "GET" -> "/configuration/locales/sync",
+          "GET" -> "/configuration/resources/registry",
+          "GET" -> "/configuration/scopes/sync",
+          "GET" -> "/configuration/server-metadata/sync",
+          "GET" -> "/configuration/system-settings/sync",
+          "GET" -> "/configuration/themes/sync",
+          "POST" -> "/est/enroll",
+          "POST" -> "/est/renew",
+          "POST" -> "/service/configuration/sync",
+          "POST" -> "/service/users/outbox/flush",
+          "DELETE" -> "/service/users",
+          "POST" -> "/users/registrations",
+        ),
+      )
+    },
     test("only auth's callbacks and syncs, the edge-facing surface and the service tooling are internal") {
       val internal = entries.collect { case ((method, path), Entry.Internal) => method.name -> path }.toList
       assertTrue(
