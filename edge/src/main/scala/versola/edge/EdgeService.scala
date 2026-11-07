@@ -679,7 +679,7 @@ object EdgeService:
           else ProxyMetrics.AuthCall.None
         _ <- ProxyMetrics.beforeUpstream(resourceId, authCall, dispatched - started)
         response <- versola.util.http.Observability.asInternalCall(ZIO.scoped(httpClient.request(upstream).flatMap(_.collect)))
-        stripped = response.removeHeader(Header.SetCookie)
+        stripped = response.updateHeaders(ProxyHeaders.toCaller).removeHeader(Header.SetCookie)
       yield session.rotatedCookie.fold(stripped)(stripped.addCookie)
 
     /** Rate limit checkpoints R2 and R3. A policy in `enforce` refuses the call here with `429` and `Retry-After`; one in
@@ -1307,7 +1307,8 @@ object EdgeService:
         .filter(_.name != EdgeSessionCookie.name)
         .map(_.toRequest)
 
-      val baseHeaders = request.headers
+      val clientAddress = ClientAddress.resolve(request, config.clientIp, config.clientIpHeader).address
+      val baseHeaders = ProxyHeaders.toUpstream(request.headers, clientAddress)
         .removeHeader(Header.Cookie)
         .removeHeader(Header.Host)
         .removeHeader(Header.Authorization)

@@ -503,6 +503,23 @@ the secret, in `pending_logins.browser_binding_hash` (migration `V2008`, nullabl
   (a script, a load generator without a cookie jar), now gets `400` on `/complete`.
 - The native flow (`/native/*`) never used the pending login and is unaffected.
 
+#### Behaviour change: edge sends a resource its own view of the caller, not the forwarding fields the caller wrote
+
+On `/resources/*`, edge no longer passes these request fields to the resource: `Forwarded`, every `X-Forwarded-*`, `X-Real-IP`,
+`Proxy-Authorization`, and the connection-specific ones, which are `Connection` (and each field it names), `Proxy-Connection`,
+`Keep-Alive`, `TE`, `Transfer-Encoding` and `Upgrade` (RFC 9110 §7.6.1). Instead it sets `X-Forwarded-For` and `X-Real-IP` to one
+address, the one it uses for the address rate limit (`client-ip`, see [Rate limits](#rate-limits)): the peer of the connection by
+default, or the value of `client-ip-header` when `client-ip = "forwarded"`. When it has no address it sets neither. The same fields
+(and `Proxy-Authenticate`) are dropped from what the resource answers. `Forwarded` is never set (RFC 7239 §4: off by default).
+Before, all of them went through as the caller sent them, so a caller could choose the identity a resource read from them.
+
+- **Who can notice.** A resource that reads the client address from `X-Forwarded-For` / `X-Real-IP` set by a proxy in front of edge:
+  with the default `client-ip = "socket"` it now gets the address of that proxy. Set `client-ip = "forwarded"` (only when edge is reachable
+  *only* through that proxy, as already required for the address limit) and the resource gets the address the proxy set.
+  A resource that reads `X-Forwarded-Proto` or `X-Forwarded-Host` no longer gets them and has to be configured with its public origin.
+- **CEL.** `request.headers` still shows the fields as the caller sent them; a rule must not read an identity from them.
+- **No setting, no migration.**
+
 #### Behaviour change: a one-time code is good for 10 minutes after it was sent
 
 A code used to be accepted for as long as its sign-in lived (`authConversationTtlSeconds` of the tenant, 15 minutes by default, more where
