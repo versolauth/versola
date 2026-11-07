@@ -213,6 +213,22 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
         result <- env.service.getPermissionsForRoles(tenantId, Set.empty)
       yield assertTrue(result.isEmpty)
     },
+    // The edge ignores an inactive role, so what an administrator holds, which decides what they may grant, ignores it too.
+    test("getActivePermissionsForRoles leaves out an inactive role and a role of another tenant") {
+      val env = new Env(Vector(adminRole, operatorRole.copy(active = false), otherTenantRole))
+
+      for
+        result <- env.service.getActivePermissionsForRoles(tenantId, Set(adminRoleId, operatorRoleId, otherTenantRole.id))
+      yield assertTrue(result == adminRole.permissions)
+    },
+    test("findRole reads the repository, not the cache") {
+      val env = new Env(Vector.empty)
+
+      for
+        _ <- env.repository.findRole.succeedsWith(Some(adminRole))
+        result <- env.service.findRole(tenantId, adminRoleId)
+      yield assertTrue(result == Some(adminRole), env.repository.findRole.calls == List((tenantId, adminRoleId)))
+    },
     test("getRolesForSync returns all cached roles when no edge is specified") {
       val env = new Env(Vector(adminRole, otherTenantRole))
 
