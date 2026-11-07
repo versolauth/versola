@@ -26,8 +26,8 @@ global:
 #   fsGroup 10001                   -- makes a freshly provisioned PVC / emptyDir writable by that uid.
 #                                      OnRootMismatch skips the recursive chown on a volume already right.
 #   seccompProfile RuntimeDefault   -- the container runtime's default syscall filter
-# A volume that an earlier release (which ran as root) created keeps its root-owned files: see deploy.md,
-# "Containers run as an unprivileged user", for the one-off chown.
+# A volume that an earlier release (which ran as root) created keeps its root-owned files; whether fsGroup
+# fixes that depends on the storage driver: see deploy.md, "Containers run as an unprivileged user".
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 10001
@@ -39,7 +39,8 @@ podSecurityContext:
 
 # allowPrivilegeEscalation false (no setuid gain), no Linux capabilities, a read-only root filesystem: what
 # the process writes lives on the volumes mounted at /tmp and /diagnostics. A cluster whose admission policy
-# sets these itself can set both blocks to {}.
+# sets these itself can set both blocks to `null` (`{}` does
+  # NOT do it: Helm merges maps, so an empty map keeps the defaults above).
 containerSecurityContext:
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true

@@ -164,8 +164,11 @@ services:
     # DAC_OVERRIDE, which root needs to read and write what a volume or bind mount gives it under another
     # owner (a new /diagnostics volume is created with the image's owner, 10001; an old one is root's); no
     # privilege gain through a setuid binary; a read-only root filesystem (it writes /diagnostics, a volume,
-    # and /tmp); and a bound on processes and threads. /tmp is `exec` because the JVM maps the crypto
-    # provider's native library from it, and a tmpfs mounts `noexec` unless told otherwise.
+    # and /tmp); and a ceiling on processes and threads (every JVM thread counts). 4096 is a containment
+    # ceiling against a runaway, not a tuned figure: well above the few hundred threads a service holds, and
+    # reaching it fails thread creation (an OutOfMemoryError, which JAVA_OPTS turns into an exit and a restart),
+    # so raise it rather than lower it if `jvm_threads_current` ever approaches it. /tmp is `exec` because the JVM
+    # maps the crypto provider's native library from it, and a tmpfs mounts `noexec` unless told otherwise.
     user: "0:0"
     cap_drop:
       - ALL
@@ -176,7 +179,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp:exec,mode=1777,size=67108864
-    pids_limit: 1024
+    pids_limit: 4096
     depends_on:
       postgres:
         condition: service_healthy
@@ -246,7 +249,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp:exec,mode=1777,size=67108864
-    pids_limit: 1024
+    pids_limit: 4096
     # central has no healthcheck (no curl in eclipse-temurin:21-jre), so
     # this depends_on can only wait for "container started", not "actually
     # ready". If auth starts before central is really up, its startup
@@ -304,7 +307,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp:exec,mode=1777,size=67108864
-    pids_limit: 1024
+    pids_limit: 4096
     depends_on:
       central:
         condition: service_started

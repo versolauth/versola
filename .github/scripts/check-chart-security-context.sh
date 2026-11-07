@@ -9,13 +9,16 @@
 # valid manifest that runs as root, and nothing fails. The images run as uid 10001 (docker/Dockerfile.*),
 # so a container that loses `runAsNonRoot` still works and is simply not protected.
 #
-# Every container of every Deployment, StatefulSet and Job is checked, init containers included,
+# Every container of every Pod (a helm test pod is the classic way to lose a context), Deployment,
+# StatefulSet, DaemonSet, Job and CronJob is checked, init containers included,
 # across the configurations that render different pods: the versola chart with PKI, the certificate
 # sync and the migration Job on; the edge chart; the loadgen chart with the mockapi gateway on.
 # Expected values are literals written by hand, not computed by rendering the chart a second way.
 #
-# Opting out is a values choice (`global.podSecurityContext: {}`), and the last case asserts that it
-# renders nothing rather than a half-set context.
+# Opting out is a values choice, and the last case asserts that it renders nothing rather than a
+# half-set context. The opt-out is `null`, written in a values file: Helm merges maps, so an empty
+# `{}` keeps the chart's defaults and does not opt out (the second to last case asserts that too, so
+# a documented `{}` can never come back).
 
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -38,7 +41,7 @@ import tempfile
 
 import yaml
 
-POD_KINDS = {"Deployment", "StatefulSet", "Job"}
+POD_KINDS = {"Pod", "Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob"}
 
 VERSOLA = {
     "services": {
@@ -70,28 +73,41 @@ LOADGEN = {
 failures = []
 
 
-def render(chart, values, sets=()):
-    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
-        json.dump(values, f)
-        path = f.name
+def render(chart, values, overrides=None):
+    # `overrides` is a second values file (JSON is YAML), the way an operator's `-f` file reaches the chart.
+    paths = []
     try:
-        cmd = ["helm", "template", "t", chart, "-f", path]
-        for s in sets:
-            cmd += ["--set", s]
+        for v in (values, overrides):
+            if v is None:
+                continue
+            with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+                json.dump(v, f)
+                paths.append(f.name)
+        cmd = ["helm", "template", "t", chart]
+        for p in paths:
+            cmd += ["-f", p]
         out = subprocess.run(cmd, capture_output=True, text=True)
     finally:
-        os.unlink(path)
+        for p in paths:
+            os.unlink(p)
     if out.returncode != 0:
         failures.append(f"{chart}: helm template failed: {out.stderr.strip()}")
         return []
     return [d for d in yaml.safe_load_all(out.stdout) if d]
 
 
+def pod_spec(d):
+    if d["kind"] == "Pod":
+        return d["spec"]
+    if d["kind"] == "CronJob":
+        return d["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    return d["spec"]["template"]["spec"]
+
+
 def pods(docs):
     for d in docs:
         if d["kind"] in POD_KINDS:
-            spec = d["spec"]["template"]["spec"]
-            yield f'{d["kind"]}/{d["metadata"]["name"]}', spec
+            yield f'{d["kind"]}/{d["metadata"]["name"]}', pod_spec(d)
 
 
 def claim_names(docs, name):
@@ -112,6 +128,8 @@ def check(chart, docs, expect_workloads):
             failures.append(f"{chart} {name}: pod securityContext.runAsNonRoot is not true")
         if not isinstance(pod.get("runAsUser"), int) or pod["runAsUser"] == 0:
             failures.append(f"{chart} {name}: pod securityContext.runAsUser is missing or 0")
+        if not isinstance(pod.get("runAsGroup"), int) or pod["runAsGroup"] == 0:
+            failures.append(f"{chart} {name}: pod securityContext.runAsGroup is missing or 0")
         if (pod.get("seccompProfile") or {}).get("type") != "RuntimeDefault":
             failures.append(f"{chart} {name}: pod seccompProfile is not RuntimeDefault")
         volumes = {v["name"] for v in spec.get("volumes", [])} | claims
@@ -168,13 +186,20 @@ for name, spec in pods(docs):
     if "mockapi" in name and "resource-gateway" not in {c["name"] for c in spec["containers"]}:
         failures.append(f"loadgen {name}: the gateway sidecar is not rendered, so it was not checked")
 
-# A component's own context replaces the global one; the global one empty renders nothing.
-docs = render("k8s/versola", VERSOLA, sets=["global.podSecurityContext=null", "global.containerSecurityContext=null"])
+# Opting out. `null` in a values file removes the chart's default (Helm deletes a key set to null while
+# coalescing); `{}` does not, because maps are merged: the defaults survive and the pod stays hardened.
+OPT_OUT = {"global": {"podSecurityContext": None, "containerSecurityContext": None}}
+EMPTY_MAP = {"global": {"podSecurityContext": {}, "containerSecurityContext": {}}}
+docs = render("k8s/versola", VERSOLA, OPT_OUT)
 for name, spec in pods(docs):
     if name.endswith("-auth") and "securityContext" in spec:
-        failures.append(f"versola {name}: global.podSecurityContext={{}} should render no pod securityContext")
+        failures.append(f"versola {name}: global.podSecurityContext: null should render no pod securityContext")
     if name.endswith("-auth") and "securityContext" in spec["containers"][0]:
-        failures.append(f"versola {name}: global.containerSecurityContext={{}} should render no container securityContext")
+        failures.append(f"versola {name}: global.containerSecurityContext: null should render no container securityContext")
+docs = render("k8s/versola", VERSOLA, EMPTY_MAP)
+for name, spec in pods(docs):
+    if name.endswith("-auth") and spec.get("securityContext", {}).get("runAsNonRoot") is not True:
+        failures.append(f"versola {name}: an empty map was expected to keep the defaults (the documented opt-out is null)")
 
 if failures:
     print("check-chart-security-context FAILED:", file=sys.stderr)

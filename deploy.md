@@ -1474,36 +1474,27 @@ move together and `configure` is re-run)
 
 The `versola-auth`, `versola-central`, `versola-edge`, `versola-loadgen` and `versola-mockapi` images run as uid/gid
 `10001` (`USER` in `docker/Dockerfile.*`), not root. The application tree stays root-owned and read-only to that user. What
-the services write is `/diagnostics` (heap dump and GC log; `-XX:HeapDumpPath`, `-Xlog`), `/tmp` (the JVM's performance
-file and the native library of the crypto provider, which the JVM maps from there, so it must allow execution) and, for an
-edge, its identity directory (`/var/lib/versola-edge`, a volume). `/diagnostics` and `/var/lib/versola-edge` exist in the image owned by
-`10001`, so a *new* named volume mounted there takes that owner; a volume that already exists keeps the owner it has.
+the services write is `/diagnostics` (heap dump, GC log and JVM crash log: `-XX:HeapDumpPath`, `-Xlog`, `-XX:ErrorFile`), `/tmp` (the
+JVM's performance file and the native library of the crypto provider, which the JVM maps from there, so it must allow execution)
+and, for an edge, its identity directory (`/var/lib/versola-edge`, a volume). `/diagnostics` and `/var/lib/versola-edge` exist in
+the image owned by `10001`, so a *new* named volume mounted there takes that owner; a volume that already exists keeps the owner it has.
 
-**Compose (`versola-cli`, vps and docker-local).** The generated services `central`, `auth` and `edge` set `user: "0:0"`
-explicitly, so a bundle behaves as before: the volumes and files of an earlier bundle (the mutual-TLS leaves and keys
-`mtls-init` writes mode `0600` as root, step-ca's output, the diagnostics volumes) belong to root, and a service as `10001` cannot
-read them. What changed for those services is the rest of the hardening: `cap_drop: [ALL]` with `DAC_OVERRIDE` added back (root needs it for files of another owner),
-`no-new-privileges`, `read_only: true` with `/tmp` as an `exec` tmpfs, and `pids_limit: 1024`. No `mem_limit` is set: the
-heap and non-heap ceilings are in `JAVA_OPTS` (see `Dockerfile.auth`), and a hard container limit on a shared VM is the operator's
-decision. Replicas (`replicas.yml`) inherit all of it through `extends`. Running as `10001` in compose is not
-yet available: it needs the key and volume ownership above changed first.
-
-**Anything that starts the images without those settings now runs as `10001`.** That includes a `docker run` of
-an image by hand, and the compose file `versola edge bootstrap` writes for a remote edge until `versola-cli` pins its user the same way:
-an `edge-identity` volume created by an earlier release holds files owned by root (`0600`), which the edge as `10001`
-cannot read, so it would enrol again with a spent token. Until then run such an edge as root (`user: "0:0"`) or
-give the volume's files to `10001`.
+**Compose (`versola-cli`).** The generated `central`, `auth` and `edge` set `user: "0:0"` explicitly (the mutual-TLS keys that
+`mtls-init` writes `0600`, step-ca's output and the diagnostics volumes belong to root), together with `cap_drop: [ALL]` and
+`DAC_OVERRIDE` added back, `no-new-privileges`, `read_only: true` with `/tmp` as an `exec` tmpfs, and `pids_limit: 4096`. No
+`mem_limit` is set: the heap and non-heap ceilings are in `JAVA_OPTS` (see `Dockerfile.auth`). Replicas (`replicas.yml`) inherit
+all of it through `extends`. A compose file that starts these images without `user:` runs them as `10001`.
 
 **Helm charts.** Every pod the charts render (`k8s/versola` including the console, certificate sync and migration Job,
 `k8s/versola-edge`, `k8s/loadgen`) gets, from `global.podSecurityContext` / `global.containerSecurityContext` (`podSecurityContext` /
 `containerSecurityContext` in `k8s/versola-edge`): `runAsNonRoot`, uid/gid `10001` (the console runs as nginx's `101`),
 `fsGroup` the same, `seccompProfile: RuntimeDefault`, `allowPrivilegeEscalation: false`, all capabilities dropped and a read-only
-root filesystem, with `emptyDir` volumes at `/tmp` (and, for nginx, `/run` and `/var/cache/nginx`). Setting the blocks to `{}`
-renders no context, for a cluster whose admission policy sets one itself; a component's own value replaces the global one.
-An `emptyDir` is created writable by the pod's group, but a **PersistentVolume provisioned by an earlier release is not**: the edge's
-`identity` claim holds files owned by root with mode `0600`, which `fsGroup` does not make readable to `10001`. Those files must be given to
-`10001:10001` once before the upgraded edge starts (or the edge enrolled again with a new token). Nothing else in the charts
-keeps state on a volume of the pod.
+root filesystem, with `emptyDir` volumes at `/tmp` (and, for nginx, `/run` and `/var/cache/nginx`). Set the blocks to `null` (in a
+values file: `global.podSecurityContext: null`) to render no context, for a cluster whose admission policy sets one itself; `{}` does
+not do it, because Helm merges maps and keeps the defaults. A component's own value replaces the global one. Whether the edge's
+`identity` volume is writable to `10001` rests on the cluster's storage: `fsGroup` is applied by the kubelet to volumes of drivers
+that support it, and not to others (`hostPath`, and so the default `local-path` class of a kind cluster, NFS, a CSI driver with
+`fsGroupPolicy: None`); on those, own the files by `10001:10001` yourself.
 
 ### Request bodies state every field (breaking for API clients)
 

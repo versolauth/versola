@@ -96,7 +96,8 @@ EXPOSE 8080 9345
 # java_pid<pid>.hprof, and ExitOnOutOfMemoryError guarantees each OOM gets a
 # new pid, so an OOM loop would accumulate one dump per crash forever. Naming
 # the file makes every OOM overwrite the same one.
-ENV JAVA_OPTS="-XX:+UseG1GC -Xms512m -Xmx512m -XX:MaxDirectMemorySize=96m -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=64m -Xss512k -XX:NativeMemoryTracking=summary -XX:+UseCompactObjectHeaders -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/diagnostics/heap.hprof -XX:+ExitOnOutOfMemoryError -Xlog:gc*:file=/diagnostics/gc.log:time,uptime,level,tags:filecount=5,filesize=20M --enable-native-access=ALL-UNNAMED"
+# ErrorFile (Dockerfile.auth): the JVM's crash log goes to a volume, one fixed file that a crash loop overwrites.
+ENV JAVA_OPTS="-XX:+UseG1GC -Xms512m -Xmx512m -XX:MaxDirectMemorySize=96m -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=64m -Xss512k -XX:NativeMemoryTracking=summary -XX:+UseCompactObjectHeaders -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/diagnostics/heap.hprof -XX:ErrorFile=/diagnostics/hs_err.log -XX:+ExitOnOutOfMemoryError -Xlog:gc*:file=/diagnostics/gc.log:time,uptime,level,tags:filecount=5,filesize=20M --enable-native-access=ALL-UNNAMED"
 
 # See Dockerfile.auth, including why the user is 10001 and what stays root-owned. /var/lib/versola-edge is
 # where an enrolled edge keeps its identity (`versola edge bootstrap` and the Helm chart mount a volume
