@@ -35,7 +35,16 @@ object PostgresCentralAuditConfigSpec extends ZIOSpecDefault:
         config.audit.overflow == AuditEvents.Overflow.drop,
         config.audit.blockTimeout == 2.seconds,
         config.audit.events.adminUserViewed,
+        // an absent key keeps what every earlier release did: a call without an actor is served and recorded as a service's
+        !config.audit.requireActor,
       )
+    },
+    test("audit.require-actor is read, and a block that leaves it out leaves it off") {
+      for
+        on <- load("""audit { require-actor = true }""")
+        off <- load("""audit { require-actor = false }""")
+        other <- load("""audit { retention = "10 days" }""")
+      yield assertTrue(on.audit.requireActor, !off.audit.requireActor, !other.audit.requireActor)
     },
     test("the keys of the block are read, and become the writer's settings") {
       for config <- load("""audit { retention = "14 days", overflow = "drop", block-timeout = "500 millis", events { admin-user-viewed = false } }""")

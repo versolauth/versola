@@ -64,6 +64,12 @@ object CentralAudit:
   def actorMissing(reason: Option[String]): UIO[Unit] =
     ZIO.foreachDiscard(reason)(reason => actorMissing.tagged(Set(MetricLabel("reason", reason))).increment)
 
+  private val actorRefused = Metric.counter("audit_actor_refused_total")
+
+  /** A call of an administrator's route refused because `audit.require-actor` is on and it named no valid actor: `absent` (edge added
+    * none) or `invalid` (what it named is no user and no client). */
+  def actorRefused(reason: String): UIO[Unit] = actorRefused.tagged(Set(MetricLabel("reason", reason))).increment
+
   private val targetMissingCounter = Metric.counter("audit_event_without_target_total")
 
   /** A change that succeeded and whose handler did not name its target (or, on a user's resource, the user): its row is not found by the

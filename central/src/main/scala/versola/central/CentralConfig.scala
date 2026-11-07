@@ -299,12 +299,17 @@ object CentralConfig:
     *                     tenth of that. Events a second equal requests a second only if every request records an event; `events`
     *                     is what changes it. A design estimate, to be replaced with the figure measured under load.
     * @param events       the kinds a deployment may leave out
+    * @param requireActor `true`: a call of an administrator's route (every route that is not declared `Audit.Internal`) that does not
+    *                     name a valid actor is refused with `401` and counted, not recorded as a service's. `false`: it is served and
+    *                     recorded as a service's, which is what every earlier release did. Turn it on once every edge has read the
+    *                     registrations of the `central` resource and nothing else calls central around edge.
     */
   case class AuditConfig(
       retention: Duration = Duration.fromSeconds(7 * 24 * 3600L),
       overflow: AuditEvents.Overflow = AuditEvents.Overflow.drop,
       blockTimeout: Duration = Duration.fromSeconds(2),
       events: AuditConfig.Events = AuditConfig.Events(),
+      requireActor: Boolean = false,
   ):
     /** What the writer of `versola.util.audit` takes; the keys that are central's own (`events`) it does not. */
     def settings: AuditEvents.Settings =
