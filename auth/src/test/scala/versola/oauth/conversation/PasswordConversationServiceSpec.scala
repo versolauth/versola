@@ -584,9 +584,8 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.userRepository.findByLogin.succeedsWith(Some(loginUser))
-          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.acquireAll.succeedsWith(Acquisition.Granted(LimitStatus.Allowed, Nil))
           _ <- env.passwordService.verifyPassword.succeedsWith(CheckPassword.Failure)
-          _ <- env.submissionLimiter.recordLimitAll.succeedsWith(LimitStatus.Allowed)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           _ <- env.service.checkLoginPassword(authId, baseRecord, login, password)
           hashed = env.passwordService.verifyUnknownUser.calls

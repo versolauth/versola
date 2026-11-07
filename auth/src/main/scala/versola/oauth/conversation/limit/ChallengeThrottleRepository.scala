@@ -119,6 +119,9 @@ trait ChallengeThrottleRepository:
   /** Takes back one attempt charged by [[reserveAttempt]], atomically. Restores the row as it was before the
     * charge when nothing has touched it since (which also lifts a ban that this very attempt caused); otherwise
     * removes that attempt's timestamp from the list. Nothing to do when the row is gone.
+    *
+    * A ban raised by other attempts (someone else's burst) is deliberately not lifted by a right answer: the row has moved on since the
+    * charge, so only this attempt's own timestamp is taken back. That is how it was before the charge existed, and not to be "fixed".
     */
   def refundAttempt(reservation: Reservation.Granted): Task[Unit]
 

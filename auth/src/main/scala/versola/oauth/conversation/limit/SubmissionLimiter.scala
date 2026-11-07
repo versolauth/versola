@@ -68,7 +68,9 @@ trait SubmissionLimiter:
     */
   def acquireAll(clientId: ClientId, subjects: List[String], challengeType: ChallengeType): Task[Acquisition]
 
-  /** Takes back the attempts charged by [[acquireAll]], for an answer that turned out to be right. */
+  /** Takes back the attempts charged by [[acquireAll]], for an answer that turned out to be right. Best effort: a failure is logged and
+    * leaves the attempts charged, it does not fail the caller.
+    */
   def refund(charges: List[Reservation.Granted]): Task[Unit]
 
   /** Records an attempt for each subject via its own atomic read-modify-write, and returns the worst status. */
@@ -218,23 +220,34 @@ object SubmissionLimiter:
     override def tryAcquire(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus] =
       acquireAll(clientId, List(subject), challengeType).map:
         case Acquisition.Denied(status) => status
-        case Acquisition.Granted(after, _) => after
+        // A granted attempt is an allowed request, as the contract above says: the status as of before this attempt. `after`,
+        // which counts it, would refuse the maxAttempts-th request (it is the one that reaches the limit) although it fits.
+        case Acquisition.Granted(_, _) => LimitStatus.Allowed
 
+    // The subjects are charged one after another, in one fixed order, and the first refusal stops it: a request that loses the first
+    // subject never touches the second. Charged in parallel, two requests of a burst could each win a last slot on a different subject, each
+    // find the other subject full and give its slot back, and the burst would be cut off below the configured number of attempts. In one order
+    // the winners of the first subject are the only ones to reach the second, so exactly the configured number get through.
     override def acquireAll(clientId: ClientId, subjects: List[String], challengeType: ChallengeType): Task[Acquisition] =
       withWindows[Acquisition](clientId, challengeType, Acquisition.Granted(LimitStatus.Allowed, Nil)): (tenantId, limits, wLimits, now) =>
-        ZIO
-          .foreachPar(subjects): subject =>
-            throttleRepo.reserveAttempt(tenantId, subject, challengeType, now, wLimits, limits.banDurationSeconds)
-          .flatMap: reservations =>
-            val granted = reservations.collect { case g: Reservation.Granted => g }
-            val denied = reservations.collect { case Reservation.Denied(status) => status }
-            // Charged to some subjects and refused for another: the request will not check anything, so it
-            // must not cost the subjects that let it through.
-            if denied.nonEmpty then refund(granted).as(Acquisition.Denied(denied.foldLeft(LimitStatus.Allowed)(worstStatus)))
-            else ZIO.succeed(Acquisition.Granted(granted.map(_.after).foldLeft(LimitStatus.Allowed)(worstStatus), granted))
+        def charge(remaining: List[String], granted: List[Reservation.Granted]): Task[Acquisition] =
+          remaining match
+            case Nil =>
+              val charges = granted.reverse
+              ZIO.succeed(Acquisition.Granted(charges.map(_.after).foldLeft(LimitStatus.Allowed)(worstStatus), charges))
+            case subject :: rest =>
+              throttleRepo.reserveAttempt(tenantId, subject, challengeType, now, wLimits, limits.banDurationSeconds).flatMap:
+                case charged: Reservation.Granted => charge(rest, charged :: granted)
+                // Charged to the subjects before this one and refused here: the request will not check anything, so it must not cost them.
+                case Reservation.Denied(status) => refund(granted).as(Acquisition.Denied(status))
+        charge(subjects.distinct.sorted, Nil)
 
+    // Best effort, on purpose: the answer was right and the user is signed in; a failed give-back leaves the attempt charged, which is the
+    // safe side, whereas failing here would answer a correct password or code with an error. Nothing an attacker can trigger.
     override def refund(charges: List[Reservation.Granted]): Task[Unit] =
-      ZIO.foreachParDiscard(charges)(throttleRepo.refundAttempt)
+      ZIO
+        .foreachParDiscard(charges)(throttleRepo.refundAttempt)
+        .catchAllCause(cause => ZIO.logWarningCause("Could not give back a throttle attempt for a right answer; it stays charged", cause))
 
     /** Batch variant of [[recordLimit]]: records a failed attempt for every subject via its own
       * atomic [[ChallengeThrottleRepository.recordAttempt]] call. Used to charge related subjects

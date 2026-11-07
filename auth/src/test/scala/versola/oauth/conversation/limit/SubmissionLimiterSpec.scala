@@ -559,7 +559,7 @@ object SubmissionLimiterSpec extends UnitSpecBase:
         yield assertTrue(
           result == Acquisition.Granted(
             LimitStatus.Allowed,
-            List(granted(subject, LimitStatus.Allowed, now), granted(subject2, LimitStatus.Allowed, now)),
+            List(granted(subject2, LimitStatus.Allowed, now), granted(subject, LimitStatus.Allowed, now)),
           ),
           calls.map(_._2).toSet == Set(subject, subject2),
           calls.forall(c => c._1 == tenantId && c._3 == ChallengeType.OtpSubmit && c._4 == now),
@@ -603,6 +603,32 @@ object SubmissionLimiterSpec extends UnitSpecBase:
           env.throttleRepo.refundAttempt.calls == List(granted(subject2, LimitStatus.Allowed, now)),
         )
       },
+      test("stops at the first refusal: the subject after it is never charged") {
+        val env = Env()
+        for
+          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
+          _ <- env.configService.find.succeedsWith(Some(client))
+          // `subject2` sorts first and is over the limit.
+          _ <- env.throttleRepo.reserveAttempt.succeedsWith(Reservation.Denied(LimitStatus.Banned))
+          result <- env.limiter.acquireAll(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
+        yield assertTrue(
+          result == Acquisition.Denied(LimitStatus.Banned),
+          env.throttleRepo.reserveAttempt.calls.map(_._2) == List(subject2),
+          env.throttleRepo.refundAttempt.calls.isEmpty,
+        )
+      },
+      test("charges the subjects in one fixed order whatever order they are given in, so two requests cannot take each other's last slot") {
+        val env = Env()
+        for
+          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
+          _ <- env.configService.find.succeedsWith(Some(client))
+          _ <- env.throttleRepo.reserveAttempt.returnsZIO:
+            case (_, subj, _, at, _, _) => ZIO.succeed(granted(subj, LimitStatus.Allowed, at))
+          _ <- env.limiter.acquireAll(clientId, List(subject, subject2), ChallengeType.OtpSubmit)
+          _ <- env.limiter.acquireAll(clientId, List(subject2, subject), ChallengeType.OtpSubmit)
+          order = env.throttleRepo.reserveAttempt.calls.map(_._2)
+        yield assertTrue(order == List(subject2, subject, subject2, subject))
+      },
       test("reports the worst status of the subjects when it grants") {
         val env = Env()
         for
@@ -616,12 +642,19 @@ object SubmissionLimiterSpec extends UnitSpecBase:
         yield assertTrue(
           result == Acquisition.Granted(
             LimitStatus.Banned,
-            List(granted(subject, LimitStatus.Banned, now), granted(subject2, LimitStatus.Allowed, now)),
+            List(granted(subject2, LimitStatus.Allowed, now), granted(subject, LimitStatus.Banned, now)),
           ),
         )
       },
     ),
     suite("refund")(
+      test("a refund that fails does not fail the caller: the attempt stays charged") {
+        val env = Env()
+        for
+          _ <- env.throttleRepo.refundAttempt.failsWith(new RuntimeException("connection lost"))
+          result <- env.limiter.refund(List(granted(subject, LimitStatus.Allowed, Instant.EPOCH))).exit
+        yield assertTrue(result.isSuccess, env.throttleRepo.refundAttempt.calls.length == 1)
+      },
       test("takes back every charge") {
         val env = Env()
         val charges = List(granted(subject, LimitStatus.Allowed, Instant.EPOCH), granted(subject2, LimitStatus.Allowed, Instant.EPOCH))
@@ -639,15 +672,19 @@ object SubmissionLimiterSpec extends UnitSpecBase:
           result <- env.limiter.tryAcquire(clientId, subject, ChallengeType.OtpSubmit)
         yield assertTrue(result == LimitStatus.Allowed, env.throttleRepo.reserveAttempt.calls.isEmpty)
       },
-      test("returns the status including the attempt it charged") {
+      test("grants the maxAttempts-th claim: the attempt that reaches the limit is itself allowed, the next one is refused") {
         val env = Env()
         for
           now <- Clock.instant
           _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
           _ <- env.configService.find.succeedsWith(Some(client))
+          // The repository charged the last attempt that fits and reports, as the page after a wrong answer needs it, that the limit is
+          // now reached. As a request for a code it is still granted: an off-by-one here would give a tenant one request fewer than it configured.
           _ <- env.throttleRepo.reserveAttempt.succeedsWith(granted(subject, LimitStatus.RateLimited(42), now))
-          result <- env.limiter.tryAcquire(clientId, subject, ChallengeType.OtpSubmit)
-        yield assertTrue(result == LimitStatus.RateLimited(42), env.throttleRepo.reserveAttempt.calls.length == 1)
+          last <- env.limiter.tryAcquire(clientId, subject, ChallengeType.OtpSubmit)
+          _ <- env.throttleRepo.reserveAttempt.succeedsWith(Reservation.Denied(LimitStatus.RateLimited(41)))
+          next <- env.limiter.tryAcquire(clientId, subject, ChallengeType.OtpSubmit)
+        yield assertTrue(last == LimitStatus.Allowed, next == LimitStatus.RateLimited(41))
       },
       test("reports the limit when the repository denies the attempt: one check-and-charge, no separate read") {
         val env = Env()

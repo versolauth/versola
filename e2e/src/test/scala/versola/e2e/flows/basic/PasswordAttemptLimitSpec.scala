@@ -100,9 +100,15 @@ object PasswordAttemptLimitSpec extends E2ESpec:
           _ <- ZIO.foreachParDiscard(1 to burst)(i => auth.submitLoginPassword(cookie, s.login.get, s"Wrong-$i-9!x", csrf))
           _ <- passwordSteps(auth, s.userId.toString, started, expected = burst)
           (cookie2, csrf2) <- startLogin(s, auth)
-          // no code comes of it: the attempt is refused although the password is right
-          outcome <- auth.submitLoginPassword(cookie2, s.login.get, s.password, csrf2).assertRedirect(auth, cookie2).either
-        yield assertTrue(outcome.isLeft)
+          // refused although the password is right: no code, and the credential card is shown again with the failure flag, not an error page
+          refused <- auth.submitLoginPassword(cookie2, s.login.get, s.password, csrf2)
+          noCode <- ZIO.succeed(refused).assertRedirect(auth, cookie2).exit
+          page <- auth.getChallenge(cookie2)
+        yield assertTrue(
+          noCode.isFailure,
+          page.step.contains(ConversationStep.Credential),
+          page.html.contains("\"login_failed\""),
+        )
     },
     test("a right password spends none of the budget: more successful sign-ins than the limit allows all succeed") {
       withLimitedUser: (s, auth) =>
