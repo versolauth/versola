@@ -2133,6 +2133,60 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         setCookieHeader.flatMap(_.maxAge).contains(Duration.Zero),
       )
     },
+    // A token revoked on its own would otherwise come back through the refresh: auth, whose family and session are
+    // still live, grants it, and only the new token's claims were checked.
+    test("does not refresh an expired cookie token that was revoked, and never presents the refresh token to auth") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.withClients(oauthClient)
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        _ <- env.revocationService.isRevoked.returnsZIO((keys, _) => ZIO.succeed(keys.contains(RevocationKey.Jti(AccessTokenId("old-jti")))))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        setCookieHeader = response.header(Header.SetCookie).map(_.value)
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        response.header(Header.Location).exists(_.url.encode == s"/login/${presetId}"),
+        setCookieHeader.exists(c => c.name == EdgeSessionCookie.name && c.content.isEmpty),
+        env.sessionRepository.claimRefresh.calls.isEmpty,
+        env.ssoClient.exchangeRefreshToken.calls.isEmpty,
+        // asked about the keys of the old token's claims
+        env.revocationService.isRevoked.calls.map(_._1).headOption.contains(
+          List(
+            RevocationKey.Jti(AccessTokenId("old-jti")),
+            RevocationKey.Sid(SessionId("sso-session-1")),
+            RevocationKey.Sub("user-1"),
+          ),
+        ),
+      )
+    },
+    test("does not refresh an expired cookie token whose session was revoked") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.withClients(oauthClient)
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        _ <- env.revocationService.isRevoked.returnsZIO((keys, _) => ZIO.succeed(keys.contains(RevocationKey.Sid(SessionId("sso-session-1")))))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        env.sessionRepository.claimRefresh.calls.isEmpty,
+        env.ssoClient.exchangeRefreshToken.calls.isEmpty,
+      )
+    },
     unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token was sealed under another key")((security, _) =>
       security.encryptAes256(
         unreadableRefreshTokenPlaintext.getBytes("UTF-8"),

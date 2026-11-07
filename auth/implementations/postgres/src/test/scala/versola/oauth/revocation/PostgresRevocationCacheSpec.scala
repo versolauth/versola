@@ -51,7 +51,7 @@ object PostgresRevocationCacheSpec extends PostgresSpec:
         // Written through a second repository on its own connection: this is another replica
         // revoking, or this one, which learns of its own write the same way.
         xa <- ZIO.service[TransactorZIO]
-        _ <- PostgresAuthRevocationRepository(xa).revoke(revocation("from-peer"), RevocationCause.Logout)
+        _ <- PostgresAuthRevocationRepository(xa).revoke(revocation("from-peer"), RevocationCause.Logout, None)
         _ <- eventually(isRevoked(cache, "from-peer"), "peer revocation observed")
       yield assertCompletes)
         .provideSome[TransactorZIO & PostgresConfig & Scope](PostgresRevocationNotifications.live(PostgresAuthRevocationRepository.Table))
