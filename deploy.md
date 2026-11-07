@@ -1648,6 +1648,12 @@ In a load test of a two-node cluster at 1.3x and 1.7x of its knee (4.3k steps/s)
 | `breaker` | off; failureRatio 0.5, minCalls 20, window 10 s, open 5 s, probeCalls 3 | policy only |
 | `retryBudget` | ratio 0.1, minPerSecond 5 | policy only |
 
+The guard's `requestTimeout` bounds the wait for the response headers, and only in `enforce`. The response body is bounded by the client itself,
+whatever the mode: `HTTP_CLIENT_CONNECT_TIMEOUT` (opening a connection, default `5s`) and `HTTP_CLIENT_BODY_READ_TIMEOUT` (reading a body, counted from its
+headers, default `30s`; a total bound, not an idle time), each a duration or `off` (k8s/README.md, "Outbound timeouts"). A body that takes longer to arrive
+fails the call; `edge` answers `502` for a proxied resource whose body it could not collect in time. Before these defaults existed the only bound was the
+client's 50 s idle timeout, which every byte received restarts.
+
 An **edge** also takes an *overload policy* from central, per edge, which is a patch over those values: a
 field the policy leaves out keeps what the edge started with (the environment value when set, the default
 otherwise). Set it in the admin console (an edge's page, section "Overload protection") or with
