@@ -113,6 +113,9 @@ object PostgresAuditStopSpec extends PostgresSpec:
   private def stopLines: UIO[List[String]] =
     ZTestLogger.logOutput.map(_.toList.map(_.message()).filter(_.contains("the audit queue was drained on shutdown")))
 
+  private def warnings: UIO[List[String]] =
+    ZTestLogger.logOutput.map(_.toList.filter(_.logLevel >= LogLevel.Warning).map(_.message()))
+
   private val taken = raw"(\d+) events taken, (\d+) not written".r.unanchored
 
   private case class Outcome(
@@ -125,6 +128,9 @@ object PostgresAuditStopSpec extends PostgresSpec:
       heldBefore: Long,
       heldAfter: Long,
       perRowMillis: Double,
+      /** The stop's own line and every warning the service logged up to the end of the scenario: what a failed check needs to say why
+        * the stop wrote less than the window carries (a chunk that failed is named there by its exception classes and SQLSTATE). */
+      logged: List[String],
   )
 
   /** A writer inside a statement of many rows, at `millis` a row; `queued` rows queued behind it once it has been open for two seconds;
@@ -156,6 +162,7 @@ object PostgresAuditStopSpec extends PostgresSpec:
       result <- closing.join.timeout(AuditEvents.WriterStopWait.plus(AuditEvents.DrainTimeout).plus(4.seconds))
       elapsed <- Clock.nanoTime.map(now => (now - started) / 1000000)
       lines <- stopLines
+      warned <- warnings
       queuedStored <- countReason(xa, "queued")
       heldAfter <- countReason(xa, "held")
       _ <- table.endSessions(xa, marker)
@@ -170,6 +177,7 @@ object PostgresAuditStopSpec extends PostgresSpec:
       heldBefore = heldBefore,
       heldAfter = heldAfter,
       perRowMillis = perRow,
+      logged = lines ++ warned,
     )
 
   /** What the window can carry at the cost measured: the rows the stop could write in `DrainTimeout`, and half of that as the bound the
@@ -178,7 +186,7 @@ object PostgresAuditStopSpec extends PostgresSpec:
     math.min(queued.toLong, (0.5 * AuditEvents.DrainTimeout.toMillis / outcome.perRowMillis).toLong)
 
   private def check(outcome: Outcome, queued: Int) =
-    assertTrue(
+    val result = assertTrue(
       // The scenario is the one it claims to be: the writer was in the middle of its batch when the stop began.
       outcome.committedBefore >= 200L,
       outcome.held >= 100L,
@@ -191,6 +199,8 @@ object PostgresAuditStopSpec extends PostgresSpec:
       // or moved by what the abandoned chunk commits on its own, a chunk and no more.
       outcome.queuedStored == queued.toLong || (outcome.heldAfter - outcome.heldBefore) <= sizing.writeChunk.toLong,
     )
+    // Timings decide these checks, and a failure on a loaded machine is otherwise only a number: say what was measured.
+    result ?? s"queued=$queued, required=${required(outcome, queued)}, $outcome"
 
   val spec = suite("the stop of the service against Postgres")(
     test("at ten milliseconds a row, with a batch in progress, the stop returns by its bounds and stores what was queued behind it") {

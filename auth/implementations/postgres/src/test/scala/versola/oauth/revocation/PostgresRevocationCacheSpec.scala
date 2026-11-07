@@ -3,6 +3,7 @@ package versola.oauth.revocation
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
 import versola.util.postgres.{PostgresConfig, PostgresSpec}
+import versola.util.revocation.{PostgresRevocationNotifications, Revocation, RevocationCache, RevocationKey, RevocationNotifications}
 import zio.*
 import zio.test.*
 
@@ -11,7 +12,7 @@ import java.time.Instant
 /** What cannot be tested against an abstract `RevocationRepository`: delivery over a real
   * `LISTEN`/`NOTIFY` connection, from the trigger of `V0032` to the cache. Recovery from a dropped
   * connection is the listener's own (`PostgresNotificationListenerSpec`) and what the cache does on
-  * a resubscribe is `RevocationCacheSpec`'s; the rest of the cache is held to its behaviour there.
+  * a resubscribe is `RevocationCacheSpec`'s (in `util`); the rest of the cache is held to its behaviour there.
   */
 object PostgresRevocationCacheSpec extends PostgresSpec:
 
@@ -23,7 +24,7 @@ object PostgresRevocationCacheSpec extends PostgresSpec:
   private def cache =
     for
       xa <- ZIO.service[TransactorZIO]
-      impl <- RevocationCache.make(PostgresRevocationRepository(xa))
+      impl <- RevocationCache.make(PostgresAuthRevocationRepository(xa))
     yield impl
 
   private def listenerConnected =
@@ -50,10 +51,10 @@ object PostgresRevocationCacheSpec extends PostgresSpec:
         // Written through a second repository on its own connection: this is another replica
         // revoking, or this one, which learns of its own write the same way.
         xa <- ZIO.service[TransactorZIO]
-        _ <- PostgresRevocationRepository(xa).revoke(revocation("from-peer"), RevocationCause.Logout)
+        _ <- PostgresAuthRevocationRepository(xa).revoke(revocation("from-peer"), RevocationCause.Logout, None)
         _ <- eventually(isRevoked(cache, "from-peer"), "peer revocation observed")
       yield assertCompletes)
-        .provideSome[TransactorZIO & PostgresConfig & Scope](PostgresRevocationNotifications.live)
+        .provideSome[TransactorZIO & PostgresConfig & Scope](PostgresRevocationNotifications.live(PostgresAuthRevocationRepository.Table))
     },
   ) @@ TestAspect.before(clean) @@ TestAspect.after(clean)
     @@ TestAspect.withLiveClock @@ TestAspect.sequential)

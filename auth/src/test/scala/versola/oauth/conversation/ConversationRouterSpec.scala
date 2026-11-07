@@ -316,6 +316,15 @@ object ConversationRouterSpec extends UnitSpecBase:
           prepareOtpTimes == 0,
         )
       },
+      test("login-password submission with a known user (userId set) is refused, without checking the password") {
+        val env = Env()
+        val knownRecord = loginRecord.copy(userId = Some(UserId(UUID.randomUUID())))
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(knownRecord))
+          (result, _) <- env.router.submit(authId, LoginPasswordSubmission(login, password, "test-csrf"), None, None)
+          checks = env.otpConversationService.checkLoginPassword.calls
+        yield assertTrue(result == ConversationResult.BadRequest, checks.isEmpty)
+      },
       test("handle phone submission") {
         val env = Env()
         val submission = PhoneSubmission(phone, ProofInput.NoScript, "test-csrf")
@@ -810,18 +819,14 @@ object ConversationRouterSpec extends UnitSpecBase:
           finished = env.otpConversationService.finish.calls
         yield assertTrue(result == ConversationResult.BadRequest, finished.isEmpty)
       },
-      test("a correct password does not finish the conversation, the passkey is asked for again") {
+      test("a login and password are refused on a step that already knows the user, and nothing is checked") {
         val env = Env()
-        val passed = poRecord.copy(amr = Map(PassedAuthFactor.password -> PassedFactorRecord(Instant.now(), Set(AuthMethodRef.pwd))))
-        val prompt = ConversationResult.RenderStep(poStep)
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(poRecord))
-          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(ConversationResult.StepPassed(passed))
-          _ <- env.configService.getAcrVocabulary.succeedsWith(poVocabulary)
-          _ <- env.otpConversationService.promptPasskey.succeedsWith(prompt)
           (result, _) <- env.router.submit(authId, LoginPasswordSubmission(login, password, "test-csrf"), None, None)
+          checks = env.otpConversationService.checkLoginPassword.calls
           finished = env.otpConversationService.finish.calls
-        yield assertTrue(result == prompt, finished.isEmpty)
+        yield assertTrue(result == ConversationResult.BadRequest, checks.isEmpty, finished.isEmpty)
       },
       test("'passkey unavailable' denies, and is refused outside a passkey-only step") {
         val env = Env()

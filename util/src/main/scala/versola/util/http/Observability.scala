@@ -498,8 +498,43 @@ object Observability:
     */
   val clientTrust: ClientSSLConfig = ClientSSLConfig.FromSystemTrustStore
 
+  /** Bounds on a call that the connection pool and the guard's `requestTimeout` do not give (all optional, an invalid value
+    * falls back to its default; `off` removes the bound):
+    *
+    *   - `HTTP_CLIENT_CONNECT_TIMEOUT`: how long opening a connection may take, default [[defaultClientConnectTimeout]].
+    *     zio-http's own default is none: a peer that drops SYNs holds the call until the operating system gives up.
+    *   - `HTTP_CLIENT_BODY_READ_TIMEOUT`: how long reading a response body may take, default [[defaultClientBodyReadTimeout]].
+    *
+    * What zio-http 3.11.6 does with them, measured with a server that sends one byte every 300 ms for six seconds (`ClientTimeoutSpec`):
+    * `bodyReadTimeout` is **not** an idle timeout, in spite of the "server stopped sending data" it fails with. A body still dripping
+    * is cut at the timeout; with it unset the same body is read to the end, and so is a body that drips for an hour, since the only other
+    * bound is the client's 50 s `idleTimeout`, which every byte restarts. It counts from the response headers; the wait for the headers
+    * is the guard's `requestTimeout` (`enforce` only). So a response that legitimately takes longer than the timeout to arrive after its
+    * headers fails with an `IOException`; `edge` collects a proxied resource's whole body in memory through this client, and an
+    * operator whose resources answer slower raises it (or sets `off`) with `HTTP_CLIENT_BODY_READ_TIMEOUT`.
+    */
+  final val defaultClientConnectTimeout: Duration = 5.seconds
+
+  final val defaultClientBodyReadTimeout: Duration = 30.seconds
+
+  /** Resolves one of those bounds from its raw value (`None` when unset). Pure, so it can be tested without the environment. */
+  def clientTimeout(raw: Option[String], default: Duration): Option[Duration] =
+    raw.map(_.trim.toLowerCase) match
+      case Some("off") => None
+      case Some(value) => Some(parseDuration(value).getOrElse(default))
+      case None => Some(default)
+
+  val clientConnectTimeout: Option[Duration] = clientTimeout(env("HTTP_CLIENT_CONNECT_TIMEOUT"), defaultClientConnectTimeout)
+
+  val clientBodyReadTimeout: Option[Duration] = clientTimeout(env("HTTP_CLIENT_BODY_READ_TIMEOUT"), defaultClientBodyReadTimeout)
+
   def clientConfig(pool: ConnectionPoolConfig): ZClient.Config =
-    ZClient.Config.default.copy(connectionPool = pool, ssl = Some(clientTrust))
+    ZClient.Config.default.copy(
+      connectionPool = pool,
+      ssl = Some(clientTrust),
+      connectionTimeout = clientConnectTimeout,
+      bodyReadTimeout = clientBodyReadTimeout,
+    )
 
   def clientConfig(poolSize: Int): ZClient.Config = clientConfig(ConnectionPoolConfig.Fixed(poolSize))
 

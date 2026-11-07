@@ -46,7 +46,7 @@ object GuardMode:
   *   the longest a call waits for a place (`Enforce` only)
   * @param requestTimeout
   *   the longest a call may take from the moment it starts to the response headers (`Enforce` only; the body is bounded
-  *   by the client's own `bodyReadTimeout`)
+  *   by the client's own `bodyReadTimeout`, `HTTP_CLIENT_BODY_READ_TIMEOUT`, which does not depend on the mode)
   * @param breaker
   *   the circuit breaker of each peer, see [[CircuitBreaker]]; off unless `enabled`
   * @param retryBudget

@@ -278,6 +278,37 @@ object LogoutServiceSpec extends UnitSpecBase:
         yield assertTrue(env.outbox.submit.calls.isEmpty)
       },
     ),
+    suite("announceEnded")(
+      test("tells the relying parties of every session another change ended, one event naming each session, and ends nothing itself") {
+        val env = Env()
+        val withBackChannel = clientA.copy(backChannelLogoutUri = Some(URL.decode("https://rp-a.example/backchannel").toOption.get))
+        val other = record1.copy(clients = List(ClientEntry(withBackChannel.id, Instant.EPOCH)), publicId = PublicSessionId("public-session-2"))
+        val another = other.copy(publicId = PublicSessionId("public-session-3"))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(withBackChannel))
+          _ <- env.outbox.submit.succeedsWith(())
+          _ <- env.service.announceEnded(List(other, another), RevocationCause.PasswordChanged)
+          drafts <- env.audit.recorded
+        yield assertTrue(
+          env.outbox.submit.calls.map(_.customClaims.fields.collectFirst { case ("sid", sid) => sid }) ==
+            List(Some(Json.Str("public-session-2")), Some(Json.Str("public-session-3"))),
+          env.sessionService.invalidate.calls.isEmpty,
+          env.sessionService.invalidateAllByUser.calls.isEmpty,
+          // `session.ended` for each, with the cause the revocation was recorded for.
+          drafts.map(_.details) == List(
+            AuthAuditDetails.SessionEnded(cause = "password_changed", clients = 1),
+            AuthAuditDetails.SessionEnded(cause = "password_changed", clients = 1),
+          ),
+        )
+      },
+      test("says nothing and records nothing when no session was ended") {
+        val env = Env()
+        for
+          _ <- env.service.announceEnded(Nil, RevocationCause.PasswordChanged)
+          drafts <- env.audit.recorded
+        yield assertTrue(env.outbox.submit.calls.isEmpty, env.configuration.find.calls.isEmpty, drafts.isEmpty)
+      },
+    ),
     suite("invalidateSession")(
       test("refuses a session that is not the user's, ending nothing") {
         val env = Env()

@@ -110,6 +110,19 @@
   width: auto;
   margin-top: 8px;
 }
+.account-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 0;
+  padding: 4px 0;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.account-checkbox input {
+  flex: none;
+  accent-color: var(--brand);
+}
 .account-password-done {
   margin: 8px 0 0;
   font-size: 0.85rem;

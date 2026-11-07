@@ -34,6 +34,11 @@ trait LogoutService:
     * a session id is not enough to end it, since ids travel in front-channel logout URLs. */
   def invalidateSession(publicId: PublicSessionId, userId: UserId): Task[Boolean]
 
+  /** Tells the relying parties of sessions that another change ended in its own transaction (the user's
+    * password change, which ends their other sessions and records the revocations with it) and records
+    * `session.ended` for each, as [[logout]] does for the one it ends. Nothing is ended here. */
+  def announceEnded(sessions: List[SessionRecord], cause: RevocationCause): Task[Unit]
+
   /** Forgets one of the user's user agents (admin-panel "Forget device"): its live session ends the
     * way [[invalidateSession]] ends it, relying parties included, then the user agent, any earlier
     * session of it and their refresh tokens go. `false` when the user agent is not the user's. */
@@ -122,6 +127,14 @@ object LogoutService:
       sessionService.listByUser(userId).map(_.exists(_.publicId == publicId)).flatMap:
         case false => ZIO.succeed(false)
         case true => end("admin_revoked", RevocationCause.AdminRevoked, Left(publicId), None, None).as(true)
+
+    override def announceEnded(sessions: List[SessionRecord], cause: RevocationCause): Task[Unit] =
+      ZIO.foreachDiscard(sessions): session =>
+        for
+          participants <- sessionClients(session.clients.map(_.clientId))
+          _ <- sendBackChannelLogouts(participants, session)
+          _ <- auditEnded(cause.code, session)
+        yield ()
 
     override def forgetUserAgent(userId: UserId, userAgentId: UserAgentId): Task[Boolean] =
       sessionService.listDevicesByUser(userId).map(_.find(_.userAgent.exists(_.id == userAgentId))).flatMap:

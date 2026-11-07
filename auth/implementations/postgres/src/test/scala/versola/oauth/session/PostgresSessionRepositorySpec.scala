@@ -2,7 +2,7 @@ package versola.oauth.session
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
-import versola.oauth.revocation.PostgresRevocationRepository
+import versola.oauth.revocation.PostgresAuthRevocationRepository
 import versola.util.postgres.PostgresSpec
 import zio.*
 import zio.test.*
@@ -15,7 +15,7 @@ object PostgresSessionRepositorySpec extends PostgresSpec, SessionRepositorySpec
     ZLayer:
       for
         xa <- ZIO.service[TransactorZIO]
-      yield SessionRepositorySpec.Env(PostgresSessionRepository(xa), PostgresRevocationRepository(xa))
+      yield SessionRepositorySpec.Env(PostgresSessionRepository(xa), PostgresAuthRevocationRepository(xa))
 
   override def beforeEach(env: SessionRepositorySpec.Env) =
     for
