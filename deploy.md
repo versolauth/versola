@@ -1907,6 +1907,27 @@ upstreams) are `DEBUG` when the call was faster than the slow threshold (`slowMi
 is external: its success is `INFO` whatever the access-log mode is, because that line is the record that a message was
 handed over. A peer nobody classified is external. `http_client_requests_total` is unchanged.
 
+### Shutdown
+
+On SIGTERM a service first answers `503` on `/readiness` (it stays `503` until the process ends; `/liveness` stays `200`), then stops
+what it serves and drains what it holds. The `503` is the first thing that happens, before the application server stops accepting
+and waits for its requests in flight; the same moment starts the clock the drains share. The whole shutdown has `15 s`
+(`VersolaApp.GracefulShutdownTimeout`; compose gives `20 s`, the chart `30 s` including its `5 s` pre-stop sleep). Where the time
+goes, in order:
+
+1. The application server waits for its requests in flight for at most `5 s` (`VersolaApp.ServerDrainTimeout`; zio-http's own default
+   is `10 s`). With the database down these are the requests held by the pool, and it is all of this wait.
+2. The drains, one after another, each with a bound of its own: in `auth` a back-channel logout outbox `10 s`, the audit queue `1 s` + `5 s`,
+   the antifraud events, lists and counters `5 s` each, `31 s` in all, which is what a database that is down costs, and the hook used
+   to give up in the middle of it. They share the time: `2 s` of the `15 s` is left unspent, and a drain waits for at most the lesser of
+   its own bound and what is left of the other `13 s`, counted from the start of the shutdown (so after step 1). The drains keep their
+   order, so those that run first get their whole bound and the last ones what remains; one that finds nothing left does not start,
+   and what it would have written is counted as before (`audit_events_failed_total`, `antifraud_events_dropped_total{reason="shutdown"}`).
+3. The diagnostics, internal and mutual-TLS servers stop, each waiting `250 ms` for its requests. These and the audit writer's stop wait
+   (`1 s`) are outside the shared `13 s`; the unspent `2 s` is for them.
+
+Nothing changes while the database is up: a drain takes the time it takes.
+
 ### Configuration reference
 
 | Variable | Default | Meaning |
