@@ -2,6 +2,7 @@ package versola.user
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.*
+import versola.oauth.revocation.PostgresAuthRevocationRepository
 import versola.oauth.user.UserRepositorySpec
 import versola.util.postgres.PostgresSpec
 import zio.{ZIO, ZLayer}
@@ -12,10 +13,10 @@ object PostgresUserRepositorySpec extends PostgresSpec, UserRepositorySpec:
     ZLayer:
       for
         xa <- ZIO.service[TransactorZIO]
-      yield UserRepositorySpec.Env(PostgresUserRepository(xa))
+      yield UserRepositorySpec.Env(PostgresUserRepository(xa), PostgresAuthRevocationRepository(xa))
 
   override def beforeEach(env: UserRepositorySpec.Env) =
     for
       xa <- ZIO.service[TransactorZIO]
-      _ <- xa.connect(sql"TRUNCATE TABLE users CASCADE".update.run())
+      _ <- xa.connect(sql"TRUNCATE TABLE users, auth_revocations CASCADE".update.run())
     yield ()

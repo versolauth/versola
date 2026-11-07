@@ -2,6 +2,7 @@ package versola.edge
 
 import versola.edge.model.EdgeId
 import versola.util.http.ClientIpSource
+import versola.util.revocation.RevocationConfig
 import versola.util.{EnvName, JWT, RsaKeyPair, Secret}
 import zio.config.magnolia.DeriveConfig
 import zio.http.{ClientSSLConfig, Scheme, URL}
@@ -67,6 +68,7 @@ case class EdgeConfig(
     // trusting them would let a hop choose the URI a proof is validated against.
     edgeUrl: URL,
     configurationCacheRefreshInterval: Duration,
+    // How this edge keeps its list of revoked access tokens current, and whether it also pulls them from auth.
     revocation: EdgeConfig.Revocation = EdgeConfig.Revocation(),
     // RFC 9449 enforcement on proxied calls. Absent leaves it off entirely: a
     // `DPoP`-scheme request is then refused rather than half-checked, while a
@@ -136,6 +138,46 @@ object EdgeMode:
 
 object EdgeConfig:
 
+  /** The `revocation` block: the keys of [[RevocationConfig]] (the list every replica holds, shared with auth) and
+    * `feed`, the pull of auth's revocations that only edge has.
+    *
+    * The cache keys are repeated rather than inherited so that the one block reads as it always did; their
+    * defaults are [[RevocationConfig]]'s own.
+    */
+  case class Revocation(
+      reloadInterval: Duration = RevocationConfig().reloadInterval,
+      purgeInterval: Duration = RevocationConfig().purgeInterval,
+      overlap: Duration = RevocationConfig().overlap,
+      batchSize: Int = RevocationConfig().batchSize,
+      feed: RevocationFeed = RevocationFeed(),
+  ):
+    def cache: RevocationConfig =
+      RevocationConfig(reloadInterval = reloadInterval, purgeInterval = purgeInterval, overlap = overlap, batchSize = batchSize)
+
+  /** The pull of revocations from auth (`GET /revocations` on its mutual-TLS listener, #560), the guarantee for a
+    * revocation whose push to `back_channel_logout_uri` was lost or never sent.
+    *
+    * Off by default: an edge that does not set `enabled` behaves as it did, on the push alone. It needs the `native`
+    * block, which names auth's mutual-TLS listener and pins it; without one the feed is not started and a warning says why.
+    *
+    * @param pollInterval how often each pod looks, jittered. The pod that finds the lease free reads.
+    * @param lease how long a pod owns the right to read after taking it, extended while it works. A pod that dies hands
+    *   the right on this long after; it must outlast `timeout`, so a call that is slow but not dead does not lose it.
+    * @param pageSize rows asked of auth per request, at most [[MaxFeedPageSize]] (what auth serves).
+    * @param timeout how long one request to auth may take.
+    */
+  case class RevocationFeed(
+      enabled: Boolean = false,
+      pollInterval: Duration = Duration.fromSeconds(1),
+      lease: Duration = Duration.fromSeconds(5),
+      pageSize: Int = 5000,
+      timeout: Duration = Duration.fromSeconds(3),
+  )
+
+  /** The most rows auth serves in a page (`RevocationFeedController.MaxLimit`): a larger request is served this many,
+    * and the short-page rule that ends a read would then end it early. */
+  val MaxFeedPageSize: Int = 10000
+
   /** Fails startup rather than serving traffic that trusts more than the operator meant to
     * name. See `versolaInternalTrustedCertificates`'s own comment for why a CA there is a
     * hole zio-http gives this code no way to close afterwards -- so it is refused instead of
@@ -156,11 +198,24 @@ object EdgeConfig:
             ),
         )
         _ <- refuseNativeWithoutDpop(config)
+        _ <- refuseUnusableFeed(config.revocation.feed)
         _ <- refuseUnimplementedMode(config)
         _ <- refuseCentralWithoutMutualTls(config)
         _ <- ZIO.foreachDiscard(config.replicasFrom)(spec => ZIO.fromEither(ReplicaCounter.parse(spec)).mapError(IllegalArgumentException(_)))
       yield config,
     )
+
+  /** A feed whose numbers cannot work is refused at startup rather than found as a cycle that never completes. */
+  private def refuseUnusableFeed(feed: RevocationFeed): Task[Unit] =
+    val problems = List(
+      Option.when(feed.pollInterval.isZero || feed.pollInterval.isNegative)("poll-interval must be positive"),
+      Option.when(feed.timeout.isZero || feed.timeout.isNegative)("timeout must be positive"),
+      Option.when(feed.lease.compareTo(feed.timeout) <= 0)(
+        "lease must be longer than timeout, or a pod loses the lease while its own request is still allowed to run",
+      ),
+      Option.when(feed.pageSize < 1 || feed.pageSize > MaxFeedPageSize)(s"page-size must be between 1 and $MaxFeedPageSize"),
+    ).flatten
+    ZIO.fail(IllegalArgumentException(s"revocation.feed: ${problems.mkString("; ")}")).when(problems.nonEmpty).unit
 
   /** `Partner` is a mode in name only until #564: it names a configuration source, an auth
     * identity and an internal surface none of which exists yet. Refused here, at the one
@@ -361,29 +416,6 @@ object EdgeConfig:
   case class CentralEnrollment(
       url: URL,
       tokenFile: String,
-  )
-
-  /** @param reloadInterval how often the in-memory revocation list is reconciled with the
-    *                       database. Nothing depends on it in normal operation — revocations
-    *                       arrive by notification — so it is the backstop for a notification
-    *                       lost some way a reconnect doesn't cover.
-    * @param purgeInterval how often entries whose tokens have expired are dropped. Separate
-    *                      from `reloadInterval` because it is the only thing bounding what a
-    *                      replica holds and it needs no database, so it must not be tied to
-    *                      the cadence of something that talks to one.
-    * @param overlap how far back before the last row read a reconcile starts again.
-    *                `revoked_at` is set when a row is written but the row appears when its
-    *                transaction commits, so one that committed late would sit behind the
-    *                cursor and never be read. Re-reading the window costs nothing: applying
-    *                a revocation twice is applying it once.
-    * @param batchSize how many rows a single read returns. Bounds what one read holds, not
-    *                  what the replica ends up holding.
-    */
-  case class Revocation(
-      reloadInterval: Duration = Duration.fromSeconds(600),
-      purgeInterval: Duration = Duration.fromSeconds(60),
-      overlap: Duration = Duration.fromSeconds(30),
-      batchSize: Int = 50000,
   )
 
   /** RFC 9449 proof validation at the resource server: the parts that are facts about this

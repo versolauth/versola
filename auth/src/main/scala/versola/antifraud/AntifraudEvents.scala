@@ -5,6 +5,7 @@ import versola.oauth.client.model.{ClientId, PhoneRegion}
 import versola.oauth.conversation.model.AuthId
 import versola.util.http.Observability
 import versola.util.http.Observability.AntifraudDetails
+import versola.util.http.ShutdownBudget
 import versola.util.net.{AsnResolver, GeoResolver}
 import versola.util.{Base64Url, CoreConfig, Email, Phone, Secret, SecureRandom, SecurityService}
 import zio.*
@@ -586,7 +587,7 @@ object AntifraudEvents:
     private def drain(failing: Ref[Boolean]): UIO[Unit] =
       queue.takeAll.flatMap: events =>
         ZIO.when(events.nonEmpty)(
-          write(events.toList, failing).timeout(5.seconds).flatMap:
+          ShutdownBudget.within(5.seconds)(write(events.toList, failing)).flatMap:
             case None => AntifraudMetrics.dropped("shutdown", events.size)
             case Some(_) => ZIO.unit,
         ).unit

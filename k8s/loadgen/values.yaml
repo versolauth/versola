@@ -90,6 +90,34 @@ global:
   imageRepository: versolauth
   imagePullPolicy: IfNotPresent
   imagePullSecrets: []
+  # Hardening of every pod this chart renders (versolauth/versola, the container-hardening change). The
+  # images run as the unprivileged uid/gid 10001 (docker/Dockerfile.*); these state it to the kubelet too,
+  # so a pod fails to start rather than quietly running as root if an image ever regresses.
+  #   runAsNonRoot + runAsUser/Group  -- never uid 0, and the one uid whose files the images own
+  #   fsGroup 10001                   -- makes a freshly provisioned PVC / emptyDir writable by that uid.
+  #                                      OnRootMismatch skips the recursive chown on a volume already right.
+  #   seccompProfile RuntimeDefault   -- the container runtime's default syscall filter
+  # A volume that an earlier release (which ran as root) created keeps its root-owned files; whether fsGroup
+  # fixes that depends on the storage driver: see deploy.md, "Containers run as an unprivileged user".
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+
+  # allowPrivilegeEscalation false (no setuid gain), no Linux capabilities, a read-only root filesystem: what
+  # the process writes lives on the volumes mounted at /tmp and /diagnostics. A cluster whose admission policy
+  # sets these itself can set both blocks to `null` (`{}` does
+  # NOT do it: Helm merges maps, so an empty map keeps the defaults above).
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+
   # Pod placement, applied to every pod this chart renders. A component's own
   # `nodeSelector` / `tolerations` / `affinity`, when non-empty, REPLACES the
   # value here -- it is not merged with it, key by key or entry by entry. An
