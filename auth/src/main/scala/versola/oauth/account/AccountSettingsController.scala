@@ -100,7 +100,15 @@ object AccountSettingsController extends Controller:
         _ <- authorizeResource(request)
         body <- request.bodyAs[ChangePasswordRequest]
         result <- ZIO.serviceWithZIO[AccountSettingsService](
-          _.changePassword(body.userId, body.clientId, body.currentPassword, body.newPassword),
+          _.changePassword(
+            userId = body.userId,
+            clientId = body.clientId,
+            currentPassword = body.currentPassword,
+            newPassword = body.newPassword,
+            otherSessions =
+              if body.revokeOtherSessions.contains(true) then OtherSessions.End(body.sessionId.filter(_.nonEmpty).map(PublicSessionId(_)))
+              else OtherSessions.Keep,
+          ),
         ).either
         response <- result match
           case Right(_) => ZIO.succeed(Response.status(Status.NoContent))
@@ -317,11 +325,17 @@ object AccountSettingsController extends Controller:
       name: PasskeyName,
   ) derives JsonCodec
 
+  /** `revokeOtherSessions` is the user's choice and optional, absent meaning no: the Security page that does
+    * not send it, and every client written before it existed, keep the old behaviour. `sessionId` is the
+    * edge-injected caller context, like `userId`: the session the request was made from, the one that stays.
+    * Empty when the token has none. */
   private case class ChangePasswordRequest(
       userId: UserId,
       clientId: ClientId,
       currentPassword: String,
       newPassword: String,
+      revokeOtherSessions: Option[Boolean],
+      sessionId: Option[String],
   ) derives JsonCodec
 
   private case class ChangePasswordRefusal(error: String, retryAfterSeconds: Option[Long]) derives JsonCodec

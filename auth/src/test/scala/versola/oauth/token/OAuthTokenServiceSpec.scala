@@ -587,7 +587,15 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // bounded by the client's access token TTL.
           env.accessTokenRevocationService.announceFamily.calls ==
             List((testClient, familyId1, userId1.toString, now.plus(testClient.accessTokenTtl))),
-          env.tokenRepo.deleteByFamily.calls == List((familyId1, RevocationTerms(RevocationCause.CodeReplay, testClient.accessTokenTtl, Map.empty))),
+          env.tokenRepo.deleteByFamily.calls == List((
+            familyId1,
+            RevocationTerms(
+              cause = RevocationCause.CodeReplay,
+              ttl = testClient.accessTokenTtl,
+              tenantId = Some(testClient.tenantId),
+              ttlByClient = Map.empty,
+            ),
+          )),
           env.tokenRepo.createRefreshToken.calls.isEmpty,
         )
       },
@@ -782,6 +790,53 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           createCalls.head._3.audience == List(ResourceUri("resource://edge"), ResourceUri("https://api.example.com")),
         )
       },
+      test("refreshing after a role was removed issues a token with the roles held now, and never consults the revocation list") {
+        // Removing a role refuses the access tokens issued before it (`sub:` with an `issued_before`), and leaves the refresh
+        // token alone: refreshing is how the user obtains a token without the role. So `/token` must not ask the list, or a
+        // user whose roles changed could never get another token until the entry expired.
+        val env = new Env
+        for
+          now <- Clock.instant
+          tokenRecord = RefreshTokenRecord(
+            familyId = familyId1,
+            sessionId = sessionId1,
+            publicSessionId = publicSessionId1,
+            userId = userId1,
+            clientId = clientId1,
+            audience = List.empty,
+            authorizationDetails = None,
+            scope = scope1,
+            issuedAt = now.minusSeconds(3600),
+            expiresAt = now.plusSeconds(testClient.refreshTokenTtl.toSeconds),
+            requestedClaims = None,
+            uiLocales = None,
+            nonce = None,
+            amr = amr1,
+            authTime = authTime1,
+            acr = None,
+            cnf = None,
+          )
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(tokenRecord))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(RefreshToken(Array.fill(32)(7.toByte)))
+          _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
+          // What the user holds now, read when the token is minted: the removed role is not in it.
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List(RoleId("viewer")))
+          result <- env.service.refreshAccessToken(
+            RefreshTokenRequest(refreshToken1, None, None, None),
+            ClientIdWithSecret(clientId1, Some(clientSecret1)),
+            None,
+            None,
+            None,
+          )
+        yield assertTrue(
+          result.roles == List("viewer"),
+          env.userRepo.findRolesByUserAndTenant.calls.size == 1,
+          env.accessTokenRevocationService.isRevoked.calls.isEmpty,
+        )
+      },
       test("successfully refresh with reduced scope") {
         val env = new Env
         val reducedScope = Set(ScopeToken("read"), ScopeToken.OfflineAccess)
@@ -879,7 +934,16 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
           // Recorded in the repository call that expires the family, with the reuse as its cause.
           env.tokenRepo.revokeFamily.calls ==
-            List((refreshTokenMac1, clientId1, RevocationTerms(RevocationCause.RefreshReuse, testClient.accessTokenTtl, Map.empty))),
+            List((
+              refreshTokenMac1,
+              clientId1,
+              RevocationTerms(
+                cause = RevocationCause.RefreshReuse,
+                ttl = testClient.accessTokenTtl,
+                tenantId = Some(testClient.tenantId),
+                ttlByClient = Map.empty,
+              ),
+            )),
           // Every access token the family issued goes, not just the tip's, and they are named
           // collectively: one push carrying the family, bounded by the client's current TTL,
           // since no token of the chain is in hand to read an expiry off.
@@ -1164,7 +1228,16 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result == Left(TokenEndpointError.InvalidGrant.RefreshTokenReplayed),
           // Recorded in the repository call that expires the family, with the reuse as its cause.
           env.tokenRepo.revokeFamily.calls ==
-            List((refreshTokenMac1, clientId1, RevocationTerms(RevocationCause.RefreshReuse, testClient.accessTokenTtl, Map.empty))),
+            List((
+              refreshTokenMac1,
+              clientId1,
+              RevocationTerms(
+                cause = RevocationCause.RefreshReuse,
+                ttl = testClient.accessTokenTtl,
+                tenantId = Some(testClient.tenantId),
+                ttlByClient = Map.empty,
+              ),
+            )),
           env.accessTokenRevocationService.announceFamily.calls ==
             List((testClient, familyId1, userId1.toString, now.plus(testClient.accessTokenTtl))),
         )

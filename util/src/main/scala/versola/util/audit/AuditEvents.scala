@@ -3,6 +3,7 @@ package versola.util.audit
 import versola.util.SecureRandom
 import versola.util.http.Observability
 import versola.util.http.Observability.AuthDetails
+import versola.util.http.ShutdownBudget
 import zio.*
 import zio.json.ast.Json
 import zio.logging.logContext
@@ -425,7 +426,8 @@ object AuditEvents:
         held <- inHand.getAndSet(Nil)
         pending <- Ref.make(held)
         taken <- Ref.make(held.size)
-        finished <- within(DrainTimeout)(drainRound(pending, taken))
+        drainFor <- ShutdownBudget.allowed(DrainTimeout)
+        finished <- within(drainFor)(drainRound(pending, taken))
         rest <- queue.takeAll
         left <- pending.get.map(_ ++ rest)
         count <- taken.get.map(_ + rest.size)
@@ -434,7 +436,7 @@ object AuditEvents:
           s"the audit queue was drained on shutdown: $count events taken, ${left.size} not written" +
             (finished match
               case Bounded.Finished(_) => ""
-              case Bounded.TimedOut => s" (the write did not finish in $DrainTimeout)"
+              case Bounded.TimedOut => s" (the write did not finish in $drainFor)"
               case Bounded.Failed => " (the write failed)"),
         )
       yield ()
@@ -514,7 +516,7 @@ object AuditEvents:
     yield result
 
   /** How long the stop waits for the writer to give up the statement it is in; a statement the transactor will not interrupt is
-    * abandoned after this. */
+    * abandoned after this. It is not taken from [[ShutdownBudget]]; [[ShutdownBudget.Margin]] covers it. */
   val WriterStopWait: Duration = 1.second
 
   /** Passes in which other rows were stored and the same row failed the same unexplained way before it is refused. */

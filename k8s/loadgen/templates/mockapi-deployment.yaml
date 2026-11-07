@@ -42,15 +42,27 @@ spec:
       # VersolaApp and has no gracefulShutdownTimeout to cover. See
       # values.yaml's `mockapi` block.
       terminationGracePeriodSeconds: {{ $mockapi.terminationGracePeriodSeconds }}
+      {{- with (include "loadgen.podSecurityContext" (dict "root" $ "override" $mockapi.podSecurityContext) | trim) }}
+      securityContext:
+        {{- . | nindent 8 }}
+      {{- end }}
       containers:
         - name: mockapi
           image: {{ include "loadgen.image" (dict "global" $.Values.global "svc" $mockapi "chart" $.Chart) }}
           imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          {{- with (include "loadgen.containerSecurityContext" (dict "root" $ "override" $mockapi.containerSecurityContext) | trim) }}
+          securityContext:
+            {{- . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ $mockapi.port }}
             - name: diagnostics
               containerPort: {{ $mockapi.diagnosticsPort }}
+          volumeMounts:
+            # Read-only root filesystem (global.containerSecurityContext): the JVM's scratch files.
+            - name: tmp
+              mountPath: /tmp
           # No CONFIG_PATH and no volume: mockapi has no config file at all.
           # These three are read straight from the environment in its own
           # Main.scala, which is also where their defaults (8100/8101/0.0.0.0)
@@ -100,6 +112,10 @@ spec:
         - name: resource-gateway
           image: {{ $mockapi.resourceGateway.image }}
           imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          {{- with (include "loadgen.containerSecurityContext" (dict "root" $ "override" $mockapi.containerSecurityContext) | trim) }}
+          securityContext:
+            {{- . | nindent 12 }}
+          {{- end }}
           ports:
             - name: core
               containerPort: {{ $mockapi.resourceGateway.ports.core }}
@@ -112,13 +128,30 @@ spec:
               mountPath: /etc/nginx/nginx.conf
               subPath: nginx.conf
               readOnly: true
+            # nginx's pid file and temporaries; the root filesystem is read-only.
+            - name: nginx-run
+              mountPath: /run
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: tmp
+              mountPath: /tmp
           resources:
             {{- toYaml $mockapi.resourceGateway.resources | nindent 12 }}
         {{- end }}
-      {{- if $mockapi.resourceGateway.enabled }}
       volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      {{- if $mockapi.resourceGateway.enabled }}
         - name: resource-gateway-config
           configMap:
             name: {{ include "loadgen.fullname" . }}-mockapi-resource-gateway
+        - name: nginx-run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: nginx-cache
+          emptyDir:
+            sizeLimit: 64Mi
       {{- end }}
 {{- end }}
