@@ -1,7 +1,6 @@
 package versola.antifraud
 
 import versola.oauth.client.model.TenantId
-import versola.util.http.ShutdownBudget
 import versola.util.{Base64Url, CoreConfig, Secret, SecurityService}
 import zio.*
 
@@ -614,5 +613,5 @@ object VelocityCounters:
         _ <- (ZIO.sleep(jitter.millis) *> (load(slice, first) *> ZIO.sleep(settings.loadInterval)).forever).forkScoped
         _ <- (ZIO.sleep(10.minutes) *> upkeep).forever.forkScoped
         // What is written last is written once more on the way out, so a deploy loses no more than the interval.
-        _ <- ZIO.addFinalizer(ShutdownBudget.within(5.seconds)(flush).unit)
+        _ <- ZIO.addFinalizer(flush.timeout(5.seconds).unit)
       yield ()

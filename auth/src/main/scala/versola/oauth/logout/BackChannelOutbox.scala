@@ -1,7 +1,6 @@
 package versola.oauth.logout
 
 import versola.oauth.client.model.{ClientId, TenantId}
-import versola.util.http.ShutdownBudget
 import zio.*
 import zio.http.URL
 import zio.json.ast.Json
@@ -61,7 +60,7 @@ object BackChannelOutbox:
         outbox <- make(dispatcher)
         // Registered after the workers were forked, so it runs before they are interrupted:
         // events accepted from a logout that landed during shutdown are still delivered.
-        _ <- ZIO.addFinalizer(ShutdownBudget.within(DrainTimeout)(outbox.awaitDrained))
+        _ <- ZIO.addFinalizer(outbox.awaitDrained.timeout(DrainTimeout))
       yield outbox
 
   /** Builds an outbox and forks its workers into the current scope.
