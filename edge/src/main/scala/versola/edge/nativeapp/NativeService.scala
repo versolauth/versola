@@ -57,6 +57,9 @@ enum NativeError:
     * proxied path's `Outcome.UseDpopNonce`. */
   case NonceRequired(nonce: String)
 
+  /** The default limit on `/native/start` (see [[NativeStartLimit]]): the wait, in whole seconds. */
+  case RateLimited(retryAfterSeconds: Int)
+
 object NativeService:
 
   /** `/native/start`'s answer. `authorization_endpoint` plus `client_id` and `request_uri` is
@@ -121,9 +124,9 @@ object NativeService:
 
   val live: URLayer[
     EdgeConfig & OAuthClientService & NativeAuthClient & DpopPolicyService & DpopReplayGuard &
-      SecureRandom & SecurityService,
+      SecureRandom & SecurityService & NativeStartLimit,
     NativeService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
+  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _))
 
   class Impl(
       config: EdgeConfig,
@@ -133,12 +136,15 @@ object NativeService:
       replayGuard: DpopReplayGuard,
       secureRandom: SecureRandom,
       securityService: SecurityService,
+      startLimit: NativeStartLimit,
   ) extends NativeService:
 
     private val defaultIatLeeway = Duration.fromSeconds(60)
 
     override def start(clientId: String, request: Request): IO[NativeError | Throwable, Response] =
       for
+        // First, before anything is verified, looked up or written: this is the call a flood makes
+        _ <- startLimit.enforce(request)
         client <- nativeClient(clientId)
         proof <- verifyProof(request, htu = ownUri(request.path), checkOwnNonce = true)
         // §4.3 step 12: a proof addressed to edge goes no further, so edge is the only party
