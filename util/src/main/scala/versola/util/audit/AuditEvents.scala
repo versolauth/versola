@@ -189,9 +189,13 @@ object AuditEvents:
       * can interrupt what runs in the caller's region. The caller waits for the fiber, which ends by its own bounds; a caller that can
       * be interrupted is interrupted there, and takes the fiber with it before it returns, so that no event is queued after it. */
     private def waitForRoom(event: AuditEvent): UIO[Either[Unit, Option[Boolean]]] =
-      ZIO.interruptible(
-        queue.offer(event).timeout(settings.blockTimeout).map(Right(_)).raceFirst(closing.await.as(Left(()))),
-      ).forkDaemon.flatMap(fiber => fiber.join.onInterrupt(fiber.interrupt))
+      // Forking and arranging to take the fiber along are one step. Between the two a caller that is interrupted has a fiber out that
+      // nobody will interrupt: it goes on offering, and queues the event once there is room, after the caller was told it was
+      // cancelled. `restore` returns to the caller's own region for the wait, so a caller that is uninterruptible still waits it out.
+      ZIO.uninterruptibleMask: restore =>
+        ZIO.interruptible(
+          queue.offer(event).timeout(settings.blockTimeout).map(Right(_)).raceFirst(closing.await.as(Left(()))),
+        ).forkDaemon.flatMap(fiber => restore(fiber.join).onInterrupt(fiber.interrupt))
 
     /** The event of a draft: ids and time, then the request's context, from [[AuditContext]] first and the `auth` log context
       * second, for what the draft does not say. */
