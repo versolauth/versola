@@ -18,32 +18,34 @@ object ClientTimeoutSpec extends ZIOSpecDefault:
     Method.GET / "quick" -> handler(Response.text("ok")),
   )
 
-  /** What reading `path` through a client with this configuration gives. */
-  private def read(config: ZClient.Config, path: String): ZIO[Any, Nothing, Either[Throwable, String]] =
+  /** What reading `path` through a client with this configuration gives, and how long the request and the read took. The time is taken
+    * after the server and the client are built: on a loaded runner building them (a Netty event loop, the DNS resolver) took seconds,
+    * and a test of the read timeout must not measure that.
+    */
+  private def read(config: ZClient.Config, path: String): ZIO[Any, Nothing, (Either[Throwable, String], Duration)] =
     ZIO.scoped((for
       port <- Server.install(routes)
       client <- (ZLayer.succeed(config) ++ ZLayer.succeed(zio.http.netty.NettyConfig.defaultWithFastShutdown) ++ DnsResolver.default >>>
         ZClient.live).build.map(_.get[Client])
       url = URL.decode(s"http://localhost:$port/$path").toOption.get
+      started <- Clock.nanoTime
       body <- ZIO.scoped(client.request(Request.get(url)).flatMap(_.body.asString)).either
-    yield body).provideSome[Scope](Server.defaultWith(_.port(0)))).orDie
+      took <- Clock.nanoTime.map(done => Duration.fromNanos(done - started))
+    yield (body, took)).provideSome[Scope](Server.defaultWith(_.port(0)))).orDie
 
   def spec = suite("Observability client timeouts")(
     test("a body that keeps dripping is cut at the body read timeout, though it is never silent for that long") {
-      for
-        started <- Clock.nanoTime
-        body <- read(Observability.clientConfig(10).copy(bodyReadTimeout = Some(1.second)), "drip")
-        took <- Clock.nanoTime.map(done => Duration.fromNanos(done - started))
-      yield assertTrue(
-        body.isLeft,
-        took < 4.seconds, // the body would take about six
-      )
+      read(Observability.clientConfig(10).copy(bodyReadTimeout = Some(1.second)), "drip").map: (body, took) =>
+        assertTrue(
+          body.isLeft,
+          took < 4.seconds, // the body would take about six
+        )
     },
     test("without the timeout the same body is read to the end (the 50 s idle timeout is restarted by every byte)") {
-      read(Observability.clientConfig(10).copy(bodyReadTimeout = None), "drip").map(body => assertTrue(body == Right("x" * 20)))
+      read(Observability.clientConfig(10).copy(bodyReadTimeout = None), "drip").map((body, _) => assertTrue(body == Right("x" * 20)))
     },
     test("a body that arrives within the timeout is read") {
-      read(Observability.clientConfig(10).copy(bodyReadTimeout = Some(1.second)), "quick").map(body => assertTrue(body == Right("ok")))
+      read(Observability.clientConfig(10).copy(bodyReadTimeout = Some(1.second)), "quick").map((body, _) => assertTrue(body == Right("ok")))
     },
     test("the shared client is configured with both bounds, 5 s to connect and 30 s to read a body, unless the environment says otherwise") {
       val config = Observability.clientConfig(10)
