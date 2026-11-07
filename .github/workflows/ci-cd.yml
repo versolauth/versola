@@ -1467,6 +1467,16 @@ jobs:
         if: ${{ !cancelled() }}
         run: .github/scripts/check-chart-security-context.sh
 
+      # The admin console's security headers are written out in three places: docker-local's nginx.conf.template,
+      # this chart's console config, and the routes.conf that versola-cli (versolauth/versola-cli) renders for a
+      # VPS. The last lost every header once without anything failing, because nginx replaces a server-level
+      # add_header in a location that sets its own. --fetch-cli reads that file from versola-cli's main, so this
+      # step fails when either side changes the set without the other (the fix for that is a pull request there,
+      # or here); it needs only python3 and curl, and the network. Nothing in it is a secret or a write.
+      - name: Check the console's security headers match versola-cli's
+        if: ${{ !cancelled() }}
+        run: .github/scripts/check-console-headers.sh --fetch-cli
+
   # Separate from helm-checks on purpose. That job installs only Helm and
   # reports in seconds; this one runs gen-env.scala through scala-cli, which
   # has to compile it first, so folding the two together would slow the fast
