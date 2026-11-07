@@ -48,4 +48,4 @@ object ServeUntilShutdownSpec extends ZIOSpecDefault:
         duringBudget <= ShutdownBudget.Total, // begun
       )
     } @@ TestAspect.after(ZIO.succeed(ShutdownBudget.reset())),
-  ) @@ TestAspect.withLiveClock @@ TestAspect.timeout(60.seconds) @@ TestAspect.sequential
+  ) @@ ShutdownBudgetExclusive.aspect @@ TestAspect.withLiveClock @@ TestAspect.timeout(60.seconds) @@ TestAspect.sequential
