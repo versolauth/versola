@@ -560,6 +560,18 @@ object JWTSpec extends ZIOSpecDefault:
   // every other test reaches PublicKeys only through JWT.deserialize's `verifySignature`, which
   // never calls .active, .toString, .fromJson, the given JsonDecoder, .id or .algorithm.
   private val publicKeysTests = suite("PublicKeys/PublicKey")(
+    // The JWKS endpoint of auth prints this: a key whose JSON holds private members is published without them.
+    test("the published form of a set holds the public members only, whatever the parsed JSON carried") {
+      val full = com.nimbusds.jose.jwk.gen.RSAKeyGenerator(2048).keyID("full-key").generate()
+      val parsed = JWT.PublicKeys.fromJson(s"""{"keys":[${full.toJSONString}]}""".fromJson[Json.Obj].toOption.get)
+      val published = parsed.toString.fromJson[Json.Obj].toOption.get
+      val members = published.get("keys").collect { case Json.Arr(keys) => keys.toList }.getOrElse(Nil)
+        .flatMap { case key: Json.Obj => key.fields.map(_._1); case _ => Nil }.toSet
+      assertTrue(
+        members.contains("n"),
+        members.intersect(Set("d", "p", "q", "dp", "dq", "qi", "oth", "k")).isEmpty,
+      )
+    },
     test("active returns the first key, exposing its id and algorithm") {
       val active = publicKeys.active
       assertTrue(
