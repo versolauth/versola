@@ -13,6 +13,7 @@ import versola.util.http.Observability
 import zio.*
 import zio.http.*
 import zio.json.*
+import zio.json.ast.Json
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
@@ -263,5 +264,22 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ),
       expectedStatus = Status.Conflict,
       setup = service => service.deleteRole.failsWith(new RoleService.RoleInUseError(adminRole)),
+      verify = (response, _) =>
+        response.body.asString.map: body =>
+          assertTrue(body.fromJson[Json.Obj].toOption.flatMap(_.get("message")).exists(_.isInstanceOf[Json.Str])),
+    ),
+    controllerTestCase(
+      description = "delete role 409 body stays valid JSON whatever characters the message carries",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "configuration" / "roles")
+          .addQueryParams(Map("tenantId" -> tenantId.toString, "roleId" -> adminRole.toString)),
+      ),
+      expectedStatus = Status.Conflict,
+      setup = service => service.deleteRole.failsWith(new RoleService.RoleInUseError(RoleId("""a"b\c\nd"""))),
+      verify = (response, _) =>
+        response.body.asString.map: body =>
+          val message = body.fromJson[Json.Obj].toOption.flatMap(_.get("message")).collect { case Json.Str(text) => text }
+          assertTrue(message.exists(text => text.contains("a\"b") && text.contains("is a default role"))),
     ),
   )

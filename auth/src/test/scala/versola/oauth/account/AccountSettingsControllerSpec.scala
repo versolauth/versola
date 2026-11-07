@@ -37,6 +37,10 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
     URL.empty / "settings" / "password",
     Body.fromString("""{"currentPassword":"OldPass1!","newPassword":"NewPass1!"}"""),
   ).addHeader(Header.ContentType(MediaType.application.json))
+  private def changePasswordWith(extra: String) = Request.patch(
+    URL.empty / "settings" / "password",
+    Body.fromString(s"""{"currentPassword":"OldPass1!","newPassword":"NewPass1!"$extra}"""),
+  ).addHeader(Header.ContentType(MediaType.application.json))
   private val ownSessionId = PublicSessionId("session-of-the-caller")
   private val foreignSessionId = PublicSessionId("session-of-someone-else")
 
@@ -544,7 +548,45 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         expectedStatus = Status.NoContent,
         setup = (_, _, _, _, _, _, _, accountSettingsService) => accountSettingsService.changePassword.succeedsWith(()),
         verify = (_, stubs) =>
-          ZIO.succeed(assertTrue(stubs._8.changePassword.calls == List((userId, clientId, "OldPass1!", "NewPass1!")))),
+          ZIO.succeed(assertTrue(stubs._8.changePassword.calls == List((userId, clientId, "OldPass1!", "NewPass1!", OtherSessions.Keep)))),
+      ),
+      suite("signing out of the other sessions")(
+        controllerTestCase(
+          description = "asks to end every session but the one the request came from when revokeOtherSessions is true",
+          request = changePasswordWith(""","revokeOtherSessions":true"""),
+          expectedStatus = Status.NoContent,
+          setup = (_, _, _, _, _, _, _, accountSettingsService) => accountSettingsService.changePassword.succeedsWith(()),
+          verify = (_, stubs) =>
+            ZIO.succeed(
+              assertTrue(
+                stubs._8.changePassword.calls == List((userId, clientId, "OldPass1!", "NewPass1!", OtherSessions.End(Some(ownSessionId)))),
+              ),
+            ),
+        ),
+        controllerTestCase(
+          description = "leaves the other sessions alone when revokeOtherSessions is false",
+          request = changePasswordWith(""","revokeOtherSessions":false"""),
+          expectedStatus = Status.NoContent,
+          setup = (_, _, _, _, _, _, _, accountSettingsService) => accountSettingsService.changePassword.succeedsWith(()),
+          verify = (_, stubs) =>
+            ZIO.succeed(assertTrue(stubs._8.changePassword.calls.map(_._5) == List(OtherSessions.Keep))),
+        ),
+        // A token without `sid` makes edge inject an empty one: the request cannot say which session is the caller's.
+        controllerTestCase(
+          description = "passes an unknown current session on, so the service refuses instead of ending the caller's own",
+          request = changePasswordWith(""","revokeOtherSessions":true"""),
+          callerSessionId = PublicSessionId(""),
+          expectedStatus = Status.NoContent,
+          setup = (_, _, _, _, _, _, _, accountSettingsService) => accountSettingsService.changePassword.succeedsWith(()),
+          verify = (_, stubs) =>
+            ZIO.succeed(assertTrue(stubs._8.changePassword.calls.map(_._5) == List(OtherSessions.End(None)))),
+        ),
+        controllerTestCase(
+          description = "refuses a revokeOtherSessions that is not a boolean, changing nothing",
+          request = changePasswordWith(""","revokeOtherSessions":"yes""""),
+          expectedStatus = Status.BadRequest,
+          verify = (_, stubs) => ZIO.succeed(assertTrue(stubs._8.changePassword.calls.isEmpty)),
+        ),
       ),
       controllerTestCase(
         description = "does not change a password without resource credentials",
@@ -565,6 +607,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           (ChangePasswordError.IncorrectCurrentPassword, Status.BadRequest, "current_password_incorrect"),
           (ChangePasswordError.NewPasswordNotAllowed, Status.BadRequest, "password_not_allowed"),
           (ChangePasswordError.PasswordReused, Status.BadRequest, "password_reused"),
+          (ChangePasswordError.CurrentSessionUnknown, Status.BadRequest, "current_session_unknown"),
         ).map((error, status, code) =>
           controllerTestCase(
             description = s"$code answers $status",

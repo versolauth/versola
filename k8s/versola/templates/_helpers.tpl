@@ -787,12 +787,20 @@ same thing here as in its Deployment.
   "imagePullPolicy" $root.Values.global.imagePullPolicy
   "args" $args
   "env" $env
-  "volumeMounts" $mounts
+  "volumeMounts" (append $mounts (dict "name" "tmp" "mountPath" "/tmp"))
   "resources" $m.resources) -}}
+{{- with (include "versola.containerSecurityContext" (dict "root" $root "override" $m.containerSecurityContext) | trim) -}}
+{{- $last := sub (len $containers) 1 | int -}}
+{{- $_ := set (index $containers $last) "securityContext" (fromYaml .) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- if $containers -}}
 restartPolicy: Never
+{{- with (include "versola.podSecurityContext" (dict "root" $root "override" $m.podSecurityContext) | trim) }}
+securityContext:
+  {{- . | nindent 2 }}
+{{- end }}
 {{- with $root.Values.global.imagePullSecrets }}
 imagePullSecrets:
   {{- toYaml . | nindent 2 }}
@@ -812,10 +820,26 @@ affinity:
 containers:
   {{- toYaml $containers | nindent 2 }}
 volumes:
+  {{- $_ := set $volumes "tmp" (dict "name" "tmp" "emptyDir" (dict "sizeLimit" "64Mi")) -}}
   {{- $ordered := list -}}
   {{- range $k := keys $volumes | sortAlpha -}}
   {{- $ordered = append $ordered (get $volumes $k) -}}
   {{- end }}
   {{- toYaml $ordered | nindent 2 }}
 {{- end -}}
+{{- end -}}
+
+{{/*
+Pod- and container-level securityContext (the YAML body, no key), for every pod this chart renders.
+`override` is a component's own value; when non-empty it REPLACES `global.podSecurityContext` /
+`global.containerSecurityContext` rather than merging with them, the same rule as placement. Empty
+global values render nothing, which is how a cluster whose admission policy sets these itself opts out.
+The defaults and what each one is for are in values.yaml, under `global`.
+*/}}
+{{- define "versola.podSecurityContext" -}}
+{{- with (.override | default .root.Values.global.podSecurityContext) }}{{ toYaml . }}{{- end }}
+{{- end -}}
+
+{{- define "versola.containerSecurityContext" -}}
+{{- with (.override | default .root.Values.global.containerSecurityContext) }}{{ toYaml . }}{{- end }}
 {{- end -}}

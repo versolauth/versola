@@ -8,6 +8,7 @@ import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{CreateRoleRequest, GetAllRolesResponse, RoleResponse, UpdateRoleRequest}
 import versola.central.users.UserService
 import zio.http.{Method, Request, Response, Status, handler}
+import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec}
 import zio.schema.*
 import zio.telemetry.opentelemetry.tracing.Tracing
@@ -67,7 +68,7 @@ object RoleController extends AuditedController:
         .catchSome:
           case denied: RoleGrantGuard.Denied => RoleGrantGuard.refusal(denied)
           case error: RoleService.RoleInUseError =>
-            ZIO.succeed(Response.json(s"""{"message":"${error.getMessage}"}""").status(Status.Conflict))
+            ZIO.succeed(Response.json(Json.Obj("message" -> Json.Str(error.getMessage)).toJson).status(Status.Conflict))
     }
 
   val getAllRolesEndpoint =

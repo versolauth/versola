@@ -14,7 +14,7 @@ import versola.oauth.client.model.{
 }
 import versola.oauth.client.{AuthorizationDetailResolver, OAuthConfigurationService, ResourceResolver}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, RequestUri, State}
-import versola.oauth.model.{SessionCookie, UserAgentCookie}
+import versola.oauth.model.{SessionCookie, UrlEncodedParameters, UserAgentCookie}
 import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.util.CoreConfig
@@ -309,9 +309,18 @@ object AuthorizeRequestParser:
               )
           }
 
+        // OIDC Core §3.1.2.1: `max_age` is a number of seconds. One that is not a whole, non-negative number is an invalid
+        // parameter value, which RFC 6749 §4.1.2.1 answers with `invalid_request`; ignoring it would let a request that
+        // asked for a re-authentication get a session that is too old. Sent without a value it is omitted (RFC 6749 §3.1).
         maxAge <- getParam(params, "max_age")
           .orElseFail(Error.MultipleValuesProvided(clientId, redirectUri, state, "max_age", responseMode = responseMode))
-          .map(_.flatMap(_.toLongOption))
+          .flatMap:
+            case None | Some("") => ZIO.none
+            case Some(raw) =>
+              ZIO
+                .fromOption(raw.toLongOption.filter(_ >= 0))
+                .orElseFail(Error.MaxAgeInvalid(clientId, redirectUri, state, responseMode = responseMode))
+                .asSome
 
         acrValues <- getParam(params, "acr_values")
           .orElseFail[Error](Error.MultipleValuesProvided(clientId, redirectUri, state, "acr_values", responseMode = responseMode))
@@ -490,14 +499,15 @@ object AuthorizeRequestParser:
         case Method.GET =>
           ZIO.succeed(request.url.queryParams.map)
         case Method.POST | _ =>
-          request.body.asURLEncodedForm
-            .map(_.formData.flatMap { field =>
-              field.stringValue.toList.flatMap { value =>
-                val values =
-                  if field.name == "resource" then ResourceUri.splitFormValue(value)
-                  else List(value)
-                values.map(field.name -> _)
-              }
+          // Read as sent: zio-http's own form parsing joins a repeated field into one comma-separated value, which would hide
+          // a repeated parameter from the check in `getParam` (RFC 6749 §3.1: request parameters MUST NOT be included more than once).
+          request.body.asString
+            .flatMap(body => ZIO.fromOption(UrlEncodedParameters.parse(body)).orElseFail(new IllegalArgumentException("malformed form body")))
+            .map(_.flatMap { (name, value) =>
+              val values =
+                if name == "resource" then ResourceUri.splitFormValue(value)
+                else List(value)
+              values.map(name -> _)
             })
             .map(_.groupMap(_._1)(_._2).view.mapValues(Chunk.fromIterable).toMap)
 

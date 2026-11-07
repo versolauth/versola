@@ -58,6 +58,10 @@ spec:
       # terminationGracePeriodSeconds for why this has to cover both the
       # preStop sleep below and VersolaApp's own gracefulShutdownTimeout.
       terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      {{- with (include "versola.podSecurityContext" (dict "root" $ "override" $svc.podSecurityContext) | trim) }}
+      securityContext:
+        {{- . | nindent 8 }}
+      {{- end }}
       {{- if and $.Values.pki.enabled (eq $name "central") }}
       # Central creates cert-manager CertificateRequests with its own service account, which
       # templates/pki.yaml gives exactly that and nothing else.
@@ -67,6 +71,10 @@ spec:
         - name: {{ $name }}
           image: {{ include "versola.image" (dict "global" $.Values.global "svc" $svc "chart" $.Chart) }}
           imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          {{- with (include "versola.containerSecurityContext" (dict "root" $ "override" $svc.containerSecurityContext) | trim) }}
+          securityContext:
+            {{- . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ $svc.port }}
@@ -169,6 +177,11 @@ spec:
             # there to `kubectl cp`.
             - name: diagnostics
               mountPath: /diagnostics
+            # The root filesystem is read-only (global.containerSecurityContext), and the JVM
+            # keeps its scratch files here: the perf-data file `jcmd` attaches through, and the
+            # native libraries Netty extracts at start. Pod-scoped and bounded, like /diagnostics.
+            - name: tmp
+              mountPath: /tmp
           # /liveness and /readiness are served by the diagnostics server,
           # separate from application traffic on `http` -- see
           # VersolaApp.scala's serviceRoutes.
@@ -209,5 +222,8 @@ spec:
             # filecount x filesize (5 x 20M). Bounded so a pod that OOMs in a
             # loop cannot evict its neighbours by filling the node.
             sizeLimit: {{ $svc.diagnosticsSizeLimit | default $.Values.diagnosticsSizeLimit }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ $.Values.tmpSizeLimit }}
 {{- end }}
 {{- end }}

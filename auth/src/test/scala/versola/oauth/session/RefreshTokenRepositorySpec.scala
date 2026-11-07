@@ -3,9 +3,10 @@ package versola.oauth.session
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, ScopeToken}
 import versola.oauth.model.{AccessToken, Cnf, RefreshToken}
-import versola.oauth.revocation.{Revocation, RevocationCause, RevocationCursor, RevocationKey, RevocationRepository, RevocationTerms}
+import versola.oauth.revocation.{RevocationCause, RevocationTerms}
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId, RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
+import versola.util.revocation.{Revocation, RevocationCursor, RevocationKey, RevocationRepository}
 import versola.util.{DatabaseSpecBase, MAC}
 import zio.*
 import zio.json.*
@@ -51,7 +52,11 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
   val idempotencyKey2 = MAC(Array.fill(32)(41.toByte))
 
   /** What the family methods are told about the revocation they record. */
-  val terms = RevocationTerms(RevocationCause.RefreshReuse, 10.minutes, Map.empty)
+  val terms = RevocationTerms(cause = RevocationCause.RefreshReuse, ttl = 10.minutes, tenantId = None, ttlByClient = Map.empty)
+
+  /** What an administrator's revoking of a client's offline access is told about the revocation it records:
+    * the client's own TTL, since every token the family issued went to that client. */
+  val offlineTerms = RevocationTerms(cause = RevocationCause.OfflineAccessRevoked, ttl = 15.minutes, tenantId = None, ttlByClient = Map.empty)
 
   /** What the repository has recorded as revoked, by key: the whole list is small in a test. */
   def recorded(env: RefreshTokenRepositorySpec.Env): Task[Map[RevocationKey, Revocation]] =
@@ -103,25 +108,40 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
         for
           now <- Clock.instant
           mine = tokenRecord1(now, refreshTtl)
-          sameUserOtherClient = tokenRecord1(now, refreshTtl).copy(clientId = clientId2)
-          otherUserSameClient = tokenRecord2(now, refreshTtl).copy(clientId = clientId1)
+          // Each of the grants that must survive is a family of its own, so that a record for it would show.
+          sameUserOtherClient = tokenRecord1(now, refreshTtl).copy(clientId = clientId2, familyId = RefreshTokenFamilyId("family-other-client"))
+          otherUserSameClient = tokenRecord2(now, refreshTtl).copy(clientId = clientId1, familyId = RefreshTokenFamilyId("family-other-user"))
           _ <- env.repository.createRefreshToken(refreshToken1, None, mine, None)
           _ <- env.repository.createRefreshToken(refreshToken2, None, mine.copy(familyId = familyId2), None)
           _ <- env.repository.createRefreshToken(refreshToken3, None, sameUserOtherClient, None)
           _ <- env.repository.createRefreshToken(refreshToken4, None, otherUserSameClient, None)
-          revoked <- env.repository.revokeRefreshTokensByUserAndClient(userId1, clientId1)
+          revoked <- env.repository.revokeRefreshTokensByUserAndClient(userId1, clientId1, offlineTerms)
+          entries <- recorded(env)
           gone1 <- env.repository.findToken(refreshToken1)
           gone2 <- env.repository.findToken(refreshToken2)
           kept3 <- env.repository.findToken(refreshToken3)
           kept4 <- env.repository.findToken(refreshToken4)
-          again <- env.repository.revokeRefreshTokensByUserAndClient(userId1, clientId1)
+          again <- env.repository.revokeRefreshTokensByUserAndClient(userId1, clientId1, offlineTerms)
         yield assertTrue(
-          revoked == 2,
+          revoked.toSet == Set(familyId1, familyId2),
           gone1.isEmpty && gone2.isEmpty,
           kept3.isDefined,
           kept4.isDefined,
-          again == 0,
+          again.isEmpty,
+          // One `fam` per family ended, bounded by the client's own TTL, and nothing for the other client's or
+          // the other user's grant: their access tokens keep working.
+          entries.keySet == Set(RevocationKey.Fam(familyId1), RevocationKey.Fam(familyId2)),
+          entries.values.forall(_.issuedBefore.isEmpty),
+          entries.values.forall(_.expiresAt == now.plus(offlineTerms.ttl)),
         )
+      },
+      test("revokeRefreshTokensByUserAndClient records nothing when the client holds no live token for the user") {
+        for
+          now <- Clock.instant
+          _ <- env.repository.createRefreshToken(refreshToken3, None, tokenRecord1(now, refreshTtl).copy(clientId = clientId2), None)
+          revoked <- env.repository.revokeRefreshTokensByUserAndClient(userId1, clientId1, offlineTerms)
+          entries <- recorded(env)
+        yield assertTrue(revoked.isEmpty, entries.isEmpty)
       },
       test("create and find multiple refresh tokens") {
         for

@@ -1,6 +1,7 @@
 package versola.user
 
 import versola.oauth.client.model.TenantId
+import versola.oauth.revocation.RevocationTerms
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.{Email, Patch, Phone}
@@ -49,11 +50,22 @@ trait UserRepository:
 
   def findRolesByUser(userId: UserId): Task[Map[TenantId, List[RoleId]]]
 
+  /** Adds and removes roles of the user in one tenant, in one transaction.
+    *
+    * When it takes at least one role away, `sub:<user>` is recorded in the same transaction (see
+    * [[versola.oauth.revocation.PostgresAuthRevocationRepository.upsertUser]]), so a token issued with the role
+    * is refused from the moment the removal is visible. "Takes away" means a row was there to delete: removing
+    * a role the user does not hold, or one the same call adds back, records nothing, and adding revokes
+    * nothing. Refresh tokens are not touched: refreshing is how the user gets a token with the roles they hold now.
+    *
+    * The row names the user, not the tenant: sessions and tokens of auth are not tenant-scoped, and the token of
+    * another tenant's client carries no role of this one but is refused all the same (documented). */
   def updateRoles(
       userId: UserId,
       tenantId: TenantId,
       add: Set[RoleId],
       remove: Set[RoleId],
+      revocation: RevocationTerms,
   ): Task[Unit]
 
   /** Marks the given credential as verified for this user by setting its `email_verified` /

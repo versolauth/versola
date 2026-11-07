@@ -971,6 +971,12 @@ paths:
           $ref: '#/components/responses/RoleGrantRefused'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: The role is one of the tenant's default roles for new registrations and cannot be deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
 
   /configuration/authorization-detail-types:
     get:
@@ -1141,9 +1147,11 @@ paths:
         first and purges the account's sessions, refresh tokens, authorization codes, in-flight
         conversations, passkeys, passwords, roles, consents and throttling records (the relying
         parties of its sessions receive a back-channel logout), and only then does the index row
-        go. A failure in auth leaves the user in place, so the call can be repeated. Access tokens
-        already issued stay valid until they expire; the refresh tokens that would renew them do
-        not. The request log carries the user id and nothing else about the user.
+        go. A failure in auth leaves the user in place, so the call can be repeated. The access
+        tokens the user already holds are refused by auth at `/userinfo` and `/introspect` from the
+        moment the deletion is applied, as are the refresh tokens that would renew them; a resource
+        server that checks a token only by its signature accepts it until it expires. The request log
+        carries the user id and nothing else about the user.
       operationId: deleteUser
       parameters:
         - name: id
@@ -1203,6 +1211,18 @@ paths:
     patch:
       tags: [Users]
       summary: Grant and revoke a user's roles
+      description: |
+        Adding a role changes nothing about the access tokens the user already holds: they carry the
+        roles they were issued with, and the new role appears in the next token the user gets.
+
+        Removing a role (one the user actually holds) refuses every access token the user holds that
+        was issued before the removal, for all of the user's apps, so that the removed right does not
+        outlive the removal by up to a token's lifetime. Auth applies this when it applies the change,
+        and refuses those tokens at `/userinfo` and `/introspect`. The user's refresh tokens and
+        sessions are not touched: refreshing yields a token with the roles the user holds now. A token
+        minted in the same second as the removal counts as issued before it, so an app that refreshes
+        at once may have to refresh once more. A resource server that checks a token only by its
+        signature accepts it until it expires.
       operationId: patchUserRoles
       requestBody:
         required: true
@@ -1423,8 +1443,11 @@ paths:
       summary: Revoke a client's offline access for a user
       description: |
         Expires every live refresh token `clientId` holds for the user, so the client cannot renew
-        its access without sending the user through `/authorize` again. Not a logout: the user's
-        sessions stay, and access tokens already issued run out on their own. Idempotent.
+        its access without sending the user through `/authorize` again. The access tokens those
+        grants already issued are refused too, by auth at `/userinfo` and `/introspect` (a resource
+        server that checks a token only by its signature accepts one until it expires). Not a
+        logout: the user's sessions stay, and so do the tokens of the user's other clients.
+        Idempotent.
       operationId: revokeUserRefreshTokens
       parameters:
         - name: id
@@ -1529,6 +1552,12 @@ paths:
         the plaintext to the caller instead of delivering it and is rejected in production.
         Omitting `channel` still creates the temporary password but delivers it nowhere and
         returns nothing — always pass a channel, or the request silently locks the user out.
+
+        A reset is what an administrator does when the account may be in someone else's hands, so it
+        signs the user out everywhere: every session and refresh token of the user ends, the relying
+        parties of those sessions receive a back-channel logout, and the access tokens issued before
+        the reset are refused at auth's `/userinfo` and `/introspect`. The user signs in again with the
+        temporary password. (`POST /users/password/set` refuses the earlier access tokens only.)
       operationId: resetUserPassword
       requestBody:
         required: true
@@ -1554,7 +1583,13 @@ paths:
     post:
       tags: [Users]
       summary: Set a user's password
-      description: A test affordance — returns `404 Not Found` in production.
+      description: |
+        A test affordance — returns `404 Not Found` in production.
+
+        Refuses the access tokens the user holds that were issued before the change, at auth's
+        `/userinfo` and `/introspect`. The user's refresh tokens and sessions are not touched, so the
+        user refreshes or signs in again to get a token that works. A token minted in the same second
+        as the change counts as issued before it.
       operationId: setUserPassword
       requestBody:
         required: true

@@ -1,0 +1,13 @@
+-- Which tenant a revocation belongs to, so that the feed edges pull from (GET /revocations on the
+-- mutual-TLS listener) can hand an edge only the rows of the tenants central assigned it.
+--
+-- Nullable, and NULL means "not limited to a tenant", which the feed serves to every edge. It is
+-- set for what a client's tenant names: 'jti:' (a client's /revoke) and 'fam:' (a refresh-token family,
+-- which belongs to one client). It is NULL for 'sid:' and 'sub:': a user and an SSO session are
+-- not tenant-scoped in auth (a user holds roles in several tenants), so no single tenant owns them.
+-- Rows written before this migration are NULL as well: they are served to every edge until they
+-- expire, which only ever over-delivers (an edge applies a key it holds no token for harmlessly).
+--
+-- No DEFAULT: the writer names the column. Additive and nullable, so the previous release, which
+-- does not name it, keeps inserting on the new schema.
+ALTER TABLE auth_revocations ADD COLUMN tenant_id TEXT;

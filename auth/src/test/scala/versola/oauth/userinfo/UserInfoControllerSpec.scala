@@ -14,12 +14,21 @@ import versola.oauth.dpop.DpopService
 import versola.oauth.jwks.JwksService
 import versola.oauth.logout.BackChannelOutbox
 import versola.oauth.mtls.{ClientCertificate, EdgeCertificateTrust}
-import versola.oauth.revocation.{Revocation, RevocationCache, RevocationKey, RevocationNotifications, RevocationPage, RevocationRepository}
+import versola.oauth.revocation.AuthRevocationRepository
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId}
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
 import versola.user.model.UserId
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
+import versola.util.revocation.{
+  Revocation,
+  RevocationCache,
+  RevocationConfig,
+  RevocationKey,
+  RevocationNotifications,
+  RevocationPage,
+  RevocationRepository,
+}
 import versola.util.{CoreConfig, Dpop, EdgeIdentityNames, TestCertificates, UnitSpecBase}
 import zio.*
 import zio.http.*
@@ -175,16 +184,16 @@ object UserInfoControllerSpec extends UnitSpecBase:
         clientAuthentication = stub[ClientAuthentication]
         jwksService = TestEnvConfig.jwksService
         tracing <- NoopTracing.layer.build
-        revocationRepository = stub[RevocationRepository]
+        revocationRepository = stub[AuthRevocationRepository]
         _ <- revocationRepository.activeSince.succeedsWith(RevocationPage(revocations, None, hasMore = false))
         revocationCache <- RevocationCache.live.build.provideSomeEnvironment[Scope](
-          _ ++ ZEnvironment[RevocationRepository, RevocationNotifications, CoreConfig](
+          _ ++ ZEnvironment[RevocationRepository, RevocationNotifications, RevocationConfig](
             revocationRepository,
             new RevocationNotifications:
               override def notifications =
                 ZStream.empty
             ,
-            config,
+            config.revocationOrDefault,
           ),
         )
         accessTokenRevocation = AccessTokenRevocationService.Impl(stub[BackChannelOutbox], revocationRepository, revocationCache.get)
