@@ -238,5 +238,4 @@ object RevocationCache:
       * strictly forward would never see it.
       */
     private def rewound(highWater: RevocationCursor): RevocationCursor =
-      if highWater == RevocationCursor.Beginning then RevocationCursor.Beginning
-      else RevocationCursor(highWater.revokedAt.minusSeconds(config.overlap.toSeconds), "")
+      highWater.rewound(config.overlap)

@@ -965,6 +965,12 @@ paths:
           description: Role deleted.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: The role is one of the tenant's default roles for new registrations and cannot be deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
 
   /configuration/authorization-detail-types:
     get:

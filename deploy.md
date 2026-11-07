@@ -473,6 +473,18 @@ dump and the rollback is lost. With extra replicas of `auth` or `edge`, remove t
 unfinished `versola rollout` is undone with `versola rollout --abort` instead; secrets the new
 version added stay in OpenBao either way.
 
+#### Behaviour change: edge refuses a resource path whose segments a resource could read differently
+
+A call to `/resources/{resourceId}/{path}` whose path has a segment that is a separator once decoded (`%2F`, `%5C`, a raw `\`), a
+control character, a dot segment in any encoding (`..;x` too) or one that is only a dot segment after another round of decoding is
+answered `404`, like a path no endpoint registers, after the caller has been authenticated. Before, an encoded slash was counted as
+two segments when the endpoint was chosen and sent as one, so the endpoint a permission was checked for could differ from the one the
+resource routed to.
+
+- **Who can notice.** A resource whose identifiers legitimately contain `/` or `\` in a path segment (an id such as `a/b` sent as
+  `a%2Fb`). Such an id has to be carried in a query parameter or the body. Ids with a dot, a space, `;` or `%` inside are unaffected.
+- **No setting, no migration.** Nothing is stored; a rollback restores the old matching.
+
 #### Behaviour change: edge binds a login to the browser that began it (login CSRF on `/complete`)
 
 `/login/{presetId}` now sets an `EDGE_LOGIN_<state>` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`, `Path` =
@@ -550,6 +562,55 @@ role change and `DELETE /users/refresh-tokens` do not write one yet.
   Revoking a refresh token now ends its whole family, not only the presented row.
 - Components that verify a JWT on its signature alone (a resource server without `edge`, without introspection and
   without the event) still accept a revoked token until `exp`.
+
+#### New: `edge` can pull revocations from `auth` (migrations `V0033` for `auth`, `V2009` for `edge`; off by default)
+
+Until now a first-party `edge` learned of a revoked access token only from the event `auth` sent to the client's
+`back_channel_logout_uri`: one attempt (a few, through the outbox), nothing for a client with no such address, and nothing
+for an `edge` that was down at the time. With `revocation.feed.enabled = true` the `edge` also **asks** `auth` for what was
+revoked, about once a second, from a cursor it keeps, so a revocation reaches it whatever happened to the event. The event
+stays as the faster signal (#560). Nothing changes until the switch is turned on: an `edge` that does not set it behaves as
+before, an old `edge` against this `auth` and this `edge` against an old `auth` both keep working on the event alone.
+
+- **Migrations.** `V0033__auth_revocations_tenant.sql` adds the nullable `auth_revocations.tenant_id` (the client's tenant for
+  a revoked token or refresh-token family, `NULL` for a session or a user, which no tenant owns; rows written before the
+  upgrade are `NULL` and are served to every edge until they expire). `V2009__revocation_cursors.sql` creates edge's
+  `revocation_cursors` (where the `edge` has read up to, and which pod is reading). Both are additive, the previous release runs
+  on them and a rollback works; neither can be undone except by the pre-migration dump.
+- **New endpoint.** `GET /revocations?after=<cursor>&limit=<n>` on `auth`'s mutual-TLS listener (`MPORT`) and nowhere else (not the
+  main port, not `/service`): the `mutual-tls` block, with `edge-trusted-certificates`, must be configured, because the caller is
+  recognised from the certificate of the handshake. A client's certificate, an edge central does not list, or no certificate is
+  `403`. It serves the revocations of the tenants central assigned the calling edge, and the ones no tenant owns. See
+  `auth/open-api/revocations.yaml`.
+- **Turning it on.** The `edge` needs its `native` block (`auth-mutual-tls-url`, `trusted-certificates`: the feed is read over the same
+  channel and with the same certificate as its `/userinfo` calls); without one the feed does not start and a warning says so. In `edge`'s
+  config:
+
+  ```hocon
+  revocation {
+    feed {
+      enabled       = true
+      # poll-interval = 1 second   how often each pod looks
+      # lease         = 5 seconds  how long one pod owns the reading; longer than `timeout`
+      # page-size     = 5000       at most 10000
+      # timeout       = 3 seconds  one request to auth
+    }
+  }
+  ```
+
+  Several pods of one `edge` share one cursor row: the one that finds its lease free reads, writes what it read to the `revocations`
+  table (whose notification reaches every pod) and gives the lease back. A pod that dies hands the reading on after `lease`. A new `edge`
+  reads from the beginning of the list, a restarted one from its cursor. Every `revocation.reload-interval` (600 seconds) one pod
+  rereads the whole list, which bounds a revocation missed through a very late commit to minutes. The first deployment of the switch
+  reads everything unexpired once: a page of 5000 rows per request.
+- **What to watch.** `revocation_feed_lag_seconds` (seconds, by the database's clock, since a pod last read the feed to its end; read from
+  the cursor row, so every pod of the `edge` reports the same figure), `revocation_feed_cycles_total{outcome="ok|error|lease_not_acquired"}`, `revocation_feed_pages_total`,
+  `revocation_feed_rows_total`, `revocation_feed_lease_held`. `revocation_cursors` is updated about twice a second by the pod that
+  reads (taking and giving back the lease); the columns carry no index, so the updates are HOT. A feed that stays down is logged as a warning, then at most once in five
+  minutes; it never fails readiness, and the `edge` carries on with the events.
+- **`edge` behaviour fix.** An expired cookie token that was revoked is no longer refreshed: the old token's `jti`, family, session and
+  user are checked first, and a revoked one sends the caller to log in with the cookie cleared, without presenting the refresh token to `auth`.
+- The `revocation` block of `edge` is the same one as before (`reload-interval`, `purge-interval`, `overlap`, `batch-size`) with `feed` inside it.
 
 #### Behaviour change: edge syncs through `/edge/sync/*`, on central's mutual-TLS port
 
@@ -714,7 +775,10 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   token, refresh-token family, session or user, with an expiry of one access token lifetime. It is small by construction, the
   last few minutes of revocations rather than a history. `revoked_at` is stamped with the database's clock, and the pair
   `(revoked_at, revoked_key)` is the cursor every replica resumes its reconciliation from. Rows are collected by the cleanup
-  manager once `expires_at` has passed.
+  manager once `expires_at` has passed. `tenant_id` (`V0033`, nullable) says which tenant a key belongs to, for the feed edges pull.
+- **Revocation cursors** (`edge`, `revocation_cursors`, `V2009`). One row per source (auth's mutual-TLS URL): the position the `edge` has
+  read the feed up to, when a pod last read it to the end (`last_read_at`), and the lease that lets one pod at a time read it. Compared on the database's clock; nothing is held open across
+  the call to `auth`.
 - **Configuration snapshots.** `auth` and `edge` keep the last configuration sync from `central`
   (signed with a key the node already holds) and start from it when `central` is unreachable or
   failing, retrying in the background and reporting `config_snapshot_age_seconds`. The tables fill on
@@ -1480,6 +1544,32 @@ move together and `configure` is re-run)
   upgrade changes nothing for existing edges.
 - CAs are split by role (server, edge, client). Whether the server role is its own intermediate is not
   decided.
+
+### Containers run as an unprivileged user
+
+The `versola-auth`, `versola-central`, `versola-edge`, `versola-loadgen` and `versola-mockapi` images run as uid/gid
+`10001` (`USER` in `docker/Dockerfile.*`), not root. The application tree stays root-owned and read-only to that user. What
+the services write is `/diagnostics` (heap dump, GC log and JVM crash log: `-XX:HeapDumpPath`, `-Xlog`, `-XX:ErrorFile`), `/tmp` (the
+JVM's performance file and the native library of the crypto provider, which the JVM maps from there, so it must allow execution)
+and, for an edge, its identity directory (`/var/lib/versola-edge`, a volume). `/diagnostics` and `/var/lib/versola-edge` exist in
+the image owned by `10001`, so a *new* named volume mounted there takes that owner; a volume that already exists keeps the owner it has.
+
+**Compose (`versola-cli`).** The generated `central`, `auth` and `edge` set `user: "0:0"` explicitly (the mutual-TLS keys that
+`mtls-init` writes `0600`, step-ca's output and the diagnostics volumes belong to root), together with `cap_drop: [ALL]` and
+`DAC_OVERRIDE` added back, `no-new-privileges`, `read_only: true` with `/tmp` as an `exec` tmpfs, and `pids_limit: 4096`. No
+`mem_limit` is set: the heap and non-heap ceilings are in `JAVA_OPTS` (see `Dockerfile.auth`). Replicas (`replicas.yml`) inherit
+all of it through `extends`. A compose file that starts these images without `user:` runs them as `10001`.
+
+**Helm charts.** Every pod the charts render (`k8s/versola` including the console, certificate sync and migration Job,
+`k8s/versola-edge`, `k8s/loadgen`) gets, from `global.podSecurityContext` / `global.containerSecurityContext` (`podSecurityContext` /
+`containerSecurityContext` in `k8s/versola-edge`): `runAsNonRoot`, uid/gid `10001` (the console runs as nginx's `101`),
+`fsGroup` the same, `seccompProfile: RuntimeDefault`, `allowPrivilegeEscalation: false`, all capabilities dropped and a read-only
+root filesystem, with `emptyDir` volumes at `/tmp` (and, for nginx, `/run` and `/var/cache/nginx`). Set the blocks to `null` (in a
+values file: `global.podSecurityContext: null`) to render no context, for a cluster whose admission policy sets one itself; `{}` does
+not do it, because Helm merges maps and keeps the defaults. A component's own value replaces the global one. Whether the edge's
+`identity` volume is writable to `10001` rests on the cluster's storage: `fsGroup` is applied by the kubelet to volumes of drivers
+that support it, and not to others (`hostPath`, and so the default `local-path` class of a kind cluster, NFS, a CSI driver with
+`fsGroupPolicy: None`); on those, own the files by `10001:10001` yourself.
 
 ### Request bodies state every field (breaking for API clients)
 

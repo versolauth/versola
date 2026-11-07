@@ -165,6 +165,48 @@ object EdgeConfigSpec extends ZIOSpecDefault:
           config.native.map(_.blobTtl) == Some(10.minutes),
         )
       },
+      // The feed is off for every configuration written before it existed, and the cache keys read as they always did.
+      test("a file without a revocation block parses with the feed off and the cache defaults") {
+        for config <- TypesafeConfigProvider
+            .fromHoconString(hocon(includeInternalUrl = false))
+            .kebabCase
+            .load(edgeConfigDescriptor)
+        yield assertTrue(
+          !config.revocation.feed.enabled,
+          config.revocation.cache == versola.util.revocation.RevocationConfig(),
+          config.revocation.feed == EdgeConfig.RevocationFeed(),
+          config.revocation.feed.pollInterval == 1.second,
+          config.revocation.feed.lease == 5.seconds,
+          config.revocation.feed.pageSize == 5000,
+        )
+      },
+      test("parses revocation.feed next to the cache keys") {
+        val block =
+          """revocation {
+            |  reload-interval = 300 seconds
+            |  feed {
+            |    enabled = true
+            |    poll-interval = 2 seconds
+            |    lease = 8 seconds
+            |    page-size = 1000
+            |    timeout = 4 seconds
+            |  }
+            |}""".stripMargin
+        for config <- TypesafeConfigProvider
+            .fromHoconString(hocon(includeInternalUrl = false, dpopBlock = block))
+            .kebabCase
+            .load(edgeConfigDescriptor)
+        yield assertTrue(
+          config.revocation.cache.reloadInterval == 300.seconds,
+          config.revocation.feed == EdgeConfig.RevocationFeed(
+            enabled = true,
+            pollInterval = 2.seconds,
+            lease = 8.seconds,
+            pageSize = 1000,
+            timeout = 4.seconds,
+          ),
+        )
+      },
       // Every configuration written before the listener existed has no such block, and none serves
       // `/resources` on a second port.
       test("a file without a mutual-tls block parses with no listener") {
@@ -272,6 +314,28 @@ object EdgeConfigSpec extends ZIOSpecDefault:
     // endpoint actually presents -- would accept any certificate that CA has ever issued, for
     // any host. `EdgeConfig.validated` is where that is refused instead.
     suite("validated")(
+      test("refuses a revocation feed whose numbers cannot work, and accepts the defaults") {
+        def validate(feed: EdgeConfig.RevocationFeed) =
+          ZIO.service[EdgeConfig].provideLayer(
+            ZLayer.succeed(baseConfig(None).copy(revocation = EdgeConfig.Revocation(feed = feed))) >>> EdgeConfig.validated,
+          ).exit
+        val enabled = EdgeConfig.RevocationFeed(enabled = true)
+        for
+          defaults <- validate(enabled)
+          leaseNotLongerThanTimeout <- validate(enabled.copy(lease = 3.seconds, timeout = 3.seconds))
+          noPage <- validate(enabled.copy(pageSize = 0))
+          pageTooLarge <- validate(enabled.copy(pageSize = EdgeConfig.MaxFeedPageSize + 1))
+          noPoll <- validate(enabled.copy(pollInterval = Duration.Zero))
+          noTimeout <- validate(enabled.copy(timeout = Duration.Zero))
+        yield assertTrue(
+          defaults.isSuccess,
+          leaseNotLongerThanTimeout.isFailure,
+          noPage.isFailure,
+          pageTooLarge.isFailure,
+          noPoll.isFailure,
+          noTimeout.isFailure,
+        )
+      },
       test("refuses a replicas-from that is not dns:<name>, and accepts one that is") {
         def validate(from: Option[String]) =
           ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(baseConfig(None).copy(replicasFrom = from)) >>> EdgeConfig.validated).exit

@@ -44,6 +44,16 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
       expiresAt = None,
     )
 
+  private def currentRecord(hash: MAC): PasswordRecord =
+    PasswordRecord(
+      id = 1L,
+      userId = userId,
+      password = Secret(hash),
+      salt = testSalt,
+      createdAt = Instant.EPOCH,
+      expiresAt = None,
+    )
+
   private def tempRecord(hash: MAC, expiresAt: Instant): PasswordRecord =
     PasswordRecord(
       id = 0L,
@@ -138,6 +148,35 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.passwordRepo.list.succeedsWith(Vector.empty)
           result <- env.service.verifyPassword(userId, password)
         yield assertTrue(result == CheckPassword.Failure)
+      },
+    ),
+    suite("verifyUnknownUser")(
+      test("hashes the password once with the configured pepper, as one password of a known user costs, and keeps nothing") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom)
+          _ <- env.securityService.hashPassword.succeedsWith(testHash)
+          _ <- env.service.verifyUnknownUser(password)
+          calls = env.securityService.hashPassword.calls
+        yield assertTrue(
+          calls.size == 1,
+          calls.head._3 == coreConfig.security.passwordsSecret,
+          env.passwordRepo.list.calls.isEmpty,
+        )
+      },
+      test("costs the same number of hashes as verifying a wrong password against the one password a user has") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          known = Env(secureRandom)
+          unknown = Env(secureRandom)
+          _ <- known.passwordRepo.list.succeedsWith(Vector(currentRecord(differentHash)))
+          _ <- known.securityService.hashPassword.succeedsWith(testHash)
+          _ <- known.service.verifyPassword(userId, password)
+          _ <- unknown.securityService.hashPassword.succeedsWith(testHash)
+          _ <- unknown.service.verifyUnknownUser(password)
+          knownHashes = known.securityService.hashPassword.calls.size
+          unknownHashes = unknown.securityService.hashPassword.calls.size
+        yield assertTrue(knownHashes == 1, unknownHashes == 1)
       },
     ),
     suite("setPassword")(

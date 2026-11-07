@@ -1,8 +1,11 @@
 package versola.util.revocation
 
-import zio.Task
+import zio.{Duration, Task}
 
+import java.nio.charset.StandardCharsets
 import java.time.Instant
+import java.util.Base64
+import scala.util.Try
 
 /** How far through the list a replica has read.
   *
@@ -10,9 +13,35 @@ import java.time.Instant
   * position ambiguous, and a page boundary falling between them would skip one. The key breaks the
   * tie, which is why rows are ordered and resumed by the pair.
   */
-case class RevocationCursor(revokedAt: Instant, revokedKey: String)
+case class RevocationCursor(revokedAt: Instant, revokedKey: String):
+  /** The form the feed carries a position in (`GET /revocations`): `<revoked_at>|<revoked_key>`, base64url, and the
+    * empty string for [[RevocationCursor.Beginning]]. It is what an edge stores between polls, and what it has to read
+    * back to start a poll a little behind where the last one ended (see [[rewound]]).
+    */
+  def encoded: String =
+    if this == RevocationCursor.Beginning then ""
+    else Base64.getUrlEncoder.withoutPadding.encodeToString(s"$revokedAt|$revokedKey".getBytes(StandardCharsets.UTF_8))
+
+  /** Starts the read a little behind this position, for a reader that rereads a window to catch what committed late.
+    * `revoked_at` is stamped when a row is written but the row only appears when its transaction commits, so one that took
+    * longer to commit than its neighbours can land behind a cursor that has already passed it. The key is dropped, so the
+    * whole second of the new position is read.
+    */
+  def rewound(by: Duration): RevocationCursor =
+    if this == RevocationCursor.Beginning then this
+    else RevocationCursor(revokedAt.minusSeconds(by.toSeconds), "")
 
 object RevocationCursor:
+  /** `None` for a value [[encoded]] did not produce. */
+  def decode(encoded: String): Option[RevocationCursor] =
+    if encoded.isEmpty then Some(Beginning)
+    else
+      Try:
+        val decoded = String(Base64.getUrlDecoder.decode(encoded), StandardCharsets.UTF_8)
+        val separator = decoded.indexOf('|')
+        RevocationCursor(Instant.parse(decoded.take(separator)), decoded.drop(separator + 1))
+      .toOption
+
   /** Before any row that exists, since `revoked_at` is the instant of a write. Reading from here is
     * what loads the whole list, which is what a replica does once, at startup.
     */
