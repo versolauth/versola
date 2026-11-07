@@ -28,4 +28,9 @@ EXPOSE 8100 8101
 
 ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -XX:+UseCompactObjectHeaders --enable-native-access=ALL-UNNAMED"
 
+# Unprivileged user, uid/gid 10001 (see Dockerfile.auth); the application tree stays root-owned and read-only to it.
+RUN groupadd --system --gid 10001 versola \
+ && useradd --system --uid 10001 --gid versola --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin versola
+USER 10001:10001
+
 ENTRYPOINT ["/bin/sh", "-c", "/app/bin/mockapi $JAVA_OPTS"]

@@ -211,5 +211,31 @@ object ClientCredentialsFlowSpec extends E2ESpec:
         assertTrue(after == Status.Unauthorized)
           .label("the edge must reject the token once auth has revoked it")
     },
+    // RFC 6749 §3.2: request parameters MUST NOT be included more than once; §5.2 answers a request that repeats one with invalid_request.
+    test("a parameter sent twice is refused with invalid_request, the same request sent once is served") {
+      for
+        auth <- ZIO.serviceWith[Flows.Setups](_.client)
+        (clientId, secret) <- registerClient(auth)
+        once <- auth.tokenRaw(Map("grant_type" -> "client_credentials", "scope" -> "email"), clientId, secret)
+        twice <- auth.tokenRawRepeated(
+          List("grant_type" -> "client_credentials", "scope" -> "email", "scope" -> "openid"),
+          clientId,
+          secret,
+        )
+        grantTwice <- auth.tokenRawRepeated(
+          List("grant_type" -> "client_credentials", "grant_type" -> "client_credentials"),
+          clientId,
+          secret,
+        )
+        twiceBody <- twice.body.asString
+        grantTwiceBody <- grantTwice.body.asString
+      yield assertTrue(
+        once.status == Status.Ok,
+        twice.status == Status.BadRequest,
+        twiceBody.contains("invalid_request"),
+        grantTwice.status == Status.BadRequest,
+        grantTwiceBody.contains("invalid_request"),
+      )
+    },
     // The revocation above is recorded against wall-clock expiry, so these need the live clock.
   ) @@ TestAspect.sequential @@ TestAspect.withLiveClock @@ TestAspect.timeout(60.seconds)

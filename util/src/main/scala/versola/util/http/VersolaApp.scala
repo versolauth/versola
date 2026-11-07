@@ -211,14 +211,16 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       case Some(seconds) => seconds.seconds
       case None => 20.seconds
 
+  // Each server waits for its in-flight requests on a shutdown for `gracefulShutdownTimeout` (zio-http's default is 10 s), and that
+  // wait is time of the shutdown hook, so it is stated here, not left to the library: see [[VersolaApp.ServerDrainTimeout]].
   def serverConfig: Server.Config =
-    Server.Config.default.binding(bindHost, port)
+    Server.Config.default.binding(bindHost, port).gracefulShutdownTimeout(VersolaApp.ServerDrainTimeout)
 
   def diagnosticsConfig: Server.Config =
-    Server.Config.default.binding(bindHost, diagnosticsPort)
+    Server.Config.default.binding(bindHost, diagnosticsPort).gracefulShutdownTimeout(VersolaApp.SecondaryServerDrainTimeout)
 
   def additionalConfig: Server.Config =
-    Server.Config.default.binding(bindHost, additionalPort)
+    Server.Config.default.binding(bindHost, additionalPort).gracefulShutdownTimeout(VersolaApp.SecondaryServerDrainTimeout)
 
   // Migrations are no longer ever run by way of starting one of these processes in a special
   // mode -- see versola-tools' migrate-tool, which applies every service's migrations from one
@@ -375,8 +377,11 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
               scope.addFinalizer(warmupFiber.interrupt.unit)
             }
           }
-          _ <- readinessService.setReady
-          _ <- ZIO.never
+          // Here, inside the `provide` of the server and not in `scope`: on SIGTERM this block is interrupted first, and only then is
+          // the server's layer released, which is what stops it accepting and waits for the requests in flight. A finalizer of
+          // `scope` would run after all of that, so /readiness would answer 503 once the port is already closed and the shared
+          // budget would start late by whatever the server waited.
+          _ <- VersolaApp.serveUntilShutdown(readinessService)
         yield ()
       }.provide(
         ZLayer.succeedEnvironment(appDependencies),
@@ -466,6 +471,26 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 object VersolaApp:
   /** What [[VersolaApp.gracefulShutdownTimeout]] is, for what has to fit inside it. */
   val GracefulShutdownTimeout: Duration = 15.seconds
+
+  /** How long the application server waits for its in-flight requests once a shutdown has begun (zio-http's own default is 10 s,
+    * which left the drains of [[ShutdownBudget]] with 3 s of the hook). It comes out of the shared budget: the clock is started
+    * before the server stops, so the drains get what is left of [[ShutdownBudget.Total]]. With the database down, requests held by
+    * the pool are what this waits for, and it is the whole of it.
+    */
+  val ServerDrainTimeout: Duration = 5.seconds
+
+  /** The same for the diagnostics, internal and mutual-TLS servers: probes, metrics and short requests. They are stopped after the
+    * drains, so their wait is not in the budget; with the writer's stop wait it is what [[ShutdownBudget.Margin]] is left for.
+    */
+  val SecondaryServerDrainTimeout: Duration = 250.millis
+
+  /** Marks the service ready and holds the calling fiber until the shutdown interrupts it; then, before anything this fiber's
+    * scope releases (the server is one such thing), takes the service out of rotation and starts [[ShutdownBudget]]. `setReady` is
+    * the acquire, so a start that failed before reaching it never runs the release.
+    */
+  private[http] def serveUntilShutdown(readiness: ReadinessService): UIO[Nothing] =
+    ZIO.scoped:
+      ZIO.acquireRelease(readiness.setReady)(_ => readiness.setNotReady *> ShutdownBudget.begin) *> ZIO.never
 
   private def envName: ZLayer[ConfigProvider, Config.Error, EnvName] =
     ZLayer.fromZIO:

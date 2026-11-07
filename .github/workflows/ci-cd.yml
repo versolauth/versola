@@ -1459,6 +1459,14 @@ jobs:
         if: ${{ !cancelled() }}
         run: .github/scripts/check-chart-ingress.sh
 
+      # A securityContext is the one thing a chart template can lose silently: a workload copied from an old one, a
+      # helper refactored, a `{}` left in values each render a valid manifest that runs as root. The script renders
+      # the three charts and fails if any container of any pod lacks runAsNonRoot, a read-only root filesystem, dropped
+      # capabilities, the default seccomp profile or its /tmp volume. PyYAML and helm only, no cluster.
+      - name: Check chart pod security contexts
+        if: ${{ !cancelled() }}
+        run: .github/scripts/check-chart-security-context.sh
+
       # The admin console's security headers are written out in three places: docker-local's nginx.conf.template,
       # this chart's console config, and the routes.conf that versola-cli (versolauth/versola-cli) renders for a
       # VPS. The last lost every header once without anything failing, because nginx replaces a server-level

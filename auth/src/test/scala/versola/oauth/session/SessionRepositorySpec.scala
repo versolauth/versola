@@ -50,6 +50,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
   val terms = RevocationTerms(
     RevocationCause.Logout,
     ttl = 10.minutes,
+    tenantId = None,
     ttlByClient = Map(clientId1 -> 5.minutes, clientId2 -> 30.minutes),
   )
 

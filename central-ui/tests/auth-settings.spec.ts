@@ -26,7 +26,7 @@ const formConfig = {
     step_up_failed: 'We could not confirm your sign-in',
     password_title: 'Password', current_password_label: 'Current password', new_password_label: 'New password',
     confirm_password_label: 'Repeat the new password', show_password: 'Show password', hide_password: 'Hide password',
-    change_password_button: 'Change password', password_changed: 'Password changed', password_mismatch: 'Passwords do not match',
+    change_password_button: 'Change password', sign_out_other_sessions: 'Sign out of all other sessions', password_changed: 'Password changed', password_mismatch: 'Passwords do not match',
     password_not_allowed: 'Password is too weak', password_reused: 'This password was used recently',
     current_password_incorrect: 'The current password is incorrect', too_many_attempts: 'Too many failed attempts',
     too_many_attempts_retry: 'Too many failed attempts, retry in {seconds} s', password_change_failed: 'Could not change the password',
@@ -290,6 +290,44 @@ test('changes the password and clears the form', async ({ page }) => {
   await expect(page.getByText('Password changed')).toBeVisible();
   await expect(page.locator('#newPassword')).toHaveValue('');
   expect(bodies.map(body => JSON.parse(body))).toEqual([{ currentPassword: 'OldPass1', newPassword: 'NewPass1' }]);
+});
+
+test('leaves the other sessions alone unless the box is ticked, and says so on the wire', async ({ page }) => {
+  await page.route('**/resources/auth/settings/password', route => route.fulfill({ status: 204, body: '' }));
+  await loadAccountForm(page);
+  const box = page.getByLabel('Sign out of all other sessions');
+  await expect(box).not.toBeChecked();
+  await fillPasswordForm(page, 'OldPass1', 'NewPass1');
+  await expect(page.getByText('Password changed')).toBeVisible();
+  await expect(page.getByText('Firefox · Linux', { exact: true })).toBeVisible();
+});
+
+test('asks to sign out of the other sessions and shows only the current one afterwards', async ({ page }) => {
+  const bodies: string[] = [];
+  await page.route('**/resources/auth/settings/password', async route => {
+    bodies.push(route.request().postData() ?? '');
+    await route.fulfill({ status: 204, body: '' });
+  });
+  await loadAccountForm(page);
+  await page.getByLabel('Sign out of all other sessions').check();
+  await fillPasswordForm(page, 'OldPass1', 'NewPass1');
+  await expect(page.getByText('Password changed')).toBeVisible();
+  expect(bodies.map(body => JSON.parse(body))).toEqual([{ currentPassword: 'OldPass1', newPassword: 'NewPass1', revokeOtherSessions: true }]);
+  await expect(page.getByText('Firefox · Linux', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Chrome · macOS')).toBeVisible();
+  // Default again for the next change.
+  await expect(page.getByLabel('Sign out of all other sessions')).not.toBeChecked();
+});
+
+test('keeps the other sessions listed when the change is refused', async ({ page }) => {
+  await page.route('**/resources/auth/settings/password', route => route.fulfill({
+    status: 400, contentType: 'application/json', body: JSON.stringify({ error: 'current_password_incorrect' }),
+  }));
+  await loadAccountForm(page);
+  await page.getByLabel('Sign out of all other sessions').check();
+  await fillPasswordForm(page, 'WrongPass1', 'NewPass1');
+  await expect(page.getByText('The current password is incorrect')).toBeVisible();
+  await expect(page.getByText('Firefox · Linux', { exact: true })).toBeVisible();
 });
 
 test('checks the new password locally before asking the server', async ({ page }) => {

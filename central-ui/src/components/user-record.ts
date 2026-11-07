@@ -1095,7 +1095,7 @@ export class VersolaUserRecord extends LitElement {
       title: 'Revoke offline access',
       messagePrefix: 'Revoke the offline access of ',
       messageSubject: client,
-      messageSuffix: ` for ${userLabel(user)}? The app can no longer get new access tokens without sending the user through sign-in again. The user stays signed in.`,
+      messageSuffix: ` for ${userLabel(user)}? The access tokens the app already holds stop working, and it can no longer get new ones without sending the user through sign-in again. The user stays signed in.`,
       confirmLabel: 'Revoke',
     });
     if (!confirmed) return;

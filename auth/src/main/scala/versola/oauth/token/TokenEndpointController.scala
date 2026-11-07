@@ -10,7 +10,7 @@ import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ClientCre
 import versola.oauth.clientauth.{AuthenticatedEndpoint, CertificateRelevance, ClientAuthentication}
 import versola.oauth.dpop.DpopService
 import versola.oauth.jwks.JwksService
-import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken}
+import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken, UrlEncodedParameters}
 import versola.oauth.mtls.ClientCertificate
 import versola.oauth.token.model.{
   ClientCredentialsRequest,
@@ -69,7 +69,7 @@ object TokenEndpointController extends Controller:
       (for
         oauthTokenService <- ZIO.service[OAuthTokenService]
         config <- ZIO.service[CoreConfig]
-        form <- request.body.asURLEncodedForm.orElseFail(TokenEndpointError.InvalidRequest)
+        form <- readForm(request)
         tokenRequest <- parseRequest(form)
         credentials <- request.extractCredentials(form).orElseFail(TokenEndpointError.InvalidClient)
         dpopJkt <- verifyDpopProof(request, config, credentials.clientId)
@@ -293,6 +293,18 @@ object TokenEndpointController extends Controller:
 
       case _ =>
         ZIO.none
+
+  /** The request's form, with RFC 6749 §3.2 held: request parameters MUST NOT be included more than once, and §5.2 answers a
+    * request that repeats one with `invalid_request`. Reading one of two values would let a request mean one thing to this server
+    * and another to whatever else reads it. `resource` is the exception: RFC 8707 §2 lets it be repeated, and each occurrence
+    * stays a field of its own.
+    */
+  private def readForm(request: Request): IO[TokenEndpointError, Form] =
+    for
+      body <- request.body.asString.orElseFail(TokenEndpointError.InvalidRequest)
+      parameters <- ZIO.fromOption(UrlEncodedParameters.parse(body)).orElseFail(TokenEndpointError.InvalidRequest)
+      _ <- ZIO.fail(TokenEndpointError.InvalidRequest).when((UrlEncodedParameters.repeated(parameters) - "resource").nonEmpty)
+    yield Form.fromStrings(parameters*)
 
   private def parseRequest(form: Form): IO[TokenEndpointError, TokenRequest] =
     form.get("grant_type").flatMap(_.stringValue) match

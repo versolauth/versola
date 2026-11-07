@@ -596,6 +596,17 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         BootstrapService.accountEndpointRecords.exists(_.inject == expectedBodyInjects),
       )
     },
+    test("only the password change is told which session it came from, and an absent sid is sent as empty") {
+      val withSession = BootstrapService.accountEndpointRecords.filter: endpoint =>
+        endpoint.inject.contains(InjectRule(InjectTarget.body, "sessionId", "has(token.sid) ? token.sid : ''"))
+      assertTrue(
+        withSession.map(endpoint => endpoint.method -> endpoint.path) == List("PATCH" -> "/settings/password"),
+        // Every other body-injecting endpoint is exactly the caller context, nothing more.
+        BootstrapService.accountEndpointRecords
+          .filter(endpoint => endpoint.method != "GET" && endpoint.path != "/settings/password")
+          .forall(_.inject.map(_.name) == Vector("userId", "clientId")),
+      )
+    },
     test("removing a passkey, starting to add one and signing a session out ask for a fresh sensitive sign-in") {
       val asking = BootstrapService.accountEndpointRecords.filter(_.stepUpAcr.isDefined)
       assertTrue(
