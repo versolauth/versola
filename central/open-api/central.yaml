@@ -73,12 +73,13 @@ info:
     Certificates central issues are recorded as `cert.enrolled`, `cert.renewed` and `cert.revoked`, by the client,
     the edge or the system.
 
-    The administrator is the one edge has authenticated. Edge adds four query parameters to every call and removes
+    The administrator is the one edge has authenticated. Edge adds query parameters to every call and removes
     any a client sent under the same names: `actorId` (the `sub` of the access token), `actorTenantId` (its tenant),
-    `actorClientId` (the client it was issued to) and `actorSessionId` (the session, when the token has one). A call that
+    `actorClientId` (the client it was issued to), `actorSessionId` (the session, when the token has one) and `actorIp`
+    (the address the call came from, where the edge's own `client-ip` setting finds one; it is the `ip` of the row). A call that
     carries none, from a caller that reaches central without edge, is recorded as made by a service. Central passes the administrator on to auth
-    as `actorId` (a query parameter, or a field of the body) on the calls it makes for the request, so that auth records
-    who asked.
+    as `actorId` (a query parameter, or a field of the body) and the address as `actorIp` (a query parameter) on the calls it
+    makes for the request, so that auth records who asked and from where.
 
     What the log holds about one user is read through `GET /users/audit` (`audit:read`, not `users:read`).
   license:

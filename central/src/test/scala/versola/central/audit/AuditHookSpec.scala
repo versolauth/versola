@@ -21,7 +21,13 @@ object AuditHookSpec extends ZIOSpecDefault:
   private val targetUser = "00000000-0000-0000-0000-000000000001"
 
   /** What the hook gave the log, and the context of the request at that moment (the tenant and the user agent come from there). */
-  private case class Recorded(draft: AuditDraft, context: AuditContext.State, clientId: Option[String], sessionId: Option[String]):
+  private case class Recorded(
+      draft: AuditDraft,
+      context: AuditContext.State,
+      clientId: Option[String],
+      sessionId: Option[String],
+      ip: Option[String],
+  ):
     def kind: String = draft.kind.value
     def details: Map[String, Json] = draft.details.toJson.fields.toMap
 
@@ -31,7 +37,7 @@ object AuditHookSpec extends ZIOSpecDefault:
       for
         state <- AuditContext.current
         auth <- logContext.get.map(_.get(Observability.auth))
-        _ <- seen.update(_ :+ Recorded(draft, state, auth.flatMap(_.clientId), auth.flatMap(_.sessionId)))
+        _ <- seen.update(_ :+ Recorded(draft, state, auth.flatMap(_.clientId), auth.flatMap(_.sessionId), auth.flatMap(_.ip)))
       yield ()
 
   private def settings(adminUserViewed: Boolean = true) =
@@ -275,6 +281,33 @@ object AuditHookSpec extends ZIOSpecDefault:
         recorded.head.draft.actor.contains((CentralAudit.Actors.Admin, Some(admin))),
         recorded.head.clientId.contains("central-admin"),
         recorded.head.sessionId.contains(session),
+      )
+    },
+    test("the address edge found for the caller is the ip of the event; one that is no address is not recorded and is counted") {
+      def count(reason: String) =
+        Metric.counter("audit_actor_missing_total").tagged(Set(MetricLabel("reason", reason))).value.map(_.count)
+      def withIp(value: String) =
+        asAdmin(post("/configuration/clients/web", """{"id":"c"}""")).updateURL(_.addQueryParam(AuditHook.ActorIpParam, value))
+      for
+        before <- count("invalid_ip")
+        (_, v4) <- serve(Routes(createClient -> ok()), withIp("203.0.113.7"))
+        (_, v6) <- serve(Routes(createClient -> ok()), withIp("2001:db8:1:2::1"))
+        afterValid <- count("invalid_ip")
+        (_, none) <- serve(Routes(createClient -> ok()), asAdmin(post("/configuration/clients/web", """{"id":"c"}""")))
+        (_, text) <- serve(Routes(createClient -> ok()), withIp("not-an-address"))
+        (_, almost) <- serve(Routes(createClient -> ok()), withIp("1.2.3"))
+        (_, listed) <- serve(Routes(createClient -> ok()), withIp("203.0.113.7, 198.51.100.1"))
+        afterInvalid <- count("invalid_ip")
+      yield assertTrue(
+        v4.forall(_.ip.contains("203.0.113.7")),
+        v6.forall(_.ip.contains("2001:db8:1:2::1")),
+        afterValid == before,
+        // no address: the event has none, and nothing is counted for it
+        none.forall(_.ip.isEmpty),
+        // an address that is none is treated as absent, the actor is still the one edge named, and the call is counted
+        List(text, almost, listed).forall(_.forall(_.ip.isEmpty)),
+        List(text, almost, listed).forall(_.head.draft.actor.contains((CentralAudit.Actors.Admin, Some(admin)))),
+        afterInvalid == before + 3,
       )
     },
     test("a request that is interrupted after its change committed is still recorded, as a failure that was interrupted") {
