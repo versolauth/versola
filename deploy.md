@@ -814,7 +814,6 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
     overflow      = "drop"        # drop | block: what a full writer queue does to an event (drop does not wait, block waits up to block-timeout for room)
     block-timeout = "2 seconds"
     events { admin-user-viewed = true }   # whether a look at a user (GET /users) is an event: the one read that is many
-    require-actor = false                 # true: a call of an administrator's route without a valid actor is refused (401)
   }
   ```
 
@@ -825,19 +824,19 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   design estimate, to be replaced with the figure measured under load.
 
   A call that reaches central without the query parameters edge adds (`actorId`, `actorTenantId`, `actorClientId`, `actorSessionId`,
-  and `actorIp`, the address of the caller) is not refused: it is recorded as made by a `service` with no id, and counted in `audit_actor_missing_total{reason}` (an alert is in
-  `dashboards/alerts/versola-audit-central.rules.yaml`). Edge adds them to every admin route since this release, and central's
-  bootstrap brings the registrations of the existing `central` resource up to date at start (it adds those inject rules to endpoints
-  an earlier release registered, removes the header rules an earlier form of this feature registered, and leaves what an operator added
-  alone); until edge has synced them, admin actions are recorded without an actor. Edge's sync is the refresh interval (5 minutes by
-  default).
+  and `actorIp`, the address of the caller) names no actor and is refused (below); it is counted in `audit_actor_missing_total{reason}`
+  (an alert is in `dashboards/alerts/versola-audit-central.rules.yaml`). Edge adds them to every admin route since this release, and
+  central's bootstrap brings the registrations of the existing `central` resource up to date at start (it adds those inject rules to
+  endpoints an earlier release registered, removes the header rules an earlier form of this feature registered, and leaves what an
+  operator added alone); until edge has synced them (its sync is the refresh interval, 5 minutes by default), admin calls through it are
+  refused for want of an actor.
 
-  `audit.require-actor` (optional; absent or `false` keeps the behaviour above) makes central refuse such a call with `401` instead of
-  recording it as a service's: every route of the admin API except the ones that are not an administrator's call (auth's syncs, the
-  certificate flows `/est/*` and `/users/registrations`, the `/service/*` tooling) needs a valid `actorId` (a user, or the client a
-  client-credentials token was issued to). The refusal is counted in `audit_actor_refused_total{reason}` (`absent`, `invalid`) and, for a
-  change, recorded as a denial with the reason `actor_required`. Turn it on once every edge has synced the registrations of the `central`
-  resource and nothing calls central around edge; a script that holds the central resource secret and calls central directly is refused.
+  A call of an administrator's route that names no valid actor is refused with `401` and the handler does not run: every route of the
+  admin API except the ones that are not an administrator's call (auth's syncs, the certificate flows `/est/*` and
+  `/users/registrations`, the `/service/*` tooling) needs a valid `actorId` (a user, or the client a client-credentials token was
+  issued to). The refusal is counted in `audit_actor_missing_total{reason}` (`absent`, `invalid`) and in `audit_actor_refused_total{reason}`
+  and, for a change, recorded as a denial with the reason `actor_required`. So a script that holds the central resource secret and calls
+  central directly is refused; it goes through edge, which states who it is.
 
   The `ip` of an `admin.*` row is the address edge found for the caller by its own `client-ip` setting (`socket`, the peer of the
   connection, or `forwarded`, the header named by `client-ip-header`), so it is only as right as that setting: with `socket` behind a

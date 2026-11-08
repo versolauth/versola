@@ -77,9 +77,9 @@ info:
     any a client sent under the same names: `actorId` (the `sub` of the access token), `actorTenantId` (its tenant),
     `actorClientId` (the client it was issued to), `actorSessionId` (the session, when the token has one) and `actorIp`
     (the address the call came from, where the edge's own `client-ip` setting finds one; it is the `ip` of the row). A call that
-    carries none, from a caller that reaches central without edge, is recorded as made by a service, unless the deployment sets
-    `audit.require-actor`: then every route of this API except the ones that are not an administrator's call (auth's syncs, the
-    certificate flows, the `/service` tooling) refuses it with `401`. Central passes the administrator on to auth
+    carries none, or an `actorId` that is no user and no client, from a caller that reaches central without edge, names no actor: every
+    route of this API except the ones that are not an administrator's call (auth's syncs, the certificate flows, the `/service`
+    tooling) refuses it with `401`. Central passes the administrator on to auth
     as `actorId` (a query parameter, or a field of the body) and the address as `actorIp` (a query parameter) on the calls it
     makes for the request, so that auth records who asked and from where.
 

@@ -29,17 +29,17 @@ import zio.logging.logContext
   * Edge says so: it adds the query parameters `actorId` (the `sub` of the verified token), `actorTenantId`, `actorClientId` and
   * `actorSessionId` to every call, and `actorIp`, the address the call came from, where the edge's own `client-ip` setting finds one
   * (see `BootstrapService.actorInjects`), removing any a client sent. Query parameters because
-  * they work on every method, and because a `userId` field of a body is the target user on the user routes. A call without them is
-  * not refused, which would break a deployment whose edge has not yet read the new registrations and every direct caller of
-  * central: it is recorded as made by a `service`, with no id, and counted in `audit_actor_missing_total`. A value that is not of the
-  * type it names (an `actorId` that is no user id, an `actorIp` that is no address) is treated as absent and counted too. The service of the request also finds the
-  * actor in the [[AuditContext]], which is how `AuthClient` tells auth on whose behalf it calls.
+  * they work on every method, and because a `userId` field of a body is the target user on the user routes. A call without them, or
+  * with an `actorId` that is no user id and no client, names no actor: it is counted in `audit_actor_missing_total` (`absent`,
+  * `invalid`) and refused, see below. An `actorIp` that is no address is treated as absent and counted too (`invalid_ip`); it costs the
+  * row its `ip`, not the call. The service of the request also finds the actor in the [[AuditContext]], which is how `AuthClient` tells
+  * auth on whose behalf it calls.
   *
-  * ==Requiring an actor==
-  * With `audit.require-actor` on, a call of an administrator's route (any route that is not declared [[Entry.Internal]], the one
-  * declaration that says a route has no administrator) that names no valid actor is refused with `401` and counted in
-  * `audit_actor_refused_total{reason}`, and the handler does not run. A refused change is recorded as a denial (`actor_required`), like any
-  * other `401` of a recorded route. Off, which is the default, everything above holds.
+  * ==An actor is required==
+  * A call of an administrator's route (any route that is not declared [[Entry.Internal]], the one declaration that says a route has no
+  * administrator) that names no valid actor is refused with `401`, the status of any unauthenticated call, and the handler does not run.
+  * The refusal is counted in `audit_actor_refused_total{reason}`; a refused change is recorded as a denial (`actor_required`, actor
+  * `service`), like any other `401` of a recorded route.
   */
 object AuditHook:
 
@@ -73,9 +73,9 @@ object AuditHook:
     entry match
       case entry: Entry.Change => recording(handler, pattern, Some(entry), None)
       case entry: Entry.Read => recording(handler, pattern, None, Some(entry))
-      // An administrator's read that nobody records needs no event, only an actor where the deployment requires one.
+      // An administrator's read that nobody records needs no event, only an actor.
       case Entry.Unrecorded => requiringActor(handler)
-      // An internal route is not an administrator's call: it has none to require.
+      // An internal route is not an administrator's call: it has no actor to require.
       case Entry.Internal => handler
 
   /** Who made the call, from what edge put in it. */
@@ -121,27 +121,19 @@ object AuditHook:
     // An address that is no address is not recorded, and is counted as an actor that is not one is.
     CentralAudit.actorMissing(missing) *> CentralAudit.actorMissing(Option.when(stated.isDefined && ip.isEmpty)("invalid_ip")).as(actor)
 
-  /** What a call that names no valid actor gets where `audit.require-actor` is on: the status of any unauthenticated call. The error
-    * code is the request's, so a recorded call says why it was denied. */
+  /** What a call that names no valid actor gets: the status of any unauthenticated call. The error code is the request's, so a recorded
+    * call says why it was denied. */
   private def refusal(actor: Actor): UIO[Response] =
-    Observability.setError("actor_required", Some("the call names no valid actor and audit.require-actor is on")) *>
+    Observability.setError("actor_required", Some("the call names no valid actor")) *>
       ZIO.foreachDiscard(actor.missing)(CentralAudit.actorRefused).as(Response.unauthorized)
 
-  private def requiresActor(actor: Actor): URIO[CentralConfig, Boolean] =
-    ZIO.serviceWith[CentralConfig](config => config.audit.requireActor && !actor.named)
-
-  /** An administrator's route that is not recorded: served as it is, unless `audit.require-actor` is on and the call has no actor. With
-    * it off (the default) nothing is read from the request. */
-  private def requiringActor[Env1 <: CentralConfig](
+  /** An administrator's route that is not recorded: served as it is, unless the call names no valid actor. */
+  private def requiringActor[Env1](
       handler: Handler[Env1, Response, Request, Response],
   ): Handler[Env1, Response, Request, Response] =
     Handler.scoped[Env1]:
       Handler.fromFunctionZIO[Request]: request =>
-        ZIO.serviceWithZIO[CentralConfig]: config =>
-          if !config.audit.requireActor then handler(request)
-          else
-            actorOf(request).flatMap: actor =>
-              requiresActor(actor).flatMap(if _ then refusal(actor) else handler(request))
+        actorOf(request).flatMap(actor => if actor.named then handler(request) else refusal(actor))
 
   private def recording[Env1 <: AuditEvents & CentralConfig](
       handler: Handler[Env1, Response, Request, Response],
@@ -153,7 +145,6 @@ object AuditHook:
       Handler.fromFunctionZIO[Request]: request =>
         for
           actor <- actorOf(request)
-          refused <- requiresActor(actor)
           initial = AuditContext.State(
             tenantId = actor.tenantId.map(_.toString),
             actor = Some((actor.actorType, actor.id)),
@@ -172,9 +163,9 @@ object AuditHook:
           response <- Audit.tenantOfTarget.locally(None):
             AuditContext.reset(initial):
               ZIO.uninterruptibleMask: restore =>
-                // A call without the actor the deployment requires is answered here and the handler is not run; the answer is recorded
-                // (a denial) like any other the route gives.
-                restore(if refused then refusal(actor) else handler(request)).exit.flatMap: exit =>
+                // A call that names no valid actor is answered here and the handler is not run; the answer is recorded (a denial) like any
+                // other the route gives.
+                restore(if actor.named then handler(request) else refusal(actor)).exit.flatMap: exit =>
                   val status = exit match
                     case Exit.Success(response) => response.status
                     case Exit.Failure(cause) => cause.failureOption.fold(Status.InternalServerError)(_.status)
