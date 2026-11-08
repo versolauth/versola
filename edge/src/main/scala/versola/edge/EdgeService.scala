@@ -1264,6 +1264,11 @@ object EdgeService:
         "headersAll" -> headersMap.asJava,
       )
       parsedBody.foreach(body => requestData("body") = JsonJava.toJava(body))
+      // The caller's address, where this edge's own configuration says what it is (`client-ip`): for a rule that tells an upstream
+      // where the call came from (central's audit log). Absent on the mutual-TLS listener, where the caller is a certificate and
+      // the address behind an L4 proxy is not known, and where the setting does not find one; a rule reads it with `has`.
+      Option.when(request.remoteCertificate.isEmpty)(ClientAddress.trustedLiteral(request, config.clientIp, config.clientIpHeader)).flatten
+        .foreach(address => requestData("clientIp") = address)
       Map(
         "token" -> JsonJava.toJava(claims),
         "user" -> JsonJava.toJava(userInfo),

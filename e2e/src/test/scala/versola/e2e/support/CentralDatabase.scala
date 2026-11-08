@@ -53,6 +53,7 @@ object CentralDatabase:
       targetType: Option[String],
       targetId: Option[String],
       details: String,
+      ip: Option[String],
   )
 
   /** The rows of the audit log that are about `targetId`, oldest first. The log has no read API for what administrators did to
@@ -68,7 +69,7 @@ object CentralDatabase:
         try
           val statement = connection
             .prepareStatement(
-              "SELECT kind, outcome, reason, severity, actor_type, actor_id, tenant_id, user_id::text, target_type, target_id, details::text " +
+              "SELECT kind, outcome, reason, severity, actor_type, actor_id, tenant_id, user_id::text, target_type, target_id, details::text, host(ip) " +
                 "FROM central_audit_event WHERE target_id = ? ORDER BY at, id",
             ).nn
           try
@@ -88,6 +89,7 @@ object CentralDatabase:
                 targetType = Option(result.getString(9)),
                 targetId = Option(result.getString(10)),
                 details = result.getString(11).nn,
+                ip = Option(result.getString(12)),
               )
             rows.result()
           finally statement.close()
