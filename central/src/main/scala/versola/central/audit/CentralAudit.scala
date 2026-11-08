@@ -67,8 +67,8 @@ object CentralAudit:
 
   private val actorRefused = Metric.counter("audit_actor_refused_total")
 
-  /** A call of an administrator's route refused because `audit.require-actor` is on and it named no valid actor: `absent` (edge added
-    * none), `invalid` (what it named is no user and no client), `unsigned` or `invalid_signature`. */
+  /** A call of an administrator's route refused because it named no valid actor: `absent` (edge added none), `invalid` (what it
+    * named is no user and no client), `unsigned` or `invalid_signature`. */
   def actorRefused(reason: String): UIO[Unit] = actorRefused.tagged(Set(MetricLabel("reason", reason))).increment
 
   private val targetMissingCounter = Metric.counter("audit_event_without_target_total")

@@ -100,7 +100,7 @@ object AuditRoutesSpec extends ZIOSpecDefault:
         ),
       )
     },
-    test("the routes that are exempt from audit.require-actor are exactly these: a new one is a decision, made here") {
+    test("the routes that are exempt from the requirement of an actor are exactly these: a new one is a decision, made here") {
       val internal = entries.collect { case ((method, path), Entry.Internal) => method.name -> path }.toSet
       assertTrue(
         internal == Set(

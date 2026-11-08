@@ -80,9 +80,9 @@ info:
     `actorSignature` is a compact JWS under the edge's own key (the public half is in the edge's registration) over the method,
     the path and every other query parameter of the call, valid for 60 seconds. Only what a registered first-party edge signed is
     taken as said by an edge: a call that states an actor without a signature, or with one that does not verify, is treated as one
-    that states none. A call that carries none, from a caller that reaches central without edge, is recorded as made by a service, unless the deployment sets
-    `audit.require-actor`: then every route of this API except the ones that are not an administrator's call (auth's syncs, the
-    certificate flows, the `/service` tooling) refuses it with `401`. Central passes the administrator on to auth
+    that states none. A call that names no actor (none, or an `actorId` that is no user and no client, or one no edge signed), from a
+    caller that reaches central without edge, is refused: every route of this API except the ones that are not an administrator's call
+    (auth's syncs, the certificate flows, the `/service` tooling) answers it `401`. Central passes the administrator on to auth
     as `actorId` (a query parameter, or a field of the body) and the address as `actorIp` (a query parameter) on the calls it
     makes for the request, so that auth records who asked and from where.
 

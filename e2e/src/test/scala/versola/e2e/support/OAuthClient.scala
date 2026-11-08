@@ -486,6 +486,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
   private val centralAuthorization = Authorization.Basic("central", config.resourceSecret)
   private val edgeAuthorization = Authorization.Basic("edge", config.edgeInternalSecret)
 
+  /** A call to central's admin API as edge would forward it: central takes who made it only from a call an edge signed. */
+  private def centralSend(request: Request): Task[Response] =
+    EdgeSigning.forwarded(config, request).flatMap(Client.batched(_).provide(ZLayer.succeed(client)))
+
   /** Central's management API, as the caller this client registers clients through -- for a
     * spec that needs a tenant of its own, see [[SecurityProfiles.withTenant]]. */
   def central: CentralApi = CentralApi(client, config, Some("central" -> config.resourceSecret))
@@ -1071,9 +1075,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
     ).flatten
     val body = Body.fromString(Json.Obj(fields*).toJson)
     val req = Request.post(s"${config.centralUrl}/users", body)
-      .addHeader(centralAuthorization)
+      .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
       .addHeader(Header.ContentType(MediaType.application.json))
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+    centralSend(req).flatMap: resp =>
       resp.body.asString.flatMap: bodyStr =>
         if resp.status.isSuccess then
           ZIO.fromEither(bodyStr.fromJson[OAuthClient.CreateUserResponseBody])
@@ -1105,9 +1109,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
     for
       base <- ZIO.fromEither(URL.decode(s"${config.centralUrl}/users"))
         .mapError(error => RuntimeException(s"Invalid Central users URL: $error"))
-      response <- Client.batched(
-        Request.get(base.addQueryParam(queryName, value)).addHeader(centralAuthorization),
-      ).provide(ZLayer.succeed(client))
+      response <- centralSend(
+        Request.get(base.addQueryParam(queryName, value)).addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query)),
+      )
       body <- response.body.asString
       users <- if response.status.isSuccess then
         ZIO.fromEither(body.fromJson[OAuthClient.UserSearchResponseBody])
@@ -1125,8 +1129,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
   /** DELETE /service/users — deletes a user via the Central service API (non-prod only). */
   def deleteUser(userId: java.util.UUID): Task[Unit] =
     val req = Request.delete(s"${config.centralUrl}/service/users?id=$userId")
-      .addHeader(centralAuthorization)
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
+    centralSend(req).flatMap: resp =>
       if resp.status.isSuccess then ZIO.unit
       else
         resp.body.asString.flatMap: body =>
@@ -1137,8 +1141,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
     */
   def invalidateUserSessions(userId: java.util.UUID): Task[Unit] =
     val req = Request.delete(s"${config.centralUrl}/users/sessions?userId=$userId")
-      .addHeader(centralAuthorization)
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
+    centralSend(req).flatMap: resp =>
       if resp.status.isSuccess then ZIO.unit
       else
         resp.body.asString.flatMap: body =>
@@ -1157,9 +1161,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       Json.Obj("userId" -> Json.Str(userId.toString), "password" -> Json.Str(password)).toJson,
     )
     val req = Request.post(s"${config.centralUrl}/users/password/set", body)
-      .addHeader(centralAuthorization)
+      .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
       .addHeader(Header.ContentType(MediaType.application.json))
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+    centralSend(req).flatMap: resp =>
       if resp.status.isSuccess then ZIO.sleep(1.second).withClock(Clock.ClockLive)
       else
         resp.body.asString.flatMap: bodyStr =>
@@ -1172,9 +1176,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val body =
       Body.fromString(Json.Obj("userId" -> Json.Str(userId.toString), "expiresInSeconds" -> Json.Num(3600), "channel" -> Json.Str("show")).toJson)
     val req = Request.post(s"${config.centralUrl}/users/password/reset", body)
-      .addHeader(centralAuthorization)
+      .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
       .addHeader(Header.ContentType(MediaType.application.json))
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+    centralSend(req).flatMap: resp =>
       resp.body.asString.flatMap: bodyStr =>
         if !resp.status.isSuccess then ZIO.fail(RuntimeException(s"resetUserPassword failed: status=${resp.status} body=$bodyStr"))
         else
@@ -1197,9 +1201,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       ).toJson,
     )
     val req = Request.patch(s"${config.centralUrl}/users/roles", body)
-      .addHeader(centralAuthorization)
+      .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
       .addHeader(Header.ContentType(MediaType.application.json))
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+    centralSend(req).flatMap: resp =>
       if resp.status.isSuccess then ZIO.unit
       else
         resp.body.asString.flatMap: bodyStr =>
@@ -1218,9 +1222,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       ).toJson,
     )
     val req = Request.patch(s"${config.centralUrl}/users/roles", body)
-      .addHeader(centralAuthorization)
+      .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
       .addHeader(Header.ContentType(MediaType.application.json))
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+    centralSend(req).flatMap: resp =>
       if resp.status.isSuccess then ZIO.unit
       else
         resp.body.asString.flatMap: bodyStr =>
@@ -1327,9 +1331,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
     ).toJson
     val (kindPath, typed) = ClientEndpoints.registration(flat.fromJson[Json.Obj].getOrElse(Json.Obj()))
     val req = Request.post(s"${config.centralUrl}$kindPath", Body.fromString(typed.toJson))
-      .addHeader(centralAuthorization)
+      .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
       .addHeader(Header.ContentType(MediaType.application.json))
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterClientResult.parse).tap:
+    centralSend(req).flatMap(RegisterClientResult.parse).tap:
       case _: RegisterClientResult.Success => redirectUris.headOption.fold(ZIO.unit)(awaitKnownToAuth(clientId, _))
       case _: RegisterClientResult.Failure => ZIO.unit
 
@@ -1367,9 +1371,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
   def updateClient(body: Json.Obj): Task[Unit] =
     def attempt(kindPath: String, typed: Json.Obj) =
       val req = Request.put(s"${config.centralUrl}$kindPath", Body.fromString(typed.toJson))
-        .addHeader(centralAuthorization)
+        .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
         .addHeader(Header.ContentType(MediaType.application.json))
-      Client.batched(req).provide(ZLayer.succeed(client))
+      centralSend(req)
     // The update names a client, not its kind: the first endpoint that does not call it another's.
     ZIO.foldLeft(ClientEndpoints.updates(body))(Option.empty[Response]):
       case (done @ Some(resp), _) if resp.status != Status.Conflict => ZIO.succeed(done)
@@ -1403,9 +1407,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       ).toJson,
     )
     val req = Request.post(s"${config.centralUrl}/configuration/resources", body)
-      .addHeader(centralAuthorization)
+      .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
       .addHeader(Header.ContentType(MediaType.application.json))
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+    centralSend(req).flatMap: resp =>
       if resp.status.isSuccess then ZIO.unit
       else
         resp.body.asString.flatMap: bodyStr =>
@@ -1426,9 +1430,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       s"""{"tenantId":"$tenantId","type":"$typeName","description":{},"schema":$schema}""",
     )
     val req = Request.post(s"${config.centralUrl}/configuration/authorization-detail-types", body)
-      .addHeader(centralAuthorization)
+      .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
       .addHeader(Header.ContentType(MediaType.application.json))
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterAuthorizationDetailTypeResult.parse)
+    centralSend(req).flatMap(RegisterAuthorizationDetailTypeResult.parse)
 
   /** DELETE /configuration/authorization-detail-types — removes an RFC 9396 authorization detail type. */
   def deleteAuthorizationDetailType(
@@ -1437,8 +1441,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
   ): Task[Unit] =
     val req = Request.delete(
       s"${config.centralUrl}/configuration/authorization-detail-types?tenantId=$tenantId&type=$typeName",
-    ).addHeader(centralAuthorization)
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+    ).addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
+    centralSend(req).flatMap: resp =>
       if resp.status.isSuccess then ZIO.unit
       else
         resp.body.asString.flatMap: body =>
@@ -1447,8 +1451,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
   /** GET /configuration/server-metadata — reads the current Central server metadata document. */
   def serverMetadata: Task[Json.Obj] =
     val req = Request.get(s"${config.centralUrl}/configuration/server-metadata")
-      .addHeader(centralAuthorization)
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
+    centralSend(req).flatMap: resp =>
       resp.body.asString.flatMap: body =>
         if resp.status.isSuccess then
           ZIO.fromEither(body.fromJson[Json.Obj])
@@ -1474,7 +1478,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
   /** POST /service/users/outbox/flush — forces central to dispatch all pending user-outbox events to auth (non-prod only). */
   def flushUserOutbox(): Task[Unit] =
     val req = Request.post(s"${config.centralUrl}/service/users/outbox/flush", Body.empty)
-      .addHeader(centralAuthorization)
+      .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
     Client.batched(req)
       .provide(ZLayer.succeed(client))
       .flatMap: resp =>
@@ -1488,7 +1492,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
     */
   def syncConfiguration(): Task[Unit] =
     val req = Request.post(s"${config.centralUrl}/service/configuration/sync", Body.empty)
-      .addHeader(centralAuthorization)
+      .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
     Client.batched(req)
       .provide(ZLayer.succeed(client))
       .flatMap: resp =>
@@ -1588,9 +1592,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
          |  "logoDark": ${logoDark.fold("null")(url => s"\"$url\"")}
          |}""".stripMargin
     val req = Request.put(s"${config.centralUrl}/configuration/challenges/challenge-settings", Body.fromString(bodyStr))
-      .addHeader(centralAuthorization)
+      .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
       .addHeader(Header.ContentType(MediaType.application.json))
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+    centralSend(req).flatMap: resp =>
       if resp.status.isSuccess then ZIO.unit
       else
         resp.body.asString.flatMap: body =>
@@ -1601,8 +1605,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
     */
   def generateJwksKey(alg: String): Task[String] =
     val req = Request.post(s"${config.centralUrl}/configuration/jwks/generate?alg=$alg", Body.empty)
-      .addHeader(centralAuthorization)
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
+    centralSend(req).flatMap: resp =>
       resp.body.asString.flatMap: body =>
         if resp.status.isSuccess then
           ZIO.fromOption(body.fromJson[Json.Obj].toOption.flatMap(_.fields.collectFirst { case ("kid", Json.Str(k)) => k }))
@@ -1614,8 +1618,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
     */
   def deleteJwksKey(kid: String): Task[Unit] =
     val req = Request.delete(s"${config.centralUrl}/configuration/jwks?kid=$kid")
-      .addHeader(centralAuthorization)
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
+    centralSend(req).flatMap: resp =>
       if resp.status.isSuccess then ZIO.unit
       else
         resp.body.asString.flatMap: body =>

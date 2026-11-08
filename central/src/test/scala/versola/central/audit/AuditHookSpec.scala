@@ -41,10 +41,8 @@ object AuditHookSpec extends ZIOSpecDefault:
         _ <- seen.update(_ :+ Recorded(draft, state, auth.flatMap(_.clientId), auth.flatMap(_.sessionId), auth.flatMap(_.ip)))
       yield ()
 
-  private def settings(adminUserViewed: Boolean = true, requireActor: Boolean = false) =
-    TestCentralConfig.config.copy(audit =
-      CentralConfig.AuditConfig(events = CentralConfig.AuditConfig.Events(adminUserViewed = adminUserViewed), requireActor = requireActor),
-    )
+  private def settings(adminUserViewed: Boolean = true) =
+    TestCentralConfig.config.copy(audit = CentralConfig.AuditConfig(events = CentralConfig.AuditConfig.Events(adminUserViewed = adminUserViewed)))
 
   private def asAdmin(request: Request, tenant: String = "default", client: String = "central-admin"): Request =
     request.updateURL(
@@ -95,7 +93,6 @@ object AuditHookSpec extends ZIOSpecDefault:
   private def post(path: String, body: String) = Request.post(URL(Path.decode(path)), Body.fromString(body))
 
   private val bare = post("/configuration/clients/web", """{"id":"c"}""")
-  private val strict = settings(requireActor = true)
   private val syncClients = Method.GET / "configuration" / "clients" / "sync"
   private def refusedCount(reason: String) =
     Metric.counter("audit_actor_refused_total").tagged(Set(MetricLabel("reason", reason))).value.map(_.count)
@@ -128,12 +125,12 @@ object AuditHookSpec extends ZIOSpecDefault:
           after == before,
         )
       },
-      test("a call that states an actor and is not signed is a service's, whatever it states, and is counted as unsigned") {
+      test("a call that states an actor and is not signed names no actor, whatever it states: it is refused and counted as unsigned") {
         for
           before <- missingCount("unsigned")
           (response, recorded) <- serve(Routes(createClient -> ok()), signedRequest, signing = false)
           after <- missingCount("unsigned")
-        yield assertTrue(response.status == Status.Ok, asService(recorded), after == before + 1)
+        yield assertTrue(response.status == Status.Unauthorized, asService(recorded), after == before + 1)
       },
       test("a parameter changed after the call was signed makes the signature invalid: the call is a service's") {
         def tampered(name: String, value: String) =
@@ -199,12 +196,12 @@ object AuditHookSpec extends ZIOSpecDefault:
     )
 
   private def requireActorSuite =
-    suite("audit.require-actor")(
+    suite("a call that names no valid actor")(
       test("a change without an actor is answered 401 and the handler does not run; it is recorded as a denial and counted") {
         for
           before <- refusedCount("absent")
           (counter, run) <- ran
-          (response, recorded) <- serve(Routes(createClient -> run), bare, strict)
+          (response, recorded) <- serve(Routes(createClient -> run), bare)
           runs <- counter.get
           after <- refusedCount("absent")
         yield assertTrue(
@@ -221,8 +218,8 @@ object AuditHookSpec extends ZIOSpecDefault:
         val viewed = Request.get(URL(Path.decode("/users")).addQueryParam("id", targetUser))
         for
           (counter, run) <- ran
-          (user, userRecorded) <- serve(Routes(findUsers -> run), viewed, strict)
-          (listed, listedRecorded) <- serve(Routes(listClients -> run), Request.get(URL(Path.decode("/configuration/clients"))), strict)
+          (user, userRecorded) <- serve(Routes(findUsers -> run), viewed)
+          (listed, listedRecorded) <- serve(Routes(listClients -> run), Request.get(URL(Path.decode("/configuration/clients"))))
           runs <- counter.get
         yield assertTrue(
           user.status == Status.Unauthorized,
@@ -236,7 +233,7 @@ object AuditHookSpec extends ZIOSpecDefault:
         for
           before <- refusedCount("unsigned")
           (counter, run) <- ran
-          (response, recorded) <- serve(Routes(createClient -> run), asAdmin(bare), strict, signing = false)
+          (response, recorded) <- serve(Routes(createClient -> run), asAdmin(bare), signing = false)
           runs <- counter.get
           after <- refusedCount("unsigned")
         yield assertTrue(
@@ -250,7 +247,7 @@ object AuditHookSpec extends ZIOSpecDefault:
         for
           before <- refusedCount("invalid")
           (counter, run) <- ran
-          (response, _) <- serve(Routes(createClient -> run), bare.updateURL(_.addQueryParam(AuditHook.ActorIdParam, "someone")), strict)
+          (response, _) <- serve(Routes(createClient -> run), bare.updateURL(_.addQueryParam(AuditHook.ActorIdParam, "someone")))
           runs <- counter.get
           after <- refusedCount("invalid")
         yield assertTrue(response.status == Status.Unauthorized, runs == 0, after == before + 1)
@@ -258,9 +255,9 @@ object AuditHookSpec extends ZIOSpecDefault:
       test("a call with a valid actor, an administrator or a client, is served and recorded as before") {
         for
           (counter, run) <- ran
-          (byAdmin, adminRecorded) <- serve(Routes(createClient -> run), asAdmin(bare), strict)
-          (byClient, clientRecorded) <- serve(Routes(createClient -> run), asAdmin(bare, client = admin), strict)
-          (listed, _) <- serve(Routes(listClients -> run), asAdmin(Request.get(URL(Path.decode("/configuration/clients")))), strict)
+          (byAdmin, adminRecorded) <- serve(Routes(createClient -> run), asAdmin(bare))
+          (byClient, clientRecorded) <- serve(Routes(createClient -> run), asAdmin(bare, client = admin))
+          (listed, _) <- serve(Routes(listClients -> run), asAdmin(Request.get(URL(Path.decode("/configuration/clients")))))
           runs <- counter.get
         yield assertTrue(
           byAdmin.status == Status.Ok,
@@ -275,23 +272,9 @@ object AuditHookSpec extends ZIOSpecDefault:
       test("a route declared internal is served without an actor: it has no administrator") {
         for
           (counter, run) <- ran
-          (response, recorded) <- serve(Routes(syncClients -> run), Request.get(URL(Path.decode("/configuration/clients/sync"))), strict)
+          (response, recorded) <- serve(Routes(syncClients -> run), Request.get(URL(Path.decode("/configuration/clients/sync"))))
           runs <- counter.get
         yield assertTrue(response.status == Status.Ok, runs == 1, recorded.isEmpty)
-      },
-      test("with it off, which is the default, a call without an actor is served and recorded as a service's, as it always was") {
-        for
-          (counter, run) <- ran
-          (response, recorded) <- serve(Routes(createClient -> run), bare)
-          (listed, _) <- serve(Routes(listClients -> run), Request.get(URL(Path.decode("/configuration/clients"))))
-          runs <- counter.get
-        yield assertTrue(
-          response.status == Status.Ok,
-          listed.status == Status.Ok,
-          runs == 2,
-          recorded.head.draft.actor.contains((CentralAudit.Actors.Service, None)),
-          recorded.head.draft.outcome == AuditOutcome.success,
-        )
       },
     )
 
@@ -455,21 +438,26 @@ object AuditHookSpec extends ZIOSpecDefault:
         revealed.map(_.kind) == List("admin.user-password.action:reset", "admin.secret.revealed"),
       )
     },
-    test("a call without the actor parameters is recorded as a service's with no id and counted; one whose actor is its own client as the client's") {
+    test(
+      "a call without the actor parameters is refused, recorded as a denial of a service's with no id and counted; one whose actor is its own client is the client's",
+    ) {
       val bare = post("/configuration/clients/web", """{"id":"c"}""")
       def count(reason: String) =
         Metric.counter("audit_actor_missing_total").tagged(Set(MetricLabel("reason", reason))).value.map(_.count)
       for
         absentBefore <- count("absent")
         invalidBefore <- count("invalid")
-        (_, bareRecorded) <- serve(Routes(createClient -> ok()), bare)
+        (bareResponse, bareRecorded) <- serve(Routes(createClient -> ok()), bare)
         absentAfter <- count("absent")
-        (_, notAUser) <- serve(Routes(createClient -> ok()), bare.updateURL(_.addQueryParam(AuditHook.ActorIdParam, "someone")))
+        (notAUserResponse, notAUser) <- serve(Routes(createClient -> ok()), bare.updateURL(_.addQueryParam(AuditHook.ActorIdParam, "someone")))
         invalidAfter <- count("invalid")
         (_, clientRecorded) <- serve(Routes(createClient -> ok()), asAdmin(bare, client = admin))
         clientAfter <- count("invalid")
         (_, userAgent) <- serve(Routes(createClient -> ok()), asAdmin(bare).addHeader(Header.Custom("User-Agent", "Console/1")))
       yield assertTrue(
+        bareResponse.status == Status.Unauthorized,
+        notAUserResponse.status == Status.Unauthorized,
+        bareRecorded.head.draft.outcome == AuditOutcome.denied,
         bareRecorded.head.draft.actor.contains((CentralAudit.Actors.Service, None)),
         bareRecorded.head.context.tenantId.isEmpty,
         absentAfter == absentBefore + 1,
@@ -549,16 +537,17 @@ object AuditHookSpec extends ZIOSpecDefault:
     test("a parameter an attacker makes enormous does not make an enormous row") {
       val long = "x" * 10000
       for
-        (_, recorded) <- serve(
+        (_, recorded) <- serve(Routes(createClient -> named(long)), asAdmin(post("/configuration/clients/web", "{}"), tenant = long))
+        // an actor id that is no user id is no actor: the call is refused, and the row does not hold what was written
+        (refused, refusedRecorded) <- serve(
           Routes(createClient -> named(long)),
-          post("/configuration/clients/web", "{}")
-            .updateURL(_.addQueryParam(AuditHook.ActorIdParam, long).addQueryParam(AuditHook.ActorTenantParam, long)),
+          post("/configuration/clients/web", "{}").updateURL(_.addQueryParam(AuditHook.ActorIdParam, long)),
         )
       yield assertTrue(
-        // an actor id that is no user id is no actor
-        recorded.head.draft.actor.contains((CentralAudit.Actors.Service, None)),
         recorded.head.context.tenantId.exists(_.length <= 256),
         recorded.head.draft.target.exists(_._2.length <= 256),
+        refused.status == Status.Unauthorized,
+        refusedRecorded.head.draft.actor.contains((CentralAudit.Actors.Service, None)),
       )
     },
     test("reads nobody records and internal routes record nothing, and are served as before") {

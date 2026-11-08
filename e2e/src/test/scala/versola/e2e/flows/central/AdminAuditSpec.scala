@@ -161,7 +161,7 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
         stored.forall(row => !row.ip.contains(forgedIp)),
       )
     },
-    test("a call that reaches central around edge and states an actor is recorded as a service's: only what an edge signed is believed") {
+    test("a call that reaches central around edge and states an actor is refused: only what an edge signed is believed") {
       for
         c <- ZIO.service[E2EConfig]
         client <- ZIO.service[Client]
@@ -175,19 +175,15 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
           )
           .addHeader(Header.ContentType(MediaType.application.json))
           .addHeader(Header.Authorization.Basic("central", c.resourceSecret))
-        created <- client.batched(request)
-        _ <- client.batched(
-          Request.delete(base.copy(path = Path.decode("/configuration/clients")).addQueryParams(QueryParams("clientId" -> id, "actorId" -> forged)))
-            .addHeader(Header.Authorization.Basic("central", c.resourceSecret)),
-        )
-        stored <- rows(id)(_.exists(_.kind == "admin.client.delete"))
+        refused <- client.batched(request)
+        // one that states nobody at all is refused too
+        anonymous <- client.batched(request.updateURL(_.setQueryParams(QueryParams.empty)))
+        exists <- ZIO.serviceWithZIO[CentralApi](_.get("/configuration/clients", "tenantId" -> Fixtures.suiteTenant))
       yield assertTrue(
-        // the call is served: nothing is refused unless the deployment asks for it (`audit.require-actor`)
-        created.status == Status.Created,
-        stored.nonEmpty,
-        // but whoever it says it is, it is a service with no id, no tenant and no address
-        stored.forall(row => row.actorType == "service" && row.actorId.isEmpty && !row.tenantId.contains("someone-elses")),
-        stored.forall(row => !row.ip.contains(forgedAddress)),
+        refused.status == Status.Unauthorized,
+        anonymous.status == Status.Unauthorized,
+        // the change did not happen
+        !exists.body.contains(id),
       )
     },
     test("rotating a client secret is of high severity and reveals a secret once more") {

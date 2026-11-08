@@ -2258,13 +2258,6 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |  max-attempts = 5
        |}
        |
-       |# Audit log of administrators' actions (deploy.md, "Audit log"); every key is optional. `require-actor = true` refuses (401) a call of
-       |# an administrator's route that does not carry the actor edge adds, instead of recording it as made by a service: turn it on once
-       |# every edge has synced the registrations of the `central` resource and nothing calls central around edge.
-       |audit {
-       |  require-actor = false
-       |}
-       |
        |postgres {
        |  url = "$centralPgUrl"
        |  user = "$centralPgUser"${pgSslRootCertLine}
