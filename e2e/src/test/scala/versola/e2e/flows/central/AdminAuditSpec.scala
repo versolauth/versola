@@ -181,10 +181,14 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
         created <- asAdmin.post("/users", Fixtures.user(login = Some(login)))
         id <- created.stringAt("id")
         patched <- asAdmin.patch("/users", Json.Obj("id" -> Json.Str(id), "login" -> Json.Str(renamed)))
+        // The summary of the administrators' changes and the list of events are two reads, one after the other, so a row that
+        // lands between them is in the summary and not yet in the list: wait for both to hold the update.
         first <- reportWhere(asAdmin, id)(result =>
-          adminActions(result).map(actions =>
-            actions.exists(_.str("kind").contains("admin.user.update")) && actions.exists(_.str("kind").contains("admin.user.create")),
-          ),
+          result.obj.map: body =>
+            val actions = body.obj("summary").fold(Chunk.empty[Json.Obj])(_.objs("adminActions"))
+            val listed = body.objs("events").filter(_.str("source").contains("central")).flatMap(_.str("kind"))
+            actions.exists(_.str("kind").contains("admin.user.update")) && actions.exists(_.str("kind").contains("admin.user.create")) &&
+            listed.contains("admin.user.update"),
         )
         body <- first.obj
         actions <- adminActions(first)
