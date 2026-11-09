@@ -685,7 +685,7 @@ object SecretSchema:
     * applied for a deployment (a deployment with no record is revision 1) and compare `since`
     * with that; this file only says what the current content is. Removing or renaming a secret
     * is not described by `since`. */
-  val Revision = 1
+  val Revision = 2
 
   /** `since` of everything the schema started with: the secrets that existed before it had a
     * revision at all. Deliberately a constant of its own and not `Revision`, which moves. */
@@ -767,7 +767,7 @@ object SecretSchema:
     base64Url("DPOP_NONCES_SECRET", List("auth"), 32),
     // Keys the hash of a phone number or address in the antifraud event log. A new one does no harm beyond
     // events before and after it no longer matching, so it stays `generate`.
-    base64Url("ANTIFRAUD_SUBJECT_SECRET", List("auth"), 32),
+    base64Url("ANTIFRAUD_SUBJECT_SECRET", List("auth"), 32, since = 2),
     // The signing key auth holds and the public JWKS central serves for it: auth matches the
     // key to its JWKS entry (RSA modulus, or proof of possession for EC), and the entry needs a
     // usable `alg`. EC P-256 (ES256) from gen-env; an older deployment may still hold an RSA key.
