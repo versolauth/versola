@@ -20,7 +20,7 @@ import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.authorize.model.{Prompt, ResponseTypeEntry}
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnError, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
-import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
+import versola.oauth.challenge.password.model.{CheckPassword, PasswordChangeEffect, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{
   Acr,
@@ -35,7 +35,7 @@ import versola.oauth.client.model.{
   ScopeToken,
 }
 import versola.oauth.consent.{ConsentDecision, ConsentService}
-import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
+import versola.oauth.conversation.limit.{Acquisition, ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, CodeAlternative, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
@@ -410,7 +410,15 @@ object ConversationService:
         subject: String,
         challengeType: ChallengeType,
     )(step: Option[Long] => ConversationStep): Task[ConversationResult.Render] =
-      submissionLimiter.recordLimit(conversation.clientId, subject, challengeType).flatMap:
+      submissionLimiter.recordLimit(conversation.clientId, subject, challengeType).flatMap(renderAfterFailure(authId, conversation, _)(step))
+
+    /** Renders what a failed attempt, already charged, produced: `status` is the one including that attempt. */
+    private def renderAfterFailure(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        status: LimitStatus,
+    )(step: Option[Long] => ConversationStep): Task[ConversationResult.Render] =
+      status match
         case LimitStatus.Banned => accessDenied(authId, conversation)
         case LimitStatus.RateLimited(retryAfter) => renderStep(authId, conversation, step(Some(retryAfter)))
         case LimitStatus.Allowed => renderStep(authId, conversation, step(None))
@@ -839,12 +847,10 @@ object ConversationService:
         authId: AuthId,
     ): Task[ConversationResult] =
       val subject = conversation.credential.map(_.merge).getOrElse("")
-      submissionLimiter.isBanned(conversation.clientId, subject, throttleType(conversation, ChallengeType.OtpSubmit)).flatMap:
-        case LimitStatus.Banned =>
-          auditStep(authId, conversation, "otp", AuditOutcome.denied, Some("locked")) *>
-            otpChecked(authId, conversation, AntifraudOutcome.locked) *>
-            accessDenied(authId, conversation)
-        case LimitStatus.RateLimited(retryAfter) =>
+      // The attempt is charged before the code is looked at (see [[SubmissionLimiter.acquireAll]]): a burst of guesses
+      // is cut off after the configured number of them instead of every request of it passing a read of the status.
+      submissionLimiter.acquireAll(conversation.clientId, List(subject), throttleType(conversation, ChallengeType.OtpSubmit)).flatMap:
+        case Acquisition.Denied(LimitStatus.RateLimited(retryAfter)) =>
           auditStep(authId, conversation, "otp", AuditOutcome.denied, Some("throttled")) *>
             otpChecked(authId, conversation, AntifraudOutcome.locked) *>
             renderStep(
@@ -852,7 +858,11 @@ object ConversationService:
               conversation,
               otp.copy(rateLimitExceeded = true, lockedSeconds = retryAfter.toInt, passkeyRequest = None, passkeyFailed = false),
             )
-        case LimitStatus.Allowed =>
+        case Acquisition.Denied(_) =>
+          auditStep(authId, conversation, "otp", AuditOutcome.denied, Some("locked")) *>
+            otpChecked(authId, conversation, AntifraudOutcome.locked) *>
+            accessDenied(authId, conversation)
+        case Acquisition.Granted(after, charges) =>
           otpService.checkOtp(otp, submittedCode).tap:
             case SubmitOtpResult.Success => auditStep(authId, conversation, "otp", AuditOutcome.success)
             // a fake code is answered as a wrong one, and the log says no more than the person was told
@@ -860,7 +870,7 @@ object ConversationService:
           .flatMap:
             case SubmitOtpResult.Failure =>
               otpChecked(authId, conversation, if otp.isFake then AntifraudOutcome.fake_verify else AntifraudOutcome.wrong_code) *>
-                recordLimitAndRender(authId, conversation, subject, throttleType(conversation, ChallengeType.OtpSubmit)): retryAfter =>
+                renderAfterFailure(authId, conversation, after): retryAfter =>
                   otp.copy(
                     timesSubmitted = otp.timesSubmitted + 1,
                     rateLimitExceeded = retryAfter.isDefined,
@@ -870,7 +880,8 @@ object ConversationService:
                   )
 
             case SubmitOtpResult.Success =>
-              Clock.instant.flatMap: now =>
+              // A right code spends none of the budget.
+              submissionLimiter.refund(charges) *> Clock.instant.flatMap: now =>
                 val otpType = conversation.authFlow.otpType
                 val otpMethods = Set(AuthMethodRef.otp) ++ Option.when(otpType == OtpType.sms)(AuthMethodRef.sms)
                 for
@@ -926,18 +937,22 @@ object ConversationService:
           val subjects = credSubjectOpt.fold(List(userSubject))(s => List(userSubject, s))
           for
             _ <- Observability.setUserId(userSubject)
-            ban <- submissionLimiter.statusForSubjects(conversation.clientId, subjects, throttleType(conversation, ChallengeType.PasswordSubmit))
-            result <- ban match
-              case LimitStatus.Banned =>
-                auditStep(authId, conversation, "password", AuditOutcome.denied, Some("locked")) *>
-                  accessDenied(authId, conversation)
-              case LimitStatus.RateLimited(_) =>
+            // The attempt is charged before the password is looked at (see [[SubmissionLimiter.acquireAll]]): a burst of
+            // guesses is cut off after the configured number of them instead of every request of it passing a read of
+            // the status.
+            acquired <- submissionLimiter.acquireAll(conversation.clientId, subjects, throttleType(conversation, ChallengeType.PasswordSubmit))
+            result <- acquired match
+              case Acquisition.Denied(LimitStatus.RateLimited(_)) =>
                 auditStep(authId, conversation, "password", AuditOutcome.denied, Some("throttled")) *>
                   renderStep(authId, conversation, passwordStep.copy(rateLimitExceeded = true))
-              case LimitStatus.Allowed =>
+              case Acquisition.Denied(_) =>
+                auditStep(authId, conversation, "password", AuditOutcome.denied, Some("locked")) *>
+                  accessDenied(authId, conversation)
+              case Acquisition.Granted(after, charges) =>
                 passwordService.verifyPassword(userId, submittedPassword).tap(auditPasswordCheck(authId, conversation, userId, _)).flatMap:
                   case CheckPassword.Success =>
-                    Clock.instant.flatMap: now =>
+                    // A right password spends none of the budget.
+                    submissionLimiter.refund(charges) *> Clock.instant.flatMap: now =>
                       val updated =
                         conversation.copy(amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))))
                       conversationRepository.overwrite(authId, updated)
@@ -948,7 +963,7 @@ object ConversationService:
                   case CheckPassword.Temporary =>
                     // Temporary password accepted – mark password factor as passed and flag that the user
                     // must set a new password after completing all remaining factors (e.g. OTP).
-                    Clock.instant.flatMap: now =>
+                    submissionLimiter.refund(charges) *> Clock.instant.flatMap: now =>
                       val updated = conversation.copy(
                         amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
                         needsPasswordChange = true,
@@ -959,73 +974,27 @@ object ConversationService:
                           case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
 
                   case CheckPassword.TemporaryExpired =>
-                    submissionLimiter.recordLimitAll(conversation.clientId, subjects, throttleType(conversation, ChallengeType.PasswordSubmit)).flatMap:
-                      case LimitStatus.Banned => accessDenied(authId, conversation)
-                      case LimitStatus.RateLimited(_) =>
-                        renderStep(
-                          authId,
-                          conversation,
-                          passwordStep.copy(
-                            timesSubmitted = passwordStep.timesSubmitted + 1,
-                            temporaryExpired = true,
-                            rateLimitExceeded = true,
-                          ),
-                        )
-                      case LimitStatus.Allowed =>
-                        renderStep(
-                          authId,
-                          conversation,
-                          passwordStep.copy(
-                            timesSubmitted = passwordStep.timesSubmitted + 1,
-                            temporaryExpired = true,
-                          ),
-                        )
+                    renderAfterFailure(authId, conversation, after): retryAfter =>
+                      passwordStep.copy(
+                        timesSubmitted = passwordStep.timesSubmitted + 1,
+                        temporaryExpired = true,
+                        rateLimitExceeded = retryAfter.isDefined,
+                      )
 
                   case CheckPassword.OldPassword(changedAt) =>
-                    submissionLimiter.recordLimitAll(conversation.clientId, subjects, throttleType(conversation, ChallengeType.PasswordSubmit)).flatMap:
-                      case LimitStatus.Banned => accessDenied(authId, conversation)
-                      case LimitStatus.RateLimited(_) =>
-                        renderStep(
-                          authId,
-                          conversation,
-                          passwordStep.copy(
-                            timesSubmitted = passwordStep.timesSubmitted + 1,
-                            oldPasswordChangedAt = Some(changedAt),
-                            rateLimitExceeded = true,
-                          ),
-                        )
-                      case LimitStatus.Allowed =>
-                        renderStep(
-                          authId,
-                          conversation,
-                          passwordStep.copy(
-                            timesSubmitted = passwordStep.timesSubmitted + 1,
-                            oldPasswordChangedAt = Some(changedAt),
-                            rateLimitExceeded = false,
-                          ),
-                        )
+                    renderAfterFailure(authId, conversation, after): retryAfter =>
+                      passwordStep.copy(
+                        timesSubmitted = passwordStep.timesSubmitted + 1,
+                        oldPasswordChangedAt = Some(changedAt),
+                        rateLimitExceeded = retryAfter.isDefined,
+                      )
 
                   case CheckPassword.Failure =>
-                    submissionLimiter.recordLimitAll(conversation.clientId, subjects, throttleType(conversation, ChallengeType.PasswordSubmit)).flatMap:
-                      case LimitStatus.Banned => accessDenied(authId, conversation)
-                      case LimitStatus.RateLimited(_) =>
-                        renderStep(
-                          authId,
-                          conversation,
-                          passwordStep.copy(
-                            timesSubmitted = passwordStep.timesSubmitted + 1,
-                            rateLimitExceeded = true,
-                          ),
-                        )
-                      case LimitStatus.Allowed =>
-                        renderStep(
-                          authId,
-                          conversation,
-                          passwordStep.copy(
-                            timesSubmitted = passwordStep.timesSubmitted + 1,
-                            rateLimitExceeded = false,
-                          ),
-                        )
+                    renderAfterFailure(authId, conversation, after): retryAfter =>
+                      passwordStep.copy(
+                        timesSubmitted = passwordStep.timesSubmitted + 1,
+                        rateLimitExceeded = retryAfter.isDefined,
+                      )
           yield result
 
     override def checkLoginPassword(
@@ -1035,7 +1004,7 @@ object ConversationService:
         password: Password,
     ): Task[ConversationResult] =
       conversation.step match
-        case cred: ConversationStep.Credential =>
+        case cred: ConversationStep.Credential if !cred.passkeyOnly =>
           userRepository.findByLogin(login).flatMap:
             case None =>
               // The password is hashed all the same: the time of the answer must not say that the login does not exist.
@@ -1046,24 +1015,25 @@ object ConversationService:
             case Some(user) =>
               val userSubject = user.id.toString
               Observability.setUserId(userSubject) *>
-                submissionLimiter.statusForSubjects(conversation.clientId, List(login, userSubject), throttleType(conversation, ChallengeType.PasswordSubmit)).flatMap:
-                  case LimitStatus.Banned =>
-                    auditStep(authId, conversation, "password", AuditOutcome.denied, Some("locked"), Some(user.id)) *>
-                      accessDenied(authId, conversation)
-                  case LimitStatus.RateLimited(_) =>
+                // The attempt is charged before the password is looked at, as in `checkPassword`.
+                submissionLimiter.acquireAll(conversation.clientId, List(login, userSubject), throttleType(conversation, ChallengeType.PasswordSubmit)).flatMap:
+                  case Acquisition.Denied(LimitStatus.RateLimited(_)) =>
                     auditStep(authId, conversation, "password", AuditOutcome.denied, Some("throttled"), Some(user.id)) *>
                       renderStep(authId, conversation, cred.copy(loginFailed = true))
-                  case LimitStatus.Allowed =>
+                  case Acquisition.Denied(_) =>
+                    auditStep(authId, conversation, "password", AuditOutcome.denied, Some("locked"), Some(user.id)) *>
+                      accessDenied(authId, conversation)
+                  case Acquisition.Granted(after, charges) =>
                     passwordService.verifyPassword(user.id, password).tap(auditPasswordCheck(authId, conversation, user.id, _)).flatMap:
                       case CheckPassword.Success =>
-                        Clock.instant.flatMap: now =>
-                          val updated = conversation.copy(
+                        submissionLimiter.refund(charges) *> Clock.instant.flatMap: now =>
+                          val updated = conversation.withoutIdentityState.copy(
                             userId = Some(user.id),
                             userEmail = user.email,
                             userPhone = user.phone,
                             userLogin = user.login,
                             userClaims = Some(user.claims),
-                            amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
+                            amr = Map(PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
                           )
                           conversationRepository.overwrite(authId, updated).flatMap:
                             case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
@@ -1072,14 +1042,14 @@ object ConversationService:
                       case CheckPassword.Temporary =>
                         // Temporary password accepted – set user context, mark password as passed,
                         // and flag that the user must set a new password after all remaining factors.
-                        Clock.instant.flatMap: now =>
-                          val updated = conversation.copy(
+                        submissionLimiter.refund(charges) *> Clock.instant.flatMap: now =>
+                          val updated = conversation.withoutIdentityState.copy(
                             userId = Some(user.id),
                             userEmail = user.email,
                             userPhone = user.phone,
                             userLogin = user.login,
                             userClaims = Some(user.claims),
-                            amr = conversation.amr + (PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
+                            amr = Map(PassedAuthFactor.password -> PassedFactorRecord(now, Set(AuthMethodRef.pwd))),
                             needsPasswordChange = true,
                           )
                           conversationRepository.overwrite(authId, updated).flatMap:
@@ -1087,12 +1057,12 @@ object ConversationService:
                             case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
 
                       case _ =>
-                        submissionLimiter.recordLimitAll(conversation.clientId, List(login, userSubject), throttleType(conversation, ChallengeType.PasswordSubmit)).flatMap:
+                        after match
                           case LimitStatus.Banned => accessDenied(authId, conversation)
                           case _ => renderStep(authId, conversation, cred.copy(loginFailed = true))
         case _ =>
-          // A login+password submission arrived while the conversation isn't on the credential
-          // step, e.g. a stale form or a tampered request.
+          // A login+password submission arrived while the conversation isn't on a credential card that takes one
+          // (another step, or the passkey-only card), e.g. a stale form or a tampered request.
           Observability.setError("step_mismatch").as(ConversationResult.BadRequest)
 
     override def offerSetPassword(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
@@ -1694,7 +1664,7 @@ object ConversationService:
             case LimitStatus.RateLimited(_) =>
               renderStep(authId, conversation, setPasswordStep.copy(rateLimitExceeded = true))
             case LimitStatus.Allowed =>
-              passwordService.setPassword(userId, newPassword).foldZIO(
+              passwordService.setPassword(userId, newPassword, PasswordChangeEffect.Untouched).foldZIO(
                 {
                   case _: versola.oauth.challenge.password.model.PasswordReuseError =>
                     submissionLimiter.recordLimitAll(conversation.clientId, subjects, throttleType(conversation, ChallengeType.PasswordSubmit)).flatMap:

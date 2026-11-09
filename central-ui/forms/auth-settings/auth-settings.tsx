@@ -352,6 +352,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
     const form = event.currentTarget as HTMLFormElement;
     const value = (name: string) => (form.elements.namedItem(name) as HTMLInputElement).value;
     const [currentPassword, newPassword, confirm] = [value('currentPassword'), value('newPassword'), value('confirm')];
+    const revokeOtherSessions = (form.elements.namedItem('revokeOtherSessions') as HTMLInputElement).checked;
 
     setPasswordChanged(false);
     // The same rules the server applies; checking them here only saves the round trip.
@@ -368,11 +369,14 @@ function AccountSettingsForm(props: { config: FormConfig }) {
       const res = await fetch(`${base}password`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ currentPassword, newPassword }),
+        // Sent only when ticked, so an unticked change is the request this page has always made.
+        body: JSON.stringify({ currentPassword, newPassword, ...(revokeOtherSessions ? { revokeOtherSessions: true } : {}) }),
       });
       if (res.ok) {
         form.reset();
         setPasswordChanged(true);
+        // The other sessions are gone on the server; the list above should say so rather than keep showing them.
+        if (revokeOtherSessions) setSessions(sessions().filter((session) => session.current));
       } else {
         setPasswordErrors(placePasswordRefusal(await readRefusal(res)));
       }
@@ -555,6 +559,10 @@ function AccountSettingsForm(props: { config: FormConfig }) {
               hideLabel={t().hide_password}
               onInput={() => setPasswordErrors({ ...passwordErrors(), confirm: undefined })}
             />
+            <label class="account-checkbox">
+              <input type="checkbox" id="revokeOtherSessions" name="revokeOtherSessions" />
+              <span>{t().sign_out_other_sessions}</span>
+            </label>
             <Show when={passwordErrors().general}>
               <div class="error-text error-text-block" role="alert">{refusalText(passwordErrors().general)}</div>
             </Show>

@@ -818,6 +818,26 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # Built once more, for one platform and into the runner's own Docker, only to be run: the push step below builds the
+      # manifest list and pushes it in one go, so there is nothing to run before the tag is published, and a published tag
+      # cannot be recalled. The layers come from the same cache, so this costs the image's own RUN steps, not a rebuild.
+      - name: Build auth image for the smoke test
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile.auth
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: versola-auth:smoke
+          cache-from: type=gha
+
+      # What the image promises about its user, filesystem and JVM flags, checked before it is pushed: an image that runs as
+      # root again, or whose JVM cannot start as uid 10001 on a read-only root, is not published. See the script for what it
+      # does not prove (it does not start the service).
+      - name: Smoke test the auth image
+        run: .github/scripts/smoke-service-image.sh versola-auth:smoke
+
       - name: Build and push auth image
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -934,6 +954,26 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # Built once more, for one platform and into the runner's own Docker, only to be run: the push step below builds the
+      # manifest list and pushes it in one go, so there is nothing to run before the tag is published, and a published tag
+      # cannot be recalled. The layers come from the same cache, so this costs the image's own RUN steps, not a rebuild.
+      - name: Build central image for the smoke test
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile.central
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: versola-central:smoke
+          cache-from: type=gha
+
+      # What the image promises about its user, filesystem and JVM flags, checked before it is pushed: an image that runs as
+      # root again, or whose JVM cannot start as uid 10001 on a read-only root, is not published. See the script for what it
+      # does not prove (it does not start the service).
+      - name: Smoke test the central image
+        run: .github/scripts/smoke-service-image.sh versola-central:smoke
+
       - name: Build and push central image
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -1029,6 +1069,26 @@ jobs:
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+
+      # Built once more, for one platform and into the runner's own Docker, only to be run: the push step below builds the
+      # manifest list and pushes it in one go, so there is nothing to run before the tag is published, and a published tag
+      # cannot be recalled. The layers come from the same cache, so this costs the image's own RUN steps, not a rebuild.
+      - name: Build edge image for the smoke test
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile.edge
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: versola-edge:smoke
+          cache-from: type=gha
+
+      # What the image promises about its user, filesystem and JVM flags, checked before it is pushed: an image that runs as
+      # root again, or whose JVM cannot start as uid 10001 on a read-only root, is not published. See the script for what it
+      # does not prove (it does not start the service).
+      - name: Smoke test the edge image
+        run: .github/scripts/smoke-service-image.sh versola-edge:smoke /var/lib/versola-edge
 
       - name: Build and push edge image
         id: build
@@ -1458,6 +1518,24 @@ jobs:
       - name: Check chart ingress class contract
         if: ${{ !cancelled() }}
         run: .github/scripts/check-chart-ingress.sh
+
+      # A securityContext is the one thing a chart template can lose silently: a workload copied from an old one, a
+      # helper refactored, a `{}` left in values each render a valid manifest that runs as root. The script renders
+      # the three charts and fails if any container of any pod lacks runAsNonRoot, a read-only root filesystem, dropped
+      # capabilities, the default seccomp profile or its /tmp volume. PyYAML and helm only, no cluster.
+      - name: Check chart pod security contexts
+        if: ${{ !cancelled() }}
+        run: .github/scripts/check-chart-security-context.sh
+
+      # The admin console's security headers are written out in three places: docker-local's nginx.conf.template,
+      # this chart's console config, and the routes.conf that versola-cli (versolauth/versola-cli) renders for a
+      # VPS. The last lost every header once without anything failing, because nginx replaces a server-level
+      # add_header in a location that sets its own. --fetch-cli reads that file from versola-cli's main, so this
+      # step fails when either side changes the set without the other (the fix for that is a pull request there,
+      # or here); it needs only python3 and curl, and the network. Nothing in it is a secret or a write.
+      - name: Check the console's security headers match versola-cli's
+        if: ${{ !cancelled() }}
+        run: .github/scripts/check-console-headers.sh --fetch-cli
 
   # Separate from helm-checks on purpose. That job installs only Helm and
   # reports in seconds; this one runs gen-env.scala through scala-cli, which

@@ -6,7 +6,7 @@ import versola.central.configuration.clients.ClientId
 import versola.central.configuration.tenants.TenantId
 import versola.central.users.UserId
 import versola.util.audit.*
-import versola.util.http.Observability
+import versola.util.http.{IpAddress, Observability}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -27,11 +27,12 @@ import zio.logging.logContext
   *
   * ==Who is the administrator==
   * Edge says so: it adds the query parameters `actorId` (the `sub` of the verified token), `actorTenantId`, `actorClientId` and
-  * `actorSessionId` to every call (see `BootstrapService.actorInjects`), removing any a client sent. Query parameters because
+  * `actorSessionId` to every call, and `actorIp`, the address the call came from, where the edge's own `client-ip` setting finds one
+  * (see `BootstrapService.actorInjects`), removing any a client sent. Query parameters because
   * they work on every method, and because a `userId` field of a body is the target user on the user routes. A call without them is
   * not refused, which would break a deployment whose edge has not yet read the new registrations and every direct caller of
   * central: it is recorded as made by a `service`, with no id, and counted in `audit_actor_missing_total`. A value that is not of the
-  * type it names (an `actorId` that is no user id) is treated as absent and counted too. The service of the request also finds the
+  * type it names (an `actorId` that is no user id, an `actorIp` that is no address) is treated as absent and counted too. The service of the request also finds the
   * actor in the [[AuditContext]], which is how `AuthClient` tells auth on whose behalf it calls.
   */
 object AuditHook:
@@ -47,6 +48,10 @@ object AuditHook:
 
   /** The session the caller's token belongs to, when it carries one. */
   val ActorSessionParam = "actorSessionId"
+
+  /** The address the call came from, as the edge that took it found it (its `client-ip` setting); absent where the edge does not
+    * trust one. */
+  val ActorIpParam = "actorIp"
 
   /** Longest value of a header, a query parameter or a body field the log keeps. */
   private val MaxLength = 256
@@ -72,6 +77,7 @@ object AuditHook:
       tenantId: Option[TenantId],
       clientId: Option[ClientId],
       sessionId: Option[String],
+      ip: Option[String],
   )
 
   private def clipped(value: String): String = value.take(MaxLength)
@@ -84,17 +90,20 @@ object AuditHook:
     val tenant = param(ActorTenantParam).map(TenantId(_))
     val client = param(ActorClientParam).map(ClientId(_))
     val session = param(ActorSessionParam)
+    val stated = param(ActorIpParam)
+    val ip = stated.flatMap(IpAddress.literal)
     // A client credentials token's subject is the client itself.
     val isClient = sub.exists(id => client.contains(ClientId(id)))
     val admin = sub.filterNot(_ => isClient).flatMap(UserId.parse(_).toOption)
     val actor =
-      if isClient then Actor(CentralAudit.Actors.Client, sub, tenant, client, session)
+      if isClient then Actor(CentralAudit.Actors.Client, sub, tenant, client, session, ip)
       else
-        admin.fold(Actor(CentralAudit.Actors.Service, None, tenant, client, session))(id =>
-          Actor(CentralAudit.Actors.Admin, Some(id.toString), tenant, client, session),
+        admin.fold(Actor(CentralAudit.Actors.Service, None, tenant, client, session, ip))(id =>
+          Actor(CentralAudit.Actors.Admin, Some(id.toString), tenant, client, session, ip),
         )
     val missing = if sub.isEmpty then Some("absent") else Option.when(actor.id.isEmpty)("invalid")
-    CentralAudit.actorMissing(missing).as(actor)
+    // An address that is no address is not recorded, and is counted as an actor that is not one is.
+    CentralAudit.actorMissing(missing) *> CentralAudit.actorMissing(Option.when(stated.isDefined && ip.isEmpty)("invalid_ip")).as(actor)
 
   private def recording[Env1 <: AuditEvents & CentralConfig](
       handler: Handler[Env1, Response, Request, Response],
@@ -117,6 +126,8 @@ object AuditHook:
           // What the request's events say of where it came from (the client and the session of the token).
           _ <- ZIO.foreachDiscard(actor.clientId)(client => Observability.setClientId(client.toString))
           _ <- ZIO.foreachDiscard(actor.sessionId)(Observability.setSessionId)
+          // The address the events of the request carry, and `AuthClient` passes on to auth for what it records there.
+          _ <- ZIO.foreachDiscard(actor.ip)(Observability.setIp)
           // The handler may be interrupted (the client went away, a timeout) after its change committed: the record that follows it
           // is not interrupted, and the interruption goes on afterwards.
           response <- Audit.tenantOfTarget.locally(None):

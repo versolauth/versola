@@ -3,6 +3,7 @@ package versola
 import versola.antifraud.{AntifraudSettingsRepository, Tuning}
 import versola.oauth.challenge.password.{OneTimeLink, PasswordRepository}
 import versola.oauth.client.model.TenantId
+import versola.oauth.revocation.{RevocationCause, RevocationTerms}
 import versola.role.model.RoleId
 import versola.user.UserRepository
 import versola.user.model.{Login, UserId}
@@ -75,6 +76,8 @@ object AuthBootstrapService:
             tenantId = TenantId.default,
             add = Set(RoleId("oauth-admin")),
             remove = Set.empty,
+            // Only adds a role, which revokes nothing: the terms are never written.
+            revocation = RevocationTerms.widest(RevocationCause.RolesChanged, Map.empty),
           )
           // BOOTSTRAP_RESET=1 on a restart drops the still-valid temporary password and its link so that
           // new ones are issued below, instead of the admin waiting out the 24 hours. A permanent password
@@ -98,6 +101,8 @@ object AuthBootstrapService:
               salt <- secureRandom.nextBytes(16).map(Salt(_))
               hash <- securityService.hashPassword(Secret.fromString(cfg.password), salt, config.security.passwordsSecret)
               expiresAt = now.plusSeconds(BootstrapPasswordTtlSeconds)
+              // `createBootstrapCredential` replaces the former `createTemporary(..., Untouched)`: a bootstrap
+              // revokes nothing, and it also issues the one-time link under the same lock.
               link <- ZIO.foreach(cfg.firstLoginUrl)(url => OneTimeLink.generate(secureRandom).map(url -> _))
               created <- passwordRepo.createBootstrapCredential(
                 userId = userId,

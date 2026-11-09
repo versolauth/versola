@@ -71,6 +71,7 @@ object AccessTokenRevocationService:
       repository.revoke(
         Revocation(key = RevocationKey.Jti(token.id.encoded), expiresAt = token.expiresAt, issuedBefore = None),
         RevocationCause.Revoke,
+        Some(client.tenantId),
       ) *>
         // Not `jti`/`exp`: those are the event token's own id and lifetime (two minutes), and
         // overwriting them would both strip the event of a replay id and leave the recipient

@@ -286,8 +286,15 @@ object BootstrapService:
     InjectRule(InjectTarget.body, "clientId", "token.client_id"),
   )
 
+  /** A password change can ask to end the user's other sessions, and "other" needs the session the request
+    * came from: edge fills it from the token, so the browser cannot name another one. Empty when the token has
+    * no `sid`, which auth reads as "unknown" and refuses to end sessions on. */
+  private val accountPasswordBodyInjects = accountCallerBodyInjects :+
+    InjectRule(InjectTarget.body, "sessionId", "has(token.sid) ? token.sid : ''")
+
   private[versola] def accountCallerInjects(method: String, path: String) =
     if method == "GET" then accountCallerQueryInjects
+    else if method == "PATCH" && path == "/settings/password" then accountPasswordBodyInjects
     else accountCallerBodyInjects
 
   /** The caller may not revoke the session the page is being viewed from: edge compares the
@@ -1073,8 +1080,8 @@ object BootstrapService:
       "GET" -> "/antifraud/lists/audit",
     )
 
-  /** Who is calling, for the audit log (#469): the `sub`, the tenant, the client and the session of the token edge has verified, as
-    * query parameters (`AuditHook`). A query parameter and not a body field: a `userId` in a body is the *target* user on the user
+  /** Who is calling, for the audit log (#469): the `sub`, the tenant, the client and the session of the token edge has verified, and
+    * the address the call came from, as query parameters (`AuditHook`). A query parameter and not a body field: a `userId` in a body is the *target* user on the user
     * routes (edge overwrites a field of the same name, so the administrator would reset their own password), and a call without a
     * body or a JSON one (a `DELETE`, a rotation) has nothing to carry a field; a query parameter works on every method. Edge removes
     * a parameter of the same name that the caller sent. The session is empty, and so not sent, for a token that has none. Every
@@ -1084,6 +1091,9 @@ object BootstrapService:
     InjectRule(InjectTarget.query, AuditHook.ActorTenantParam, "token.tenant_id"),
     InjectRule(InjectTarget.query, AuditHook.ActorClientParam, "token.client_id"),
     InjectRule(InjectTarget.query, AuditHook.ActorSessionParam, "has(token.sid) ? token.sid : ''"),
+    // The caller's address as this edge's own `client-ip` setting finds it; none (and so not sent) where it does not, or on an edge
+    // that does not offer one to a rule yet.
+    InjectRule(InjectTarget.query, AuditHook.ActorIpParam, "has(request.clientIp) ? request.clientIp : ''"),
   )
 
   /** What central's endpoints are told of the caller, from the token edge has verified (not from the caller: edge overwrites

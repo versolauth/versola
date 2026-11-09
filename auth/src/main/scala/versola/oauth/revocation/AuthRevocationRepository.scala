@@ -1,6 +1,7 @@
 package versola.oauth.revocation
 
-import versola.util.revocation.{Revocation, RevocationRepository}
+import versola.oauth.client.model.TenantId
+import versola.util.revocation.{Revocation, RevocationCursor, RevocationPage, RevocationRepository}
 import zio.Task
 
 /** The durable copy of the revocation list in auth's database: what [[RevocationRepository]] reads,
@@ -18,4 +19,10 @@ trait AuthRevocationRepository extends RevocationRepository:
     * Every replica, including the one writing, learns about it through
     * [[versola.util.revocation.RevocationNotifications]] rather than from the return value.
     */
-  def revoke(revocation: Revocation, cause: RevocationCause): Task[Unit]
+  def revoke(revocation: Revocation, cause: RevocationCause, tenantId: Option[TenantId]): Task[Unit]
+
+  /** One page of what the feed serves an edge: the revocations that still matter, after `cursor`, of
+    * the given tenants and of no tenant at all (`tenant_id` is `NULL` for a key no tenant owns: a
+    * session or a user), in the order [[activeSince]] reads them in, so one cursor serves both.
+    */
+  def feedSince(cursor: RevocationCursor, limit: Int, tenantIds: Set[TenantId]): Task[RevocationPage]

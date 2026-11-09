@@ -173,7 +173,56 @@ object AccountSettingsEdgeSpec extends E2ESpec:
         assertTrue(restored.status == Status.NoContent)
           .label(s"the shared user's password must be restored, got: ${restored.status} ${restored.body}")
     },
-  ) @@ TestAspect.beforeAll(grantAccountRole) @@ TestAspect.sequential @@ TestAspect.timeout(120.seconds)
+    test("signs out of every other session when asked to, and keeps the one the change was made from") {
+      val changed = "NewPass-Changed-2!"
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        stale <- login(s, auth)
+        another <- login(s, auth)
+        caller <- login(s, auth)
+        before <- auth.userinfo(stale.accessToken).map(_.response.status)
+        // `sessionId` is not in the body the browser sends: edge fills it from the token, which is what tells
+        // the other sessions from this one.
+        result <- auth.edgeChangePassword(Some(caller.accessToken), s.password, changed, revokeOtherSessions = Some(true))
+        staleAfter <- awaitRefused(auth, stale.accessToken)
+        anotherAfter <- awaitRefused(auth, another.accessToken)
+        callerAfter <- auth.userinfo(caller.accessToken).map(_.response.status)
+        sessions <- auth.edgeAccountPage(Some(caller.accessToken)).flatMap(_.formItems("sessions"))
+        restorer <- login(s.copy(password = changed), auth)
+        restored <- auth.edgeChangePassword(Some(restorer.accessToken), changed, s.password)
+      yield assertTrue(before == Status.Ok).label("the other session's token works until the password is changed") &&
+        assertTrue(result.status == Status.NoContent).label(s"the change must succeed, got: ${result.status} ${result.body}") &&
+        assertTrue(staleAfter == Status.Unauthorized, anotherAfter == Status.Unauthorized)
+          .label("the access tokens of the other sessions must be refused") &&
+        assertTrue(callerAfter == Status.Ok).label("the session the change was made from must keep working") &&
+        assertTrue(sessions.flatMap(str(_, "id")) == List(caller.sessionId))
+          .label(s"only the current session may remain listed, got: $sessions") &&
+        assertTrue(restored.status == Status.NoContent)
+          .label(s"the shared user's password must be restored, got: ${restored.status} ${restored.body}")
+    },
+    test("leaves the other sessions alone when the option is absent or false") {
+      val changed = "NewPass-Changed-3!"
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        other <- login(s, auth)
+        caller <- login(s, auth)
+        absent <- auth.edgeChangePassword(Some(caller.accessToken), s.password, changed)
+        declined <- auth.edgeChangePassword(Some(caller.accessToken), changed, s.password, revokeOtherSessions = Some(false))
+        otherAfter <- auth.userinfo(other.accessToken).map(_.response.status)
+        sessions <- auth.edgeAccountPage(Some(caller.accessToken)).flatMap(_.formItems("sessions"))
+      yield assertTrue(absent.status == Status.NoContent, declined.status == Status.NoContent) &&
+        assertTrue(otherAfter == Status.Ok).label("an unticked change must not touch the other sessions' tokens") &&
+        assertTrue(sessions.flatMap(str(_, "id")).contains(other.sessionId))
+          .label("the other session must stay listed")
+    },
+  ) @@ TestAspect.beforeAll(grantAccountRole) @@ TestAspect.sequential @@ TestAspect.timeout(180.seconds)
+
+  /** Polls `/userinfo` until it refuses the token: a revocation reaches the replica that answers by notification. */
+  private def awaitRefused(auth: OAuthClient, accessToken: String): Task[Status] =
+    auth.userinfo(accessToken).map(_.response.status)
+      .repeat(Schedule.spaced(100.millis) && Schedule.recurUntil[Status](_ == Status.Unauthorized))
+      .map(_._2)
+      .timeoutFail(RuntimeException("/userinfo still honoured the token after 15 seconds"))(15.seconds)
 
   /** Edge authorizes against the roles baked into the access token, and the shared e2e user
     * is created without any — so the self-service role is granted (and flushed to auth)

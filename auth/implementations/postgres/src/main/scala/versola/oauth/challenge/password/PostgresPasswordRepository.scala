@@ -3,7 +3,10 @@ package versola.oauth.challenge.password
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.auth.model.PasswordRecord
-import versola.oauth.challenge.password.model.{PasswordHistoryChanged, PasswordReuseError}
+import versola.oauth.challenge.password.model.{PasswordChangeEffect, PasswordHistoryChanged, PasswordReuseError}
+import versola.oauth.revocation.{PostgresAuthRevocationRepository, RevocationTerms}
+import versola.oauth.session.PostgresSessionRepository
+import versola.oauth.session.model.SessionRecord
 import versola.user.model.UserId
 import versola.util.postgres.BasicCodecs
 import versola.util.{Salt, Secret}
@@ -14,6 +17,10 @@ import java.time.Instant
 import java.util.UUID
 
 class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, BasicCodecs:
+
+  /** Where the SQL that ends a user's other sessions lives, so a password change that asks for it runs the
+    * same statements a logout does. */
+  private val sessions = PostgresSessionRepository(xa)
 
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
   given DbCodec[Salt] = DbCodec.ByteArrayCodec.biMap(Salt(_), identity[Array[Byte]])
@@ -41,7 +48,8 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
       historySize: Int,
       numDifferent: Int,
       expectedHead: Option[Long],
-  ): IO[Throwable | PasswordReuseError | PasswordHistoryChanged.type, Unit] =
+      change: PasswordChangeEffect,
+  ): IO[Throwable | PasswordReuseError | PasswordHistoryChanged.type, List[SessionRecord]] =
     for
       now <- Clock.instant
       result <- xa.transactMeasured("create-password") {
@@ -94,7 +102,7 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
           if toDelete.nonEmpty then
             val ids = toDelete.map(_.id)
             sql"""DELETE FROM user_passwords WHERE id = ANY($ids)""".update.run()
-          Right(())
+          Right(apply(userId, now, change))
         }
       }.absolve
     yield result
@@ -104,7 +112,8 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
       passwordHash: Secret,
       salt: Salt,
       expiresAt: Instant,
-  ): Task[Unit] =
+      change: PasswordChangeEffect,
+  ): Task[List[SessionRecord]] =
     Clock.instant.flatMap: now =>
       xa.transactMeasured("create-temporary-password") {
         // Remove any existing temporary for this user (at most one temp at a time)
@@ -118,7 +127,19 @@ class PostgresPasswordRepository(xa: TransactorZIO) extends PasswordRepository, 
         sql"""INSERT INTO user_passwords (user_id, password, salt, created_at, expires_at)
               VALUES ($userId, $passwordHash, $salt, $now, $expiresAt)
            """.update.run()
-      }.unit
+
+        apply(userId, now, change)
+      }
+
+  /** What the password being stored does to the user's tokens and sessions, in the password's transaction. */
+  private def apply(userId: UserId, now: Instant, change: PasswordChangeEffect)(using DbCon): List[SessionRecord] =
+    change match
+      case PasswordChangeEffect.Untouched => Nil
+      case PasswordChangeEffect.RefuseEarlierTokens(terms) =>
+        PostgresAuthRevocationRepository.upsertUser(userId, now, terms)
+        Nil
+      case PasswordChangeEffect.EndAllSessions(terms) => sessions.endAllSessions(userId, now, terms)
+      case PasswordChangeEffect.EndOtherSessions(keep, terms) => sessions.endOtherSessions(userId, keep, now, terms)
 
   override def deleteTemporary(userId: UserId): Task[Unit] =
     xa.transactMeasured("delete-temporary-password") {

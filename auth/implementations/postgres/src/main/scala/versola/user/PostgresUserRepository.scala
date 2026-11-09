@@ -5,13 +5,14 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.PgCodec
 import com.augustnagro.magnum.pg.PgCodec.given
 import versola.oauth.client.model.TenantId
+import versola.oauth.revocation.{PostgresAuthRevocationRepository, RevocationTerms}
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.postgres.BasicCodecs
 import versola.util.{Email, Phone}
 import zio.json.*
 import zio.json.ast.Json
-import zio.{Task, ZIO, ZLayer}
+import zio.{Clock, Task, ZIO, ZLayer}
 
 import java.time.LocalDate
 import java.util.UUID
@@ -148,19 +149,23 @@ class PostgresUserRepository(
       tenantId: TenantId,
       add: Set[RoleId],
       remove: Set[RoleId],
+      revocation: RevocationTerms,
   ): Task[Unit] =
     if add.isEmpty && remove.isEmpty then ZIO.unit
     else
-      xa.transactMeasured("update-roles"):
-        if remove.nonEmpty then
-          sql"DELETE FROM user_roles WHERE user_id = $userId AND tenant_id = $tenantId AND role_id = ANY($remove)"
-            .update.run()
-        if add.nonEmpty then
-          sql"""INSERT INTO user_roles (user_id, tenant_id, role_id)
-                SELECT $userId, $tenantId, unnest($add)
-                ON CONFLICT DO NOTHING"""
-            .update.run()
-      .unit
+      Clock.instant.flatMap: now =>
+        xa.transactMeasured("update-roles"):
+          // A role the same call adds back is not taken away: the user holds it after as before.
+          val removed = Option.when(remove.nonEmpty):
+            sql"DELETE FROM user_roles WHERE user_id = $userId AND tenant_id = $tenantId AND role_id = ANY($remove) RETURNING role_id"
+              .query[RoleId].run().toSet -- add
+          if add.nonEmpty then
+            sql"""INSERT INTO user_roles (user_id, tenant_id, role_id)
+                  SELECT $userId, $tenantId, unnest($add)
+                  ON CONFLICT DO NOTHING"""
+              .update.run()
+          if removed.exists(_.nonEmpty) then PostgresAuthRevocationRepository.upsertUser(userId, now, revocation)
+        .unit
 
   override def markVerified(userId: UserId, credential: Either[Email, Phone]): Task[Option[Json.Obj]] =
     xa.connectMeasured("mark-credential-verified"):

@@ -111,6 +111,25 @@ object JwksServiceSpec extends ZIOSpecDefault:
         raw <- service.getRaw
       yield assertTrue(raw == testJwks)).provide(serviceFrom(Vector(record)))
     },
+    // A row written before keys were validated may still hold private members; none of them is published.
+    test("getRaw and getPublicKeys drop private members a stored row holds") {
+      val stored = TestJwks.withField(TestJwks.rsaPrivate, "kid", Json.Str("key-1"))
+      val record = JwksRecord("key-1", stored, None)
+      (for
+        service <- ZIO.service[JwksService]
+        raw <- service.getRaw
+        published <- service.getPublicKeys
+        members = raw.get("keys").toList.flatMap { case Json.Arr(keys) => keys.toList; case _ => Nil }.flatMap {
+          case key: Json.Obj => key.fields.map(_._1)
+          case _ => Nil
+        }.toSet
+      yield assertTrue(
+        members.intersect(JwkValidation.PrivateMembers).isEmpty,
+        members.contains("n"),
+        !published.toString.contains("\"d\""),
+        published.keys.size() == 1,
+      )).provide(serviceFrom(Vector(record)))
+    },
     suite("getSigningKeys")(
       // Under the transport secret, not the at-rest one. Shipping the stored ciphertext is
       // what auth cannot decrypt: the two secrets are separate values, so every configuration

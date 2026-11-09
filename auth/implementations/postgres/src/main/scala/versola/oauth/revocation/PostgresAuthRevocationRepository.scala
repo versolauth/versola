@@ -2,17 +2,69 @@ package versola.oauth.revocation
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.util.revocation.{PostgresRevocationRepository, Revocation, RevocationRepository, RevocationTable}
-import zio.{Task, ZEnvironment, ZIO, ZLayer}
+import versola.oauth.client.model.TenantId
+import versola.user.model.UserId
+import versola.util.postgres.TableName
+import versola.util.revocation.{
+  PostgresRevocationRepository,
+  Revocation,
+  RevocationCursor,
+  RevocationKey,
+  RevocationPage,
+  RevocationRepository,
+  RevocationTable,
+}
+import zio.{Clock, Task, ZEnvironment, ZIO, ZLayer}
+
+import java.time.Instant
 
 class PostgresAuthRevocationRepository(xa: TransactorZIO)
   extends PostgresRevocationRepository(xa, PostgresAuthRevocationRepository.Table),
     AuthRevocationRepository:
 
-  override def revoke(revocation: Revocation, cause: RevocationCause): Task[Unit] =
+  override def revoke(revocation: Revocation, cause: RevocationCause, tenantId: Option[TenantId]): Task[Unit] =
     xa.transactMeasured("revoke-token"):
-      PostgresAuthRevocationRepository.upsert(revocation, cause)
+      PostgresAuthRevocationRepository.upsert(revocation, cause, tenantId)
     .unit
+
+  private given DbCodec[FeedRow] = DbCodec.derived
+
+  private val relation = SqlLiteral(TableName.validated(PostgresAuthRevocationRepository.Table.name))
+
+  /** The tenant filter is an `ANY` over a text array bound as one parameter, so a long tenant list is
+    * still one statement of fixed shape. `tenant_id IS NULL` is what the column's `NULL` means: not
+    * limited to a tenant, served to every edge.
+    */
+  override def feedSince(cursor: RevocationCursor, limit: Int, tenantIds: Set[TenantId]): Task[RevocationPage] =
+    Clock.instant.flatMap: now =>
+      xa.connectMeasured("list-revocation-feed"):
+        val tenants: Set[String] = tenantIds.map(identity[String])
+        val rows = sql"""
+          SELECT revoked_key, revoked_at, expires_at, issued_before
+          FROM $relation
+          WHERE expires_at > $now
+            AND (revoked_at, revoked_key) > (${cursor.revokedAt}, ${cursor.revokedKey})
+            AND (tenant_id IS NULL OR tenant_id = ANY($tenants))
+          ORDER BY revoked_at, revoked_key
+          LIMIT $limit
+        """
+          .query[FeedRow]
+          .run()
+          .toList
+        RevocationPage(
+          revocations = rows.flatMap(_.decoded),
+          last = rows.lastOption.map(_.cursor),
+          hasMore = rows.sizeIs == limit,
+        )
+
+/** A row as the feed reads it: the encoded key, not [[RevocationKey]], so that a row of a kind this
+  * version has no case for moves the cursor and is skipped instead of failing the page.
+  */
+private case class FeedRow(revokedKey: String, revokedAt: Instant, expiresAt: Instant, issuedBefore: Option[Instant]):
+  def decoded: Option[Revocation] =
+    RevocationKey.decode(revokedKey).map(Revocation(_, expiresAt, issuedBefore))
+
+  def cursor: RevocationCursor = RevocationCursor(revokedAt, revokedKey)
 
 object PostgresAuthRevocationRepository:
   /** The table and channel of `V0032__revocations_table.sql`. */
@@ -23,6 +75,17 @@ object PostgresAuthRevocationRepository:
       ZIO.serviceWith[TransactorZIO]: xa =>
         val repository = PostgresAuthRevocationRepository(xa)
         ZEnvironment[AuthRevocationRepository, RevocationRepository](repository, repository)
+
+  /** `sub:<user>`, bounded at `now`: every token the user holds that was issued before this instant is refused,
+    * and one issued after it, which the user obtained by signing in or refreshing again, is not. Written by
+    * whatever changes the user in a way their old tokens no longer reflect, in the same transaction as the
+    * change. */
+  def upsertUser(userId: UserId, now: Instant, terms: RevocationTerms)(using DbCon): Int =
+    upsert(
+      Revocation(key = RevocationKey.Sub(userId.toString), expiresAt = now.plus(terms.ttl), issuedBefore = Some(now)),
+      terms.cause,
+      terms.tenantId,
+    )
 
   /** Writes a revocation on the caller's connection, so that a repository method which ends a
     * session or a refresh family records it in the same transaction as the ending: the two commit
@@ -51,10 +114,22 @@ object PostgresAuthRevocationRepository:
     * database has one clock; every row taking its `revoked_at` from it is what makes the cursor
     * comparable across replicas at all.
     */
-  def upsert(revocation: Revocation, cause: RevocationCause)(using DbCon): Int =
+  def upsert(revocation: Revocation, cause: RevocationCause, tenantId: Option[TenantId])(using DbCon): Int =
+    upsertStatement(revocation, cause, tenantId).run()
+
+  /** [[upsert]] for several keys of one cause at once, as one batch on the caller's connection: a method that ends
+    * several families or sessions in one transaction writes their records in one round trip rather than one each.
+    */
+  def upsertAll(revocations: List[Revocation], cause: RevocationCause, tenantId: Option[TenantId])(using DbCon): Unit =
+    if revocations.nonEmpty then
+      batchUpdate(revocations)(upsertStatement(_, cause, tenantId))
+      ()
+
+  private def upsertStatement(revocation: Revocation, cause: RevocationCause, tenantId: Option[TenantId]): Update =
+    val tenant: Option[String] = tenantId.map(identity[String])
     sql"""
-      INSERT INTO auth_revocations (revoked_key, revoked_at, expires_at, issued_before, cause)
-      VALUES (${revocation.key.encoded}, NOW(), ${revocation.expiresAt}, ${revocation.issuedBefore}, ${cause.code})
+      INSERT INTO auth_revocations (revoked_key, revoked_at, expires_at, issued_before, cause, tenant_id)
+      VALUES (${revocation.key.encoded}, NOW(), ${revocation.expiresAt}, ${revocation.issuedBefore}, ${cause.code}, $tenant)
       ON CONFLICT (revoked_key) DO UPDATE
       SET revoked_at    = EXCLUDED.revoked_at,
           expires_at    = GREATEST(auth_revocations.expires_at, EXCLUDED.expires_at),
@@ -66,4 +141,4 @@ object PostgresAuthRevocationRepository:
       WHERE auth_revocations.expires_at < EXCLUDED.expires_at
          OR (auth_revocations.issued_before IS NOT NULL
              AND (EXCLUDED.issued_before IS NULL OR auth_revocations.issued_before < EXCLUDED.issued_before))
-    """.update.run()
+    """.update

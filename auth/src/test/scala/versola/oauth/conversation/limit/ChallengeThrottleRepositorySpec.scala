@@ -24,6 +24,9 @@ trait ChallengeThrottleRepositorySpec extends DatabaseSpecBase[ChallengeThrottle
   private val wLimits = NonEmptyChunk(RateLimit(maxAttempts = 1000, windowSeconds = 3600))
   private val banDurationSeconds = 600L
 
+  // A hard window of 3 attempts a minute; the hour-long window is the broad one that applies the ban, far above these tests.
+  private val reserveLimits = NonEmptyChunk(RateLimit(maxAttempts = 3, windowSeconds = 60), RateLimit(maxAttempts = 1000, windowSeconds = 3600))
+
   /** Explicit `now` for every `recordAttempt` test, rather than `Clock.instant`. The prune/ban
     * decision is relative to the instant passed in, so an ambient clock would make these tests
     * depend on whether the suite happens to run under `TestClock` (epoch) or a live one — and on
@@ -33,6 +36,10 @@ trait ChallengeThrottleRepositorySpec extends DatabaseSpecBase[ChallengeThrottle
     */
   private val now = Instant.parse("2030-06-01T00:00:00Z")
   private val nowEpoch = now.getEpochSecond
+
+  private def grantedOf(reservation: Reservation): Option[Reservation.Granted] = reservation match
+    case granted: Reservation.Granted => Some(granted)
+    case _ => None
 
   def record(
       challengeType: ChallengeType,
@@ -274,6 +281,135 @@ trait ChallengeThrottleRepositorySpec extends DatabaseSpecBase[ChallengeThrottle
           // macro never reaches it -- but not a pattern worth keeping around to be lifted out.
           found.exists(r => r.attempts.distinct.size == r.attempts.size),
         )
+      },
+      test("reserveAttempt charges the attempt when the subject is under the limits, reporting the row before and after") {
+        for
+          reservation <- env.repository.reserveAttempt(tenantId, subject, ChallengeType.PasswordSubmit, now, reserveLimits, banDurationSeconds)
+          found <- env.repository.find(tenantId, subject, ChallengeType.PasswordSubmit)
+        yield assertTrue(
+          found.exists(_.attempts == List(nowEpoch)),
+          reservation.isInstanceOf[Reservation.Granted],
+          reservation match
+            case g: Reservation.Granted => g.after == LimitStatus.Allowed && g.previous.isEmpty && found.contains(g.applied) && g.reservedAt == now
+            case _ => false,
+        )
+      },
+      test("reserveAttempt grants the attempt that reaches the limit, then denies the next without writing") {
+        val atLimit = (1 to 3).map(i => now.plusSeconds(i.toLong))
+        for
+          granted <- ZIO.foreach(atLimit)(at =>
+            env.repository.reserveAttempt(tenantId, subject, ChallengeType.PasswordSubmit, at, reserveLimits, banDurationSeconds),
+          )
+          denied <-
+            env.repository.reserveAttempt(tenantId, subject, ChallengeType.PasswordSubmit, now.plusSeconds(4), reserveLimits, banDurationSeconds)
+          found <- env.repository.find(tenantId, subject, ChallengeType.PasswordSubmit)
+        yield assertTrue(
+          granted.forall(_.isInstanceOf[Reservation.Granted]),
+          // the third attempt is itself allowed, and says that the limit is now reached
+          granted.last match
+            case g: Reservation.Granted => g.after.isInstanceOf[LimitStatus.RateLimited]
+            case _ => false,
+          denied match
+            case Reservation.Denied(status) => status.isInstanceOf[LimitStatus.RateLimited]
+            case _ => false,
+          // a denied attempt is not recorded: a flood against a subject over the limit does not keep it there
+          found.exists(_.attempts.size == 3),
+        )
+      },
+      test("reserveAttempt is denied as Banned, writing nothing, while a ban is active") {
+        val activeBan = now.plusSeconds(3600)
+        val banned = ChallengeThrottleRecord(tenantId, subject, ChallengeType.PasswordSubmit, Nil, Some(activeBan), activeBan)
+        for
+          _ <- env.repository.upsert(banned)
+          reservation <- env.repository.reserveAttempt(tenantId, subject, ChallengeType.PasswordSubmit, now, reserveLimits, banDurationSeconds)
+          found <- env.repository.find(tenantId, subject, ChallengeType.PasswordSubmit)
+        yield assertTrue(reservation == Reservation.Denied(LimitStatus.Banned), found.contains(banned))
+      },
+      test("reserveAttempt keeps a burst against a brand-new key to the configured number of attempts") {
+        // The property the check-then-record sequence lacks: however the requests interleave, only `maxAttempts` of
+        // them are granted, because each is checked and charged in one step under the row's lock.
+        val burst = 40
+        for
+          reservations <- ZIO.foreachPar(1 to burst)(i =>
+            env.repository.reserveAttempt(
+              tenantId,
+              subject,
+              ChallengeType.PasswordSubmit,
+              now.plusSeconds(i.toLong),
+              reserveLimits,
+              banDurationSeconds,
+            ),
+          )
+          found <- env.repository.find(tenantId, subject, ChallengeType.PasswordSubmit)
+        yield assertTrue(
+          reservations.count(_.isInstanceOf[Reservation.Granted]) == 3,
+          reservations.count(_.isInstanceOf[Reservation.Denied]) == burst - 3,
+          found.exists(_.attempts.size == 3),
+        )
+      },
+      test("reserveAttempt keeps a burst against an existing row to the configured number of attempts") {
+        val burst = 40
+        val earlier = now.minusSeconds(10).getEpochSecond
+        for
+          _ <- env.repository.upsert(record(ChallengeType.PasswordSubmit, attempts = List(earlier)))
+          reservations <- ZIO.foreachPar(1 to burst)(i =>
+            env.repository.reserveAttempt(
+              tenantId,
+              subject,
+              ChallengeType.PasswordSubmit,
+              now.plusSeconds(i.toLong),
+              reserveLimits,
+              banDurationSeconds,
+            ),
+          )
+          found <- env.repository.find(tenantId, subject, ChallengeType.PasswordSubmit)
+        yield assertTrue(
+          // one attempt is already on record, so two more fit
+          reservations.count(_.isInstanceOf[Reservation.Granted]) == 2,
+          found.exists(_.attempts.size == 3),
+        )
+      },
+      test("refundAttempt restores the row to what it was before the charge, deleting one the charge created") {
+        val earlier = now.minusSeconds(10).getEpochSecond
+        for
+          first <- env.repository.reserveAttempt(tenantId, subject, ChallengeType.PasswordSubmit, now, reserveLimits, banDurationSeconds)
+          _ <- ZIO.foreachDiscard(grantedOf(first))(env.repository.refundAttempt)
+          afterFirst <- env.repository.find(tenantId, subject, ChallengeType.PasswordSubmit)
+          _ <- env.repository.upsert(record(ChallengeType.PasswordSubmit, attempts = List(earlier)))
+          second <- env.repository.reserveAttempt(tenantId, subject, ChallengeType.PasswordSubmit, now, reserveLimits, banDurationSeconds)
+          _ <- ZIO.foreachDiscard(grantedOf(second))(env.repository.refundAttempt)
+          afterSecond <- env.repository.find(tenantId, subject, ChallengeType.PasswordSubmit)
+        yield assertTrue(afterFirst.isEmpty, afterSecond.exists(_.attempts == List(earlier)))
+      },
+      test("refundAttempt removes only its own attempt when the row has moved on since the charge") {
+        for
+          first <-
+            env.repository.reserveAttempt(tenantId, subject, ChallengeType.PasswordSubmit, now.plusSeconds(1), reserveLimits, banDurationSeconds)
+          _ <- env.repository.reserveAttempt(tenantId, subject, ChallengeType.PasswordSubmit, now.plusSeconds(2), reserveLimits, banDurationSeconds)
+          _ <- ZIO.foreachDiscard(grantedOf(first))(env.repository.refundAttempt)
+          found <- env.repository.find(tenantId, subject, ChallengeType.PasswordSubmit)
+        yield assertTrue(found.exists(_.attempts == List(now.plusSeconds(2).getEpochSecond)))
+      },
+      test("refundAttempt lifts a ban that the refunded attempt itself caused") {
+        // maxAttempts = 1 in the sole window: the first attempt trips the ban. A right password on that attempt must
+        // not leave the user banned.
+        // The instant has nanoseconds, as a clock's does; the row keeps microseconds, and the refund still has to recognise it.
+        val tightLimits = NonEmptyChunk(RateLimit(maxAttempts = 1, windowSeconds = 3600))
+        val at = now.plusNanos(123_456_789)
+        for
+          reservation <- env.repository.reserveAttempt(tenantId, subject, ChallengeType.PasswordSubmit, at, tightLimits, banDurationSeconds)
+          banned <- env.repository.find(tenantId, subject, ChallengeType.PasswordSubmit)
+          _ <- ZIO.foreachDiscard(grantedOf(reservation))(env.repository.refundAttempt)
+          found <- env.repository.find(tenantId, subject, ChallengeType.PasswordSubmit)
+        yield assertTrue(banned.exists(_.bannedUntil.isDefined), found.isEmpty)
+      },
+      test("refundAttempt does nothing when the row is gone") {
+        for
+          reservation <- env.repository.reserveAttempt(tenantId, subject, ChallengeType.PasswordSubmit, now, reserveLimits, banDurationSeconds)
+          _ <- env.repository.delete(tenantId, subject, ChallengeType.PasswordSubmit)
+          _ <- ZIO.foreachDiscard(grantedOf(reservation))(env.repository.refundAttempt)
+          found <- env.repository.find(tenantId, subject, ChallengeType.PasswordSubmit)
+        yield assertTrue(found.isEmpty)
       },
     )
 

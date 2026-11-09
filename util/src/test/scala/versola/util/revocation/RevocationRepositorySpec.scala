@@ -122,6 +122,20 @@ trait RevocationRepositorySpec extends DatabaseSpecBase[RevocationRepositorySpec
           page.revocations.map(_.expiresAt) == List(firstAction.plusSeconds(3600)),
         )
       } @@ TestAspect.withLiveClock,
+      test("re-revoking a bounded key with no bound widens it to cover every token, and never the other way") {
+        // The cache's rule: no bound beats any instant. The write has to agree, or the two replicas
+        // that read the same row would answer differently for a key written both ways.
+        val bound = Instant.now().truncatedTo(ChronoUnit.MICROS)
+        val expiry = bound.plusSeconds(3600)
+        for
+          _ <- env.revoke(Revocation(sub("bounded"), expiry, Some(bound)))
+          _ <- env.revoke(Revocation(sub("bounded"), expiry, None))
+          _ <- env.revoke(Revocation(sub("unbounded"), expiry, None))
+          _ <- env.revoke(Revocation(sub("unbounded"), expiry, Some(bound)))
+          page <- env.repository.activeSince(RevocationCursor.Beginning, limit = 10)
+          byKey = page.revocations.map(r => r.key -> r.issuedBefore).toMap
+        yield assertTrue(byKey(sub("bounded")).isEmpty, byKey(sub("unbounded")).isEmpty)
+      } @@ TestAspect.withLiveClock,
     )
 
 object RevocationRepositorySpec:

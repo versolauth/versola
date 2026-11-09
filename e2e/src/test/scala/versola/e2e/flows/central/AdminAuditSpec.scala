@@ -57,6 +57,9 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
       .timeout(20.seconds)
       .someOrElseZIO(CentralDatabase.auditEvents(targetId))
 
+  /** What Postgres prints for an `inet` without its mask: an IPv4 address or an IPv6 one. */
+  private val addressText = raw"([0-9]{1,3}(\.[0-9]{1,3}){3}|[0-9a-f:]+)".r
+
   private def detail(row: CentralDatabase.AuditRow): Json.Obj = row.details.fromJson[Json.Obj].getOrElse(Json.Obj())
 
   private def report(central: CentralApi, userId: String, query: (String, String)*) =
@@ -106,6 +109,8 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
           // who: the client the token was issued to, as edge verified it, and its tenant
           stored.forall(row => row.actorType == "client" && row.actorId.contains(c.provisionerClientId)),
           stored.forall(_.tenantId.exists(_.nonEmpty)),
+          // from where: the address edge found for the caller (its `client-ip` setting), which central keeps in `ip`
+          stored.forall(_.ip.exists(address => addressText.matches(address))),
           stored.forall(row => row.targetType.contains("client") && row.targetId.contains(id)),
           // what changed: the names of the fields of the request, never their values; the one that names the client is not a change
           update.flatMap(row => detail(row).get("changed")).contains(Json.Arr(
@@ -128,13 +133,20 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
         session <- ProvisionerCredential.session(auth, c, List("resource://central"))
         id <- CentralApi.id("audit-spoof")
         spoof = "00000000-0000-0000-0000-00000000dead"
+        forgedIp = "198.51.100.66"
         created <- edge.proxyDpop(
           Method.POST,
           "central",
           "/configuration/clients/service",
           session,
           Some(serviceBody(id)),
-          query = List("actorId" -> spoof, "actorTenantId" -> "someone-elses", "actorClientId" -> "someone-else", "actorSessionId" -> "forged"),
+          query = List(
+            "actorId" -> spoof,
+            "actorTenantId" -> "someone-elses",
+            "actorClientId" -> "someone-else",
+            "actorSessionId" -> "forged",
+            "actorIp" -> forgedIp,
+          ),
         )
         _ <- edge.proxyDpop(Method.DELETE, "central", "/configuration/clients", session, query = List("clientId" -> id))
         stored <- rows(id)(_.exists(_.kind == "admin.client.delete"))
@@ -144,6 +156,7 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
         // the token's actor, not the one the caller wrote
         stored.forall(row => row.actorType == "client" && row.actorId.contains(c.provisionerClientId)),
         stored.forall(row => !row.actorId.contains(spoof) && !row.tenantId.contains("someone-elses")),
+        stored.forall(row => !row.ip.contains(forgedIp)),
       )
     },
     test("rotating a client secret is of high severity and reveals a secret once more") {
@@ -181,10 +194,14 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
         created <- asAdmin.post("/users", Fixtures.user(login = Some(login)))
         id <- created.stringAt("id")
         patched <- asAdmin.patch("/users", Json.Obj("id" -> Json.Str(id), "login" -> Json.Str(renamed)))
+        // The summary of the administrators' changes and the list of events are two reads, one after the other, so a row that
+        // lands between them is in the summary and not yet in the list: wait for both to hold the update.
         first <- reportWhere(asAdmin, id)(result =>
-          adminActions(result).map(actions =>
-            actions.exists(_.str("kind").contains("admin.user.update")) && actions.exists(_.str("kind").contains("admin.user.create")),
-          ),
+          result.obj.map: body =>
+            val actions = body.obj("summary").fold(Chunk.empty[Json.Obj])(_.objs("adminActions"))
+            val listed = body.objs("events").filter(_.str("source").contains("central")).flatMap(_.str("kind"))
+            actions.exists(_.str("kind").contains("admin.user.update")) && actions.exists(_.str("kind").contains("admin.user.create")) &&
+            listed.contains("admin.user.update"),
         )
         body <- first.obj
         actions <- adminActions(first)

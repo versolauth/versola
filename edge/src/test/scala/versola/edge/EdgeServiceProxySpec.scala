@@ -12,6 +12,7 @@ import versola.edge.revocation.TokenRevocationService
 import versola.util.cel.CelEvaluator
 import versola.util.http.{
   Checkpoint,
+  ClientIpSource,
   DeclaredLimit,
   DeclaredOwner,
   DeclaredRateLimit,
@@ -47,6 +48,7 @@ import zio.json.{DecoderOps, EncoderOps}
 import zio.metrics.{Metric, MetricLabel}
 import zio.test.*
 
+import java.net.InetAddress
 import java.security.cert.X509Certificate
 import java.security.interfaces.{ECPrivateKey, ECPublicKey, RSAPublicKey}
 import java.security.{InvalidKeyException, KeyPairGenerator, PrivateKey, PublicKey}
@@ -247,6 +249,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         security: SecurityService,
         verifier: DpopVerifier = dpopVerifier,
         sessions: session.EdgeSessionRepository = sessionRepository,
+        config: EdgeConfig = edgeConfig,
     ): EdgeService =
       EdgeService.Impl(
         clientService,
@@ -257,7 +260,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         ssoClient,
         security,
         httpClient,
-        edgeConfig,
+        config,
         sessions,
         revocationService,
         jwksService,
@@ -392,6 +395,76 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
 
   private val securityServiceLayer: ULayer[SecurityService] =
     SecureRandom.live >>> SecurityService.live
+
+  /** What central's registration injects to say where an administrator's call came from (`BootstrapService.actorInjects`) reads the
+    * address edge finds for the caller. */
+  private val actorIpRule = InjectRule(InjectTarget.query, "actorIp", "has(request.clientIp) ? request.clientIp : ''")
+
+  /** What reaches upstream as `actorIp` for a call shaped by `request`, on an edge configured by `configure`. */
+  private def upstreamActorIp(request: Request => Request, configure: EdgeConfig => EdgeConfig) =
+    val env = new Env
+    for
+      _ <- env.setupDefaults()
+      capture <- captureUpstream()
+      client <- ZIO.service[Client]
+      security <- ZIO.service[SecurityService]
+      _ <- env.withResources(usersResource(usersEndpoint(inject = Vector(actorIpRule))))
+      token <- env.signToken()
+      service = env.buildService(client, security, config = configure(env.edgeConfig))
+      response <- service.proxy(
+        ResourceId("users-api"),
+        Path.decode("/users"),
+        request(Request.get(URL.empty / "users").addCookie(sessionCookie(token))),
+      )
+      upstream <- capture.get
+    yield (response.status, upstream.map(_.url.queryParams.getAll("actorIp")))
+
+  private def peer(address: String)(request: Request) = request.copy(remoteAddress = Some(InetAddress.getByName(address)))
+
+  private def clientAddressSuite =
+    suite("the caller's address as a rule reads it (request.clientIp)")(
+      test("under client-ip = socket it is the peer of the connection, and an actorIp the caller sent is replaced") {
+        for
+          (status, ips) <- upstreamActorIp(
+            request => peer("203.0.113.7")(request.updateURL(_.addQueryParam("actorIp", "198.51.100.66"))),
+            identity,
+          )
+        yield assertTrue(status == Status.Ok, ips.contains(Chunk("203.0.113.7")))
+      },
+      test("under client-ip = socket the forwarding header is not read, whatever a caller writes in it") {
+        for
+          (_, ips) <- upstreamActorIp(request => peer("203.0.113.7")(request.addHeader("X-Real-IP", "198.51.100.66")), identity)
+        yield assertTrue(ips.contains(Chunk("203.0.113.7")))
+      },
+      test("under client-ip = forwarded it is the configured header, as the address it is, and not the peer") {
+        for
+          (_, ips) <- upstreamActorIp(
+            request => peer("10.0.0.1")(request.addHeader("X-Forwarded-For-Edge", "2001:db8:1:2::1")),
+            _.copy(clientIp = ClientIpSource.Forwarded, clientIpHeader = "X-Forwarded-For-Edge"),
+          )
+        yield assertTrue(ips.contains(Chunk("2001:db8:1:2::1")))
+      },
+      test("under client-ip = forwarded a missing or malformed header sends nothing: the peer is the proxy's, not the caller's") {
+        val forwarded = (config: EdgeConfig) => config.copy(clientIp = ClientIpSource.Forwarded)
+        for
+          (_, missing) <- upstreamActorIp(request => peer("10.0.0.1")(request.updateURL(_.addQueryParam("actorIp", "198.51.100.66"))), forwarded)
+          (_, malformed) <- upstreamActorIp(request => peer("10.0.0.1")(request.addHeader("X-Real-IP", "unknown")), forwarded)
+        yield assertTrue(missing.contains(Chunk.empty), malformed.contains(Chunk.empty))
+      },
+      test("on the mutual-TLS listener, where the caller is a certificate, nothing is sent, and what the caller wrote is removed") {
+        val certificate = TestCertificates.generate(subject = "CN=bank-a,O=Bank,C=KZ").certificate
+        for
+          (_, ips) <- upstreamActorIp(
+            request => peer("10.0.0.1")(request.updateURL(_.addQueryParam("actorIp", "198.51.100.66")).copy(remoteCertificate = Some(certificate))),
+            identity,
+          )
+        yield assertTrue(ips.contains(Chunk.empty))
+      },
+      test("a connection with no address sends nothing") {
+        for (_, ips) <- upstreamActorIp(identity, identity)
+        yield assertTrue(ips.contains(Chunk.empty))
+      },
+    )
 
   def spec = suite("EdgeService.proxy")(
     proxySuite,
@@ -1945,6 +2018,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         upstream.exists(_.url.queryParams.getAll("actor") == Chunk("user-1")),
       )
     },
+    clientAddressSuite,
     // Mirrors "returns 500 when an allow expression cannot be evaluated at all", but for the
     // inject-rule evaluator: a rule that cannot be evaluated is a configuration error, so
     // it fails the whole request with 500 rather than silently omitting the header.
@@ -2131,6 +2205,60 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response.header(Header.Location).exists(_.url.encode == s"/login/${presetId}"),
         setCookieHeader.exists(c => c.name == EdgeSessionCookie.name && c.content.isEmpty),
         setCookieHeader.flatMap(_.maxAge).contains(Duration.Zero),
+      )
+    },
+    // A token revoked on its own would otherwise come back through the refresh: auth, whose family and session are
+    // still live, grants it, and only the new token's claims were checked.
+    test("does not refresh an expired cookie token that was revoked, and never presents the refresh token to auth") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.withClients(oauthClient)
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        _ <- env.revocationService.isRevoked.returnsZIO((keys, _) => ZIO.succeed(keys.contains(RevocationKey.Jti(AccessTokenId("old-jti")))))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        setCookieHeader = response.header(Header.SetCookie).map(_.value)
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        response.header(Header.Location).exists(_.url.encode == s"/login/${presetId}"),
+        setCookieHeader.exists(c => c.name == EdgeSessionCookie.name && c.content.isEmpty),
+        env.sessionRepository.claimRefresh.calls.isEmpty,
+        env.ssoClient.exchangeRefreshToken.calls.isEmpty,
+        // asked about the keys of the old token's claims
+        env.revocationService.isRevoked.calls.map(_._1).headOption.contains(
+          List(
+            RevocationKey.Jti(AccessTokenId("old-jti")),
+            RevocationKey.Sid(SessionId("sso-session-1")),
+            RevocationKey.Sub("user-1"),
+          ),
+        ),
+      )
+    },
+    test("does not refresh an expired cookie token whose session was revoked") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.withClients(oauthClient)
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        _ <- env.revocationService.isRevoked.returnsZIO((keys, _) => ZIO.succeed(keys.contains(RevocationKey.Sid(SessionId("sso-session-1")))))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        env.sessionRepository.claimRefresh.calls.isEmpty,
+        env.ssoClient.exchangeRefreshToken.calls.isEmpty,
       )
     },
     unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token was sealed under another key")((security, _) =>
