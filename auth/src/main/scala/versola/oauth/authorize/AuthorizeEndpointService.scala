@@ -1,5 +1,7 @@
 package versola.oauth.authorize
 
+import versola.audit.AuditSupport.*
+import versola.audit.{AuthAuditDetails, AuthAuditKinds}
 import versola.oauth.AuthMetrics
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
 import versola.oauth.challenge.password.{ConsumedLink, OneTimeLink, OneTimeLinkPurpose, PasswordRepository}
@@ -17,6 +19,7 @@ import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
 import versola.user.model.UserId
 import versola.util.MAC
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Observability
 import versola.util.{AuthPropertyGenerator, Base64Url, CoreConfig, JWT, Secret, SecureRandom, SecurityService}
 import zio.json.ast.Json
@@ -45,7 +48,7 @@ object AuthorizeEndpointService:
     case Ignore
 
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       conversationRepository: ConversationRepository,
@@ -63,7 +66,31 @@ object AuthorizeEndpointService:
       acrResolutionService: AcrResolutionService,
       consentService: ConsentService,
       passwordRepository: PasswordRepository,
+      audit: AuditEvents,
   ) extends AuthorizeEndpointService:
+
+    /** `login.step` for a spent one-time link: it stands in for the password step of the conversation (what a correct
+      * temporary password writes), so that an investigator can tell a login that came in through a link from one that
+      * typed the password, and sees a link that was spent and then abandoned. Only a link that was actually spent is
+      * recorded, never one that was merely presented: unknown tokens can be sprayed at no cost. Nothing of the token goes in. */
+    private def auditLinkSpent(authId: AuthId, userId: UserId, purpose: OneTimeLinkPurpose): UIO[Unit] =
+      audit.log(
+        AuditDraft(
+          kind = AuthAuditKinds.LoginStep,
+          outcome = AuditOutcome.success,
+          reason = None,
+          actor = None,
+          userId = Some(userId),
+          target = None,
+          details = AuthAuditDetails.LoginStep(
+            step = s"link_${purpose.value}",
+            conversationId = authId.toString,
+            kind = "login",
+            subjectHash = None,
+            afDecision = None,
+          ),
+        ),
+      )
 
     override def authorize(
         request: AuthorizeRequest,
@@ -161,8 +188,8 @@ object AuthorizeEndpointService:
                 passwordRepository.consumeLink(OneTimeLink.hash(token), accepted = Set(OneTimeLinkPurpose.FirstLogin)).flatMap:
                   case None => ordinaryLogin
                   // A purpose is accepted here only together with its case: add both.
-                  case Some(ConsumedLink(userId, OneTimeLinkPurpose.FirstLogin)) =>
-                    createConversation(
+                  case Some(ConsumedLink(userId, purpose @ OneTimeLinkPurpose.FirstLogin)) =>
+                    auditLinkSpent(authId, userId, purpose) *> createConversation(
                       authId,
                       request,
                       flow,

@@ -3,6 +3,7 @@ package versola.oauth.authorize
 import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
+import versola.audit.{AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseMode, ResponseTypeEntry}
 import versola.oauth.challenge.password.{ConsumedLink, OneTimeLink, OneTimeLinkPurpose, PasswordRepository}
@@ -36,6 +37,7 @@ import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
 import versola.user.model.UserRecord
+import versola.util.audit.AuditOutcome
 import versola.util.{AuthPropertyGenerator, Email, JWT, MAC, Phone, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.http.URL
@@ -154,6 +156,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     val acrResolver = stub[AcrResolutionService]
     val consentService = stub[ConsentService]
     val passwordRepository = stub[PasswordRepository]
+    val audit = CapturingAuditEvents.shared()
     // Registration is a tenant decision; a test that is about it says so.
     configurationService.registrationAvailable.returnsWith(ZIO.succeed(false))
     val service = AuthorizeEndpointService.Impl(
@@ -172,6 +175,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       acrResolver,
       consentService,
       passwordRepository,
+      audit,
     )
 
   val phoneHint = Phone("+12025551234")
@@ -289,6 +293,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           conversation = env.conversationRepository.create.calls.head._2
           spent = env.passwordRepository.consumeLink.calls.head
           advanceTimes = env.conversationRouter.advance.times
+          rows <- env.audit.of(AuthAuditKinds.LoginStep)
         yield assertTrue(
           result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
           conversation.userId == Some(adminId),
@@ -298,6 +303,12 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           Arrays.equals(spent._1, OneTimeLink.hash("the-token")),
           spent._2 == Set(OneTimeLinkPurpose.FirstLogin),
           advanceTimes == 1,
+          // the spent link is on the audit trail as the step that stood in for the password, with no token in it
+          rows.size == 1,
+          rows.head.userId == Some(adminId),
+          rows.head.outcome == AuditOutcome.success,
+          rows.head.details.toJson.toString.contains("link_first_login"),
+          !rows.head.details.toJson.toString.contains("the-token"),
         )
       },
       test("a token whose user no longer exists is refused, not turned into a login with the password already passed") {
@@ -329,12 +340,15 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           result <- env.service.authorize(baseRequest.copy(linkToken = Some("unknown")))
           conversation = env.conversationRepository.create.calls.head._2
           advanceTimes = env.conversationRouter.advance.times
+          rows <- env.audit.of(AuthAuditKinds.LoginStep)
         yield assertTrue(
           result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
           conversation.userId.isEmpty,
           conversation.amr.isEmpty,
           !conversation.needsPasswordChange,
           advanceTimes == 0,
+          // a token that was only presented, never spent, writes nothing: unknown tokens can be sprayed for free
+          rows.isEmpty,
         )
       },
       test("a browser that already has a session is not turned into the admin: the token is neither read nor spent") {

@@ -37,9 +37,10 @@ trait PasswordRepository:
   /** Creates a temporary password (not counted in history, not checked for reuse).
     * Deletes any existing temporary passwords for the user before inserting.
     *
-    * A temporary password is set by an administrator's reset ([[PasswordChangeEffect.EndAllSessions]], applied
-    * in this transaction) or by the bootstrap ([[PasswordChangeEffect.Untouched]]). The sessions `change` ended
-    * come back, for the caller to tell their relying parties.
+    * A temporary password is set here by an administrator's reset ([[PasswordChangeEffect.EndAllSessions]], applied
+    * in this transaction); the bootstrap uses [[createBootstrapCredential]], which also issues its one-time link and
+    * ends nothing. The sessions `change` ended come back, for the caller to tell their relying parties. A reset also
+    * revokes the user's `first_login` link.
     */
   def createTemporary(
       userId: UserId,

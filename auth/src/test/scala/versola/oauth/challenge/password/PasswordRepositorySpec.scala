@@ -443,7 +443,17 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
           mine.exists(_.issuedBefore.contains(now)),
         )
       },
+      // The call the bootstrap actually makes (it replaced createTemporary(..., Untouched)): it must leave sessions and
+      // the revocation records alone, as the call it replaced did.
       test("the bootstrap's temporary password ends nothing and records nothing") {
+        for
+          session <- seedSession(env, userId1, userAgentId1, 1)
+          created <- bootstrap(env, userId1, token(1))
+          entries <- recorded(env)
+          after <- env.sessions.findSession(session.mac)
+        yield assertTrue(created, entries.isEmpty, after.isDefined)
+      },
+      test("a temporary password set with Untouched ends nothing and records nothing") {
         for
           now <- Clock.instant
           session <- seedSession(env, userId1, userAgentId1, 1)

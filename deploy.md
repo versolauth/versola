@@ -1306,9 +1306,10 @@ records query parameters only if listed in `logQuery`. Auth does not keep the ra
 holds its hash. The one exception is a client that requires **PAR** or a signed request object (JAR):
 there the token travels inside the pushed or signed request, and `pushed_authorization_requests`
 holds it until the request is consumed or expires. Without `first-login-url` no token is issued. The
-migration `V0035` adds the `one_time_links` table; the `cleanup.tables` entry for it is written by
-`gen-env` into a newly generated `auth.conf`, an existing one needs it added by hand (without it an
-expired row just stays until the next bootstrap, a password change or a purge replaces it).
+links live in the `one_time_links` table, and the `cleanup.tables` entry in `auth.conf` removes expired
+rows (without it an expired row just stays until the next bootstrap, a password change or a purge
+replaces it). Spending a link writes a `login.step` audit row with the step `link_first_login` and the
+user, standing in for the password step; a token that was only presented, never spent, writes nothing.
 
 Open the link yourself, in the browser you will sign in with. Do not paste it into chat or mail: a
 link preview that follows it spends the token, and you are left with an ordinary sign-in page. The
@@ -1338,9 +1339,7 @@ grep ADMIN_BOOTSTRAP_PASSWORD <bundle printed by versola up>/auth.secrets.env
 ```
 
 If the temporary password expired without a first login, `docker restart versola-auth` makes
-bootstrap set a fresh one (and a new link). An environment upgraded to this release while its
-temporary password is still valid gets no link until that password expires; set `BOOTSTRAP_RESET=1`
-once to get one now. More admin users: Console → **Users** → **Create
+bootstrap set a fresh one (and a new link). More admin users: Console → **Users** → **Create
 User**, **Edit Roles**, **Reset Password** — in prod the temporary password can only be delivered by
 email or SMS, and neither is configured yet ([5](#5-known-gaps)).
 
