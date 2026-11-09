@@ -229,7 +229,10 @@ services:
       # start auth/edge (see the comment on auth's depends_on below); it
       # can't do that without a published port, since it runs as a plain
       # process on the host, not inside this Compose network.
-      - "8091:8091"
+      # Host-side probes need loopback only; publishing diagnostics on every interface would
+      # expose the local demo's metrics and health endpoints to the network. The listener
+      # inside the container still binds all interfaces so Docker can forward to it.
+      - "127.0.0.1:8091:8091"
 
   auth:
     image: ${REGISTRY}/versola-auth:${VERSION}
@@ -287,7 +290,8 @@ services:
       - versola-auth-diagnostics-local:/diagnostics
       - versola-mtls-local:/app/mtls:ro
     ports:
-      - "8081:8081"
+      # Host-side diagnostics only, as central's above.
+      - "127.0.0.1:8081:8081"
 
   edge:
     image: ${REGISTRY}/versola-edge:${VERSION}
@@ -326,7 +330,8 @@ services:
       - versola-edge-diagnostics-local:/diagnostics
       - versola-mtls-local:/app/mtls:ro
     ports:
-      - "8096:8096"
+      # Host-side diagnostics only, as central's above.
+      - "127.0.0.1:8096:8096"
 
   # ---- Certificates for mutual TLS (#440) ---------------------------------------------------------
   # Three certificate relationships, each with its own rotation -- see develop.md "Certificate

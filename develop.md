@@ -132,8 +132,11 @@ The script first asks for the environment **Name** (default `local`):
     - `edge/dev/env.conf`
 - **`docker-local`** — also runs non-interactively, for the case where auth/central/edge
   each run in their own container on one Docker Compose bridge network, sitting behind
-  nginx as the single published port (used by `versola bootstrap local`). Files are
-  written to `.local/env/docker-local/` (see below).
+  nginx as the entry point for application traffic (used by `versola bootstrap local`). Files are
+  written to `.local/env/docker-local/` (see below). The proxy (`2821`), OpenBao (`8200`) and the
+  diagnostic ports (central `8091`, auth `8081`, edge `8096`) are published on `127.0.0.1` only.
+  Diagnostics serve `/metrics`, `/liveness` and `/readiness`; the CLI polls them from the host.
+  Listeners inside the containers remain reachable on the Compose network.
 
   Defaults split into two kinds, and it matters which is which:
     - **Real network calls between containers** (Postgres, `central`'s and `edge`'s calls
