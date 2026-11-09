@@ -123,6 +123,42 @@ object AuthBootstrapServiceSpec extends UnitSpecBase:
           resets = env.passwordRepository.resetBootstrapCredential.times
         yield assertTrue(resets == 0)
       },
+      test("BOOTSTRAP_RESET=true and surrounding spaces are accepted like 1") {
+        val env = Env(firstLoginUrl = Some(linkBase), credentialCreated = true)
+        for
+          _ <- TestSystem.putEnv("BOOTSTRAP_RESET", " True ")
+          _ <- env.run
+          resets = env.passwordRepository.resetBootstrapCredential.times
+        yield assertTrue(resets == 1)
+      },
+      test("an unrecognised BOOTSTRAP_RESET value resets nothing and says so") {
+        val env = Env(firstLoginUrl = Some(linkBase), credentialCreated = true)
+        for
+          _ <- TestSystem.putEnv("BOOTSTRAP_RESET", "yes")
+          _ <- env.run
+          lines <- logged
+          resets = env.passwordRepository.resetBootstrapCredential.times
+        yield assertTrue(resets == 0, lines.exists(_.contains("BOOTSTRAP_RESET='yes' is not recognised")))
+      },
+      test("a blank first-login URL issues no token and warns instead of printing an unopenable link") {
+        val env = Env(firstLoginUrl = Some("  "), credentialCreated = true)
+        for
+          _ <- env.run
+          lines <- logged
+          storedHash = env.passwordRepository.createBootstrapCredential.calls.head._5
+        yield assertTrue(
+          storedHash.isEmpty,
+          !lines.exists(_.startsWith("first-login link for admin:")),
+          lines.exists(_.contains("first-login-url is blank")),
+        )
+      },
+      test("a first-login URL that already has a query keeps it and appends the token with &") {
+        val env = Env(firstLoginUrl = Some(s"$linkBase?ui_locales=ru"), credentialCreated = true)
+        for
+          _ <- env.run
+          lines <- logged
+        yield assertTrue(lines.exists(_.startsWith(s"first-login link for admin: $linkBase?ui_locales=ru&${OneTimeLink.ParamName}=")))
+      },
       // The log output is read from the test logger, which these specs would otherwise share while they run in parallel.
     ) @@ TestAspect.sequential,
   )

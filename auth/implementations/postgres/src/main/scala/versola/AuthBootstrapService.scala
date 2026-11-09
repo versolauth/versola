@@ -103,7 +103,11 @@ object AuthBootstrapService:
               expiresAt = now.plusSeconds(BootstrapPasswordTtlSeconds)
               // `createBootstrapCredential` replaces the former `createTemporary(..., Untouched)`: a bootstrap
               // revokes nothing, and it also issues the one-time link under the same lock.
-              link <- ZIO.foreach(cfg.firstLoginUrl)(url => OneTimeLink.generate(secureRandom).map(url -> _))
+              // A blank `first-login-url` would print a link that cannot be opened: treat it as not configured.
+              firstLoginUrl = cfg.firstLoginUrl.map(_.trim).filter(_.nonEmpty)
+              _ <- ZIO.logWarning("bootstrap.first-login-url is blank: no first-login link is issued")
+                .when(cfg.firstLoginUrl.exists(_.isBlank))
+              link <- ZIO.foreach(firstLoginUrl)(url => OneTimeLink.generate(secureRandom).map(url -> _))
               created <- passwordRepo.createBootstrapCredential(
                 userId = userId,
                 passwordHash = Secret(hash),
@@ -114,11 +118,20 @@ object AuthBootstrapService:
               _ <- ZIO.when(created):
                 ZIO.logInfo(s"Set temporary bootstrap password for admin user '${cfg.login}'") *>
                   // The only place the token appears: whoever deploys (versola-cli, #82) reads this line. It is a secret for up to
-                  // 24 hours, single use, and bound to a password change; it is never written to a file.
+                  // 24 hours, single use, and bound to a password change; it is never written to a file. Logged at
+                  // WARN, not INFO: only a hash is stored, so under LOG_LEVEL=warn an INFO line would be dropped and the
+                  // link lost with nothing to say so. It is a one-off line, so WARN costs no noise.
                   ZIO.foreachDiscard(link): (url, token) =>
-                    ZIO.logInfo(s"first-login link for admin: $url?${OneTimeLink.ParamName}=$token")
+                    val separator = if url.contains("?") then "&" else "?"
+                    ZIO.logWarning(s"first-login link for admin: $url$separator${OneTimeLink.ParamName}=$token")
             yield ()
         yield ()
 
+    /** `1` or `true`. Any other non-empty value is reported rather than ignored in silence: an operator who believes a
+      * leaked link was revoked must not be left with it working. */
     private val resetRequested: UIO[Boolean] =
-      System.env("BOOTSTRAP_RESET").map(_.contains("1")).orElseSucceed(false)
+      System.env("BOOTSTRAP_RESET").orElseSucceed(None).flatMap:
+        case Some(value) if Set("1", "true").contains(value.trim.toLowerCase) => ZIO.succeed(true)
+        case Some(value) if value.trim.nonEmpty =>
+          ZIO.logWarning(s"BOOTSTRAP_RESET='$value' is not recognised (expected 1): nothing is reset").as(false)
+        case _ => ZIO.succeed(false)

@@ -1287,7 +1287,9 @@ from the link itself.
 
 When `auth.conf` has `bootstrap.first-login-url` (`versola-tools` writes it on vps:
 `<edge-url>/login/central-admin`), bootstrap also issues a **one-time link of purpose `first_login`**
-together with the temporary password and logs one line, once, by the replica that created it:
+together with the temporary password and logs one line, once, by the replica that created it, at
+level WARN (only the token's hash is stored, so under `LOG_LEVEL=warn` an INFO line would be dropped
+and the link lost; a blank `first-login-url` issues no link and logs a warning):
 
 ```
 first-login link for admin: <edge-url>/login/central-admin?link_token=<token>
@@ -1321,7 +1323,8 @@ can still set a password in that time, so after a leak wait that long before rel
 
 A spent or lost link does **not** take the temporary password with it: it is still valid for its 24
 hours, and the password path below is the immediate way in. To get a new link without waiting, start
-`auth` with `BOOTSTRAP_RESET=1` in its environment. This is a manual, operator-level step with no
+`auth` with `BOOTSTRAP_RESET=1` (or `true`; any other non-empty value is refused with a warning in the
+log) in its environment. This is a manual, operator-level step with no
 command of its own yet: the vps compose gives the container `auth.secrets.env` and an `environment:`
 block, the variable has to be in one of them, and `docker restart` does **not** re-read either, so the
 container has to be recreated (`docker compose up -d` on the bundle). `versola` rewrites
