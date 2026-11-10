@@ -836,7 +836,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `/users/registrations`, the `/service/*` tooling) needs a valid `actorId` (a user, or the client a client-credentials token was
   issued to). The refusal is counted in `audit_actor_missing_total{reason}` (`absent`, `invalid`) and in `audit_actor_refused_total{reason}`
   and, for a change, recorded as a denial with the reason `actor_required`. So a script that holds the central resource secret and calls
-  central directly is refused; it goes through edge, which states who it is.
+  central directly is refused; it goes through edge, which states who it is. The actor is not signed: it is trusted because only edge can reach central (its admin API is not public) and only edge holds the credential for it, so anything that reaches central with that credential is as trusted as edge. Keep central unreachable from anywhere else; a channel that proves the caller cryptographically (mutual TLS) would replace this assumption.
 
   The `ip` of an `admin.*` row is the address edge found for the caller by its own `client-ip` setting (`socket`, the peer of the
   connection, or `forwarded`, the header named by `client-ip-header`), so it is only as right as that setting: with `socket` behind a
