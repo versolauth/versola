@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.edge.dpop.DpopVerifier
-import versola.edge.model.{AccessTokenId, ClientId, Confirmation, RefreshTokenFamilyId, RoleId, SessionId, TenantId}
+import versola.edge.model.{AccessToken, AccessTokenId, ClientId, Confirmation, RefreshTokenFamilyId, RoleId, SessionId, TenantId}
 import versola.edge.revocation.{EdgeRevocationKeys, TokenRevocationService}
 import versola.util.JWT
 import versola.util.revocation.RevocationKey
@@ -32,9 +32,13 @@ enum AuthorizeOutcome extends RuntimeException, scala.util.control.NoStackTrace:
   * proof, and one carrying `cnf.x5t#S256` only out of the session cookie, or
   * `/permissions/me` would be a way around the binding the proxy enforces.
   */
+/** A caller [[authorize]] accepted: the claims of its token, and the token itself, which a caller of an edge endpoint may need to speak
+  * for it to auth (the `/userinfo` call of `/permissions/me`). Binding was verified for the presentation that brought it. */
+case class AuthorizedCaller(claims: PermissionsClaims, accessToken: AccessToken)
+
 def authorize(
     request: Request,
-): ZIO[JwksService & TokenRevocationService & DpopVerifier, AuthorizeOutcome, PermissionsClaims] =
+): ZIO[JwksService & TokenRevocationService & DpopVerifier, AuthorizeOutcome, AuthorizedCaller] =
   val presented = request.header(Header.Authorization)
     .collect {
       case Header.Authorization.Bearer(bearer) => (bearer.stringValue, Presentation.Bearer)
@@ -62,7 +66,7 @@ def authorize(
         )
         _ <- ZIO.fail(AuthorizeOutcome.Denied).when(revoked)
         _ <- verifyBinding(request, raw, claims, presentation)
-      yield claims
+      yield AuthorizedCaller(claims = claims, accessToken = AccessToken(raw))
 
     case None =>
       ZIO.fail(AuthorizeOutcome.Denied)

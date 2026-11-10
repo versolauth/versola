@@ -336,7 +336,7 @@ export class VersolaUserActivity extends LitElement {
 
   override connectedCallback() {
     super.connectedCallback();
-    // The zone saved under Preferences shows without a reload, and so does a zone cleared there.
+    // The zone the shell learns after the page may be drawn shows without a reload.
     this.stopProfileZone = onProfileZoneChange(() => {
       this.profileZone = getProfileZone();
       this.storedZoneChoice = getStoredZoneChoice();
@@ -414,7 +414,7 @@ export class VersolaUserActivity extends LitElement {
   private get zoneNote(): string {
     switch (this.zoneChoice) {
       case 'utc': return 'Times are shown in UTC.';
-      case 'zone': return `Times are shown in your time zone from Preferences (${this.zone}).`;
+      case 'zone': return `Times are shown in your time zone (${this.zone}), set on My Security.`;
       default: return `Times are shown in your browser's time zone (${this.zone}).`;
     }
   }

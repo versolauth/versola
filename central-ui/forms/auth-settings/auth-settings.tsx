@@ -34,6 +34,8 @@ type AccountSettingsStep = {
   passkeys: AccountPasskey[];
   hasPassword: boolean;
   passwordRegex: string;
+  /** The user's own `zoneinfo` claim; absent when none is stored. */
+  zoneinfo?: string;
 };
 
 interface FormConfig extends BaseFormConfig {
@@ -150,6 +152,24 @@ async function readRefusal(res: Response): Promise<Partial<PasswordRefusal>> {
   }
 }
 
+/** The names the browser can show times in, offered while typing; empty when it cannot list them (the server then decides). */
+function browserZoneNames(): string[] {
+  try {
+    const names = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf?.('timeZone') ?? [];
+    return names.includes('UTC') ? names : ['UTC', ...names];
+  } catch {
+    return [];
+  }
+}
+
+function browserZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone ?? '';
+  } catch {
+    return '';
+  }
+}
+
 function AccountSettingsForm(props: { config: FormConfig }) {
   const { t, locale: currentLocale, changeLocale } = createTranslations(props.config);
   const step = props.config.step;
@@ -171,6 +191,11 @@ function AccountSettingsForm(props: { config: FormConfig }) {
   const [changingPassword, setChangingPassword] = createSignal(false);
   const [passwordErrors, setPasswordErrors] = createSignal<PasswordFieldErrors>({});
   const [passwordChanged, setPasswordChanged] = createSignal(false);
+  const zoneNames = browserZoneNames();
+  const [zone, setZone] = createSignal(step.zoneinfo ?? '');
+  const [zoneSaving, setZoneSaving] = createSignal(false);
+  const [zoneSaved, setZoneSaved] = createSignal(false);
+  const [zoneError, setZoneError] = createSignal<'zone_invalid' | 'zone_save_failed' | null>(null);
   const [deletionRequest, setDeletionRequest] = createSignal<DeletionRequest | null>(null);
   // The sign-in that was asked for has ended, one way or the other, and sent the browser back here.
   const returnError = takeReturnError();
@@ -198,6 +223,37 @@ function AccountSettingsForm(props: { config: FormConfig }) {
       }
     } finally {
       setBusySessionId(null);
+    }
+  };
+
+  // An empty field clears the stored zone; the browser's own is then used. The server checks the name too: this only saves a round trip.
+  const submitZone = async (event: Event) => {
+    event.preventDefault();
+    if (zoneSaving()) return;
+    const value = zone().trim();
+    setZoneSaved(false);
+    if (value && zoneNames.length > 0 && !zoneNames.includes(value)) {
+      setZoneError('zone_invalid');
+      return;
+    }
+    setZoneError(null);
+    setZoneSaving(true);
+    try {
+      const res = await fetch(`${base}zoneinfo`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ zoneinfo: value || null }),
+      });
+      if (res.ok) {
+        setZone(value);
+        setZoneSaved(true);
+      } else {
+        setZoneError(res.status === 400 ? 'zone_invalid' : 'zone_save_failed');
+      }
+    } catch {
+      setZoneError('zone_save_failed');
+    } finally {
+      setZoneSaving(false);
     }
   };
 
@@ -575,6 +631,45 @@ function AccountSettingsForm(props: { config: FormConfig }) {
           </form>
         </section>
       </Show>
+
+      <section class="account-section">
+        <h2>{t().zone_title}</h2>
+        <form class="account-zone-form" onSubmit={submitZone}>
+          <label class="field-label" for="zoneinfo">{t().zone_label}</label>
+          <input
+            class="input-field"
+            id="zoneinfo"
+            name="zoneinfo"
+            type="text"
+            list="zoneinfo-names"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck={false}
+            placeholder={browserZone()}
+            value={zone()}
+            aria-invalid={zoneError() === 'zone_invalid' ? 'true' : undefined}
+            aria-describedby="zoneinfo-hint"
+            onInput={(e) => {
+              setZone(e.currentTarget.value);
+              setZoneSaved(false);
+              setZoneError(null);
+            }}
+          />
+          <datalist id="zoneinfo-names">
+            <For each={zoneNames}>{(name) => <option value={name} />}</For>
+          </datalist>
+          <p class="field-hint" id="zoneinfo-hint">{t().zone_hint}</p>
+          <Show when={zoneError()}>
+            {(error) => <div class="error-text error-text-block" role="alert">{t()[error()]}</div>}
+          </Show>
+          <Show when={zoneSaved()}>
+            <div class="account-password-done" role="status">{t().zone_saved}</div>
+          </Show>
+          <button type="submit" class="btn btn-primary" disabled={zoneSaving()}>
+            {t().zone_save_button}
+          </button>
+        </form>
+      </section>
 
       <button type="button" class="btn btn-secondary account-go-back" onClick={() => history.back()}>
         {t().go_back_button}

@@ -1,4 +1,4 @@
-package versola.central.users
+package versola.util
 
 import java.time.ZoneId
 import scala.jdk.CollectionConverters.*

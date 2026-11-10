@@ -16,6 +16,7 @@ import versola.util.revocation.{Revocation, RevocationKey}
 import versola.util.{Base64, EnvName, JWT, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*
+import zio.json.ast.Json
 import zio.test.*
 
 import java.security.KeyPairGenerator
@@ -266,6 +267,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     frontChannelLogoutSuite,
     backChannelLogoutSuite,
     getMyPermissionsSuite,
+    getMyTimeZoneSuite,
   ).provideSomeLayer[Client](
     SecureRandom.live >>> SecurityService.live,
   ).provideLayer(TestClient.layer) @@ TestAspect.silentLogging
@@ -1394,6 +1396,67 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val centralResource = simpleResource("central", centralEndpointId)
   private val ordersResource = simpleResource("orders", ordersEndpointId)
   private val billingResource = simpleResource("billing", billingEndpointId)
+
+  private val getMyTimeZoneSuite =
+    def callerClaims(confirmation: Option[Confirmation]) = PermissionsClaims(
+      jti = AccessTokenId("token-1"),
+      subject = "user-1",
+      issuedAt = 0,
+      clientId = Some(ClientId("central-admin")),
+      tenantId = Some(TenantId.default),
+      roles = Some(List(RoleId("oauth-admin"))),
+      sid = None,
+      family = None,
+      confirmation = confirmation,
+    )
+    val token = AccessToken("the-callers-token")
+
+    def zoneFor(
+        askAuth: Env => UIO[Unit],
+        confirmation: Option[Confirmation] = None,
+    ): ZIO[SecurityService & Client, Nothing, (Option[String], Env)] =
+      val env = new Env
+      for
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        _ <- askAuth(env)
+        zone <- env.buildService(client, security).getMyTimeZone(callerClaims(confirmation), token)
+      yield (zone, env)
+
+    suite("getMyTimeZone")(
+      test("is the zoneinfo claim auth releases at /userinfo for the caller's own token") {
+        for
+          (zone, env) <- zoneFor(_.ssoClient.userInfo.succeedsWith(Json.Obj("sub" -> Json.Str("user-1"), "zoneinfo" -> Json.Str("Asia/Almaty"))))
+        yield assertTrue(zone == Some("Asia/Almaty"), env.ssoClient.userInfo.calls == List((token, SSOClient.TokenBinding.Unbound)))
+      },
+      test("is empty when the profile releases no zoneinfo (no profile scope, or none stored)") {
+        for (zone, _) <- zoneFor(_.ssoClient.userInfo.succeedsWith(Json.Obj("sub" -> Json.Str("user-1"))))
+        yield assertTrue(zone.isEmpty)
+      },
+      test("is empty for a value that is not a name of the IANA time zone database, and never passes it on") {
+        for
+          offset <- zoneFor(_.ssoClient.userInfo.succeedsWith(Json.Obj("zoneinfo" -> Json.Str("+05:00"))))
+          unknown <- zoneFor(_.ssoClient.userInfo.succeedsWith(Json.Obj("zoneinfo" -> Json.Str("Mars/Olympus"))))
+          notText <- zoneFor(_.ssoClient.userInfo.succeedsWith(Json.Obj("zoneinfo" -> Json.Num(5))))
+        yield assertTrue(offset._1.isEmpty, unknown._1.isEmpty, notText._1.isEmpty)
+      },
+      test("is empty when auth refuses the token, without failing the permissions around it") {
+        for (zone, _) <- zoneFor(_.ssoClient.userInfo.failsWith(SSOClient.UserInfoUnauthorized))
+        yield assertTrue(zone.isEmpty)
+      },
+      test("is empty when auth cannot be reached") {
+        for (zone, _) <- zoneFor(_.ssoClient.userInfo.failsWith(new RuntimeException("connection refused")))
+        yield assertTrue(zone.isEmpty)
+      },
+      test("speaks for a key-bound token the way the proxy does, as a verified key") {
+        for
+          (zone, env) <- zoneFor(
+            _.ssoClient.userInfo.succeedsWith(Json.Obj("zoneinfo" -> Json.Str("Europe/Berlin"))),
+            confirmation = Some(Confirmation(jkt = Some("thumbprint"), certificateThumbprint = None)),
+          )
+        yield assertTrue(zone == Some("Europe/Berlin"), env.ssoClient.userInfo.calls == List((token, SSOClient.TokenBinding.Key)))
+      },
+    )
 
   private val getMyPermissionsSuite = suite("getMyPermissions")(
     test("reports the environment so the console can hide non-prod affordances") {

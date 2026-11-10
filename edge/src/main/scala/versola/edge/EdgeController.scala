@@ -204,11 +204,13 @@ object EdgeController extends Controller:
   val permissionsEndpoint =
     Method.GET / "permissions" / "me" -> handler { (request: Request) =>
       (for
-        claims <- authorize(request)
+        caller <- authorize(request)
         service <- ZIO.service[EdgeService]
         resourceIds <- request.queryZIO[List[ResourceId]]("resource")
-        response <- service.getMyPermissions(claims, resourceIds)
-      yield Response.json(response.toJson)).catchAll {
+        response <- service.getMyPermissions(caller.claims, resourceIds)
+        // The console's: the zone it shows times in. Best effort, so an auth that cannot say costs the field, not the permissions.
+        timeZone <- service.getMyTimeZone(caller.claims, caller.accessToken)
+      yield Response.json(response.copy(timeZone = timeZone).toJson)).catchAll {
         // §9: the same challenge shape as the proxy's Outcome.UseDpopNonce -- a bare 401 here
         // would give a DPoP-scheme caller no way to learn the nonce it must retry with.
         case AuthorizeOutcome.NonceRequired(nonce) =>

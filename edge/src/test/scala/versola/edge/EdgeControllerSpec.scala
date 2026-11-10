@@ -124,6 +124,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       )
       _ <- jwks.getPublicKeys.succeedsWith(publicKeys)
       _ <- revocation.isRevoked.succeedsWith(revoked)
+      _ <- service.getMyTimeZone.succeedsWith(None)
       _ <- setup(service, jwks)
       _ <- presetsSetup(presets)
       _ <- dpopSetup(dpopVerifier)
@@ -136,6 +137,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ResourceId("orders") -> EdgeService.ResourcePermissions(Set(PermissionId("orders:read"))),
     ),
     isProd = false,
+    timeZone = None,
   )
 
   private val permissionsSuite = suite("GET /permissions/me")(
@@ -280,7 +282,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         request = Request
           .get(URL.decode("/permissions/me").toOption.get)
           .addCookie(Cookie.Request(EdgeSessionCookie.name, s"web-app:$accessToken"))
-        emptyResponse = EdgeService.PermissionsResponse(resources = Map.empty, isProd = false)
+        emptyResponse = EdgeService.PermissionsResponse(resources = Map.empty, isProd = false, timeZone = None)
         (response, service, _) <- run(request, (s, _) => s.getMyPermissions.succeedsWith(emptyResponse))
       yield assertTrue(
         response.status == Status.Ok,
@@ -324,6 +326,28 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             ),
           ),
       )
+    },
+    test("adds the caller's time zone, asked with the caller's own token, to the permissions") {
+      for
+        accessToken <- token(clientId = "central-admin", tenantId = Some("default"), roles = Some(List("oauth-admin")))
+        request = Request
+          .get(URL.decode("/permissions/me?resource=central").toOption.get)
+          .addCookie(Cookie.Request(EdgeSessionCookie.name, s"central-admin:$accessToken"))
+        (response, service, _) <- run(
+          request,
+          (s, _) => s.getMyPermissions.succeedsWith(sampleResponse) *> s.getMyTimeZone.succeedsWith(Some("Asia/Almaty")),
+        )
+        payload <- response.body.asString.map(_.fromJson[EdgeService.PermissionsResponse])
+      yield assertTrue(
+        response.status == Status.Ok,
+        payload == Right(sampleResponse.copy(timeZone = Some("Asia/Almaty"))),
+        service.getMyTimeZone.calls.map(_._2) == List(AccessToken(accessToken)),
+      )
+    },
+    test("asks nobody for a time zone when the caller is refused") {
+      for
+        (response, service, _) <- run(Request.get(URL.decode("/permissions/me?resource=central").toOption.get))
+      yield assertTrue(response.status == Status.Unauthorized, service.getMyTimeZone.calls.isEmpty)
     },
     test("returns 401 when the token has been revoked") {
       for

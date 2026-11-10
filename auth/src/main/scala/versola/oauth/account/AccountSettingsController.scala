@@ -14,10 +14,10 @@ import versola.oauth.revocation.RevocationCause
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.PublicSessionId
 import versola.user.UserRepository
-import versola.user.model.UserId
+import versola.user.model.{UserId, UserRecord}
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{BadRequest, Controller, Observability, Unauthorized}
-import versola.util.{Base64, CoreConfig, Secret}
+import versola.util.{Base64, CoreConfig, Secret, Zoneinfo}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -44,6 +44,7 @@ object AccountSettingsController extends Controller:
     renamePasskeyRoute,
     deletePasskeyRoute,
     changePasswordRoute,
+    patchZoneinfoRoute,
     startPasskeyEnrollmentRoute,
     finishPasskeyEnrollmentRoute,
   )
@@ -114,6 +115,38 @@ object AccountSettingsController extends Controller:
           case Right(_) => ZIO.succeed(Response.status(Status.NoContent))
           case Left(error: ChangePasswordError) => Observability.setError(error.code).as(changePasswordRefusal(error))
           case Left(error: Throwable) => ZIO.fail(error)
+      yield response
+    }
+
+  /** The user's own time zone, stored as the `zoneinfo` claim of their profile (OpenID Connect Core 1.0 §5.1), which their `/userinfo`
+    * releases with the `profile` scope. The user is the one edge injected from the verified token, never one the browser names. An absent
+    * or `null` `zoneinfo` clears the claim and leaves the others as they were. A value that is not a name of the IANA time zone database is
+    * refused with a stable `error` code, like the password change, and changes nothing. */
+  val patchZoneinfoRoute: Route[Env, Throwable] =
+    Method.PATCH / "settings" / "zoneinfo" -> handler { (request: Request) =>
+      for
+        _ <- authorizeResource(request)
+        body <- request.bodyAs[PatchZoneinfoRequest]
+        response <- body.zoneinfo match
+          case Some(name) if !Zoneinfo.isValid(name) =>
+            Observability.setError("invalid_zoneinfo").as(Response.json(ZoneinfoRefusal(error = "invalid_zoneinfo").toJson).status(Status.BadRequest))
+          case zone =>
+            for
+              _ <- ZIO.serviceWithZIO[UserRepository](_.patchClaims(body.userId, Json.Obj("zoneinfo" -> zone.fold[Json](Json.Null)(Json.Str(_)))))
+              _ <- ZIO.serviceWithZIO[AuditEvents](
+                _.log(
+                  AuditDraft(
+                    kind = AuthAuditKinds.AccountClaimsUpdated,
+                    outcome = AuditOutcome.success,
+                    reason = None,
+                    actor = None,
+                    userId = Some(body.userId),
+                    target = None,
+                    details = AuthAuditDetails.ClaimsUpdated(claims = List("zoneinfo")),
+                  ),
+                ),
+              )
+            yield Response.status(Status.NoContent)
       yield response
     }
 
@@ -241,10 +274,11 @@ object AccountSettingsController extends Controller:
   private def accountView(
       userId: UserId,
       sessionId: PublicSessionId,
-  ): ZIO[SessionService & PasskeyRepository & PasswordService & OAuthConfigurationService, Throwable, StepView.AccountSettings] =
+  ): ZIO[SessionService & PasskeyRepository & PasswordService & OAuthConfigurationService & UserRepository, Throwable, StepView.AccountSettings] =
     for
       sessions <- listSessions(userId, sessionId)
       passkeys <- listPasskeys(userId)
+      zoneinfo <- ZIO.serviceWithZIO[UserRepository](_.find(userId)).map(_.flatMap(storedZoneinfo))
       hasPassword <- ZIO.serviceWithZIO[PasswordService](_.hasPassword(userId))
       passwordRegex <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasswordRegex)
     yield StepView.AccountSettings(
@@ -252,7 +286,12 @@ object AccountSettingsController extends Controller:
       passkeys = passkeys,
       hasPassword = hasPassword,
       passwordRegex = passwordRegex,
+      zoneinfo = zoneinfo,
     )
+
+  /** The stored claim when it is a name the page can offer back; a value written through the claims API that is not one reads as unset. */
+  private def storedZoneinfo(user: UserRecord): Option[String] =
+    user.claims.fields.toMap.get("zoneinfo").collect { case Json.Str(name) => name }.filter(Zoneinfo.isValid)
 
   private def listSessions(userId: UserId, sessionId: PublicSessionId): ZIO[SessionService, Throwable, List[StepView.AccountSession]] =
     ZIO.serviceWithZIO[SessionService](_.listByUser(userId)).map:
@@ -337,5 +376,13 @@ object AccountSettingsController extends Controller:
       revokeOtherSessions: Option[Boolean],
       sessionId: Option[String],
   ) derives JsonCodec
+
+  /** `userId` is the edge-injected caller context. `zoneinfo` absent or `null` clears the claim. */
+  private case class PatchZoneinfoRequest(
+      userId: UserId,
+      zoneinfo: Option[String],
+  ) derives JsonCodec
+
+  private case class ZoneinfoRefusal(error: String) derives JsonCodec
 
   private case class ChangePasswordRefusal(error: String, retryAfterSeconds: Option[Long]) derives JsonCodec

@@ -73,6 +73,37 @@ object AccountSettingsSpec extends E2ESpec:
         result <- auth.revokeAccountSession(caller, UUID.randomUUID().toString)
       yield assertTrue(result.status == Status.NoContent)
     },
+    test("stores a time zone as the caller's zoneinfo claim, shows it on the page and clears it again") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        set <- auth.patchAccountZoneinfo(caller, Some("Asia/Almaty"))
+        shown <- auth.accountPage(caller).flatMap(_.formStep)
+        cleared <- auth.patchAccountZoneinfo(caller, None)
+        gone <- auth.accountPage(caller).flatMap(_.formStep)
+      yield assertTrue(set.status == Status.NoContent, cleared.status == Status.NoContent) &&
+        assertTrue(str(shown, "zoneinfo").contains("Asia/Almaty")).label("the stored zone must be on the page") &&
+        assertTrue(str(gone, "zoneinfo").isEmpty).label("a cleared zone must leave the page without one")
+    },
+    test("refuses a time zone that is not a name of the IANA database and keeps the stored one") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        _ <- auth.patchAccountZoneinfo(caller, Some("Europe/Berlin"))
+        offset <- auth.patchAccountZoneinfo(caller, Some("+05:00"))
+        unknown <- auth.patchAccountZoneinfo(caller, Some("Mars/Olympus"))
+        kept <- auth.accountPage(caller).flatMap(_.formStep)
+        _ <- auth.patchAccountZoneinfo(caller, None)
+      yield assertTrue(offset.status == Status.BadRequest, unknown.status == Status.BadRequest) &&
+        assertTrue(str(kept, "zoneinfo").contains("Europe/Berlin")).label("a refused value must change nothing")
+    },
+    test("does not change the time zone without resource credentials") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        result <- auth.patchAccountZoneinfo(caller, Some("Asia/Almaty"), credentials = None)
+      yield assertTrue(result.status == Status.Unauthorized)
+    },
     test("enrolls, renames and deletes a passkey through the full ceremony") {
       val name = "E2E Key"
       for

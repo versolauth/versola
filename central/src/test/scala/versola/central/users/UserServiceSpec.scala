@@ -383,39 +383,6 @@ object UserServiceSpec extends UnitSpecBase:
         _ <- env.service.patchClaims(userId, patch)
       yield assertTrue(env.authClient.patchUserClaims.calls == List((userId, patch)))
     },
-    test("getZoneinfo reads the zoneinfo claim of the user's profile") {
-      val env = Env()
-      for
-        _ <- env.authClient.getUserClaims.succeedsWith(Some(Json.Obj("zoneinfo" -> Json.Str("Asia/Almaty"), "name" -> Json.Str("Ada"))))
-        zone <- env.service.getZoneinfo(userId)
-      yield assertTrue(zone == Some("Asia/Almaty"), env.authClient.getUserClaims.calls == List(userId))
-    },
-    test("getZoneinfo is empty when the claim is missing, is not a string, is not a zone of the database, or the user is unknown") {
-      def zoneOf(claims: Option[Json.Obj]) =
-        val env = Env()
-        env.authClient.getUserClaims.succeedsWith(claims) *> env.service.getZoneinfo(userId)
-      for
-        none <- zoneOf(Some(Json.Obj("name" -> Json.Str("Ada"))))
-        number <- zoneOf(Some(Json.Obj("zoneinfo" -> Json.Num(5))))
-        offset <- zoneOf(Some(Json.Obj("zoneinfo" -> Json.Str("+05:00"))))
-        unknown <- zoneOf(Some(Json.Obj("zoneinfo" -> Json.Str("Mars/Olympus"))))
-        cased <- zoneOf(Some(Json.Obj("zoneinfo" -> Json.Str("asia/almaty"))))
-        missingUser <- zoneOf(None)
-      yield assertTrue(List(none, number, offset, unknown, cased, missingUser).forall(_.isEmpty))
-    },
-    test("setZoneinfo patches the zoneinfo claim alone, and clears it with null") {
-      val env = Env()
-      for
-        _ <- env.authClient.patchUserClaims.succeedsWith(())
-        _ <- env.service.setZoneinfo(userId, Some("Europe/Berlin"))
-        _ <- env.service.setZoneinfo(userId, None)
-      yield assertTrue(
-        env.authClient.patchUserClaims.calls == List(
-          (userId, Json.Obj("zoneinfo" -> Json.Str("Europe/Berlin"))),
-          (userId, Json.Obj("zoneinfo" -> Json.Null)),
-        ),
-      )
-    },
     test("delete purges the user in auth before removing the index row") {
       val env = Env()
       for

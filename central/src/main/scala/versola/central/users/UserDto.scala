@@ -39,12 +39,6 @@ case class PatchUserClaimsRequest(
     claims: Json.Obj,
 ) derives JsonCodec, Schema
 
-/** The calling administrator's own preferences: the `zoneinfo` claim of their profile, `null` when none is stored. */
-case class UserPreferencesResponse(@jsonExplicitNull zoneinfo: Option[String]) derives JsonCodec, Schema
-
-/** `zoneinfo` absent keeps the stored name, `null` clears it, a name sets it. */
-case class PatchUserPreferencesRequest(zoneinfo: Option[Patch[String]]) derives JsonCodec, Schema
-
 case class UpdateUserRolesRequest(
     userId: UserId,
     tenantId: TenantId,

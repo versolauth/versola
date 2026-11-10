@@ -225,7 +225,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
       (service, id) =>
         service.renderAccount(
           id.getOrElse(clientId),
-          StepView.AccountSettings(sessions = Nil, passkeys = Nil, hasPassword = false, passwordRegex = ".*"),
+          StepView.AccountSettings(sessions = Nil, passkeys = Nil, hasPassword = false, passwordRegex = ".*", zoneinfo = None),
           None,
         ),
     ),
@@ -1290,7 +1290,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderAccount(
             clientId,
-            StepView.AccountSettings(sessions = Nil, passkeys = Nil, hasPassword = false, passwordRegex = ".*"),
+            StepView.AccountSettings(sessions = Nil, passkeys = Nil, hasPassword = false, passwordRegex = ".*", zoneinfo = None),
             None,
           )
           body <- response.body.asString
@@ -1308,7 +1308,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderAccount(
             clientId,
-            StepView.AccountSettings(sessions = Nil, passkeys = Nil, hasPassword = false, passwordRegex = ".*"),
+            StepView.AccountSettings(sessions = Nil, passkeys = Nil, hasPassword = false, passwordRegex = ".*", zoneinfo = None),
             None,
           )
           body <- response.body.asString
@@ -1324,7 +1324,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getTenantLogo.succeedsWith(None)
           response <- env.service.renderAccount(
             clientId,
-            StepView.AccountSettings(sessions = Nil, passkeys = Nil, hasPassword = false, passwordRegex = ".*"),
+            StepView.AccountSettings(sessions = Nil, passkeys = Nil, hasPassword = false, passwordRegex = ".*", zoneinfo = None),
             None,
           )
           body <- response.body.asString

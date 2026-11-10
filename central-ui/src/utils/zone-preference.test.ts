@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  clearStoredZoneChoice,
   effectiveZoneChoice,
   getProfileZone,
   getStoredZoneChoice,
@@ -28,15 +27,13 @@ describe('the remembered time zone choice', () => {
     expect(getStoredZoneChoice(memoryStore())).toBeNull();
   });
 
-  it('remembers each choice and forgets them', () => {
+  it('remembers each choice', () => {
     const store = memoryStore();
     for (const choice of ['utc', 'local', 'zone'] as const) {
       setStoredZoneChoice(choice, store);
       expect(store.data.get(ZONE_STORAGE_KEY)).toBe(choice);
       expect(getStoredZoneChoice(store)).toBe(choice);
     }
-    clearStoredZoneChoice(store);
-    expect(getStoredZoneChoice(store)).toBeNull();
   });
 
   it('ignores a stored value it does not know', () => {
@@ -51,7 +48,6 @@ describe('the remembered time zone choice', () => {
     };
     expect(getStoredZoneChoice(broken)).toBeNull();
     expect(() => setStoredZoneChoice('utc', broken)).not.toThrow();
-    expect(() => clearStoredZoneChoice(broken)).not.toThrow();
     expect(getStoredZoneChoice(null)).toBeNull();
   });
 });

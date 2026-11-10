@@ -147,7 +147,7 @@ export class VersolaUserRecord extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    // The zone loads after the page may already be drawn, and changes under Preferences: the times follow it.
+    // The zone loads after the page may already be drawn, and may change: the times follow it.
     this.stopProfileZone = onProfileZoneChange(() => this.requestUpdate());
   }
 

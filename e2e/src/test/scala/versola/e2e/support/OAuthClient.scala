@@ -1723,6 +1723,20 @@ final class OAuthClient(client: Client, config: E2EConfig):
       credentials,
     )
 
+  /** PATCH /settings/zoneinfo — stores the caller's time zone as their `zoneinfo` claim; `None` clears it. */
+  def patchAccountZoneinfo(
+      caller: AccountCaller,
+      zoneinfo: Option[String],
+      credentials: Option[(String, String)] = Some(accountCredentials),
+  ): Task[AccountResult] =
+    accountRequest(
+      Method.PATCH,
+      "/settings/zoneinfo",
+      Nil,
+      Some(caller.bodyWith("zoneinfo" -> zoneinfo.fold[Json](Json.Null)(Json.Str(_)))),
+      credentials,
+    )
+
   /** PATCH /settings/password — changes the caller's password, proving the current one. */
   def changeAccountPassword(
       caller: AccountCaller,
@@ -1851,6 +1865,15 @@ final class OAuthClient(client: Client, config: E2EConfig):
           ) ++ Chunk.fromIterable(revokeOtherSessions.map(flag => "revokeOtherSessions" -> Json.Bool(flag))),
         ),
       ),
+      accessToken,
+    )
+
+  /** PATCH /resources/auth/settings/zoneinfo — stores the caller's time zone through edge; `None` clears it. */
+  def edgePatchAccountZoneinfo(accessToken: Option[String], zoneinfo: Option[String]): Task[AccountResult] =
+    edgeAccountRequest(
+      Method.PATCH,
+      "/settings/zoneinfo",
+      Some(Json.Obj("zoneinfo" -> zoneinfo.fold[Json](Json.Null)(Json.Str(_)))),
       accessToken,
     )
 

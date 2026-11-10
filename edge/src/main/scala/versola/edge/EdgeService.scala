@@ -11,6 +11,7 @@ import versola.edge.model.{
   ClientId,
   Code,
   CodeVerifier,
+  Confirmation,
   InjectRule,
   InjectTarget,
   InvalidLogoutToken,
@@ -34,11 +35,11 @@ import versola.edge.session.{EdgeSessionRecord, EdgeSessionRepository}
 import versola.util.cel.CelEvaluator
 import versola.util.http.{Checkpoint, Observability, RateDecision, RateLimitKeys, RateLimiter}
 import versola.util.revocation.RevocationKey
-import versola.util.{Base64, Base64Url, EnvName, JWT, JsonJava, RedirectUri, Secret, SecureRandom, SecurityService}
+import versola.util.{Base64, Base64Url, EnvName, JWT, JsonJava, RedirectUri, Secret, SecureRandom, SecurityService, Zoneinfo}
 import zio.http.{Body, Client, Cookie, Header, Headers, MediaType, Path, Request, Response, Status, URL}
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder, jsonField}
-import zio.{Chunk, Clock, Duration, IO, NonEmptyChunk, Task, UIO, ZIO, ZLayer, durationInt}
+import zio.{Cause, Chunk, Clock, Duration, IO, NonEmptyChunk, Task, UIO, ZIO, ZLayer, durationInt}
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -82,6 +83,12 @@ trait EdgeService:
       claims: PermissionsClaims,
       resourceIds: List[ResourceId],
   ): UIO[EdgeService.PermissionsResponse]
+
+  /** The time zone the admin console shows the caller's times in: the `zoneinfo` claim of their profile, which auth releases at `/userinfo`
+    * with the `profile` scope, asked with the caller's own token. Empty when the token has no such scope, the profile has none or a value
+    * that is not a name of the IANA time zone database, auth does not answer in time, or refuses the token. The console then reads times in
+    * the browser's zone, as it did before. Only the console reads this. */
+  def getMyTimeZone(claims: PermissionsClaims, accessToken: AccessToken): UIO[Option[String]]
 
   /** Front-channel logout, either OP-initiated (`iss`/`sid` query params, rendered in an
     * iframe) or first-party (the browser navigating to the endpoint itself). The presented
@@ -194,6 +201,8 @@ object EdgeService:
         * such as revealing a generated temporary password.
         */
       isProd: Boolean,
+      /** The caller's own time zone (`zoneinfo` of their profile) for the console to read times in; absent when there is none. */
+      timeZone: Option[String],
   ) derives JsonCodec
 
   def live: ZLayer[
@@ -484,6 +493,23 @@ object EdgeService:
           )
         case ex: Throwable => ZIO.fail(ex)
 
+    /** `/userinfo` may be slow or down: the zone is a courtesy to the console, so it waits no longer than this for it. */
+    private val timeZoneTimeout = 2.seconds
+
+    override def getMyTimeZone(claims: PermissionsClaims, accessToken: AccessToken): UIO[Option[String]] =
+      // `/permissions/me` has verified the caller's binding already (a key proof, or the session cookie), which is what `Accept` says.
+      fetchUserInfo(accessToken, claims.confirmation, claims.clientId, BindingCheck.Accept)
+        .map(_.fields.collectFirst { case ("zoneinfo", Json.Str(zone)) if Zoneinfo.isValid(zone) => zone })
+        .timeout(timeZoneTimeout)
+        .map(_.flatten)
+        .catchAll:
+          // Auth refused the token (revoked since, wrong binding): the caller has no zone to show, and `/permissions/me` already
+          // answered who the caller is.
+          case SSOClient.UserInfoUnauthorized => ZIO.none
+          // Deliberately swallowed, and said once here: a failed `/userinfo` must not take the permissions with it.
+          case cause: Throwable =>
+            ZIO.logWarningCause("userinfo for the console's time zone failed; the console uses the browser's zone", Cause.fail(cause)).as(None)
+
     override def getMyPermissions(
         claims: PermissionsClaims,
         resourceIds: List[ResourceId],
@@ -497,7 +523,7 @@ object EdgeService:
           // A token without a tenant claim cannot match a role grant, which is keyed by tenant.
           perms <- ZIO.foreach(claims.tenantId)(permissionService.getPermissionsForRoles(_, roles, endpointIds))
         yield Some(resourceId -> ResourcePermissions(perms.getOrElse(Set.empty)))
-      .map(entries => PermissionsResponse(entries.flatten.toMap, env.isProd))
+      .map(entries => PermissionsResponse(resources = entries.flatten.toMap, isProd = env.isProd, timeZone = None))
 
     override def frontChannelLogout(
         iss: Option[String],
@@ -654,7 +680,7 @@ object EdgeService:
         _ <- checkAudience(resource, typedClaims)
         // R3: the route is known and the caller may use it; nothing has been asked of auth or the resource yet
         _ <- observeRoute(typedClaims, resourceId, endpoint)
-        userInfo <- fetchUserInfo(session.accessToken, typedClaims, binding)
+        userInfo <- fetchUserInfo(session.accessToken, typedClaims.confirmation, Some(typedClaims.clientId), binding)
           .when(endpoint.fetchUserInfo)
           .someOrElse(Json.Obj())
           .mapError {
@@ -860,19 +886,23 @@ object EdgeService:
       */
     private def fetchUserInfo(
         accessToken: AccessToken,
-        claims: AccessTokenClaims,
+        confirmation: Option[Confirmation],
+        clientId: Option[ClientId],
         check: BindingCheck,
     ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
       for
         binding <-
-          (claims.confirmation.flatMap(_.jkt), claims.confirmation.flatMap(_.certificateThumbprint)) match
+          (confirmation.flatMap(_.jkt), confirmation.flatMap(_.certificateThumbprint)) match
             case (Some(_), _) => ZIO.succeed(SSOClient.TokenBinding.Key)
             case (None, Some(_)) if check == BindingCheck.AcceptCallerCertificate =>
               ZIO.succeed(SSOClient.TokenBinding.CallerCertificate)
             case (None, Some(_)) =>
-              clientService.findClient(claims.clientId)
-                .someOrFail(ClientNotFound(claims.clientId))
-                .map(client => SSOClient.TokenBinding.Certificate(client.id, client.credential))
+              // A token bound to a session's certificate is presented over its client's, so a token that names no client cannot be.
+              clientId.fold(ZIO.fail(SSOClient.UserInfoUnauthorized))(id =>
+                clientService.findClient(id)
+                  .someOrFail(ClientNotFound(id))
+                  .map(client => SSOClient.TokenBinding.Certificate(client.id, client.credential)),
+              )
             case (None, None) => ZIO.succeed(SSOClient.TokenBinding.Unbound)
         info <- ssoClient.userInfo(accessToken, binding)
       yield info

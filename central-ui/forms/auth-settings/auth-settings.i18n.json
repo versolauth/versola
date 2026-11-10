@@ -43,7 +43,14 @@
     "current_password_incorrect": "The current password is incorrect",
     "too_many_attempts": "Too many failed attempts. Please try again later",
     "too_many_attempts_retry": "Too many failed attempts. Please try again in {seconds} s",
-    "password_change_failed": "Could not change the password. Please try again"
+    "password_change_failed": "Could not change the password. Please try again",
+    "zone_title": "Time zone",
+    "zone_label": "Time zone",
+    "zone_hint": "Dates and times are shown to you in this time zone. Leave it empty to use your browser's time zone.",
+    "zone_saved": "Time zone saved",
+    "zone_invalid": "Choose a time zone from the list, for example Europe/Berlin",
+    "zone_save_failed": "Could not save the time zone. Please try again",
+    "zone_save_button": "Save time zone"
   },
   "ru": {
     "page_title": "Безопасность",
@@ -89,6 +96,13 @@
     "current_password_incorrect": "Текущий пароль неверный",
     "too_many_attempts": "Слишком много неудачных попыток. Попробуйте позже",
     "too_many_attempts_retry": "Слишком много неудачных попыток. Повторите через {seconds} с",
-    "password_change_failed": "Не удалось сменить пароль. Попробуйте ещё раз"
+    "password_change_failed": "Не удалось сменить пароль. Попробуйте ещё раз",
+    "zone_title": "Часовой пояс",
+    "zone_label": "Часовой пояс",
+    "zone_hint": "Дата и время показываются вам в этом часовом поясе. Оставьте поле пустым, чтобы использовать часовой пояс браузера.",
+    "zone_saved": "Часовой пояс сохранён",
+    "zone_invalid": "Выберите часовой пояс из списка, например Europe/Berlin",
+    "zone_save_failed": "Не удалось сохранить часовой пояс. Попробуйте ещё раз",
+    "zone_save_button": "Сохранить часовой пояс"
   }
 }

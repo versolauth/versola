@@ -1633,6 +1633,9 @@ export type MyPermissionsResponse = {
   // Lets the console hide affordances that only exist outside production,
   // such as revealing a generated temporary password.
   isProd: boolean;
+  // The caller's own time zone, the `zoneinfo` of their profile (set on the Security page), for the screens to show times in.
+  // Absent when they have none or edge could not read it; the screens then use the browser's zone.
+  timeZone?: string;
 };
 
 export async function fetchMyPermissions(): Promise<MyPermissionsResponse> {

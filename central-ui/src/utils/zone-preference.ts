@@ -1,7 +1,7 @@
 import { isKnownZone, localZone } from './date-format';
 
 /**
- * Which zone a screen shows times in: the administrator's own (`zone`, the `zoneinfo` of their profile, set under Preferences),
+ * Which zone a screen shows times in: the administrator's own (`zone`, the `zoneinfo` of their profile, set on the Security page),
  * the browser's (`local`) or UTC. Nothing chosen reads as the profile zone when there is one and as the browser's otherwise,
  * so a screen is the same on every browser the administrator opens.
  */
@@ -37,15 +37,6 @@ export function setStoredZoneChoice(choice: ZoneChoice, store: Store | null = de
   }
 }
 
-/** Forgets the switch, so the profile zone is the default again (saving a zone under Preferences does this). */
-export function clearStoredZoneChoice(store: Store | null = defaultStore()): void {
-  try {
-    store?.removeItem(ZONE_STORAGE_KEY);
-  } catch {
-    // Nothing to forget in a browser that refuses storage.
-  }
-}
-
 /** A profile zone this browser can format with, else `null`: a stale or odd value never breaks a screen. A UTC offset (`+05:00`) is
  *  accepted by `Intl` but is no `zoneinfo`, which names a zone of the IANA database, so it is refused too. */
 export function usableZone(zone: string | null | undefined): string | null {
@@ -69,7 +60,7 @@ export function resolveZone(choice: ZoneChoice, profileZone: string | null = get
   return localZone();
 }
 
-// The administrator's own zone, loaded once by the shell and changed under Preferences. A screen reads it when it opens and
+// The administrator's own zone, loaded once by the shell and learnt once the shell has read `/permissions/me`. A screen reads it when it opens and
 // listens for a change, so what is saved shows without a reload.
 let profileZone: string | null = null;
 const listeners = new Set<() => void>();

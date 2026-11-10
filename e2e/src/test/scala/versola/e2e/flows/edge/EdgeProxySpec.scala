@@ -486,6 +486,17 @@ object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         named <- permissions.obj.map(_.obj("resources").map(_.fields.map(_._1).toSet))
       yield assertTrue(named.contains(Set(f.resourceId)))
     },
+    test("the permissions endpoint names no time zone for a token without the profile scope, and still answers") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        established <- session
+        permissions <- edgeApi.permissions(established.auth, resources = List(f.resourceId))
+        body <- permissions.obj
+      yield assertTrue(permissions.status == Status.Ok) &&
+        assertTrue(!body.fields.exists(_._1 == "timeZone"))
+          .label("`/userinfo` releases `zoneinfo` only with the `profile` scope: a zone here would be a claim released without its scope")
+    },
     test("the permissions endpoint answers about nothing when asked about nothing") {
       for
         edgeApi <- edge

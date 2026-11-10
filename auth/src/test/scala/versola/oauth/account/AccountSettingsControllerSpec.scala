@@ -13,7 +13,7 @@ import versola.oauth.revocation.RevocationCause
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionUnderUserAgent}
 import versola.user.UserRepository
-import versola.user.model.UserId
+import versola.user.model.{UserId, UserRecord}
 import versola.util.audit.{AuditDraft, AuditEvents}
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.{Base64, Secret, UnitSpecBase}
@@ -41,6 +41,14 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
     URL.empty / "settings" / "password",
     Body.fromString(s"""{"currentPassword":"OldPass1!","newPassword":"NewPass1!"$extra}"""),
   ).addHeader(Header.ContentType(MediaType.application.json))
+  private def patchZoneinfo(body: String) = Request.patch(
+    URL.empty / "settings" / "zoneinfo",
+    Body.fromString(body),
+  ).addHeader(Header.ContentType(MediaType.application.json))
+
+  private def userWithClaims(claims: Json.Obj) =
+    UserRecord(id = userId, email = None, phone = None, login = None, claims = claims, uiLocales = None)
+
   private val ownSessionId = PublicSessionId("session-of-the-caller")
   private val foreignSessionId = PublicSessionId("session-of-someone-else")
 
@@ -211,6 +219,18 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
       yield assertTrue(response.status == expectedStatus) && verifyResult && verifyAudit(drafts)
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
+  private val badZoneinfo = List("Mars/Olympus", "+05:00", "asia/almaty", "", "A" * 65)
+
+  private def refusesZoneinfo(name: String) =
+    controllerTestCase(
+      description = s"refuses '${name.take(20)}' with invalid_zoneinfo, changing and recording nothing",
+      request = patchZoneinfo(Json.Obj("zoneinfo" -> Json.Str(name)).toJson),
+      expectedStatus = Status.BadRequest,
+      verify = (response, stubs) =>
+        response.body.asString.map(body => assertTrue(body.contains("invalid_zoneinfo"), stubs._5.patchClaims.calls.isEmpty)),
+      verifyAudit = drafts => assertTrue(drafts.isEmpty),
+    )
+
   val spec = suite("AccountSettingsController")(
     suite("internal resource authentication")(
       controllerTestCase(
@@ -233,11 +253,12 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         expectedStatus = Status.Ok,
         resourceSecrets = List(accountResourceSecret, previousAccountResourceSecret),
         callerSecret = previousAccountResourceSecret,
-        setup = (configuration, sessionService, passkeyRepository, _, _, renderService, passwordService, _) =>
+        setup = (configuration, sessionService, passkeyRepository, _, userRepository, renderService, passwordService, _) =>
           sessionService.listByUser.succeedsWith(List(ownSession)) *>
             passkeyRepository.listByUser.succeedsWith(Vector(passkey)) *>
             passwordService.hasPassword.succeedsWith(false) *>
             configuration.getPasswordRegex.succeedsWith(passwordRegex) *>
+            userRepository.find.succeedsWith(None) *>
             renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
       ),
       controllerTestCase(
@@ -270,11 +291,12 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         description = "renders the page with the caller's own sessions and passkeys",
         request = Request.get(URL.empty / "settings"),
         expectedStatus = Status.Ok,
-        setup = (configuration, sessionService, passkeyRepository, _, _, renderService, passwordService, _) =>
+        setup = (configuration, sessionService, passkeyRepository, _, userRepository, renderService, passwordService, _) =>
           sessionService.listByUser.succeedsWith(List(ownSession)) *>
             passkeyRepository.listByUser.succeedsWith(Vector(passkey)) *>
             passwordService.hasPassword.succeedsWith(false) *>
             configuration.getPasswordRegex.succeedsWith(passwordRegex) *>
+            userRepository.find.succeedsWith(None) *>
             renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
         verify = (_, stubs) =>
           val (_, sessionService, passkeyRepository, _, _, renderService, _, _) = stubs
@@ -288,11 +310,12 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         description = "marks the session the page is viewed from using edge's injected sid",
         request = Request.get(URL.empty / "settings"),
         expectedStatus = Status.Ok,
-        setup = (configuration, sessionService, passkeyRepository, _, _, renderService, passwordService, _) =>
+        setup = (configuration, sessionService, passkeyRepository, _, userRepository, renderService, passwordService, _) =>
           sessionService.listByUser.succeedsWith(List(ownSession, otherDeviceSession)) *>
             passkeyRepository.listByUser.succeedsWith(Vector.empty) *>
             passwordService.hasPassword.succeedsWith(false) *>
             configuration.getPasswordRegex.succeedsWith(passwordRegex) *>
+            userRepository.find.succeedsWith(None) *>
             renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
@@ -540,6 +563,78 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         val spliced = s"${forged.takeWhile(_ != '.')}.${serialized.dropWhile(_ != '.').drop(1)}"
         assertTrue(PasskeyEnrollmentTicket.parse(spliced, secret, Instant.EPOCH) == Left("invalid signature"))
       },
+    ),
+    suite("PATCH /settings/zoneinfo")(
+      controllerTestCase(
+        description = "stores the name as the caller's zoneinfo claim alone and records the claim's name, never its value",
+        request = patchZoneinfo("""{"zoneinfo":"Asia/Almaty"}"""),
+        expectedStatus = Status.NoContent,
+        setup = (_, _, _, _, userRepository, _, _, _) => userRepository.patchClaims.succeedsWith(()),
+        verify = (_, stubs) =>
+          ZIO.succeed(assertTrue(stubs._5.patchClaims.calls == List((userId, Json.Obj("zoneinfo" -> Json.Str("Asia/Almaty")))))),
+        verifyAudit = drafts =>
+          assertTrue(
+            drafts.map(_.kind) == List(AuthAuditKinds.AccountClaimsUpdated),
+            drafts.flatMap(_.userId) == List(userId),
+            drafts.map(_.details) == List(AuthAuditDetails.ClaimsUpdated(claims = List("zoneinfo"))),
+          ),
+      ),
+      controllerTestCase(
+        description = "clears the claim for a null zoneinfo",
+        request = patchZoneinfo("""{"zoneinfo":null}"""),
+        expectedStatus = Status.NoContent,
+        setup = (_, _, _, _, userRepository, _, _, _) => userRepository.patchClaims.succeedsWith(()),
+        verify = (_, stubs) => ZIO.succeed(assertTrue(stubs._5.patchClaims.calls == List((userId, Json.Obj("zoneinfo" -> Json.Null))))),
+      ),
+      controllerTestCase(
+        description = "clears the claim when zoneinfo is absent, like null",
+        request = patchZoneinfo("{}"),
+        expectedStatus = Status.NoContent,
+        setup = (_, _, _, _, userRepository, _, _, _) => userRepository.patchClaims.succeedsWith(()),
+        verify = (_, stubs) => ZIO.succeed(assertTrue(stubs._5.patchClaims.calls == List((userId, Json.Obj("zoneinfo" -> Json.Null))))),
+      ),
+      suite("a value that is not a name of the IANA database")(badZoneinfo.map(refusesZoneinfo)*),
+      controllerTestCase(
+        description = "refuses a zoneinfo that is not a string",
+        request = patchZoneinfo("""{"zoneinfo":5}"""),
+        expectedStatus = Status.BadRequest,
+        verify = (_, stubs) => ZIO.succeed(assertTrue(stubs._5.patchClaims.calls.isEmpty)),
+      ),
+      controllerTestCase(
+        description = "changes nothing without resource credentials",
+        request = patchZoneinfo("""{"zoneinfo":"Asia/Almaty"}"""),
+        expectedStatus = Status.Unauthorized,
+        authenticate = false,
+        verify = (_, stubs) => ZIO.succeed(assertTrue(stubs._5.patchClaims.calls.isEmpty)),
+      ),
+    ),
+    suite("GET /settings time zone")(
+      controllerTestCase(
+        description = "gives the page the caller's stored zoneinfo",
+        request = Request.get(URL.empty / "settings"),
+        expectedStatus = Status.Ok,
+        setup = (configuration, sessionService, passkeyRepository, _, userRepository, renderService, passwordService, _) =>
+          sessionService.listByUser.succeedsWith(List(ownSession)) *>
+            passkeyRepository.listByUser.succeedsWith(Vector.empty) *>
+            passwordService.hasPassword.succeedsWith(false) *>
+            configuration.getPasswordRegex.succeedsWith(passwordRegex) *>
+            userRepository.find.succeedsWith(Some(userWithClaims(Json.Obj("zoneinfo" -> Json.Str("Asia/Almaty"), "name" -> Json.Str("Ada"))))) *>
+            renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
+        verify = (_, stubs) => ZIO.succeed(assertTrue(stubs._6.renderAccount.calls.map(_._2.zoneinfo) == List(Some("Asia/Almaty")))),
+      ),
+      controllerTestCase(
+        description = "shows no zone for a stored value that is not a name of the IANA database",
+        request = Request.get(URL.empty / "settings"),
+        expectedStatus = Status.Ok,
+        setup = (configuration, sessionService, passkeyRepository, _, userRepository, renderService, passwordService, _) =>
+          sessionService.listByUser.succeedsWith(List(ownSession)) *>
+            passkeyRepository.listByUser.succeedsWith(Vector.empty) *>
+            passwordService.hasPassword.succeedsWith(false) *>
+            configuration.getPasswordRegex.succeedsWith(passwordRegex) *>
+            userRepository.find.succeedsWith(Some(userWithClaims(Json.Obj("zoneinfo" -> Json.Str("+05:00"))))) *>
+            renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
+        verify = (_, stubs) => ZIO.succeed(assertTrue(stubs._6.renderAccount.calls.map(_._2.zoneinfo) == List(None))),
+      ),
     ),
     suite("PATCH /settings/password")(
       controllerTestCase(

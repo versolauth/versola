@@ -110,6 +110,16 @@
   width: auto;
   margin-top: 8px;
 }
+.account-zone-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.account-zone-form .btn {
+  align-self: flex-start;
+  width: auto;
+  margin-top: 8px;
+}
 .account-checkbox {
   display: flex;
   align-items: center;

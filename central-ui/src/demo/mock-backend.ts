@@ -385,6 +385,8 @@ const defaultJwksKeySummaries: JwksKeySummaryDto[] = [
 type MyPermissionsDto = {
   resources: Record<string, { permissions: string[] }>;
   isProd: boolean;
+  /** The caller's own time zone (the `zoneinfo` of their profile), as edge names it in `/permissions/me`; absent for none. */
+  timeZone?: string;
 };
 
 /** Stands for the foundation stylesheet central lays every visual theme on. */
@@ -416,10 +418,6 @@ export type MockConfigState = {
   users: UserDto[];
   /** What `GET /users/audit?id=` serves, keyed by user id; a user with no entry has an empty report. */
   userAudit: Record<string, UserAuditMock>;
-  /** The `zoneinfo` of the signed-in administrator's profile, what `GET /users/preferences` serves; `null` for none. */
-  myZoneinfo: string | null;
-  /** A status `GET /users/preferences` answers with instead of the preferences, to show a screen on a central that cannot serve them. */
-  myPreferencesStatus?: number;
   forms: FormDto[];
   // The states central lists for the built-in forms; null stands for a central that has no such endpoint.
   formPreviews: FormPreviewDto[] | null;
@@ -489,7 +487,6 @@ export const defaultMyPermissions: MyPermissionsDto = {
         'security:read', 'security:manage',
         'users:read', 'users:manage',
         'audit:read',
-        'preferences:manage',
         'resources:read', 'resources:manage',
         'forms:read', 'forms:manage',
         'locales:read', 'locales:manage',
@@ -532,7 +529,6 @@ const defaultState: MockConfigState = {
   authorizationPresets: {},
   users: [],
   userAudit: {},
-  myZoneinfo: null,
   forms: [],
   formPreviews: [],
   formLocales: [],
@@ -579,8 +575,6 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     roles: clone({ ...defaultState.roles, ...overrides.roles }),
     users: clone(overrides.users ?? defaultState.users),
     userAudit: clone(overrides.userAudit ?? defaultState.userAudit),
-    myZoneinfo: overrides.myZoneinfo === undefined ? defaultState.myZoneinfo : overrides.myZoneinfo,
-    myPreferencesStatus: overrides.myPreferencesStatus,
     forms: clone(overrides.forms ?? defaultState.forms),
     formPreviews: clone(overrides.formPreviews === undefined ? defaultState.formPreviews : overrides.formPreviews),
     formLocales: clone(overrides.formLocales ?? defaultState.formLocales),
@@ -1960,28 +1954,6 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       ...(user.login !== undefined ? { login: user.login } : {}),
       claims: user.claims ?? {},
     });
-
-    if (pathname === '/users/preferences' && method === 'GET') {
-      if (state.myPreferencesStatus) {
-        await route.fulfill({ status: state.myPreferencesStatus, contentType: 'text/plain', body: 'unavailable' });
-        return;
-      }
-      await route.fulfill(json({ zoneinfo: state.myZoneinfo }));
-      return;
-    }
-
-    if (pathname === '/users/preferences' && method === 'PATCH') {
-      const { zoneinfo } = body as { zoneinfo?: string | null };
-      // Central takes the IANA database's names only: an offset is no zone, and neither is a name it does not carry.
-      const known = typeof zoneinfo === 'string' && /^[A-Za-z]/.test(zoneinfo) && (() => { try { new Intl.DateTimeFormat('en-US', { timeZone: zoneinfo }); return true; } catch { return false; } })();
-      if (zoneinfo !== undefined && zoneinfo !== null && !known) {
-        await route.fulfill({ status: 400, contentType: 'text/plain', body: 'zoneinfo is not a name of the IANA time zone database' });
-        return;
-      }
-      if (zoneinfo !== undefined) state.myZoneinfo = zoneinfo;
-      await route.fulfill({ status: 204, body: '' });
-      return;
-    }
 
     if (pathname === '/users/audit' && method === 'GET') {
       const audit = state.userAudit[url.searchParams.get('id') ?? ''] ?? { events: [] };

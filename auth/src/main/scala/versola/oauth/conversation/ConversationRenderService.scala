@@ -192,6 +192,8 @@ object ConversationRenderService:
         passkeys: List[AccountPasskey],
         hasPassword: Boolean,
         passwordRegex: String,
+        /** The user's own `zoneinfo` claim, absent when none is stored. */
+        zoneinfo: Option[String],
     ) extends StepView
 
     @jsonHint("access-denied")

@@ -30,6 +30,8 @@ const formConfig = {
     password_not_allowed: 'Password is too weak', password_reused: 'This password was used recently',
     current_password_incorrect: 'The current password is incorrect', too_many_attempts: 'Too many failed attempts',
     too_many_attempts_retry: 'Too many failed attempts, retry in {seconds} s', password_change_failed: 'Could not change the password',
+    zone_title: 'Time zone', zone_label: 'Time zone', zone_hint: "Times are shown in this zone. Empty uses your browser's zone.", zone_saved: 'Time zone saved', zone_save_button: 'Save time zone',
+    zone_invalid: 'Choose a time zone from the list', zone_save_failed: 'Could not save the time zone',
   },
   locales: ['en'],
 };
@@ -365,3 +367,61 @@ for (const refusal of [
     await expect(page.getByText('Password changed')).toHaveCount(0);
   });
 }
+
+// The Time zone section: the user's own `zoneinfo` claim, for every account (a password or not).
+test.describe('time zone', () => {
+  test('shows the stored zone, offers the browser\'s names and saves a change on the wire', async ({ page }) => {
+    const requests: Array<{ method: string; body: string }> = [];
+    await page.route('**/resources/auth/settings/zoneinfo', async route => {
+      requests.push({ method: route.request().method(), body: route.request().postData() ?? '' });
+      await route.fulfill({ status: 204 });
+    });
+    await loadAccountForm(page, { ...formConfig, step: { ...formConfig.step, zoneinfo: 'Europe/Berlin' } });
+    const field = page.getByLabel('Time zone');
+    await expect(field).toHaveValue('Europe/Berlin');
+    expect(await page.locator('#zoneinfo-names option').count()).toBeGreaterThan(300);
+    await field.fill('Asia/Almaty');
+    await page.getByRole('button', { name: 'Save time zone' }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'Time zone saved' })).toBeVisible();
+    expect(requests).toEqual([{ method: 'PATCH', body: JSON.stringify({ zoneinfo: 'Asia/Almaty' }) }]);
+  });
+
+  test('an empty field clears the zone (null on the wire), and the form is there without a password', async ({ page }) => {
+    const bodies: string[] = [];
+    await page.route('**/resources/auth/settings/zoneinfo', async route => {
+      bodies.push(route.request().postData() ?? '');
+      await route.fulfill({ status: 204 });
+    });
+    await loadAccountForm(page, { ...formConfig, step: { ...formConfig.step, hasPassword: false, zoneinfo: 'Europe/Berlin' } });
+    await page.getByLabel('Time zone').fill('');
+    await page.getByRole('button', { name: 'Save time zone' }).click();
+    await expect(page.getByText('Time zone saved')).toBeVisible();
+    expect(bodies).toEqual([JSON.stringify({ zoneinfo: null })]);
+  });
+
+  test('refuses a name the browser does not know without asking the server', async ({ page }) => {
+    let requests = 0;
+    await page.route('**/resources/auth/settings/zoneinfo', route => { requests += 1; return route.fulfill({ status: 204 }); });
+    await loadAccountForm(page);
+    const field = page.getByLabel('Time zone');
+    await field.fill('Mars/Olympus');
+    await page.getByRole('button', { name: 'Save time zone' }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'Choose a time zone from the list' })).toBeVisible();
+    await expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(requests).toBe(0);
+  });
+
+  for (const refusal of [
+    { name: 'a refusal of the name by the server', status: 400, text: 'Choose a time zone from the list' },
+    { name: 'a failure of the server', status: 502, text: 'Could not save the time zone' },
+  ]) {
+    test(`shows ${refusal.name} and not a success`, async ({ page }) => {
+      await page.route('**/resources/auth/settings/zoneinfo', route => route.fulfill({ status: refusal.status, contentType: 'application/json', body: '{"error":"invalid_zoneinfo"}' }));
+      await loadAccountForm(page);
+      await page.getByLabel('Time zone').fill('Asia/Almaty');
+      await page.getByRole('button', { name: 'Save time zone' }).click();
+      await expect(page.getByRole('alert').filter({ hasText: refusal.text })).toBeVisible();
+      await expect(page.getByText('Time zone saved')).toHaveCount(0);
+    });
+  }
+});

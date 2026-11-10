@@ -161,6 +161,25 @@ object AccountSettingsEdgeSpec extends E2ESpec:
         assertTrue(!afterDelete.exists(passkey => str(passkey, "id").contains(credential.id)))
           .label("the deleted passkey must be gone from the page")
     },
+    test("stores a time zone for the token's own user through edge, and clears it") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        set <- auth.edgePatchAccountZoneinfo(Some(caller.accessToken), Some("Asia/Almaty"))
+        shown <- auth.edgeAccountPage(Some(caller.accessToken)).flatMap(_.formStep)
+        invalid <- auth.edgePatchAccountZoneinfo(Some(caller.accessToken), Some("Mars/Olympus"))
+        cleared <- auth.edgePatchAccountZoneinfo(Some(caller.accessToken), None)
+        gone <- auth.edgeAccountPage(Some(caller.accessToken)).flatMap(_.formStep)
+      yield assertTrue(set.status == Status.NoContent, invalid.status == Status.BadRequest, cleared.status == Status.NoContent) &&
+        assertTrue(str(shown, "zoneinfo").contains("Asia/Almaty")).label("the stored zone must be on the page") &&
+        assertTrue(str(gone, "zoneinfo").isEmpty).label("a cleared zone must leave the page without one")
+    },
+    test("refuses to change a time zone without an access token") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        result <- auth.edgePatchAccountZoneinfo(None, Some("Asia/Almaty"))
+      yield assertTrue(result.status == Status.Unauthorized)
+    },
     test("changes the password when the current password is correct") {
       val changed = "NewPass-Changed-1!"
       for
