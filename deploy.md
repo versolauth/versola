@@ -1536,10 +1536,20 @@ certificate expiry.
 `partner`, set at creation and never changed by the edge. The `mode` key in an edge's own configuration
 is only a declaration: at start the edge compares it with the group in its credentials and refuses to
 start on a mismatch. A partner group never reaches `/edge/sync/*`, so a partner edge cannot read
-`central`'s configuration; a client of a partner group needs standard client authentication (`private_key_jwt` or
-`tls_client_auth`). Planned, not in this release: `auth` accepting an edge's certificate for the clients of its group. Onboarding: create a `partner` group and its edge, register the partner's clients
-bound to that group, publish `id.<domain>` (and `id-mtls.<domain>` for `tls_client_auth`). A partner
-never gets `central-mtls.<domain>`.
+`central`'s configuration of the operator's own tenants; it reads `/edge/partner/*` on the mutual-TLS listener
+of `central` instead, which serves its partner's rows only. Onboarding: `POST /configuration/partners`
+creates the partner with its group, console client and first edge, and answers the enrollment token and the
+bundle once; the partner's edge enrols with them, and its staff register the partner's clients, which wait for
+the operator's approval (`GET /configuration/partners/approvals`, `POST .../approve`, `POST .../reject`) before
+auth knows them. A partner client authenticates with `tls_client_auth` (the group's certificate) or
+`private_key_jwt`, never with a shared secret. Set `central.public-urls { enroll, mtls }` (the public names of
+`central`'s enrollment and mutual-TLS listeners) and `auth.mtls-url` (the public name of `auth`'s mutual-TLS
+listener) so that the bundle and `/edge/partner/me` tell the partner's edge where everything is; without them the
+operator fills the addresses in by hand. `POST /configuration/partners/suspend` is the kill switch: the partner's
+clients are omitted from what `auth` reads, their refresh tokens are revoked (`DELETE
+/users/refresh-tokens?clientId=` on `auth`), and the partner's edges are refused with `403` everywhere, certificate
+renewal included; `POST /configuration/partners/resume` reverses it. Access tokens already issued run out within the
+partner's `accessTokenTtlMax`.
 
 **Behaviour change and breaking items** (read before upgrading; `central`, `auth` and every `edge`
 move together and `configure` is re-run)
@@ -1562,6 +1572,13 @@ move together and `configure` is re-run)
   "edge reaches `/userinfo` with its own certificate" below.)
 - The migration creates the group `default` (`first_party`) and puts every existing edge in it, so an
   upgrade changes nothing for existing edges.
+- **Breaking (#962):** an edge's identity no longer has a chain that ends. The keys `edge-identity.auto-extend` and
+  `edge-identity.max-age` are no longer read (a deployment that set `auto-extend = false` simply loses the setting: its
+  edges renew for as long as they are registered, and the way to stop one is to delete it or, for a partner's, to suspend
+  the partner), `POST /configuration/edges/extend` is gone (`404`), the field `identityChainEndsAt` is no longer in
+  `GET /configuration/edges`, and the edge no longer logs the 30-day chain warning. The table `edge_identity_chains` stays
+  in the database, unused, until a later migration drops it. The client-certificate (EST) chain, `client-identity`, is not
+  affected.
 - CAs are split by role (server, edge, client). Whether the server role is its own intermediate is not
   decided.
 

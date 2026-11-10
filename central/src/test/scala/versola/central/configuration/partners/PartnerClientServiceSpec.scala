@@ -248,6 +248,7 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.clients.findClient.succeedsWith(Some(stored))
         _ <- env.clients.updateClient.returnsZIO((_, _, _, _) => ZIO.unit)
         _ <- env.clients.setApproval.succeedsWith(true)
+        _ <- env.clients.refreshNow.succeedsWith(())
         _ <- env.presets.savePresets.succeedsWith(Right(()))
         applied <- env.service.applyApproval(waitingCreate, Some(Json.Obj("clientName" -> Json.Obj("en" -> Json.Str("ACME Shop (verified)")))))
         update = env.clients.updateClient.calls.head
@@ -270,6 +271,7 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.clients.findClient.succeedsWith(Some(client(request.id, ClientApproval.Pending)))
         _ <- env.clients.setApproval.succeedsWith(true)
+        _ <- env.clients.refreshNow.succeedsWith(())
         _ <- env.presets.savePresets.succeedsWith(Right(()))
         applied <- env.service.applyApproval(waitingCreate, None)
       yield assertTrue(applied.isEmpty, env.clients.updateClient.calls.isEmpty, env.clients.setApproval.calls.size == 1)

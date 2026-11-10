@@ -310,7 +310,8 @@ object PartnerClientService:
       * `https://<edge>/login/<client id>` (#963 `PartnerClient.loginPath`). Its redirect is the client's first one. */
     private def loginPreset(client: OAuthClientRecord): IO[PartnerError | Throwable, Unit] =
       ZIO.foreachDiscard(client.redirectUris.toList.sortBy(uri => uri: String).headOption): redirect =>
-        presets.savePresets(SaveAuthorizationPresetsRequest(
+        // the preset is validated against the clients central has cached, which a notification refreshes after the commit
+        clients.refreshNow *> presets.savePresets(SaveAuthorizationPresetsRequest(
           clientId = client.id,
           presets = List(AuthorizationPresetInput(
             id = PresetId(client.id),

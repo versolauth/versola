@@ -200,8 +200,10 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.clients.findClient.returnsZIO(id =>
             ZIO.succeed(Option.when(id == ClientId("acme-console") && env.clients.registerClient.calls.nonEmpty)(console)),
           )
+          _ <- env.clients.refreshNow.succeedsWith(())
           _ <- env.presets.savePresets.succeedsWith(Right(()))
           _ <- env.edges.registerEdge.succeedsWith(keyPair)
+          _ <- env.edges.sync().succeedsWith(())
           // the edge is read back after it was registered, and not before: the pre-check must find none
           _ <- env.edges.findFresh.returnsZIO(id =>
             ZIO.succeed(Option.when(id == EdgeId("edge-acme-1") && env.edges.registerEdge.calls.nonEmpty)(edge(id))),
@@ -226,7 +228,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           registration._1.mtlsAuth == Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_uri, "urn:versola:edge-group:acme")),
           registration._1.allowedScopes == PartnerService.ConsoleScope,
           registration._1.redirectUris == Set(newPartner.consoleRedirectUri),
-          registration._1.consentFlow.isEmpty,
+          registration._1.consentFlow.isDefined,
           !registration._1.certificateBoundAccessTokens,
           registration._5,
           env.presets.savePresets.calls.head.presets.map(p => (p.id, p.redirectUri)) == List((
@@ -247,7 +249,9 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           bundle.get("signingKey").flatMap(_.asObject).flatMap(_.get("keyId")) == Some(Json.Str("edge-key")),
         )
       },
-      test("refuses before writing anything: a taken partner, group, client or edge id, an unknown tenant, bad limits") {
+      test(
+        "refuses before writing anything: a taken partner, group, client or edge id, an unknown tenant, bad limits, a console or an edge that is not https",
+      ) {
         val env = Env()
         for
           _ <- env.empty
@@ -268,6 +272,8 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.tenants.getAll.succeedsWith(Vector(TenantRecord(tenantId, "Default", None)))
           badLimits <- env.service.create(newPartner.copy(limits = limits.copy(clientAuthMethods = Set(AuthMethod.client_secret)))).flip
           noEdges <- env.service.create(newPartner.copy(limits = limits.copy(maxEdges = 0))).flip
+          plainConsole <- env.service.create(newPartner.copy(consoleRedirectUri = RedirectUri("http://console.acme.example/complete"))).flip
+          plainEdge <- env.service.create(newPartner.copy(firstEdgePublicUrl = "http://login.acme.example")).flip
         yield assertTrue(
           partnerTaken.isInstanceOf[PartnerError.Conflict],
           groupTaken.isInstanceOf[PartnerError.Conflict],
@@ -276,6 +282,8 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           noTenant == PartnerError.NotFound("tenant 'default'"),
           badLimits.isInstanceOf[PartnerError.Invalid],
           noEdges.isInstanceOf[PartnerError.Invalid],
+          plainConsole.isInstanceOf[PartnerError.Invalid],
+          plainEdge.isInstanceOf[PartnerError.Invalid],
           env.groups.create.calls.isEmpty,
           env.partners.create.calls.isEmpty,
         )
@@ -432,6 +440,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
             ZIO.succeed(Option.when(id == EdgeId("edge-acme-2"))(edge(id)).filter(_ => env.edges.registerEdge.calls.nonEmpty)),
           )
           _ <- env.edges.registerEdge.succeedsWith(keyPair)
+          _ <- env.edges.sync().succeedsWith(())
           _ <- env.identity.issueEnrollmentToken.succeedsWith(EdgeIdentityService.IssuedToken("TOKEN", now.plusSeconds(86400)))
           _ <- env.metadata.getMetadata.succeedsWith(None)
           enrolled <- env.service.addEdge(acme, EdgeId("edge-acme-2"), "https://login2.acme.example")

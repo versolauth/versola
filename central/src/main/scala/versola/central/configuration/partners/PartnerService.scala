@@ -30,7 +30,7 @@ import versola.central.configuration.edges.{
 import versola.central.configuration.metadata.ServerMetadataService
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
-import versola.central.configuration.{AuthorizationPresetInput, CreateClientRequest, SaveAuthorizationPresetsRequest}
+import versola.central.configuration.{AuthorizationPresetInput, ConsentFlowDto, CreateClientRequest, SaveAuthorizationPresetsRequest}
 import versola.central.users.AuthClient
 import versola.util.{Base64Url, RedirectUri, RsaKeyPair}
 import zio.json.ast.Json
@@ -208,6 +208,8 @@ object PartnerService:
           ZIO.fail(PartnerError.Conflict(s"edge '${request.firstEdgeId}' already exists")).when(found.isDefined),
         )
         _ <- ZIO.fail(PartnerError.Invalid("firstEdge.publicUrl must be an https URL")).unless(request.firstEdgePublicUrl.startsWith("https://"))
+        _ <-
+          ZIO.fail(PartnerError.Invalid("consoleClient.redirectUri must be an https URL")).unless(request.consoleRedirectUri.startsWith("https://"))
         now <- Clock.instant.map(_.truncatedTo(ChronoUnit.MICROS))
         record = PartnerRecord(
           id = request.id,
@@ -234,6 +236,8 @@ object PartnerService:
         // to the partner's limits (its scope is what the console needs, its redirect is the console's), but a partner's
         // client in every other way.
         _ <- registration(clients.registerClient(consoleClient(record, request.consoleRedirectUri), allowOutsideLimits = true))
+        // the preset is validated against the clients central has cached, which a notification refreshes after the commit
+        _ <- clients.refreshNow
         console <- clients.findClient(consoleId).someOrFail(IllegalStateException(s"client '$consoleId' was registered and cannot be read"))
         _ <- consolePreset(console, request.consoleRedirectUri)
         edge <- enrol(record, request.firstEdgeId, request.firstEdgePublicUrl)
@@ -258,7 +262,8 @@ object PartnerService:
         logoUri = partner.logoUri,
         policyUri = None,
         tosUri = None,
-        consentFlow = None,
+        // a partner client has one, the console included: the staff are told which partner they sign in to
+        consentFlow = Some(ConsentFlowDto(allowPartial = false, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
         dpopBoundAccessTokens = false,
         dpopSigningAlgs = Set.empty,
         dpopMinRsaKeySize = None,
@@ -305,7 +310,9 @@ object PartnerService:
     private def enrol(partner: PartnerRecord, id: EdgeId, publicUrl: String): IO[PartnerError | Throwable, EnrolledEdge] =
       for
         keyPair <- edgeService.registerEdge(id, partner.groupId, Some(publicUrl))
-        // the cache reads the row through its notification; the edge is read back from the row so that the answer is what was stored
+        // the token is issued for an edge the cache knows, which it learns through a notification after the commit: reloaded now
+        _ <- edgeService.sync()
+        // the edge is read back from the row so that the answer is what was stored
         edge <- edgeService.findFresh(id).someOrFail(IllegalStateException(s"edge '$id' was registered and cannot be read"))
         token <- issueToken(id)
         bundle <- bundleFor(edge, keyPair, token)

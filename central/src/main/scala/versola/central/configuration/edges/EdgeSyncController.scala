@@ -4,6 +4,7 @@ import versola.central.configuration.clients.certificates.ClientCertificateServi
 import versola.central.configuration.clients.{AuthorizationPreset, AuthorizationPresetService, ClientController, OAuthClientService}
 import versola.central.configuration.jwks.JwksService
 import versola.central.configuration.metadata.ServerMetadataService
+import versola.central.configuration.partners.PartnerRegistry
 import versola.central.configuration.permissions.PermissionService
 import versola.central.configuration.resources.{ResourceRecord, ResourceService}
 import versola.central.configuration.roles.RoleService
@@ -20,8 +21,8 @@ import versola.central.configuration.{
   SignEdgeCertificateRequest,
   SignEdgeCertificateResponse,
 }
-import versola.central.{CentralConfig, authorizeAnyEdge, authorizeEdge}
-import versola.util.http.{Controller, Unauthorized}
+import versola.central.{CentralConfig, authorizeEdge, authorizeRenewal}
+import versola.util.http.{Controller, Forbidden, Unauthorized}
 import versola.util.{Base64Url, Dpop, SecurityService}
 import zio.ZIO
 import zio.http.*
@@ -40,7 +41,7 @@ import java.security.cert.X509Certificate
   */
 object EdgeSyncController extends Controller:
   type Env = Tracing & CentralConfig & EdgeService & EdgeIdentityService & SecurityService & OAuthClientService & ClientCertificateService &
-    AuthorizationPresetService & ResourceService & RoleService & PermissionService & JwksService & ServerMetadataService
+    AuthorizationPresetService & ResourceService & RoleService & PermissionService & JwksService & ServerMetadataService & PartnerRegistry
 
   def routes: Routes[Env, Throwable] = Routes(
     clientsEndpoint,
@@ -238,13 +239,12 @@ object EdgeSyncController extends Controller:
 
   /** A new certificate for the calling edge itself, for the one it has: asked for over the mutual-TLS listener, so the
     * handshake and the token have already said which edge this is. The request must name exactly that edge and its
-    * group, and carries a new key every time. The one route an edge of either kind reaches ([[authorizeAnyEdge]]): a
-    * partner's edge keeps renewing for as long as it is registered, and the way to stop it is to suspend the partner,
-    * which refuses it on `/edge/partner`, renew included. */
+    * group, and carries a new key every time. The one route an edge of either kind reaches ([[authorizeRenewal]]): a
+    * partner's edge keeps renewing for as long as it is registered and its partner is not suspended (403 then). */
   val renewIdentityEndpoint =
     Method.POST / "edge" / "certificate" / "renew" -> handler { (request: Request) =>
       (for
-        edge <- authorizeAnyEdge(request)
+        edge <- authorizeRenewal(request)
         body <- request.bodyAs[RenewEdgeCertificateRequest]
         identity <- ZIO.serviceWithZIO[EdgeIdentityService](_.renew(
           edge.id,
@@ -256,6 +256,7 @@ object EdgeSyncController extends Controller:
           case error: EdgeIdentityService.Refused =>
             ZIO.succeed(Response.text(error.getMessage).status(Status.UnprocessableEntity))
           case Unauthorized => ZIO.succeed(Response.status(Status.Unauthorized))
+          case Forbidden => ZIO.succeed(Response.status(Status.Forbidden))
           case error: Throwable => ZIO.fail(error)
         }
     }

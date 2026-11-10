@@ -90,10 +90,25 @@ def authorizePartnerEdge(request: Request): ZIO[CentralConfig & EdgeService & Pa
   for
     edge <- authorizeAnyEdge(request)
     _ <- (Observability.setError("edge_group_first_party") *> ZIO.fail(Unauthorized)).when(edge.groupKind != EdgeGroupKind.Partner)
+    partner <- unsuspendedPartnerOf(edge)
+  yield PartnerCaller(edge, partner)
+
+/** The route both kinds of edge reach, `POST /edge/certificate/renew`: [[authorizeAnyEdge]], and an edge of a partner group is
+  * refused with 403 `partner_suspended` while its partner is suspended, as on every route of `/edge/partner` (#962: the kill
+  * switch stops the certificate from being renewed too). An edge of a first-party group is not looked at beyond the first.
+  */
+def authorizeRenewal(request: Request): ZIO[CentralConfig & EdgeService & PartnerRegistry, Unauthorized.type | Forbidden.type, EdgeRecord] =
+  for
+    edge <- authorizeAnyEdge(request)
+    _ <- unsuspendedPartnerOf(edge).when(edge.groupKind == EdgeGroupKind.Partner)
+  yield edge
+
+private def unsuspendedPartnerOf(edge: EdgeRecord): ZIO[PartnerRegistry, Unauthorized.type | Forbidden.type, PartnerRecord] =
+  for
     partner <- ZIO.serviceWithZIO[PartnerRegistry](_.findByGroup(edge.groupId))
       .someOrElseZIO(Observability.setError("partner_unknown") *> ZIO.fail(Unauthorized))
     _ <- (Observability.setError("partner_suspended") *> ZIO.fail(Forbidden)).when(partner.status == PartnerStatus.Suspended)
-  yield PartnerCaller(edge, partner)
+  yield partner
 
 /** An edge of a partner, as `authorizePartnerEdge` proved it: the edge that called and the partner it belongs to. */
 case class PartnerCaller(edge: EdgeRecord, partner: PartnerRecord)

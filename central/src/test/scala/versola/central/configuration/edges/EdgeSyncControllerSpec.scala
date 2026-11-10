@@ -26,6 +26,15 @@ import versola.central.configuration.clients.{
 }
 import versola.central.configuration.jwks.JwksService
 import versola.central.configuration.metadata.ServerMetadataService
+import versola.central.configuration.partners.{
+  PartnerContact,
+  PartnerId,
+  PartnerLimits,
+  PartnerRecord,
+  PartnerRegistry,
+  PartnerSettings,
+  PartnerStatus,
+}
 import versola.central.configuration.permissions.{Permission, PermissionRecord, PermissionService}
 import versola.central.configuration.resources.{
   AudienceRateLimit,
@@ -280,6 +289,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
       metadata: Stub[ServerMetadataService],
       edges: Stub[EdgeService],
       identity: Stub[EdgeIdentityService],
+      registry: Stub[PartnerRegistry],
       security: SecurityService,
   )
 
@@ -337,6 +347,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
           metadata = stub[ServerMetadataService],
           edges = stub[EdgeService],
           identity = stub[EdgeIdentityService],
+          registry = stub[PartnerRegistry],
           security = security,
         )
         certificates =
@@ -355,6 +366,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[ServerMetadataService](services.metadata) ++
                 ZEnvironment[EdgeService](services.edges) ++
                 ZEnvironment[EdgeIdentityService](services.identity) ++
+                ZEnvironment[PartnerRegistry](services.registry) ++
                 ZEnvironment[SecurityService](security) ++
                 ZEnvironment[CentralConfig](config) ++
                 tracing,
@@ -368,6 +380,30 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         verifyResult <- verify(response, services)
       yield assertTrue(response.status == expectedStatus) && verifyResult
     } @@ TestAspect.silentLogging
+
+  private def partnerRecord(status: PartnerStatus) = PartnerRecord(
+    id = PartnerId("partner-acme"),
+    tenantId = TenantId("tenant-a"),
+    displayName = "Acme",
+    logoUri = None,
+    contact = PartnerContact("ops@acme.example", None),
+    status = status,
+    limits = PartnerLimits(
+      scopes = Set(ScopeToken("openid")),
+      redirectDomains = Set("acme.example"),
+      maxClients = 5,
+      maxEdges = 2,
+      accessTokenTtlMax = 600,
+      refreshTokenTtlMax = 86400,
+      clientAuthMethods = Set(AuthMethod.tls_client_auth),
+      rateLimitPolicy = "partner-default",
+    ),
+    groupId = EdgeGroupId("partner-acme"),
+    consoleClientId = ClientId("partner-acme-console"),
+    settings = PartnerSettings.empty,
+    reviewAt = None,
+    createdAt = Instant.parse("2026-11-01T00:00:00Z"),
+  )
 
   private def sync(resource: String): URL = URL.root / "edge" / "sync" / resource
 
@@ -758,8 +794,31 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         edge = edgeRecord.copy(groupId = EdgeGroupId("partner-acme"), groupKind = EdgeGroupKind.Partner),
         certificate = Some(otherGroupCertificate.certificate),
         expectedStatus = Status.Ok,
-        setup = services => services.identity.renew.succeedsWith(EdgeIdentityService.Identity("CHAIN")),
+        setup = services =>
+          services.registry.findByGroup.succeedsWith(Some(partnerRecord(PartnerStatus.Active))) *>
+            services.identity.renew.succeedsWith(EdgeIdentityService.Identity("CHAIN")),
         verify = (_, services) => ZIO.succeed(assertTrue(services.identity.renew.calls.map(_._1) == List(edgeId))),
+      ),
+      // The kill switch (#962): a suspended partner's edge is not given a new certificate.
+      testCase(
+        description = "certificate renewal: an edge of a suspended partner is 403, and nothing is signed",
+        request = Request.post(URL.root / "edge" / "certificate" / "renew", Body.fromString("""{"csr":"REQUEST"}"""))
+          .addHeader(Header.ContentType(MediaType.application.json)),
+        edge = edgeRecord.copy(groupId = EdgeGroupId("partner-acme"), groupKind = EdgeGroupKind.Partner),
+        certificate = Some(otherGroupCertificate.certificate),
+        expectedStatus = Status.Forbidden,
+        setup = services => services.registry.findByGroup.succeedsWith(Some(partnerRecord(PartnerStatus.Suspended))),
+        verify = (_, services) => ZIO.succeed(assertTrue(services.identity.renew.calls.isEmpty)),
+      ),
+      testCase(
+        description = "certificate renewal: an edge of a partner group whose partner is unknown is 401",
+        request = Request.post(URL.root / "edge" / "certificate" / "renew", Body.fromString("""{"csr":"REQUEST"}"""))
+          .addHeader(Header.ContentType(MediaType.application.json)),
+        edge = edgeRecord.copy(groupId = EdgeGroupId("partner-acme"), groupKind = EdgeGroupKind.Partner),
+        certificate = Some(otherGroupCertificate.certificate),
+        expectedStatus = Status.Unauthorized,
+        setup = services => services.registry.findByGroup.succeedsWith(None),
+        verify = (_, services) => ZIO.succeed(assertTrue(services.identity.renew.calls.isEmpty)),
       ),
       testCase(
         description = "edge-certificate signing: an edge of a partner group is refused, as on every route but renewal",
