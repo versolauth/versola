@@ -840,12 +840,19 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   design estimate, to be replaced with the figure measured under load.
 
   A call that reaches central without the query parameters edge adds (`actorId`, `actorTenantId`, `actorClientId`, `actorSessionId`,
-  and `actorIp`, the address of the caller) is not refused: it is recorded as made by a `service` with no id, and counted in `audit_actor_missing_total{reason}` (an alert is in
-  `dashboards/alerts/versola-audit-central.rules.yaml`). Edge adds them to every admin route since this release, and central's
-  bootstrap brings the registrations of the existing `central` resource up to date at start (it adds those inject rules to endpoints
-  an earlier release registered, removes the header rules an earlier form of this feature registered, and leaves what an operator added
-  alone); until edge has synced them, admin actions are recorded without an actor. Edge's sync is the refresh interval (5 minutes by
-  default).
+  and `actorIp`, the address of the caller) names no actor and is refused (below); it is counted in `audit_actor_missing_total{reason}`
+  (an alert is in `dashboards/alerts/versola-audit-central.rules.yaml`). Edge adds them to every admin route since this release, and
+  central's bootstrap brings the registrations of the existing `central` resource up to date at start (it adds those inject rules to
+  endpoints an earlier release registered, removes the header rules an earlier form of this feature registered, and leaves what an
+  operator added alone); until edge has synced them (its sync is the refresh interval, 5 minutes by default), admin calls through it are
+  refused for want of an actor.
+
+  A call of an administrator's route that names no valid actor is refused with `401` and the handler does not run: every route of the
+  admin API except the ones that are not an administrator's call (auth's syncs, the certificate flows `/est/*` and
+  `/users/registrations`, the `/service/*` tooling) needs a valid `actorId` (a user, or the client a client-credentials token was
+  issued to). The refusal is counted in `audit_actor_missing_total{reason}` (`absent`, `invalid`) and in `audit_actor_refused_total{reason}`
+  and, for a change, recorded as a denial with the reason `actor_required`. So a script that holds the central resource secret and calls
+  central directly is refused; it goes through edge, which states who it is.
 
   The `ip` of an `admin.*` row is the address edge found for the caller by its own `client-ip` setting (`socket`, the peer of the
   connection, or `forwarded`, the header named by `client-ip-header`), so it is only as right as that setting: with `socket` behind a
