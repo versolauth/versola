@@ -17,8 +17,8 @@ export function partnerSeed(now = Date.now()): MockPartnerState {
     redirectDomains: ['pilotpay.example', 'pilotpay.app'],
     maxClients: 10,
     maxEdges: 3,
-    // An hour: DPoP-bound access tokens (a device client's) live at least that long.
-    accessTokenTtlMax: 3600,
+    // Central's own maximum: the operator may narrow it, but never widen what central allows every client.
+    accessTokenTtlMax: 86_400,
     refreshTokenTtlMax: 30 * 86_400,
     clientAuthMethods: ['tls_client_auth' as const, 'private_key_jwt' as const],
     rateLimitPolicy: 'partner-default',

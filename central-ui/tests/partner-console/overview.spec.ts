@@ -30,7 +30,7 @@ test('shows the link, the edges, the attention list, the limits and the recent a
   const limits = page.getByRole('region', { name: 'What the operator allows you' });
   await expect(limits).toContainText('pilotpay.example');
   await expect(limits).toContainText('up to 10 · up to 3');
-  await expect(limits).toContainText('access ≤ 1 h · refresh ≤ 30 days');
+  await expect(limits).toContainText('access ≤ 1 day · refresh ≤ 30 days');
   await expect(limits).toContainText('Nov 27, 2026');
   const activity = page.getByRole('region', { name: 'Recent activity' });
   await expect(activity.locator('li')).toHaveCount(6);

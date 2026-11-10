@@ -55,7 +55,7 @@ test('an active client: Integrate, the rows the operator fixed, the caps inline,
   const tokens = panel.getByRole('region', { name: 'Credentials & tokens' });
   await expect(tokens).toContainText('tls_client_auth with your group certificate urn:versola:edge-group:pilot-pay');
   await expect(tokens).toContainText('access 5 min · refresh 14 days');
-  await expect(tokens).toContainText('(caps access ≤ 1 h · refresh ≤ 30 days)');
+  await expect(tokens).toContainText('(caps access ≤ 1 day · refresh ≤ 30 days)');
   await expect(tokens.getByRole('button', { name: 'Rotate keys' })).toHaveCount(0);
   await expect(panel.getByRole('region', { name: 'Served by' })).toContainText('the edges of group pilot-pay');
   await expect(panel.getByRole('button', { name: 'Edit general' })).toBeVisible();
@@ -143,12 +143,12 @@ test('a redirect URI outside the domains is marked and waits for the operator', 
 test('token lifetimes are capped by the operator in the editor itself', async ({ page }) => {
   const api = await loadPartnerApp(page, { path: `${clientsPath}&id=pilot-pay-web&edit=tokens` });
   const editor = sidePanel(page, 'Edit token lifetimes');
-  await expect(editor.getByText('Within the operator\'s caps: access ≤ 1 h · refresh ≤ 30 days.')).toBeVisible();
+  await expect(editor.getByText('Within the operator\'s caps: access ≤ 1 day · refresh ≤ 30 days.')).toBeVisible();
   await expect(editor.getByText('Client authentication: tls_client_auth')).toBeVisible();
-  await editor.getByLabel('Access token, minutes *').fill('90');
+  await editor.getByLabel('Access token, minutes *').fill('1500');
   await editor.getByLabel('Refresh token, days *').fill('45');
   await editor.getByRole('button', { name: 'Save token lifetimes' }).click();
-  await expect(editor.getByRole('alert')).toHaveText(['At most 1 h: the operator\'s cap.', 'At most 30 days: the operator\'s cap.']);
+  await expect(editor.getByRole('alert')).toHaveText(['At most 1 day: the operator\'s cap.', 'At most 30 days: the operator\'s cap.']);
   expect(await scan(page)).toEqual([]);
   await editor.getByLabel('Access token, minutes *').fill('10');
   await editor.getByLabel('Refresh token, days *').fill('30');
@@ -192,7 +192,7 @@ test('the wizard makes the operator\'s choices, keeps the limits inline, and end
   await expect(page.getByLabel('Access token, minutes *')).toHaveValue('5');
   await expect(page.getByRole('group', { name: 'Scopes' }).getByRole('checkbox')).toHaveCount(4);
   await expect(page.getByRole('checkbox', { name: /^openid/ })).toBeDisabled();
-  await expect(page.getByText('Cap: 1 h.')).toBeVisible();
+  await expect(page.getByText('Cap: 1 day.')).toBeVisible();
   await expect(page.getByRole('group', { name: 'Client authentication' })).toBeVisible();
   await page.getByRole('button', { name: 'Continue to review' }).click();
   await expect(page.getByRole('alert').first()).toHaveText('A client ID is required.');
@@ -247,9 +247,9 @@ test('the wizard refuses a duplicate ID and a lifetime above the cap before subm
   await page.getByLabel('Display name *').fill('Again');
   await page.getByLabel('Redirect URIs *').fill('https://app.pilotpay.example/x');
   await page.getByLabel('Redirect URIs *').press('Enter');
-  await page.getByLabel('Access token, minutes *').fill('90');
+  await page.getByLabel('Access token, minutes *').fill('1500');
   await page.getByRole('button', { name: 'Continue to review' }).click();
-  await expect(page.getByRole('alert')).toHaveText(['You already have a client with this ID.', 'At most 1 h: the operator\'s cap.']);
+  await expect(page.getByRole('alert')).toHaveText(['You already have a client with this ID.', 'At most 1 day: the operator\'s cap.']);
   expect(api.requests.some(request => request.method === 'POST')).toBe(false);
   await page.getByRole('button', { name: 'Back' }).click();
   await page.getByRole('button', { name: 'Cancel' }).click();

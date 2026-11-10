@@ -152,7 +152,7 @@ export const pilotPay: PartnerDto = {
     redirectDomains: ['pilotpay.example', 'pilotpay.app'],
     maxClients: 10,
     maxEdges: 3,
-    accessTokenTtlMax: 60 * 60,
+    accessTokenTtlMax: 24 * 60 * 60,
     refreshTokenTtlMax: 30 * 24 * 60 * 60,
     clientAuthMethods: ['tls_client_auth', 'private_key_jwt'],
     rateLimitPolicy: 'partner-default',

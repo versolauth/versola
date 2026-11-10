@@ -5,7 +5,7 @@ import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formS
 import { statusIcon } from '../../components/status-icon';
 import { confirmDiscardDraft } from '../../utils/draft-guard';
 import { formatDate } from '../../utils/helpers';
-import { ttlCapsLabel, ttlLabel } from '../../utils/partners';
+import { partnerAccessTtlError, ttlCapsLabel, ttlLabel } from '../../utils/partners';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../../utils/record-route';
 import { fetchProfileApproval, fetchSettings, requestProfileChange, updateSettings, writeErrorMessage } from '../partner-api';
 import type { PartnerMe, PartnerSettings, ProfileApproval } from '../partner-types';
@@ -124,7 +124,7 @@ export class VersolaPartnerSettings extends LitElement {
     if (this.editTarget === 'defaults') {
       if (draft.backChannelLogoutUri.trim() && !/^https:\/\/\S+$/.test(draft.backChannelLogoutUri.trim())) errors.backChannelLogoutUri = 'An https URL.';
       const positive = (value: string) => /^\d+$/.test(value.trim()) && Number(value) > 0;
-      if (!positive(draft.accessTokenTtlMinutes) || Number(draft.accessTokenTtlMinutes) * 60 > limits.accessTokenTtlMax) errors.accessTokenTtlMinutes = `Between 1 minute and ${ttlLabel(limits.accessTokenTtlMax)}, the operator's cap.`;
+      if (!positive(draft.accessTokenTtlMinutes) || partnerAccessTtlError(Number(draft.accessTokenTtlMinutes) * 60, limits.accessTokenTtlMax, false)) errors.accessTokenTtlMinutes = `Between 1 minute and ${ttlLabel(Math.min(limits.accessTokenTtlMax, 86_400))}, the operator's cap and central's limit.`;
       if (!positive(draft.refreshTokenTtlDays) || Number(draft.refreshTokenTtlDays) * 86_400 > limits.refreshTokenTtlMax) errors.refreshTokenTtlDays = `Between 1 day and ${ttlLabel(limits.refreshTokenTtlMax)}, the operator's cap.`;
     }
     return errors;

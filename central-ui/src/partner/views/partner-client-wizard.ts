@@ -4,7 +4,7 @@ import { theme, resetStyles } from '../../styles/theme';
 import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, tagStyles, wizardStyles } from '../../styles/components';
 import { statusIcon } from '../../components/status-icon';
 import { validateClientId } from '../../utils/validators';
-import { partnerLimitViolations, redirectUriWithinDomains, ttlCapsLabel, ttlLabel } from '../../utils/partners';
+import { partnerAccessTtlError, partnerLimitViolations, redirectUriWithinDomains, ttlCapsLabel, ttlLabel } from '../../utils/partners';
 import { createClient, writeErrorMessage } from '../partner-api';
 import type { PartnerClient, PartnerClientKind, PartnerMe, PartnerSettings } from '../partner-types';
 import { partnerViewStyles } from '../partner-styles';
@@ -137,6 +137,8 @@ export class VersolaPartnerClientWizard extends LitElement {
 
   private set(patch: Partial<Draft>) {
     this.draft = { ...this.draft, ...patch };
+    // A device client's tokens are DPoP-bound, which central refuses under an hour: start it there instead of on a value it would reject.
+    if (patch.kind === 'native' && this.accessSeconds < 3600) this.draft = { ...this.draft, accessTokenTtlMinutes: '60' };
   }
 
   private get limits() {
@@ -166,7 +168,7 @@ export class VersolaPartnerClientWizard extends LitElement {
     if (draft.redirectUris.length === 0) errors.redirectUris = 'At least one redirect URI.';
     const positive = (value: string) => /^\d+$/.test(value.trim()) && Number(value) > 0;
     if (!positive(draft.accessTokenTtlMinutes)) errors.accessTokenTtlMinutes = 'A whole number of minutes.';
-    else if (this.accessSeconds > this.limits.accessTokenTtlMax) errors.accessTokenTtlMinutes = `At most ${ttlLabel(this.limits.accessTokenTtlMax)}: the operator's cap.`;
+    else if (partnerAccessTtlError(this.accessSeconds, this.limits.accessTokenTtlMax, draft.kind === 'native')) errors.accessTokenTtlMinutes = partnerAccessTtlError(this.accessSeconds, this.limits.accessTokenTtlMax, draft.kind === 'native');
     if (!positive(draft.refreshTokenTtlDays)) errors.refreshTokenTtlDays = 'A whole number of days.';
     else if (this.refreshSeconds > this.limits.refreshTokenTtlMax) errors.refreshTokenTtlDays = `At most ${ttlLabel(this.limits.refreshTokenTtlMax)}: the operator's cap.`;
     if (draft.backChannelLogoutUri.trim() && !/^https:\/\/\S+$/.test(draft.backChannelLogoutUri.trim())) errors.backChannelLogoutUri = 'An https URL.';
@@ -244,6 +246,7 @@ export class VersolaPartnerClientWizard extends LitElement {
       ${this.lock(`Consent: always shown, names ${me.partner.displayName}`, 'Users see who they sign in to.')}
       ${this.lock(this.draft.authMethod === 'tls_client_auth' ? `Client authentication: tls_client_auth with your group certificate (urn:versola:edge-group:${me.partner.id})` : 'Client authentication: private_key_jwt with the keys your edge holds', 'Your edges authenticate as this client; nothing to copy.')}
       ${this.lock(`Served by the edges of group ${me.partner.id}`, 'Your own edges only.')}
+      ${this.draft.kind === 'native' ? this.lock('DPoP-bound access tokens', `The device holds its tokens, so DPoP is their only sender-constraint. They live at least ${ttlLabel(3600)}, as for every client on this server.`) : ''}
     </div>`;
   }
 

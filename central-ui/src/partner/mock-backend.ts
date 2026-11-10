@@ -8,6 +8,7 @@
 import type { MockPage, MockRequest } from '../demo/mock-backend';
 import type { PartnerLimits } from '../types';
 import { CONSENT_SCREEN_FIELDS, partnerLimitViolations } from '../utils/partners';
+import { validateAccessTokenTtl } from '../utils/validators';
 import type {
   AuditEventRecord, CreatedEdge, EnrollmentToken, PartnerClient, PartnerClientWrite, PartnerEdge, PartnerMe, PartnerResource, PartnerResourceWrite, PartnerSettings,
   ProfileApproval, ProfileChange, Revocation, RevocationRequest, StaffInvite, StaffLevel, StaffMember,
@@ -62,6 +63,11 @@ export function partnerBundle(edgeId: string, me: PartnerMe, token: string): str
     auth: { issuer: me.partner.operator.issuer, mtlsUrl: me.partner.operator.mtlsUrl, pins: ['sha256/a1d08c3f5e27…e5'] },
     token,
   }, null, 2);
+}
+
+/** What central refuses for any client, partner or not: an access token lifetime outside its rule (at most 24 h, at least 1 h when DPoP-bound, as a device client's are). */
+export function tokenLifetimeError(client: { kind: string; accessTokenTtl: number }): string | undefined {
+  return validateAccessTokenTtl(client.accessTokenTtl, client.kind === 'native').error;
 }
 
 /** The fields of a client write that wait for the operator: the consent-screen ones always, the rest when outside the limits. */
@@ -156,6 +162,11 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
           await route.fulfill(json({ error: 'outside_limits', fields: ['maxClients'] }, 403));
           return;
         }
+        const lifetimeError = tokenLifetimeError(payload);
+        if (lifetimeError) {
+          await route.fulfill(json({ message: `accessTokenTtl: ${lifetimeError}` }, 400));
+          return;
+        }
         // Creating a client always needs the operator (#549 decision 7): the name and logo wait, plus whatever is outside the limits.
         const waiting = [...new Set(['clientName', ...(payload.logoUri ? ['logoUri'] : []), ...partnerLimitViolations(limits, payload)])];
         const now = nowIso();
@@ -179,6 +190,11 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
       }
       if (method === 'PUT' && !action) {
         const payload = body as PartnerClientWrite;
+        const lifetimeError = tokenLifetimeError({ kind: client.kind, accessTokenTtl: payload.accessTokenTtl });
+        if (lifetimeError) {
+          await route.fulfill(json({ message: `accessTokenTtl: ${lifetimeError}` }, 400));
+          return;
+        }
         const outside = partnerLimitViolations(limits, payload);
         const waiting = waitingFieldsOf(limits, payload, client);
         // Within the limits a change applies at once; the name, the logo and anything outside the limits wait for the operator.

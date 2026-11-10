@@ -37,7 +37,7 @@ export const pilotPay = {
     redirectDomains: ['pilotpay.example', 'pilotpay.app'],
     maxClients: 10,
     maxEdges: 3,
-    accessTokenTtlMax: 3600,
+    accessTokenTtlMax: 86_400,
     refreshTokenTtlMax: 30 * 86_400,
     clientAuthMethods: ['tls_client_auth' as const, 'private_key_jwt' as const],
     rateLimitPolicy: 'partner-default',

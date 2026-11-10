@@ -9,7 +9,7 @@ import { confirmDestructiveAction } from '../../utils/confirm-dialog';
 import { confirmDiscardDraft } from '../../utils/draft-guard';
 import { copyToClipboard, formatDate } from '../../utils/helpers';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../../utils/record-route';
-import { approvalFieldLabel, redirectUriWithinDomains, ttlCapsLabel, ttlLabel } from '../../utils/partners';
+import { approvalFieldLabel, partnerAccessTtlError, redirectUriWithinDomains, ttlCapsLabel, ttlLabel } from '../../utils/partners';
 import { deleteClient, fetchClients, fetchSettings, isPartnerApiError, rotateClientKeys, updateClient, withdrawClient, writeErrorMessage } from '../partner-api';
 import type { PartnerClient, PartnerMe, PartnerSettings } from '../partner-types';
 import { partnerViewStyles } from '../partner-styles';
@@ -194,7 +194,7 @@ export class VersolaPartnerClients extends LitElement {
     if (target === 'tokens') {
       const positive = (value: string) => /^\d+$/.test(value.trim()) && Number(value) > 0;
       if (!positive(draft.accessTokenTtlMinutes)) errors.accessTokenTtlMinutes = 'A whole number of minutes.';
-      else if (Number(draft.accessTokenTtlMinutes) * 60 > this.limits.accessTokenTtlMax) errors.accessTokenTtlMinutes = `At most ${ttlLabel(this.limits.accessTokenTtlMax)}: the operator's cap.`;
+      else if (partnerAccessTtlError(Number(draft.accessTokenTtlMinutes) * 60, this.limits.accessTokenTtlMax, this.openClient?.kind === 'native')) errors.accessTokenTtlMinutes = partnerAccessTtlError(Number(draft.accessTokenTtlMinutes) * 60, this.limits.accessTokenTtlMax, this.openClient?.kind === 'native');
       if (!positive(draft.refreshTokenTtlDays)) errors.refreshTokenTtlDays = 'A whole number of days.';
       else if (Number(draft.refreshTokenTtlDays) * 86_400 > this.limits.refreshTokenTtlMax) errors.refreshTokenTtlDays = `At most ${ttlLabel(this.limits.refreshTokenTtlMax)}: the operator's cap.`;
     }

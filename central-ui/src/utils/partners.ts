@@ -1,6 +1,6 @@
 import type { Edge, Partner, PartnerApproval, PartnerApprovalKind, PartnerLimits, PartnerStatus } from '../types';
 import type { ClientKind, PlanLine } from './client-presets';
-import { MIN_DPOP_BOUND_ACCESS_TOKEN_TTL_SECONDS } from './validators';
+import { MIN_DPOP_BOUND_ACCESS_TOKEN_TTL_SECONDS, validateAccessTokenTtl } from './validators';
 
 /**
  * What both consoles know about a partner (#549): the limits the operator sets, the rules a
@@ -44,6 +44,16 @@ export function ttlLabel(seconds: number): string {
   if (seconds % 3_600 === 0 && seconds >= 3_600) return `${seconds / 3_600} h`;
   if (seconds % 60 === 0 && seconds >= 60) return `${seconds / 60} min`;
   return `${seconds} s`;
+}
+
+/**
+ * Why an access token lifetime is refused, or `''`: the operator's cap for the partner first, then central's own rule for every client
+ * (`validateAccessTokenTtl`: at most 24 hours, and at least 1 hour when the tokens are DPoP-bound, as a device client's are). A partner is
+ * held to the same limits as the operator's own clients; the cap can only narrow them.
+ */
+export function partnerAccessTtlError(seconds: number, capSeconds: number, dpopBound: boolean): string {
+  if (seconds > capSeconds) return `At most ${ttlLabel(capSeconds)}: the operator's cap.`;
+  return validateAccessTokenTtl(seconds, dpopBound).error ?? '';
 }
 
 /** The caps in one line: `access ≤ 10 min · refresh ≤ 30 days`. */

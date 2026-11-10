@@ -62,7 +62,7 @@ test('opens a partner: organisation, limits, edges, clients, waiting approvals, 
   await expect(panel.getByRole('region', { name: 'Organisation' })).toContainText('Managed by the partner on its edge');
   const limits = panel.getByRole('region', { name: 'Limits' });
   await expect(limits).toContainText('Up to 10');
-  await expect(limits).toContainText('access ≤ 1 h · refresh ≤ 30 days');
+  await expect(limits).toContainText('access ≤ 1 day · refresh ≤ 30 days');
   await expect(limits).toContainText('Every partner client');
   const group = panel.getByRole('region', { name: 'Edge group pilot-pay' });
   await expect(group).toContainText('edge-pilot-eu-1');

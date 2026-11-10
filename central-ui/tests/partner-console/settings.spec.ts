@@ -28,7 +28,7 @@ test('shows the organisation, the contacts, the defaults, the agreement and the 
   const agreement = page.getByRole('region', { name: 'Your agreement with Acme Retail' });
   await expect(agreement).toContainText('active');
   await expect(agreement).toContainText('Nov 27, 2026');
-  await expect(agreement).toContainText('10 clients · 3 edges · access ≤ 1 h · refresh ≤ 30 days');
+  await expect(agreement).toContainText('10 clients · 3 edges · access ≤ 1 day · refresh ≤ 30 days');
   await expect(agreement).toContainText('group certificate or private_key_jwt');
   await expect(agreement.getByRole('button')).toHaveCount(0);
   const endpoints = page.getByRole('region', { name: 'Operator endpoints' });
@@ -84,9 +84,9 @@ test('contacts save at once; the defaults are capped by the operator', async ({ 
 
   await page.getByRole('button', { name: 'Edit defaults for new clients' }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'Edit defaults for new clients' })).toBeVisible();
-  await page.getByLabel('Access token, minutes *').fill('90');
+  await page.getByLabel('Access token, minutes *').fill('1500');
   await page.getByRole('button', { name: 'Save defaults' }).click();
-  await expect(page.getByRole('alert')).toHaveText('Between 1 minute and 1 h, the operator\'s cap.');
+  await expect(page.getByRole('alert')).toHaveText('Between 1 minute and 1 day, the operator\'s cap and central\'s limit.');
   expect(await scan(page)).toEqual([]);
   await page.getByLabel('Access token, minutes *').fill('10');
   await page.getByLabel('Refresh token, days *').fill('30');

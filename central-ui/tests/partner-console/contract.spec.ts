@@ -57,10 +57,49 @@ test('adding an edge is one write that returns the edge with its token and bundl
 
 test('a lost session goes to the edge\'s fixed login path and does not leave the screen waiting', async ({ page }) => {
   await page.route('**/partner/login', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<h1>edge login</h1>' }));
-  await loadPartnerApp(page);
+  // Audit does not read the clients, so nothing hits the 401 before the click does.
+  await loadPartnerApp(page, { path: '/partner.html?view=audit' });
   await page.route('**/partner/api/clients', route => route.fulfill({ status: 401, body: '' }));
   await Promise.all([
     page.waitForURL(/\/partner\/login$/),
     page.getByRole('navigation', { name: 'Sections' }).getByRole('button', { name: 'Clients' }).click({ noWaitAfter: true }),
   ]);
+});
+
+// ── the same limits as central's own clients ──
+
+test('a native client carries DPoP-bound tokens, so its access token lives at least an hour, as central requires', async ({ page }) => {
+  const api = await loadPartnerApp(page, { path: '/partner.html?view=clients&new=1' });
+  await page.getByRole('button', { name: /^Mobile or desktop app/ }).click();
+  await expect(page.getByText('DPoP-bound access tokens')).toBeVisible();
+  await page.getByRole('button', { name: 'Continue to basics' }).click();
+  // It starts at an hour instead of on a value central would refuse.
+  await expect(page.getByLabel('Access token, minutes *')).toHaveValue('60');
+  await page.getByLabel('Client ID *').fill('pilot-pay-android');
+  await page.getByLabel('Display name *').fill('Pilot Pay Android');
+  await page.getByLabel('Redirect URIs *').fill('https://app.pilotpay.example/callback');
+  await page.getByLabel('Redirect URIs *').press('Enter');
+  await page.getByLabel('Access token, minutes *').fill('30');
+  await page.getByRole('button', { name: 'Continue to review' }).click();
+  await expect(page.getByRole('alert')).toHaveText('Must be at least 1 hour when DPoP-bound access tokens are required');
+  expect(api.requests.some(request => request.method === 'POST')).toBe(false);
+  await page.getByLabel('Access token, minutes *').fill('60');
+  await page.getByRole('button', { name: 'Continue to review' }).click();
+  await expect(page.getByText('Review and submit')).toBeVisible();
+});
+
+test('the partner API refuses what central refuses: a native client under an hour, any client over a day', async ({ page }) => {
+  const api = await loadPartnerApp(page, { path: '/partner.html?view=overview' });
+  const post = (body: unknown) => page.evaluate(async payload => {
+    const response = await fetch('/partner/api/clients', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    return { status: response.status, body: await response.json() as { message?: string } };
+  }, body);
+  const base = { clientName: 'X', redirectUris: ['https://app.pilotpay.example/cb'], scope: ['openid'], refreshTokenTtl: 86_400 };
+  const native = await post({ ...base, id: 'n-1', kind: 'native', accessTokenTtl: 300 });
+  expect(native.status).toBe(400);
+  expect(native.body.message).toContain('at least 1 hour');
+  const web = await post({ ...base, id: 'w-1', kind: 'web', accessTokenTtl: 90_000 });
+  expect(web.status).toBe(400);
+  expect(web.body.message).toContain('24 hours');
+  expect(api.requests.filter(request => request.method === 'POST')).toHaveLength(2);
 });
