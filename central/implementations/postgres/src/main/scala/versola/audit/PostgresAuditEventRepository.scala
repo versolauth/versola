@@ -98,6 +98,34 @@ class PostgresAuditEventRepository(xa: TransactorZIO) extends CentralAuditReposi
       """.query[Row].run().toList
     .flatMap(rows => ZIO.foreach(rows)(_.toEvent))
 
+  override def partnerEvents(
+      partnerId: String,
+      before: Option[CentralAuditRepository.Key],
+      actor: Option[String],
+      kind: Option[String],
+      q: Option[String],
+      limit: Int,
+  ): Task[List[AuditEvent]] =
+    val keyAt = before.map(_.at.atOffset(ZoneOffset.UTC))
+    val keyId = before.map(_.id)
+    val pattern = q.map(text => s"%$text%")
+    xa.connectMeasured("find-audit-events-of-partner"):
+      sql"""
+        SELECT id, at, tenant_id, source, node_id, kind, outcome, reason, severity, actor_type, actor_id, user_id, client_id,
+               session_id, host(ip), user_agent, trace_id, target_type, target_id, details::text
+        FROM central_audit_event
+        WHERE partner_id = $partnerId
+          AND (${before.isEmpty} OR (at, id) < (${keyAt.getOrElse(Instant.EPOCH.atOffset(ZoneOffset.UTC))}, ${keyId.getOrElse(new UUID(0L, 0L))}))
+          AND (${actor.isEmpty} OR actor_id = ${actor.getOrElse("")})
+          AND (${kind.isEmpty} OR kind = ${kind.getOrElse("")})
+          AND (${pattern.isEmpty} OR target_id ILIKE ${pattern.getOrElse("")} OR actor_id ILIKE ${pattern.getOrElse(
+          "",
+        )} OR kind ILIKE ${pattern.getOrElse("")})
+        ORDER BY at DESC, id DESC
+        LIMIT $limit
+      """.query[Row].run().toList
+    .flatMap(rows => ZIO.foreach(rows)(_.toEvent))
+
 object PostgresAuditEventRepository:
 
   /** The longest one statement of the writer, the report or the maintenance may take. */

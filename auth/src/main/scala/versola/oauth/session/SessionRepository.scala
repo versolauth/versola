@@ -95,6 +95,13 @@ trait SessionRepository:
       revocation: RevocationTerms,
   ): Task[List[RefreshTokenFamilyId]]
 
+  /** The same for every user of one client (#962: a suspended partner's client): every live family of the client ends and
+    * records `fam:`, under the same locks. Returns each family with the user it was issued to, for the back channel. */
+  def revokeRefreshTokensByClient(
+      clientId: ClientId,
+      revocation: RevocationTerms,
+  ): Task[List[(UserId, RefreshTokenFamilyId)]]
+
   /** The three ways of ending one session below record `sid:<its public id>` in the same
     * transaction, and only when a session was actually ended: ending one that is gone already
     * says nothing new about the tokens issued under it. */

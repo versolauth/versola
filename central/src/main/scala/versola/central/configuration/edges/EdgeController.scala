@@ -2,6 +2,7 @@ package versola.central.configuration.edges
 
 import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.clients.ClientId
+import versola.central.configuration.partners.{PartnerId, PartnerRegistry}
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
@@ -16,7 +17,8 @@ import zio.{Duration, UIO, ZIO}
 import java.time.Instant
 
 object EdgeController extends AuditedController:
-  type Env = Tracing & EdgeService & EdgeGroupService & EdgeIdentityService & ResourceService & CentralConfig & TenantRepository
+  type Env = Tracing & EdgeService & EdgeGroupService & EdgeIdentityService & EdgeCertificateRepository & PartnerRegistry & ResourceService &
+    CentralConfig & TenantRepository
 
   def endpoints = List(
     getAllEdgesEndpoint,
@@ -40,19 +42,10 @@ object EdgeController extends AuditedController:
         _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
         edges <- service.getAllEdges
+        partners <- ZIO.serviceWithZIO[PartnerRegistry](_.getAll)
+        certificates <- ZIO.serviceWithZIO[EdgeCertificateRepository](_.latest)
         response = GetAllEdgesResponse(
-          edges = edges.map(edge =>
-            EdgeResponse(
-              id = edge.id,
-              hasOldKey = edge.oldPublicKey.isDefined,
-              requireDpopNonce = edge.requireDpopNonce,
-              overloadPolicy = edge.overloadPolicy,
-              accessLogPolicy = edge.accessLogPolicy,
-              rateLimitPolicies = edge.rateLimitPolicies,
-              policyRevisions = edge.policyMeta.fold(Map.empty[String, Int])(_.view.mapValues(_.revision).toMap),
-              groupId = edge.groupId,
-            ),
-          ).toList,
+          edges = edges.map(edge => EdgeResponse.of(edge, partners.find(_.groupId == edge.groupId).map(_.id), certificates.get(edge.id))).toList,
         )
       yield Response.json(response.toJson)
     }
@@ -70,7 +63,7 @@ object EdgeController extends AuditedController:
           response <- group match
             case None => ZIO.succeed(Response.text(s"edge group '$groupId' does not exist").status(Status.UnprocessableEntity))
             case Some(_) =>
-              service.registerEdge(body.id, groupId).map: keyPair =>
+              service.registerEdge(body.id, groupId, body.publicUrl).map: keyPair =>
                 val privateKeyEncoded = Base64Url.encode(keyPair.privateKey.getEncoded)
                 Response.json(ServiceKeyResponse(keyId = keyPair.keyId, privateKey = privateKeyEncoded).toJson).status(Status.Created)
         yield response
@@ -249,6 +242,9 @@ object EdgeController extends AuditedController:
     * has to reach auth some other way (see `versola.oauth.mtls.EdgeCertificateTrust`). No
     * keys: auth recognises an edge by its certificate, not by a key it holds.
     *
+    * First-party edges only (#549): a partner's edge verifies tokens at its own boundary and calls `/userinfo` as a
+    * client with the user's token, never as a voucher, so auth must not learn it as one.
+    *
     * Restricted to auth, which `authorizeInternal` reports as an absent edge id: an edge has no
     * use for its peers' identities.
     */
@@ -261,7 +257,7 @@ object EdgeController extends AuditedController:
         edges <- service.getAllEdges
         tenants <- ZIO.serviceWithZIO[TenantRepository](_.getAll)
         response = GetEdgesRegistryResponse(
-          edges = edges.map(edge =>
+          edges = edges.filter(_.groupKind == EdgeGroupKind.FirstParty).map(edge =>
             EdgeRegistryEntry(
               id = edge.id,
               tenantIds = tenants.filter(_.edgeId.contains(edge.id)).map(_.id).toList,
@@ -275,6 +271,8 @@ case class RegisterEdgeRequest(
     id: EdgeId,
     /** The group the edge joins and never leaves; absent means `default`. */
     groupId: Option[EdgeGroupId],
+    /** Where browsers reach the edge; absent registers none. */
+    publicUrl: Option[String],
 ) derives Schema, JsonCodec
 
 case class GetEdgeGroupsResponse(
@@ -296,7 +294,34 @@ case class EdgeResponse(
     /** The revision of each policy section that has ever changed, for the compare-and-set of `PATCH /configuration/edges/policies`. */
     policyRevisions: Map[String, Int],
     groupId: EdgeGroupId,
+    /** Who runs the group: the operator (`first_party`) or a partner. */
+    groupKind: EdgeGroupKind,
+    /** The partner whose group this is; absent for a first-party edge. */
+    partnerId: Option[PartnerId],
+    /** Where browsers reach the edge; absent where none was registered. */
+    publicUrl: Option[String],
+    /** The expiry of the certificate central last issued to this edge, and when it was issued; absent until the edge enrolled. */
+    certificateNotAfter: Option[Instant],
+    lastRenewedAt: Option[Instant],
 ) derives Schema, JsonCodec
+
+object EdgeResponse:
+  def of(edge: EdgeRecord, partnerId: Option[PartnerId], certificate: Option[EdgeCertificateRepository.Issued]): EdgeResponse =
+    EdgeResponse(
+      id = edge.id,
+      hasOldKey = edge.oldPublicKey.isDefined,
+      requireDpopNonce = edge.requireDpopNonce,
+      overloadPolicy = edge.overloadPolicy,
+      accessLogPolicy = edge.accessLogPolicy,
+      rateLimitPolicies = edge.rateLimitPolicies,
+      policyRevisions = edge.policyMeta.fold(Map.empty[String, Int])(_.view.mapValues(_.revision).toMap),
+      groupId = edge.groupId,
+      groupKind = edge.groupKind,
+      partnerId = partnerId,
+      publicUrl = edge.publicUrl,
+      certificateNotAfter = certificate.map(_.notAfter),
+      lastRenewedAt = certificate.map(_.issuedAt),
+    )
 
 case class SetEdgeDpopRequest(
     requireDpopNonce: Boolean,

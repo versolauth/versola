@@ -52,7 +52,7 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
     List(
       test("create and find edge") {
         for
-          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
+          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId, None)
           found <- env.repository.find(edgeId)
         yield assertTrue(
           found.isDefined,
@@ -62,8 +62,8 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
       },
       test("getAll returns all edges") {
         for
-          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
-          _ <- env.repository.createEdge(edge2Id, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
+          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId, None)
+          _ <- env.repository.createEdge(edge2Id, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId, None)
           all <- env.repository.getAll
         yield assertTrue(
           all.length == 2,
@@ -72,7 +72,7 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
       },
       test("rotateEdgeKey updates key and stores old key") {
         for
-          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
+          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId, None)
           beforeRotation <- env.repository.find(edgeId)
           _ <- env.repository.rotateEdgeKey(edgeId, newJwk)
           afterRotation <- env.repository.find(edgeId)
@@ -84,7 +84,7 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
       },
       test("deleteEdge removes edge") {
         for
-          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
+          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId, None)
           before <- env.repository.find(edgeId)
           _ <- env.repository.deleteEdge(edgeId)
           after <- env.repository.find(edgeId)
@@ -97,7 +97,7 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
       // registered edge that did not demand a nonce would be a downgrade nobody asked for.
       test("a newly registered edge requires a DPoP nonce") {
         for
-          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
+          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId, None)
           found <- env.repository.find(edgeId)
         yield assertTrue(found.exists(_.requireDpopNonce))
       },
@@ -139,8 +139,8 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
         )
         val at = java.time.Instant.parse("2026-10-27T10:00:00Z")
         for
-          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
-          _ <- env.repository.createEdge(edge2Id, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
+          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId, None)
+          _ <- env.repository.createEdge(edge2Id, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId, None)
           fresh <- env.repository.find(edgeId)
           _ <- env.repository.patchPolicies(
             edgeId,
@@ -184,7 +184,7 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
           outbound = None,
         )
         for
-          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
+          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId, None)
           refused <- env.repository.patchPolicies(edgeId, record => Left(PolicyPatchError.Conflict(PolicySection.Overload, record)))
           after <- env.repository.find(edgeId)
           missing <- env.repository.patchPolicies(EdgeId("edge-nobody"), record => Right(record))
@@ -222,15 +222,15 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
             ),
           )
         for
-          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
+          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId, None)
           _ <- ZIO.foreachParDiscard(1 to 12)(n => bump(n + 10))
           after <- env.repository.find(edgeId)
         yield assertTrue(after.flatMap(_.policyMeta).exists(_("overload").revision == 12))
       },
       test("setRequireDpopNonce changes only the named edge") {
         for
-          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
-          _ <- env.repository.createEdge(edge2Id, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
+          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId, None)
+          _ <- env.repository.createEdge(edge2Id, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId, None)
           _ <- env.repository.setRequireDpopNonce(edgeId, false)
           changed <- env.repository.find(edgeId)
           untouched <- env.repository.find(edge2Id)
@@ -260,7 +260,7 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
         )
 
         for
-          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
+          _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId, None)
           _ <- env.repository.rotateEdgeKey(edgeId, newJwk)
           afterFirst <- env.repository.find(edgeId)
           _ <- env.repository.rotateEdgeKey(edgeId, thirdJwk)

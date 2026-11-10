@@ -1,8 +1,9 @@
 package versola.central
 
 import versola.central.configuration.edges.{EdgeCertificate, EdgeGroupKind, EdgeId, EdgeRecord, EdgeService}
+import versola.central.configuration.partners.{PartnerRecord, PartnerRegistry, PartnerStatus}
 import versola.central.configuration.resources.ResourceService
-import versola.util.http.{Observability, Unauthorized}
+import versola.util.http.{Forbidden, Observability, Unauthorized}
 import versola.util.{JWT, Secret}
 import zio.ZIO
 import zio.http.{Handler, Header, Middleware, Request, Response, Routes}
@@ -78,6 +79,24 @@ def authorizeAnyEdge(request: Request): ZIO[CentralConfig & EdgeService, Unautho
     presented <- ZIO.fromOption(request.remoteCertificate).orElseFail(Unauthorized)
     _ <- ZIO.fail(Unauthorized).unless(EdgeCertificate.isIssuedTo(presented, edgeId, edge.groupId))
   yield edge
+
+/** The partner-edge surface's check (#549, #962), for `/edge/partner/...`: the two checks of [[authorizeAnyEdge]], and the
+  * caller is an edge of a `partner` group (else 401 `edge_group_first_party`: the operator's own edges read `/edge/sync`)
+  * whose partner exists (`edge -> group -> partner`, else 401) and is not suspended (else 403 `partner_suspended`, on every
+  * call, certificate renewal included -- the kill switch). An `onboarding` partner is served: its first edge calling is what
+  * makes it `active`, which `/edge/partner/me` does.
+  */
+def authorizePartnerEdge(request: Request): ZIO[CentralConfig & EdgeService & PartnerRegistry, Unauthorized.type | Forbidden.type, PartnerCaller] =
+  for
+    edge <- authorizeAnyEdge(request)
+    _ <- (Observability.setError("edge_group_first_party") *> ZIO.fail(Unauthorized)).when(edge.groupKind != EdgeGroupKind.Partner)
+    partner <- ZIO.serviceWithZIO[PartnerRegistry](_.findByGroup(edge.groupId))
+      .someOrElseZIO(Observability.setError("partner_unknown") *> ZIO.fail(Unauthorized))
+    _ <- (Observability.setError("partner_suspended") *> ZIO.fail(Forbidden)).when(partner.status == PartnerStatus.Suspended)
+  yield PartnerCaller(edge, partner)
+
+/** An edge of a partner, as `authorizePartnerEdge` proved it: the edge that called and the partner it belongs to. */
+case class PartnerCaller(edge: EdgeRecord, partner: PartnerRecord)
 
 /** Refuses an edge token on every route it wraps (#554). The edge-facing surface is
   * `EdgeSyncController` alone; everything else central serves belongs to auth or to the admin

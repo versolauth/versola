@@ -56,6 +56,7 @@ object EdgeCallerRefusalSpec extends ZIOSpecDefault, ZIOStubs:
     policyMeta = None,
     groupId = EdgeGroup.DefaultId,
     groupKind = EdgeGroupKind.FirstParty,
+    publicUrl = None,
   )
 
   private val edgeToken: Task[String] =

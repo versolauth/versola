@@ -13,6 +13,16 @@ import versola.central.configuration.challenges.{
   SubmissionLimits,
 }
 import versola.central.configuration.edges.EdgeId
+import versola.central.configuration.edges.{EdgeCertificate, EdgeGroupId}
+import versola.central.configuration.partners.{
+  PartnerContact,
+  PartnerId,
+  PartnerLimits,
+  PartnerRecord,
+  PartnerRegistry,
+  PartnerSettings,
+  PartnerStatus,
+}
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.roles.{RoleRecord, RoleRepository}
 import versola.central.configuration.scopes.ScopeToken
@@ -162,6 +172,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     createdAt = Instant.EPOCH,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
+    approval = ClientApproval.Approved,
   )
 
   private val otherTenantClient = OAuthClientRecord(
@@ -200,6 +212,34 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     createdAt = Instant.EPOCH,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
+    approval = ClientApproval.Approved,
+  )
+
+  private val groupAuth = MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_uri, EdgeCertificate.groupUriFor(EdgeGroupId("acme")))
+
+  private val acme = PartnerRecord(
+    id = PartnerId("acme"),
+    tenantId = tenantId,
+    displayName = "ACME",
+    logoUri = None,
+    contact = PartnerContact("ops@acme.example", None),
+    status = PartnerStatus.Active,
+    limits = PartnerLimits(
+      scopes = Set(ScopeToken("openid"), readScope),
+      redirectDomains = Set("acme.example"),
+      maxClients = 2,
+      maxEdges = 1,
+      accessTokenTtlMax = 600,
+      refreshTokenTtlMax = 86400,
+      clientAuthMethods = Set(AuthMethod.tls_client_auth),
+      rateLimitPolicy = "partner-default",
+    ),
+    groupId = EdgeGroupId("acme"),
+    consoleClientId = ClientId("acme-console"),
+    settings = PartnerSettings.empty,
+    reviewAt = None,
+    createdAt = Instant.EPOCH,
   )
 
   private val createRequest = CreateClientRequest(
@@ -239,6 +279,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     enrollEdgeClientCertificate = false,
     themeOverrides = None,
     estEnrollment = false,
+    partnerId = None,
   )
 
   /** Stands in for the pair `SecurityService` would mint, so that what the tests exercise is
@@ -341,6 +382,36 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   /** A tenant whose reverse proxy terminates mTLS and forwards the certificate, which RFC
     * 8705 §6.5 makes a precondition of registering `mtlsAuth` at all. */
+  /** A conforming registration of a client of `acme`. */
+  private val partnerRequest = createRequest.copy(
+    id = ClientId("acme-shop"),
+    redirectUris = Set(RedirectUri("https://www.acme.example/cb")),
+    allowedScopes = Set(ScopeToken("openid")),
+    permissions = Set.empty,
+    consentFlow = Some(ConsentFlowDto(allowPartial = false, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
+    authMethod = AuthMethod.tls_client_auth,
+    mtlsAuth = Some(groupAuth),
+    template = Some(ClientTemplate(ClientKind.web)),
+    refreshTokenTtl = Some(3600),
+    partnerId = Some(acme.id),
+  )
+
+  private def partnerClient(id: String, approval: ClientApproval): OAuthClientRecord =
+    cachedClient.copy(
+      id = ClientId(id),
+      redirectUris = Set(RedirectUri("https://www.acme.example/cb")),
+      scope = Set(ScopeToken("openid")),
+      secret = None,
+      consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
+      authMethod = AuthMethod.tls_client_auth,
+      mtlsAuth = Some(groupAuth),
+      template = Some(ClientTemplate(ClientKind.web)),
+      accessTokenTtl = 5.minutes,
+      refreshTokenTtl = 3600.seconds,
+      partnerId = Some(acme.id),
+      approval = approval,
+    )
+
   private val mtlsTerminatingSettings = ChallengeSettingsRecord(
     tenantId = tenantId,
     phoneRegions = List.empty,
@@ -397,6 +468,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val challengeSettingsService = stub[ChallengeSettingsService]
     val secureRandom = stub[SecureRandom]
     val securityService = stub[SecurityService]
+    val partners = stub[PartnerRegistry]
     val config = TestCentralConfig.config
     val service = OAuthClientService.Impl(
       cache,
@@ -406,9 +478,14 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       secureRandom,
       securityService,
       certificateAuthority,
+      partners,
       config,
       envName,
     )
+
+    // No partners unless a test registers one: a first-party client never reads the registry, and the sync to auth reads it
+    // for the suspended ones.
+    partners.getAll.returnsWith(ZIO.succeed(Vector.empty))
 
     // Every test not about the security profile registers under a `standard` tenant, so what
     // it asserts is not decided by a profile it never mentions.
@@ -527,6 +604,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         createdAt = Instant.EPOCH,
         themeOverrides = None,
         applicationType = ApplicationType.web,
+        partnerId = None,
+        approval = ClientApproval.Approved,
       )
 
       for
@@ -2215,4 +2294,131 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         registered.privateKey.isDefined,
       )
     },
+    suite("a partner's client (#549, #962)")(
+      test("registerClient holds it to the invariant: a client without consent is refused, and nothing is stored") {
+        val env = new Env()
+        for
+          _ <- env.partners.findFresh.succeedsWith(Some(acme))
+          refused <- env.service.registerClient(partnerRequest.copy(consentFlow = None)).either
+        yield assertTrue(
+          refused.left.toOption.exists:
+            case error: InvalidRegistrationConfiguration => error.reason.contains("consentFlow")
+            case _ => false,
+          env.repository.createClient.calls.isEmpty,
+        )
+      },
+      test(
+        "registerClient refuses one outside the partner's limits, unless the caller records a request for approval, and then stores it as the caller says",
+      ) {
+        val env = new Env()
+        val wide = partnerRequest.copy(allowedScopes = Set(ScopeToken("openid"), ScopeToken("email")))
+        for
+          _ <- env.partners.findFresh.succeedsWith(Some(acme))
+          _ <- env.repository.createClient.succeedsWith(())
+          refused <- env.service.registerClient(wide).either
+          _ <- env.service.registerClient(wide, approval = ClientApproval.Pending, allowOutsideLimits = true)
+          created = env.repository.createClient.calls.head
+        yield assertTrue(
+          refused.left.toOption.exists:
+            case error: InvalidRegistrationConfiguration => error.reason.contains("scope")
+            case _ => false,
+          env.repository.createClient.calls.size == 1,
+          created.partnerId == Some(acme.id),
+          created.approval == ClientApproval.Pending,
+        )
+      },
+      test(
+        "a partner's tls_client_auth web client does not bind its tokens, and needs no mTLS header from its tenant: its edge presents the group's certificate on auth's own listener",
+      ) {
+        val env = new Env()
+        for
+          _ <- env.terminatesNoMtls
+          _ <- env.partners.findFresh.succeedsWith(Some(acme))
+          _ <- env.repository.createClient.succeedsWith(())
+          _ <- env.service.registerClient(partnerRequest)
+          created = env.repository.createClient.calls.head
+        yield assertTrue(
+          created.mtlsAuth == Some(groupAuth),
+          !created.certificateBoundAccessTokens,
+          !created.bindsAccessTokens,
+          // the same registration of a first-party client binds
+          created.copy(partnerId = None).bindsAccessTokens,
+        )
+      },
+      test("registerClient refuses a client over the partner's maxClients, pending ones counted") {
+        val env = new Env(Vector(partnerClient("acme-one", ClientApproval.Approved), partnerClient("acme-two", ClientApproval.Pending)))
+        for
+          _ <- env.partners.findFresh.succeedsWith(Some(acme))
+          refused <- env.service.registerClient(partnerRequest.copy(id = ClientId("acme-three"))).either
+        yield assertTrue(
+          refused.left.toOption.exists:
+            case error: InvalidRegistrationConfiguration => error.reason.contains("at most 2")
+            case _ => false,
+          env.repository.createClient.calls.isEmpty,
+        )
+      },
+      test("updateClient holds a partner's client to the same rules, as the patch would leave it") {
+        val stored = partnerClient("acme-one", ClientApproval.Approved)
+        val env = new Env(Vector(stored))
+        for
+          _ <- env.partners.findFresh.succeedsWith(Some(acme))
+          _ <- env.repository.updateClient.succeedsWith(())
+          refused <- env.service.updateClient(UpdateClientRequest(
+            clientId = stored.id,
+            clientName = None,
+            redirectUris = PatchClientRedirectUris(Set(RedirectUri("https://evil.test/cb")), Set.empty),
+            scope = PatchClientScope(Set.empty, Set.empty),
+            permissions = PatchPermissions(Set.empty, Set.empty),
+            accessTokenTtl = None,
+            refreshTokenTtl = None,
+            theme = None,
+            authFlow = None,
+            otpTemplateId = None,
+            frontChannelLogoutUri = None,
+            frontChannelLogoutSessionRequired = None,
+            backChannelLogoutUri = None,
+            logoUri = None,
+            policyUri = None,
+            tosUri = None,
+            consentFlow = None,
+            dpopBoundAccessTokens = None,
+            dpopSigningAlgs = None,
+            dpopMinRsaKeySize = None,
+            authMethod = None,
+            mtlsAuth = None,
+            certificateBoundAccessTokens = None,
+            jwks = None,
+            requireSignedRequestObject = None,
+            requirePushedAuthorizationRequests = None,
+            edgeSigningKey = None,
+            edgeClientCertificate = None,
+            applicationType = None,
+            themeOverrides = None,
+          )).either
+        yield assertTrue(
+          refused.left.toOption.exists:
+            case error: InvalidRegistrationConfiguration => error.reason.contains("redirectUris")
+            case _ => false,
+          env.repository.updateClient.calls.isEmpty,
+        )
+      },
+      test("the sync to auth leaves out a pending client and every client of a suspended partner; a first-party edge gets none of a partner's") {
+        val approved = partnerClient("acme-one", ClientApproval.Approved)
+        val pending = partnerClient("acme-two", ClientApproval.Pending)
+        val globexClient = partnerClient("globex-one", ClientApproval.Approved).copy(partnerId = Some(PartnerId("globex")))
+        val env = new Env(Vector(cachedClient, approved, pending, globexClient))
+        val globex = acme.copy(id = PartnerId("globex"), groupId = EdgeGroupId("globex"), status = PartnerStatus.Suspended)
+        for
+          _ <- env.partners.getAll.succeedsWith(Vector(acme, globex))
+          _ <- env.tenantRepository.getAll.succeedsWith(Vector(TenantRecord(tenantId, "Tenant A", Some(EdgeId("edge-1")))))
+          forAuth <- env.service.getClientsForSync(None)
+          forEdge <- env.service.getClientsForSync(Some(EdgeId("edge-1")))
+          ofAcme <- env.service.getPartnerClients(acme.id)
+        yield assertTrue(
+          forAuth.map(_.id) == Vector(cachedClient.id, approved.id),
+          forEdge.map(_.id) == Vector(cachedClient.id),
+          ofAcme.map(_.id) == Vector(approved.id, pending.id),
+        )
+      },
+    ),
   )

@@ -28,6 +28,20 @@ info:
       is served only the tenants bound to it; the admin credential and auth's token are refused there
       (`401`). An edge of a `partner` group is refused all of `/edge/sync/*` (`401`): it is
       issued a certificate that names its group and is given no configuration.
+    * `/edge/partner/*`, on the same mutual-TLS listener, the surface of a **partner's** edge (#549): an edge of a
+      `partner` group, resolved `edge -> group -> partner`, is served `GET /edge/partner/me` and
+      `GET /edge/partner/sync/{clients,resources,auth-request-presets,jwks,dpop,overload,access-log,rate-limits,server-metadata}`
+      -- its partner's rows only, the clients without secrets or edge credentials -- and manages, on behalf of its
+      console, `/edge/partner/clients` (`GET`, `POST`, `PUT`, `DELETE`, `POST .../withdraw`, `POST .../jwks`),
+      `/edge/partner/resources` (`GET`, `POST`, `PUT`, `DELETE`, `POST .../rotate-secret`), `/edge/partner/edges`
+      (`GET`, `POST`, `DELETE`, `POST`/`DELETE .../enrollment-tokens`), `POST /edge/partner/revocations`,
+      `PUT /edge/partner/profile`, `GET`/`PUT /edge/partner/settings` and `GET /edge/partner/audit`. A management
+      call carries the staff member's access token in `Versola-Principal` besides the edge's bearer token; it is
+      verified against auth's keys, the issuer and the partner's console client, and its `sub` is the actor of the
+      audit event (`403` `partner_principal_mismatch` otherwise). A first-party edge is refused there (`401`
+      `edge_group_first_party`), an edge of a group no partner points at too (`401`), and a suspended partner's edge
+      everywhere, `POST /edge/certificate/renew` included (`403` `partner_suspended`). Refusals of the service are
+      `400`, `404` and `409` with a `text/plain` reason, as on this document's partner routes.
     * `POST /edge/enroll`, which an edge reaches before it has a certificate: it trades a one-time
       token (`POST /configuration/edges/enrollment-tokens`) and a certificate request for its first
       certificate. It is served alone on central's additional listener (`APORT`, plain HTTP meant to
@@ -144,6 +158,11 @@ tags:
       Passwords are write-only.
   - name: Edges
     description: Registered edge deployments and their signing keys.
+  - name: Partners
+    description: |
+      Organisations the operator lets run a Versola edge on their own infrastructure and own clients inside the
+      operator's tenant (#549). A partner is not a tenant: its clients, resources and presets live in its tenant
+      with `partnerId` ownership, are served by the partner's own edge group and never by the operator's edges.
   - name: Antifraud lists
     description: |
       Values the antifraud rules block, fake, watch or allow at once. Stored and enforced by auth.
@@ -2438,6 +2457,253 @@ paths:
         '409':
           description: A group with this id exists; it is left as it was.
 
+  /configuration/partners:
+    get:
+      tags: [Partners]
+      summary: List partners
+      operationId: getPartners
+      parameters:
+        - name: tenantId
+          in: query
+          required: false
+          description: Only the partners of this tenant; every partner when absent.
+          schema:
+            $ref: '#/components/schemas/TenantId'
+      responses:
+        '200':
+          description: The partners, by id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetPartnersResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Partners]
+      summary: Create a partner with its group, console client, first edge and enrollment token
+      description: |
+        One request creates everything a partner starts with: the partner (`onboarding` until its first edge calls
+        central), its edge group (`id` = partner id, kind `partner`), its console client `<id>-console` (web, scope
+        `openid phone email`, no consent, `tls_client_auth` by the group's `san_uri`, the one redirect URI given, with
+        its preset `<id>-console`, so the console signs in at `/login/<id>-console`), the first edge in the group with
+        its `publicUrl` and signing key, and one enrollment token valid 24 hours. `openid` is always added to
+        `limits.scopes`. Nothing is written when any part is refused (an id taken: `409`; bad limits or a plain-HTTP
+        edge URL: `400`; an unknown tenant: `404`).
+
+        The answer carries the token and the `bundle` (a JSON string: `{edgeId, group, central: {enrollUrl, mtlsUrl},
+        auth: {issuer, mtlsUrl}, signingKey: {keyId, privateKey}, token}`) once; neither is kept. `central.*` come from
+        `public-urls { enroll, mtls }`, `auth.mtlsUrl` from `auth.mtls-url`, `auth.issuer` from the server metadata;
+        each is absent where not configured.
+      operationId: createPartner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePartnerRequest'
+      responses:
+        '201':
+          description: Partner created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedPartner'
+        '400':
+          description: The limits are invalid (see `PartnerLimits`), or the first edge's URL is not `https`. The reason, as `text/plain`.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The tenant does not exist.
+        '409':
+          description: A partner, edge group, client or edge of one of the ids exists.
+    put:
+      tags: [Partners]
+      summary: Change a partner's profile
+      description: The operator's side of the record; the partner's own name and logo changes go through an approval.
+      operationId: updatePartner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePartnerRequest'
+      responses:
+        '204':
+          description: Partner updated.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No partner of that id.
+
+  /configuration/partners/suspend:
+    post:
+      tags: [Partners]
+      summary: Suspend a partner (the kill switch)
+      description: |
+        From this call on the partner's clients are omitted from the sync to auth (which answers `invalid_client`
+        at `/par`, `/token` and `/introspect`; an access token already issued keeps working at `/userinfo` until it
+        expires, within `limits.accessTokenTtlMax`) and from every edge's sync; every live refresh token of every
+        approved client of the partner is revoked at auth, which sends the back-channel logout to the client's
+        registered URI, that is to the partner's edge; and the partner's edges are refused everything under
+        `/edge/partner/*` and `POST /edge/certificate/renew` with `403`, so their certificates expire within
+        `edge-certificates.partner-validity`. Audited. `note` is not stored.
+      operationId: suspendPartner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SuspendPartnerRequest'
+      responses:
+        '204':
+          description: Partner suspended.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No partner of that id.
+
+  /configuration/partners/resume:
+    post:
+      tags: [Partners]
+      summary: Resume a suspended partner
+      description: The clients return to the syncs and the edges are served again. Grants revoked by the suspension stay revoked.
+      operationId: resumePartner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResumePartnerRequest'
+      responses:
+        '204':
+          description: Partner active again.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No partner of that id.
+        '409':
+          description: The partner is not suspended.
+
+  /configuration/partners/limits:
+    put:
+      tags: [Partners]
+      summary: Change a partner's limits
+      description: |
+        Re-validates the partner's clients against the new limits: a client now outside them is named in the answer
+        with the fields concerned, and is not changed. `openid` is always added to `scopes`.
+      operationId: setPartnerLimits
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetPartnerLimitsRequest'
+      responses:
+        '200':
+          description: The limits are stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SetPartnerLimitsResponse'
+        '400':
+          description: The limits are invalid. The reason, as `text/plain`.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No partner of that id.
+
+  /configuration/partners/approvals:
+    get:
+      tags: [Partners]
+      summary: List the requests partners made
+      description: Newest first. Every filter narrows.
+      operationId: getPartnerApprovals
+      parameters:
+        - name: tenantId
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/TenantId'
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [waiting, approved, rejected, withdrawn]
+        - name: partnerId
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/PartnerId'
+      responses:
+        '200':
+          description: The requests.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetPartnerApprovalsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/partners/approvals/approve:
+    post:
+      tags: [Partners]
+      summary: Approve a partner's request
+      description: |
+        Applies `requested` with `overrides` laid over it (a field named in both is the operator's); the result is kept
+        as `applied` when overrides were given, and `requested` is never rewritten. A `client_create` sets the client
+        `approved` and gives it its preset (`id` = client id, the client's first redirect URI, its scope), so the
+        partner's "Sign in with" button is `https://<edge>/login/<client id>`. A `client_change` applies the change. A
+        `profile_change` renames the partner. The administrator's `sub` is recorded as `decidedBy`.
+      operationId: approvePartnerRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovePartnerRequest'
+      responses:
+        '200':
+          description: The request as decided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerApproval'
+        '400':
+          description: The overrides cannot be applied (they leave the client invalid). The reason, as `text/plain`.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No request of that id, or its client is gone.
+        '409':
+          description: The request is already decided or withdrawn.
+
+  /configuration/partners/approvals/reject:
+    post:
+      tags: [Partners]
+      summary: Reject a partner's request
+      description: A `client_create` rejected sets the client `rejected`; a `client_change` or `profile_change` rejected changes nothing.
+      operationId: rejectPartnerRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RejectPartnerRequest'
+      responses:
+        '200':
+          description: The request as decided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerApproval'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No request of that id.
+        '409':
+          description: The request is already decided or withdrawn.
+
   /configuration/edges/enrollment-tokens:
     post:
       tags: [Edges]
@@ -4007,6 +4273,15 @@ components:
           description: |
             Where the client stands when it obtains its certificate through EST (`estEnrollment`);
             `null` (or absent) when it does not.
+        partnerId:
+          $ref: '#/components/schemas/PartnerId'
+          description: The partner that owns the client (#549); absent for a first-party client.
+        approval:
+          type: string
+          enum: [pending, approved, rejected]
+          description: |
+            Where a partner-owned client stands with the operator; `approved` for a first-party client. A client that is
+            not `approved` is synced to nobody and issues no token.
       required:
         - id
         - clientName
@@ -4220,6 +4495,16 @@ components:
             `POST /configuration/clients/est/enrollment-tokens`, then the client enrols with it. Defaults to
             `false`. Mutually exclusive with `issueEdgeClientCertificate`, `enrollEdgeClientCertificate` and
             supplying a certificate.
+        partnerId:
+          $ref: '#/components/schemas/PartnerId'
+          description: |
+            The partner that owns the client (#549). The client is then held to the partner's limits and to the
+            partner client invariant (400 otherwise): a `consentFlow`; `authMethod` among the partner's
+            `clientAuthMethods`, for `tls_client_auth` with `mtlsAuth` `san_uri` `urn:versola:edge-group:<partner group>`;
+            `certificateBoundAccessTokens` false (every edge of the group presents a certificate of its own, so a token is
+            never bound to one); every redirect URI `https` and under one of `limits.redirectDomains`; scope within
+            `limits.scopes`; `accessTokenTtl` and `refreshTokenTtl` within the caps; at most `maxClients` clients. The
+            operator's registration is `approved` at once. Absent registers a first-party client.
       required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate, theme, otpTemplateId, frontChannelLogoutSessionRequired, dpopBoundAccessTokens, dpopSigningAlgs, certificateBoundAccessTokens, requireSignedRequestObject, requirePushedAuthorizationRequests, estEnrollment]
     CreateNativeClientRequest:
       type: object
@@ -4345,6 +4630,11 @@ components:
             nothing. Over a theme stored with CSS only, the overrides apply on top of it.
             Only a client that asks for consent (a `consentFlow`, a partner app) has them: a
             non-empty value on a client without one is refused with 400.
+        partnerId:
+          $ref: '#/components/schemas/PartnerId'
+          description: |
+            The partner that owns the client (#549); see `CreateWebClientRequest.partnerId` for what it is held to. A
+            partner's native client keeps its DPoP binding. Absent registers a first-party client.
       required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate, theme, otpTemplateId, frontChannelLogoutSessionRequired, dpopSigningAlgs]
     CreateServiceClientRequest:
       type: object
@@ -5008,6 +5298,9 @@ components:
             $ref: '#/components/schemas/AudienceRateLimit'
           description: |
             The limits the resource sets for its audience clients; empty when there are none.
+        partnerId:
+          $ref: '#/components/schemas/PartnerId'
+          description: The partner that owns the resource (#549); absent for a first-party one.
       required: [resourceId, resource, audience, endpoints, internal, secretRotation]
     GetAllResourcesResponse:
       type: object
@@ -5073,6 +5366,9 @@ components:
             $ref: '#/components/schemas/AudienceRateLimit'
           description: |
             The limits the resource sets for clients of `audience`: at most one per client, and only for a client in the audience.
+        partnerId:
+          $ref: '#/components/schemas/PartnerId'
+          description: The partner that owns the resource (#549), which serves it through its own edges; absent registers a first-party one.
       required: [tenantId, resourceId, resource, audience, endpoints, internal]
     UpdateResourceRequest:
       type: object
@@ -6770,6 +7066,281 @@ components:
           description: Write-only. Absent or `null` keeps the stored password, empty clears it.
 
     # ─────────────────────────────── Edges ───────────────────────────────
+    PartnerId:
+      type: string
+      pattern: '^[a-z][a-z0-9-]*$'
+    PartnerContact:
+      type: object
+      properties:
+        email:
+          type: string
+        phone:
+          type: [string, 'null']
+      required: [email]
+    PartnerLimits:
+      type: object
+      description: |
+        What the operator lets a partner have; the partner client invariant is written against these. Refused (400)
+        when `clientAuthMethods` is empty or names anything but `tls_client_auth` and `private_key_jwt`,
+        `redirectDomains` is empty, `maxClients` or `maxEdges` is below 1, or a TTL cap is not positive.
+      properties:
+        scopes:
+          type: array
+          items:
+            type: string
+          description: What a partner client may request; `openid` is always added.
+        redirectDomains:
+          type: array
+          items:
+            type: string
+          description: Every redirect URI of a partner client is `https` and under one of these (the domain or a subdomain).
+        maxClients:
+          type: integer
+          description: How many clients the partner may register, pending ones included.
+        maxEdges:
+          type: integer
+        accessTokenTtlMax:
+          type: integer
+          description: Seconds. Also how long a suspended partner's issued access tokens keep working at `/userinfo`.
+        refreshTokenTtlMax:
+          type: integer
+          description: Seconds.
+        clientAuthMethods:
+          type: array
+          items:
+            type: string
+            enum: [tls_client_auth, private_key_jwt]
+        rateLimitPolicy:
+          type: string
+          description: The name of the edge rate-limit policy set the operator applies to the partner's group; stored for the consoles.
+      required: [scopes, redirectDomains, maxClients, maxEdges, accessTokenTtlMax, refreshTokenTtlMax, clientAuthMethods, rateLimitPolicy]
+    Partner:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/PartnerId'
+        tenantId:
+          $ref: '#/components/schemas/TenantId'
+        displayName:
+          type: string
+        logoUri:
+          type: [string, 'null']
+        contact:
+          $ref: '#/components/schemas/PartnerContact'
+        status:
+          type: string
+          enum: [onboarding, active, suspended]
+          description: |
+            `onboarding` until the partner's first edge calls `GET /edge/partner/me`; `suspended` is the kill switch
+            (`POST /configuration/partners/suspend`).
+        limits:
+          $ref: '#/components/schemas/PartnerLimits'
+        groupId:
+          type: string
+          description: The partner's edge group, of kind `partner`, one to one.
+        consoleClientId:
+          $ref: '#/components/schemas/ClientId'
+        reviewAt:
+          type: [string, 'null']
+          format: date-time
+          description: A reminder for the operator; central does nothing at that date.
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, tenantId, displayName, contact, status, limits, groupId, consoleClientId, createdAt]
+    GetPartnersResponse:
+      type: object
+      properties:
+        partners:
+          type: array
+          items:
+            $ref: '#/components/schemas/Partner'
+      required: [partners]
+    CreatePartnerRequest:
+      type: object
+      properties:
+        partner:
+          type: object
+          properties:
+            id:
+              $ref: '#/components/schemas/PartnerId'
+            tenantId:
+              $ref: '#/components/schemas/TenantId'
+            displayName:
+              type: string
+            logoUri:
+              type: [string, 'null']
+            contact:
+              $ref: '#/components/schemas/PartnerContact'
+            limits:
+              $ref: '#/components/schemas/PartnerLimits'
+            reviewAt:
+              type: [string, 'null']
+              format: date-time
+          required: [id, tenantId, displayName, contact, limits]
+        consoleClient:
+          type: object
+          properties:
+            redirectUri:
+              type: string
+              description: Where the partner's console completes its sign-in, the one redirect URI of the console client.
+          required: [redirectUri]
+        firstEdge:
+          type: object
+          properties:
+            id:
+              $ref: '#/components/schemas/EdgeId'
+            publicUrl:
+              type: string
+              description: Where browsers reach the edge; `https`.
+          required: [id, publicUrl]
+      required: [partner, consoleClient, firstEdge]
+    CreatedPartner:
+      type: object
+      properties:
+        partner:
+          $ref: '#/components/schemas/Partner'
+        edge:
+          $ref: '#/components/schemas/EdgeResponse'
+        enrollmentToken:
+          type: string
+          description: Shown once; only its hash is stored. Valid 24 hours.
+        expiresAt:
+          type: string
+          format: date-time
+        bundle:
+          type: string
+          description: |
+            A JSON string the partner pastes into its edge: `{edgeId, group, central: {enrollUrl, mtlsUrl}, auth: {issuer, mtlsUrl},
+            signingKey: {keyId, privateKey}, token}`. Shown once.
+      required: [partner, edge, enrollmentToken, expiresAt, bundle]
+    UpdatePartnerRequest:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/PartnerId'
+        displayName:
+          type: string
+        logoUri:
+          type: [string, 'null']
+        contact:
+          $ref: '#/components/schemas/PartnerContact'
+        reviewAt:
+          type: [string, 'null']
+          format: date-time
+      required: [id, displayName, contact]
+    SuspendPartnerRequest:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/PartnerId'
+        note:
+          type: string
+          description: The operator's reason; not stored in this release.
+      required: [id]
+    ResumePartnerRequest:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/PartnerId'
+      required: [id]
+    SetPartnerLimitsRequest:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/PartnerId'
+        limits:
+          $ref: '#/components/schemas/PartnerLimits'
+      required: [id, limits]
+    SetPartnerLimitsResponse:
+      type: object
+      properties:
+        outsideLimits:
+          type: array
+          description: The partner's clients now outside the limits, with the fields concerned; they are not changed.
+          items:
+            type: object
+            properties:
+              clientId:
+                $ref: '#/components/schemas/ClientId'
+              fields:
+                type: array
+                items:
+                  type: string
+            required: [clientId, fields]
+      required: [outsideLimits]
+    PartnerApproval:
+      type: object
+      description: One request of a partner and the operator's decision on it.
+      properties:
+        id:
+          type: string
+        partnerId:
+          $ref: '#/components/schemas/PartnerId'
+        kind:
+          type: string
+          enum: [client_create, client_change, profile_change]
+        targetId:
+          type: string
+          description: The client id, or the partner id for a `profile_change`.
+        requested:
+          type: object
+          description: The fields as the partner sent them; never rewritten.
+        current:
+          type: object
+          description: The fields as registered before a change; absent for `client_create`.
+        applied:
+          type: object
+          description: What the operator registered when approving with overrides; absent when approved as asked.
+        outsideLimits:
+          type: array
+          items:
+            type: string
+          description: The field names that needed the operator; for a client always `clientName` and `logoUri`.
+        requestedBy:
+          type: string
+          description: The `sub` of the partner's staff member.
+        requestedAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [waiting, approved, rejected, withdrawn]
+        decidedBy:
+          type: string
+        decidedAt:
+          type: string
+          format: date-time
+        note:
+          type: string
+      required: [id, partnerId, kind, targetId, requested, outsideLimits, requestedBy, requestedAt, status]
+    GetPartnerApprovalsResponse:
+      type: object
+      properties:
+        approvals:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartnerApproval'
+      required: [approvals]
+    ApprovePartnerRequest:
+      type: object
+      properties:
+        id:
+          type: string
+        note:
+          type: string
+        overrides:
+          type: object
+          description: Fields laid over `requested`; the same shape as `requested`.
+      required: [id]
+    RejectPartnerRequest:
+      type: object
+      properties:
+        id:
+          type: string
+        note:
+          type: string
+      required: [id, note]
     RegisterEdgeRequest:
       type: object
       properties:
@@ -6778,6 +7349,9 @@ components:
         groupId:
           type: string
           description: The group the edge joins and never leaves. `default` when absent.
+        publicUrl:
+          type: string
+          description: Where browsers reach the edge; a partner's "Sign in with" links are `<publicUrl>/login/<client>`.
       required: [id]
     EdgeGroup:
       type: object
@@ -6869,7 +7443,25 @@ components:
         groupId:
           type: string
           description: The group of edges this edge belongs to.
-      required: [id, hasOldKey, requireDpopNonce]
+        groupKind:
+          type: string
+          enum: [first_party, partner]
+          description: Who runs the group.
+        partnerId:
+          $ref: '#/components/schemas/PartnerId'
+          description: The partner whose group this is; absent for a first-party edge.
+        publicUrl:
+          type: string
+          description: Where browsers reach the edge; absent where none was registered.
+        certificateNotAfter:
+          type: string
+          format: date-time
+          description: The expiry of the certificate central last issued to this edge; absent until the edge enrolled.
+        lastRenewedAt:
+          type: string
+          format: date-time
+          description: When that certificate was issued.
+      required: [id, hasOldKey, requireDpopNonce, groupId, groupKind]
     OverloadPolicy:
       type: object
       description: |

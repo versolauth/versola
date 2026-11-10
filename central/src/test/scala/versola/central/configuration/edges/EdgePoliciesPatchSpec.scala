@@ -26,6 +26,7 @@ object EdgePoliciesPatchSpec extends ZIOSpecDefault:
     policyMeta = None,
     groupId = EdgeGroup.DefaultId,
     groupKind = EdgeGroupKind.FirstParty,
+    publicUrl = None,
   )
 
   private val perClient = RateLimitPolicy(

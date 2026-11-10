@@ -2,7 +2,7 @@ package versola.audit
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.central.audit.{CentralAudit, CentralAuditRepositorySpec}
+import versola.central.audit.{CentralAudit, CentralAuditRepository, CentralAuditRepositorySpec}
 import versola.util.audit.*
 import versola.util.postgres.PostgresSpec
 import zio.*
@@ -101,6 +101,51 @@ object PostgresAuditEventRepositorySpec extends PostgresSpec, CentralAuditReposi
           attached.daysLeftInDefault.isEmpty,
           attached.created == 1,
           ahead >= 1,
+        )
+      },
+      test("the rows of a partner are those whose details name it, newest first, narrowed by actor, kind and text, and paged by key") {
+        def about(id: String, partner: String, actor: String, kind: String, target: String, at: Instant) =
+          written(id).copy(
+            at = at,
+            kind = AuditKind(kind),
+            actorId = Some(actor),
+            targetId = Some(target),
+            details = Json.Obj("partnerId" -> Json.Str(partner)),
+          )
+        val first = about("00000000-0000-7000-8000-000000000011", "acme", "partner-staff:alice", "partner.client.create", "acme-app", oldAt)
+        val second =
+          about("00000000-0000-7000-8000-000000000012", "acme", "partner-staff:bob", "partner.client.update", "acme-web", oldAt.plusSeconds(60))
+        val third =
+          about("00000000-0000-7000-8000-000000000013", "acme", "partner-staff:alice", "partner.client.update", "acme-app", oldAt.plusSeconds(120))
+        val foreign = about(
+          "00000000-0000-7000-8000-000000000014",
+          "globex",
+          "partner-staff:carol",
+          "partner.client.create",
+          "globex-app",
+          oldAt.plusSeconds(180),
+        )
+        val unrelated = written("00000000-0000-7000-8000-000000000015")
+        for
+          xa <- ZIO.service[TransactorZIO]
+          _ <- dropOldDayPartition(xa)
+          _ <- env.repository.insertBatch(List(first, second, third, foreign, unrelated))
+          all <- env.repository.partnerEvents("acme", None, None, None, None, 10)
+          byActor <- env.repository.partnerEvents("acme", None, Some("partner-staff:alice"), None, None, 10)
+          byKind <- env.repository.partnerEvents("acme", None, None, Some("partner.client.create"), None, 10)
+          byText <- env.repository.partnerEvents("acme", None, None, None, Some("acme-web"), 10)
+          page <- env.repository.partnerEvents("acme", None, None, None, None, 2)
+          next <- env.repository.partnerEvents("acme", Some(CentralAuditRepository.Key(page.last.at, page.last.id)), None, None, None, 2)
+          nobody <- env.repository.partnerEvents("initech", None, None, None, None, 10)
+          _ <- dropOldDayPartition(xa)
+        yield assertTrue(
+          all.map(_.id) == List(third.id, second.id, first.id),
+          byActor.map(_.id) == List(third.id, first.id),
+          byKind.map(_.id) == List(first.id),
+          byText.map(_.id) == List(second.id),
+          page.map(_.id) == List(third.id, second.id),
+          next.map(_.id) == List(first.id),
+          nobody.isEmpty,
         )
       },
       test("the service is the owner of the table, so that it may maintain the partitions") {

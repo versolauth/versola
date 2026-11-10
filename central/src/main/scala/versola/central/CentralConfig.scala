@@ -45,6 +45,10 @@ case class CentralConfig(
     /** The audit log (#469). Every key has a default, so a deployment that sets none keeps what an earlier release did and
       * records admin actions for 7 days. */
     audit: CentralConfig.AuditConfig = CentralConfig.AuditConfig(),
+    /** Where a partner's edge reaches central from outside (#549): the enrollment listener and the mutual-TLS listener by
+      * their public names. Written into the bundle a new partner edge is bootstrapped with; absent, the bundle names no
+      * address and the operator fills it in by hand. */
+    publicUrls: Option[CentralConfig.PublicUrlsConfig] = None,
 ):
   /** `client-certificates` only where it names a CA. A config with no such block still decodes to
     * `Some(defaults)` -- every field has a default, so an absent block parses -- and must read as
@@ -60,7 +64,11 @@ object CentralConfig:
   val centralClientId: ClientId = ClientId("central-admin")
   val defaultTenantId: TenantId = TenantId("default")
 
-  case class AuthConfig(url: URL)
+  /** @param mtlsUrl the public name of auth's mutual-TLS listener (`MPORT`), where a partner's edge authenticates its clients
+    *                with the group's certificate; told to the edge in `/edge/partner/me` and in the bundle. */
+  case class AuthConfig(url: URL, mtlsUrl: Option[URL] = None)
+
+  case class PublicUrlsConfig(enroll: URL, mtls: URL)
 
   /** Central terminates mutual TLS itself for the edge surface, which is reachable from outside
     * the cluster: the handshake demands a client certificate that chains to

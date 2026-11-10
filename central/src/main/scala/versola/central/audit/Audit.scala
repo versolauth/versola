@@ -1,6 +1,7 @@
 package versola.central.audit
 
 import versola.central.audit.AuditRoutes.Entry
+import versola.central.configuration.partners.PartnerId
 import versola.central.configuration.tenants.TenantId
 import versola.central.users.UserId
 import versola.util.Patch
@@ -41,10 +42,16 @@ object Audit:
 
   def tenant(tenantId: Option[TenantId]): UIO[Unit] = ZIO.foreachDiscard(tenantId)(tenant)
 
+  /** The partner the call is about (#962): the event carries it in `details.partnerId`, which is what the partner's own audit feed
+    * is read by, so an operator's decision about a partner shows in the partner's feed. */
+  def partner(partnerId: PartnerId): UIO[Unit] = partnerOfTarget.set(Some(partnerId.toString))
+
   /** The type of a target is the route's declaration, which the hook puts in place of this marker. */
   private[audit] val PendingType = ""
 
   private[audit] val tenantOfTarget: FiberRef[Option[String]] = Unsafe.unsafe(FiberRef.unsafe.make(Option.empty[String])(using _))
+
+  private[audit] val partnerOfTarget: FiberRef[Option[String]] = Unsafe.unsafe(FiberRef.unsafe.make(Option.empty[String])(using _))
 
   /** Whether a mistake in what a route reports (a request that is no record, an `except` name the record does not have) is a defect. A
     * test makes it one, so a renamed field fails the spec of the route; in production an administrator's change is not failed for the

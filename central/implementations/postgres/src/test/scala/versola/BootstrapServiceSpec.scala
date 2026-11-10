@@ -11,6 +11,7 @@ import versola.central.configuration.clients.{
   AuthFactor,
   AuthFactorType,
   AuthMethod,
+  ClientApproval,
   ClientId,
   MutualTlsAuth,
   MutualTlsSubjectType,
@@ -83,6 +84,8 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       createdAt = Instant.EPOCH,
       themeOverrides = None,
       applicationType = ApplicationType.web,
+      partnerId = None,
+      approval = ClientApproval.Approved,
     )
 
   private val utilityKey = ECKeyGenerator(Curve.P_256).keyID("utils-1").algorithm(JWSAlgorithm.ES256).generate()
@@ -272,6 +275,54 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         grantedBy("edges:manage").contains(endpointId("PATCH", "/configuration/edges/policies")),
         // reading is not changing: edges:read must not carry the patch
         !grantedBy("edges:read").contains(endpointId("PATCH", "/configuration/edges/policies")),
+      )
+    },
+    test("the edge group, enrollment token and DPoP routes are registered and granted, read with edges:read and changed with edges:manage (#962)") {
+      val prod = BootstrapService.centralEndpoints(EnvName.Prod)
+      def grantedBy(permission: String) =
+        BootstrapService.permissionCatalog.find(
+          _._1 == versola.central.configuration.permissions.Permission(permission),
+        ).map(_._3).getOrElse(Set.empty)
+      assertTrue(
+        prod.contains("GET" -> "/configuration/edge-groups"),
+        prod.contains("POST" -> "/configuration/edge-groups"),
+        prod.contains("POST" -> "/configuration/edges/enrollment-tokens"),
+        prod.contains("PUT" -> "/configuration/edges/dpop"),
+        grantedBy("edges:read").contains(endpointId("GET", "/configuration/edge-groups")),
+        grantedBy("edges:manage").contains(endpointId("POST", "/configuration/edge-groups")),
+        grantedBy("edges:manage").contains(endpointId("POST", "/configuration/edges/enrollment-tokens")),
+        grantedBy("edges:manage").contains(endpointId("PUT", "/configuration/edges/dpop")),
+        !grantedBy("edges:read").contains(endpointId("POST", "/configuration/edge-groups")),
+      )
+    },
+    test(
+      "the partner routes are registered, read with partners:read and changed with partners:manage, and partners:read goes to the viewer roles (#962)",
+    ) {
+      val prod = BootstrapService.centralEndpoints(EnvName.Prod)
+      def grantedBy(permission: String) =
+        BootstrapService.permissionCatalog.find(
+          _._1 == versola.central.configuration.permissions.Permission(permission),
+        ).map(_._3).getOrElse(Set.empty)
+      def holders(permission: String) =
+        BootstrapService.roleCatalog.collect {
+          case (role, _, permissions) if permissions.contains(versola.central.configuration.permissions.Permission(permission)) => role.toString
+        }.toSet
+      val reads = Set(("GET", "/configuration/partners"), ("GET", "/configuration/partners/approvals"))
+      val changes = Set(
+        ("POST", "/configuration/partners"),
+        ("PUT", "/configuration/partners"),
+        ("POST", "/configuration/partners/suspend"),
+        ("POST", "/configuration/partners/resume"),
+        ("PUT", "/configuration/partners/limits"),
+        ("POST", "/configuration/partners/approvals/approve"),
+        ("POST", "/configuration/partners/approvals/reject"),
+      )
+      assertTrue(
+        (reads ++ changes).forall(prod.contains),
+        grantedBy("partners:read") == reads.map(endpointId),
+        grantedBy("partners:manage") == changes.map(endpointId),
+        holders("partners:read") == Set("oauth-admin", "frontend-developer", "auditor", "viewer"),
+        holders("partners:manage") == Set("oauth-admin"),
       )
     },
     test("every endpoint the edge permissions grant is registered as an endpoint of the central resource") {

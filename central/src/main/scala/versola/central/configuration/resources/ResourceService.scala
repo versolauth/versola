@@ -141,6 +141,7 @@ object ResourceService:
                     audience = request.audience,
                     endpoints = request.endpoints.map(asRecord),
                     secret = encryptedSecret,
+                    partnerId = request.partnerId,
                   )
                   _ <- ZIO.when(request.audienceRateLimits.nonEmpty)(
                     resourceRepository.updateAudienceRateLimits(request.resourceId, request.audienceRateLimits),

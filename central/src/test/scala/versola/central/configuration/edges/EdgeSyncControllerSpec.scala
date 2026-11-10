@@ -15,6 +15,7 @@ import versola.central.configuration.clients.{
   AuthMethod,
   AuthorizationPreset,
   AuthorizationPresetService,
+  ClientApproval,
   ClientId,
   ClientKind,
   ClientTemplate,
@@ -127,6 +128,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     policyMeta = None,
     groupId = EdgeGroup.DefaultId,
     groupKind = EdgeGroupKind.FirstParty,
+    publicUrl = None,
   )
 
   /** What an edge presents: signed with its registered key and naming itself, exactly as edge's
@@ -186,6 +188,8 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     createdAt = registeredAt,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
+    approval = ClientApproval.Approved,
   )
 
   private val clientA = client("web-a", tenantA)
@@ -222,6 +226,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     secret = Some(resourceSecret),
     previousSecret = None,
     audienceRateLimits = Nil,
+    partnerId = None,
   )
 
   private val declaredLimit = DeclaredRateLimit(
@@ -743,6 +748,28 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
             services.identity.renew.calls.map(call => (call._1, call._2)) == List((edgeId, "REQUEST")),
             services.identity.renew.calls.head._3.isDefined,
           ),
+      ),
+      // #549 decision 8: the one route both kinds reach. The partner edge presents the certificate central issued it,
+      // which names its group.
+      testCase(
+        description = "certificate renewal: an edge of a partner group is answered too, where every other route refuses it",
+        request = Request.post(URL.root / "edge" / "certificate" / "renew", Body.fromString("""{"csr":"REQUEST"}"""))
+          .addHeader(Header.ContentType(MediaType.application.json)),
+        edge = edgeRecord.copy(groupId = EdgeGroupId("partner-acme"), groupKind = EdgeGroupKind.Partner),
+        certificate = Some(otherGroupCertificate.certificate),
+        expectedStatus = Status.Ok,
+        setup = services => services.identity.renew.succeedsWith(EdgeIdentityService.Identity("CHAIN")),
+        verify = (_, services) => ZIO.succeed(assertTrue(services.identity.renew.calls.map(_._1) == List(edgeId))),
+      ),
+      testCase(
+        description = "edge-certificate signing: an edge of a partner group is refused, as on every route but renewal",
+        request = Request.post(
+          URL.root / "edge" / "clients" / "edge-certificate" / "sign",
+          Body.fromString("""{"clientId":"web-a","csr":"x"}"""),
+        ).addHeader(Header.ContentType(MediaType.application.json)),
+        edge = edgeRecord.copy(groupId = EdgeGroupId("partner-acme"), groupKind = EdgeGroupKind.Partner),
+        certificate = Some(otherGroupCertificate.certificate),
+        expectedStatus = Status.Unauthorized,
       ),
       testCase(
         description = "certificate renewal: a request that names something else is 422",

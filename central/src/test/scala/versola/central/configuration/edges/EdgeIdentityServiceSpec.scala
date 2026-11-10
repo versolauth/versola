@@ -29,6 +29,7 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
       accessLogPolicy = None,
       rateLimitPolicies = None,
       policyMeta = None,
+      publicUrl = None,
     )
 
   private class InMemoryTokens(state: Ref[Map[String, (EdgeId, Instant, Boolean)]]) extends EdgeEnrollmentTokenRepository:
@@ -45,11 +46,16 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
             (Some(edge), tokens.updated(tokenHash, (edge, expiresAt, true)))
           case _ => (None, tokens)
 
+    override def revoke(edgeId: EdgeId): Task[Int] =
+      state.modify(tokens => (tokens.count((_, v) => v._1 == edgeId && !v._3), tokens.filterNot((_, v) => v._1 == edgeId && !v._3)))
+
     def hashes: UIO[Set[String]] = state.get.map(_.keySet)
 
   private class InMemoryCertificates(state: Ref[Vector[(EdgeId, String)]]) extends EdgeCertificateRepository:
     override def record(edgeId: EdgeId, serial: String, notAfter: Instant, issuedAt: Instant): Task[Unit] =
       state.update(_ :+ (edgeId -> serial))
+
+    override def latest: Task[Map[EdgeId, EdgeCertificateRepository.Issued]] = ZIO.succeed(Map.empty)
 
     def all: UIO[Vector[(EdgeId, String)]] = state.get
 

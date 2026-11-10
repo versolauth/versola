@@ -50,6 +50,9 @@ case class EdgeRecord(
     policyMeta: Option[Map[String, PolicySectionMeta]],
     groupId: EdgeGroupId,
     groupKind: EdgeGroupKind,
+    /** Where browsers reach this edge (#549): the partner's "Sign in with" links are `<publicUrl>/login/<client>`. `None` for
+      * an edge registered without one. */
+    publicUrl: Option[String],
 ):
   def asPublicKeys: JWT.PublicKeys =
     val keys = Json.Arr((publicKey +: oldPublicKey.toVector)*)

@@ -44,7 +44,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.security.generateRsaKeyPair.succeedsWith(testKeyPair)
         _ <- env.repository.createEdge.succeedsWith(())
-        keyPair <- env.service.registerEdge(edgeId, EdgeGroup.DefaultId)
+        keyPair <- env.service.registerEdge(edgeId, EdgeGroup.DefaultId, None)
       yield
         val createCalls = env.repository.createEdge.calls
         assertTrue(
@@ -102,6 +102,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         policyMeta = None,
         groupId = EdgeGroup.DefaultId,
         groupKind = EdgeGroupKind.FirstParty,
+        publicUrl = None,
       )
       val patch = EdgePoliciesPatch(overload =
         Change.Replace(OverloadPolicy(
@@ -145,6 +146,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         policyMeta = None,
         groupId = EdgeGroup.DefaultId,
         groupKind = EdgeGroupKind.FirstParty,
+        publicUrl = None,
       )
       val refused = PolicyPatchError.Conflict(PolicySection.Overload, stored)
       for
@@ -165,6 +167,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         policyMeta = None,
         groupId = EdgeGroup.DefaultId,
         groupKind = EdgeGroupKind.FirstParty,
+        publicUrl = None,
       )
       val patch = EdgePoliciesPatch(accessLog = Change.Replace(AccessLogPolicy(mode = Some("full"), slowMillis = None, successSampleRate = None)))
       for
@@ -201,6 +204,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         policyMeta = None,
         groupId = EdgeGroup.DefaultId,
         groupKind = EdgeGroupKind.FirstParty,
+        publicUrl = None,
       )
       for
         _ <- env.repository.find.succeedsWith(Some(stored))
@@ -220,6 +224,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           policyMeta = None,
           groupId = EdgeGroup.DefaultId,
           groupKind = EdgeGroupKind.FirstParty,
+          publicUrl = None,
         ),
         EdgeRecord(
           edgeId,
@@ -232,6 +237,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           policyMeta = None,
           groupId = EdgeGroup.DefaultId,
           groupKind = EdgeGroupKind.FirstParty,
+          publicUrl = None,
         ),
       )
       val env = Env(initial = edges)
@@ -253,6 +259,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         policyMeta = None,
         groupId = EdgeGroup.DefaultId,
         groupKind = EdgeGroupKind.FirstParty,
+        publicUrl = None,
       ))
       val env = Env(initial = edges)
       for
@@ -275,6 +282,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         policyMeta = None,
         groupId = EdgeGroup.DefaultId,
         groupKind = EdgeGroupKind.FirstParty,
+        publicUrl = None,
       ))
       val env = Env()
       for

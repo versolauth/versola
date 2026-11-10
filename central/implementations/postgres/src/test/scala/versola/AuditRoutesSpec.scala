@@ -87,6 +87,7 @@ object AuditRoutesSpec extends ZIOSpecDefault:
           "POST" -> "/configuration/edges",
           "POST" -> "/configuration/edges/rotate-key",
           "POST" -> "/configuration/edges/enrollment-tokens",
+          "POST" -> "/configuration/partners",
           "POST" -> "/users/password/reset",
         ),
       )
@@ -117,7 +118,24 @@ object AuditRoutesSpec extends ZIOSpecDefault:
   private def expectedOperation(method: Method, path: String): String =
     val last = path.split('/').last
     val actions =
-      Set("rotate-secret", "renew", "enrollment-tokens", "extend", "revoke", "dpop", "rotate-key", "active", "default", "generate", "reset", "set")
+      Set(
+        "rotate-secret",
+        "renew",
+        "enrollment-tokens",
+        "extend",
+        "revoke",
+        "dpop",
+        "rotate-key",
+        "active",
+        "default",
+        "generate",
+        "reset",
+        "set",
+        "suspend",
+        "resume",
+        "approve",
+        "reject",
+      )
     if actions.contains(last) then s"action:$last"
     else
       method match

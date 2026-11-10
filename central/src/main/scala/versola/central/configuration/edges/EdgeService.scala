@@ -10,7 +10,7 @@ trait EdgeService:
   def find(id: EdgeId): UIO[Option[EdgeRecord]]
 
   /** Registers an edge in `groupId`, which it never leaves. The group has to exist ([[EdgeGroupService.find]]). */
-  def registerEdge(id: EdgeId, groupId: EdgeGroupId): Task[RsaKeyPair]
+  def registerEdge(id: EdgeId, groupId: EdgeGroupId, publicUrl: Option[String]): Task[RsaKeyPair]
 
   def rotateEdgeKey(id: EdgeId): Task[RsaKeyPair]
 
@@ -51,10 +51,16 @@ object EdgeService:
     override def find(id: EdgeId): UIO[Option[EdgeRecord]] =
       cache.get.map(_.find(_.id == id))
 
-    override def registerEdge(id: EdgeId, groupId: EdgeGroupId): Task[RsaKeyPair] =
+    override def registerEdge(id: EdgeId, groupId: EdgeGroupId, publicUrl: Option[String]): Task[RsaKeyPair] =
       for
         keyPair <- securityService.generateRsaKeyPair
-        _ <- edgeRepository.createEdge(id, keyPair.toPublicJwk, EdgeRecord.DefaultRequireDpopNonce, groupId)
+        _ <- edgeRepository.createEdge(
+          id = id,
+          publicKeyJwk = keyPair.toPublicJwk,
+          requireDpopNonce = EdgeRecord.DefaultRequireDpopNonce,
+          groupId = groupId,
+          publicUrl = publicUrl,
+        )
       yield keyPair
 
     override def rotateEdgeKey(id: EdgeId): Task[RsaKeyPair] =

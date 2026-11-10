@@ -24,7 +24,7 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
   override def getAll: Task[Vector[EdgeRecord]] =
     xa.connectMeasured("get-all-edges"):
       sql"""
-        SELECT e.id, e.public_key_jwk, e.old_public_key_jwk, e.require_dpop_nonce, e.overload_policy, e.access_log_policy, e.rate_limit_policies, e.policy_meta, e.group_id, g.kind
+        SELECT e.id, e.public_key_jwk, e.old_public_key_jwk, e.require_dpop_nonce, e.overload_policy, e.access_log_policy, e.rate_limit_policies, e.policy_meta, e.group_id, g.kind, e.public_url
         FROM edges e
         JOIN edge_groups g ON g.id = e.group_id
       """.query[EdgeRecord].run()
@@ -32,17 +32,23 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
   override def find(id: EdgeId): Task[Option[EdgeRecord]] =
     xa.connectMeasured("find-edge"):
       sql"""
-        SELECT e.id, e.public_key_jwk, e.old_public_key_jwk, e.require_dpop_nonce, e.overload_policy, e.access_log_policy, e.rate_limit_policies, e.policy_meta, e.group_id, g.kind
+        SELECT e.id, e.public_key_jwk, e.old_public_key_jwk, e.require_dpop_nonce, e.overload_policy, e.access_log_policy, e.rate_limit_policies, e.policy_meta, e.group_id, g.kind, e.public_url
         FROM edges e
         JOIN edge_groups g ON g.id = e.group_id
         WHERE e.id = $id
       """.query[EdgeRecord].run().headOption
 
-  override def createEdge(id: EdgeId, publicKeyJwk: Json.Obj, requireDpopNonce: Boolean, groupId: EdgeGroupId): Task[Unit] =
+  override def createEdge(
+      id: EdgeId,
+      publicKeyJwk: Json.Obj,
+      requireDpopNonce: Boolean,
+      groupId: EdgeGroupId,
+      publicUrl: Option[String],
+  ): Task[Unit] =
     xa.connectMeasured("create-edge"):
       sql"""
-        INSERT INTO edges (id, public_key_jwk, old_public_key_jwk, require_dpop_nonce, group_id)
-        VALUES ($id, $publicKeyJwk, NULL, $requireDpopNonce, $groupId)
+        INSERT INTO edges (id, public_key_jwk, old_public_key_jwk, require_dpop_nonce, group_id, public_url)
+        VALUES ($id, $publicKeyJwk, NULL, $requireDpopNonce, $groupId, $publicUrl)
       """.update.run()
     .unit
 
@@ -72,7 +78,7 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
     xa.transactMeasured("patch-edge-policies"):
       val current =
         sql"""
-        SELECT e.id, e.public_key_jwk, e.old_public_key_jwk, e.require_dpop_nonce, e.overload_policy, e.access_log_policy, e.rate_limit_policies, e.policy_meta, e.group_id, g.kind
+        SELECT e.id, e.public_key_jwk, e.old_public_key_jwk, e.require_dpop_nonce, e.overload_policy, e.access_log_policy, e.rate_limit_policies, e.policy_meta, e.group_id, g.kind, e.public_url
         FROM edges e
         JOIN edge_groups g ON g.id = e.group_id
         WHERE e.id = $id

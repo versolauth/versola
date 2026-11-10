@@ -3,6 +3,7 @@ package versola.central.configuration.edges
 import com.nimbusds.jose.jwk.RSAKey
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.configuration.partners.PartnerRegistry
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.{TestAdminAuth, TestCentralConfig}
@@ -66,6 +67,10 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         tenantRepository = stub[TenantRepository]
         groupService = stub[EdgeGroupService]
         identityService = stub[EdgeIdentityService]
+        partners = stub[PartnerRegistry]
+        certificates = stub[EdgeCertificateRepository]
+        _ <- partners.getAll.succeedsWith(Vector.empty)
+        _ <- certificates.latest.succeedsWith(Map.empty)
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
@@ -73,6 +78,8 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               ZEnvironment[EdgeService](edgeService) ++
                 ZEnvironment[EdgeGroupService](groupService) ++
                 ZEnvironment[EdgeIdentityService](identityService) ++
+                ZEnvironment[EdgeCertificateRepository](certificates) ++
+                ZEnvironment[PartnerRegistry](partners) ++
                 ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[TenantRepository](tenantRepository) ++
                 ZEnvironment(TestCentralConfig.config) ++
@@ -108,6 +115,10 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         tenantRepository = stub[TenantRepository]
         groupService = stub[EdgeGroupService]
         identityService = stub[EdgeIdentityService]
+        partners = stub[PartnerRegistry]
+        certificates = stub[EdgeCertificateRepository]
+        _ <- partners.getAll.succeedsWith(Vector.empty)
+        _ <- certificates.latest.succeedsWith(Map.empty)
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
@@ -115,6 +126,8 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               ZEnvironment[EdgeService](edgeService) ++
                 ZEnvironment[EdgeGroupService](groupService) ++
                 ZEnvironment[EdgeIdentityService](identityService) ++
+                ZEnvironment[EdgeCertificateRepository](certificates) ++
+                ZEnvironment[PartnerRegistry](partners) ++
                 ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[TenantRepository](tenantRepository) ++
                 ZEnvironment(TestCentralConfig.config) ++
@@ -169,6 +182,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     policyMeta = None,
     groupId = EdgeGroup.DefaultId,
     groupKind = EdgeGroupKind.FirstParty,
+    publicUrl = None,
   )
 
   private val rateLimits = RateLimitPolicies(
@@ -247,6 +261,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               policyMeta = None,
               groupId = EdgeGroup.DefaultId,
               groupKind = EdgeGroupKind.FirstParty,
+              publicUrl = None,
             ),
             EdgeRecord(
               EdgeId("edge-2"),
@@ -259,6 +274,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               policyMeta = None,
               groupId = EdgeGroup.DefaultId,
               groupKind = EdgeGroupKind.FirstParty,
+              publicUrl = None,
             ),
           ),
         ),
@@ -275,6 +291,11 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               rateLimitPolicies = None,
               groupId = EdgeGroup.DefaultId,
               policyRevisions = Map.empty,
+              groupKind = EdgeGroupKind.FirstParty,
+              partnerId = None,
+              publicUrl = None,
+              certificateNotAfter = None,
+              lastRenewedAt = None,
             ),
             EdgeResponse(
               EdgeId("edge-2"),
@@ -285,6 +306,11 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               rateLimitPolicies = None,
               groupId = EdgeGroup.DefaultId,
               policyRevisions = Map.empty,
+              groupKind = EdgeGroupKind.FirstParty,
+              partnerId = None,
+              publicUrl = None,
+              certificateNotAfter = None,
+              lastRenewedAt = None,
             ),
           ),
         ),
@@ -304,14 +330,14 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.POST,
         url = URL.root / "configuration" / "edges",
-        body = Body.fromString(RegisterEdgeRequest(edgeId, groupId = None).toJson),
+        body = Body.fromString(RegisterEdgeRequest(edgeId, groupId = None, publicUrl = None).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
       setup = service => service.registerEdge.succeedsWith(testKeyPair),
       verify = (response, service) =>
         for body <- response.body.asJson[versola.central.configuration.edges.ServiceKeyResponse]
         yield assertTrue(
-          service.registerEdge.calls == List((edgeId, EdgeGroup.DefaultId)),
+          service.registerEdge.calls == List((edgeId, EdgeGroup.DefaultId, None)),
           body.keyId == testKeyPair.keyId,
         ),
     ),
@@ -342,7 +368,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ZIO.succeed(assertTrue(service.deleteOldEdgeKey.calls == List(edgeId))),
     ),
     internalTestCase(
-      description = "edges registry serves every edge's id and assigned tenants to auth",
+      description = "edges registry serves every first-party edge's id and assigned tenants to auth, and no partner edge",
       token = authSyncToken,
       expectedStatus = Status.Ok,
       setup = service =>
@@ -360,6 +386,22 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               policyMeta = None,
               groupId = EdgeGroup.DefaultId,
               groupKind = EdgeGroupKind.FirstParty,
+              publicUrl = None,
+            ),
+            // A partner's edge is never a voucher at auth (#549): it verifies tokens itself and calls /userinfo as a client,
+            // so the registry leaves it out whatever tenants point at it.
+            EdgeRecord(
+              EdgeId("edge-partner"),
+              publicJwk,
+              oldPublicKey = None,
+              requireDpopNonce = true,
+              overloadPolicy = None,
+              accessLogPolicy = None,
+              rateLimitPolicies = None,
+              policyMeta = None,
+              groupId = EdgeGroupId("partner-acme"),
+              groupKind = EdgeGroupKind.Partner,
+              publicUrl = Some("https://login.acme.example"),
             ),
           ),
         ),
@@ -367,6 +409,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         TenantRecord(TenantId("tenant-a"), "Tenant A", edgeId = Some(edgeId)),
         TenantRecord(TenantId("tenant-b"), "Tenant B", edgeId = Some(edgeId)),
         TenantRecord(TenantId("tenant-c"), "Tenant C", edgeId = Some(EdgeId("edge-2"))),
+        TenantRecord(TenantId("tenant-p"), "Tenant P", edgeId = Some(EdgeId("edge-partner"))),
         // Assigned to neither edge below, and must not leak into either one's tenantIds --
         // this is the set `EdgeCertificateTrust` checks a token's tenant against.
         TenantRecord(TenantId("tenant-d"), "Tenant D", edgeId = None),

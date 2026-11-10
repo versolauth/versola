@@ -49,7 +49,17 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val createdEndpoint =
     ResourceEndpointRecord(createdEndpointId, "/users", "POST", false, denyAware, Vector.empty, None, None, None, rateLimit = None)
   private val resource =
-    ResourceRecord(tenantId, resourceId, originalUri, audience, Vector(existingEndpoint, removedEndpoint), None, None, audienceRateLimits = Nil)
+    ResourceRecord(
+      tenantId,
+      resourceId,
+      originalUri,
+      audience,
+      Vector(existingEndpoint, removedEndpoint),
+      None,
+      None,
+      audienceRateLimits = Nil,
+      partnerId = None,
+    )
   private val otherTenantResource =
     ResourceRecord(
       otherTenantId,
@@ -60,6 +70,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       None,
       None,
       audienceRateLimits = Nil,
+      partnerId = None,
     )
   private val centralSecret = Secret(Array.fill(32)(7.toByte))
   private val previousCentralSecret = Secret(Array.fill(32)(8.toByte))
@@ -72,6 +83,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
     secret = Some(centralSecret),
     previousSecret = Some(previousCentralSecret),
     audienceRateLimits = Nil,
+    partnerId = None,
   )
 
   private val createRequest = CreateResourceRequest(
@@ -107,6 +119,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     internal = false,
     audienceRateLimits = Nil,
+    partnerId = None,
   )
 
   private val updateRequest = UpdateResourceRequest(
@@ -192,7 +205,8 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(result == Vector(resource))
     },
     test("getTenantResources applies pagination after filtering") {
-      val pagedResource = ResourceRecord(tenantId, ResourceId("paged"), updatedUri, audience, Vector.empty, None, None, audienceRateLimits = Nil)
+      val pagedResource =
+        ResourceRecord(tenantId, ResourceId("paged"), updatedUri, audience, Vector.empty, None, None, audienceRateLimits = Nil, partnerId = None)
       val env = new Env(Vector(resource, pagedResource, otherTenantResource))
 
       for result <- env.service.getTenantResources(tenantId, offset = 1, limit = Some(1))
@@ -257,6 +271,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             ResourceEndpointRecord(existingEndpointId, "/users", "GET", false, allow, inject, None, None, None, rateLimit = None),
             ResourceEndpointRecord(createdEndpointId, "/users", "POST", true, denyAware, Vector.empty, None, None, None, rateLimit = None),
           ),
+          None,
           None,
         )),
       )
@@ -983,7 +998,17 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val storedParameterized =
         ResourceEndpointRecord(existingEndpointId, "/users/{id}", "GET", false, None, Vector.empty, None, None, None, rateLimit = None)
       val storedResource =
-        ResourceRecord(tenantId, resourceId, originalUri, audience, Vector(storedParameterized), None, None, audienceRateLimits = Nil)
+        ResourceRecord(
+          tenantId,
+          resourceId,
+          originalUri,
+          audience,
+          Vector(storedParameterized),
+          None,
+          None,
+          audienceRateLimits = Nil,
+          partnerId = None,
+        )
       val request = UpdateResourceRequest(
         resourceId = resourceId,
         resource = None,
@@ -1020,7 +1045,17 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val storedParameterized =
         ResourceEndpointRecord(existingEndpointId, "/users/{id}", "GET", false, None, Vector.empty, None, None, None, rateLimit = None)
       val storedResource =
-        ResourceRecord(tenantId, resourceId, originalUri, audience, Vector(storedParameterized), None, None, audienceRateLimits = Nil)
+        ResourceRecord(
+          tenantId,
+          resourceId,
+          originalUri,
+          audience,
+          Vector(storedParameterized),
+          None,
+          None,
+          audienceRateLimits = Nil,
+          partnerId = None,
+        )
       val request = UpdateResourceRequest(
         resourceId = resourceId,
         resource = None,
@@ -1108,7 +1143,17 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("sync upserts fetched resource for non-delete event") {
       val env = new Env(Vector(resource, otherTenantResource))
       val updatedResource =
-        ResourceRecord(tenantId, resourceId, updatedUri, audience, Vector(updatedEndpoint, createdEndpoint), None, None, audienceRateLimits = Nil)
+        ResourceRecord(
+          tenantId,
+          resourceId,
+          updatedUri,
+          audience,
+          Vector(updatedEndpoint, createdEndpoint),
+          None,
+          None,
+          audienceRateLimits = Nil,
+          partnerId = None,
+        )
 
       for
         _ <- env.repository.findResource.succeedsWith(Some(updatedResource))

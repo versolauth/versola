@@ -16,3 +16,6 @@ trait EdgeEnrollmentTokenRepository:
   /** Spends the token in one statement: the edge it was created for, or `None` when it is unknown, already spent or
     * past `expiresAt`. Two concurrent calls with the same token cannot both succeed. */
   def consume(tokenHash: String, now: Instant): Task[Option[EdgeId]]
+
+  /** Forgets the unspent tokens of `edgeId`: for a partner that printed a bundle and wants it void. The number forgotten. */
+  def revoke(edgeId: EdgeId): Task[Int]

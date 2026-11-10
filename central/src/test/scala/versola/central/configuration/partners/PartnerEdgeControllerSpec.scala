@@ -1,0 +1,574 @@
+package versola.central.configuration.partners
+
+import io.opentelemetry.api
+import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.audit.{CentralAudit, CentralAuditRepository, RecordedAudit}
+import versola.central.configuration.clients.{
+  ApplicationType,
+  AuthFlow,
+  AuthMethod,
+  AuthorizationPreset,
+  AuthorizationPresetService,
+  ClientApproval,
+  ClientId,
+  ClientKind,
+  ClientTemplate,
+  ConsentFlow,
+  MutualTlsAuth,
+  MutualTlsSubjectType,
+  OAuthClientRecord,
+  OAuthClientService,
+  PresetId,
+  ResponseType,
+}
+import versola.central.configuration.edges.{
+  EdgeCertificate,
+  EdgeCertificateRepository,
+  EdgeEnrollmentTokenRepository,
+  EdgeGroup,
+  EdgeGroupId,
+  EdgeGroupKind,
+  EdgeId,
+  EdgeRecord,
+  EdgeService,
+}
+import versola.central.configuration.jwks.JwksService
+import versola.central.configuration.metadata.ServerMetadataService
+import versola.central.configuration.resources.{ResourceId, ResourceRecord, ResourceService}
+import versola.central.configuration.scopes.ScopeToken
+import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
+import versola.central.configuration.{GetAuthorizationPresetsSyncResponse, GetOAuthClientsSyncResponse, GetResourcesSyncResponse, ResourceUri}
+import versola.central.users.{AuthClient, UserId}
+import versola.central.{CentralConfig, TestCentralConfig}
+import versola.util.audit.{AuditEvents, AuditOutcome}
+import versola.util.http.Observability
+import versola.util.{JWT, RedirectUri, RsaKeyPair, Secret, SecureRandom, SecurityService, TestCertificates}
+import zio.*
+import zio.http.*
+import zio.json.*
+import zio.json.ast.Json
+import zio.telemetry.opentelemetry.OpenTelemetry
+import zio.telemetry.opentelemetry.tracing.Tracing
+import zio.test.*
+
+import java.security.KeyPairGenerator
+import java.security.cert.Certificate
+import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
+import java.time.Instant
+import java.util.UUID
+
+/** The partner-edge surface (#549, #962 §4): who gets in, and what each caller is served. A partner's edge is scoped to its
+  * partner by the certificate and the token alone; a management call needs the staff member's token besides, and is
+  * recorded. */
+object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
+  private val config = TestCentralConfig.config
+  private val tenantId = TenantId("default")
+  private val issuer = "https://id.example.com"
+  private val now = Instant.parse("2026-11-10T10:00:00Z")
+
+  private def rsaKeyPair(keyId: String): RsaKeyPair =
+    val generator = KeyPairGenerator.getInstance("RSA")
+    generator.initialize(2048)
+    val pair = generator.generateKeyPair()
+    RsaKeyPair(keyId = keyId, publicKey = pair.getPublic.asInstanceOf[RSAPublicKey], privateKey = pair.getPrivate.asInstanceOf[RSAPrivateKey])
+
+  private val edgeKey = rsaKeyPair("edge-a-key")
+  private val authKey = rsaKeyPair("auth-key")
+  private val strangerKey = rsaKeyPair("stranger-key")
+
+  private val acmeGroup = EdgeGroupId("acme")
+  private val edgeId = EdgeId("edge-acme-1")
+
+  private def edgeRecord(groupId: EdgeGroupId, kind: EdgeGroupKind) = EdgeRecord(
+    id = edgeId,
+    publicKey = edgeKey.toPublicJwk,
+    oldPublicKey = None,
+    requireDpopNonce = true,
+    overloadPolicy = None,
+    accessLogPolicy = None,
+    rateLimitPolicies = None,
+    policyMeta = None,
+    groupId = groupId,
+    groupKind = kind,
+    publicUrl = Some("https://login.acme.example"),
+  )
+
+  private val partnerEdge = edgeRecord(acmeGroup, EdgeGroupKind.Partner)
+  private val firstPartyEdge = edgeRecord(EdgeGroup.DefaultId, EdgeGroupKind.FirstParty)
+
+  private val partnerCertificate =
+    TestCertificates.generate(uris = List(EdgeCertificate.uriFor(edgeId), EdgeCertificate.groupUriFor(acmeGroup))).certificate
+  private val firstPartyCertificate = TestCertificates.generate(uris = List(EdgeCertificate.uriFor(edgeId))).certificate
+
+  private def partner(id: String, status: PartnerStatus = PartnerStatus.Active) = PartnerRecord(
+    id = PartnerId(id),
+    tenantId = tenantId,
+    displayName = id.toUpperCase,
+    logoUri = None,
+    contact = PartnerContact(s"ops@$id.example", None),
+    status = status,
+    limits = PartnerLimits(
+      scopes = Set(ScopeToken("openid")),
+      redirectDomains = Set(s"$id.example"),
+      maxClients = 5,
+      maxEdges = 2,
+      accessTokenTtlMax = 600,
+      refreshTokenTtlMax = 86400,
+      clientAuthMethods = Set(AuthMethod.tls_client_auth),
+      rateLimitPolicy = "partner-default",
+    ),
+    groupId = EdgeGroupId(id),
+    consoleClientId = ClientId(s"$id-console"),
+    settings = PartnerSettings.empty,
+    reviewAt = None,
+    createdAt = now,
+  )
+
+  private val acme = partner("acme")
+  private val globex = partner("globex")
+
+  private def client(id: String, owner: PartnerRecord, approval: ClientApproval = ClientApproval.Approved) = OAuthClientRecord(
+    id = ClientId(id),
+    tenantId = tenantId,
+    clientName = Map("en" -> id),
+    redirectUris = Set(RedirectUri(s"https://shop.${owner.id}.example/cb")),
+    scope = Set(ScopeToken("openid")),
+    secret = None,
+    previousSecret = None,
+    accessTokenTtl = 5.minutes,
+    refreshTokenTtl = 3600.seconds,
+    permissions = Set.empty,
+    theme = "default",
+    authFlow = Some(AuthFlow.default),
+    otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
+    dpopBoundAccessTokens = false,
+    dpopSigningAlgs = Set.empty,
+    dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.tls_client_auth,
+    mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_uri, EdgeCertificate.groupUriFor(owner.groupId))),
+    certificateBoundAccessTokens = false,
+    jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = true,
+    edgeSigningKey = None,
+    edgeClientCertificate = None,
+    template = Some(ClientTemplate(ClientKind.web)),
+    createdAt = now,
+    applicationType = ApplicationType.web,
+    themeOverrides = None,
+    partnerId = Some(owner.id),
+    approval = approval,
+  )
+
+  private val acmeShop = client("acme-shop", acme)
+  private val acmePending = client("acme-pay", acme, ClientApproval.Pending)
+  private val globexShop = client("globex-shop", globex)
+
+  private def resource(id: String, owner: Option[PartnerId]) = ResourceRecord(
+    tenantId = tenantId,
+    resourceId = ResourceId(id),
+    resource = ResourceUri(s"https://$id.example.com"),
+    audience = Nil,
+    endpoints = Vector.empty,
+    secret = Some(Secret(Array.fill(32)(7.toByte))),
+    previousSecret = None,
+    audienceRateLimits = Nil,
+    partnerId = owner,
+  )
+
+  private def preset(id: String, clientId: ClientId) = AuthorizationPreset(
+    id = PresetId(id),
+    clientId = clientId,
+    description = id,
+    redirectUri = RedirectUri("https://example.com/callback"),
+    postLoginRedirectUri = RedirectUri("https://example.com/home"),
+    postLogoutRedirectUri = None,
+    scope = Set(ScopeToken("openid")),
+    responseType = ResponseType.Code,
+    uiLocales = None,
+    customParameters = Map.empty,
+    cookieDomain = None,
+    cookiePath = None,
+  )
+
+  private def edgeToken(keyPair: RsaKeyPair = edgeKey): Task[String] =
+    JWT.serialize(
+      JWT.Claims("edge", "edge", List("central"), Json.Obj()),
+      1.minute,
+      JWT.Signature.Asymmetric(JWT.Algorithm.RS256, keyPair.keyId, keyPair.privateKey),
+      headers = Map("edge_id" -> edgeId.toString),
+    )
+
+  /** The staff member's access token, as auth issues it to the console client. */
+  private def staffToken(clientId: String = "acme-console", key: RsaKeyPair = authKey, iss: String = issuer): Task[String] =
+    JWT.serialize(
+      JWT.Claims(iss, "staff-1", List("partner-api"), Json.Obj("client_id" -> Json.Str(clientId))),
+      5.minutes,
+      JWT.Signature.Asymmetric(JWT.Algorithm.RS256, key.keyId, key.privateKey),
+      typ = JWT.Type.AccessToken,
+    )
+
+  private val tracingLayer: ULayer[Tracing] =
+    ZLayer.make[Tracing](Tracing.live(logAnnotated = false), OpenTelemetry.contextZIO, ZLayer.succeed(api.OpenTelemetry.noop().getTracer("test")))
+
+  private case class Services(
+      edges: Stub[EdgeService],
+      registry: Stub[PartnerRegistry],
+      partners: Stub[PartnerService],
+      partnerClients: Stub[PartnerClientService],
+      clients: Stub[OAuthClientService],
+      resources: Stub[ResourceService],
+      presets: Stub[AuthorizationPresetService],
+      jwks: Stub[JwksService],
+      metadata: Stub[ServerMetadataService],
+      auth: Stub[AuthClient],
+      tenants: Stub[TenantRepository],
+      certificates: Stub[EdgeCertificateRepository],
+      tokens: Stub[EdgeEnrollmentTokenRepository],
+      auditRepository: Stub[CentralAuditRepository],
+      audit: RecordedAudit,
+  )
+
+  /** Two partners, each with a client, a resource and a preset: the caller must be served acme's and never globex's. */
+  private def scoped(services: Services): UIO[Unit] =
+    services.registry.findByGroup.returnsZIO(group => ZIO.succeed(List(acme, globex).find(_.groupId == group))) *>
+      services.registry.find.returnsZIO(id => ZIO.succeed(List(acme, globex).find(_.id == id))) *>
+      services.clients.getPartnerClients.returnsZIO(id => ZIO.succeed(Vector(acmeShop, acmePending, globexShop).filter(_.partnerId.contains(id)))) *>
+      services.resources.getResourcesForSync.succeedsWith(Vector(
+        resource("acme-api", Some(acme.id)),
+        resource("globex-api", Some(globex.id)),
+        resource("own", None),
+      )) *>
+      services.presets.getPresetsForSync.succeedsWith(Vector(
+        preset("acme-shop", acmeShop.id),
+        preset("globex-shop", globexShop.id),
+        preset("acme-pay", acmePending.id),
+      )) *>
+      services.jwks.getRaw.succeedsWith(Json.Obj("keys" -> Json.Arr())) *>
+      services.jwks.getPublicKeys.succeedsWith(JWT.PublicKeys.fromJson(Json.Obj("keys" -> Json.Arr(authKey.toPublicJwk)))) *>
+      services.metadata.getMetadata.succeedsWith(Some(Json.Obj("issuer" -> Json.Str(issuer)))) *>
+      services.tenants.getAll.succeedsWith(Vector(TenantRecord(tenantId, "Example Bank", None))) *>
+      services.partners.activate.succeedsWith(()) *>
+      services.certificates.latest.succeedsWith(Map.empty)
+
+  private def testCase(
+      description: String,
+      request: Request,
+      edge: EdgeRecord = partnerEdge,
+      certificate: Option[Certificate] = Some(partnerCertificate),
+      token: Task[String] = edgeToken(),
+      principal: Option[Task[String]] = None,
+      expectedStatus: Status,
+      setup: Services => UIO[Unit] = _ => ZIO.unit,
+      verify: (Response, Services) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
+  ) =
+    test(description) {
+      for
+        security <- (SecureRandom.live >>> SecurityService.live).build.map(_.get[SecurityService])
+        services = Services(
+          edges = stub[EdgeService],
+          registry = stub[PartnerRegistry],
+          partners = stub[PartnerService],
+          partnerClients = stub[PartnerClientService],
+          clients = stub[OAuthClientService],
+          resources = stub[ResourceService],
+          presets = stub[AuthorizationPresetService],
+          jwks = stub[JwksService],
+          metadata = stub[ServerMetadataService],
+          auth = stub[AuthClient],
+          tenants = stub[TenantRepository],
+          certificates = stub[EdgeCertificateRepository],
+          tokens = stub[EdgeEnrollmentTokenRepository],
+          auditRepository = stub[CentralAuditRepository],
+          audit = RecordedAudit.unsafe,
+        )
+        tracing <- tracingLayer.build
+        routes = Observability.handleErrors(
+          PartnerEdgeController.routes.provideEnvironment(
+            ZEnvironment[EdgeService](services.edges) ++
+              ZEnvironment[PartnerRegistry](services.registry) ++
+              ZEnvironment[PartnerService](services.partners) ++
+              ZEnvironment[PartnerClientService](services.partnerClients) ++
+              ZEnvironment[OAuthClientService](services.clients) ++
+              ZEnvironment[ResourceService](services.resources) ++
+              ZEnvironment[AuthorizationPresetService](services.presets) ++
+              ZEnvironment[JwksService](services.jwks) ++
+              ZEnvironment[ServerMetadataService](services.metadata) ++
+              ZEnvironment[SecurityService](security) ++
+              ZEnvironment[AuthClient](services.auth) ++
+              ZEnvironment[TenantRepository](services.tenants) ++
+              ZEnvironment[EdgeCertificateRepository](services.certificates) ++
+              ZEnvironment[EdgeEnrollmentTokenRepository](services.tokens) ++
+              ZEnvironment[CentralAuditRepository](services.auditRepository) ++
+              ZEnvironment[AuditEvents](services.audit) ++
+              ZEnvironment[CentralConfig](config) ++
+              tracing,
+          ),
+        )
+        _ <- services.edges.find.succeedsWith(Some(edge))
+        _ <- scoped(services)
+        _ <- setup(services)
+        raw <- token
+        staff <- ZIO.foreach(principal)(identity)
+        authorized = request.addHeader(Header.Authorization.Bearer(raw)).copy(remoteCertificate = certificate)
+        sent = staff.fold(authorized)(value => authorized.addHeader(Header.Custom(PartnerPrincipal.Header, value)))
+        response <- routes.runZIO(sent)
+        verifyResult <- verify(response, services)
+      yield assertTrue(response.status == expectedStatus) && verifyResult
+    } @@ TestAspect.silentLogging
+
+  private def partnerPath(segments: String*): URL = segments.foldLeft(URL.root / "edge" / "partner")(_ / _)
+
+  private def decodeBody[A: JsonDecoder](response: Response): Task[A] =
+    response.body.asString.flatMap(body => ZIO.fromEither(body.fromJson[A])).mapError(message => RuntimeException(s"Failed to decode JSON: $message"))
+
+  private def jsonBody(json: String): Body = Body.fromString(json)
+
+  def spec = suite("PartnerEdgeController")(
+    suite("who gets in")(
+      testCase(
+        description = "a first-party edge is refused: its surface is /edge/sync",
+        request = Request.get(partnerPath("me")),
+        edge = firstPartyEdge,
+        certificate = Some(firstPartyCertificate),
+        expectedStatus = Status.Unauthorized,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.partners.activate.calls.isEmpty)),
+      ),
+      testCase(
+        description = "a partner-kind edge whose group no partner points at is refused",
+        request = Request.get(partnerPath("me")),
+        edge = partnerEdge.copy(groupId = EdgeGroupId("orphan")),
+        certificate = Some(TestCertificates.generate(uris =
+          List(EdgeCertificate.uriFor(edgeId), EdgeCertificate.groupUriFor(EdgeGroupId("orphan"))),
+        ).certificate),
+        expectedStatus = Status.Unauthorized,
+      ),
+      testCase(
+        description = "a suspended partner's edge is refused everything with 403: the kill switch",
+        request = Request.get(partnerPath("sync", "clients")),
+        expectedStatus = Status.Forbidden,
+        setup = services => services.registry.findByGroup.succeedsWith(Some(acme.copy(status = PartnerStatus.Suspended))),
+        verify = (_, services) => ZIO.succeed(assertTrue(services.clients.getPartnerClients.calls.isEmpty)),
+      ),
+      testCase(
+        description = "a token signed with a key central never registered is refused before the partner is looked up",
+        request = Request.get(partnerPath("me")),
+        token = edgeToken(strangerKey),
+        expectedStatus = Status.Unauthorized,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.registry.findByGroup.calls.isEmpty)),
+      ),
+      testCase(
+        description = "no certificate in the handshake is refused",
+        request = Request.get(partnerPath("me")),
+        certificate = None,
+        expectedStatus = Status.Unauthorized,
+      ),
+    ),
+    suite("/me")(
+      testCase(
+        description = "the first call of an onboarding partner's edge activates it and tells the edge who it is",
+        request = Request.get(partnerPath("me")),
+        expectedStatus = Status.Ok,
+        setup = services => services.registry.findByGroup.succeedsWith(Some(acme.copy(status = PartnerStatus.Onboarding))),
+        verify = (response, services) =>
+          for body <- decodeBody[Json.Obj](response)
+          yield assertTrue(
+            services.partners.activate.calls.map(_.id) == List(acme.id),
+            body.get("partner").flatMap(_.asObject).flatMap(_.get("id")) == Some(Json.Str("acme")),
+            body.get("console") == Some(Json.Obj("clientId" -> Json.Str("acme-console"), "presetId" -> Json.Str("acme-console"))),
+            body.get("edge").flatMap(_.asObject).flatMap(_.get("publicUrl")) == Some(Json.Str("https://login.acme.example")),
+            body.get("operator").flatMap(_.asObject).flatMap(_.get("issuer")) == Some(Json.Str(issuer)),
+            body.get("operator").flatMap(_.asObject).flatMap(_.get("name")) == Some(Json.Str("Example Bank")),
+          ),
+      ),
+    ),
+    suite("the sync is the partner's own rows, and nothing of another partner's or the operator's")(
+      testCase(
+        description = "clients: acme's approved clients, without secrets or edge credentials",
+        request = Request.get(partnerPath("sync", "clients")),
+        expectedStatus = Status.Ok,
+        verify = (response, _) =>
+          for
+            text <- response.body.asString
+            payload <- ZIO.fromEither(text.fromJson[GetOAuthClientsSyncResponse]).mapError(RuntimeException(_))
+          yield assertTrue(
+            payload.clients.map(_.id) == Vector("acme-shop"),
+            payload.clients.forall(c =>
+              c.secret.isEmpty && c.edgeSigningKey.isEmpty && c.edgeClientCertificate.isEmpty && c.edgeCertificateSubject.isEmpty,
+            ),
+          ),
+      ),
+      testCase(
+        description = "resources: acme's, the secret encrypted to the calling edge's key",
+        request = Request.get(partnerPath("sync", "resources")),
+        expectedStatus = Status.Ok,
+        verify = (response, _) =>
+          for payload <- decodeBody[GetResourcesSyncResponse](response)
+          yield assertTrue(payload.resources.map(_.resourceId) == Vector(ResourceId("acme-api")), payload.resources.head.secret.isDefined),
+      ),
+      testCase(
+        description = "auth-request-presets: the presets of acme's approved clients",
+        request = Request.get(partnerPath("sync", "auth-request-presets")),
+        expectedStatus = Status.Ok,
+        verify = (response, _) =>
+          for payload <- decodeBody[GetAuthorizationPresetsSyncResponse](response)
+          yield assertTrue(payload.presets.map(_.id) == Vector(PresetId("acme-shop"))),
+      ),
+      testCase(
+        description = "dpop: the calling edge's own row",
+        request = Request.get(partnerPath("sync", "dpop")),
+        expectedStatus = Status.Ok,
+        verify = (response, _) => decodeBody[Json.Obj](response).map(body => assertTrue(body.get("requireDpopNonce") == Some(Json.Bool(true)))),
+      ),
+    ),
+    suite("management needs the staff member's token")(
+      testCase(
+        description = "no Versola-Principal is 403, and nothing is read",
+        request = Request.get(partnerPath("clients")),
+        expectedStatus = Status.Forbidden,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.partnerClients.list.calls.isEmpty)),
+      ),
+      testCase(
+        description = "a token of another client than the partner's console is 403",
+        request = Request.get(partnerPath("clients")),
+        principal = Some(staffToken(clientId = "globex-console")),
+        expectedStatus = Status.Forbidden,
+      ),
+      testCase(
+        description = "a token from another issuer is 403",
+        request = Request.get(partnerPath("clients")),
+        principal = Some(staffToken(iss = "https://other.example.com")),
+        expectedStatus = Status.Forbidden,
+      ),
+      testCase(
+        description = "a token auth did not sign is 403",
+        request = Request.get(partnerPath("clients")),
+        principal = Some(staffToken(key = strangerKey)),
+        expectedStatus = Status.Forbidden,
+      ),
+      testCase(
+        description = "the console client's live token is let in; a read is not recorded",
+        request = Request.get(partnerPath("clients")),
+        principal = Some(staffToken()),
+        expectedStatus = Status.Ok,
+        setup = services => services.partnerClients.list.succeedsWith(Vector.empty),
+        verify = (_, services) =>
+          for drafts <- services.audit.drafts
+          yield assertTrue(services.partnerClients.list.calls.map(_.id) == List(acme.id), drafts.isEmpty),
+      ),
+      testCase(
+        description = "a change is recorded by the staff member, with the partner and the edge, and answered 202 with the request",
+        request = Request.post(
+          partnerPath("clients"),
+          jsonBody(
+            """{"id":"acme-pay","kind":"web","clientName":{"en":"ACME Pay"},"redirectUris":["https://pay.acme.example/cb"],"scope":["openid"],""" +
+              """"authMethod":"tls_client_auth","accessTokenTtl":300}""",
+          ),
+        ).addHeader(Header.ContentType(MediaType.application.json)),
+        principal = Some(staffToken()),
+        expectedStatus = Status.Accepted,
+        setup = services =>
+          services.partnerClients.create.succeedsWith((acmePending, waitingCreate)) *>
+            services.partnerClients.find.succeedsWith(Some(PartnerClientService.View(
+              acmePending,
+              PartnerClientService.Approval(
+                PartnerClientService.RequestKind.create,
+                PartnerClientService.RequestState.pending,
+                List("clientName", "logoUri"),
+                Some(now),
+                None,
+              ),
+            ))),
+        verify = (response, services) =>
+          for
+            body <- decodeBody[Json.Obj](response)
+            drafts <- services.audit.drafts
+          yield assertTrue(
+            services.partnerClients.create.calls.map(call => (call._1.id, call._2.id, call._3)) == List((acme.id, ClientId("acme-pay"), "staff-1")),
+            body.get("approval").flatMap(_.asObject).flatMap(_.get("status")) == Some(Json.Str("pending")),
+            body.get("loginPath") == Some(Json.Str("/login/acme-pay")),
+            drafts.map(_.kind) == Vector(CentralAudit.admin("partner-client", "create")),
+            drafts.head.actor == Some((CentralAudit.Actors.PartnerStaff, Some("staff-1"))),
+            drafts.head.outcome == AuditOutcome.success,
+            drafts.head.target == Some(("partner-client", "acme-pay")),
+            drafts.head.details.toJson.get("partnerId") == Some(Json.Str("acme")),
+            drafts.head.details.toJson.get("edgeId") == Some(Json.Str("edge-acme-1")),
+          ),
+      ),
+      testCase(
+        description = "a refused change is recorded as a failure with its reason",
+        request = Request.delete(partnerPath("clients").addQueryParam("id", "globex-shop")),
+        principal = Some(staffToken()),
+        expectedStatus = Status.NotFound,
+        setup = services => services.partnerClients.delete.failsWith(PartnerError.NotFound("client 'globex-shop'")),
+        verify = (_, services) =>
+          for drafts <- services.audit.drafts
+          yield assertTrue(drafts.map(_.outcome) == Vector(AuditOutcome.failure), drafts.head.reason == Some("partner_not_found")),
+      ),
+    ),
+    suite("revocations act on the partner's own clients only")(
+      testCase(
+        description = "a client that is not the partner's is refused, and auth is not asked",
+        request = Request.post(
+          partnerPath("revocations"),
+          jsonBody(s"""{"by":"user","value":"${UUID.randomUUID()}","clients":["acme-shop","globex-shop"],"revokeRefresh":true}"""),
+        ).addHeader(Header.ContentType(MediaType.application.json)),
+        principal = Some(staffToken()),
+        expectedStatus = Status.BadRequest,
+        verify = (_, services) =>
+          ZIO.succeed(assertTrue(services.auth.revokeRefreshTokens.calls.isEmpty, services.auth.revokeRefreshTokensByClient.calls.isEmpty)),
+      ),
+      testCase(
+        description = "by user: the user's grants at each named client of the partner are revoked at auth",
+        request = Request.post(
+          partnerPath("revocations"),
+          jsonBody("""{"by":"user","value":"018f0f2a-1c7b-7000-8000-000000000301","clients":["acme-shop","acme-pay"],"revokeRefresh":true}"""),
+        ).addHeader(Header.ContentType(MediaType.application.json)),
+        principal = Some(staffToken()),
+        expectedStatus = Status.Accepted,
+        setup = services => services.auth.revokeRefreshTokens.succeedsWith(()),
+        verify = (_, services) =>
+          ZIO.succeed(assertTrue(
+            services.auth.revokeRefreshTokens.calls == List(
+              (UserId(UUID.fromString("018f0f2a-1c7b-7000-8000-000000000301")), ClientId("acme-shop")),
+              (UserId(UUID.fromString("018f0f2a-1c7b-7000-8000-000000000301")), ClientId("acme-pay")),
+            ),
+          )),
+      ),
+      testCase(
+        description = "by client: every user's grants of that client",
+        request = Request.post(
+          partnerPath("revocations"),
+          jsonBody("""{"by":"client","value":"acme-shop","clients":["acme-shop"],"revokeRefresh":true}"""),
+        ).addHeader(Header.ContentType(MediaType.application.json)),
+        principal = Some(staffToken()),
+        expectedStatus = Status.Accepted,
+        setup = services => services.auth.revokeRefreshTokensByClient.succeedsWith(()),
+        verify = (_, services) => ZIO.succeed(assertTrue(services.auth.revokeRefreshTokensByClient.calls == List(ClientId("acme-shop")))),
+      ),
+    ),
+  )
+
+  private val waitingCreate = PartnerApprovalRecord(
+    id = ApprovalId("c"),
+    partnerId = acme.id,
+    kind = ApprovalKind.ClientCreate,
+    targetId = "acme-pay",
+    requested = Json.Obj(),
+    current = None,
+    applied = None,
+    outsideLimits = List("clientName", "logoUri"),
+    requestedBy = "staff-1",
+    requestedAt = now,
+    status = ApprovalStatus.Waiting,
+    decidedBy = None,
+    decidedAt = None,
+    note = None,
+  )

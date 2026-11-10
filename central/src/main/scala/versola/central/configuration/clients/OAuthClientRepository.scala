@@ -20,4 +20,7 @@ trait OAuthClientRepository extends CacheSource[Vector[OAuthClientRecord]]:
 
   def deletePreviousClientSecret(clientId: ClientId): Task[Unit]
 
+  /** Where a partner's client stands with the operator. `false` when there is no such client. */
+  def setApproval(clientId: ClientId, approval: ClientApproval): Task[Boolean]
+
   def deleteClient(clientId: ClientId): Task[Unit]

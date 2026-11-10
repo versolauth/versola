@@ -135,6 +135,30 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           entries.values.forall(_.expiresAt == now.plus(offlineTerms.ttl)),
         )
       },
+      test("revokeRefreshTokensByClient expires every user's live tokens of the client and nothing of another client's") {
+        for
+          now <- Clock.instant
+          mine = tokenRecord1(now, refreshTtl)
+          sameUserOtherClient = tokenRecord1(now, refreshTtl).copy(clientId = clientId2, familyId = RefreshTokenFamilyId("family-other-client"))
+          otherUserSameClient = tokenRecord2(now, refreshTtl).copy(clientId = clientId1, familyId = RefreshTokenFamilyId("family-other-user"))
+          _ <- env.repository.createRefreshToken(refreshToken1, None, mine, None)
+          _ <- env.repository.createRefreshToken(refreshToken3, None, sameUserOtherClient, None)
+          _ <- env.repository.createRefreshToken(refreshToken4, None, otherUserSameClient, None)
+          revoked <- env.repository.revokeRefreshTokensByClient(clientId1, offlineTerms)
+          entries <- recorded(env)
+          gone1 <- env.repository.findToken(refreshToken1)
+          kept3 <- env.repository.findToken(refreshToken3)
+          gone4 <- env.repository.findToken(refreshToken4)
+          again <- env.repository.revokeRefreshTokensByClient(clientId1, offlineTerms)
+        yield assertTrue(
+          revoked.toSet == Set((userId1, familyId1), (otherUserSameClient.userId, RefreshTokenFamilyId("family-other-user"))),
+          gone1.isEmpty,
+          kept3.isDefined,
+          gone4.isEmpty,
+          again.isEmpty,
+          entries.keySet == Set(RevocationKey.Fam(familyId1), RevocationKey.Fam(RefreshTokenFamilyId("family-other-user"))),
+        )
+      },
       test("revokeRefreshTokensByUserAndClient records nothing when the client holds no live token for the user") {
         for
           now <- Clock.instant

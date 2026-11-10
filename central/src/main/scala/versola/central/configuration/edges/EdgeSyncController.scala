@@ -1,7 +1,7 @@
 package versola.central.configuration.edges
 
 import versola.central.configuration.clients.certificates.ClientCertificateService
-import versola.central.configuration.clients.{AuthorizationPresetService, ClientController, OAuthClientService}
+import versola.central.configuration.clients.{AuthorizationPreset, AuthorizationPresetService, ClientController, OAuthClientService}
 import versola.central.configuration.jwks.JwksService
 import versola.central.configuration.metadata.ServerMetadataService
 import versola.central.configuration.permissions.PermissionService
@@ -173,24 +173,27 @@ object EdgeSyncController extends Controller:
         edgeId <- authorizeEdge(request)
         service <- ZIO.service[AuthorizationPresetService]
         presets <- service.getPresetsForSync(Some(edgeId))
-        response = GetAuthorizationPresetsSyncResponse(presets.map { preset =>
-          AuthorizationPresetSyncResponse(
-            id = preset.id,
-            clientId = preset.clientId,
-            description = preset.description,
-            redirectUri = preset.redirectUri,
-            postLoginRedirectUri = preset.postLoginRedirectUri,
-            postLogoutRedirectUri = preset.postLogoutRedirectUri,
-            scope = preset.scope,
-            responseType = preset.responseType,
-            uiLocales = preset.uiLocales,
-            customParameters = preset.customParameters,
-            cookieDomain = preset.cookieDomain,
-            cookiePath = preset.cookiePath,
-          )
-        })
-      yield Response.json(response.toJson)
+      yield Response.json(presetsSyncResponse(presets).toJson)
     }
+
+  /** Presets as an edge is served them; shared with the partner surface. */
+  private[central] def presetsSyncResponse(presets: Vector[AuthorizationPreset]): GetAuthorizationPresetsSyncResponse =
+    GetAuthorizationPresetsSyncResponse(presets.map { preset =>
+      AuthorizationPresetSyncResponse(
+        id = preset.id,
+        clientId = preset.clientId,
+        description = preset.description,
+        redirectUri = preset.redirectUri,
+        postLoginRedirectUri = preset.postLoginRedirectUri,
+        postLogoutRedirectUri = preset.postLogoutRedirectUri,
+        scope = preset.scope,
+        responseType = preset.responseType,
+        uiLocales = preset.uiLocales,
+        customParameters = preset.customParameters,
+        cookieDomain = preset.cookieDomain,
+        cookiePath = preset.cookiePath,
+      )
+    })
 
   /** The one field of the authorization server metadata an edge acts on: the DPoP proof
     * algorithms (RFC 9449 §5.1), which it checks proxied calls' proofs against (edge's
@@ -202,12 +205,17 @@ object EdgeSyncController extends Controller:
     Method.GET / "edge" / "sync" / "server-metadata" -> handler { (request: Request) =>
       for
         _ <- authorizeEdge(request)
-        service <- ZIO.service[ServerMetadataService]
-        metadata <- service.getMetadata
-        algorithms = metadata.flatMap(_.get(Dpop.Algorithm.MetadataField))
-        reduced = Json.Obj(algorithms.map(Dpop.Algorithm.MetadataField -> _).toSeq*)
+        reduced <- reducedServerMetadata
       yield Response.json(reduced.toJson)
     }
+
+  /** The DPoP algorithms of the metadata document, and nothing else; shared with the partner surface. */
+  private[central] val reducedServerMetadata: ZIO[ServerMetadataService, Throwable, Json.Obj] =
+    for
+      service <- ZIO.service[ServerMetadataService]
+      metadata <- service.getMetadata
+      algorithms = metadata.flatMap(_.get(Dpop.Algorithm.MetadataField))
+    yield Json.Obj(algorithms.map(Dpop.Algorithm.MetadataField -> _).toSeq*)
 
   /** #463: an edge's request for a certificate for a client it generated the key of. Authenticated
     * as the edge itself (the signed token it syncs with), never as an admin: it is not on the admin
@@ -260,7 +268,8 @@ object EdgeSyncController extends Controller:
       edge <- ZIO.serviceWithZIO[EdgeService](_.find(edgeId)).someOrFail(Unauthorized)
     yield edge
 
-  private def toResourceSyncResponse(record: ResourceRecord, edge: EdgeRecord) =
+  /** A resource as an edge is served it, the secret encrypted to the edge's key; shared with the partner surface. */
+  private[central] def toResourceSyncResponse(record: ResourceRecord, edge: EdgeRecord) =
     // Keep edge on the old secret until the previous secret is explicitly removed.
     val effectiveSecret = record.previousSecret.orElse(record.secret)
     ZIO.foreach(effectiveSecret)(secret =>
