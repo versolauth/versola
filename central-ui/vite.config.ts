@@ -11,60 +11,71 @@ import { defineConfig, type Plugin } from 'vite';
 // instead of assuming a fixed absolute path.
 const BASE_PATH = './';
 
-function distIndexHtmlPlugin(): Plugin {
+function distIndexHtmlPlugin(partner: boolean): Plugin {
   return {
     name: 'dist-index-html',
     async closeBundle() {
       const projectRoot = process.cwd();
-      const sourcePath = path.join(projectRoot, 'index.html');
       const outputDir = path.join(projectRoot, 'dist');
-      const outputPath = path.join(outputDir, 'index.html');
-      const source = await readFile(sourcePath, 'utf8');
+      // Each console is its own build (see `build` below): index.html belongs to the operator's, partner.html to the partner's.
+      const page = partner
+        ? { source: 'partner.html', output: 'partner.html', scriptMarker: '/src/partner/main.ts', bundle: 'versola-partner.js' }
+        : { source: 'index.html', output: 'index.html', scriptMarker: '/src/index.ts', bundle: 'versola-admin.js' };
+      const source = await readFile(path.join(projectRoot, page.source), 'utf8');
 
-      // Guard against index.html being reformatted later without updating
+      // Guard against the page being reformatted later without updating
       // these markers — a silent no-op replace() would otherwise ship a
-      // dist/index.html with a dangling /src/index.ts reference or an
+      // dist page with a dangling /src/... reference or an
       // un-prefixed favicon path, and nothing would fail the build to say so.
-      const scriptMarker = '/src/index.ts';
       const faviconMarker = 'href="/favicon-light.svg"';
-      if (!source.includes(scriptMarker)) {
-        throw new Error(`dist-index-html: expected to find "${scriptMarker}" in index.html — update this plugin if index.html's shape changed.`);
+      if (!source.includes(page.scriptMarker)) {
+        throw new Error(`dist-index-html: expected to find "${page.scriptMarker}" in ${page.source} — update this plugin if ${page.source}'s shape changed.`);
       }
       if (!source.includes(faviconMarker)) {
-        throw new Error(`dist-index-html: expected to find '${faviconMarker}' in index.html — update this plugin if index.html's shape changed.`);
+        throw new Error(`dist-index-html: expected to find '${faviconMarker}' in ${page.source} — update this plugin if ${page.source}'s shape changed.`);
       }
 
       const html = source
-        .replace(scriptMarker, `${BASE_PATH}versola-admin.js`)
+        .replace(page.scriptMarker, `${BASE_PATH}${page.bundle}`)
         .replace(faviconMarker, `href="${BASE_PATH}favicon-light.svg"`);
 
       await mkdir(outputDir, { recursive: true });
-      await writeFile(outputPath, html, 'utf8');
+      await writeFile(path.join(outputDir, page.output), html, 'utf8');
     },
   };
 }
 
 const isPlaywright = process.env.PLAYWRIGHT === 'true';
 
-export default defineConfig(({ command, isPreview }) => ({
+export default defineConfig(({ command, isPreview, mode }) => {
+  // `vite build` builds the operator console, `vite build --mode partner` the partner console (#549 decision 5).
+  const partner = mode === 'partner';
+  return {
   // Prefix in production builds, and also when previewing that build
   // (`vite preview` still reports command === 'serve', with isPreview=true
   // as the only signal) — otherwise `npm run preview` serves dist/ at "/"
   // while its index.html references /admin/... assets, and everything 404s.
   // The plain dev server (npm run dev) is the only case that stays at "/".
   base: command === 'build' || isPreview ? BASE_PATH : '/',
-  plugins: [distIndexHtmlPlugin()],
+  plugins: [distIndexHtmlPlugin(partner)],
+  // The partner entry installs an in-page mock in the plain dev server only; Playwright routes the API itself.
+  define: { 'import.meta.env.PLAYWRIGHT': JSON.stringify(isPlaywright) },
   build: {
+    // Two builds, one package: each console is a single self-contained file, so the partner's bundle shares no chunk with
+    // the operator's and holds nothing but what its own entry reaches (checked on the output by scripts/check-bundles.mjs).
+    // The operator's build empties dist; the partner's adds to it.
+    emptyOutDir: !partner,
     lib: {
-      entry: 'src/index.ts',
+      entry: partner ? { 'versola-partner': 'src/partner/main.ts' } : { 'versola-admin': 'src/index.ts' },
       formats: ['es'],
-      fileName: 'versola-admin',
+      fileName: (_format, entryName) => `${entryName}.js`,
     },
     rollupOptions: {
       external: [],
+      output: { inlineDynamicImports: true },
     },
     // Copy public assets
-    copyPublicDir: true,
+    copyPublicDir: !partner,
   },
   server: {
     port: 3000,
@@ -135,5 +146,5 @@ export default defineConfig(({ command, isPreview }) => ({
   },
   // Public directory for static assets
   publicDir: 'public',
-}));
-
+};
+});

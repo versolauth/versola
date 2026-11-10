@@ -1,4 +1,4 @@
-import type { ClientDto, MockConfigState, ResourceDto, RoleDto } from './mock-backend';
+import type { ClientDto, EdgeDto, MockConfigState, PartnerApprovalDto, PartnerDto, ResourceDto, RoleDto } from './mock-backend';
 
 /**
  * What a visitor finds in the public demo console: one fictional retailer with enough of everything
@@ -139,6 +139,144 @@ const clients: ClientDto[] = [
   },
 ];
 
+// ── Partner (#549): Pilot Pay runs its own edge and owns two clients and one resource inside the tenant ──
+export const pilotPay: PartnerDto = {
+  id: 'pilot-pay',
+  tenantId: tenant,
+  displayName: 'Pilot Pay',
+  logoUri: 'https://pay.pilotpay.example/brand/pilot-pay.svg',
+  contact: { email: 'security@pilotpay.example', phone: '+7 727 300 1100' },
+  status: 'active',
+  limits: {
+    scopes: ['openid', 'profile', 'email', 'phone'],
+    redirectDomains: ['pilotpay.example', 'pilotpay.app'],
+    maxClients: 10,
+    maxEdges: 3,
+    accessTokenTtlMax: 60 * 60,
+    refreshTokenTtlMax: 30 * 24 * 60 * 60,
+    clientAuthMethods: ['tls_client_auth', 'private_key_jwt'],
+    rateLimitPolicy: 'partner-default',
+  },
+  groupId: 'pilot-pay',
+  consoleClientId: 'pilot-pay-console',
+  reviewAt: daysAhead(20),
+  createdAt: daysAgo(66),
+};
+
+const partnerFixed = {
+  authMethod: 'tls_client_auth' as const,
+  mtlsAuth: { type: 'san_uri', value: 'urn:versola:edge-group:pilot-pay' },
+  requirePushedAuthorizationRequests: true,
+  certificateBoundAccessTokens: false,
+  consentFlow: { allowPartial: false, rememberDuration: 90 * 24 * 60 * 60 },
+  authFlow: smsLogin,
+};
+
+const partnerClients: ClientDto[] = [
+  {
+    id: 'pilot-pay-web',
+    kind: 'web' as const,
+    clientName: { en: 'Pilot Pay Shop' },
+    redirectUris: ['https://pay.pilotpay.example/complete', 'https://staging.pilotpay.example/complete'],
+    scope: ['openid', 'profile', 'email'],
+    permissions: [],
+    secretRotation: false,
+    accessTokenTtl: 5 * 60,
+    refreshTokenTtl: 14 * 24 * 60 * 60,
+    backChannelLogoutUri: 'https://login.pilotpay.example/logout/backchannel',
+    logoUri: 'https://pay.pilotpay.example/brand/pilot-pay.svg',
+    createdAt: daysAgo(60),
+    partnerId: 'pilot-pay',
+    approval: 'approved',
+    ...partnerFixed,
+  },
+  {
+    id: 'pilot-pay-checkout',
+    kind: 'web' as const,
+    clientName: { en: 'Pilot Pay Checkout' },
+    redirectUris: ['https://checkout.pilotpay.example/complete', 'https://checkout.pilot-partner.net/complete'],
+    scope: ['openid', 'profile', 'email'],
+    permissions: [],
+    secretRotation: false,
+    accessTokenTtl: 5 * 60,
+    refreshTokenTtl: 14 * 24 * 60 * 60,
+    backChannelLogoutUri: 'https://login.pilotpay.example/logout/backchannel',
+    createdAt: daysAgo(2),
+    partnerId: 'pilot-pay',
+    approval: 'pending',
+    ...partnerFixed,
+  },
+  {
+    id: 'pilot-pay-console',
+    kind: 'web' as const,
+    clientName: { en: 'Pilot Pay console' },
+    redirectUris: ['https://login.pilotpay.example/complete'],
+    scope: ['openid', 'phone', 'email'],
+    permissions: [],
+    secretRotation: false,
+    accessTokenTtl: 10 * 60,
+    refreshTokenTtl: 12 * 60 * 60,
+    createdAt: daysAgo(66),
+    partnerId: 'pilot-pay',
+    approval: 'approved',
+    authMethod: 'tls_client_auth' as const,
+    mtlsAuth: { type: 'san_uri', value: 'urn:versola:edge-group:pilot-pay' },
+    requirePushedAuthorizationRequests: true,
+    certificateBoundAccessTokens: false,
+    authFlow: smsLogin,
+    consentFlow: null,
+  },
+];
+
+const pilotOrdersApi: ResourceDto = {
+  resourceId: 'pilot-orders',
+  resource: 'http://orders.pilotpay.internal:8080',
+  audience: ['pilot-pay-web'],
+  endpoints: [
+    { id: 401, method: 'GET', path: '/orders', fetchUserInfo: false, allow: "'profile' in token.scope", inject: [{ target: 'header', name: 'X-User', expression: 'token.sub' }] },
+    { id: 402, method: 'POST', path: '/orders', fetchUserInfo: true, allow: "'profile' in token.scope && userinfo.email_verified", inject: [{ target: 'header', name: 'X-User', expression: 'token.sub' }], stepUpCondition: 'request.body.amount > 50000', stepUpAcr: 'sensitive', maxAge: 300, rateLimit: { limits: [{ limit: 60, windowSeconds: 60 }], by: 'subject', mode: 'enforce' } },
+    { id: 403, method: 'GET', path: '/orders/{id}', fetchUserInfo: false, allow: "'profile' in token.scope", inject: [] },
+  ],
+  internal: true,
+  secretRotation: false,
+  partnerId: 'pilot-pay',
+};
+
+const partnerEdges: EdgeDto[] = [
+  {
+    id: 'edge-pilot-eu-1', hasOldKey: false, requireDpopNonce: true, tenants: [], clients: [],
+    groupId: 'pilot-pay', groupKind: 'partner', partnerId: 'pilot-pay', publicUrl: 'https://login.pilotpay.example',
+    certificateNotAfter: daysAhead(10), lastRenewedAt: daysAgo(4),
+  },
+];
+
+const partnerApprovals: PartnerApprovalDto[] = [
+  {
+    id: 'apr-1001', partnerId: 'pilot-pay', kind: 'client_create', targetId: 'pilot-pay-checkout',
+    requested: {
+      kind: 'web', clientName: 'Pilot Pay Checkout', logoUri: 'https://pay.pilotpay.example/brand/pilot-pay.svg',
+      redirectUris: ['https://checkout.pilotpay.example/complete', 'https://checkout.pilot-partner.net/complete'],
+      scope: ['openid', 'profile', 'email'], accessTokenTtl: 300, refreshTokenTtl: 14 * 24 * 60 * 60,
+      backChannelLogoutUri: 'https://login.pilotpay.example/logout/backchannel',
+    },
+    outsideLimits: ['clientName', 'logoUri', 'redirectUris'],
+    requestedBy: 'u_7f3a9c2e', requestedAt: daysAgo(2), status: 'waiting',
+  },
+  {
+    id: 'apr-1002', partnerId: 'pilot-pay', kind: 'client_change', targetId: 'pilot-pay-web',
+    requested: { scope: ['openid', 'profile', 'email', 'offline_access'] },
+    current: { scope: ['openid', 'profile', 'email'] },
+    outsideLimits: ['scope'],
+    requestedBy: 'u_2b91d4e0', requestedAt: daysAgo(3), status: 'waiting',
+  },
+  {
+    id: 'apr-0998', partnerId: 'pilot-pay', kind: 'client_create', targetId: 'pilot-pay-web',
+    requested: { kind: 'web', clientName: 'Pilot Pay Shop', redirectUris: ['https://pay.pilotpay.example/complete'], scope: ['openid', 'profile', 'email'] },
+    outsideLimits: ['clientName'],
+    requestedBy: 'u_7f3a9c2e', requestedAt: daysAgo(61), status: 'approved', decidedBy: 'b.argin', decidedAt: daysAgo(60), note: 'Name matches the partner.',
+  },
+];
+
 const roles: RoleDto[] = [
   { id: 'customer', description: { en: 'Shopper', ru: 'Покупатель' }, permissions: ['orders:read', 'orders:write', 'catalog:read'], active: true },
   { id: 'support', description: { en: 'Customer support' }, permissions: ['orders:read', 'customers:read', 'catalog:read'], active: true },
@@ -227,11 +365,16 @@ export const demoSeed: Partial<MockConfigState> = {
   ],
   scopes: { [tenant]: scopes, [staging]: scopes.slice(0, 3) },
   permissions: { [tenant]: permissions, [staging]: permissions.slice(0, 2) },
-  resources: { [tenant]: [ordersApi, catalogApi, customersApi], [staging]: [] },
-  clients: { [tenant]: clients, [staging]: [clients[0]] },
+  resources: { [tenant]: [ordersApi, catalogApi, customersApi, pilotOrdersApi], [staging]: [] },
+  clients: { [tenant]: [...clients, ...partnerClients], [staging]: [clients[0]] },
   roles: { [tenant]: roles, [staging]: roles.slice(0, 2) },
   users,
-  edges: [{ id: 'edge-main', hasOldKey: false, requireDpopNonce: true, tenants: [tenant], clients: [{ tenantId: tenant, clientId: 'backoffice' }] }],
+  edges: [
+    { id: 'edge-main', hasOldKey: false, requireDpopNonce: true, tenants: [tenant], clients: [{ tenantId: tenant, clientId: 'backoffice' }], groupId: 'default', groupKind: 'first_party', partnerId: null, publicUrl: 'https://id.acme.example', certificateNotAfter: daysAhead(12), lastRenewedAt: daysAgo(2) },
+    ...partnerEdges,
+  ],
+  partners: [pilotPay],
+  partnerApprovals,
   locales: [
     { code: 'en', name: 'English', isDefault: true, active: true },
     { code: 'ru', name: 'Русский', isDefault: false, active: true },

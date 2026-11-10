@@ -15,7 +15,7 @@ import { dana, danaId, quiet, shopManager, shopSupport, shopUser, userClients, u
  * that catches missing labels, low contrast and similar, next to looking at the screenshots
  * (see .claude/rules/frontend.md). Tags are the WCAG 2.0/2.1 levels A and AA axe documents.
  */
-const views = ['tenants', 'clients', 'scopes', 'permissions', 'resources', 'roles', 'users', 'edges', 'security', 'otp-templates', 'authorization-details', 'keys', 'system-settings', 'delivery'];
+const views = ['tenants', 'clients', 'scopes', 'permissions', 'resources', 'partners', 'roles', 'users', 'edges', 'security', 'otp-templates', 'authorization-details', 'keys', 'system-settings', 'delivery'];
 const themes = ['light', 'dark'] as const;
 
 /** The stored choice, the OS scheme it is resolved against, and the theme that must be painted. */

@@ -1596,6 +1596,10 @@ jobs:
       - name: Unit tests
         run: npm run test:unit
 
+      # The partner console ships to a partner's edge: its bundle must hold nothing of the operator's API (#549).
+      - name: Build and check the console bundles
+        run: npm run build && npm run check:bundles
+
       - name: Check the Playwright image matches the locked version
         env:
           IMAGE_PLAYWRIGHT_VERSION: '1.64.1'
