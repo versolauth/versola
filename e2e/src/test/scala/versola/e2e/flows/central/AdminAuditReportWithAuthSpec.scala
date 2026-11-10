@@ -20,12 +20,15 @@ object AdminAuditReportWithAuthSpec extends E2ESpec:
 
   private val fixedOtp = "123456"
 
+  private val callerIp = "203.0.113.7"
+
   def spec = suite("Admin audit: the report with auth's part")(
     test("a user's sign-in and token are in the report with what an administrator did to them, newest first, and it is not partial") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
         admin = UUID.randomUUID().toString
-        central = auth.central.withQuery("actorId", admin)
+        // what edge adds to a call: the administrator and the address the call came from
+        central = auth.central.withQuery("actorId", admin).withQuery("actorIp", callerIp)
         email <- CentralApi.email("audit-auth")
         userId <- auth.registerUser(email = Some(email))
         _ <- auth.flushUserOutbox()
@@ -55,6 +58,7 @@ object AdminAuditReportWithAuthSpec extends E2ESpec:
         events = body.objs("events")
         kinds = events.flatMap(_.str("kind")).toSet
         times = events.flatMap(_.str("at"))
+        ipOf = (kind: String) => events.filter(_.str("kind").contains(kind)).flatMap(_.str("ip")).toSet
         traceOf = (kind: String) => events.filter(_.str("kind").contains(kind)).flatMap(_.str("traceId")).toSet
       yield assertTrue(
         result.status == Status.Ok,
@@ -68,6 +72,9 @@ object AdminAuditReportWithAuthSpec extends E2ESpec:
         // central's row of the revocation and auth's row of its effect are one trace: the request's trace context reaches auth
         traceOf("admin.user-session.delete").nonEmpty,
         traceOf("admin.user-session.delete") == traceOf("session.ended"),
+        // from where: the address of the administrator's call is the ip of central's row and of auth's row of its effect
+        ipOf("admin.user-session.delete") == Set(callerIp),
+        ipOf("session.ended") == Set(callerIp),
         body.obj("summary").exists(_.objs("adminActions").exists(_.str("kind").contains("admin.user-session.delete"))),
       )
     },
