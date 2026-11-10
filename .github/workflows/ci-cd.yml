@@ -1590,6 +1590,16 @@ jobs:
             sh "$t"
           done
 
+      # The CA both compose fragments run, started for real: step-ca-init.sh creates it without
+      # printing a password (versolauth/versola#890) and leaves an image-made one alone, the
+      # fragments' own lines drop the unused `versola` provisioner, and mtls-init signs on top of it.
+      # Each test re-runs itself in the pinned smallstep/step-ca image, so all they need is Docker,
+      # which the runner has; a step-ca bump that changes `step ca init` fails here, not on a VPS.
+      - name: Check the step-ca init and mtls-init scripts against a real CA
+        run: |
+          sh docker/versola-tools/test/step-ca-init.test.sh
+          sh docker/versola-tools/test/mtls-init.test.sh
+
   # Install-level checks (versolauth/versola#391): every other helm-* job asserts on `helm template`
   # output, and the failures the charts actually hit rendered cleanly and broke only once installed.
   # This installs into an ephemeral kind cluster: k8s/loadgen with only mockapi (needs no database and
