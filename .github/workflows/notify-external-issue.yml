@@ -1,0 +1,62 @@
+name: Notify external issue
+
+# Reports an issue opened by someone outside the team to the Telegram "Notifications" topic.
+# Runs on issues in this repository and is called from versola-sdk and versola-cli (workflow_call),
+# so the filter and the message live in one place.
+#
+# The message goes through the bot of versola-website (engineering/notifier): POST /api/notify with the bearer secret
+# NOTIFY_TOKEN, an organization secret with the same value as the bot's. The bot owns the Telegram token and the list of
+# chats (TELEGRAM_CHAT_IDS there), so neither is in this repository.
+#
+# Skipped: members of the organization and collaborators, the logins listed below, and bots, except Dependabot.
+
+on:
+  issues:
+    types: [opened]
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  notify:
+    if: >-
+      (github.event.issue.user.type != 'Bot' || github.event.issue.user.login == 'dependabot[bot]') &&
+      !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association) &&
+      !contains(fromJSON('["goshacodes","BKJN1","Lekerr"]'), github.event.issue.user.login)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Send to the bot
+        env:
+          NOTIFY_TOKEN: ${{ secrets.NOTIFY_TOKEN }}
+          NOTIFY_URL: https://engineering.versola.io/api/notify
+          # Issue data comes from outside the team: pass it through env only, never inline it into the script.
+          REPO: ${{ github.repository }}
+          NUM: ${{ github.event.issue.number }}
+          TITLE: ${{ github.event.issue.title }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+          URL: ${{ github.event.issue.html_url }}
+        run: |
+          if [ -z "$NOTIFY_TOKEN" ]; then
+            echo "::error::NOTIFY_TOKEN is not available to this repository"
+            exit 1
+          fi
+
+          # The title is written by an outsider: one line, bounded, so it cannot fake extra lines of the message.
+          # The login goes without "@" so Telegram does not read it as a mention of one of its own users.
+          one_line=$(printf '%s' "$TITLE" | tr '\r\n\t' '   ' | cut -c1-200)
+          body=$(printf '#%s %s\nот %s\n%s' "$NUM" "$one_line" "$AUTHOR" "$URL")
+          # jq does the JSON escaping; the bot escapes the HTML itself.
+          payload=$(jq -n --arg title "🆕 Новый issue — $REPO" --arg text "$body" '{title: $title, text: $text}')
+
+          # Three attempts for what may pass by itself (429, 5xx, no connection). Anything else is a mistake to fix, not to retry.
+          # The response is discarded so nothing from the bot ends up in the public log.
+          code=000
+          for _ in 1 2 3; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -X POST "$NOTIFY_URL" \
+              -H "authorization: Bearer ${NOTIFY_TOKEN}" -H 'content-type: application/json' --data "$payload") || code=000
+            [ "$code" = 200 ] && exit 0
+            case "$code" in 000|429|5??) sleep 3 ;; *) break ;; esac
+          done
+          echo "::error::the bot answered HTTP $code (401: wrong NOTIFY_TOKEN, 404: /api/notify is not deployed, 422: bad message, 429: rate limit, 502: Telegram unreachable, 503: no chat configured in the bot, 000: no connection)"
+          exit 1
