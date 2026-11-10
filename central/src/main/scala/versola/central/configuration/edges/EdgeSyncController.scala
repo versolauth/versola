@@ -20,7 +20,7 @@ import versola.central.configuration.{
   SignEdgeCertificateRequest,
   SignEdgeCertificateResponse,
 }
-import versola.central.{CentralConfig, authorizeEdge}
+import versola.central.{CentralConfig, authorizeAnyEdge, authorizeEdge}
 import versola.util.http.{Controller, Unauthorized}
 import versola.util.{Base64Url, Dpop, SecurityService}
 import zio.ZIO
@@ -230,18 +230,20 @@ object EdgeSyncController extends Controller:
 
   /** A new certificate for the calling edge itself, for the one it has: asked for over the mutual-TLS listener, so the
     * handshake and the token have already said which edge this is. The request must name exactly that edge and its
-    * group, and carries a new key every time. */
+    * group, and carries a new key every time. The one route an edge of either kind reaches ([[authorizeAnyEdge]]): a
+    * partner's edge keeps renewing for as long as it is registered, and the way to stop it is to suspend the partner,
+    * which refuses it on `/edge/partner`, renew included. */
   val renewIdentityEndpoint =
     Method.POST / "edge" / "certificate" / "renew" -> handler { (request: Request) =>
       (for
-        edgeId <- authorizeEdge(request)
+        edge <- authorizeAnyEdge(request)
         body <- request.bodyAs[RenewEdgeCertificateRequest]
         identity <- ZIO.serviceWithZIO[EdgeIdentityService](_.renew(
-          edgeId,
+          edge.id,
           body.csr,
           request.remoteCertificate.collect { case certificate: X509Certificate => certificate.getSerialNumber.toString(16) },
         ))
-      yield Response.json(EdgeIdentityResponse(identity.chain, identity.chainEndsAt).toJson))
+      yield Response.json(EdgeIdentityResponse(identity.chain).toJson))
         .catchAll {
           case error: EdgeIdentityService.Refused =>
             ZIO.succeed(Response.text(error.getMessage).status(Status.UnprocessableEntity))

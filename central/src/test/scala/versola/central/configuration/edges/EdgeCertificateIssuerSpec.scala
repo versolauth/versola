@@ -65,7 +65,19 @@ object EdgeCertificateIssuerSpec extends ZIOSpecDefault:
         material.subjectValues("san_uri") == subject.uris.toSet,
       )
     },
-    test("the lifetime asked of the CA defaults to the clients' when no edge backend names one") {
-      assertTrue(EdgeCertificateIssuer.validity(TestCentralConfig.config) == CentralConfig.ClientCertificatesConfig().validity)
+    test("the lifetime asked of the CA for a first-party edge defaults to the clients' when no edge backend names one") {
+      assertTrue(
+        EdgeCertificateIssuer.validity(TestCentralConfig.config, EdgeGroupKind.FirstParty) == CentralConfig.ClientCertificatesConfig().validity,
+      )
+    },
+    test("a partner's edge gets edge-certificates.partner-validity, 14 days unless set, whatever CA signs") {
+      val configured = TestCentralConfig.config.copy(
+        edgeCertificates = Some(CentralConfig.ClientCertificatesConfig(validity = 30.days, partnerValidity = 5.days)),
+      )
+      assertTrue(
+        EdgeCertificateIssuer.validity(TestCentralConfig.config, EdgeGroupKind.Partner) == 14.days,
+        EdgeCertificateIssuer.validity(configured, EdgeGroupKind.Partner) == 5.days,
+        EdgeCertificateIssuer.validity(configured, EdgeGroupKind.FirstParty) == CentralConfig.ClientCertificatesConfig().validity,
+      )
     },
   ) @@ TestAspect.withLiveClock

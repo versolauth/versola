@@ -32,7 +32,6 @@ object EdgeController extends AuditedController:
     createEdgeGroupEndpoint,
     getEdgeGroupsEndpoint,
     createEnrollmentTokenEndpoint,
-    extendEdgeEndpoint,
   )
 
   val getAllEdgesEndpoint =
@@ -41,7 +40,6 @@ object EdgeController extends AuditedController:
         _ <- authorizeBasic(request)
         service <- ZIO.service[EdgeService]
         edges <- service.getAllEdges
-        chainEnds <- ZIO.serviceWithZIO[EdgeIdentityService](_.chainEnds)
         response = GetAllEdgesResponse(
           edges = edges.map(edge =>
             EdgeResponse(
@@ -53,7 +51,6 @@ object EdgeController extends AuditedController:
               rateLimitPolicies = edge.rateLimitPolicies,
               policyRevisions = edge.policyMeta.fold(Map.empty[String, Int])(_.view.mapValues(_.revision).toMap),
               groupId = edge.groupId,
-              identityChainEndsAt = chainEnds.get(edge.id),
             ),
           ).toList,
         )
@@ -98,21 +95,6 @@ object EdgeController extends AuditedController:
         _ <- authorizeBasic(request)
         groups <- ZIO.serviceWithZIO[EdgeGroupService](_.getAll)
       yield Response.json(GetEdgeGroupsResponse(groups).toJson)
-    }
-
-  /** Starts the certificate chain of the edge over, for an operator who turned `edge-identity.auto-extend` off: the edge's
-    * next renewals are not refused for age. A no-op in effect where central extends chains itself. */
-  val extendEdgeEndpoint =
-    (Method.POST / "configuration" / "edges" / "extend").audited(Audit.change("edge", Audit.action("extend"))) -> handler {
-      (request: Request) =>
-        for
-          _ <- authorizeBasic(request)
-          edgeId <- request.url.queryZIO[EdgeId]("edgeId")
-          _ <- Audit.target(edgeId)
-          response <- ZIO.serviceWithZIO[EdgeIdentityService](_.extend(edgeId)).as(Response.status(Status.NoContent))
-            .catchSome:
-              case error: EdgeIdentityService.Refused => ZIO.succeed(Response.text(error.getMessage).status(Status.NotFound))
-        yield response
     }
 
   /** A one-time token for the named edge to trade for its first certificate, shown once. */
@@ -314,8 +296,6 @@ case class EdgeResponse(
     /** The revision of each policy section that has ever changed, for the compare-and-set of `PATCH /configuration/edges/policies`. */
     policyRevisions: Map[String, Int],
     groupId: EdgeGroupId,
-    /** When the certificate chain of this edge ends, if it does: only where `edge-identity.auto-extend` is off. */
-    identityChainEndsAt: Option[Instant],
 ) derives Schema, JsonCodec
 
 case class SetEdgeDpopRequest(

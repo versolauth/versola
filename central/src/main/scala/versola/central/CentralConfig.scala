@@ -35,8 +35,6 @@ case class CentralConfig(
       * way `client-certificate-authority` does for clients. Central is the one authority on which edges exist --
       * registering one and enrolling it are both its admin API -- so the key gives it no power it lacks. */
     edgeCertificateAuthority: Option[CentralConfig.ClientCertificateAuthorityConfig] = None,
-    /** How long the certificate chain of an edge may run, and what happens at the end of it. */
-    edgeIdentity: CentralConfig.EdgeIdentityConfig = CentralConfig.EdgeIdentityConfig(),
     /** How long the certificate chain of a client that gets its certificate through EST may run, and what happens at the
       * end of it. */
     clientIdentity: CentralConfig.ClientIdentityConfig = CentralConfig.ClientIdentityConfig(),
@@ -82,20 +80,6 @@ object CentralConfig:
       trustedCertificates: String,
   )
 
-  /** An edge whose certificate central issues renews it by itself, over the mutual-TLS listener, for as long as it is
-    * registered. That is a chain, and it begins at the edge's enrollment.
-    *
-    * @param maxAge how old a chain may get before it needs more than a renewal.
-    * @param autoExtend what happens then. On (the default), central extends the chain itself and says so in its log: an
-    *   edge never stops for want of anyone enrolling it again. Off, central stops renewing the edges of **partner**
-    *   groups at `maxAge` until an operator extends the edge (the operator's own edges are always extended) (`POST /configuration/edges/extend`) or enrols it again: for an operator who wants every partner's
-    *   edge to be re-approved on a schedule. The edge is told the date long before, and so is the console.
-    */
-  case class EdgeIdentityConfig(
-      maxAge: Duration = Duration.fromSeconds(365 * 24 * 3600L),
-      autoExtend: Boolean = true,
-  )
-
   /** A client whose certificate is obtained through EST (`estEnrollment`) renews it by itself, with the certificate it
     * has, for as long as it is registered. That is a chain, and it begins at the client's enrolment.
     *
@@ -134,6 +118,9 @@ object CentralConfig:
     * @param validity lifetime requested for each certificate.
     * @param renewBefore a certificate with less than this left is renewed.
     * @param checkInterval how often stored certificates are examined for renewal.
+    * @param partnerValidity read under `edge-certificates` only: the lifetime of the certificate of an edge of a
+    *   `partner` group ([[versola.central.configuration.edges.EdgeCertificateIssuer.validity]]). Short, so that a
+    *   suspended partner's edges expire within days; the edge renews at a third of it left.
     */
   case class ClientCertificatesConfig(
       validity: Duration = Duration.fromSeconds(14 * 24 * 3600L),
@@ -141,6 +128,7 @@ object CentralConfig:
       checkInterval: Duration = Duration.fromSeconds(3600),
       stepCa: Option[StepCaConfig] = None,
       certManager: Option[CertManagerConfig] = None,
+      partnerValidity: Duration = Duration.fromSeconds(14 * 24 * 3600L),
   )
 
   /** step-ca's `/1.0/sign` with a one-time token from a JWK provisioner.

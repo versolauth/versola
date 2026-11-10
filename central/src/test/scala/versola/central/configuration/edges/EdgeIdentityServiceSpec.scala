@@ -47,13 +47,6 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
     def hashes: UIO[Set[String]] = state.get.map(_.keySet)
 
-  private class InMemoryChains(state: Ref[Map[EdgeId, Instant]]) extends EdgeIdentityChainRepository:
-    override def start(edgeId: EdgeId, at: Instant): Task[Unit] = state.update(_.updated(edgeId, at))
-
-    override def startedAt(edgeId: EdgeId): Task[Option[Instant]] = state.get.map(_.get(edgeId))
-
-    override def all: Task[Map[EdgeId, Instant]] = state.get
-
   private class InMemoryCertificates(state: Ref[Vector[(EdgeId, String)]]) extends EdgeCertificateRepository:
     override def record(edgeId: EdgeId, serial: String, notAfter: Instant, issuedAt: Instant): Task[Unit] =
       state.update(_ :+ (edgeId -> serial))
@@ -65,6 +58,13 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
     (request: CertificateSigningRequest) =>
       ZIO.succeed(TestCertificates.generate(subject = s"CN=${request.commonName}", uris = request.uris).certificatePem)
 
+  /** Issues what was asked and remembers the lifetime each request asked for. */
+  private class RecordingIssuer extends ClientCertificateIssuer:
+    val validities = Unsafe.unsafe(Ref.unsafe.make(Vector.empty[Duration])(using _))
+
+    override def sign(request: CertificateSigningRequest): Task[String] =
+      validities.update(_ :+ request.validity) *> honestIssuer.sign(request)
+
   /** Issues a certificate that names a different edge than the one asked for. */
   private val lyingIssuer: ClientCertificateIssuer =
     (_: CertificateSigningRequest) =>
@@ -73,12 +73,11 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private class Env(
       edges: List[EdgeRecord],
       issuer: ClientCertificateIssuer = honestIssuer,
-      policy: CentralConfig.EdgeIdentityConfig = CentralConfig.EdgeIdentityConfig(),
+      config: CentralConfig = TestCentralConfig.config,
   ):
     val edgeService = stub[EdgeService]
     val tokens = InMemoryTokens(Unsafe.unsafe(Ref.unsafe.make(Map.empty[String, (EdgeId, Instant, Boolean)])(using _)))
     val certificates = InMemoryCertificates(Unsafe.unsafe(Ref.unsafe.make(Vector.empty[(EdgeId, String)])(using _)))
-    val chains = InMemoryChains(Unsafe.unsafe(Ref.unsafe.make(Map.empty[EdgeId, Instant])(using _)))
     val audit = RecordedAudit.unsafe
     val service: URIO[SecureRandom, EdgeIdentityService] =
       for
@@ -89,10 +88,9 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         edgeService,
         tokens,
         certificates,
-        chains,
         EdgeCertificateIssuer(issuer),
         random,
-        TestCentralConfig.config.copy(edgeIdentity = policy),
+        config,
         audit,
       )
 
@@ -251,92 +249,43 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         recorded <- env.certificates.all
       yield assertTrue(failure.isInstanceOf[EdgeIdentityService.Refused], recorded.isEmpty)
     },
-    test("by default an edge renews its way along past the maximum age, and central extends the chain itself") {
-      val edge = edgeRecord(edgeId)
-      val env = Env(List(edge))
+    // #549 decision 8: renewal is always on, for both kinds; a partner is stopped by suspending it, not by a chain's age.
+    test("an edge of either kind renews its way along, however old its enrollment: there is no chain that ends") {
+      val own = edgeRecord(edgeId)
+      val partner = partnerEdge(otherEdgeId)
+      val env = Env(List(own, partner))
       for
         service <- env.service
-        issued <- service.issueEnrollmentToken(edgeId)
-        enrolled <- csrFor(edge).flatMap(service.enroll(edgeId, issued.token, _))
+        issuedOwn <- service.issueEnrollmentToken(edgeId)
+        issuedPartner <- service.issueEnrollmentToken(otherEdgeId)
+        _ <- csrFor(own).flatMap(service.enroll(edgeId, issuedOwn.token, _))
+        _ <- csrFor(partner).flatMap(service.enroll(otherEdgeId, issuedPartner.token, _))
         _ <- TestClock.adjust(400.days)
-        late <- csrFor(edge).flatMap(service.renew(edgeId, _))
-        later <- TestClock.adjust(400.days) *> csrFor(edge).flatMap(service.renew(edgeId, _))
-        ends <- service.chainEnds
+        ownLate <- csrFor(own).flatMap(service.renew(edgeId, _))
+        partnerLate <- csrFor(partner).flatMap(service.renew(otherEdgeId, _))
+        _ <- TestClock.adjust(400.days)
+        partnerLater <- csrFor(partner).flatMap(service.renew(otherEdgeId, _))
       yield assertTrue(
-        enrolled.chainEndsAt.isEmpty,
-        late.chain.contains("BEGIN CERTIFICATE"),
-        late.chainEndsAt.isEmpty,
-        later.chain.contains("BEGIN CERTIFICATE"),
-        ends.isEmpty,
+        ownLate.chain.contains("BEGIN CERTIFICATE"),
+        partnerLate.chain.contains("BEGIN CERTIFICATE"),
+        partnerLater.chain.contains("BEGIN CERTIFICATE"),
       )
     },
-    suite("with auto-extend off, for a partner's edge")(
-      test("the operator's own edges are extended whatever the setting says") {
-        val edge = edgeRecord(edgeId)
-        val env = Env(List(edge), policy = CentralConfig.EdgeIdentityConfig(maxAge = 100.days, autoExtend = false))
-        for
-          service <- env.service
-          issued <- service.issueEnrollmentToken(edgeId)
-          enrolled <- csrFor(edge).flatMap(service.enroll(edgeId, issued.token, _))
-          _ <- TestClock.adjust(400.days)
-          late <- csrFor(edge).flatMap(service.renew(edgeId, _))
-          ends <- service.chainEnds
-        yield assertTrue(enrolled.chainEndsAt.isEmpty, late.chain.contains("BEGIN CERTIFICATE"), late.chainEndsAt.isEmpty, ends.isEmpty)
-      },
-      test("the edge is told when its chain ends, in the answer to the enrollment and to every renewal") {
-        val edge = partnerEdge(edgeId)
-        val env = Env(List(edge), policy = CentralConfig.EdgeIdentityConfig(maxAge = 100.days, autoExtend = false))
-        for
-          service <- env.service
-          issued <- service.issueEnrollmentToken(edgeId)
-          now <- Clock.instant
-          enrolled <- csrFor(edge).flatMap(service.enroll(edgeId, issued.token, _))
-          _ <- TestClock.adjust(30.days)
-          renewed <- csrFor(edge).flatMap(service.renew(edgeId, _))
-          ends <- service.chainEnds
-        yield assertTrue(
-          enrolled.chainEndsAt == Some(now.plusSeconds(100 * 86400L)),
-          renewed.chainEndsAt == enrolled.chainEndsAt,
-          ends == Map(edgeId -> now.plusSeconds(100 * 86400L)),
-        )
-      },
-      test("at the maximum age renewal stops, with what to do, and an operator's extension makes it go on") {
-        val edge = partnerEdge(edgeId)
-        val env = Env(List(edge), policy = CentralConfig.EdgeIdentityConfig(maxAge = 100.days, autoExtend = false))
-        for
-          service <- env.service
-          issued <- service.issueEnrollmentToken(edgeId)
-          _ <- csrFor(edge).flatMap(service.enroll(edgeId, issued.token, _))
-          _ <- TestClock.adjust(101.days)
-          refused <- csrFor(edge).flatMap(service.renew(edgeId, _)).flip
-          _ <- service.extend(edgeId)
-          extended <- csrFor(edge).flatMap(service.renew(edgeId, _))
-          ends <- service.chainEnds
-          now <- Clock.instant
-        yield assertTrue(
-          refused.isInstanceOf[EdgeIdentityService.Refused],
-          refused.getMessage.contains("/configuration/edges/extend"),
-          refused.getMessage.contains("enrol it again"),
-          extended.chain.contains("BEGIN CERTIFICATE"),
-          ends == Map(edgeId -> now.plusSeconds(100 * 86400L)),
-        )
-      },
-      test("an edge that is not registered cannot be extended") {
-        val env = Env(Nil, policy = CentralConfig.EdgeIdentityConfig(autoExtend = false))
-        for
-          service <- env.service
-          failure <- service.extend(edgeId).flip
-        yield assertTrue(failure.isInstanceOf[EdgeIdentityService.Refused])
-      },
-    ),
-    test("an edge that has no chain recorded, enrolled before chains were kept, starts one with its first renewal") {
-      val edge = partnerEdge(edgeId)
-      val env = Env(List(edge), policy = CentralConfig.EdgeIdentityConfig(maxAge = 100.days, autoExtend = false))
+    test("a partner's edge is asked a certificate of edge-certificates.partner-validity, a first-party edge the global validity") {
+      val own = edgeRecord(edgeId)
+      val partner = partnerEdge(otherEdgeId)
+      val issuer = RecordingIssuer()
+      val env = Env(
+        List(own, partner),
+        issuer,
+        TestCentralConfig.config.copy(edgeCertificates = Some(CentralConfig.ClientCertificatesConfig(validity = 30.days, partnerValidity = 7.days))),
+      )
       for
         service <- env.service
-        now <- Clock.instant
-        renewed <- csrFor(edge).flatMap(service.renew(edgeId, _))
-      yield assertTrue(renewed.chainEndsAt == Some(now.plusSeconds(100 * 86400L)))
+        _ <- csrFor(own).flatMap(service.renew(edgeId, _))
+        _ <- csrFor(partner).flatMap(service.renew(otherEdgeId, _))
+        asked <- issuer.validities.get
+      yield assertTrue(asked == Vector(CentralConfig.ClientCertificatesConfig().validity, 7.days))
     },
     test("an enrollment token is valid for an hour unless asked for longer, and for no more than a day") {
       val env = Env(List(edgeRecord(edgeId)))

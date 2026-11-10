@@ -735,7 +735,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         request = Request.post(URL.root / "edge" / "certificate" / "renew", Body.fromString("""{"csr":"REQUEST"}"""))
           .addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.Ok,
-        setup = services => services.identity.renew.succeedsWith(EdgeIdentityService.Identity("CHAIN", None)),
+        setup = services => services.identity.renew.succeedsWith(EdgeIdentityService.Identity("CHAIN")),
         verify = (response, services) =>
           for body <- decodeBody[SignEdgeCertificateResponse](response)
           yield assertTrue(

@@ -19,8 +19,9 @@ info:
       route outside `/edge/*` refuses a token that authenticates an edge (`403`).
     * `/edge/sync/*` (`clients`, `resources`, `roles`, `permissions`, `jwks`, `dpop`,
       `auth-request-presets`, `server-metadata`, `overload`, `access-log`, `rate-limits`), `POST /edge/clients/edge-certificate/sign`
-      and `POST /edge/certificate/renew` (an edge's own certificate, over the same listener),
-      the surface an edge reads with the key it was registered with. It is served only on central's
+      and `POST /edge/certificate/renew` (an edge's own certificate, over the same listener; the one
+      route an edge of either kind reaches, since renewal is always on and a partner's edge is stopped by
+      suspending the partner), the surface an edge reads with the key it was registered with. It is served only on central's
       own mutual-TLS listener (`MPORT`), never on the port this document describes: the handshake must
       present a certificate that chains to the listener's trust anchors, and the certificate must carry
       the URI name `urn:versola:edge:<id>` for the edge the token names, or the call is `401`. An edge
@@ -2437,31 +2438,6 @@ paths:
         '409':
           description: A group with this id exists; it is left as it was.
 
-  /configuration/edges/extend:
-    post:
-      tags: [Edges]
-      summary: Extend the certificate chain of an edge
-      description: |
-        An edge whose certificate central issues renews it by itself, over the mutual-TLS listener. Those
-        renewals are a chain that began at the edge's enrollment, and `edge-identity.max-age` (a year by default)
-        is how old the chain may get. With `edge-identity.auto-extend` on, the default, central extends the chain
-        itself at that age and the edge never stops. With it off, central stops renewing the edges of **partner** groups
-        (the operator's own edges are always extended) at that age until this is
-        called (or the edge is enrolled again with a new token): the edge keeps working on the certificate it has
-        and is told the date in every answer, warns in its log from a month before, and the date is in
-        `identityChainEndsAt` of `GET /configuration/edges`. Calling this starts the chain over; the partner does
-        nothing, the edge's next renewal goes through.
-      operationId: extendEdgeIdentity
-      parameters:
-        - $ref: '#/components/parameters/EdgeIdQuery'
-      responses:
-        '204':
-          description: The chain starts over now.
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          description: No edge is registered under that id.
-
   /configuration/edges/enrollment-tokens:
     post:
       tags: [Edges]
@@ -2471,8 +2447,8 @@ paths:
         to 24: a bundle handed to someone far away may need it), together with a certificate
         request, for its first certificate (`POST /edge/enroll` on the enrollment listener). Only a
         hash of the token is kept: it is shown here and never again. The certificate is renewed by
-        the edge itself over the mutual-TLS listener (see `POST /configuration/edges/extend` for
-        how long, and what happens at the end).
+        the edge itself over the mutual-TLS listener (`POST /edge/certificate/renew`), for as long as the
+        edge is registered; an edge of a `partner` group is refused there once its partner is suspended.
       operationId: createEdgeEnrollmentToken
       parameters:
         - $ref: '#/components/parameters/EdgeIdQuery'
@@ -6893,13 +6869,6 @@ components:
         groupId:
           type: string
           description: The group of edges this edge belongs to.
-        identityChainEndsAt:
-          type: string
-          format: date-time
-          description: |
-            When central stops renewing the certificate of this edge, if it will: only for an edge of a
-            partner group, where `edge-identity.auto-extend` is off. Absent otherwise. Extend it with
-            `POST /configuration/edges/extend` before then.
       required: [id, hasOldKey, requireDpopNonce]
     OverloadPolicy:
       type: object

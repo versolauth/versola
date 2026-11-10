@@ -83,7 +83,6 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- tenantRepository.getAll.succeedsWith(Vector.empty)
         _ <- groupService.find.succeedsWith(Some(EdgeGroupRecord(EdgeGroup.DefaultId, EdgeGroupKind.FirstParty)))
-        _ <- identityService.chainEnds.succeedsWith(Map.empty)
         _ <- setup(edgeService)
         response <- client.batched(request.addHeader(TestAdminAuth.basicAuthHeader))
         verifyResult <- verify(response, edgeService)
@@ -125,7 +124,6 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         )
         _ <- tenantRepository.getAll.succeedsWith(tenants)
         _ <- groupService.find.succeedsWith(Some(EdgeGroupRecord(EdgeGroup.DefaultId, EdgeGroupKind.FirstParty)))
-        _ <- identityService.chainEnds.succeedsWith(Map.empty)
         // `token` stubs `find` for `authorizeInternal`; a case that wants a particular record
         // back from it sets its own afterwards, so its setup runs second.
         raw <- token(edgeService)
@@ -277,7 +275,6 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               rateLimitPolicies = None,
               groupId = EdgeGroup.DefaultId,
               policyRevisions = Map.empty,
-              identityChainEndsAt = None,
             ),
             EdgeResponse(
               EdgeId("edge-2"),
@@ -288,7 +285,6 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               rateLimitPolicies = None,
               groupId = EdgeGroup.DefaultId,
               policyRevisions = Map.empty,
-              identityChainEndsAt = None,
             ),
           ),
         ),
