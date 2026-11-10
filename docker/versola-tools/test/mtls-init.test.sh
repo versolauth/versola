@@ -1,7 +1,7 @@
 #!/bin/sh
-# Runs step-ca-intermediates.sh and mtls-init.sh against a throwaway CA, through every phase, and
-# asserts the files, the output lines and the chains. Needs `step`, so on a machine without it the
-# script re-runs itself in a smallstep/step-ca container (no volumes, no ports, removed on exit):
+# Runs step-ca-init.sh, step-ca-intermediates.sh and mtls-init.sh against a throwaway CA, through
+# every phase, and asserts the files, the output lines and the chains. Needs `step`, so on a machine
+# without it the script re-runs itself in a smallstep/step-ca container (no volumes, no ports, removed on exit):
 #
 #   sh docker/versola-tools/test/mtls-init.test.sh
 #
@@ -55,10 +55,10 @@ init() { # init <phase> [VAR=value ...]
   run_init "$work/out.$phase" MTLS_INIT_PHASE="$phase" "$@"
 }
 
-# --- a CA as the image's own init leaves it, then the two extra intermediates ---------------------
+# --- a CA as step-ca-init.sh leaves it, then the two extra intermediates --------------------------
 DOCKER_STEPCA_INIT_NAME="Versola Client CA" DOCKER_STEPCA_INIT_DNS_NAMES=localhost,127.0.0.1 \
   DOCKER_STEPCA_INIT_PROVISIONER_NAME=versola DOCKER_STEPCA_INIT_ADDRESS=127.0.0.1:9000 \
-  /bin/bash /entrypoint.sh true >/dev/null 2>&1
+  sh "$scripts/step-ca-init.sh" >/dev/null 2>&1
 sh "$scripts/step-ca-intermediates.sh" >"$work/ca1.out" 2>&1
 certs=$STEP_HOME/certs
 client_ca=$certs/intermediate_ca.crt server_ca=$certs/server_ca.crt edge_ca=$certs/edge_ca.crt root=$certs/root_ca.crt
