@@ -193,6 +193,28 @@ services:
       - /tmp:exec,mode=1777,size=67108864
     pids_limit: 4096
     network_mode: host
+    # Ready, not merely started: /readiness on the diagnostics port answers 200 once central has built its
+    # dependencies and bound its server (503 before). No curl or wget in the JRE image, so the probe is
+    # bash's /dev/tcp; it is bash and not CMD-SHELL, because /bin/sh there is dash and has no /dev/tcp.
+    # The port is the container's own DPORT (`$$` keeps compose from interpolating it): versola-cli moves
+    # central's ports on this target (28091, and 28191 for a rollout replica), so a literal 8091 would
+    # probe the wrong one and central would never turn healthy. start_period covers
+    # a cold start (JVM, pool, schema validation) so failures in it do not count; after it, 12 failed
+    # 5s probes mark central unhealthy and `docker compose up` stops with that named, instead of
+    # leaving auth and edge to wait on a central that is not coming.
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/$${DPORT:-8091} &&
+          printf 'GET /readiness HTTP/1.0\r\n\r\n' >&3 &&
+          head -n 1 <&3 | grep -q ' 200 '
+      start_period: 180s
+      interval: 5s
+      timeout: 5s
+      retries: 12
     environment:
       PORT: 8090
       DPORT: 8091
@@ -261,14 +283,11 @@ services:
     tmpfs:
       - /tmp:exec,mode=1777,size=67108864
     pids_limit: 4096
-    # Same caveat as docker-local's auth: central has no healthcheck, so
-    # this can only wait for "container started", not "actually ready" --
-    # whatever starts this compose file must itself wait for central's
-    # readiness before starting auth/edge. See the long comment on this in
-    # compose.fragment.yml.template; it applies here unchanged.
+    # Waits for central's healthcheck (its /readiness), as docker-local's auth does; see the comment on
+    # it in compose.fragment.yml.template, including why one restart after a host reboot is expected.
     depends_on:
       central:
-        condition: service_started
+        condition: service_healthy
       mtls-init:
         condition: service_completed_successfully
 #@PG@      postgres:
@@ -321,7 +340,7 @@ services:
     pids_limit: 4096
     depends_on:
       central:
-        condition: service_started
+        condition: service_healthy
       mtls-init:
         condition: service_completed_successfully
 #@PG@      postgres:
