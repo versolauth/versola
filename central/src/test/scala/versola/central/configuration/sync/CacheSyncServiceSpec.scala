@@ -63,7 +63,66 @@ object CacheSyncServiceSpec extends UnitSpecBase:
       serverMetadataService,
     )
 
+  private def stubAllReloads(env: Env, roleFails: Boolean = false) =
+    for
+      _ <- (() => env.tenantService.sync()).succeedsWith(())
+      _ <- (() => env.edgeService.sync()).succeedsWith(())
+      _ <- (() => env.jwksService.sync()).succeedsWith(())
+      _ <- if roleFails then env.roleService.reload.failsWith(RuntimeException("db down")) else env.roleService.reload.succeedsWith(())
+      _ <- env.clientService.refreshNow.succeedsWith(())
+      _ <- env.scopeService.reload.succeedsWith(())
+      _ <- env.authorizationDetailTypeService.reload.succeedsWith(())
+      _ <- env.permissionService.reload.succeedsWith(())
+      _ <- env.resourceService.reload.succeedsWith(())
+      _ <- env.presetService.reload.succeedsWith(())
+      _ <- env.formService.reload.succeedsWith(())
+      _ <- env.otpChallengeService.reload.succeedsWith(())
+      _ <- env.challengeSettingsService.refreshNow.succeedsWith(())
+      _ <- (() => env.themeService.sync()).succeedsWith(())
+      _ <- (() => env.systemSettingsService.sync()).succeedsWith(())
+      _ <- (() => env.deliverySettingsService.sync()).succeedsWith(())
+      _ <- (() => env.serverMetadataService.sync()).succeedsWith(())
+    yield ()
+
   def spec = suite("CacheSyncService")(
+    test("Reload reloads every cache") {
+      val env = Env(SyncEvent.Reload)
+      for
+        _ <- stubAllReloads(env)
+        _ <- env.service.sync()
+      yield assertTrue(
+        (() => env.tenantService.sync()).calls.size == 1,
+        (() => env.edgeService.sync()).calls.size == 1,
+        (() => env.jwksService.sync()).calls.size == 1,
+        env.roleService.reload.calls.size == 1,
+        env.clientService.refreshNow.calls.size == 1,
+        env.scopeService.reload.calls.size == 1,
+        env.authorizationDetailTypeService.reload.calls.size == 1,
+        env.permissionService.reload.calls.size == 1,
+        env.resourceService.reload.calls.size == 1,
+        env.presetService.reload.calls.size == 1,
+        env.formService.reload.calls.size == 1,
+        env.otpChallengeService.reload.calls.size == 1,
+        env.challengeSettingsService.refreshNow.calls.size == 1,
+        (() => env.themeService.sync()).calls.size == 1,
+        (() => env.systemSettingsService.sync()).calls.size == 1,
+        (() => env.deliverySettingsService.sync()).calls.size == 1,
+        (() => env.serverMetadataService.sync()).calls.size == 1,
+      )
+    },
+    test("a cache that fails to reload does not stop the others or the stream") {
+      val env = Env(SyncEvent.Reload, SyncEvent.TenantsUpdated)
+      for
+        _ <- stubAllReloads(env, roleFails = true)
+        _ <- env.service.sync()
+      yield assertTrue(
+        env.roleService.reload.calls.size == 1,
+        env.formService.reload.calls.size == 1,
+        (() => env.serverMetadataService.sync()).calls.size == 1,
+        // the TenantsUpdated that follows the Reload is still handled
+        (() => env.tenantService.sync()).calls.size == 2,
+      )
+    },
     test("routes ClientsUpdated DELETE to OAuthClientService.sync") {
       val event = SyncEvent.ClientsUpdated(versola.central.configuration.clients.ClientId("c1"), SyncEvent.Op.DELETE)
       val env = Env(event)

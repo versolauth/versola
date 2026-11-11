@@ -152,6 +152,15 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.service.deleteRole(tenantId, operatorRoleId)
       yield assertTrue(env.repository.deleteRole.calls === List((tenantId, operatorRoleId)))
     },
+    test("reload replaces the cache with what the repository holds") {
+      val env = new Env(Vector(adminRole))
+
+      for
+        _ <- env.repository.getAll.succeedsWith(Vector(otherTenantRole))
+        _ <- env.service.reload
+        cached <- env.cache.get
+      yield assertTrue(cached == Vector(otherTenantRole))
+    },
     test("sync removes cached role on delete event") {
       val env = new Env(Vector(adminRole, otherTenantRole))
 

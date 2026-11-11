@@ -35,6 +35,9 @@ trait PermissionService:
       event: SyncEvent.PermissionsUpdated,
   ): Task[Unit]
 
+  /** Reads the whole cache again from the database, for when notifications may have been missed. */
+  def reload: Task[Unit]
+
 object PermissionService:
   def live: ZLayer[PermissionRepository & TenantRepository & Scope & CentralConfig, Throwable, PermissionService] =
     (ZLayer.fromZIO:
@@ -91,6 +94,9 @@ object PermissionService:
         descriptionPatch = request.description,
         endpointIds = request.endpointIds,
       )
+
+    override def reload: Task[Unit] =
+      permissionRepository.getAll.flatMap(cache.set(_))
 
     override def sync(
         event: SyncEvent.PermissionsUpdated,

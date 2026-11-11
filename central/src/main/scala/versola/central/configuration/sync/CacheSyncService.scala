@@ -51,6 +51,27 @@ object CacheSyncService:
       serverMetadataService: ServerMetadataService,
   ) extends CacheSyncService:
 
+    // Named so a failed reload can be told apart in the log.
+    private def reloads: List[(String, Task[Unit])] = List(
+      "tenants" -> tenantService.sync(),
+      "edges" -> edgeService.sync(),
+      "jwks" -> jwksService.sync(),
+      "roles" -> roleService.reload,
+      "clients" -> clientService.refreshNow,
+      "scopes" -> scopeService.reload,
+      "authorization detail types" -> authorizationDetailTypeService.reload,
+      "permissions" -> permissionService.reload,
+      "resources" -> resourceService.reload,
+      "presets" -> presetService.reload,
+      "forms" -> formService.reload,
+      "otp templates" -> otpChallengeService.reload,
+      "challenge settings" -> challengeSettingsService.refreshNow,
+      "themes" -> themeService.sync(),
+      "system settings" -> systemSettingsService.sync(),
+      "delivery settings" -> deliverySettingsService.sync(),
+      "server metadata" -> serverMetadataService.sync(),
+    )
+
     override def sync(): Task[Unit] =
       repository.getNotifications
         .runForeach {
@@ -104,6 +125,14 @@ object CacheSyncService:
 
           case SyncEvent.ServerMetadataUpdated =>
             serverMetadataService.sync().either
+
+          case SyncEvent.Reload =>
+            // One failing cache must not keep the others stale, nor stop the stream; the failed one
+            // keeps its previous value until its own timer reload.
+            ZIO.foreachDiscard(reloads): (name, reload) =>
+              reload.catchAllCause(cause =>
+                ZIO.logWarningCause(s"Reloading the $name cache after the notification feed resubscribed failed; keeping the previous value", cause),
+              )
 
           case SyncEvent.Unknown =>
             ZIO.unit
