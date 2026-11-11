@@ -15,8 +15,9 @@ release and the tag, fix `release.json`, publish again. If a later job failed, t
 
 - [ ] Version: the tag has no leading `v` (`0.7.1`); a `-` in it makes a pre-release.
 - [ ] CI on `main` is green for the release commit (the release run itself skips tests).
-- [ ] No released migration was edited: `git diff --name-status <old>..<new> -- '*/postgres/migrations'`
-      shows only `A` (manual until #616 makes CI fail on it).
+- [ ] No released migration was edited: `git diff --name-status <old>..<new> -- '*/postgres/migrations/*'`
+      shows only `A` (CI's `Migrations guard` workflow fails a PR that edits one; run this once more on the
+      release range, since a maintainer can let a PR through with the `allow-migration-edit` label).
 - [ ] New migrations work with the previous version running (additive, see
       `.claude/rules/database-migrations.md`).
 - [ ] A secret was added or changed: `SecretSchema.Revision` in `scripts/gen-env.scala` is raised.
