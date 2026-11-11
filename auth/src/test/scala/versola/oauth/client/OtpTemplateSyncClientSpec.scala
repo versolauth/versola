@@ -38,4 +38,14 @@ object OtpTemplateSyncClientSpec extends ZIOSpecDefault:
         templates == Vector(record),
       )
     },
+    test("reads the subjects of a template, and none from a central that does not send them") {
+      val withSubjects =
+        """{"id":"t","tenantId":"default","localizations":{"en":"<p>{{code}}</p>"},"purpose":"otp","channel":"email","subjects":{"en":"Your code"}}"""
+      val withoutSubjects =
+        """{"id":"t","tenantId":"default","localizations":{"en":"<p>{{code}}</p>"},"purpose":"otp","channel":"email"}"""
+      assertTrue(
+        withSubjects.fromJson[OtpTemplateRecord].map(_.subjects) == Right(Map("en" -> "Your code")),
+        withoutSubjects.fromJson[OtpTemplateRecord].map(_.subjects) == Right(Map.empty[String, String]),
+      )
+    },
   ).provide(TestClient.layer) @@ TestAspect.silentLogging

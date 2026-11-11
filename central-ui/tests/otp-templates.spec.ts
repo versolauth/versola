@@ -150,6 +150,32 @@ test('an email template is written as HTML in the code editor and can be preview
   expect((await findRequest(api.requests, 'PUT', '/configuration/challenges/otp-templates')).body).toMatchObject({ id: 'welcome-code', channel: 'email' });
 });
 
+test('an email template has a subject per language; an empty one is not sent, and an SMS has no subject field', async ({ page }) => {
+  const withSubject = { ...loginEmail, localizations: { en: loginEmail.localizations.en, ru: loginEmail.localizations.en }, subjects: { en: '{{code}} is your code' } };
+  const api = await loadAdminApp(page, { path: `${base}&id=login-otp:otp:email&edit=message`, state: withTemplates(withSubject as never) });
+
+  const editor = sidePanel(page, 'Edit message');
+  await expect(editor.locator('#subject-en')).toHaveValue('{{code}} is your code');
+  await expect(editor.locator('#subject-ru')).toHaveValue('');
+  await editor.locator('#subject-ru').fill('Ваш код {{code}}');
+  await editor.locator('#subject-en').fill('Code\u0001');
+  await editor.getByRole('button', { name: 'Save message' }).click();
+  await expect(editor.locator('#subject-en')).toHaveAttribute('aria-invalid', 'true');
+  expect(api.requests.some(request => request.method === 'PUT')).toBe(false);
+
+  await editor.locator('#subject-en').fill('');
+  await editor.getByRole('button', { name: 'Save message' }).click();
+  expect((await findRequest(api.requests, 'PUT', '/configuration/challenges/otp-templates')).body).toMatchObject({ subjects: { ru: 'Ваш код {{code}}' } });
+  await expect(sidePanel(page, 'login-otp').getByRole('region', { name: 'Message' })).toContainText('Subject: Ваш код {{code}}');
+  await expect(sidePanel(page, 'login-otp').getByRole('region', { name: 'Message' })).toContainText('Subject: from the SMTP settings');
+});
+
+test('an SMS template has no subject field', async ({ page }) => {
+  await loadAdminApp(page, { path: `${base}&id=login-otp:otp:sms&edit=message`, state: withTemplates(loginSms) });
+  await expect(sidePanel(page, 'Edit message').locator('#message-en')).toBeVisible();
+  await expect(sidePanel(page, 'Edit message').locator('#subject-en')).toHaveCount(0);
+});
+
 test('deletes a template from the panel and from the row menu through the confirm dialog', async ({ page }) => {
   const api = await loadAdminApp(page, { path: base, state: withTemplates(loginSms, tempPassword) });
 

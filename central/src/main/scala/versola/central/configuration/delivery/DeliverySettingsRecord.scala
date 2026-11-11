@@ -33,6 +33,9 @@ case class SmtpDeliverySettings(
     port: Int,
     username: String,
     from: String,
+    /** Deprecated: the subject belongs to the email template (`OtpTemplateRecord.subjects`). Sent only with a message
+      * whose template has no subject; still required until a later version drops it.
+      */
     subject: String,
     startTls: Boolean,
     enabled: Boolean,

@@ -17,23 +17,32 @@ object EmailOtpProviderSpec extends ZIOSpecDefault:
 
   /** Records what it is asked to send. */
   private class RecordingSender extends EmailSender:
-    val sent = Unsafe.unsafe(Ref.unsafe.make(List.empty[(Email, String)])(using _))
-    override def send(to: Email, message: String): Task[Unit] = sent.update(_ :+ (to -> message))
+    val sent = Unsafe.unsafe(Ref.unsafe.make(List.empty[(Email, Option[String], String)])(using _))
+    override def send(to: Email, subject: Option[String], message: String): Task[Unit] = sent.update(_ :+ (to, subject, message))
 
   def spec = suite("EmailOtpProvider")(
     test("sendOtp renders the code into the template and hands it to the configured sender") {
       val sender = RecordingSender()
       for
-        _ <- EmailOtpProvider.Impl(DeliveryChannels.fixed(Some(sender), None)).sendOtp(email, code, template)
+        _ <- EmailOtpProvider.Impl(DeliveryChannels.fixed(Some(sender), None)).sendOtp(email, code, template, None)
         sent <- sender.sent.get
-      yield assertTrue(sent == List(email -> "Your code is 123456"))
+      yield assertTrue(sent == List((email, None, "Your code is 123456")))
+    },
+    test("sendOtp fills {{code}} into the subject of the template, and a template without one sends none") {
+      val sender = RecordingSender()
+      val provider = EmailOtpProvider.Impl(DeliveryChannels.fixed(Some(sender), None))
+      for
+        _ <- provider.sendOtp(email, code, template, Some("{{code}} is your code"))
+        _ <- provider.sendOtp(email, code, template, None)
+        sent <- sender.sent.get
+      yield assertTrue(sent.map(_._2) == List(Some("123456 is your code"), None))
     },
     test("send hands the message over as it is") {
       val sender = RecordingSender()
       for
-        _ <- EmailOtpProvider.Impl(DeliveryChannels.fixed(Some(sender), None)).send(email, "<p>hello</p>")
+        _ <- EmailOtpProvider.Impl(DeliveryChannels.fixed(Some(sender), None)).send(email, Some("Hello"), "<p>hello</p>")
         sent <- sender.sent.get
-      yield assertTrue(sent == List(email -> "<p>hello</p>"))
+      yield assertTrue(sent == List((email, Some("Hello"), "<p>hello</p>")))
     },
     test("asks the channels again for every message, so a changed server is used without a restart") {
       val first = RecordingSender()
@@ -45,27 +54,27 @@ object EmailOtpProviderSpec extends ZIOSpecDefault:
           override def sms = ZIO.none
           override def refresh: UIO[Unit] = ZIO.unit
         provider = EmailOtpProvider.Impl(channels)
-        _ <- provider.send(email, "one")
+        _ <- provider.send(email, None, "one")
         _ <- current.set(Some(second))
-        _ <- provider.send(email, "two")
+        _ <- provider.send(email, None, "two")
         sentFirst <- first.sent.get
         sentSecond <- second.sent.get
-      yield assertTrue(sentFirst.map(_._2) == List("one"), sentSecond.map(_._2) == List("two"))
+      yield assertTrue(sentFirst.map(_._3) == List("one"), sentSecond.map(_._3) == List("two"))
     },
     test("a one-time code is skipped, with a warning, when no SMTP server is configured or the saved one is switched off") {
       val provider = EmailOtpProvider.Impl(DeliveryChannels.fixed(None, None))
-      for _ <- provider.sendOtp(email, code, template)
+      for _ <- provider.sendOtp(email, code, template, None)
       yield assertCompletes
     },
     test("a message is skipped, with a warning, when no SMTP server is configured or the saved one is switched off") {
-      for _ <- EmailOtpProvider.Impl(DeliveryChannels.fixed(None, None)).send(email, "hello")
+      for _ <- EmailOtpProvider.Impl(DeliveryChannels.fixed(None, None)).send(email, None, "hello")
       yield assertCompletes
     },
     test("passes a failure of the sender on") {
       val failing = new EmailSender:
-        override def send(to: Email, message: String): Task[Unit] = ZIO.fail(RuntimeException("smtp down"))
+        override def send(to: Email, subject: Option[String], message: String): Task[Unit] = ZIO.fail(RuntimeException("smtp down"))
       for
-        result <- EmailOtpProvider.Impl(DeliveryChannels.fixed(Some(failing), None)).send(email, "hello").either
+        result <- EmailOtpProvider.Impl(DeliveryChannels.fixed(Some(failing), None)).send(email, None, "hello").either
       yield assertTrue(result.left.map(_.getMessage) == Left("smtp down"))
     },
   ) @@ silentLogging

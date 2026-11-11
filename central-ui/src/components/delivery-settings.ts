@@ -386,7 +386,7 @@ export class VersolaDeliverySettings extends LitElement {
           ${this.row('Username', html`<span class="mono">${smtp.username}</span>`)}
           ${this.row('Password', this.passwordChip(record.hasSmtpPassword))}
           ${this.row('From', html`<span class="mono">${smtp.from}</span>`)}
-          ${this.row('Subject', smtp.subject)}
+          ${this.row('Default subject', html`${smtp.subject} <span class="muted">(deprecated: set the subject in the email template; this one is sent only when a template has none)</span>`)}
         ` : html`${this.row('Status', html`<span class="muted">${NOT_CONFIGURED}</span>`)}`}
         @edit=${() => dispatchRecordRoute(this, { id: null, edit: 'smtp', create: false, layout: null })}></versola-record-card>
     `;
@@ -505,7 +505,7 @@ export class VersolaDeliverySettings extends LitElement {
           <h3>Message</h3>
           <p class="editor-sub">What the recipient sees.</p>
           ${this.field('from', 'From *', this.textInput('from', draft.from, value => set({ from: value }), { mono: true, placeholder: 'noreply@example.com' }), 'The sender address.')}
-          ${this.field('subject', 'Subject *', this.textInput('subject', draft.subject, value => set({ subject: value })), 'One line, the same for every message.')}
+          ${this.field('subject', 'Default subject * (deprecated)', this.textInput('subject', draft.subject, value => set({ subject: value })), 'One line. Sent only with a message whose email template has no subject; set the subject in the template instead.')}
         </div>
         <div class="editor-box">
           <h3>Status</h3>

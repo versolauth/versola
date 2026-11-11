@@ -5747,6 +5747,18 @@ components:
           $ref: '#/components/schemas/OtpTemplatePurpose'
         channel:
           $ref: '#/components/schemas/OtpTemplateChannel'
+        subjects:
+          allOf:
+            - $ref: '#/components/schemas/LocalizedText'
+          description: |
+            Email only (a non-empty `subjects` on an SMS template is refused): the subject line of the
+            message, by language. One line of at most 200 characters, not blank. For an `otp` template `{{code}}`
+            and `{{appName}}` are replaced as in the message; a `password` template's subject is sent as written.
+
+            A language with no subject here, and a template with none at all, is sent with `subject` of the SMTP
+            delivery settings (or of the `smtp` block of `auth.conf`), as every message was before templates had one.
+            The subject is picked for the language the message body is shown in. On a `PUT`, an absent `subjects` keeps
+            the subjects the template has (a client that predates this field does not lose them); send `{}` to clear them.
       required: [id, tenantId, localizations, purpose, channel]
     GetOtpTemplatesResponse:
       type: object
@@ -6712,7 +6724,11 @@ components:
           description: The sender address.
         subject:
           type: string
-          description: Subject line of every message.
+          deprecated: true
+          description: |
+            Deprecated: the subject belongs to the email template (`subjects` of an OTP template, per client and
+            language). This one is sent only with a message whose template has no subject for the language shown, so it
+            remains required for now, and a later version will drop it.
         startTls:
           type: boolean
           description: Whether the connection is upgraded with STARTTLS.

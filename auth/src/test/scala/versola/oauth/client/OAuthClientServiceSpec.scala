@@ -254,6 +254,24 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       authorizationDetailTypeCache = ReloadingCache(authorizationDetailTypeRef),
     )
 
+  private val emailSubjectTemplate = OtpTemplateRecord(
+    "default",
+    TenantId("default"),
+    Map("en" -> "Code: {{code}}", "ru" -> "Код: {{code}}"),
+    purpose = OtpTemplatePurpose.otp,
+    channel = OtpTemplateChannel.email,
+    subjects = Map("en" -> "{{code}} for {{appName}}", "ru" -> "Код для {{appName}}"),
+  )
+
+  private val passwordSubjectTemplate = OtpTemplateRecord(
+    "password-template",
+    TenantId("default"),
+    Map("en" -> "Password: {{password}} {{expiresHours}}", "ru" -> "Пароль: {{password}} {{expiresHours}}"),
+    purpose = OtpTemplatePurpose.password,
+    channel = OtpTemplateChannel.email,
+    subjects = Map("en" -> "Your temporary password", "ru" -> "Ваш временный пароль"),
+  )
+
   val spec = suite("OAuthConfigurationService")(
     test("find returns existing client") {
       for
@@ -384,6 +402,61 @@ object OAuthClientServiceSpec extends UnitSpecBase:
           env <- makeEnv(otpTemplates = Vector.empty)
           result <- env.service.getClientTemplate(clientId1, OtpType.sms, None)
         yield assertTrue(result == OtpTemplate("{{code}}"))
+      },
+    ),
+    suite("getClientSubject")(
+      test("returns the subject in the language of the body, with {{appName}} filled in and {{code}} left for the sender") {
+        for
+          env <- makeEnv(otpTemplates = Vector(emailSubjectTemplate), locales = Locales(Vector.empty, "en"))
+          en <- env.service.getClientSubject(clientId1, None)
+          ru <- env.service.getClientSubject(clientId1, Some(List("ru")))
+        yield assertTrue(en == Some("{{code}} for Private 1"), ru == Some("Код для Private 1"))
+      },
+      test("has no subject for a template that has none, so the SMTP settings' subject applies") {
+        for
+          env <- makeEnv(otpTemplates = Vector(emailSubjectTemplate.copy(subjects = Map.empty)), locales = Locales(Vector.empty, "en"))
+          result <- env.service.getClientSubject(clientId1, None)
+        yield assertTrue(result.isEmpty)
+      },
+      test("has no subject for a language that has a body but no subject, rather than one in another language") {
+        for
+          env <- makeEnv(
+            otpTemplates = Vector(emailSubjectTemplate.copy(subjects = Map("en" -> "Your code"))),
+            locales = Locales(Vector.empty, "en"),
+          )
+          result <- env.service.getClientSubject(clientId1, Some(List("ru")))
+        yield assertTrue(result.isEmpty)
+      },
+      test("has no subject when the client has no email template, or does not exist") {
+        for
+          env <- makeEnv(otpTemplates = Vector.empty, locales = Locales(Vector.empty, "en"))
+          none <- env.service.getClientSubject(clientId1, None)
+          missing <- env.service.getClientSubject(ClientId("missing"), None)
+        yield assertTrue(none.isEmpty, missing.isEmpty)
+      },
+      test("is not taken from the SMS template of the same id") {
+        val sms = emailSubjectTemplate.copy(channel = OtpTemplateChannel.sms, subjects = Map.empty)
+        for
+          env <- makeEnv(otpTemplates = Vector(sms), locales = Locales(Vector.empty, "en"))
+          result <- env.service.getClientSubject(clientId1, None)
+        yield assertTrue(result.isEmpty)
+      },
+    ),
+    suite("getPasswordSubject")(
+      test("returns the subject of the global email password template in the language of its body") {
+        for
+          env <- makeEnv(otpTemplates = Vector(passwordSubjectTemplate), locales = Locales(Vector.empty, "en"))
+          en <- env.service.getPasswordSubject(None)
+          ru <- env.service.getPasswordSubject(Some(List("ru")))
+        yield assertTrue(en == Some("Your temporary password"), ru == Some("Ваш временный пароль"))
+      },
+      test("has none for a template without subjects, or when there is no template") {
+        for
+          withoutSubjects <- makeEnv(otpTemplates = Vector(passwordSubjectTemplate.copy(subjects = Map.empty)), locales = Locales(Vector.empty, "en"))
+          noTemplate <- makeEnv(otpTemplates = Vector.empty, locales = Locales(Vector.empty, "en"))
+          a <- withoutSubjects.service.getPasswordSubject(None)
+          b <- noTemplate.service.getPasswordSubject(None)
+        yield assertTrue(a.isEmpty, b.isEmpty)
       },
     ),
     suite("getPasswordTemplate")(
