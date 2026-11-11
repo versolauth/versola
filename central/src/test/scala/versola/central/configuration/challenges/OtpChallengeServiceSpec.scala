@@ -5,6 +5,7 @@ import versola.central.configuration.locales.LocaleService
 import versola.central.configuration.sync.SyncEvent
 import versola.central.configuration.tenants.TenantId
 import versola.util.ReloadingCache
+import versola.util.http.BadRequest
 import zio.*
 import zio.test.*
 
@@ -199,6 +200,26 @@ object OtpChallengeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.upsertTemplate.succeedsWith(())
         _ <- env.service.upsertTemplate(rec1, keepStoredSubjects = true)
       yield assertTrue(env.repository.upsertTemplate.calls == List(rec1))
+    },
+    test("a refused template fails with BadRequest, which the server answers as a 400, not with an exception that becomes a 500") {
+      val env = Env()
+      val sms = OtpTemplateRecord(
+        "sms-template",
+        tenantA,
+        Map("en" -> "Code {{code}}"),
+        purpose = OtpTemplatePurpose.otp,
+        channel = OtpTemplateChannel.sms,
+        subjects = Map("en" -> "Your code"),
+      )
+      for
+        subject <- env.service.upsertTemplate(sms, keepStoredSubjects = false).either
+        body <-
+          env.service.upsertTemplate(sms.copy(subjects = Map.empty, localizations = Map("en" -> "no placeholder")), keepStoredSubjects = false).either
+      yield assertTrue(
+        subject == Left(BadRequest("Only email templates have a subject")),
+        body.left.exists(_.isInstanceOf[BadRequest]),
+        env.repository.upsertTemplate.calls.isEmpty,
+      )
     },
     test("getSyncTemplates strips the subjects of inactive locales along with their localizations") {
       import versola.central.configuration.locales.LocaleRecord

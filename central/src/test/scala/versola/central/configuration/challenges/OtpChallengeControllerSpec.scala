@@ -7,7 +7,7 @@ import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.roles.{RoleId, RoleRecord, RoleRepository}
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
-import versola.util.http.Observability
+import versola.util.http.{BadRequest, Observability}
 import versola.util.{JWT, Patch}
 import zio.*
 import zio.http.*
@@ -463,7 +463,14 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         method = Method.PUT,
         url = URL.empty / "configuration" / "challenges" / "otp-templates",
         body =
-          Body.fromString(UpsertOtpTemplateRequest(template.id, template.tenantId, template.localizations, template.purpose, template.channel, None).toJson),
+          Body.fromString(UpsertOtpTemplateRequest(
+            template.id,
+            template.tenantId,
+            template.localizations,
+            template.purpose,
+            template.channel,
+            None,
+          ).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
       setup = service => service.upsertTemplate.succeedsWith(()),
@@ -489,7 +496,10 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus = Status.NoContent,
       setup = service => service.upsertTemplate.succeedsWith(()),
       verify = (_, service) =>
-        ZIO.succeed(assertTrue(service.upsertTemplate.calls.map((record, keep) => (record.subjects, keep)) == List((Map("en" -> "Your code"), false)))),
+        ZIO.succeed(assertTrue(service.upsertTemplate.calls.map((record, keep) => (record.subjects, keep)) == List((
+          Map("en" -> "Your code"),
+          false,
+        )))),
     ),
     controllerTestCase(
       description = "PUT otp-templates from a client that does not know subjects keeps the stored ones",
@@ -503,7 +513,30 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus = Status.NoContent,
       setup = service => service.upsertTemplate.succeedsWith(()),
       verify = (_, service) =>
-        ZIO.succeed(assertTrue(service.upsertTemplate.calls.map((record, keep) => (record.subjects, keep)) == List((Map.empty[String, String], true)))),
+        ZIO.succeed(assertTrue(service.upsertTemplate.calls.map((record, keep) => (record.subjects, keep)) == List((
+          Map.empty[String, String],
+          true,
+        )))),
+    ),
+    controllerTestCase(
+      description = "PUT otp-templates answers 400 when the service refuses the template",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "challenges" / "otp-templates",
+        body = Body.fromString(
+          UpsertOtpTemplateRequest(
+            id = "sms",
+            tenantId = tenantId,
+            localizations = Map("en" -> "Code {{code}}"),
+            purpose = OtpTemplatePurpose.otp,
+            channel = OtpTemplateChannel.sms,
+            subjects = Some(Map("en" -> "Your code")),
+          ).toJson,
+        ),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = service => service.upsertTemplate.failsWith(BadRequest("Only email templates have a subject")),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.upsertTemplate.calls.length == 1)),
     ),
     controllerTestCase(
       description = "DELETE otp-templates deletes template and returns no content",

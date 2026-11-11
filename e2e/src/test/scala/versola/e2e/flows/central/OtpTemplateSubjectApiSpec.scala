@@ -36,7 +36,10 @@ object OtpTemplateSubjectApiSpec extends CentralApiSpec:
 
   private def remove(central: CentralApi, id: String, channel: String): UIO[Unit] =
     central
-      .deleteWithBody(path, Json.Obj("id" -> Json.Str(id), "tenantId" -> Json.Str(Fixtures.suiteTenant), "purpose" -> Json.Str("otp"), "channel" -> Json.Str(channel)))
+      .deleteWithBody(
+        path,
+        Json.Obj("id" -> Json.Str(id), "tenantId" -> Json.Str(Fixtures.suiteTenant), "purpose" -> Json.Str("otp"), "channel" -> Json.Str(channel)),
+      )
       .unit
       .catchAllCause(cause => ZIO.logWarningCause(s"Could not remove template $id after a test", cause))
 

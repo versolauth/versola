@@ -1634,6 +1634,11 @@ paths:
       responses:
         '204':
           description: Template stored.
+        '400':
+          description: |
+            The template was refused and nothing is stored: a message without the placeholders of its type, an email
+            body that is not valid HTML, or a `subjects` entry that is blank, has a line break, is longer than 200
+            characters, or belongs to an SMS template. The body is the reason, as plain text.
         '401':
           $ref: '#/components/responses/Unauthorized'
     delete:

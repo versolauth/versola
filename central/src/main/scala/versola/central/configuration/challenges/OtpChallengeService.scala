@@ -5,12 +5,14 @@ import versola.central.configuration.locales.LocaleService
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.TenantId
 import versola.util.ReloadingCache
+import versola.util.http.{BadRequest, Observability}
 import zio.{Schedule, Scope, Task, ZIO, ZLayer}
 
 trait OtpChallengeService:
   def getTemplates(tenantId: TenantId): Task[Vector[OtpTemplateRecord]]
   def getAllTemplates: Task[Vector[OtpTemplateRecord]]
   def getSyncTemplates: Task[Vector[OtpTemplateRecord]]
+
   /** `keepStoredSubjects`: the request named no subjects (an older client), so the template keeps the ones it has. A request
     * that names them, an empty map included, replaces them.
     */
@@ -46,10 +48,12 @@ object OtpChallengeService:
       for
         templates <- cache.get
         activeLocales <- localeService.getActive.map(_.map(_.code).toSet)
-      yield templates.map(t => t.copy(
-        localizations = t.localizations.filter((code, _) => activeLocales.contains(code)),
-        subjects = t.subjects.filter((code, _) => activeLocales.contains(code)),
-      ))
+      yield templates.map(t =>
+        t.copy(
+          localizations = t.localizations.filter((code, _) => activeLocales.contains(code)),
+          subjects = t.subjects.filter((code, _) => activeLocales.contains(code)),
+        ),
+      )
 
     override def upsertTemplate(record: OtpTemplateRecord, keepStoredSubjects: Boolean): Task[Unit] =
       for
@@ -58,7 +62,8 @@ object OtpChallengeService:
           else ZIO.none
         merged = stored.fold(record)(subjects => record.copy(subjects = subjects))
         _ <- validate(merged) match
-          case Left(error) => ZIO.fail(IllegalArgumentException(error))
+          // BadRequest is what the server middleware answers with a 400; any other exception would be a 500.
+          case Left(error) => Observability.setError("invalid_otp_template", Some(error)) *> ZIO.fail(BadRequest(error))
           case Right(_) => repository.upsertTemplate(merged)
       yield ()
 
