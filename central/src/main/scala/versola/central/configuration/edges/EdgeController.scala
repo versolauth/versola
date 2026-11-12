@@ -330,6 +330,12 @@ case class EdgeOverloadSyncResponse(
     overloadPolicy: Option[OverloadPolicy],
 ) derives Schema, JsonCodec
 
+/** What the admin console reads through its edge that is not about the caller: the time zone to show times in for an administrator whose
+  * profile has none (`system_settings.ui_time_zone`). The same for every edge. */
+case class EdgeConsoleSyncResponse(
+    uiTimeZone: Option[String],
+) derives Schema, JsonCodec
+
 case class EdgeAccessLogSyncResponse(
     accessLogPolicy: Option[AccessLogPolicy],
 ) derives Schema, JsonCodec

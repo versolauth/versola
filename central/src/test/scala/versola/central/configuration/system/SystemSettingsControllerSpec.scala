@@ -25,6 +25,7 @@ object SystemSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
     passwordRegex = "^(?=.*[A-Z]).{8,}$",
     passwordHistorySize = 10,
     passwordNumDifferent = 5,
+    uiTimeZone = Some("Asia/Almaty"),
   )
 
   private val syncToken = Unsafe.unsafe { unsafe ?=>
@@ -80,6 +81,21 @@ object SystemSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(response.status == expectedStatus) && verifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
+  private val badZones = List("+05:00", "UTC+5", "asia/almaty", "Mars/Olympus", "", " UTC", "A" * 65)
+
+  private def refusesZone(zone: String) =
+    controllerTestCase(
+      description = s"'${zone.take(20)}' is refused with 400 and nothing is stored",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "system-settings",
+        body = Body.fromString(customSettings.copy(uiTimeZone = Some(zone)).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = svc => svc.upsertSettings.succeedsWith(()),
+      verify = (_, svc) => ZIO.succeed(assertTrue(svc.upsertSettings.calls.isEmpty)),
+    )
+
   def spec = suite("SystemSettingsController")(
     controllerTestCase(
       description = "GET returns current settings",
@@ -115,6 +131,18 @@ object SystemSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, svc) =>
         ZIO.succeed(assertTrue(svc.upsertSettings.calls == List(customSettings))),
     ),
+    controllerTestCase(
+      description = "PUT stores a time zone of the IANA database and an absent one clears it",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "system-settings",
+        body = Body.fromString(defaultSettings.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = svc => svc.upsertSettings.succeedsWith(()),
+      verify = (_, svc) => ZIO.succeed(assertTrue(svc.upsertSettings.calls == List(defaultSettings.copy(uiTimeZone = None)))),
+    ),
+    suite("PUT refuses a uiTimeZone that is not a name of the IANA time zone database")(badZones.map(refusesZone)*),
     controllerTestCase(
       description = "PUT returns 401 without credentials",
       request = Request(

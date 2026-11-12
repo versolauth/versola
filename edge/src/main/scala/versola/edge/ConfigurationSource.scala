@@ -21,7 +21,7 @@ import zio.{Scope, ZLayer}
 type ConfigurationSource =
   AuthorizationPresetsSyncClient & OAuthClientsSyncClient & ClientPermissionsSyncClient & ResourcesSyncClient &
     RolesSyncClient & PermissionsSyncClient & DpopAlgorithmsSyncClient & DpopPolicySyncClient & JwksSyncClient &
-    OverloadPolicySyncClient & AccessLogPolicySyncClient & RateLimitPolicySyncClient
+    OverloadPolicySyncClient & AccessLogPolicySyncClient & RateLimitPolicySyncClient & ConsoleSettingsSyncClient
 
 object ConfigurationSource:
   type Requirements = Scope & Client & EdgeConfig & SecurityService & CelEvaluator & ConfigSnapshot
@@ -56,5 +56,6 @@ object ConfigurationSource:
       DpopPolicySyncClient.live >++>
       OverloadPolicySyncClient.live >++>
       AccessLogPolicySyncClient.live >++>
+      ConsoleSettingsSyncClient.live >++>
       RateLimitPolicySyncClient.live >++>
       JwksSyncClient.live

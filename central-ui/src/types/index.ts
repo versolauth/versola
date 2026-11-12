@@ -298,6 +298,8 @@ export interface SystemSettingsRecord {
   passwordRegex: string;
   passwordHistorySize: number;
   passwordNumDifferent: number;
+  // The time zone the console shows times in for an administrator with none of their own; absent when none is set.
+  uiTimeZone?: string;
 }
 
 // A registered passkey credential for a user

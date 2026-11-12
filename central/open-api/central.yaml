@@ -6689,6 +6689,14 @@ components:
         passwordNumDifferent:
           type: integer
           description: How many characters a new password must differ by.
+        uiTimeZone:
+          type: string
+          description: |
+            The time zone the admin console shows times in for an administrator whose profile has no
+            `zoneinfo` of their own: a name of the IANA time zone database (`Asia/Almaty`; an offset such
+            as `+05:00` is not one). The edge hands it to the console in `/permissions/me` as `timeZone`.
+            Absent: the console uses the browser's zone. `PUT` replaces the whole record, so a body
+            without it clears the value; one with a name the database does not carry is refused with `400`.
       required: [passwordRegex, passwordHistorySize, passwordNumDifferent]
 
     # ─────────────────────────── Delivery settings ───────────────────────────

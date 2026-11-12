@@ -36,6 +36,7 @@ import versola.central.configuration.resources.{
 }
 import versola.central.configuration.roles.{RoleId, RoleRecord, RoleService}
 import versola.central.configuration.scopes.ScopeToken
+import versola.central.configuration.system.{SystemSettingsRecord, SystemSettingsService}
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{
   GetAuthorizationPresetsSyncResponse,
@@ -273,6 +274,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
       permissions: Stub[PermissionService],
       jwks: Stub[JwksService],
       metadata: Stub[ServerMetadataService],
+      systemSettings: Stub[SystemSettingsService],
       edges: Stub[EdgeService],
       identity: Stub[EdgeIdentityService],
       security: SecurityService,
@@ -330,6 +332,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
           permissions = stub[PermissionService],
           jwks = stub[JwksService],
           metadata = stub[ServerMetadataService],
+          systemSettings = stub[SystemSettingsService],
           edges = stub[EdgeService],
           identity = stub[EdgeIdentityService],
           security = security,
@@ -348,6 +351,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[PermissionService](services.permissions) ++
                 ZEnvironment[JwksService](services.jwks) ++
                 ZEnvironment[ServerMetadataService](services.metadata) ++
+                ZEnvironment[SystemSettingsService](services.systemSettings) ++
                 ZEnvironment[EdgeService](services.edges) ++
                 ZEnvironment[EdgeIdentityService](services.identity) ++
                 ZEnvironment[SecurityService](security) ++
@@ -403,6 +407,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
       "dpop",
       "overload",
       "access-log",
+      "console",
       "rate-limits",
       "auth-request-presets",
       "server-metadata",
@@ -586,6 +591,24 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         verify = (response, _) =>
           for body <- decodeBody[EdgeAccessLogSyncResponse](response)
           yield assertTrue(body.accessLogPolicy.isEmpty),
+      ),
+      testCase(
+        description = "console: the default time zone of the system settings, served to any edge",
+        request = Request.get(sync("console")),
+        expectedStatus = Status.Ok,
+        setup = services => services.systemSettings.getSettings.succeedsWith(SystemSettingsRecord.default.copy(uiTimeZone = Some("Asia/Almaty"))),
+        verify = (response, _) =>
+          for body <- decodeBody[EdgeConsoleSyncResponse](response)
+          yield assertTrue(body.uiTimeZone.contains("Asia/Almaty")),
+      ),
+      testCase(
+        description = "console: no default time zone is served as null",
+        request = Request.get(sync("console")),
+        expectedStatus = Status.Ok,
+        setup = services => services.systemSettings.getSettings.succeedsWith(SystemSettingsRecord.default),
+        verify = (response, _) =>
+          for body <- decodeBody[EdgeConsoleSyncResponse](response)
+          yield assertTrue(body.uiTimeZone.isEmpty),
       ),
       testCase(
         description = "rate-limits: the calling edge's own policies",

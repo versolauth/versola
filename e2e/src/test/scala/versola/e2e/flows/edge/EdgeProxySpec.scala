@@ -547,6 +547,33 @@ object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         assertTrue(!body.fields.exists(_._1 == "timeZone"))
           .label("`/userinfo` releases `zoneinfo` only with the `profile` scope: a zone here would be a claim released without its scope")
     },
+    test("the permissions endpoint names the system settings' default time zone for a user with none of their own, and stops when it is cleared") {
+      def zoneOf(edgeApi: EdgeApi, auth: EdgeAuth): Task[Option[String]] =
+        edgeApi.permissions(auth).flatMap(_.obj).map(_.fields.collectFirst { case ("timeZone", Json.Str(zone)) => zone })
+      def withZone(settings: Json.Obj, zone: Option[String]): Json.Obj =
+        Json.Obj(settings.fields.filterNot(_._1 == "uiTimeZone") ++ Chunk.fromIterable(zone.map(name => "uiTimeZone" -> (Json.Str(name): Json))))
+      for
+        edgeApi <- edge
+        central <- ZIO.service[CentralApi]
+        established <- session
+        original <- central.get("/configuration/system-settings").flatMap(_.obj)
+        // The settings are shared by every spec: whatever happens, they go back as they were.
+        result <- (for
+          refused <- central.put("/configuration/system-settings", withZone(original, Some("Mars/Olympus")))
+          unchanged <- zoneOf(edgeApi, established.auth)
+          set <- central.put("/configuration/system-settings", withZone(original, Some("Asia/Almaty")))
+          _ <- edgeApi.syncConfiguration
+          named <- zoneOf(edgeApi, established.auth)
+          cleared <- central.put("/configuration/system-settings", withZone(original, None))
+          _ <- edgeApi.syncConfiguration
+          gone <- zoneOf(edgeApi, established.auth)
+        yield (refused.status, unchanged, set.status, named, cleared.status, gone))
+          .ensuring(central.put("/configuration/system-settings", original).ignore *> edgeApi.syncConfiguration.ignore)
+        (refused, unchanged, set, named, cleared, gone) = result
+      yield assertTrue(refused == Status.BadRequest, set == Status.NoContent, cleared == Status.NoContent) &&
+        assertTrue(named.contains("Asia/Almaty")).label("a user whose profile has no zone gets the system default, through central's sync to edge") &&
+        assertTrue(unchanged != Some("Mars/Olympus"), gone.isEmpty).label("a refused name is never served, and a cleared default is gone")
+    },
     test("the permissions endpoint answers about nothing when asked about nothing") {
       for
         edgeApi <- edge

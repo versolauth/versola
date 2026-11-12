@@ -85,9 +85,10 @@ trait EdgeService:
   ): UIO[EdgeService.PermissionsResponse]
 
   /** The time zone the admin console shows the caller's times in: the `zoneinfo` claim of their profile, which auth releases at `/userinfo`
-    * with the `profile` scope, asked with the caller's own token. Empty when the token has no such scope, the profile has none or a value
-    * that is not a name of the IANA time zone database, auth does not answer in time, or refuses the token. The console then reads times in
-    * the browser's zone, as it did before. Only the console reads this. */
+    * with the `profile` scope, asked with the caller's own token; when there is none (the token has no such scope, the profile has no zone
+    * or one that is not a name of the IANA time zone database, auth does not answer in time or refuses the token), the default of the system
+    * settings that central syncs (`ConsoleSettingsService`). Empty when that is not set either: the console then reads times in the
+    * browser's zone, as it did before. Only the console reads this. */
   def getMyTimeZone(claims: PermissionsClaims, accessToken: AccessToken): UIO[Option[String]]
 
   /** Front-channel logout, either OP-initiated (`iss`/`sid` query params, rendered in an
@@ -206,11 +207,11 @@ object EdgeService:
   ) derives JsonCodec
 
   def live: ZLayer[
-    OAuthClientService & ResourceService & CelEvaluator & SecureRandom & LoginRepository & SSOClient & SecurityService & Client & EdgeConfig & session.EdgeSessionRepository & TokenRevocationService & JwksService & PermissionService & DpopVerifier & EnvName & RateLimiter,
+    OAuthClientService & ResourceService & CelEvaluator & SecureRandom & LoginRepository & SSOClient & SecurityService & Client & EdgeConfig & session.EdgeSessionRepository & TokenRevocationService & JwksService & PermissionService & DpopVerifier & EnvName & RateLimiter & ConsoleSettingsService,
     Nothing,
     EdgeService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       clientService: OAuthClientService,
@@ -229,6 +230,7 @@ object EdgeService:
       dpopVerifier: DpopVerifier,
       env: EnvName,
       rateLimiter: RateLimiter,
+      consoleSettings: ConsoleSettingsService,
   ) extends EdgeService:
 
     private val loginTtl = 10.minutes
@@ -498,18 +500,27 @@ object EdgeService:
     private val timeZoneTimeout = 2.seconds
 
     override def getMyTimeZone(claims: PermissionsClaims, accessToken: AccessToken): UIO[Option[String]] =
+      ownTimeZone(claims, accessToken).flatMap:
+        case own @ Some(_) => ZIO.succeed(own)
+        case None => consoleSettings.defaultTimeZone.map(_.filter(Zoneinfo.isValid))
+
+    /** The caller's own `zoneinfo`, from `/userinfo`; empty for every reason it might not be there. */
+    private def ownTimeZone(claims: PermissionsClaims, accessToken: AccessToken): UIO[Option[String]] =
       // `/permissions/me` has verified the caller's binding already (a key proof, or the session cookie), which is what `Accept` says.
       fetchUserInfo(accessToken, claims.confirmation, claims.clientId, BindingCheck.Accept)
         .map(_.fields.collectFirst { case ("zoneinfo", Json.Str(zone)) if Zoneinfo.isValid(zone) => zone })
         .timeout(timeZoneTimeout)
         .map(_.flatten)
         .catchAll:
-          // Auth refused the token (revoked since, wrong binding): the caller has no zone to show, and `/permissions/me` already
-          // answered who the caller is.
+          // Auth refused the token (revoked since, wrong binding): the caller has no zone of their own to show, and `/permissions/me`
+          // already answered who the caller is.
           case SSOClient.UserInfoUnauthorized => ZIO.none
           // Deliberately swallowed, and said once here: a failed `/userinfo` must not take the permissions with it.
           case cause: Throwable =>
-            ZIO.logWarningCause("userinfo for the console's time zone failed; the console uses the browser's zone", Cause.fail(cause)).as(None)
+            ZIO.logWarningCause(
+              "userinfo for the console's time zone failed; the console uses the default or the browser's zone",
+              Cause.fail(cause),
+            ).as(None)
 
     override def getMyPermissions(
         claims: PermissionsClaims,

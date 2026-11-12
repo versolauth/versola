@@ -15,6 +15,7 @@ trait SystemSettingsRepositorySpec extends DatabaseSpecBase[SystemSettingsReposi
     passwordRegex = "^.{8,}$",
     passwordHistorySize = 3,
     passwordNumDifferent = 1,
+    uiTimeZone = None,
   )
 
   override def testCases(env: SystemSettingsRepositorySpec.Env) =
@@ -28,6 +29,15 @@ trait SystemSettingsRepositorySpec extends DatabaseSpecBase[SystemSettingsReposi
           _ <- env.repository.upsert(record)
           result <- env.repository.getAll
         yield assertTrue(result == record)
+      },
+      test("the console's default time zone is stored, read back and cleared by a record without one") {
+        val withZone = record.copy(uiTimeZone = Some("Asia/Almaty"))
+        for
+          _ <- env.repository.upsert(withZone)
+          stored <- env.repository.getAll
+          _ <- env.repository.upsert(record)
+          cleared <- env.repository.getAll
+        yield assertTrue(stored == withZone, cleared == record)
       },
       test("upsert overwrites the previously stored settings") {
         val updated = record.copy(passwordHistorySize = 5)

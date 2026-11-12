@@ -7,6 +7,7 @@ import versola.central.configuration.metadata.ServerMetadataService
 import versola.central.configuration.permissions.PermissionService
 import versola.central.configuration.resources.{ResourceRecord, ResourceService}
 import versola.central.configuration.roles.RoleService
+import versola.central.configuration.system.SystemSettingsService
 import versola.central.configuration.{
   AuthorizationPresetSyncResponse,
   GetAuthorizationPresetsSyncResponse,
@@ -40,7 +41,7 @@ import java.security.cert.X509Certificate
   */
 object EdgeSyncController extends Controller:
   type Env = Tracing & CentralConfig & EdgeService & EdgeIdentityService & SecurityService & OAuthClientService & ClientCertificateService &
-    AuthorizationPresetService & ResourceService & RoleService & PermissionService & JwksService & ServerMetadataService
+    AuthorizationPresetService & ResourceService & RoleService & PermissionService & JwksService & ServerMetadataService & SystemSettingsService
 
   def routes: Routes[Env, Throwable] = Routes(
     clientsEndpoint,
@@ -51,6 +52,7 @@ object EdgeSyncController extends Controller:
     dpopEndpoint,
     overloadEndpoint,
     accessLogEndpoint,
+    consoleEndpoint,
     rateLimitEndpoint,
     presetsEndpoint,
     serverMetadataEndpoint,
@@ -155,6 +157,16 @@ object EdgeSyncController extends Controller:
         edge <- callerEdge(request)
         response = EdgeAccessLogSyncResponse(accessLogPolicy = edge.accessLogPolicy)
       yield Response.json(response.toJson)
+    }
+
+  /** The time zone the admin console shows times in for an administrator with no `zoneinfo` of their own, from the system settings: not
+    * per edge, so any registered edge is served the one value; `null` when none is set. */
+  val consoleEndpoint =
+    Method.GET / "edge" / "sync" / "console" -> handler { (request: Request) =>
+      for
+        _ <- authorizeEdge(request)
+        settings <- ZIO.serviceWithZIO[SystemSettingsService](_.getSettings)
+      yield Response.json(EdgeConsoleSyncResponse(uiTimeZone = settings.uiTimeZone).toJson)
     }
 
   /** The rate limit policies an operator set for the calling edge (`edges.rate_limit_policies`); `null` when none are set.

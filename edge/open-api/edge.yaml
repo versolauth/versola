@@ -982,12 +982,13 @@ components:
         timeZone:
           type: string
           description: |
-            The caller's own time zone, a name of the IANA time zone database (`Asia/Almaty`): the
-            `zoneinfo` claim of their profile, which the edge reads from the authorization server's
-            `/userinfo` with the caller's token (it is released with the `profile` scope). Absent
-            when the token has no such scope, the profile has no zone, the value is not a zone name
-            of the database, or `/userinfo` cannot be asked in time. Read by the admin console, to
-            show times in this zone by default; clients that do not need it ignore it.
+            The time zone to show the caller's times in, a name of the IANA time zone database
+            (`Asia/Almaty`). It is the `zoneinfo` claim of the caller's own profile, which the edge reads
+            from the authorization server's `/userinfo` with the caller's token (released with the
+            `profile` scope); when there is none, the default of the system settings that the edge syncs
+            from central (`uiTimeZone`). Absent when neither exists, or when `/userinfo` cannot be asked
+            in time and there is no default. Read by the admin console, to show times in this zone by
+            default; clients that do not need it ignore it.
 
     NativeStartRequest:
       type: object

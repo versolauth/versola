@@ -188,3 +188,94 @@ test('no longer carries the logo: it is a tenant setting', async ({ page }) => {
 
   await expect(page.getByText('Identity provider logo')).toHaveCount(0);
 });
+
+// The console time zone: what administrators without a zone of their own on the Security page read times in (edge hands it to the
+// console in /permissions/me). Central replaces the whole settings record, so each editor has to carry the other's fields over.
+test.describe('the console time zone', () => {
+  test.use({ timezoneId: 'Europe/Berlin', locale: 'en-US' });
+  const card = (page: import('@playwright/test').Page) => page.getByRole('region', { name: 'Console time zone' });
+  const field = (page: import('@playwright/test').Page) => page.getByRole('combobox', { name: 'Time zone' });
+
+  test('says each browser decides while none is set, and shows a set one with its offset', async ({ page }) => {
+    await loadAdminApp(page, { path, state: { systemSettings, locales } });
+    await expect(card(page)).toContainText("Not set. Times follow each browser's own time zone.");
+
+    const set = await page.context().newPage();
+    await loadAdminApp(set, { path, state: { systemSettings: { ...systemSettings, uiTimeZone: 'Asia/Almaty' }, locales } });
+    await expect(card(set)).toContainText('Asia/Almaty');
+    await expect(card(set)).toContainText('UTC+5 now');
+  });
+
+  test('saves a zone picked by typing a place, keeps the password policy as it is, and returns to the record', async ({ page }) => {
+    const api = await loadAdminApp(page, { path, state: { systemSettings, locales } });
+    await page.getByRole('button', { name: 'Edit console time zone' }).click();
+    await expect(page).toHaveURL(/edit=time-zone/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Edit console time zone' })).toBeVisible();
+
+    await field(page).fill('almaty');
+    await page.getByRole('option', { name: 'Asia/Almaty (UTC+5)' }).click();
+    await page.getByRole('button', { name: 'Save time zone' }).click();
+
+    expect((await findRequest(api.requests, 'PUT', '/configuration/system-settings')).body).toEqual({ ...systemSettings, uiTimeZone: 'Asia/Almaty' });
+    await expect(page).not.toHaveURL(/edit=time-zone/);
+    await expect(card(page)).toContainText('Asia/Almaty');
+  });
+
+  test('clears the zone: the record is sent without it', async ({ page }) => {
+    const api = await loadAdminApp(page, { path, state: { systemSettings: { ...systemSettings, uiTimeZone: 'Asia/Almaty' }, locales } });
+    await page.getByRole('button', { name: 'Edit console time zone' }).click();
+    await expect(field(page)).toHaveValue('Asia/Almaty (UTC+5)');
+    await page.getByRole('button', { name: /^Clear/ }).click();
+    await page.getByRole('button', { name: 'Save time zone' }).click();
+
+    const body = (await findRequest(api.requests, 'PUT', '/configuration/system-settings')).body as Record<string, unknown>;
+    expect(body).toEqual(systemSettings);
+    expect('uiTimeZone' in body).toBe(false);
+    await expect(card(page)).toContainText("Not set. Times follow each browser's own time zone.");
+  });
+
+  test('editing the password policy carries the time zone over instead of clearing it', async ({ page }) => {
+    const api = await loadAdminApp(page, { path, state: { systemSettings: { ...systemSettings, uiTimeZone: 'Asia/Almaty' }, locales } });
+    await page.getByRole('button', { name: 'Edit password policy' }).click();
+    await page.getByLabel('Password regex *').fill('.{12,}');
+    await page.getByRole('button', { name: 'Save password policy' }).click();
+
+    expect((await findRequest(api.requests, 'PUT', '/configuration/system-settings')).body).toEqual({
+      passwordRegex: '.{12,}',
+      passwordHistorySize: 5,
+      passwordNumDifferent: 3,
+      uiTimeZone: 'Asia/Almaty',
+    });
+  });
+
+  test("keeps the editor open with central's reason when the save is refused", async ({ page }) => {
+    await loadAdminApp(page, { path, state: { systemSettings, locales } });
+    await page.route('**/configuration/system-settings', route => route.request().method() === 'PUT'
+      ? route.fulfill({ status: 400, contentType: 'text/plain', body: 'uiTimeZone is not a name of the IANA time zone database' })
+      : route.fallback());
+    await page.getByRole('button', { name: 'Edit console time zone' }).click();
+    await field(page).fill('berlin');
+    await page.getByRole('option', { name: /^Europe\/Berlin/ }).click();
+    await page.getByRole('button', { name: 'Save time zone' }).click();
+    await expect(page.getByRole('alert')).toContainText('not a name of the IANA time zone database');
+    await expect(page.getByRole('button', { name: 'Save time zone' })).toBeEnabled();
+    await expect(page).toHaveURL(/edit=time-zone/);
+  });
+
+  test('asks before Cancel drops a picked zone, and sends nothing', async ({ page }) => {
+    const api = await loadAdminApp(page, { path: `${path}&edit=time-zone`, state: { systemSettings, locales } });
+    await field(page).fill('berlin');
+    await page.getByRole('option', { name: /^Europe\/Berlin/ }).click();
+    await page.getByRole('button', { name: 'Cancel' }).click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await page.getByRole('button', { name: /^Keep editing/ }).click();
+    await expect(page).toHaveURL(/edit=time-zone/);
+    expect(api.requests.filter(request => request.method === 'PUT')).toHaveLength(0);
+  });
+
+  test('read-only console: the card is shown without an Edit', async ({ page }) => {
+    await loadAdminApp(page, { path, state: { systemSettings: { ...systemSettings, uiTimeZone: 'Asia/Almaty' }, locales, myPermissions: readOnly } });
+    await expect(card(page)).toContainText('Asia/Almaty');
+    await expect(page.getByRole('button', { name: 'Edit console time zone' })).toHaveCount(0);
+  });
+});

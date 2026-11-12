@@ -977,6 +977,15 @@ const consoleShots: DocsShot[] = [
     },
   },
 
+  {
+    name: 'console/system-settings-time-zone', kind: 'frame', path: '/?view=system-settings', state: systemSettingsState,
+    before: async page => {
+      await page.getByRole('button', { name: 'Edit console time zone' }).click();
+      await page.getByRole('combobox', { name: 'Time zone' }).fill('almaty');
+      await expect(page.getByRole('option', { name: 'Asia/Almaty (UTC+5)' })).toBeVisible();
+    },
+  },
+
   // Delivery
   {
     name: 'console/delivery-empty', kind: 'frame', path: '/?view=delivery', state: {},

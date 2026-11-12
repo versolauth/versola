@@ -5,8 +5,10 @@ import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formS
 import type { Locale, SystemSettingsRecord } from '../types';
 import { fetchLocales, fetchSystemSettings, setDefaultLocale, updateLocales, upsertSystemSettings, type ApiError } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
+import { localZone, offsetLabel } from '../utils/date-format';
 import { confirmDiscardDraft } from '../utils/draft-guard';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
+import { zoneOptions, type ZoneOption } from '../utils/zone-options';
 import { statusIcon } from './status-icon';
 import type { DataTableColumn, RowMenuItem } from './data-table';
 import './content-header';
@@ -15,6 +17,7 @@ import './error-card';
 import './loading-cards';
 import './record-card';
 import './record-header';
+import './typeahead-select';
 
 // ISO 639-1 language codes; display names are resolved at runtime via Intl.DisplayNames.
 const LANGUAGE_CODES = [
@@ -57,7 +60,7 @@ function activationFailure(error: unknown): { locale: string; missing: string[] 
 }
 
 /**
- * The settings shared by every tenant: the password policy as a record card with its own Edit
+ * The settings shared by every tenant: the password policy and the console's default time zone, each a record card with its own Edit
  * (a page), and the locales the login forms, scopes and templates can be shown in, as a card
  * with a table whose row menu saves at once (Set as default, Activate, Deactivate, Remove) and
  * a small Add locale form.
@@ -85,11 +88,13 @@ export class VersolaSystemSettings extends LitElement {
   @state() private draftRegex = '';
   @state() private draftHistory = 5;
   @state() private draftDifferent = 3;
+  @state() private draftZone = '';
   @state() private fieldErrors: Record<string, string> = {};
   @state() private formError = '';
   @state() private isSaving = false;
   private draftKey = '';
   private draftBaseline = '';
+  private zoneChoices: ZoneOption[] = [];
 
   static styles = [
     theme,
@@ -118,6 +123,10 @@ export class VersolaSystemSettings extends LitElement {
 
       .editor-card {
         max-width: 54rem;
+      }
+
+      versola-typeahead-select {
+        width: 24rem;
       }
 
       .form-actions {
@@ -196,8 +205,8 @@ export class VersolaSystemSettings extends LitElement {
   updated(changed: Map<string, unknown>) {
     if (changed.has('canReadLocales') && this.canReadLocales && this.locales === null) void this.loadLocales();
     if (changed.has('route') || changed.has('settings')) {
-      const editing = this.editingPassword;
-      const draftKey = editing ? `password:${this.settings !== null}` : '';
+      const editing = this.editingPassword ? 'password' : this.editingZone ? 'time-zone' : '';
+      const draftKey = editing ? `${editing}:${this.settings !== null}` : '';
       if (draftKey !== this.draftKey) {
         this.draftKey = draftKey;
         if (editing) this.resetDraft();
@@ -233,14 +242,20 @@ export class VersolaSystemSettings extends LitElement {
     return this.canManage && this.route.edit === 'password';
   }
 
+  private get editingZone(): boolean {
+    return this.canManage && this.route.edit === 'time-zone';
+  }
+
   private get draftSnapshot(): string {
-    return JSON.stringify([this.draftRegex, this.draftHistory, this.draftDifferent]);
+    return JSON.stringify([this.draftRegex, this.draftHistory, this.draftDifferent, this.draftZone]);
   }
 
   private resetDraft() {
     this.draftRegex = this.settings?.passwordRegex ?? '';
     this.draftHistory = this.settings?.passwordHistorySize ?? 5;
     this.draftDifferent = this.settings?.passwordNumDifferent ?? 3;
+    this.draftZone = this.settings?.uiTimeZone ?? '';
+    if (this.editingZone) this.zoneChoices = zoneOptions();
     this.fieldErrors = {};
     this.formError = '';
     this.isSaving = false;
@@ -265,7 +280,13 @@ export class VersolaSystemSettings extends LitElement {
     if (!Number.isInteger(this.draftDifferent) || this.draftDifferent < 0) errors.different = 'A whole number, 0 or more.';
     this.fieldErrors = errors;
     if (Object.keys(errors).length) return;
-    const next: SystemSettingsRecord = { passwordRegex: regex, passwordHistorySize: this.draftHistory, passwordNumDifferent: this.draftDifferent };
+    // Central replaces the whole record: the time zone is carried over as it is.
+    const next: SystemSettingsRecord = {
+      passwordRegex: regex,
+      passwordHistorySize: this.draftHistory,
+      passwordNumDifferent: this.draftDifferent,
+      uiTimeZone: this.settings?.uiTimeZone,
+    };
     this.isSaving = true;
     this.formError = '';
     try {
@@ -275,6 +296,27 @@ export class VersolaSystemSettings extends LitElement {
       dispatchRecordRoute(this, { edit: null });
     } catch (error) {
       this.formError = error instanceof Error ? error.message : 'Failed to save the password policy';
+    } finally {
+      this.isSaving = false;
+    }
+  }
+
+  // ── console time zone ──
+
+  private async handleZoneSubmit(event: Event) {
+    event.preventDefault();
+    if (this.isSaving || !this.settings) return;
+    // Central replaces the whole record: the password policy is carried over as it is.
+    const next: SystemSettingsRecord = { ...this.settings, uiTimeZone: this.draftZone || undefined };
+    this.isSaving = true;
+    this.formError = '';
+    try {
+      await upsertSystemSettings(next);
+      this.settings = next;
+      this.draftBaseline = this.draftSnapshot;
+      dispatchRecordRoute(this, { edit: null });
+    } catch (error) {
+      this.formError = error instanceof Error ? error.message : 'Failed to save the console time zone';
     } finally {
       this.isSaving = false;
     }
@@ -465,6 +507,48 @@ export class VersolaSystemSettings extends LitElement {
     `;
   }
 
+  private zoneValue(zone: string | undefined) {
+    if (!zone) return html`<span class="muted">Not set. Times follow each browser's own time zone.</span>`;
+    return html`<span class="mono">${zone}</span><span class="muted"> · ${offsetLabel(Date.now(), zone)} now</span>`;
+  }
+
+  private renderZoneCard(settings: SystemSettingsRecord) {
+    return html`
+      <versola-record-card id="console-time-zone" heading="Console time zone"
+        subheading="The zone the console shows times in for an administrator who has not set one on their own Security page."
+        ?editable=${this.canManage} .body=${html`
+        ${this.row('Time zone', this.zoneValue(settings.uiTimeZone))}
+      `} @edit=${() => dispatchRecordRoute(this, { id: null, edit: 'time-zone', create: false, layout: null })}></versola-record-card>
+    `;
+  }
+
+  private renderZoneEditor() {
+    return html`
+      <versola-record-header
+        .crumbs=${[{ label: 'System settings', onSelect: () => void this.cancelEditor() }, { label: 'Console time zone' }]}
+        .heading=${'Edit console time zone'}
+        .meta=${html`<span class="muted">Used when the console is next opened.</span>`}
+      ></versola-record-header>
+      <form class="card editor-card" novalidate @submit=${(e: Event) => void this.handleZoneSubmit(e)}>
+        ${this.formError ? html`<div class="editor-error" role="alert">${this.formError}</div>` : ''}
+        <div class="editor-box">
+          <h3>Console time zone</h3>
+          <p class="editor-sub">A name of the IANA time zone database. An administrator's own zone, set on their Security page, wins over it; the report's data stays in UTC.</p>
+          <div class="form-group">
+            <versola-typeahead-select label="Time zone" placeholder="Use each browser's time zone"
+              .options=${this.zoneChoices} .value=${this.draftZone}
+              @change=${(e: CustomEvent<{ id: string }>) => { this.draftZone = e.detail.id; }}></versola-typeahead-select>
+            <div class="hint">Start typing a city or region. Leave it empty to use each browser's own zone${this.draftZone ? '' : `, now ${localZone()} here`}.</div>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" ?disabled=${this.isSaving} @click=${() => void this.cancelEditor()}>Cancel</button>
+          <button type="submit" class="btn btn-primary" ?disabled=${this.isSaving}>${this.isSaving ? 'Saving…' : 'Save time zone'}</button>
+        </div>
+      </form>
+    `;
+  }
+
   private field(id: string, label: string, control: unknown, hint: string) {
     const error = this.fieldErrors[id];
     return html`
@@ -515,11 +599,12 @@ export class VersolaSystemSettings extends LitElement {
 
   render() {
     if (this.editingPassword && this.settings) return this.renderPasswordEditor();
+    if (this.editingZone && this.settings) return this.renderZoneEditor();
     return html`
-      <versola-record-header .heading=${'System settings'} .meta=${html`<span class="chip">Global</span><span class="muted">Settings shared by every tenant: passwords and the languages the login forms offer.</span>`}></versola-record-header>
-      ${this.isLoading ? html`<versola-loading-cards .count=${2}></versola-loading-cards>`
+      <versola-record-header .heading=${'System settings'} .meta=${html`<span class="chip">Global</span><span class="muted">Settings shared by every tenant: passwords, the console's time zone and the languages the login forms offer.</span>`}></versola-record-header>
+      ${this.isLoading ? html`<versola-loading-cards .count=${3}></versola-loading-cards>`
       : this.errorMessage ? html`<versola-error-card heading="Could not load system settings" .message=${this.errorMessage} @retry=${() => this.loadData()}></versola-error-card>`
-      : this.settings ? this.renderPasswordCard(this.settings) : ''}
+      : this.settings ? html`${this.renderPasswordCard(this.settings)}${this.renderZoneCard(this.settings)}` : ''}
       ${this.canReadLocales && !this.isLoading ? this.renderLocalesCard() : ''}
     `;
   }

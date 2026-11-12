@@ -98,6 +98,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val sessionRepository = stub[session.EdgeSessionRepository]
     val revocationService = stub[TokenRevocationService]
     val permissionService = stub[PermissionService]
+    val consoleSettings = stub[ConsoleSettingsService]
     val rateLimiter: RateLimiter = Unsafe.unsafe(unsafe ?=> Runtime.default.unsafe.run(RateLimiter.make()).getOrThrow())
     val dpopVerifier = stub[versola.edge.dpop.DpopVerifier]
 
@@ -259,6 +260,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         dpopVerifier,
         env,
         rateLimiter,
+        consoleSettings,
       )
 
   def spec = suite("EdgeService")(
@@ -1414,12 +1416,14 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     def zoneFor(
         askAuth: Env => UIO[Unit],
         confirmation: Option[Confirmation] = None,
+        default: Option[String] = None,
     ): ZIO[SecurityService & Client, Nothing, (Option[String], Env)] =
       val env = new Env
       for
         security <- ZIO.service[SecurityService]
         client <- ZIO.service[Client]
         _ <- askAuth(env)
+        _ <- env.consoleSettings.defaultTimeZone.succeedsWith(default)
         zone <- env.buildService(client, security).getMyTimeZone(callerClaims(confirmation), token)
       yield (zone, env)
 
@@ -1446,6 +1450,30 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
       test("is empty when auth cannot be reached") {
         for (zone, _) <- zoneFor(_.ssoClient.userInfo.failsWith(new RuntimeException("connection refused")))
+        yield assertTrue(zone.isEmpty)
+      },
+      test("is the system default when the caller's profile has no zone of its own") {
+        for
+          (zone, _) <- zoneFor(_.ssoClient.userInfo.succeedsWith(Json.Obj("sub" -> Json.Str("user-1"))), default = Some("Europe/Berlin"))
+        yield assertTrue(zone == Some("Europe/Berlin"))
+      },
+      test("is the caller's own zone, not the default, when both exist") {
+        for
+          (zone, _) <- zoneFor(
+            _.ssoClient.userInfo.succeedsWith(Json.Obj("zoneinfo" -> Json.Str("Asia/Almaty"))),
+            default = Some("Europe/Berlin"),
+          )
+        yield assertTrue(zone == Some("Asia/Almaty"))
+      },
+      test("is the system default when the caller's own zone is not a name of the database, auth refuses the token or cannot be reached") {
+        for
+          invalid <- zoneFor(_.ssoClient.userInfo.succeedsWith(Json.Obj("zoneinfo" -> Json.Str("+05:00"))), default = Some("Europe/Berlin"))
+          refused <- zoneFor(_.ssoClient.userInfo.failsWith(SSOClient.UserInfoUnauthorized), default = Some("Europe/Berlin"))
+          down <- zoneFor(_.ssoClient.userInfo.failsWith(new RuntimeException("connection refused")), default = Some("Europe/Berlin"))
+        yield assertTrue(invalid._1 == Some("Europe/Berlin"), refused._1 == Some("Europe/Berlin"), down._1 == Some("Europe/Berlin"))
+      },
+      test("is empty when the default synced from central is not a name of the database either") {
+        for (zone, _) <- zoneFor(_.ssoClient.userInfo.succeedsWith(Json.Obj()), default = Some("Mars/Olympus"))
         yield assertTrue(zone.isEmpty)
       },
       test("speaks for a key-bound token the way the proxy does, as a verified key") {

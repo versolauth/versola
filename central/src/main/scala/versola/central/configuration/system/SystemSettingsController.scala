@@ -4,6 +4,8 @@ import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
+import versola.util.Zoneinfo
+import versola.util.http.Observability
 import zio.ZIO
 import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.EncoderOps
@@ -43,6 +45,12 @@ object SystemSettingsController extends AuditedController:
           service <- ZIO.service[SystemSettingsService]
           body <- request.bodyAs[SystemSettingsRecord]
           _ <- Audit.replaced(body)
-          _ <- service.upsertSettings(body)
-        yield Response.status(Status.NoContent)
+          // The console reads times in this zone, so it has to be a name its `Intl` knows too: the database's names, as for a user's own.
+          response <-
+            if body.uiTimeZone.exists(!Zoneinfo.isValid(_)) then
+              Observability.setError("invalid_ui_time_zone").as(
+                Response.text("uiTimeZone is not a name of the IANA time zone database").status(Status.BadRequest),
+              )
+            else service.upsertSettings(body).as(Response.status(Status.NoContent))
+        yield response
     }

@@ -10,6 +10,9 @@ case class SystemSettingsRecord(
     passwordRegex: String,
     passwordHistorySize: Int,
     passwordNumDifferent: Int,
+    /** The time zone the admin console shows times in for an administrator with no `zoneinfo` of their own: a name of the IANA time zone
+      * database. Absent: the console uses the browser's zone. */
+    uiTimeZone: Option[String],
 ) derives Schema, JsonCodec
 
 object SystemSettingsRecord:
@@ -23,4 +26,5 @@ object SystemSettingsRecord:
       passwordRegex = DefaultPasswordRegex,
       passwordHistorySize = 2,
       passwordNumDifferent = 1,
+      uiTimeZone = None,
     )

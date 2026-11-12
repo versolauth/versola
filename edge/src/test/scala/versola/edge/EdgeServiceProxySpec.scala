@@ -268,6 +268,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         verifier,
         EnvName.Test("test"),
         rateLimiter,
+        stub[ConsoleSettingsService],
       )
 
   /** Real crypto, except that opening an AES-GCM value fails with `failure`: the one way to make
