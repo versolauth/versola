@@ -16,7 +16,7 @@ export const PARTNER_LOGOUT_PATH = '/partner/logout';
 
 /** What the edge answered with: the HTTP status, the error code of the contract when it sent one, and the fields it named. */
 export class PartnerApiError extends Error {
-  constructor(readonly status: number, readonly code: PartnerErrorCode | null, message: string, readonly fields: string[] = [], readonly identifier?: string, readonly partner?: string) {
+  constructor(readonly status: number, readonly code: PartnerErrorCode | null, message: string, readonly fields: string[] = [], readonly identifier?: string, readonly partner?: string, readonly required?: StaffLevel) {
     super(message);
     this.name = 'PartnerApiError';
   }
@@ -34,11 +34,23 @@ export function writeErrorMessage(error: unknown, fallback = 'The change was not
   if (isPartnerApiError(error, 'partner_suspended')) {
     return 'The operator has suspended your organisation: nothing can be changed until it resumes you.';
   }
-  if (isPartnerApiError(error, 'outside_limits')) {
-    return `Outside your limits: ${error.fields.join(', ') || 'one of the fields'}. Ask the operator to change the limits, or change the request.`;
+  if (isPartnerApiError(error, 'insufficient_level')) {
+    return `This needs the ${error.required ?? 'admin'} level: ask an admin of your organisation.`;
   }
-  if (isPartnerApiError(error, 'needs_approval')) {
-    return `This needs the operator's approval: ${error.fields.join(', ') || 'the change'}.`;
+  if (isPartnerApiError(error, 'origin_mismatch')) {
+    return 'The request did not come from this console. Reload the page and try again.';
+  }
+  if (isPartnerApiError(error, 'partner_principal_mismatch')) {
+    return 'Your session is no longer accepted by the operator. Sign in again.';
+  }
+  if (isPartnerApiError(error, 'not_found')) {
+    return 'It no longer exists. Reload the page.';
+  }
+  if (isPartnerApiError(error, 'conflict')) {
+    return error.message || 'The change conflicts with the current state.';
+  }
+  if (error instanceof PartnerApiError && (error.code === 'central_unreadable' || error.code?.startsWith('central_answered_'))) {
+    return `The operator answered something this console could not use${error.message ? `: ${error.message}` : ''}. Nothing was changed; try again, and tell the operator if it persists.`;
   }
   return error instanceof Error && error.message ? error.message : fallback;
 }
@@ -57,15 +69,16 @@ async function request<T>(path: string, options: { method?: string; query?: Quer
     credentials: 'include',
   });
   if (response.status === 401) {
-    // No session on the edge: sign in again through the console's login path, and fail the call so nothing waits on it.
-    window.location.assign(PARTNER_LOGIN_PATH);
+    // No session on the edge: it names where to sign in (`loginPath`, `/partner/login`); go there and fail the call so nothing waits on it.
+    const refusal = tryParse(await response.text()) as { loginPath?: string } | string | undefined;
+    window.location.assign(typeof refusal === 'object' && refusal?.loginPath ? refusal.loginPath : PARTNER_LOGIN_PATH);
     throw new PartnerApiError(401, null, 'Your session ended. Signing you in again…');
   }
   const text = await response.text();
   const parsed = text ? tryParse(text) : undefined;
   if (!response.ok) {
-    const body = (parsed ?? {}) as { error?: PartnerErrorCode; message?: string; fields?: string[]; identifier?: string; partner?: string };
-    throw new PartnerApiError(response.status, body.error ?? null, body.message ?? body.error ?? text ?? `Request failed (${response.status})`, body.fields ?? [], body.identifier, body.partner);
+    const body = (parsed ?? {}) as { error?: PartnerErrorCode; message?: string; fields?: string[]; identifier?: string; partner?: string; required?: StaffLevel };
+    throw new PartnerApiError(response.status, body.error ?? null, body.message ?? (body.error === 'internal_error' ? 'The edge failed unexpectedly.' : body.error) ?? text ?? `Request failed (${response.status})`, body.fields ?? [], body.identifier, body.partner, body.required);
   }
   return parsed as T;
 }
@@ -84,7 +97,6 @@ export const fetchClients = () => request<{ clients: PartnerClient[] }>('/client
 export const createClient = (client: PartnerClientWrite) => request<PartnerClient>('/clients', { method: 'POST', body: client });
 export const updateClient = (client: PartnerClientWrite) => request<PartnerClient>(`/clients/${encodeURIComponent(client.id)}`, { method: 'PUT', body: client });
 export const deleteClient = (id: string) => request<void>(`/clients/${encodeURIComponent(id)}`, { method: 'DELETE' });
-export const rotateClientKeys = (id: string) => request<{ jwksUri?: string; rotatedAt: string }>(`/clients/${encodeURIComponent(id)}/rotate-secret`, { method: 'POST' });
 export const withdrawClient = (id: string) => request<PartnerClient>(`/clients/${encodeURIComponent(id)}/withdraw`, { method: 'POST' });
 
 export const fetchResources = () => request<{ resources: PartnerResource[] }>('/resources').then(response => response.resources);

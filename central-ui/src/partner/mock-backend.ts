@@ -3,7 +3,9 @@
  * serve it, on the same `MockPage` / `MockRoute` interfaces as the operator mock, so the Playwright
  * specs and the in-page demo share it. It answers in every state the screens must survive: a
  * staff member who is not on the team (`not_a_member`), a suspended partner, central unavailable
- * on writes, and the limit rules on clients.
+ * (503 on everything central answers), and the limit rules on clients. Its shapes, status codes and
+ * error codes are those of `edge/open-api/partner-api.yaml`; where the console's own behaviour differs
+ * from it (revocation), the PR says so.
  */
 import type { MockPage, MockRequest } from '../demo/mock-backend';
 import type { PartnerLimits } from '../types';
@@ -19,8 +21,10 @@ export type MockPartnerState = {
   me: PartnerMe | null;
   /** Answers `/me` with 403 `not_a_member` and this masked identifier. */
   notAMember?: string;
-  /** Makes every write answer 503 `central_unavailable`; reads keep working from the snapshot. */
+  /** Central cannot be reached: everything the edge answers by calling central is 503 `central_unavailable`; `/me` and the team, which the edge answers itself, keep working. */
   centralUnavailable?: boolean;
+  /** The edges whose enrollment token was issued and not used yet, with its expiry. The DTO does not carry it; only Revoke token needs it. */
+  pendingTokens?: Record<string, string>;
   clients: PartnerClient[];
   resources: PartnerResource[];
   edges: PartnerEdge[];
@@ -56,7 +60,7 @@ function readBody(request: MockRequest): unknown {
 
 /** The bootstrap bundle the partner console shows once for a new edge. */
 export function partnerBundle(edgeId: string, me: PartnerMe, token: string): string {
-  const central = me.partner.operator.centralMtlsUrl.replace('central-mtls.', 'central.');
+  const central = (me.partner.operator.centralMtlsUrl ?? '').replace('central-mtls.', 'central.');
   return JSON.stringify({
     edgeId, group: me.partner.id,
     central: { enrollUrl: `${central}/edge/enroll`, mtlsUrl: me.partner.operator.centralMtlsUrl, pins: ['sha256/4f3a0c7e9b2d…c1', 'sha256/9b2e51a8d0f4…77'] },
@@ -89,7 +93,6 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
   const seed = base ?? (await import('./seed')).partnerSeed();
   const state = mergePartnerState(overrides, seed);
   const requests: PartnerRequestLog[] = [];
-  const tokens = new Map<string, EnrollmentToken>();
   const nowMs = () => (state.now ? Date.parse(state.now) : Date.now());
   const nowIso = () => new Date(nowMs()).toISOString();
   const issueToken = (edge: PartnerEdge): EnrollmentToken => {
@@ -98,9 +101,14 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
     // An enrollment token lives 24 hours.
     const expiresAt = new Date(nowMs() + 24 * 60 * 60_000).toISOString();
     const issued = { token, bundle: partnerBundle(edge.id, me, token), expiresAt };
-    tokens.set(edge.id, issued);
-    edge.pendingToken = { expiresAt };
+    state.pendingTokens = { ...(state.pendingTokens ?? {}), [edge.id]: expiresAt };
     return issued;
+  };
+
+  /** One audit event of what the signed-in staff member just did, as central writes it: its kind, and `<type>:<id>` as the target. */
+  const recordAudit = (kind: string, target: string) => {
+    const me = state.me!;
+    state.audit = [{ id: `ev-${Date.now()}-${state.audit.length}`, at: nowIso(), actor: { sub: me.staff.sub }, action: kind, target, outcome: 'ok', from: me.edge.id }, ...state.audit];
   };
 
   await page.route('**/partner/api/**', async route => {
@@ -112,20 +120,27 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
     requests.push({ method, pathname, searchParams: Object.fromEntries(url.searchParams.entries()), body });
     if (state.delayMs) await new Promise(resolve => setTimeout(resolve, state.delayMs));
 
+    const refuse = (status: number, error: string, extra: Record<string, unknown> = {}) => route.fulfill(json({ error, ...extra }, status));
     const write = method !== 'GET';
-    if (write && state.centralUnavailable && pathname !== '/staff' && !pathname.startsWith('/staff/') && pathname !== '/revocations') {
-      // Staff and the sessions live on the partner's own edges: neither needs central, so ending a session works while it is down.
-      await route.fulfill(json({ error: 'central_unavailable', message: 'central is unreachable' }, 503));
-      return;
-    }
-    if (write && state.me?.partner.status === 'suspended' && !pathname.startsWith('/staff')) {
-      await route.fulfill(json({ error: 'partner_suspended' }, 403));
-      return;
-    }
+    // What the edge answers itself: who is asking, the team, the pending profile change, and the one operation a partner does not have.
+    const edgeServed = pathname === '/me' || pathname === '/staff' || pathname.startsWith('/staff/') || (pathname === '/profile' && method === 'GET') || /^\/clients\/[^/]+\/rotate-secret$/.test(pathname)
+      // Revocation here ends sessions on the partner's own edges (the owner's decision), so it does not go through central; the edge's contract has it central-served.
+      || pathname === '/revocations';
     const level: StaffLevel = state.me?.staff.level ?? 'viewer';
-    const adminOnly = pathname.startsWith('/staff') || pathname === '/settings' || pathname === '/profile' || pathname === '/revocations';
-    if (write && (level === 'viewer' || (level === 'developer' && adminOnly))) {
-      await route.fulfill(json({ error: 'forbidden', message: `A ${level} may not do this` }, 403));
+    const rank: Record<StaffLevel, number> = { viewer: 0, developer: 1, admin: 2 };
+    const required: StaffLevel = pathname === '/me' ? 'viewer'
+      : pathname.startsWith('/staff') || pathname === '/settings' || pathname === '/profile' || (pathname === '/revocations' && write) ? 'admin'
+        : write ? 'developer' : 'viewer';
+    if (pathname !== '/me' && rank[level] < rank[required]) {
+      await refuse(403, 'insufficient_level', { required, message: `A ${level} may not do this` });
+      return;
+    }
+    if (!edgeServed && state.centralUnavailable) {
+      await refuse(503, 'central_unavailable', { message: 'central is unreachable' });
+      return;
+    }
+    if (!edgeServed && write && state.me?.partner.status === 'suspended') {
+      await refuse(403, 'partner_suspended', { message: 'the operator has suspended the partner' });
       return;
     }
 
@@ -135,7 +150,7 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
         return;
       }
       if (!state.me) {
-        await route.fulfill(json({ message: 'edge database unavailable' }, 500));
+        await refuse(500, 'internal_error');
         return;
       }
       await route.fulfill(json({ ...state.me, edge: { ...state.me.edge, central: state.centralUnavailable ? 'unavailable' : state.me.edge.central } }));
@@ -156,57 +171,65 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
       if (method === 'POST' && !id) {
         const payload = body as PartnerClientWrite;
         if (state.clients.some(client => client.id === payload.id)) {
-          await route.fulfill(json({ message: `Client ${payload.id} already exists` }, 409));
+          await refuse(409, 'conflict', { message: `Client ${payload.id} already exists` });
           return;
         }
-        if (state.clients.length >= limits.maxClients) {
-          await route.fulfill(json({ error: 'outside_limits', fields: ['maxClients'] }, 403));
-          return;
-        }
+        // Central decides what is inside the limits and answers 400 with the reason in `message`; the edge sends no `outside_limits` code.
+        const outsideAtCreate = [...(state.clients.length >= limits.maxClients ? ['maxClients'] : []), ...partnerLimitViolations(limits, payload)];
         const lifetimeError = tokenLifetimeError(payload);
-        if (lifetimeError) {
-          await route.fulfill(json({ message: `accessTokenTtl: ${lifetimeError}` }, 400));
+        if (lifetimeError || outsideAtCreate.length > 0) {
+          await refuse(400, 'invalid_request', { message: lifetimeError ? `accessTokenTtl: ${lifetimeError}` : `outside the partner's limits: ${outsideAtCreate.join(', ')}` });
           return;
         }
-        // Creating a client always needs the operator (#549 decision 7): the name and logo wait, plus whatever is outside the limits.
-        const waiting = [...new Set(['clientName', ...(payload.logoUri ? ['logoUri'] : []), ...partnerLimitViolations(limits, payload)])];
+        // Registered waiting for the operator (`approval.kind` create): the name and the logo wait.
+        const waiting = ['clientName', ...(payload.logoUri ? ['logoUri'] : [])];
         const now = nowIso();
+        const authMethod = payload.authMethod ?? 'tls_client_auth';
         const client: PartnerClient = {
-          ...payload, logoUri: payload.logoUri ?? null, policyUri: payload.policyUri ?? null, tosUri: payload.tosUri ?? null,
-          backChannelLogoutUri: payload.backChannelLogoutUri ?? null, createdAt: now,
+          id: payload.id, kind: payload.kind, clientName: payload.clientName, logoUri: payload.logoUri ?? null, policyUri: payload.policyUri ?? null, tosUri: payload.tosUri ?? null,
+          redirectUris: payload.redirectUris, scope: payload.scope, accessTokenTtl: payload.accessTokenTtl, refreshTokenTtl: payload.refreshTokenTtl ?? null,
+          backChannelLogoutUri: payload.backChannelLogoutUri ?? null, authMethod, limits, createdAt: now,
           loginPath: `/login/${payload.id}`,
-          approval: { kind: 'create', status: 'pending', waitingFields: waiting, requestedAt: now },
-          fixed: { consent: true, flow: 'code+pkce+par', authMethod: payload.authMethod ?? 'tls_client_auth', group: me.partner.id },
+          approval: { kind: 'create', status: 'pending', waitingFields: waiting, requestedAt: now, note: null },
+          fixed: { consent: true, flow: 'code+pkce+par', authMethod, group: me.partner.id },
         };
-        delete (client as Partial<PartnerClientWrite>).authMethod;
         state.clients = [client, ...state.clients];
-        state.audit = [{ id: `ev-${Date.now()}`, at: now, actor: { sub: me.staff.sub, display: me.staff.display }, action: 'submitted a client for approval', target: client.id, outcome: 'ok', from: me.edge.id }, ...state.audit];
-        await route.fulfill(json(client, 201));
+        recordAudit('admin.partner-client.create', `client:${client.id}`);
+        await route.fulfill(json(client, 202));
         return;
       }
       const client = id ? state.clients.find(candidate => candidate.id === id) : undefined;
       if (!client) {
-        await route.fulfill(json({ message: `Client ${id} was not found` }, 404));
+        await refuse(404, 'not_found', { message: `Client ${id} was not found` });
+        return;
+      }
+      if (method === 'POST' && action === 'rotate-secret') {
+        // A partner client has no secret and no key the operator holds: there is nothing to rotate.
+        await refuse(409, 'not_supported', { message: "a partner client authenticates with the group's certificate: it has no secret to rotate" });
         return;
       }
       if (method === 'PUT' && !action) {
         const payload = body as PartnerClientWrite;
-        const lifetimeError = tokenLifetimeError({ kind: client.kind, accessTokenTtl: payload.accessTokenTtl });
-        if (lifetimeError) {
-          await route.fulfill(json({ message: `accessTokenTtl: ${lifetimeError}` }, 400));
+        if (payload.id && payload.id !== client.id) {
+          await refuse(400, 'invalid_request', { message: 'the id in the body differs from the path' });
           return;
         }
-        const outside = partnerLimitViolations(limits, payload);
+        const lifetimeError = tokenLifetimeError({ kind: client.kind, accessTokenTtl: payload.accessTokenTtl });
+        if (lifetimeError) {
+          await refuse(400, 'invalid_request', { message: `accessTokenTtl: ${lifetimeError}` });
+          return;
+        }
         const waiting = waitingFieldsOf(limits, payload, client);
-        // Within the limits a change applies at once; the name, the logo and anything outside the limits wait for the operator.
+        // Within the limits a change applies at once (200); the name, the logo and anything outside the limits wait for the operator (202).
         const applied = { ...payload } as Partial<PartnerClientWrite>;
         for (const field of waiting) delete (applied as Record<string, unknown>)[field];
         delete applied.authMethod;
+        delete applied.kind;
         Object.assign(client, applied);
+        recordAudit('admin.partner-client.update', `client:${client.id}`);
         if (waiting.length > 0) {
-          client.approval = { kind: 'change', status: 'pending', waitingFields: waiting, requestedAt: nowIso() };
-          state.audit = [{ id: `ev-${Date.now()}`, at: client.approval.requestedAt!, actor: { sub: me.staff.sub, display: me.staff.display }, action: 'asked the operator to change a client', target: client.id, outcome: 'ok', from: me.edge.id }, ...state.audit];
-          await route.fulfill(json({ ...client, approval: { ...client.approval, waitingFields: [...waiting] }, outsideLimits: outside }, 202));
+          client.approval = { kind: 'change', status: 'pending', waitingFields: waiting, requestedAt: nowIso(), note: null };
+          await route.fulfill(json(client, 202));
           return;
         }
         await route.fulfill(json(client));
@@ -214,22 +237,20 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
       }
       if (method === 'DELETE' && !action) {
         state.clients = state.clients.filter(candidate => candidate.id !== id);
+        recordAudit('admin.partner-client.delete', `client:${id}`);
         await route.fulfill({ status: 204, body: '' });
-        return;
-      }
-      if (method === 'POST' && action === 'rotate-secret') {
-        await route.fulfill(json({ rotatedAt: nowIso() }));
         return;
       }
       if (method === 'POST' && action === 'withdraw') {
         if (client.approval.status !== 'pending') {
-          await route.fulfill(json({ message: 'Nothing is waiting for this client' }, 409));
+          await refuse(409, 'conflict', { message: 'Nothing is waiting for this client' });
           return;
         }
         // The approval says whether it is the client's creation (the client is gone with its request) or a change (the client stays as registered).
         const neverApproved = client.approval.kind === 'create';
         if (neverApproved) state.clients = state.clients.filter(candidate => candidate.id !== id);
-        else client.approval = { kind: 'change', status: 'approved', waitingFields: [] };
+        else client.approval = { kind: 'change', status: 'approved', waitingFields: [], note: null };
+        recordAudit('admin.partner-client.withdraw', `client:${id}`);
         await route.fulfill(json(neverApproved ? { ...client, approval: { ...client.approval, status: 'rejected', waitingFields: [], note: 'withdrawn' } } : client));
         return;
       }
@@ -247,17 +268,17 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
       if (method === 'POST' && !id) {
         const payload = body as PartnerResourceWrite;
         if (state.resources.some(resource => resource.resourceId === payload.resourceId)) {
-          await route.fulfill(json({ message: `Resource ${payload.resourceId} already exists` }, 409));
+          await refuse(409, 'conflict', { message: `Resource ${payload.resourceId} already exists` });
           return;
         }
-        const resource: PartnerResource = { resourceId: payload.resourceId, resource: payload.resource, audience: [...payload.audience], endpoints: payload.endpoints ?? [], secretRotation: false, secretRotatedAt: nowIso() };
+        const resource: PartnerResource = { resourceId: payload.resourceId, resource: payload.resource, audience: [...payload.audience], endpoints: payload.endpoints ?? [], secretRotation: false };
         state.resources = [resource, ...state.resources];
         await route.fulfill(json({ resource, secret: `generated-${resource.resourceId}` }, 201));
         return;
       }
       const resource = id ? state.resources.find(candidate => candidate.resourceId === id) : undefined;
       if (!resource) {
-        await route.fulfill(json({ message: `Resource ${id} was not found` }, 404));
+        await refuse(404, 'not_found', { message: `Resource ${id} was not found` });
         return;
       }
       if (method === 'PUT' && !action) {
@@ -278,7 +299,6 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
       }
       if (method === 'POST' && action === 'rotate-secret') {
         resource.secretRotation = true;
-        resource.secretRotatedAt = nowIso();
         await route.fulfill(json({ secret: `rotated-${id}` }));
         return;
       }
@@ -296,11 +316,11 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
       if (method === 'POST' && !id) {
         const payload = body as { id: string; publicUrl: string };
         if (state.edges.some(edge => edge.id === payload.id)) {
-          await route.fulfill(json({ message: `Edge ${payload.id} already exists` }, 409));
+          await refuse(409, 'conflict', { message: `Edge ${payload.id} already exists` });
           return;
         }
         if (state.edges.length >= limits.maxEdges) {
-          await route.fulfill(json({ error: 'outside_limits', fields: ['maxEdges'] }, 403));
+          await refuse(409, 'conflict', { message: `the partner is at its limit of ${limits.maxEdges} edges` });
           return;
         }
         const edge: PartnerEdge = { id: payload.id, publicUrl: payload.publicUrl, status: 'waiting', replicas: 0, policies: state.edges[0]?.policies ?? { overload: {}, accessLog: {}, rateLimits: {} } };
@@ -314,7 +334,7 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
       }
       const edge = id ? state.edges.find(candidate => candidate.id === id) : undefined;
       if (!edge) {
-        await route.fulfill(json({ message: `Edge ${id} was not found` }, 404));
+        await refuse(404, 'not_found', { message: `Edge ${id} was not found` });
         return;
       }
       if (method === 'DELETE' && !action) {
@@ -324,7 +344,7 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
       }
       if (method === 'POST' && action === 'enrollment-tokens') {
         if (edge.status !== 'waiting') {
-          await route.fulfill(json({ message: `Edge ${id} is already enrolled` }, 409));
+          await refuse(409, 'conflict', { message: `Edge ${id} is already enrolled` });
           return;
         }
         const issued = issueToken(edge);
@@ -332,8 +352,12 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
         return;
       }
       if (method === 'DELETE' && action === 'enrollment-tokens') {
-        tokens.delete(edge.id);
-        delete edge.pendingToken;
+        if (!state.pendingTokens?.[edge.id]) {
+          await refuse(409, 'conflict', { message: `Edge ${edge.id} has no unused enrollment token` });
+          return;
+        }
+        const { [edge.id]: _revoked, ...rest } = state.pendingTokens;
+        state.pendingTokens = rest;
         await route.fulfill({ status: 204, body: '' });
         return;
       }
@@ -349,17 +373,17 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
         const payload = body as RevocationRequest;
         const ownEdges = state.edges.filter(edge => edge.status === 'enrolled').map(edge => edge.id);
         if (!payload.value?.trim() || !payload.clients?.length || !payload.edges?.length) {
-          await route.fulfill(json({ message: 'value, clients and edges are required' }, 400));
+          await refuse(400, 'invalid_request', { message: 'value, clients and edges are required' });
           return;
         }
         if (payload.edges.some(id => !ownEdges.includes(id))) {
-          await route.fulfill(json({ message: 'Only your own enrolled edges can end sessions' }, 400));
+          await refuse(400, 'invalid_request', { message: 'Only your own enrolled edges can end sessions' });
           return;
         }
         const ended = payload.by === 'sid' || payload.by === 'fam' ? 1 : payload.by === 'client' ? 1284 : 3;
-        const revocation: Revocation = { id: `rv-${Date.now()}`, at: nowIso(), by_staff: me.staff.display ?? me.staff.sub, ...payload, ended };
+        const revocation: Revocation = { id: `rv-${Date.now()}`, at: nowIso(), by_staff: me.staff.sub, ...payload, ended };
         state.revocations = [revocation, ...state.revocations];
-        state.audit = [{ id: `ev-${Date.now()}`, at: revocation.at, actor: { sub: me.staff.sub, display: me.staff.display }, action: `ended sessions by ${payload.by}`, target: `${payload.clients.join(', ')} · ${payload.value}`, outcome: 'ok', from: me.edge.id }, ...state.audit];
+        recordAudit('admin.partner-revocation.create', `revocation:${payload.by}:${payload.value}`);
         await route.fulfill(json({ ended }));
         return;
       }
@@ -371,10 +395,11 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
       const kind = url.searchParams.get('kind') ?? '';
       const cursor = url.searchParams.get('cursor');
       const q = (url.searchParams.get('q') ?? '').toLowerCase();
+      // `actor` is a staff `sub`, `kind` an audit kind, `q` a free-text filter, as in the contract.
       const matches = state.audit
-        .filter(event => !actor || (actor === 'operator' ? !!event.actor.byOperator : actor === 'edges' ? event.actor.sub.startsWith('edge-') : actor === 'team' ? !event.actor.byOperator && !event.actor.sub.startsWith('edge-') && event.actor.sub !== 'anonymous' : event.actor.sub === actor))
-        .filter(event => !kind || (kind === 'security' ? event.outcome !== 'ok' : kind === 'clients' ? /client/.test(event.action) : kind === 'resources' ? /resource/.test(event.action) : kind === 'edges' ? event.actor.sub.startsWith('edge-') : kind === 'team' ? /member|invite/.test(event.action) : kind === 'revocations' ? /ended|revoked/.test(event.action) : true))
-        .filter(event => !q || `${event.actor.display ?? ''} ${event.actor.sub} ${event.action} ${event.target}`.toLowerCase().includes(q));
+        .filter(event => !actor || event.actor.sub === actor)
+        .filter(event => !kind || event.action === kind)
+        .filter(event => !q || `${event.actor.sub} ${event.action} ${event.target}`.toLowerCase().includes(q));
       const start = cursor ? Math.max(0, matches.findIndex(event => event.id === cursor)) : 0;
       const pageEvents = matches.slice(start, start + AUDIT_PAGE);
       const next = matches[start + AUDIT_PAGE]?.id ?? null;
@@ -397,17 +422,16 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
         const masked = kind === 'email' ? identifier : identifier.replace(/\d(?=\d{2})/g, '•');
         const now = nowMs();
         const member: StaffMember = {
-          id: `inv-${Date.now()}`, identifier: { kind, masked }, level: payload.level, state: 'invited', addedBy: me.staff.display ?? me.staff.sub,
+          id: `inv-${Date.now()}`, identifier: { kind, masked }, level: payload.level, state: 'invited', addedBy: me.staff.sub,
           addedAt: new Date(now).toISOString(), expiresAt: new Date(now + payload.expiresInDays * 86_400_000).toISOString(),
         };
         state.staff = [...state.staff, member];
-        state.audit = [{ id: `ev-${now}`, at: member.addedAt, actor: { sub: me.staff.sub, display: me.staff.display }, action: `invited a member (${payload.level})`, target: masked, outcome: 'ok', from: me.edge.id }, ...state.audit];
         await route.fulfill(json(member, 201));
         return;
       }
       const member = id ? state.staff.find(candidate => candidate.id === id) : undefined;
       if (!member) {
-        await route.fulfill(json({ message: `Member ${id} was not found` }, 404));
+        await refuse(404, 'not_found', { message: `Member ${id} was not found` });
         return;
       }
       if (method === 'PUT') {
@@ -417,7 +441,7 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
       }
       if (method === 'DELETE') {
         if (member.subject === me.staff.sub) {
-          await route.fulfill(json({ message: 'You cannot remove yourself' }, 409));
+          await refuse(409, 'conflict', { message: 'You cannot remove yourself' });
           return;
         }
         state.staff = state.staff.filter(candidate => candidate.id !== id);
@@ -451,7 +475,7 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
       }
     }
 
-    await route.fulfill(json({ message: `No mock handler for ${method} ${pathname}` }, 404));
+    await refuse(404, 'not_found', { message: `No mock handler for ${method} ${pathname}` });
   });
 
   return { state, requests };

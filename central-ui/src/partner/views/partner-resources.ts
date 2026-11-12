@@ -10,7 +10,7 @@ import type { EndpointsSaveDetail } from '../../components/resource-endpoints-ed
 import type { ResourceEndpoint } from '../../types';
 import { confirmDestructiveAction } from '../../utils/confirm-dialog';
 import { confirmDiscardDraft } from '../../utils/draft-guard';
-import { copyToClipboard, formatDate } from '../../utils/helpers';
+import { copyToClipboard } from '../../utils/helpers';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../../utils/record-route';
 import { validateResourceId, validateResourceUri } from '../../utils/validators';
 import { createResource, deleteResource, fetchClients, fetchResources, rotateResourceSecret, updateResource, writeErrorMessage } from '../partner-api';
@@ -229,7 +229,7 @@ export class VersolaPartnerResources extends LitElement {
     this.errorMessage = '';
     try {
       const { secret } = await rotateResourceSecret(resource.resourceId);
-      this.resources = this.resources.map(candidate => candidate.resourceId === resource.resourceId ? { ...candidate, secretRotation: true, secretRotatedAt: new Date().toISOString() } : candidate);
+      this.resources = this.resources.map(candidate => candidate.resourceId === resource.resourceId ? { ...candidate, secretRotation: true } : candidate);
       this.issued = { resourceId: resource.resourceId, secret, action: 'rotated' };
       this.copyFeedback = '';
     } catch (error) {
@@ -307,7 +307,7 @@ export class VersolaPartnerResources extends LitElement {
         </button>` },
       { id: 'audience', label: 'Audience', cell: resource => valueChips(resource.audience, { empty: 'No client' }) },
       { id: 'endpoints', label: 'Endpoints', cell: resource => valueChips(resource.endpoints.map(endpoint => `${endpoint.method} ${endpoint.path}`), { max: 2, empty: 'None yet' }) },
-      { id: 'secret', label: 'Secret', cell: resource => resource.secretRotation ? html`<span class="chip warn">Previous secret kept</span>` : html`<span class="muted">${resource.secretRotatedAt ? `rotated ${formatDate(resource.secretRotatedAt)}` : 'current'}</span>` },
+      { id: 'secret', label: 'Secret', cell: resource => resource.secretRotation ? html`<span class="chip warn">Previous secret kept</span>` : html`<span class="muted">current</span>` },
     ];
     const menuItems = (resource: PartnerResource): RowMenuItem[] => [
       { label: 'Open', onSelect: () => this.openView(resource) },
@@ -349,12 +349,12 @@ export class VersolaPartnerResources extends LitElement {
     return html`
       <versola-record-card heading="General" ?editable=${edit} .body=${html`
         ${this.row('Upstream', html`<span class="mono">${resource.resource}</span>`)}
-        ${this.row('Reached at', html`<span class="mono">${me.edge.publicUrl}/resources/${resource.resourceId}/…</span>`)}
+        ${this.row('Reached at', html`<span class="mono">${me.edge.publicUrl ?? ''}/resources/${resource.resourceId}/…</span>`)}
         ${this.row('Audience', resource.audience.length ? html`<div class="tag-list">${resource.audience.map(id => html`<span class="tag">${id}</span>`)}</div>` : html`<span class="muted">No client may call it yet.</span>`)}
       `} @edit=${() => dispatchRecordRoute(this, { edit: 'general', create: false })}></versola-record-card>
 
       <versola-record-card heading="Secret" subheading="Your edge authenticates to the upstream with it (Basic auth)." .body=${html`
-        ${this.row('Status', resource.secretRotation ? html`<span class="chip warn">Previous secret kept</span>` : html`Current${resource.secretRotatedAt ? html` · rotated ${formatDate(resource.secretRotatedAt)}` : ''}`)}
+        ${this.row('Status', resource.secretRotation ? html`<span class="chip warn">Previous secret kept</span>` : html`Current`)}
         ${edit ? html`<versola-record-row .value=${html`<div class="key-actions"><button type="button" class="btn btn-secondary btn-sm" @click=${() => this.handleRotate(resource)}>Rotate secret</button></div>`}></versola-record-row>` : ''}
       `}></versola-record-card>
 

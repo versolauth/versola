@@ -20,7 +20,7 @@ test('shows the link, the edges, the attention list, the limits and the recent a
   for (const id of ['edge-pilot-eu-1', 'edge-pilot-eu-2', 'edge-pilot-kz-1']) await expect(page.locator('.tile').getByText(id, { exact: true })).toBeVisible();
 
   await expect(page.getByRole('button', { name: 'Client pilot-pay-checkout is waiting for the operator since Nov 5, 2026' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Edge edge-pilot-kz-1 has not enrolled yet (token expires in 1 hr)' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Edge edge-pilot-kz-1 has not enrolled yet' })).toBeVisible();
   // The invite expires in six days: not yet something to attend to.
   await expect(page.getByRole('button', { name: /^Invite for/ })).toHaveCount(0);
 
@@ -68,7 +68,7 @@ test('says Nothing when nothing needs attention, and that cards fail on their ow
 
   await page.route('**/partner/api/audit*', route => route.fulfill({ status: 500, contentType: 'application/json', body: '{"message":"boom"}' }));
   await page.goto('/partner.html?view=overview');
-  await expect(page.getByRole('region', { name: 'Recent activity' })).toContainText('…');
+  await expect(page.getByRole('region', { name: 'Recent activity' })).toContainText('Could not be read from central.');
   await expect(page.getByRole('region', { name: 'Clients' })).toContainText('pilot-pay-web');
   await expect(page.getByRole('alert')).toHaveCount(0);
 });

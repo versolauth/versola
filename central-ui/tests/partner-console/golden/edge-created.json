@@ -1,0 +1,22 @@
+{
+  "edge": {
+    "id": "acme-edge-1",
+    "publicUrl": "https://edge.partner.example.com",
+    "status": "waiting",
+    "certificateNotAfter": "2026-11-24T08:00:00Z",
+    "lastRenewedAt": "2026-11-10T08:00:00Z",
+    "replicas": 0,
+    "policies": {
+      "overload": {},
+      "accessLog": {},
+      "rateLimits": {}
+    }
+  },
+  "signingKey": {
+    "keyId": "2026-11-12_09-00-00",
+    "privateKey": "-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----"
+  },
+  "token": "vtk_acme_x",
+  "bundle": "{}",
+  "expiresAt": "2026-11-13T09:00:00Z"
+}

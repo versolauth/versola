@@ -23,7 +23,7 @@ test('lists members and invites, filters them, and explains the three levels', a
   const table = page.locator('versola-data-table');
   await expect(table.getByRole('columnheader')).toHaveText(['Member', 'Level', 'State', 'Added', 'Actions']);
   await expect(table.getByRole('button', { name: /^Open member/ })).toHaveCount(4);
-  await expect(table.locator('tr[data-key="u_7f3a9c2e"]')).toContainText('signed in 1 hr ago');
+  await expect(table.locator('tr[data-key="u_7f3a9c2e"]')).toContainText('since Sep 2, 2026');
   await expect(table.locator('tr[data-key="inv-1"]')).toContainText('Invited');
   await expect(table.locator('tr[data-key="inv-1"]')).toContainText('expires Nov 13, 2026');
   await expect(page.getByRole('region', { name: 'Levels' })).toContainText('read everything, change nothing');
@@ -34,7 +34,7 @@ test('lists members and invites, filters them, and explains the three levels', a
   await page.getByRole('group', { name: 'Filter team' }).getByRole('button', { name: 'Invited' }).click();
   await expect(table.getByRole('button', { name: /^Open member/ })).toHaveText([/ops@pilotpay\.example/]);
   await page.getByRole('group', { name: 'Filter team' }).getByRole('button', { name: 'All' }).click();
-  await page.getByLabel('Search team').fill('777');
+  await page.getByLabel('Search team').fill('marat');
   await expect(table.getByRole('button', { name: /^Open member/ })).toHaveText([/Marat Lee/]);
 });
 
@@ -71,7 +71,7 @@ test('invites by email with nothing looked up; the invite waits for the first si
 test('changes a member\'s level; the signed-in admin cannot change or remove themself', async ({ page }) => {
   const api = await loadPartnerApp(page, { path: `${teamPath}&id=u_2b91d4e0` });
   const panel = sidePanel(page, 'Marat Lee');
-  await expect(panel.getByRole('region', { name: 'Member' })).toContainText('+7 777 •••• 18');
+  await expect(panel.getByRole('region', { name: 'Member' })).toContainText('u_2b91d4e0');
   await expect(panel.getByRole('region', { name: 'Member' })).toContainText('From the operator');
   await panel.getByRole('button', { name: 'Edit level' }).click();
   const editor = sidePanel(page, 'Edit level');

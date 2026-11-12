@@ -20,14 +20,14 @@ test.beforeEach(async ({ page }) => {
 test('lists the edges with their certificates; at the cap Add edge is disabled', async ({ page }) => {
   await loadPartnerApp(page, { path: edgesPath });
   const table = page.locator('versola-data-table');
-  await expect(table.getByRole('columnheader')).toHaveText(['Edge', 'Public URL', 'Status', 'Certificate', 'Replicas', 'Actions']);
+  await expect(table.getByRole('columnheader')).toHaveText(['Edge', 'Public URL', 'Status', 'Certificate', 'Actions']);
   const eu1 = table.getByRole('row').filter({ hasText: 'edge-pilot-eu-1' });
   await expect(eu1).toContainText('Enrolled');
   await expect(eu1).toContainText('valid to Nov 17, 2026');
   await expect(eu1).toContainText('renewed Nov 3, 2026');
   const kz = table.getByRole('row').filter({ hasText: 'edge-pilot-kz-1' });
   await expect(kz).toContainText('Waiting for enrollment');
-  await expect(kz).toContainText('not enrolled · token expires in 1 hr');
+  await expect(kz).toContainText('not enrolled');
   await expect(page.getByText('Certificates renew by themselves')).toBeVisible();
   await expect(page.getByText('You have the 3 edges the operator allows.')).toBeVisible();
   const add = page.getByRole('button', { name: '+ Add edge' });
@@ -43,13 +43,14 @@ test('an enrolled edge: the link to the operator, the certificate names, the pol
   const link = panel.getByRole('region', { name: 'Link to the operator' });
   await expect(link).toContainText('https://central-mtls.acme.example');
   await expect(link).toContainText('connected');
-  await expect(link).toContainText('serves from the signed snapshot; management calls answer 503');
+  await expect(link).toContainText('this page cannot be read or changed: its calls answer 503 until central is back');
   const certificate = panel.getByRole('region', { name: 'Certificate' });
   await expect(certificate).toContainText('Nov 3, 2026 → Nov 17, 2026');
   await expect(certificate).toContainText('urn:versola:edge:edge-pilot-eu-1');
   await expect(certificate).toContainText('urn:versola:edge-group:pilot-pay');
   await expect(certificate).toContainText('By itself');
-  await expect(panel.getByRole('region', { name: 'Replicas' })).toContainText('2, each with its own copy of the certificate');
+  await expect(panel.getByRole('region', { name: 'Address' })).toContainText('https://login.pilotpay.example');
+  await expect(panel.getByText('Replicas')).toHaveCount(0);
   const policies = panel.getByRole('region', { name: "The operator's policies" });
   await expect(policies).toContainText('partner-default · 30000 / 60 s per client');
   await expect(policies).toContainText('inbound priority · retry budget 10 %');
@@ -93,7 +94,7 @@ test('adds an edge: the token and the bootstrap bundle are shown once, and leavi
   await expect(panel.getByRole('region', { name: 'Signing key' })).toContainText('BEGIN PRIVATE KEY');
   await expect(bundle).toContainText('"group": "pilot-pay"');
   await expect(bundle).toContainText('https://central-mtls.acme.example');
-  await expect(panel.getByRole('region', { name: 'Certificate' })).toContainText('Not enrolled · token expires in 24 hr');
+  await expect(panel.getByRole('region', { name: 'Certificate' })).toContainText('Not enrolled');
   expect(await scan(page)).toEqual([]);
 
   await panel.getByRole('button', { name: 'Copy token' }).click();
@@ -107,7 +108,7 @@ test('adds an edge: the token and the bootstrap bundle are shown once, and leavi
   await expect(panel.locator('.secret-value')).toHaveCount(0);
   await page.getByRole('button', { name: 'Close panel' }).click();
   await expect(panel).toHaveCount(0);
-  await expect(page.locator('versola-data-table').getByRole('row').filter({ hasText: 'edge-pilot-us-1' })).toContainText('token expires in 24 hr');
+  await expect(page.locator('versola-data-table').getByRole('row').filter({ hasText: 'edge-pilot-us-1' })).toContainText('Waiting for enrollment');
   await expect(page.getByRole('button', { name: '+ Add edge' })).toBeDisabled();
 });
 
@@ -115,19 +116,22 @@ test('a waiting edge: revoke the unused token, issue a new one', async ({ page }
   const api = await loadPartnerApp(page, { path: `${edgesPath}&id=edge-pilot-kz-1` });
   const panel = sidePanel(page, 'edge-pilot-kz-1');
   const certificate = panel.getByRole('region', { name: 'Certificate' });
-  await expect(certificate).toContainText('Not enrolled · token expires in 1 hr');
+  await expect(certificate).toContainText('Not enrolled');
   await expect(sidePanel(page, 'edge-pilot-kz-1').getByRole('region', { name: 'Link to the operator' })).toContainText('not enrolled');
   await certificate.getByRole('button', { name: 'Revoke token' }).click();
   await page.getByRole('dialog', { name: 'Revoke enrollment token' }).getByRole('button', { name: 'Revoke token' }).click();
   await findRequest(api.requests, 'DELETE', '/edges/edge-pilot-kz-1/enrollment-tokens');
-  await expect(certificate).toContainText('no token issued');
-  await expect(page.locator('versola-data-table').getByRole('row').filter({ hasText: 'edge-pilot-kz-1' })).toContainText('no token');
+  // The token is gone: revoking again is refused (409) and the console says why.
+  await certificate.getByRole('button', { name: 'Revoke token' }).click();
+  await page.getByRole('dialog', { name: 'Revoke enrollment token' }).getByRole('button', { name: 'Revoke token' }).click();
+  await expect(page.getByRole('alert')).toContainText('has no unused enrollment token');
 
   await certificate.getByRole('button', { name: 'Issue enrollment token' }).click();
   await findRequest(api.requests, 'POST', '/edges/edge-pilot-kz-1/enrollment-tokens');
   await expect(panel.getByRole('status').first()).toContainText('Bootstrap bundle created. It is shown once.');
-  await expect(certificate).toContainText('token expires in 24 hr');
-  await expect(certificate.getByRole('button', { name: 'Issue a new token' })).toBeVisible();
+  await expect(panel.locator('.secret-value').first()).toHaveText(/^vtk_pilot-pay_/);
+  await expect(panel.getByRole('status').first()).toContainText('until');
+  // An edge that already enrolled has nothing to issue a token for.
 });
 
 test('removes an edge through the confirm dialog', async ({ page }) => {

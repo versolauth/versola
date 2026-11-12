@@ -1,0 +1,25 @@
+{
+  "staff": [
+    {
+      "id": "7a1c2f0e-5c5b-4f10-9e3f-2d6c1c8d0b11",
+      "subject": "7a1c2f0e-5c5b-4f10-9e3f-2d6c1c8d0b11",
+      "display": "Aigul S.",
+      "level": "admin",
+      "state": "member",
+      "addedBy": "config",
+      "addedAt": "2026-11-01T08:00:00Z"
+    },
+    {
+      "id": "4e2c8a58-0b4a-4d0e-8c53-0f3d5a8a9b33",
+      "identifier": {
+        "kind": "email",
+        "masked": "d•••@acme.example.com"
+      },
+      "level": "developer",
+      "state": "invited",
+      "addedBy": "7a1c2f0e-5c5b-4f10-9e3f-2d6c1c8d0b11",
+      "addedAt": "2026-11-10T09:00:00Z",
+      "expiresAt": "2026-11-17T09:00:00Z"
+    }
+  ]
+}

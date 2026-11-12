@@ -27,9 +27,9 @@ type Issued = EnrollmentToken & { edgeId: string; signingKey?: SigningKey };
 
 /**
  * Edges, the partner's own deployments in its group: the table (id, public URL, status,
- * certificate, replicas), Add edge up to `maxEdges`, which ends on the new record with the
+ * certificate), Add edge up to `maxEdges`, which ends on the new record with the
  * enrollment token and the bootstrap bundle shown once; the record with the link to the operator,
- * the certificate, the replicas and the operator's policies read-only; Revoke an unused token.
+ * the certificate and the operator's policies read-only; Revoke an unused token.
  */
 @customElement('versola-partner-edges')
 export class VersolaPartnerEdges extends LitElement {
@@ -168,7 +168,7 @@ export class VersolaPartnerEdges extends LitElement {
     this.formError = '';
     try {
       const { edge, ...token } = await createEdge({ id: this.edgeId, publicUrl: this.draftUrl.trim().replace(/\/$/, '') });
-      this.edges = [...this.edges, { ...edge, pendingToken: { expiresAt: token.expiresAt } }];
+      this.edges = [...this.edges, edge];
       this.issued = { ...token, edgeId: edge.id };
       this.copyFeedback = '';
       dispatchRecordRoute(this, { id: edge.id, edit: null, create: false });
@@ -183,7 +183,6 @@ export class VersolaPartnerEdges extends LitElement {
     this.errorMessage = '';
     try {
       const token = await issueEnrollmentToken(edge.id);
-      this.edges = this.edges.map(candidate => candidate.id === edge.id ? { ...candidate, pendingToken: { expiresAt: token.expiresAt } } : candidate);
       this.issued = { ...token, edgeId: edge.id };
       this.copyFeedback = '';
     } catch (error) {
@@ -203,7 +202,6 @@ export class VersolaPartnerEdges extends LitElement {
     this.errorMessage = '';
     try {
       await revokeEnrollmentToken(edge.id);
-      this.edges = this.edges.map(candidate => candidate.id === edge.id ? { ...candidate, pendingToken: undefined } : candidate);
       if (this.issued?.edgeId === edge.id) this.issued = null;
     } catch (error) {
       this.errorMessage = writeErrorMessage(error);
@@ -244,7 +242,7 @@ export class VersolaPartnerEdges extends LitElement {
   }
 
   private certificateCell(edge: PartnerEdge) {
-    if (edge.status === 'waiting') return html`<span class="muted">not enrolled${edge.pendingToken ? ` · token expires ${relativeTime(edge.pendingToken.expiresAt)}` : ' · no token'}</span>`;
+    if (edge.status === 'waiting') return html`<span class="muted">not enrolled</span>`;
     if (edge.status === 'suspended') return html`<div class="cell-lines"><span>to ${edge.certificateNotAfter ? formatDate(edge.certificateNotAfter) : '—'}</span><div class="chips"><span class="chip danger">Renewal refused</span></div></div>`;
     return html`<div class="cell-lines"><span>valid to ${edge.certificateNotAfter ? formatDate(edge.certificateNotAfter) : '—'}</span><span class="muted">${edge.lastRenewedAt ? `renewed ${formatDate(edge.lastRenewedAt)}` : ''}</span></div>`;
   }
@@ -255,7 +253,6 @@ export class VersolaPartnerEdges extends LitElement {
       { id: 'url', label: 'Public URL', cell: edge => html`<span class="cell-line">${edge.publicUrl}</span>` },
       { id: 'status', label: 'Status', cell: edge => html`<div class="chips">${this.statusChip(edge)}</div>` },
       { id: 'certificate', label: 'Certificate', cell: edge => this.certificateCell(edge) },
-      { id: 'replicas', label: 'Replicas', class: 'muted', cell: edge => edge.replicas ? String(edge.replicas) : '—' },
     ];
     const menuItems = (edge: PartnerEdge): RowMenuItem[] => [
       { label: 'Open', onSelect: () => this.openView(edge) },
@@ -281,7 +278,7 @@ export class VersolaPartnerEdges extends LitElement {
         <div class="banner ok key-banner" role="status">
           <div class="banner-text">
             <div class="banner-title">${statusIcon('check')}Bootstrap bundle created. It is shown once.</div>
-            <div>The token is good for one enrollment until ${formatDate(issued.expiresAt)} (${relativeTime(issued.expiresAt)}). Put the bundle next to the edge as <span class="mono">bootstrap.json</span> and start it with <span class="mono">mode = "partner"</span>; it asks the operator for a certificate that names <span class="mono">${edge.id}</span> and your group.${issued.signingKey ? html` The signing key is created with the edge and the operator does not keep its private half.` : ''}</div>
+            <div>The token is good for one enrollment${issued.expiresAt ? html` until ${formatDate(issued.expiresAt)} (${relativeTime(issued.expiresAt)})` : ''}. Put the bundle next to the edge as <span class="mono">bootstrap.json</span> and start it with <span class="mono">mode = "partner"</span>; it asks the operator for a certificate that names <span class="mono">${edge.id}</span> and your group.${issued.signingKey ? html` The signing key is created with the edge and the operator does not keep its private half.` : ''}</div>
             <div class="secret-rows">
               <div><div class="secret-label">Enrollment token</div><pre class="secret-value">${issued.token}</pre></div>
               ${issued.signingKey ? html`<div><div class="secret-label">Signing key ${issued.signingKey.keyId}</div><pre class="secret-value" tabindex="0" role="region" aria-label="Signing key">${issued.signingKey.privateKey}</pre></div>` : ''}
@@ -319,24 +316,23 @@ export class VersolaPartnerEdges extends LitElement {
       <versola-record-card heading="Link to the operator" .body=${html`
         ${this.row('central-mtls', html`<span class="mono">${me.partner.operator.centralMtlsUrl}</span> · ${edge.status === 'enrolled' ? (central ? html`<span class="chip ok">${statusIcon('check', 'icon', 14)}connected</span>` : html`<span class="chip danger">unavailable</span>`) : html`<span class="muted">not enrolled</span>`}`)}
         ${this.row('id-mtls (auth)', html`<span class="mono">${me.partner.operator.mtlsUrl}</span> · as your clients`)}
-        ${this.row('If central is unreachable', 'serves from the signed snapshot; management calls answer 503')}
+        ${this.row('If central is unreachable', 'this page cannot be read or changed: its calls answer 503 until central is back')}
       `}></versola-record-card>
 
       <versola-record-card heading="Certificate" subheading="Issued by the operator's edge CA, renewed by this edge with a new key every 14 days." .body=${html`
         ${edge.status === 'waiting' ? html`
-          ${this.row('Status', html`Not enrolled${edge.pendingToken ? html` · token expires ${relativeTime(edge.pendingToken.expiresAt)}` : html` · <span class="muted">no token issued</span>`}`)}
+          ${this.row('Status', html`Not enrolled · <span class="muted">a token is shown once, when it is issued</span>`)}
           ${edit ? html`<versola-record-row .value=${html`<div class="key-actions">
-            ${edge.pendingToken ? html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.handleRevokeToken(edge)}>Revoke token</button>` : ''}
-            <button type="button" class="btn btn-secondary btn-sm" @click=${() => this.handleIssueToken(edge)}>${edge.pendingToken ? 'Issue a new token' : 'Issue enrollment token'}</button>
+            <button type="button" class="btn btn-secondary btn-sm" @click=${() => this.handleRevokeToken(edge)}>Revoke token</button>
+            <button type="button" class="btn btn-secondary btn-sm" @click=${() => this.handleIssueToken(edge)}>Issue enrollment token</button>
           </div>`}></versola-record-row>` : ''}` : html`
           ${this.row('Valid', html`${edge.lastRenewedAt ? `${formatDate(edge.lastRenewedAt)} → ` : ''}${edge.certificateNotAfter ? formatDate(edge.certificateNotAfter) : '—'}`)}
           ${this.row('Names', html`<span class="mono">urn:versola:edge:${edge.id}</span><br><span class="mono">urn:versola:edge-group:${me.partner.id}</span>`)}
           ${this.row('Renewal', edge.status === 'suspended' ? html`<span class="chip danger">Refused: suspended</span>` : html`<span class="chip ok">${statusIcon('check', 'icon', 14)}By itself</span>`)}`}
       `}></versola-record-card>
 
-      <versola-record-card heading="Replicas" .body=${html`
-        ${this.row('Running', edge.replicas ? `${edge.replicas}, each with its own copy of the certificate` : html`<span class="muted">None reported yet</span>`)}
-        ${this.row('Public URL', html`<span class="mono">${edge.publicUrl}</span>`, 'Edge config')}
+      <versola-record-card heading="Address" .body=${html`
+        ${this.row('Public URL', edge.publicUrl ? html`<span class="mono">${edge.publicUrl}</span>` : html`<span class="muted">None registered</span>`)}
       `}></versola-record-card>
 
       <versola-record-card heading="The operator's policies" subheading=${`Set by ${me.partner.operator.name} for your group. Read-only.`} .body=${this.policyRows(edge)}></versola-record-card>

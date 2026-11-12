@@ -97,14 +97,12 @@ test('a developer sees the recent list and cannot end sessions', async ({ page }
   expect(await scan(page)).toEqual([]);
 });
 
-test('with central unavailable sessions can still be ended: they live on the partner\'s own edges', async ({ page }) => {
-  const api = await loadPartnerApp(page, { path: revocationPath, state: centralDown });
-  await page.getByLabel('User (sub) *').fill('u_2b91d4e0');
-  await page.getByRole('button', { name: 'End sessions', exact: true }).click();
-  await page.getByRole('dialog', { name: 'End sessions' }).getByRole('button', { name: 'End sessions' }).click();
-  await findRequest(api.requests, 'POST', '/revocations');
-  await expect(page.getByRole('status').filter({ hasText: 'Ended 3 sessions' })).toBeVisible();
-  await expect(page.getByRole('alert')).toHaveCount(0);
+test('with central unavailable the form cannot read the clients and edges it chooses from, and says so', async ({ page }) => {
+  await loadPartnerApp(page, { path: revocationPath, state: centralDown });
+  await expect(page.getByRole('alert')).toContainText('Your clients and edges could not be read, so there is nothing to choose from.');
+  await expect(page.getByRole('alert')).toContainText('Central is unavailable right now');
+  await expect(page.getByRole('group', { name: 'Clients *' })).toContainText('No approved clients yet.');
+  expect(await scan(page)).toEqual([]);
 });
 
 test('with no enrolled edge there is nothing to end sessions on; with none ended the list says so', async ({ page }) => {

@@ -1,0 +1,17 @@
+{
+  "edges": [
+    {
+      "id": "acme-edge-1",
+      "publicUrl": "https://edge.partner.example.com",
+      "status": "enrolled",
+      "certificateNotAfter": "2026-11-24T08:00:00Z",
+      "lastRenewedAt": "2026-11-10T08:00:00Z",
+      "replicas": 0,
+      "policies": {
+        "overload": {},
+        "accessLog": {},
+        "rateLimits": {}
+      }
+    }
+  ]
+}

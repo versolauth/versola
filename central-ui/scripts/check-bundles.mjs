@@ -12,6 +12,9 @@ const EXPECTED = ['versola-admin.js', 'versola-partner.js'];
 // What a partner's browser must never be able to reach: the operator's API, its user lookups and its permission catalog.
 const FORBIDDEN = ['/configuration/', '/users/', 'permissions/me', '/central/', 'versola-admin'];
 
+// The in-page mock of the partner API is for the dev server only: a production file that still carries it would answer for the edge.
+const MOCK_MARKERS = ['No mock handler for', 'installMockFetch', 'partner-default', 'pilot-pay-web'];
+
 const files = (await readdir(dist)).filter(name => name.endsWith('.js')).sort();
 const problems = [];
 if (JSON.stringify(files) !== JSON.stringify(EXPECTED)) {
@@ -32,7 +35,7 @@ while (queue.length > 0) {
     problems.push(`${name} is imported but missing from dist`);
     continue;
   }
-  for (const needle of FORBIDDEN) {
+  for (const needle of [...FORBIDDEN, ...MOCK_MARKERS]) {
     const at = code.indexOf(needle);
     if (at >= 0) problems.push(`${name} contains "${needle}": …${code.slice(Math.max(0, at - 40), at + 60).replace(/\s+/g, ' ')}…`);
   }

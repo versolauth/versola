@@ -1,0 +1,27 @@
+{
+  "events": [
+    {
+      "id": "ev-1",
+      "at": "2026-11-10T09:00:00Z",
+      "actor": {
+        "sub": "7a1c2f0e-5c5b-4f10-9e3f-2d6c1c8d0b11"
+      },
+      "action": "admin.partner-client.create",
+      "target": "client:acme-web",
+      "outcome": "ok",
+      "from": "acme-edge-1"
+    },
+    {
+      "id": "ev-2",
+      "at": "2026-11-09T09:00:00Z",
+      "actor": {
+        "sub": "operator",
+        "byOperator": true
+      },
+      "action": "admin.partner-approval.approve",
+      "target": "client:acme-web",
+      "outcome": "ok"
+    }
+  ],
+  "next": null
+}

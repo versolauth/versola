@@ -157,15 +157,13 @@ test('token lifetimes are capped by the operator in the editor itself', async ({
   await expect(sidePanel(page, 'Pilot Pay Shop').getByRole('region', { name: 'Credentials & tokens' })).toContainText('access 10 min · refresh 30 days');
 });
 
-test('rotates the keys of a private_key_jwt client, and deletes a client through the confirm dialog', async ({ page }) => {
-  const jwtClient = { ...partnerSeedState.clients[1], fixed: { ...partnerSeedState.clients[1].fixed, authMethod: 'private_key_jwt' as const } };
+test('a partner client has nothing to rotate; deleting a client goes through the confirm dialog', async ({ page }) => {
+  const jwtClient = { ...partnerSeedState.clients[1], authMethod: 'private_key_jwt' as const, fixed: { ...partnerSeedState.clients[1].fixed, authMethod: 'private_key_jwt' as const } };
   const api = await loadPartnerApp(page, { path: `${clientsPath}&id=pilot-pay-ios`, state: { clients: [partnerSeedState.clients[0], jwtClient] } });
   const panel = sidePanel(page, 'Pilot Pay iOS');
   await expect(panel.getByRole('region', { name: 'Credentials & tokens' })).toContainText('private_key_jwt with the keys your edge holds');
-  await panel.getByRole('button', { name: 'Rotate keys' }).click();
-  await page.getByRole('dialog', { name: 'Rotate keys' }).getByRole('button', { name: 'Rotate' }).click();
-  await findRequest(api.requests, 'POST', '/clients/pilot-pay-ios/rotate-secret');
-  await expect(panel.getByRole('status').first()).toContainText('Keys rotated at Nov 7, 2026');
+  // The edge answers 409 not_supported to a rotation, so the console offers none.
+  await expect(panel.getByRole('button', { name: 'Rotate keys' })).toHaveCount(0);
 
   await panel.getByRole('button', { name: 'Delete client pilot-pay-ios' }).click();
   await expect(page.getByRole('dialog', { name: 'Delete client' })).toContainText('Its users are signed out and the operator is notified.');

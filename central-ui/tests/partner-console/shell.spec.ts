@@ -75,7 +75,7 @@ test('a staff member who is not on the team gets the No access page with the mas
 test('an edge that cannot answer /me shows the load error with Retry', async ({ page }) => {
   await loadPartnerApp(page, { state: { me: null } });
   await expect(page.getByRole('alert')).toContainText('Could not load the partner console');
-  await expect(page.getByRole('alert')).toContainText('edge database unavailable');
+  await expect(page.getByRole('alert')).toContainText('The edge failed unexpectedly.');
   await expect(page.getByRole('button', { name: 'Retry' })).toBeVisible();
   expect(await scan(page)).toEqual([]);
 });
@@ -100,18 +100,35 @@ test('a suspended partner sees the banner on every screen, refused renewals, and
   await expect(page.getByRole('button', { name: 'Request change' })).toHaveCount(0);
 });
 
-test('central unavailable: reads keep working from the snapshot, a write says so inline', async ({ page }) => {
-  const api = await loadPartnerApp(page, { path: '/partner.html?view=clients&id=pilot-pay-web&edit=general', state: centralDown });
+test('central unavailable: who you are still works, everything central answers is a 503 the screens say so', async ({ page }) => {
+  const api = await loadPartnerApp(page, { path: '/partner.html?view=overview', state: centralDown });
+  // /me and the team are answered by the edge itself.
+  await expect(page.getByText('Central unavailable')).toBeVisible();
+  await expect(page.getByText('Your edges serve from their last snapshot')).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Clients' })).toBeVisible();
+  expect(await scan(page)).toEqual([]);
+
+  await page.goto('/partner.html?view=clients');
+  await expect(page.getByRole('heading', { name: 'Could not load clients' })).toBeVisible();
+  await expect(page.getByText('central is unreachable')).toBeVisible();
+  await page.goto('/partner.html?view=edges');
+  await expect(page.getByRole('heading', { name: 'Could not load edges' })).toBeVisible();
+  expect(api.requests.some(request => request.pathname === '/me')).toBe(true);
+
+});
+
+test('a write refused with 503 says so inline and changes nothing', async ({ page }) => {
+  // Central goes away after the page was read: the save is refused and the editor says why.
+  const api = await loadPartnerApp(page, { path: '/partner.html?view=clients&id=pilot-pay-web&edit=general' });
+  await page.route('**/partner/api/clients/pilot-pay-web', route => route.request().method() === 'PUT'
+    ? route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"central_unavailable","message":"central is unreachable"}' })
+    : route.fallback());
   const editor = sidePanel(page, 'Edit general');
   await editor.getByLabel('Privacy policy URL').fill('https://pilotpay.example/privacy-v2');
   await editor.getByRole('button', { name: 'Save general' }).click();
   await expect(editor.getByRole('alert')).toContainText('Central is unavailable right now, so nothing was saved.');
-  expect(api.requests.filter(request => request.method === 'PUT')).toHaveLength(1);
+  expect(api.requests.filter(request => request.method === 'PUT')).toHaveLength(0);
   expect(await scan(page)).toEqual([]);
-
-  await page.goto('/partner.html?view=overview');
-  await expect(page.getByText('Central unavailable')).toBeVisible();
-  await expect(page.getByText('Your edges serve from their last snapshot')).toBeVisible();
 });
 
 test('an unknown view falls back to Overview; the record route survives a reload', async ({ page }) => {

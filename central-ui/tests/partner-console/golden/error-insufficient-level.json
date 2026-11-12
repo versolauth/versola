@@ -1,0 +1,5 @@
+{
+  "error": "insufficient_level",
+  "required": "admin",
+  "message": "A viewer may not do this"
+}

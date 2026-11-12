@@ -15,10 +15,11 @@ export type PartnerMe = {
     status: PartnerStatus;
     limits: PartnerLimits;
     reviewAt?: string | null;
-    operator: { name: string; issuer: string; mtlsUrl: string; centralMtlsUrl: string };
+    /** The operator's authorization server and mutual-TLS addresses: the edge may not know them (`null`) while central has not been read. */
+    operator: { name: string; issuer: string | null; mtlsUrl: string | null; centralMtlsUrl: string | null };
   };
   staff: { sub: string; display?: string; level: StaffLevel };
-  edge: { id: string; publicUrl: string; central: 'ok' | 'unavailable' };
+  edge: { id: string; publicUrl: string | null; central: 'ok' | 'unavailable' };
   /** The partner's own console client and its auth-request preset. Sign-in does not need it (the edge serves `/partner/login`), so it is only for the record. */
   console: { clientId: string; presetId: string };
 };
@@ -32,8 +33,8 @@ export type PartnerClientApproval = {
   status: 'pending' | 'approved' | 'rejected';
   /** The fields that wait for the operator. */
   waitingFields: string[];
-  requestedAt?: string;
-  note?: string;
+  requestedAt?: string | null;
+  note?: string | null;
 };
 
 export type PartnerClientFixed = {
@@ -52,11 +53,14 @@ export type PartnerClient = {
   policyUri?: string | null;
   tosUri?: string | null;
   redirectUris: string[];
-  postLogoutRedirectUris?: string[];
   scope: string[];
   accessTokenTtl: number;
-  refreshTokenTtl: number;
+  refreshTokenTtl: number | null;
   backChannelLogoutUri?: string | null;
+  /** What the client authenticates with; `fixed.authMethod` says the same for every client of the group. */
+  authMethod?: PartnerClientAuthMethod;
+  /** What the operator lets the partner have, as it holds it for this client. */
+  limits: PartnerLimits;
   /** `/login/<presetId>` on the partner's own edge: the edge keeps one auth-request preset per partner client; the console prefixes the edge's public URL. */
   loginPath: string;
   createdAt: string;
@@ -64,7 +68,7 @@ export type PartnerClient = {
   fixed: PartnerClientFixed;
 };
 
-export type PartnerClientWrite = Omit<PartnerClient, 'createdAt' | 'approval' | 'fixed' | 'loginPath'> & { authMethod?: PartnerClientAuthMethod };
+export type PartnerClientWrite = Omit<PartnerClient, 'createdAt' | 'approval' | 'fixed' | 'loginPath' | 'limits' | 'consentFlow'> & { authMethod?: PartnerClientAuthMethod };
 
 /** `ResourceDto` without `internal`: a partner resource always carries a secret the edge authenticates to the upstream with. */
 export type PartnerResource = {
@@ -73,8 +77,6 @@ export type PartnerResource = {
   audience: string[];
   endpoints: ResourceEndpoint[];
   secretRotation: boolean;
-  /** When the secret was last rotated; absent when never. */
-  secretRotatedAt?: string;
 };
 
 export type PartnerResourceWrite = {
@@ -92,14 +94,13 @@ export type PartnerEdge = {
   status: PartnerEdgeStatus;
   certificateNotAfter?: string;
   lastRenewedAt?: string;
+  /** Always 0: central does not count the replicas behind an edge, so the console shows none. */
   replicas: number;
   /** The operator's policies for the group, read-only. */
   policies: { overload: Record<string, unknown>; accessLog: Record<string, unknown>; rateLimits: Record<string, unknown> };
-  /** An enrollment token that was issued and not used yet; the token itself was shown once. */
-  pendingToken?: { expiresAt: string };
 };
 
-export type EnrollmentToken = { token: string; bundle: string; expiresAt: string };
+export type EnrollmentToken = { token: string; bundle: string; expiresAt: string | null };
 
 /** `POST /partner/api/edges`: the edge and its first enrollment token in one write. */
 export type CreatedEdge = EnrollmentToken & { edge: PartnerEdge; signingKey: SigningKey };
@@ -114,8 +115,10 @@ export type RevocationRequest = { by: RevocationBy; value: string; clients: stri
 
 export type Revocation = RevocationRequest & { id: string; at: string; by_staff: string; ended: number };
 
-export type AuditActor = { sub: string; display?: string; byOperator?: true };
+/** `sub` is the staff member's, `operator` (or the operator's actor id) for the operator's own actions. The edge sends no display name: the console reads it off the team. */
+export type AuditActor = { sub: string; byOperator?: true };
 
+/** `action` is central's audit kind (`admin.partner-client.create`), `target` is `<targetType>:<targetId>`. */
 export type AuditEventRecord = { id: string; at: string; actor: AuditActor; action: string; target: string; outcome: 'ok' | 'refused' | 'failed'; from?: string };
 
 export type AuditQuery = { cursor?: string | null; actor?: string; kind?: string; q?: string };
@@ -133,7 +136,6 @@ export type StaffMember = {
   addedBy: string;
   addedAt: string;
   expiresAt?: string;
-  lastSignInAt?: string;
 };
 
 export type StaffInvite = { identifier: string; level: StaffLevel; expiresInDays: number };
@@ -147,4 +149,7 @@ export type ProfileChange = { displayName: string; logoUri: string | null };
 
 export type ProfileApproval = { id: string; status: 'waiting'; requestedAt: string; requested: ProfileChange };
 
-export type PartnerErrorCode = 'outside_limits' | 'needs_approval' | 'partner_suspended' | 'not_a_member' | 'central_unavailable';
+/** The `error` codes of the edge's contract (`edge/open-api/partner-api.yaml`). `central_answered_<status>` is any other status central answered. */
+export type PartnerErrorCode =
+  | 'invalid_request' | 'unauthenticated' | 'not_a_member' | 'insufficient_level' | 'origin_mismatch' | 'partner_suspended' | 'partner_principal_mismatch'
+  | 'not_found' | 'conflict' | 'not_supported' | 'central_unreadable' | 'central_unavailable' | 'internal_error' | `central_answered_${number}`;

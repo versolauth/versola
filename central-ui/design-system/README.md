@@ -578,7 +578,11 @@ the recipe no longer matches the screen. The partner console's own mock backend
 shared by the specs and by `partner.html` in `npm run dev`; the operator demo seed (`src/demo/seed.ts`) has
 the same partner as `pilot-pay`.
 
-**Pending extraction.** The partner console draws its consent preview as a static sketch because
-`client-consent-preview` calls central's API, which a partner bundle must not contain. When the partner
-console is wired to the real edge, extract the pure rendering part of `client-consent-preview` (form, theme
-and previews in, iframe out) into a shared component with no API import, and use it in both consoles.
+**Consent preview: why it is not shared yet.** The partner console draws its consent preview as a static sketch.
+`client-consent-preview` needs four things the partner API does not serve (`edge/open-api/partner-api.yaml` has no
+route for any of them): the active consent form's compiled bundle, the consent scenario of the preview catalogue, the
+client's theme tokens and CSS, and central's composition of that CSS (`POST /configuration/themes/css`, an admin API
+call). Extracting the pure rendering into a shared component would give the partner console nothing to feed it. It
+becomes possible when the edge serves one read-only route for it (for example the rendered `srcdoc` of a client's
+consent screen, composed by central from the client's own theme), which is a decision for the owner and for #564.
+Until then the sketch stays, and the operator's approvals queue shows the real form.

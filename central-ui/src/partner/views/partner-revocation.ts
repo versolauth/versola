@@ -6,8 +6,8 @@ import { statusIcon } from '../../components/status-icon';
 import type { DataTableColumn } from '../../components/data-table';
 import { confirmDestructiveAction } from '../../utils/confirm-dialog';
 import { formatDate } from '../../utils/helpers';
-import { fetchClients, fetchEdges, fetchRevocations, revoke, writeErrorMessage } from '../partner-api';
-import type { PartnerClient, PartnerEdge, PartnerMe, Revocation, RevocationBy } from '../partner-types';
+import { fetchClients, fetchEdges, fetchRevocations, fetchStaff, revoke, writeErrorMessage } from '../partner-api';
+import type { PartnerClient, PartnerEdge, PartnerMe, Revocation, RevocationBy, StaffMember } from '../partner-types';
 import { partnerViewStyles } from '../partner-styles';
 import '../../components/content-header';
 import '../../components/data-table';
@@ -33,6 +33,9 @@ export class VersolaPartnerRevocation extends LitElement {
 
   @state() private clients: PartnerClient[] = [];
   @state() private edges: PartnerEdge[] = [];
+  @state() private team: StaffMember[] = [];
+  /** Set when the clients or the edges could not be read (central answers them): there is nothing to choose from, and the form says why. */
+  @state() private readError = '';
   @state() private selectedEdges: string[] = [];
   @state() private recent: Revocation[] | null = null;
   @state() private by: RevocationBy = 'user';
@@ -70,7 +73,9 @@ export class VersolaPartnerRevocation extends LitElement {
   }
 
   private async load() {
-    const [clients, edges, recent] = await Promise.allSettled([fetchClients(), fetchEdges(), fetchRevocations()]);
+    const [clients, edges, recent, team] = await Promise.allSettled([fetchClients(), fetchEdges(), fetchRevocations(), fetchStaff()]);
+    this.team = team.status === 'fulfilled' ? team.value : [];
+    this.readError = clients.status === 'rejected' || edges.status === 'rejected' ? writeErrorMessage(clients.status === 'rejected' ? clients.reason : (edges as PromiseRejectedResult).reason, 'Your clients and edges could not be read.') : '';
     this.clients = clients.status === 'fulfilled' ? clients.value.filter(client => client.approval.status === 'approved') : [];
     this.selected = this.clients.map(client => client.id);
     this.edges = edges.status === 'fulfilled' ? edges.value.filter(edge => edge.status === 'enrolled') : [];
@@ -132,6 +137,7 @@ export class VersolaPartnerRevocation extends LitElement {
           <div class="record-card-head"><div><h2>End sessions</h2><div class="record-card-sub">On your own edges, for your clients only. The user is named by the same identifier you got in the token.</div></div></div>
           <div class="revoke-body">
             ${this.formError ? html`<div class="editor-error" role="alert">${this.formError}</div>` : ''}
+            ${this.readError ? html`<div class="editor-error" role="alert">Your clients and edges could not be read, so there is nothing to choose from. ${this.readError}</div>` : ''}
             ${this.result ? html`<div class="banner ok" role="status"><div class="banner-text"><div class="banner-title">${statusIcon('check')}Ended ${this.result.ended} ${this.result.ended === 1 ? 'session' : 'sessions'}</div><div>${this.result.what}. The tokens they held are discarded.</div></div></div>` : ''}
             ${this.canManage ? '' : html`<div class="banner info" role="status"><div class="banner-text"><div class="banner-title">${statusIcon('info')}Admins end sessions</div><div>Your level is ${this.me.staff.level}: you can see the recent ones, not end one.</div></div></div>`}
             <div class="ctrl-group">
@@ -174,7 +180,7 @@ export class VersolaPartnerRevocation extends LitElement {
                         const checked = (e.target as HTMLInputElement).checked;
                         this.selectedEdges = checked ? [...this.selectedEdges, edge.id] : this.selectedEdges.filter(id => id !== edge.id);
                       }} />
-                    <span class="mono">${edge.id}</span><span class="muted small">${edge.publicUrl.replace(/^https:\/\//, '')}</span>
+                    <span class="mono">${edge.id}</span><span class="muted small">${(edge.publicUrl ?? '').replace(/^https:\/\//, '')}</span>
                   </label>`) : html`<span class="muted small">No enrolled edge yet.</span>`}
               </span>
               ${edgesError ? html`<div class="error-message" role="alert">${edgesError}</div>` : html`<div class="hint">Sessions live on your edges; the operator's auth is not contacted.</div>`}
@@ -188,7 +194,7 @@ export class VersolaPartnerRevocation extends LitElement {
   private renderRecent() {
     const columns: DataTableColumn<Revocation>[] = [
       { id: 'when', label: 'When', class: 'muted', cell: item => formatDate(item.at) },
-      { id: 'who', label: 'By', cell: item => item.by_staff },
+      { id: 'who', label: 'By', cell: item => this.team.find(member => member.subject === item.by_staff)?.display ?? item.by_staff },
       { id: 'what', label: 'What', cell: item => html`<span class="cell-line">${BY_LABELS[item.by].label.toLowerCase()} · ${item.value}</span>` },
       { id: 'clients', label: 'Clients', cell: item => html`<div class="tag-list">${item.clients.map(id => html`<span class="tag">${id}</span>`)}</div>` },
       { id: 'edges', label: 'Edges', cell: item => html`<div class="tag-list">${item.edges.map(id => html`<span class="tag">${id}</span>`)}</div>` },

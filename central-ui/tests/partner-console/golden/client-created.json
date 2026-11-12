@@ -1,0 +1,56 @@
+{
+  "id": "acme-web",
+  "kind": "web",
+  "clientName": "Acme web shop",
+  "logoUri": null,
+  "policyUri": null,
+  "tosUri": null,
+  "redirectUris": [
+    "https://acme.example.com/callback"
+  ],
+  "scope": [
+    "openid",
+    "profile"
+  ],
+  "authMethod": "tls_client_auth",
+  "accessTokenTtl": 900,
+  "refreshTokenTtl": 86400,
+  "backChannelLogoutUri": "https://acme.example.com/logout/backchannel",
+  "consentFlow": null,
+  "createdAt": "2026-11-10T09:00:00Z",
+  "loginPath": "/login/acme-web",
+  "approval": {
+    "kind": "create",
+    "status": "pending",
+    "waitingFields": [
+      "clientName"
+    ],
+    "requestedAt": "2026-11-10T09:00:00Z",
+    "note": null
+  },
+  "fixed": {
+    "consent": true,
+    "flow": "code+pkce+par",
+    "authMethod": "tls_client_auth",
+    "group": "acme"
+  },
+  "limits": {
+    "scopes": [
+      "openid",
+      "profile",
+      "orders.read"
+    ],
+    "redirectDomains": [
+      "acme.example.com"
+    ],
+    "maxClients": 5,
+    "maxEdges": 2,
+    "accessTokenTtlMax": 3600,
+    "refreshTokenTtlMax": 2592000,
+    "clientAuthMethods": [
+      "tls_client_auth",
+      "private_key_jwt"
+    ],
+    "rateLimitPolicy": "standard"
+  }
+}

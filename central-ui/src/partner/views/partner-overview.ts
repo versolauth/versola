@@ -5,7 +5,7 @@ import { bannerStyles, buttonStyles, cardStyles, chipStyles, recordStyles, tagSt
 import { statusIcon } from '../../components/status-icon';
 import { formatDate } from '../../utils/helpers';
 import { relativeTime } from '../../utils/user-display';
-import { ttlCapsLabel } from '../../utils/partners';
+import { auditActionText, auditTarget, ttlCapsLabel } from '../../utils/partners';
 import { fetchAudit, fetchClients, fetchEdges, fetchStaff } from '../partner-api';
 import type { AuditEventRecord, PartnerClient, PartnerEdge, PartnerMe, StaffMember } from '../partner-types';
 import { partnerViewStyles } from '../partner-styles';
@@ -27,6 +27,8 @@ export class VersolaPartnerOverview extends LitElement {
   @state() private staff: StaffMember[] | null = null;
   @state() private events: AuditEventRecord[] | null = null;
   @state() private failed = false;
+  /** Whether a card's read finished: `null` data with this set is a read that failed (central is not reachable), not one still under way. */
+  @state() private settled = false;
 
   static styles = [
     theme,
@@ -75,6 +77,12 @@ export class VersolaPartnerOverview extends LitElement {
     this.staff = staff.status === 'fulfilled' ? staff.value : null;
     this.events = audit.status === 'fulfilled' ? audit.value.events : null;
     this.failed = [clients, edges, staff, audit].every(result => result.status === 'rejected');
+    this.settled = true;
+  }
+
+  /** The team member a `sub` belongs to, when the team could be read (admins only). */
+  private nameOf(sub: string): string | undefined {
+    return (this.staff ?? []).find(member => member.subject === sub)?.display;
   }
 
   private go(view: PartnerNavItem, id?: string, create = false) {
@@ -89,7 +97,7 @@ export class VersolaPartnerOverview extends LitElement {
     }
     for (const edge of this.edges ?? []) {
       if (edge.status === 'suspended') items.push({ text: `Edge ${edge.id}: certificate renewal refused, the partner is suspended`, view: 'edges', id: edge.id });
-      if (edge.status === 'waiting') items.push({ text: `Edge ${edge.id} has not enrolled yet${edge.pendingToken ? ` (token expires ${relativeTime(edge.pendingToken.expiresAt)})` : ''}`, view: 'edges', id: edge.id });
+      if (edge.status === 'waiting') items.push({ text: `Edge ${edge.id} has not enrolled yet`, view: 'edges', id: edge.id });
     }
     const soon = Date.now() + 3 * 86_400_000;
     for (const member of this.staff ?? []) {
@@ -119,7 +127,7 @@ export class VersolaPartnerOverview extends LitElement {
         </div>
         <div class="tile">
           <span class="kicker">Your edges</span>
-          <span class="big edge-ids">${this.edges === null ? html`<span class="muted">…</span>` : edges.length ? edges.map(edge => html`<span class="mono">${edge.id}</span>`) : html`<span class="muted">None enrolled</span>`}</span>
+          <span class="big edge-ids">${this.edges === null ? html`<span class="muted">${this.settled ? 'Could not be read from central.' : '…'}</span>` : edges.length ? edges.map(edge => html`<span class="mono">${edge.id}</span>`) : html`<span class="muted">None enrolled</span>`}</span>
           <span class="sub">${suspended ? `renewals are refused while you are suspended${nextRenewal ? `; the first certificate expires on ${formatDate(nextRenewal)}` : ''}` : nextRenewal ? `next certificate renewal before ${formatDate(nextRenewal)}; they renew by themselves every 14 days` : 'certificates renew by themselves every 14 days once enrolled'}</span>
         </div>
         <div class="tile">
@@ -153,7 +161,7 @@ export class VersolaPartnerOverview extends LitElement {
       ${this.renderTiles()}
       <div class="grid-2">
         <versola-record-card heading="Clients" subheading="Your applications that sign the operator's users in." .body=${html`
-          ${this.clients === null ? html`<versola-loading-cards .count=${1}></versola-loading-cards>` : this.clients.length ? html`<div class="record-list">${this.clients.map(client => html`
+          ${this.clients === null ? (this.settled ? html`<div class="record-list"><span class="muted">Could not be read from central.</span></div>` : html`<versola-loading-cards .count=${1}></versola-loading-cards>`) : this.clients.length ? html`<div class="record-list">${this.clients.map(client => html`
             <div class="list-row">
               <button type="button" class="link-button mono" @click=${() => this.go('clients', client.id)}>${client.id}</button>
               <span class="muted small">${client.clientName} · ${client.kind === 'native' ? 'Native' : 'Web'}</span>
@@ -171,8 +179,8 @@ export class VersolaPartnerOverview extends LitElement {
         `}></versola-record-card>
       </div>
       <versola-record-card heading="Recent activity" subheading="Your team's actions and the operator's decisions about you. Everything here is also in the operator's audit log." .body=${html`
-        <div class="record-list">${this.events === null ? html`<span class="muted">…</span>` : this.events.length ? html`<ul class="timeline">${this.events.slice(0, 6).map(event => html`
-          <li><span class="when">${formatDate(event.at)}</span><span><b>${event.actor.display ?? event.actor.sub}</b> ${event.action} · <span class="mono">${event.target}</span></span></li>`)}</ul>` : html`<span class="muted">Nothing yet.</span>`}</div>
+        <div class="record-list">${this.events === null ? html`<span class="muted">${this.settled ? 'Could not be read from central.' : '…'}</span>` : this.events.length ? html`<ul class="timeline">${this.events.slice(0, 6).map(event => html`
+          <li><span class="when">${formatDate(event.at)}</span><span><b>${event.actor.byOperator ? 'The operator' : this.nameOf(event.actor.sub) ?? event.actor.sub}</b> ${auditActionText(event.action)} · <span class="mono">${auditTarget(event.target).id}</span></span></li>`)}</ul>` : html`<span class="muted">Nothing yet.</span>`}</div>
         <versola-record-row .value=${html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.go('audit')}>Open audit</button>`}></versola-record-row>
       `}></versola-record-card>
     `;

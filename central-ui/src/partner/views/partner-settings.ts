@@ -227,7 +227,7 @@ export class VersolaPartnerSettings extends LitElement {
     const tags = (values: string[]) => html`<div class="tag-list">${values.map(value => html`<span class="tag">${value}</span>`)}</div>`;
     const waitingChip = html`<span class="chip warn">waiting for the operator</span>`;
     const edit = this.canManage;
-    const host = (url: string) => url.replace(/^https?:\/\//, '');
+    const host = (url: string | null) => (url ?? '').replace(/^https?:\/\//, '');
     return html`
       <content-header title="Settings" description="Your organisation as the operator and its users see it, and the defaults your clients start from."></content-header>
       ${this.notice ? html`<div class="banner ok" role="status"><div class="banner-text"><div class="banner-title">${statusIcon('check')}${this.notice}</div></div><button type="button" class="btn btn-secondary btn-sm" @click=${() => { this.notice = ''; }}>Dismiss</button></div>` : ''}
@@ -262,10 +262,10 @@ export class VersolaPartnerSettings extends LitElement {
                   ${this.row('Consent', `always shown, names ${me.partner.displayName}`, 'Operator')}
                 `}></versola-record-card>
                 <versola-record-card heading="Operator endpoints" subheading="What your edges talk to. For your firewall." .body=${html`
-                  ${this.row('Issuer', html`<span class="mono">${me.partner.operator.issuer}</span>`)}
-                  ${this.row('auth mTLS', html`<span class="mono">${host(me.partner.operator.mtlsUrl)}:443</span>`)}
-                  ${this.row('central mTLS', html`<span class="mono">${host(me.partner.operator.centralMtlsUrl)}:443</span>`)}
-                  ${this.row('Enrollment', html`<span class="mono">${host(me.partner.operator.centralMtlsUrl).replace('central-mtls.', 'central.')}:443</span> <span class="muted small">once per edge</span>`)}
+                  ${this.row('Issuer', me.partner.operator.issuer ? html`<span class="mono">${me.partner.operator.issuer}</span>` : html`<span class="muted">Not known yet</span>`)}
+                  ${this.row('auth mTLS', me.partner.operator.mtlsUrl ? html`<span class="mono">${host(me.partner.operator.mtlsUrl)}:443</span>` : html`<span class="muted">Not known yet</span>`)}
+                  ${this.row('central mTLS', me.partner.operator.centralMtlsUrl ? html`<span class="mono">${host(me.partner.operator.centralMtlsUrl)}:443</span>` : html`<span class="muted">Not known yet</span>`)}
+                  ${this.row('Enrollment', me.partner.operator.centralMtlsUrl ? html`<span class="mono">${host(me.partner.operator.centralMtlsUrl).replace('central-mtls.', 'central.')}:443</span> <span class="muted small">once per edge</span>` : html`<span class="muted">Not known yet</span>`)}
                   ${this.row('Inbound from the operator', 'back-channel logout to your edges')}
                 `}></versola-record-card>
               </div>

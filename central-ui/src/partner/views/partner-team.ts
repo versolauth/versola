@@ -7,7 +7,6 @@ import type { DataTableColumn, RowMenuItem, VersolaDataTable } from '../../compo
 import { confirmDestructiveAction } from '../../utils/confirm-dialog';
 import { confirmDiscardDraft } from '../../utils/draft-guard';
 import { formatDate } from '../../utils/helpers';
-import { relativeTime } from '../../utils/user-display';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../../utils/record-route';
 import { fetchStaff, inviteStaff, removeStaff, updateStaffLevel, writeErrorMessage } from '../partner-api';
 import type { PartnerMe, StaffLevel, StaffMember } from '../partner-types';
@@ -219,7 +218,7 @@ export class VersolaPartnerTeam extends LitElement {
       { id: 'level', label: 'Level', cell: member => html`<div class="chips">${this.levelChip(member.level)}</div>` },
       { id: 'state', label: 'State', cell: member => member.state === 'invited'
         ? html`<div class="cell-lines"><span class="chip warn">Invited</span><span class="muted">${member.expiresAt ? `expires ${formatDate(member.expiresAt)}` : ''}</span></div>`
-        : html`<div class="cell-lines"><span class="chip ok">${statusIcon('check', 'icon', 14)}Member</span><span class="muted">${member.lastSignInAt ? `signed in ${relativeTime(member.lastSignInAt)}` : 'never signed in'}</span></div>` },
+        : html`<div class="cell-lines"><span class="chip ok">${statusIcon('check', 'icon', 14)}Member</span><span class="muted">since ${formatDate(member.addedAt)}</span></div>` },
       { id: 'added', label: 'Added', class: 'muted', cell: member => `${formatDate(member.addedAt)} · by ${member.addedBy}` },
     ];
     const menuItems = (member: StaffMember): RowMenuItem[] => [
@@ -244,9 +243,9 @@ export class VersolaPartnerTeam extends LitElement {
     return html`
       <versola-record-card heading="Member" .body=${html`
         ${this.row('Display', member.display ?? html`<span class="muted">Unknown until the first sign-in</span>`)}
-        ${this.row(member.identifier?.kind === 'email' ? 'Email' : 'Phone', member.identifier?.masked ?? '—', invited ? 'Stored hashed until the first sign-in' : '')}
+        ${member.identifier ? this.row(member.identifier.kind === 'email' ? 'Email' : 'Phone', member.identifier.masked, invited ? 'Stored hashed until the first sign-in' : '') : ''}
         ${member.subject ? this.row('Subject', html`<span class="mono">${member.subject}</span>`, 'From the operator') : ''}
-        ${this.row('State', invited ? html`Invited · applies at the first sign-in${member.expiresAt ? `, expires ${formatDate(member.expiresAt)}` : ''}` : html`Member${member.lastSignInAt ? ` · signed in ${relativeTime(member.lastSignInAt)}` : ''}`)}
+        ${this.row('State', invited ? html`Invited · applies at the first sign-in${member.expiresAt ? `, expires ${formatDate(member.expiresAt)}` : ''}` : html`Member`)}
         ${this.row('Added', `${formatDate(member.addedAt)} by ${member.addedBy}`)}
       `}></versola-record-card>
       <versola-record-card heading="Level" ?editable=${this.canManage && !self} .body=${html`

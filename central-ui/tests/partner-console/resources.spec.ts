@@ -22,7 +22,7 @@ test('lists the resources, opens one with its endpoints, the secret and the limi
   const table = page.locator('versola-data-table');
   await expect(table.getByRole('columnheader')).toHaveText(['Resource', 'Audience', 'Endpoints', 'Secret', 'Actions']);
   await expect(table.getByRole('row').filter({ hasText: 'pilot-wallet' })).toContainText('Previous secret kept');
-  await expect(table.getByRole('row').filter({ hasText: 'pilot-orders' })).toContainText('rotated Nov 2, 2026');
+  await expect(table.getByRole('row').filter({ hasText: 'pilot-orders' })).toContainText('current');
   expect(await scan(page)).toEqual([]);
 
   await page.getByRole('button', { name: /^Open resource pilot-orders/ }).click();
@@ -30,7 +30,7 @@ test('lists the resources, opens one with its endpoints, the secret and the limi
   await expect(sidePanelDialog(page, 'pilot-orders')).toBeVisible();
   await expect(panel.getByRole('region', { name: 'General' })).toContainText('https://login.pilotpay.example/resources/pilot-orders/…');
   await expect(panel.getByRole('region', { name: 'General' })).toContainText('pilot-pay-ios');
-  await expect(panel.getByRole('region', { name: 'Secret' })).toContainText('Current · rotated Nov 2, 2026');
+  await expect(panel.getByRole('region', { name: 'Secret' })).toContainText('Current');
   await expect(panel.getByRole('region', { name: 'Endpoints' }).locator('tr[data-endpoint]')).toHaveCount(4);
   await expect(panel.getByRole('region', { name: 'Endpoints' })).toContainText("'profile' in token.scope");
   await expect(panel.getByRole('region', { name: 'Limits from the operator' })).toContainText('partner-default');

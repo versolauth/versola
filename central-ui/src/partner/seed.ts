@@ -1,3 +1,4 @@
+import type { PartnerLimits } from '../types';
 import type { MockPartnerState } from './mock-backend';
 
 /**
@@ -12,7 +13,7 @@ export function partnerSeed(now = Date.now()): MockPartnerState {
     date.setUTCHours(hour, 0, 0, 0);
     return date.toISOString();
   };
-  const limits = {
+  const limits: PartnerLimits = {
     scopes: ['openid', 'profile', 'email', 'phone'],
     redirectDomains: ['pilotpay.example', 'pilotpay.app'],
     maxClients: 10,
@@ -44,9 +45,9 @@ export function partnerSeed(now = Date.now()): MockPartnerState {
         id: 'pilot-pay-web', kind: 'web', clientName: 'Pilot Pay Shop', logoUri: 'https://pay.pilotpay.example/brand/pilot-pay.svg',
         policyUri: 'https://pilotpay.example/privacy', tosUri: 'https://pilotpay.example/terms',
         redirectUris: ['https://pay.pilotpay.example/complete', 'https://staging.pilotpay.example/complete'],
-        postLogoutRedirectUris: ['https://pay.pilotpay.example/'],
         scope: ['openid', 'profile', 'email'], accessTokenTtl: 300, refreshTokenTtl: 14 * 86_400,
         backChannelLogoutUri: 'https://login.pilotpay.example/logout/backchannel', createdAt: at(-60),
+        authMethod: 'tls_client_auth', limits,
         loginPath: '/login/pilot-pay-web',
         approval: { kind: 'create', status: 'approved', waitingFields: [], requestedAt: at(-61), note: 'Name matches the partner.' }, fixed,
       },
@@ -54,6 +55,7 @@ export function partnerSeed(now = Date.now()): MockPartnerState {
         id: 'pilot-pay-ios', kind: 'native', clientName: 'Pilot Pay iOS', logoUri: 'https://pay.pilotpay.example/brand/pilot-pay.svg',
         redirectUris: ['https://app.pilotpay.example/callback'], scope: ['openid', 'profile', 'phone'], accessTokenTtl: 3600, refreshTokenTtl: 30 * 86_400,
         backChannelLogoutUri: 'https://login.pilotpay.example/logout/backchannel', createdAt: at(-33),
+        authMethod: 'tls_client_auth', limits,
         loginPath: '/login/pilot-pay-ios',
         approval: { kind: 'create', status: 'approved', waitingFields: [], requestedAt: at(-34) }, fixed,
       },
@@ -62,13 +64,14 @@ export function partnerSeed(now = Date.now()): MockPartnerState {
         redirectUris: ['https://checkout.pilotpay.example/complete', 'https://checkout.pilot-partner.net/complete'],
         scope: ['openid', 'profile', 'email'], accessTokenTtl: 300, refreshTokenTtl: 14 * 86_400,
         backChannelLogoutUri: 'https://login.pilotpay.example/logout/backchannel', createdAt: at(-2, 14),
+        authMethod: 'tls_client_auth', limits,
         loginPath: '/login/pilot-pay-checkout',
         approval: { kind: 'create', status: 'pending', waitingFields: ['clientName', 'logoUri', 'redirectUris'], requestedAt: at(-2, 14) }, fixed,
       },
     ],
     resources: [
       {
-        resourceId: 'pilot-orders', resource: 'http://orders.pilotpay.internal:8080', audience: ['pilot-pay-web', 'pilot-pay-ios'], secretRotation: false, secretRotatedAt: at(-5),
+        resourceId: 'pilot-orders', resource: 'http://orders.pilotpay.internal:8080', audience: ['pilot-pay-web', 'pilot-pay-ios'], secretRotation: false,
         endpoints: [
           { id: 401, method: 'GET', path: '/orders', fetchUserInfo: false, allow: "'profile' in token.scope", inject: [{ target: 'header', name: 'X-User', expression: 'token.sub' }] },
           { id: 402, method: 'POST', path: '/orders', fetchUserInfo: true, allow: "'profile' in token.scope && user.email_verified == true", inject: [{ target: 'header', name: 'X-User', expression: 'token.sub' }, { target: 'header', name: 'X-User-Phone', expression: 'user.phone_number' }], stepUpCondition: 'request.body.amount > 50000', stepUpAcr: 'sensitive', maxAge: 300, rateLimit: { limits: [{ limit: 60, windowSeconds: 60 }], by: 'subject', mode: 'enforce' } },
@@ -77,7 +80,7 @@ export function partnerSeed(now = Date.now()): MockPartnerState {
         ],
       },
       {
-        resourceId: 'pilot-wallet', resource: 'http://wallet.pilotpay.internal:8080', audience: ['pilot-pay-ios'], secretRotation: true, secretRotatedAt: at(-1),
+        resourceId: 'pilot-wallet', resource: 'http://wallet.pilotpay.internal:8080', audience: ['pilot-pay-ios'], secretRotation: true,
         endpoints: [
           { id: 411, method: 'GET', path: '/wallet', fetchUserInfo: false, allow: "'phone' in token.scope", inject: [{ target: 'header', name: 'X-User', expression: 'token.sub' }] },
           { id: 412, method: 'POST', path: '/wallet/topup', fetchUserInfo: false, allow: "'phone' in token.scope", inject: [], stepUpCondition: 'true', stepUpAcr: 'sensitive', maxAge: 120 },
@@ -85,33 +88,36 @@ export function partnerSeed(now = Date.now()): MockPartnerState {
       },
     ],
     edges: [
-      { id: 'edge-pilot-eu-1', publicUrl: 'https://login.pilotpay.example', status: 'enrolled', certificateNotAfter: at(10), lastRenewedAt: at(-4, 2), replicas: 2, policies },
-      { id: 'edge-pilot-eu-2', publicUrl: 'https://login.pilotpay.example', status: 'enrolled', certificateNotAfter: at(8), lastRenewedAt: at(-6, 2), replicas: 1, policies },
-      { id: 'edge-pilot-kz-1', publicUrl: 'https://login-kz.pilotpay.example', status: 'waiting', replicas: 0, policies, pendingToken: { expiresAt: at(0, 11) } },
+      { id: 'edge-pilot-eu-1', publicUrl: 'https://login.pilotpay.example', status: 'enrolled', certificateNotAfter: at(10), lastRenewedAt: at(-4, 2), replicas: 0, policies },
+      { id: 'edge-pilot-eu-2', publicUrl: 'https://login.pilotpay.example', status: 'enrolled', certificateNotAfter: at(8), lastRenewedAt: at(-6, 2), replicas: 0, policies },
+      { id: 'edge-pilot-kz-1', publicUrl: 'https://login-kz.pilotpay.example', status: 'waiting', replicas: 0, policies },
     ],
+    // The edges whose enrollment token was issued and not used yet: the DTO does not say, only Revoke token needs to know.
+    pendingTokens: { 'edge-pilot-kz-1': at(0, 11) },
     revocations: [
-      { id: 'rv-1', at: at(-1, 10), by_staff: 'Marat Lee', by: 'user', value: 'u_2b91d4e0', clients: ['pilot-pay-web'], edges: ['edge-pilot-eu-1', 'edge-pilot-eu-2'], ended: 3 },
-      { id: 'rv-2', at: at(-9, 16), by_staff: 'Dana Kim', by: 'client', value: 'pilot-pay-ios', clients: ['pilot-pay-ios'], edges: ['edge-pilot-eu-1', 'edge-pilot-eu-2'], ended: 1284 },
+      { id: 'rv-1', at: at(-1, 10), by_staff: 'u_2b91d4e0', by: 'user', value: 'u_2b91d4e0', clients: ['pilot-pay-web'], edges: ['edge-pilot-eu-1', 'edge-pilot-eu-2'], ended: 3 },
+      { id: 'rv-2', at: at(-9, 16), by_staff: 'u_7f3a9c2e', by: 'client', value: 'pilot-pay-ios', clients: ['pilot-pay-ios'], edges: ['edge-pilot-eu-1', 'edge-pilot-eu-2'], ended: 1284 },
     ],
+    // Central's audit trail about the partner: the kind (`admin.partner-client.create`), `<type>:<id>` as the target, and a `sub` for the actor, no name.
     audit: [
-      { id: 'ev-12', at: at(-1, 10), actor: { sub: 'u_2b91d4e0', display: 'Marat Lee' }, action: 'ended the sessions of a user', target: 'pilot-pay-web · u_2b91d4e0', outcome: 'ok', from: 'edge-pilot-eu-1' },
-      { id: 'ev-11', at: at(-1, 9), actor: { sub: 'u_7f3a9c2e', display: 'Dana Kim' }, action: 'invited a member (admin)', target: 'ops@…', outcome: 'ok', from: 'edge-pilot-eu-1' },
-      { id: 'ev-10', at: at(-2, 14), actor: { sub: 'u_7f3a9c2e', display: 'Dana Kim' }, action: 'submitted a client for approval', target: 'pilot-pay-checkout', outcome: 'ok', from: 'edge-pilot-eu-1' },
-      { id: 'ev-9', at: at(-4, 2), actor: { sub: 'edge-pilot-eu-1', display: 'edge-pilot-eu-1' }, action: 'renewed its certificate', target: 'serial 4f3a…', outcome: 'ok' },
-      { id: 'ev-8', at: at(-5, 9), actor: { sub: 'u_2b91d4e0', display: 'Marat Lee' }, action: 'rotated the secret of a resource', target: 'pilot-orders', outcome: 'ok', from: 'edge-pilot-eu-2' },
-      { id: 'ev-7', at: at(-6, 18), actor: { sub: 'anonymous' }, action: 'sign-in refused: not a member', target: '+7 7•• ••• 11', outcome: 'refused', from: 'edge-pilot-eu-1' },
-      { id: 'ev-6', at: at(-10, 11), actor: { sub: 'operator', display: 'the operator', byOperator: true }, action: 'set the review date', target: at(20).slice(0, 10), outcome: 'ok' },
-      { id: 'ev-5', at: at(-17, 16), actor: { sub: 'operator', display: 'the operator', byOperator: true }, action: 'changed the limits: refresh token cap 14 → 30 days', target: 'limits', outcome: 'ok' },
-      { id: 'ev-4', at: at(-33, 12), actor: { sub: 'operator', display: 'the operator', byOperator: true }, action: 'approved a client', target: 'pilot-pay-ios', outcome: 'ok' },
-      { id: 'ev-3', at: at(-60, 12), actor: { sub: 'operator', display: 'the operator', byOperator: true }, action: 'approved a client', target: 'pilot-pay-web', outcome: 'ok' },
-      { id: 'ev-2', at: at(-61, 12), actor: { sub: 'u_7f3a9c2e', display: 'Dana Kim' }, action: 'submitted a client for approval', target: 'pilot-pay-web', outcome: 'ok', from: 'edge-pilot-eu-1' },
-      { id: 'ev-1', at: at(-66, 12), actor: { sub: 'edge-pilot-eu-1', display: 'edge-pilot-eu-1' }, action: 'enrolled', target: 'group pilot-pay', outcome: 'ok' },
+      { id: 'ev-12', at: at(-1, 10), actor: { sub: 'u_2b91d4e0' }, action: 'admin.partner-revocation.create', target: 'revocation:user:u_2b91d4e0', outcome: 'ok', from: 'edge-pilot-eu-1' },
+      { id: 'ev-11', at: at(-1, 9), actor: { sub: 'u_7f3a9c2e' }, action: 'admin.partner-settings.update', target: 'partner:pilot-pay', outcome: 'ok', from: 'edge-pilot-eu-1' },
+      { id: 'ev-10', at: at(-2, 14), actor: { sub: 'u_7f3a9c2e' }, action: 'admin.partner-client.create', target: 'client:pilot-pay-checkout', outcome: 'ok', from: 'edge-pilot-eu-1' },
+      { id: 'ev-9', at: at(-4, 2), actor: { sub: 'u_2b91d4e0' }, action: 'admin.partner-edge.create', target: 'edge:edge-pilot-eu-2', outcome: 'ok', from: 'edge-pilot-eu-1' },
+      { id: 'ev-8', at: at(-5, 9), actor: { sub: 'u_2b91d4e0' }, action: 'admin.partner-resource.rotate-secret', target: 'resource:pilot-orders', outcome: 'ok', from: 'edge-pilot-eu-2' },
+      { id: 'ev-7', at: at(-6, 18), actor: { sub: 'u_2b91d4e0' }, action: 'admin.partner-client.delete', target: 'client:pilot-pay-ios', outcome: 'refused', from: 'edge-pilot-eu-1' },
+      { id: 'ev-6', at: at(-10, 11), actor: { sub: 'operator', byOperator: true }, action: 'admin.partner.update', target: 'partner:pilot-pay', outcome: 'ok' },
+      { id: 'ev-5', at: at(-17, 16), actor: { sub: 'operator', byOperator: true }, action: 'admin.partner-limits.update', target: 'partner:pilot-pay', outcome: 'ok' },
+      { id: 'ev-4', at: at(-33, 12), actor: { sub: 'operator', byOperator: true }, action: 'admin.partner-approval.approve', target: 'client:pilot-pay-ios', outcome: 'ok' },
+      { id: 'ev-3', at: at(-60, 12), actor: { sub: 'operator', byOperator: true }, action: 'admin.partner-approval.approve', target: 'client:pilot-pay-web', outcome: 'ok' },
+      { id: 'ev-2', at: at(-61, 12), actor: { sub: 'u_7f3a9c2e' }, action: 'admin.partner-client.create', target: 'client:pilot-pay-web', outcome: 'ok', from: 'edge-pilot-eu-1' },
+      { id: 'ev-1', at: at(-66, 12), actor: { sub: 'operator', byOperator: true }, action: 'admin.partner.create', target: 'partner:pilot-pay', outcome: 'ok' },
     ],
     staff: [
-      { id: 'u_7f3a9c2e', subject: 'u_7f3a9c2e', identifier: { kind: 'phone', masked: '+7 701 •••• 42' }, display: 'Dana Kim', level: 'admin', state: 'member', addedBy: 'config', addedAt: at(-66), lastSignInAt: at(0, 9) },
-      { id: 'u_2b91d4e0', subject: 'u_2b91d4e0', identifier: { kind: 'phone', masked: '+7 777 •••• 18' }, display: 'Marat Lee', level: 'developer', state: 'member', addedBy: 'Dana Kim', addedAt: at(-60), lastSignInAt: at(-1, 10) },
-      { id: 'u_9c0e1a77', subject: 'u_9c0e1a77', identifier: { kind: 'email', masked: 'a.s•••@pilotpay.example' }, display: 'Aya Sato', level: 'viewer', state: 'member', addedBy: 'Dana Kim', addedAt: at(-28), lastSignInAt: at(-26) },
-      { id: 'inv-1', identifier: { kind: 'email', masked: 'ops@pilotpay.example' }, level: 'admin', state: 'invited', addedBy: 'Dana Kim', addedAt: at(-1, 9), expiresAt: at(6, 9) },
+      { id: 'u_7f3a9c2e', subject: 'u_7f3a9c2e', display: 'Dana Kim', level: 'admin', state: 'member', addedBy: 'config', addedAt: at(-66) },
+      { id: 'u_2b91d4e0', subject: 'u_2b91d4e0', display: 'Marat Lee', level: 'developer', state: 'member', addedBy: 'u_7f3a9c2e', addedAt: at(-60) },
+      { id: 'u_9c0e1a77', subject: 'u_9c0e1a77', display: 'Aya Sato', level: 'viewer', state: 'member', addedBy: 'u_7f3a9c2e', addedAt: at(-28) },
+      { id: 'inv-1', identifier: { kind: 'email', masked: 'ops@pilotpay.example' }, level: 'admin', state: 'invited', addedBy: 'u_7f3a9c2e', addedAt: at(-1, 9), expiresAt: at(6, 9) },
     ],
     settings: {
       contact: { email: 'security@pilotpay.example', phone: '+7 727 300 1100' },

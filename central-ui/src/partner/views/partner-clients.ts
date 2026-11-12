@@ -10,7 +10,7 @@ import { confirmDiscardDraft } from '../../utils/draft-guard';
 import { copyToClipboard, formatDate } from '../../utils/helpers';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../../utils/record-route';
 import { approvalFieldLabel, partnerAccessTtlError, redirectUriWithinDomains, ttlCapsLabel, ttlLabel } from '../../utils/partners';
-import { deleteClient, fetchClients, fetchSettings, isPartnerApiError, rotateClientKeys, updateClient, withdrawClient, writeErrorMessage } from '../partner-api';
+import { deleteClient, fetchClients, fetchSettings, isPartnerApiError, updateClient, withdrawClient, writeErrorMessage } from '../partner-api';
 import type { PartnerClient, PartnerMe, PartnerSettings } from '../partner-types';
 import { partnerViewStyles } from '../partner-styles';
 import { consentSketchStyles } from './partner-client-wizard';
@@ -161,7 +161,7 @@ export class VersolaPartnerClients extends LitElement {
     this.draft = client ? {
       clientName: client.clientName, logoUri: client.logoUri ?? '', policyUri: client.policyUri ?? '', tosUri: client.tosUri ?? '',
       redirectUris: client.redirectUris.join('\n'), scope: [...client.scope], backChannelLogoutUri: client.backChannelLogoutUri ?? '',
-      accessTokenTtlMinutes: String(Math.max(1, Math.round(client.accessTokenTtl / 60))), refreshTokenTtlDays: String(Math.max(1, Math.round(client.refreshTokenTtl / 86_400))),
+      accessTokenTtlMinutes: String(Math.max(1, Math.round(client.accessTokenTtl / 60))), refreshTokenTtlDays: String(Math.max(1, Math.round((client.refreshTokenTtl ?? 14 * 86_400) / 86_400))),
     } : VersolaPartnerClients.emptyDraft();
     this.formError = '';
     this.submitted = false;
@@ -216,7 +216,6 @@ export class VersolaPartnerClients extends LitElement {
         clientName: draft.clientName.trim(), logoUri: draft.logoUri.trim() || null, policyUri: draft.policyUri.trim() || null, tosUri: draft.tosUri.trim() || null,
         redirectUris: this.draftRedirects, scope: [...new Set(['openid', ...draft.scope])], backChannelLogoutUri: draft.backChannelLogoutUri.trim() || null,
         accessTokenTtl: Number(draft.accessTokenTtlMinutes) * 60, refreshTokenTtl: Number(draft.refreshTokenTtlDays) * 86_400,
-        postLogoutRedirectUris: client.postLogoutRedirectUris,
       });
       this.clients = this.clients.map(candidate => candidate.id === client.id ? saved : candidate);
       this.notice = saved.approval.status === 'pending' && saved.approval.waitingFields.length
@@ -273,24 +272,6 @@ export class VersolaPartnerClients extends LitElement {
     }
   }
 
-  private async handleRotate(client: PartnerClient) {
-    const confirmed = await confirmDestructiveAction({
-      title: 'Rotate keys',
-      messagePrefix: 'Rotate the keys of ',
-      messageSubject: client.id,
-      messageSuffix: '? Your edges start signing with a new key; the old one stops verifying after their next sync.',
-      confirmLabel: 'Rotate',
-    });
-    if (!confirmed) return;
-    this.errorMessage = '';
-    try {
-      const result = await rotateClientKeys(client.id);
-      this.notice = { clientId: client.id, tone: 'ok', text: `Keys rotated at ${formatDate(result.rotatedAt)}. Your edges pick the new key up on their next sync.` };
-    } catch (error) {
-      this.errorMessage = writeErrorMessage(error);
-    }
-  }
-
   private handleCreated(event: CustomEvent<PartnerClient>) {
     this.clients = [event.detail, ...this.clients];
     dispatchRecordRoute(this, { id: event.detail.id, edit: null, create: false, layout: null });
@@ -328,7 +309,7 @@ export class VersolaPartnerClients extends LitElement {
   }
 
   private snippet(client: PartnerClient): string {
-    return `<a href="${this.me.edge.publicUrl}${client.loginPath}">Sign in with ${this.me.partner.operator.name}</a>`;
+    return `<a href="${this.me.edge.publicUrl ?? ''}${client.loginPath}">Sign in with ${this.me.partner.operator.name}</a>`;
   }
 
   // ── list ──
@@ -411,7 +392,7 @@ export class VersolaPartnerClients extends LitElement {
             </div>
           </div>
           ${this.row('After sign-in', html`the browser returns to <span class="mono">${client.redirectUris[0] ?? '…'}</span> with the edge session cookie`)}
-          ${this.row('Your APIs', html`behind the edge see the user at <span class="mono">${me.edge.publicUrl}/resources/&lt;resource&gt;/…</span>`)}
+          ${this.row('Your APIs', html`behind the edge see the user at <span class="mono">${me.edge.publicUrl ?? ''}/resources/&lt;resource&gt;/…</span>`)}
         `}></versola-record-card>` : ''}
 
       <versola-record-card heading="General" subheading="What users see on the consent screen. The operator approves the name and logo." ?editable=${edit} .body=${html`
@@ -430,9 +411,8 @@ export class VersolaPartnerClients extends LitElement {
 
       <versola-record-card heading="Credentials & tokens" subheading="How your edge authenticates as this client, and how long its tokens live." ?editable=${edit} .body=${html`
         ${this.row('Client authentication', client.fixed.authMethod === 'tls_client_auth' ? html`tls_client_auth with your group certificate <span class="mono">urn:versola:edge-group:${client.fixed.group}</span>` : 'private_key_jwt with the keys your edge holds', 'Operator')}
-        ${this.row('Token lifetimes', html`access ${ttlLabel(client.accessTokenTtl)} · refresh ${ttlLabel(client.refreshTokenTtl)} <span class="muted small">(caps ${ttlCapsLabel(limits)})</span>${this.waitingMark(client, 'accessTokenTtl')}${this.waitingMark(client, 'refreshTokenTtl')}`)}
+        ${this.row('Token lifetimes', html`access ${ttlLabel(client.accessTokenTtl)} · refresh ${client.refreshTokenTtl == null ? 'none' : ttlLabel(client.refreshTokenTtl)} <span class="muted small">(caps ${ttlCapsLabel(limits)})</span>${this.waitingMark(client, 'accessTokenTtl')}${this.waitingMark(client, 'refreshTokenTtl')}`)}
         ${this.row('Refresh rotation', 'On', 'Operator')}
-        ${edit && client.fixed.authMethod === 'private_key_jwt' ? html`<versola-record-row .value=${html`<div class="key-actions"><button type="button" class="btn btn-secondary btn-sm" @click=${() => this.handleRotate(client)}>Rotate keys</button></div>`}></versola-record-row>` : ''}
       `} @edit=${() => this.openEditor('tokens')}></versola-record-card>
 
       <versola-record-card heading="Served by" .body=${html`

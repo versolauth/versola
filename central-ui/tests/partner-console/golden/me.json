@@ -1,0 +1,48 @@
+{
+  "partner": {
+    "id": "acme",
+    "displayName": "Acme Corp",
+    "logoUri": "https://acme.example.com/logo.png",
+    "status": "active",
+    "limits": {
+      "scopes": [
+        "openid",
+        "profile",
+        "orders.read"
+      ],
+      "redirectDomains": [
+        "acme.example.com"
+      ],
+      "maxClients": 5,
+      "maxEdges": 2,
+      "accessTokenTtlMax": 3600,
+      "refreshTokenTtlMax": 2592000,
+      "clientAuthMethods": [
+        "tls_client_auth",
+        "private_key_jwt"
+      ],
+      "rateLimitPolicy": "standard"
+    },
+    "reviewAt": null,
+    "operator": {
+      "name": "Versola",
+      "issuer": "https://auth.example.com",
+      "mtlsUrl": "https://mtls.auth.example.com",
+      "centralMtlsUrl": "https://mtls.central.example.com"
+    }
+  },
+  "staff": {
+    "sub": "7a1c2f0e-5c5b-4f10-9e3f-2d6c1c8d0b11",
+    "display": "Aigul S.",
+    "level": "admin"
+  },
+  "edge": {
+    "id": "acme-edge-1",
+    "publicUrl": "https://edge.partner.example.com",
+    "central": "ok"
+  },
+  "console": {
+    "clientId": "acme-console",
+    "presetId": "acme-console"
+  }
+}

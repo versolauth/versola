@@ -23,7 +23,7 @@ export function redirectUriWithinDomains(uri: string, domains: string[]): boolea
   }
 }
 
-export type PartnerClientDraft = { redirectUris: string[]; scope: string[]; accessTokenTtl?: number; refreshTokenTtl?: number };
+export type PartnerClientDraft = { redirectUris: string[]; scope: string[]; accessTokenTtl?: number; refreshTokenTtl?: number | null };
 
 /** The fields of a client draft that fall outside the partner's limits: what central refuses, or what waits for the operator. */
 export function partnerLimitViolations(limits: PartnerLimits, draft: PartnerClientDraft): string[] {
@@ -31,7 +31,7 @@ export function partnerLimitViolations(limits: PartnerLimits, draft: PartnerClie
   if (draft.redirectUris.some(uri => !redirectUriWithinDomains(uri, limits.redirectDomains))) outside.push('redirectUris');
   if (draft.scope.some(scope => !limits.scopes.includes(scope))) outside.push('scope');
   if (draft.accessTokenTtl !== undefined && draft.accessTokenTtl > limits.accessTokenTtlMax) outside.push('accessTokenTtl');
-  if (draft.refreshTokenTtl !== undefined && draft.refreshTokenTtl > limits.refreshTokenTtlMax) outside.push('refreshTokenTtl');
+  if (draft.refreshTokenTtl != null && draft.refreshTokenTtl > limits.refreshTokenTtlMax) outside.push('refreshTokenTtl');
   return outside;
 }
 
@@ -221,3 +221,29 @@ export const RATE_LIMIT_POLICY_OPTIONS: Array<{ id: string; label: string }> = [
   { id: 'partner-high', label: 'partner-high · 2000 req/s per edge, 200 per user' },
   { id: 'none', label: 'none · no rate limit' },
 ];
+
+const AUDIT_VERBS: Record<string, string> = {
+  create: 'created', update: 'changed', delete: 'deleted', withdraw: 'withdrew', 'rotate-secret': 'rotated the secret of', suspend: 'suspended',
+  resume: 'resumed', approve: 'approved', reject: 'rejected', view: 'read', query: 'read',
+};
+const AUDIT_ENTITIES: Record<string, string> = {
+  'partner-client': 'a client', 'partner-resource': 'a resource', 'partner-edge': 'an edge', 'partner-revocation': 'a revocation', 'partner-settings': 'the settings',
+  'partner-profile': 'the name or logo', 'partner-approval': 'a request', partner: 'the partner', 'partner-limits': 'the limits',
+};
+
+/**
+ * An audit kind in the console's words: `admin.partner-client.create` is "created a client". Central owns the vocabulary, so a kind this
+ * does not know is shown as it came rather than guessed at.
+ */
+export function auditActionText(kind: string): string {
+  const match = kind.match(/^admin\.([a-z-]+)\.([a-z-]+)$/);
+  const verb = match && AUDIT_VERBS[match[2]];
+  const entity = match && AUDIT_ENTITIES[match[1]];
+  return verb && entity ? `${verb} ${entity}` : kind;
+}
+
+/** `client:pilot-pay-web` as `pilot-pay-web`, with its type kept for the reader: the target of an audit event is `<targetType>:<targetId>`. */
+export function auditTarget(target: string): { type: string; id: string } {
+  const at = target.indexOf(':');
+  return at < 0 ? { type: '', id: target } : { type: target.slice(0, at), id: target.slice(at + 1) };
+}

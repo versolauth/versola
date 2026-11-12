@@ -10,6 +10,8 @@ import { defineConfig, type Plugin } from 'vite';
 // index.html resolve against wherever the HTML itself was served from,
 // instead of assuming a fixed absolute path.
 const BASE_PATH = './';
+// Where a partner edge serves the partner console from (`GET /partner`, `/partner/`, `/partner/<file>`).
+const PARTNER_BASE_PATH = '/partner/';
 
 function distIndexHtmlPlugin(partner: boolean): Plugin {
   return {
@@ -35,9 +37,11 @@ function distIndexHtmlPlugin(partner: boolean): Plugin {
         throw new Error(`dist-index-html: expected to find '${faviconMarker}' in ${page.source} — update this plugin if ${page.source}'s shape changed.`);
       }
 
+      // The partner edge serves the console at `/partner` and `/partner/`, so its files are addressed from `/partner/`: a relative `./` would resolve against `/` from `/partner` (no trailing slash).
+      const base = partner ? PARTNER_BASE_PATH : BASE_PATH;
       const html = source
-        .replace(page.scriptMarker, `${BASE_PATH}${page.bundle}`)
-        .replace(faviconMarker, `href="${BASE_PATH}favicon-light.svg"`);
+        .replace(page.scriptMarker, `${base}${page.bundle}`)
+        .replace(faviconMarker, `href="${base}favicon-light.svg"`);
 
       await mkdir(outputDir, { recursive: true });
       await writeFile(path.join(outputDir, page.output), html, 'utf8');
@@ -56,7 +60,7 @@ export default defineConfig(({ command, isPreview, mode }) => {
   // as the only signal) — otherwise `npm run preview` serves dist/ at "/"
   // while its index.html references /admin/... assets, and everything 404s.
   // The plain dev server (npm run dev) is the only case that stays at "/".
-  base: command === 'build' || isPreview ? BASE_PATH : '/',
+  base: command === 'build' || isPreview ? (partner ? PARTNER_BASE_PATH : BASE_PATH) : '/',
   plugins: [distIndexHtmlPlugin(partner)],
   // The partner entry installs an in-page mock in the plain dev server only; Playwright routes the API itself.
   define: { 'import.meta.env.PLAYWRIGHT': JSON.stringify(isPlaywright) },

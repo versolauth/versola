@@ -6,8 +6,9 @@ import { statusIcon } from '../../components/status-icon';
 import { resultBadgeStyles } from '../../components/activity-shared';
 import { formatDate } from '../../utils/helpers';
 import { EMPTY_RECORD_ROUTE, type RecordRoute } from '../../utils/record-route';
-import { fetchAudit } from '../partner-api';
-import type { AuditEventRecord, PartnerMe } from '../partner-types';
+import { auditActionText, auditTarget } from '../../utils/partners';
+import { fetchAudit, fetchStaff } from '../partner-api';
+import type { AuditEventRecord, PartnerMe, StaffMember } from '../partner-types';
 import { partnerViewStyles } from '../partner-styles';
 import '../../components/content-header';
 import '../../components/empty-state';
@@ -15,8 +16,6 @@ import '../../components/error-card';
 import '../../components/filter-bar';
 import '../../components/loading-cards';
 
-type ActorFilter = 'all' | 'team' | 'operator' | 'edges';
-type KindFilter = '' | 'clients' | 'resources' | 'edges' | 'team' | 'revocations' | 'security';
 
 /**
  * Audit: everything done in this console, every decision the operator made about the partner,
@@ -32,8 +31,14 @@ export class VersolaPartnerAudit extends LitElement {
   @state() private next: string | null = null;
   @state() private isLoading = false;
   @state() private errorMessage = '';
-  @state() private actor: ActorFilter = 'all';
-  @state() private kind: KindFilter = '';
+  /** A staff `sub`, or empty for anyone: the contract's `actor`. */
+  @state() private actor = '';
+  /** An audit kind such as `admin.partner-client.create`, or empty for every kind: the contract's `kind`. */
+  @state() private kind = '';
+  /** The kinds seen so far, which is what the kind filter offers: central owns the vocabulary, so none is invented here. */
+  @state() private knownKinds: string[] = [];
+  /** The team, to name a `sub`; admins only (the edge answers the others 403), so it may be empty and a `sub` is shown as it is. */
+  @state() private team: StaffMember[] = [];
   @state() private query = '';
   private queryTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -74,14 +79,17 @@ export class VersolaPartnerAudit extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     void this.load();
+    // Names for the `sub`s; only an admin may read the team, so a failure just leaves the `sub`s as they are.
+    void fetchStaff().then(team => { this.team = team; }, () => undefined);
   }
 
   private async load(append = false) {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      const page = await fetchAudit({ cursor: append ? this.next : null, actor: this.actor === 'all' ? undefined : this.actor, kind: this.kind || undefined, ...(this.query.trim() ? { q: this.query.trim() } : {}) });
+      const page = await fetchAudit({ cursor: append ? this.next : null, actor: this.actor || undefined, kind: this.kind || undefined, ...(this.query.trim() ? { q: this.query.trim() } : {}) });
       this.events = append ? [...this.events, ...page.events] : page.events;
+      this.knownKinds = [...new Set([...this.knownKinds, ...page.events.map(event => event.action)])].sort();
       this.next = page.next ?? null;
     } catch (error) {
       if (!append) this.events = [];
@@ -91,12 +99,12 @@ export class VersolaPartnerAudit extends LitElement {
     }
   }
 
-  private setActor(actor: ActorFilter) {
+  private setActor(actor: string) {
     this.actor = actor;
     void this.load();
   }
 
-  private setKind(kind: KindFilter) {
+  private setKind(kind: string) {
     this.kind = kind;
     void this.load();
   }
@@ -110,7 +118,7 @@ export class VersolaPartnerAudit extends LitElement {
   private exportCsv() {
     const escape = (value: string) => `"${value.replace(/"/g, '""')}"`;
     const lines = [['at', 'actor', 'sub', 'action', 'target', 'outcome', 'from'].join(','),
-      ...this.events.map(event => [event.at, event.actor.display ?? '', event.actor.sub, event.action, event.target, event.outcome, event.from ?? ''].map(escape).join(','))];
+      ...this.events.map(event => [event.at, this.nameOf(event.actor.sub) ?? '', event.actor.sub, event.action, event.target, event.outcome, event.from ?? ''].map(escape).join(','))];
     const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -120,11 +128,15 @@ export class VersolaPartnerAudit extends LitElement {
     URL.revokeObjectURL(url);
   }
 
+  /** The team member a `sub` belongs to, when the team could be read. */
+  private nameOf(sub: string): string | undefined {
+    return this.team.find(member => member.subject === sub)?.display;
+  }
+
   private who(event: AuditEventRecord) {
     if (event.actor.byOperator) return html`<span class="chip operator">operator</span>`;
-    if (event.actor.sub.startsWith('edge-')) return html`<span class="mono">${event.actor.sub}</span>`;
-    if (event.actor.sub === 'anonymous') return html`<span class="chip warn">security</span>`;
-    return html`${event.actor.display ?? event.actor.sub}`;
+    const name = this.nameOf(event.actor.sub);
+    return name ? html`${name}` : html`<span class="mono">${event.actor.sub}</span>`;
   }
 
   private outcome(event: AuditEventRecord) {
@@ -133,22 +145,20 @@ export class VersolaPartnerAudit extends LitElement {
   }
 
   render() {
-    const actors: Array<{ id: ActorFilter; label: string }> = [{ id: 'all', label: 'All' }, { id: 'team', label: 'Team' }, { id: 'operator', label: 'Operator' }, { id: 'edges', label: 'Edges' }];
     return html`
       <content-header title="Audit" description="Everything done in this console, every decision the operator made about you, and what your edges did. The same events exist in the operator's log under your partner ID.">
         <button slot="actions" class="btn btn-secondary" ?disabled=${this.events.length === 0} @click=${() => this.exportCsv()}>Export CSV</button>
       </content-header>
       <div class="list-toolbar">
         <input class="search-input" type="search" aria-label="Search audit" placeholder="Search by client, member or event" .value=${this.query} @input=${(e: Event) => this.setQuery((e.target as HTMLInputElement).value)} />
-        <versola-filter-bar label="Filter by actor" .options=${actors} .value=${this.actor} @change=${(e: CustomEvent<{ id: string }>) => this.setActor(e.detail.id as ActorFilter)}></versola-filter-bar>
-        <select class="kind" aria-label="Kind of event" .value=${this.kind} @change=${(e: Event) => this.setKind((e.target as HTMLSelectElement).value as KindFilter)}>
+        ${this.team.length ? html`
+          <select class="kind" aria-label="Who did it" .value=${this.actor} @change=${(e: Event) => this.setActor((e.target as HTMLSelectElement).value)}>
+            <option value="">Anyone</option>
+            ${this.team.filter(member => member.subject).map(member => html`<option value=${member.subject!}>${member.display ?? member.subject}</option>`)}
+          </select>` : ''}
+        <select class="kind" aria-label="Kind of event" .value=${this.kind} @change=${(e: Event) => this.setKind((e.target as HTMLSelectElement).value)}>
           <option value="">Every kind</option>
-          <option value="clients">Clients</option>
-          <option value="resources">Resources</option>
-          <option value="edges">Edges</option>
-          <option value="team">Team</option>
-          <option value="revocations">Revocations</option>
-          <option value="security">Security</option>
+          ${this.knownKinds.map(kind => html`<option value=${kind}>${auditActionText(kind)}</option>`)}
         </select>
       </div>
       ${this.errorMessage ? html`<versola-error-card heading="Could not load the audit log" .message=${this.errorMessage} @retry=${() => this.load()}></versola-error-card>`
@@ -162,15 +172,15 @@ export class VersolaPartnerAudit extends LitElement {
                     <tr>
                       <td class="when" data-label="When">${formatDate(event.at)}</td>
                       <td class="who" data-label="Who">${this.who(event)}</td>
-                      <td data-label="Event">${event.action}</td>
-                      <td data-label="Target"><span class="mono">${event.target}</span></td>
+                      <td data-label="Event">${auditActionText(event.action)}</td>
+                      <td data-label="Target"><span class="muted">${auditTarget(event.target).type}</span> <span class="mono">${auditTarget(event.target).id}</span></td>
                       <td data-label="Outcome">${this.outcome(event)}</td>
                       <td data-label="From" class="muted">${event.from ?? '—'}</td>
                     </tr>`)}</tbody>
                 </table>
                 ${this.next ? html`<div class="pager"><button type="button" class="btn btn-secondary btn-sm" ?disabled=${this.isLoading} @click=${() => this.load(true)}>${this.isLoading ? 'Loading…' : 'Older events'}</button></div>` : ''}
               </div>`}
-      <p class="muted small footnote">${statusIcon('info', 'icon', 14)}<span>Team and edge events are written by your edge; operator decisions and client changes come from central with your partner ID. Retention follows the operator's audit policy.</span></p>
+      <p class="muted small footnote">${statusIcon('info', 'icon', 14)}<span>What your staff did through your edges and what the operator decided about you, as central's audit trail has it, newest first. Retention follows the operator's audit policy.</span></p>
     `;
   }
 }
