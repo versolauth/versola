@@ -62,7 +62,7 @@ function readBody(request: MockRequest): unknown {
 export function partnerToken(me: PartnerMe): string {
   const central = (me.partner.operator.centralMtlsUrl ?? 'https://central-mtls.example').replace('central-mtls.', 'central.');
   const address = btoa(`${central}/edge/enroll`).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  const secret = Array.from({ length: 43 }, () => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_'[Math.floor(Math.random() * 64)]).join('');
+  const secret = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   return `vtk1.${address}.${secret}`;
 }
 

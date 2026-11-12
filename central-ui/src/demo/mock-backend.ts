@@ -125,7 +125,7 @@ type CreatePartnerRequestDto = {
 export function enrollmentToken(issuer: string): string {
   const host = new URL(issuer).host.replace(/^id\./, '');
   const address = btoa(`https://central.${host}/edge/enroll`).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  const secret = Array.from({ length: 43 }, () => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_'[Math.floor(Math.random() * 64)]).join('');
+  const secret = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   return `vtk1.${address}.${secret}`;
 }
 type EdgeClientLinkDto = { tenantId: string; clientId: string };
