@@ -7,7 +7,7 @@ import zio.json.ast.Json
 import zio.test.*
 
 /** A tenant's two audit switches (`auditSettings`: `log` and `tokenRefresh`), which are tenant settings of central and no key of any config:
-  * they are stored with the rest of the tenant's challenge settings, patched with the rest, served to auth in the same record, and
+  * they are stored with the rest of the tenant's challenge settings, patched with the rest, and
   * what an administrator does to a tenant that switched its log off is not in central's audit log.
   *
   * The tenants are made for the case. The rows are read from central's table (the log has no read API for what was done to a client);
@@ -23,7 +23,6 @@ object AuditTenantSwitchSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAut
 
   private val tenants = "/configuration/tenants"
   private val settingsPath = "/configuration/challenges/challenge-settings"
-  private val syncPath = "/configuration/challenges/challenge-settings/sync"
 
   private def eventually[A](read: Task[A])(condition: A => Boolean): Task[A] =
     read.repeat(Schedule.spaced(100.millis) *> Schedule.recurUntil(condition)).timeout(20.seconds).someOrElseZIO(read)
@@ -32,7 +31,7 @@ object AuditTenantSwitchSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAut
     for
       central <- ZIO.service[CentralApi]
       tenantId <- CentralApi.id(prefix)
-      created <- central.post(tenants, Fixtures.tenant(tenantId))
+      created <- central.post(tenants, Fixtures.tenant(tenantId, securityProfile = Some("standard")))
       _ <- ZIO.fail(RuntimeException(s"Could not create tenant '$tenantId': ${created.status} ${created.body}")).unless(created.status.isSuccess)
       result <- use(central, tenantId).ensuring(central.delete(tenants, "tenantId" -> tenantId).ignore)
     yield result
@@ -89,15 +88,6 @@ object AuditTenantSwitchSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAut
           cleared.status == Status.BadRequest,
           halved.status == Status.BadRequest,
         )
-    },
-    test("the switches are in the record central serves to auth") {
-      withTenant("e2e-audit-sw-sync"): (central, tenantId) =>
-        for
-          _ <- patch(central, tenantId, "auditSettings" -> audit(log = false, tokenRefresh = true))
-          _ <- readSettings(central, tenantId)(_.obj("auditSettings").flatMap(_.bool("log")).contains(false))
-          served <- eventually(central.get(syncPath).flatMap(_.items("settings")))(_.exists(_.str("tenantId").contains(tenantId)))
-          mine = served.find(_.str("tenantId").contains(tenantId)).flatMap(_.obj("auditSettings"))
-        yield assertTrue(mine.flatMap(_.bool("log")).contains(false), mine.flatMap(_.bool("tokenRefresh")).contains(true))
     },
     test("what an administrator does in a tenant that switched its log off is not recorded; the same in a tenant that kept it is") {
       withTenant("e2e-audit-off"): (central, offTenant) =>

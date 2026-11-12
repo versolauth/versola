@@ -18,14 +18,14 @@ import java.time.Instant
   */
 object AuditLogFlowSpec extends E2ESpec:
 
-  private val offlineScope = "openid offline_access"
+  private[audit] val offlineScope = "openid offline_access"
 
-  private case class Session(tokens: TokenResult.Success, idToken: String, refreshToken: String)
+  private[audit] case class Session(tokens: TokenResult.Success, idToken: String, refreshToken: String)
 
   /** In non-prod the one-time code is always the first digits of "1234567890". */
-  private val fixedOtp = "123456"
+  private[audit] val fixedOtp = "123456"
 
-  private def login(s: Flows.Setup, auth: OAuthClient): Task[Session] =
+  private[audit] def login(s: Flows.Setup, auth: OAuthClient): Task[Session] =
     for
       authorize <- auth.authorize(scope = offlineScope, clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
       cookie = authorize.conversationCookie.get
@@ -45,7 +45,7 @@ object AuditLogFlowSpec extends E2ESpec:
     yield Session(tokens, idToken, refresh)
 
   /** What a row says of itself, as the endpoint serves it. */
-  private case class Row(
+  private[audit] case class Row(
       kind: String,
       outcome: String,
       reason: Option[String],
@@ -53,9 +53,10 @@ object AuditLogFlowSpec extends E2ESpec:
       details: Json.Obj,
       clientId: Option[String],
       ip: Option[String],
+      tenantId: Option[String],
   )
 
-  private def rowOf(json: Json): Option[Row] =
+  private[audit] def rowOf(json: Json): Option[Row] =
     for
       obj <- json.asObject
       kind <- obj.get("kind").flatMap(_.asString)
@@ -69,11 +70,12 @@ object AuditLogFlowSpec extends E2ESpec:
       obj.get("details").flatMap(_.asObject).getOrElse(Json.Obj()),
       obj.get("clientId").flatMap(_.asString),
       obj.get("ip").flatMap(_.asString),
+      obj.get("tenantId").flatMap(_.asString),
     )
 
-  private case class Page(rows: List[Row], nextCursor: Option[String], retentionFrom: Instant)
+  private[audit] case class Page(rows: List[Row], nextCursor: Option[String], retentionFrom: Instant)
 
-  private def page(auth: OAuthClient, userId: String, query: String): Task[Page] =
+  private[audit] def page(auth: OAuthClient, userId: String, query: String): Task[Page] =
     for
       response <- auth.auditGet(s"/users/audit-events?id=$userId$query")
       body <- response.body.asString
@@ -87,13 +89,13 @@ object AuditLogFlowSpec extends E2ESpec:
 
   /** Every row of the user from `from` on, newest first, waiting (bounded) until `done` holds: the rows reach the table when the writer's
     * batch is written, up to a second after the request that made them. */
-  private def awaitRows(auth: OAuthClient, userId: String, from: Instant)(done: List[Row] => Boolean): Task[List[Row]] =
+  private[audit] def awaitRows(auth: OAuthClient, userId: String, from: Instant)(done: List[Row] => Boolean): Task[List[Row]] =
     def attempt(left: Int): Task[List[Row]] =
       page(auth, userId, s"&from=$from&limit=500").map(_.rows).flatMap: rows =>
         if done(rows) || left == 0 then ZIO.succeed(rows) else ZIO.sleep(250.millis) *> attempt(left - 1)
     attempt(80)
 
-  private def kinds(rows: List[Row]): List[String] = rows.map(_.kind)
+  private[audit] def kinds(rows: List[Row]): List[String] = rows.map(_.kind)
 
   /** The rows of a whole case that signs in and logs out: waited for together, not the logout alone. The writer batches, and a wait that is
     * satisfied by the last row alone returns while the sign-in's rows are still in the batch before it, or satisfied by a row of the previous
