@@ -3,6 +3,7 @@ import audit from './golden/audit.json' with { type: 'json' };
 import clientCreated from './golden/client-created.json' with { type: 'json' };
 import clients from './golden/clients.json' with { type: 'json' };
 import edgeCreated from './golden/edge-created.json' with { type: 'json' };
+import enrollmentToken from './golden/enrollment-token.json' with { type: 'json' };
 import edges from './golden/edges.json' with { type: 'json' };
 import errorInsufficient from './golden/error-insufficient-level.json' with { type: 'json' };
 import errorNotFound from './golden/error-not-found.json' with { type: 'json' };
@@ -111,12 +112,15 @@ test('a created client and a created edge have the edge\'s shape', async ({ page
     return {
       client: await post('/clients', { id: 'pilot-pay-new', kind: 'web', clientName: 'New', redirectUris: ['https://pay.pilotpay.example/cb'], scope: ['openid'], accessTokenTtl: 300, refreshTokenTtl: 86400 }),
       edge: await post('/edges', { id: 'edge-pilot-new', publicUrl: 'https://login-new.pilotpay.example' }),
+      token: await post('/edges/edge-pilot-new/enrollment-tokens', {}),
     };
   });
   expect(created.client.status).toBe(202);
   expect(created.edge.status).toBe(201);
+  expect(created.token.status).toBe(201);
   conforms('POST /clients', created.client.body, clientCreated as Json, ['POST /clients.consentFlow', 'POST /clients.policyUri', 'POST /clients.tosUri', 'POST /clients.logoUri'], problems);
   conforms('POST /edges', created.edge.body, edgeCreated as Json, ['POST /edges.edge.certificateNotAfter', 'POST /edges.edge.lastRenewedAt'], problems);
+  conforms('POST /edges/{id}/enrollment-tokens', created.token.body, enrollmentToken as Json, [], problems);
   expect(problems).toEqual([]);
 });
 

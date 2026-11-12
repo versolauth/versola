@@ -128,7 +128,11 @@ test('a waiting edge: revoke the unused token, issue a new one', async ({ page }
 
   await certificate.getByRole('button', { name: 'Issue enrollment token' }).click();
   await findRequest(api.requests, 'POST', '/edges/edge-pilot-kz-1/enrollment-tokens');
-  await expect(panel.getByRole('status').first()).toContainText('Bootstrap bundle created. It is shown once.');
+  await expect(panel.getByRole('status').first()).toContainText('Enrollment token created. It is shown once.');
+  await expect(panel.getByRole('status').first()).toContainText('central.identity.enrollment');
+  // A token issued on its own has an incomplete bundle: no bundle to save and no signing key.
+  await expect(panel.getByRole('region', { name: 'Bootstrap bundle' })).toHaveCount(0);
+  await expect(panel.getByRole('button', { name: 'Copy bundle' })).toHaveCount(0);
   await expect(panel.locator('.secret-value').first()).toHaveText(/^vtk_pilot-pay_/);
   await expect(panel.getByRole('status').first()).toContainText('until');
   // An edge that already enrolled has nothing to issue a token for.

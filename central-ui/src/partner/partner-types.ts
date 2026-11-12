@@ -100,7 +100,8 @@ export type PartnerEdge = {
   policies: { overload: Record<string, unknown>; accessLog: Record<string, unknown>; rateLimits: Record<string, unknown> };
 };
 
-export type EnrollmentToken = { token: string; bundle: string; expiresAt: string | null };
+/** `bundleComplete` is false for a token issued on its own: that bundle has no signing key and no enroll URL and cannot be saved as `bootstrap.json`; only `POST /partner/api/edges` returns a complete one. */
+export type EnrollmentToken = { token: string; bundle: string; bundleComplete?: boolean; expiresAt: string | null };
 
 /** `POST /partner/api/edges`: the edge and its first enrollment token in one write. */
 export type CreatedEdge = EnrollmentToken & { edge: PartnerEdge; signingKey: SigningKey };
@@ -115,11 +116,11 @@ export type RevocationRequest = { by: RevocationBy; value: string; clients: stri
 
 export type Revocation = RevocationRequest & { id: string; at: string; by_staff: string; ended: number };
 
-/** `sub` is the staff member's, `operator` (or the operator's actor id) for the operator's own actions. The edge sends no display name: the console reads it off the team. */
-export type AuditActor = { sub: string; byOperator?: true };
+/** `sub` is the staff member's, `operator` for the operator's own actions; `display` is the name the edge found for it. */
+export type AuditActor = { sub: string; display?: string; byOperator?: true };
 
-/** `action` is central's audit kind (`admin.partner-client.create`), `target` is `<targetType>:<targetId>`. */
-export type AuditEventRecord = { id: string; at: string; actor: AuditActor; action: string; target: string; outcome: 'ok' | 'refused' | 'failed'; from?: string };
+/** `kind` is what the event is about (`clients.create`, `team.invite`, `security.refused`); `action` says it in words; the team's own events are included. */
+export type AuditEventRecord = { id: string; at: string; kind: string; actor: AuditActor; action: string; target: string; outcome: 'ok' | 'refused' | 'failed'; from?: string };
 
 export type AuditQuery = { cursor?: string | null; actor?: string; kind?: string; q?: string };
 

@@ -100,15 +100,15 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
     const token = `vtk_${me.partner.id}_${Math.random().toString(36).slice(2, 10)}${Math.random().toString(36).slice(2, 10)}`;
     // An enrollment token lives 24 hours.
     const expiresAt = new Date(nowMs() + 24 * 60 * 60_000).toISOString();
-    const issued = { token, bundle: partnerBundle(edge.id, me, token), expiresAt };
+    const issued = { token, bundle: partnerBundle(edge.id, me, token), bundleComplete: false, expiresAt };
     state.pendingTokens = { ...(state.pendingTokens ?? {}), [edge.id]: expiresAt };
     return issued;
   };
 
-  /** One audit event of what the signed-in staff member just did, as central writes it: its kind, and `<type>:<id>` as the target. */
-  const recordAudit = (kind: string, target: string) => {
+  /** One audit event of what the signed-in staff member just did, as the edge relays it: the kind, the action in words, the actor with a name. */
+  const recordAudit = (kind: string, action: string, target: string) => {
     const me = state.me!;
-    state.audit = [{ id: `ev-${Date.now()}-${state.audit.length}`, at: nowIso(), actor: { sub: me.staff.sub }, action: kind, target, outcome: 'ok', from: me.edge.id }, ...state.audit];
+    state.audit = [{ id: `ev-${Date.now()}-${state.audit.length}`, kind, at: nowIso(), actor: { sub: me.staff.sub, display: me.staff.display ?? me.staff.sub }, action, target, outcome: 'ok', from: me.edge.id }, ...state.audit];
   };
 
   await page.route('**/partner/api/**', async route => {
@@ -194,7 +194,7 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
           fixed: { consent: true, flow: 'code+pkce+par', authMethod, group: me.partner.id },
         };
         state.clients = [client, ...state.clients];
-        recordAudit('admin.partner-client.create', `client:${client.id}`);
+        recordAudit('clients.create', 'submitted a client for approval', client.id);
         await route.fulfill(json(client, 202));
         return;
       }
@@ -226,7 +226,7 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
         delete applied.authMethod;
         delete applied.kind;
         Object.assign(client, applied);
-        recordAudit('admin.partner-client.update', `client:${client.id}`);
+        recordAudit('clients.update', 'changed a client', client.id);
         if (waiting.length > 0) {
           client.approval = { kind: 'change', status: 'pending', waitingFields: waiting, requestedAt: nowIso(), note: null };
           await route.fulfill(json(client, 202));
@@ -237,7 +237,7 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
       }
       if (method === 'DELETE' && !action) {
         state.clients = state.clients.filter(candidate => candidate.id !== id);
-        recordAudit('admin.partner-client.delete', `client:${id}`);
+        recordAudit('clients.delete', 'deleted a client', id!);
         await route.fulfill({ status: 204, body: '' });
         return;
       }
@@ -250,7 +250,7 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
         const neverApproved = client.approval.kind === 'create';
         if (neverApproved) state.clients = state.clients.filter(candidate => candidate.id !== id);
         else client.approval = { kind: 'change', status: 'approved', waitingFields: [], note: null };
-        recordAudit('admin.partner-client.withdraw', `client:${id}`);
+        recordAudit('clients.withdraw', 'withdrew a request for a client', id!);
         await route.fulfill(json(neverApproved ? { ...client, approval: { ...client.approval, status: 'rejected', waitingFields: [], note: 'withdrawn' } } : client));
         return;
       }
@@ -328,7 +328,7 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
         const issued = issueToken(edge);
         state.edges = [...state.edges, edge];
         const keyId = nowIso().slice(0, 19).replace('T', '_').replace(/:/g, '-');
-        const created: CreatedEdge = { edge, signingKey: { keyId, privateKey: `-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC…${edge.id}\n-----END PRIVATE KEY-----` }, ...issued };
+        const created: CreatedEdge = { edge, signingKey: { keyId, privateKey: `-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC…${edge.id}\n-----END PRIVATE KEY-----` }, ...issued, bundleComplete: true };
         await route.fulfill(json(created, 201));
         return;
       }
@@ -383,7 +383,7 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
         const ended = payload.by === 'sid' || payload.by === 'fam' ? 1 : payload.by === 'client' ? 1284 : 3;
         const revocation: Revocation = { id: `rv-${Date.now()}`, at: nowIso(), by_staff: me.staff.sub, ...payload, ended };
         state.revocations = [revocation, ...state.revocations];
-        recordAudit('admin.partner-revocation.create', `revocation:${payload.by}:${payload.value}`);
+        recordAudit('revocations.create', `ended the sessions of ${payload.by === 'client' ? 'a client' : payload.by === 'user' ? 'a user' : 'a session'}`, `${payload.clients.join(', ')} · ${payload.value}`);
         await route.fulfill(json({ ended }));
         return;
       }
@@ -395,11 +395,12 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
       const kind = url.searchParams.get('kind') ?? '';
       const cursor = url.searchParams.get('cursor');
       const q = (url.searchParams.get('q') ?? '').toLowerCase();
-      // `actor` is a staff `sub`, `kind` an audit kind, `q` a free-text filter, as in the contract.
+      // `actor` is team, operator, edges or a `sub`; `kind` is clients, resources, edges, team, revocations or security, or one exact kind; `q` is free text.
+      const isEdge = (sub: string) => sub.startsWith('edge-');
       const matches = state.audit
-        .filter(event => !actor || event.actor.sub === actor)
-        .filter(event => !kind || event.action === kind)
-        .filter(event => !q || `${event.actor.sub} ${event.action} ${event.target}`.toLowerCase().includes(q));
+        .filter(event => !actor || (actor === 'operator' ? !!event.actor.byOperator : actor === 'edges' ? isEdge(event.actor.sub) : actor === 'team' ? !event.actor.byOperator && !isEdge(event.actor.sub) && event.actor.sub !== 'anonymous' : event.actor.sub === actor))
+        .filter(event => !kind || (kind === 'security' ? event.outcome !== 'ok' : event.kind === kind || event.kind.startsWith(`${kind}.`)))
+        .filter(event => !q || `${event.actor.display ?? ''} ${event.actor.sub} ${event.action} ${event.target}`.toLowerCase().includes(q));
       const start = cursor ? Math.max(0, matches.findIndex(event => event.id === cursor)) : 0;
       const pageEvents = matches.slice(start, start + AUDIT_PAGE);
       const next = matches[start + AUDIT_PAGE]?.id ?? null;

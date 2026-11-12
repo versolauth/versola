@@ -5,7 +5,7 @@ import { bannerStyles, buttonStyles, cardStyles, chipStyles, recordStyles, tagSt
 import { statusIcon } from '../../components/status-icon';
 import { formatDate } from '../../utils/helpers';
 import { relativeTime } from '../../utils/user-display';
-import { auditActionText, auditTarget, ttlCapsLabel } from '../../utils/partners';
+import { ttlCapsLabel } from '../../utils/partners';
 import { fetchAudit, fetchClients, fetchEdges, fetchStaff } from '../partner-api';
 import type { AuditEventRecord, PartnerClient, PartnerEdge, PartnerMe, StaffMember } from '../partner-types';
 import { partnerViewStyles } from '../partner-styles';
@@ -180,7 +180,7 @@ export class VersolaPartnerOverview extends LitElement {
       </div>
       <versola-record-card heading="Recent activity" subheading="Your team's actions and the operator's decisions about you. Everything here is also in the operator's audit log." .body=${html`
         <div class="record-list">${this.events === null ? html`<span class="muted">${this.settled ? 'Could not be read from central.' : '…'}</span>` : this.events.length ? html`<ul class="timeline">${this.events.slice(0, 6).map(event => html`
-          <li><span class="when">${formatDate(event.at)}</span><span><b>${event.actor.byOperator ? 'The operator' : this.nameOf(event.actor.sub) ?? event.actor.sub}</b> ${auditActionText(event.action)} · <span class="mono">${auditTarget(event.target).id}</span></span></li>`)}</ul>` : html`<span class="muted">Nothing yet.</span>`}</div>
+          <li><span class="when">${formatDate(event.at)}</span><span><b>${event.actor.display ?? this.nameOf(event.actor.sub) ?? event.actor.sub}</b> ${event.action} · <span class="mono">${event.target}</span></span></li>`)}</ul>` : html`<span class="muted">Nothing yet.</span>`}</div>
         <versola-record-row .value=${html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.go('audit')}>Open audit</button>`}></versola-record-row>
       `}></versola-record-card>
     `;

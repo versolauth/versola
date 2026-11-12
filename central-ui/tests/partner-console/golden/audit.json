@@ -2,24 +2,28 @@
   "events": [
     {
       "id": "ev-1",
+      "kind": "clients.create",
       "at": "2026-11-10T09:00:00Z",
       "actor": {
-        "sub": "7a1c2f0e-5c5b-4f10-9e3f-2d6c1c8d0b11"
+        "sub": "7a1c2f0e-5c5b-4f10-9e3f-2d6c1c8d0b11",
+        "display": "Aigul S."
       },
-      "action": "admin.partner-client.create",
-      "target": "client:acme-web",
+      "action": "submitted a client for approval",
+      "target": "acme-web",
       "outcome": "ok",
       "from": "acme-edge-1"
     },
     {
       "id": "ev-2",
+      "kind": "clients.approve",
       "at": "2026-11-09T09:00:00Z",
       "actor": {
         "sub": "operator",
+        "display": "the operator",
         "byOperator": true
       },
-      "action": "admin.partner-approval.approve",
-      "target": "client:acme-web",
+      "action": "approved a client",
+      "target": "acme-web",
       "outcome": "ok"
     }
   ],

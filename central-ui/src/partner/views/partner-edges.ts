@@ -271,27 +271,36 @@ export class VersolaPartnerEdges extends LitElement {
     return html`<versola-record-row .label=${label} .fixed=${fixed} .value=${value}></versola-record-row>`;
   }
 
+  /** What is shown once after a token is issued: a complete bootstrap bundle (a new edge) or just the token (an edge that already has its identity). */
+  private renderIssued(edge: PartnerEdge, issued: Issued) {
+    const complete = issued.bundleComplete !== false;
+    const until = issued.expiresAt ? html` until ${formatDate(issued.expiresAt)} (${relativeTime(issued.expiresAt)})` : '';
+    return html`
+      <div class="banner ok key-banner" role="status">
+        <div class="banner-text">
+          <div class="banner-title">${statusIcon('check')}${complete ? 'Bootstrap bundle created. It is shown once.' : 'Enrollment token created. It is shown once.'}</div>
+          ${complete
+            ? html`<div>The token is good for one enrollment${until}. Put the bundle next to the edge as <span class="mono">bootstrap.json</span> and start it with <span class="mono">mode = "partner"</span>; it asks the operator for a certificate that names <span class="mono">${edge.id}</span> and your group.${issued.signingKey ? html` The signing key is created with the edge and the operator does not keep its private half.` : ''}</div>`
+            : html`<div>The token is good for one enrollment${until}. It does not make a <span class="mono">bootstrap.json</span>: put it in <span class="mono">central.identity.enrollment</span> (a token file) of an edge that already has its identity. A complete bundle and the signing key are given only when an edge is added.</div>`}
+          <div class="secret-rows">
+            <div><div class="secret-label">Enrollment token</div><pre class="secret-value">${issued.token}</pre></div>
+            ${issued.signingKey ? html`<div><div class="secret-label">Signing key ${issued.signingKey.keyId}</div><pre class="secret-value" tabindex="0" role="region" aria-label="Signing key">${issued.signingKey.privateKey}</pre></div>` : ''}
+            ${complete ? html`<div><div class="secret-label">Bootstrap bundle</div><pre class="secret-value" tabindex="0" role="region" aria-label="Bootstrap bundle">${issued.bundle}</pre></div>` : ''}
+          </div>
+          <div class="banner-actions">
+            <button type="button" class="btn btn-primary btn-sm" @click=${() => this.copy('token')}>Copy token</button>
+            ${complete ? html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.copy('bundle')}>Copy bundle</button>` : ''}
+            <button type="button" class="btn btn-secondary btn-sm" @click=${() => { this.issued = null; }}>Done</button>
+            ${this.copyFeedback ? html`<span class="copy-feedback" role="status">${this.copyFeedback}</span>` : ''}
+          </div>
+        </div>
+      </div>`;
+  }
+
   private renderBanners(edge: PartnerEdge) {
     const issued = this.issued?.edgeId === edge.id ? this.issued : null;
     return html`
-      ${issued ? html`
-        <div class="banner ok key-banner" role="status">
-          <div class="banner-text">
-            <div class="banner-title">${statusIcon('check')}Bootstrap bundle created. It is shown once.</div>
-            <div>The token is good for one enrollment${issued.expiresAt ? html` until ${formatDate(issued.expiresAt)} (${relativeTime(issued.expiresAt)})` : ''}. Put the bundle next to the edge as <span class="mono">bootstrap.json</span> and start it with <span class="mono">mode = "partner"</span>; it asks the operator for a certificate that names <span class="mono">${edge.id}</span> and your group.${issued.signingKey ? html` The signing key is created with the edge and the operator does not keep its private half.` : ''}</div>
-            <div class="secret-rows">
-              <div><div class="secret-label">Enrollment token</div><pre class="secret-value">${issued.token}</pre></div>
-              ${issued.signingKey ? html`<div><div class="secret-label">Signing key ${issued.signingKey.keyId}</div><pre class="secret-value" tabindex="0" role="region" aria-label="Signing key">${issued.signingKey.privateKey}</pre></div>` : ''}
-              <div><div class="secret-label">Bootstrap bundle</div><pre class="secret-value" tabindex="0" role="region" aria-label="Bootstrap bundle">${issued.bundle}</pre></div>
-            </div>
-            <div class="banner-actions">
-              <button type="button" class="btn btn-primary btn-sm" @click=${() => this.copy('token')}>Copy token</button>
-              <button type="button" class="btn btn-secondary btn-sm" @click=${() => this.copy('bundle')}>Copy bundle</button>
-              <button type="button" class="btn btn-secondary btn-sm" @click=${() => { this.issued = null; }}>Done</button>
-              ${this.copyFeedback ? html`<span class="copy-feedback" role="status">${this.copyFeedback}</span>` : ''}
-            </div>
-          </div>
-        </div>` : ''}
+      ${issued ? this.renderIssued(edge, issued) : ''}
       ${edge.status === 'suspended' ? html`
         <div class="banner warn" role="status"><div class="banner-text"><div class="banner-title">${statusIcon('alert')}Certificate renewal refused: ${this.me.partner.operator.name} has suspended you</div><div>The certificate expires on ${edge.certificateNotAfter ? formatDate(edge.certificateNotAfter) : '…'}; the edge renews again once the operator resumes you.</div></div></div>` : ''}
     `;

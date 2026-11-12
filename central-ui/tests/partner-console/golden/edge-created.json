@@ -18,5 +18,6 @@
   },
   "token": "vtk_acme_x",
   "bundle": "{}",
-  "expiresAt": "2026-11-13T09:00:00Z"
+  "expiresAt": "2026-11-13T09:00:00Z",
+  "bundleComplete": true
 }

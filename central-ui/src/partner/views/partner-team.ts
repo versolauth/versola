@@ -265,7 +265,7 @@ export class VersolaPartnerTeam extends LitElement {
       <form id="team-editor" novalidate @submit=${this.handleSubmit}>
         ${this.formError ? html`<div class="editor-error" role="alert">${this.formError}</div>` : ''}
         ${create ? html`
-          <div class="banner info" role="status"><div class="banner-text"><div class="banner-title">${statusIcon('info')}Nothing is sent and nothing is looked up</div><div>The person must already have an account with ${this.me.partner.operator.name}. The first time they sign in to this console with a matching phone or email, they become a member.</div></div></div>
+          <div class="banner info" role="status"><div class="banner-text"><div class="banner-title">${statusIcon('info')}Nothing is sent and nothing is looked up</div><div>The person must already have an account with ${this.me.partner.operator.name}, and that phone number or email must be verified there (a sign-in by a code sent to it). The first time they sign in to this console with it, they become a member.</div></div></div>
           <div class="editor-box">
             <h3>Invite a member</h3>
             <div class="form-group">
