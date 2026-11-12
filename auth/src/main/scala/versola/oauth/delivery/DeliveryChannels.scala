@@ -2,9 +2,10 @@ package versola.oauth.delivery
 
 import versola.oauth.client.CentralSyncTokenService
 import versola.oauth.delivery.DeliverySettingsSyncClient.{EndpointMissing, Fetched, Saved}
-import versola.util.delivery.{EmailSender, SmsProviderSettings, SmsSender, SmtpSettings}
+import versola.util.delivery.{DeliveryTargetPolicy, EmailSender, GuardedClient, SmsProviderSettings, SmsSender, SmtpSettings}
 import versola.util.{CacheSource, ConfigSnapshot, CoreConfig, ReloadingCache, SecurityService}
 import zio.http.Client
+import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.{Duration, Ref, Scope, Task, UIO, ZIO, ZLayer}
 
 /** The two channels auth sends one-time codes and temporary passwords through, as they are configured now.
@@ -54,16 +55,20 @@ object DeliveryChannels:
       override def sms: UIO[Option[SmsSender]] = ZIO.succeed(smsSender)
       override def refresh: UIO[Unit] = ZIO.unit
 
-  def resolve(config: CoreConfig, client: Client, central: Fetched): Resolved =
+  /** `client` is the shared one, for the provider of `auth.conf`, which is the operator's own. `centralClient` is the client of
+    * the provider saved in central, whose address an administrator typed: it refuses what the target policy refuses
+    * ([[DeliveryTargetPolicy]]), as the SMTP server saved in central does. */
+  def resolve(config: CoreConfig, client: Client, centralClient: Client, central: Fetched): Resolved =
+    val policy = DeliveryTargetPolicy(allowPrivate = config.allowPrivateDeliveryTargets)
     val (email, emailOrigin) = central.smtp match
-      case Some(Saved(settings, true)) => (Some(EmailSender.smtp(settings)), Origin.Central)
+      case Some(Saved(settings, true)) => (Some(EmailSender.smtp(settings, policy)), Origin.Central)
       case Some(Saved(_, false)) => (None, Origin.Off)
       case None =>
         config.smtp match
           case Some(smtp) => (Some(EmailSender.smtp(smtpOf(smtp))), Origin.Config)
           case None => (None, Origin.Absent)
     val (sms, smsOrigin) = central.otpProvider match
-      case Some(Saved(settings, true)) => (Some(SmsSender.http(client, settings)), Origin.Central)
+      case Some(Saved(settings, true)) => (Some(SmsSender.http(centralClient, settings)), Origin.Central)
       case Some(Saved(_, false)) => (None, Origin.Off)
       case None =>
         config.otpProvider match
@@ -98,14 +103,15 @@ object DeliveryChannels:
       body = config.body,
     )
 
-  val live: ZLayer[Scope & CoreConfig & Client & CentralSyncTokenService & SecurityService & ConfigSnapshot, Throwable, DeliveryChannels] =
+  val live: ZLayer[Scope & Tracing & CoreConfig & Client & CentralSyncTokenService & SecurityService & ConfigSnapshot, Throwable, DeliveryChannels] =
     ZLayer.fromZIO:
       for
         config <- ZIO.service[CoreConfig]
         client <- ZIO.service[Client]
+        centralClient <- GuardedClient.make(DeliveryTargetPolicy(allowPrivate = config.allowPrivateDeliveryTargets))
         sync <- (ZLayer.environment[CoreConfig & CentralSyncTokenService & SecurityService] >>> DeliverySettingsSyncClient.live).build
           .map(_.get[DeliverySettingsSyncClient])
-        source <- resolvedSource(config, client, sync)
+        source <- resolvedSource(config, client, centralClient, sync)
         channels <- make(source, config.configurationCacheRefreshInterval)
       yield channels
 
@@ -115,7 +121,12 @@ object DeliveryChannels:
     * it for "nothing is saved" would send through `auth.conf` what an administrator switched off, so it is a failed
     * refresh, and the senders already built stay.
     */
-  private[delivery] def resolvedSource(config: CoreConfig, client: Client, sync: CacheSource[Fetched]): UIO[CacheSource[Resolved]] =
+  private[delivery] def resolvedSource(
+      config: CoreConfig,
+      client: Client,
+      centralClient: Client,
+      sync: CacheSource[Fetched],
+  ): UIO[CacheSource[Resolved]] =
     for
       answeredOnce <- Ref.make(false)
       announced <- Ref.make(Option.empty[(Origin, Origin)])
@@ -127,7 +138,7 @@ object DeliveryChannels:
             case missing: EndpointMissing =>
               answeredOnce.get.flatMap(answered => if answered then ZIO.fail(missing) else ZIO.succeed(Fetched.empty))
           .flatMap: fetched =>
-            val resolved = resolve(config = config, client = client, central = fetched)
+            val resolved = resolve(config = config, client = client, centralClient = centralClient, central = fetched)
             announce(announced, resolved).as(resolved)
 
   /** The channels over a source of resolved senders: loaded now, reloaded every `interval` and on [[DeliveryChannels.refresh]]. */

@@ -47,6 +47,11 @@ case class CentralConfig(
     /** The audit log (#469). Every key has a default, so a deployment that sets none keeps what an earlier release did and
       * records admin actions for 7 days. */
     audit: CentralConfig.AuditConfig = CentralConfig.AuditConfig(),
+    /** The SMTP server and the SMS provider saved through the admin API are refused when they point at a private network
+      * address (RFC 1918, carrier-grade NAT, IPv6 unique-local). Set it for a provider inside the cluster or the VPC. Loopback,
+      * link-local and the cloud metadata addresses are refused whatever this says. `auth` has the key of the same name, which
+      * is the one that holds at connection time; the two are set together. */
+    allowPrivateDeliveryTargets: Boolean = false,
 ):
   /** `client-certificates` only where it names a CA. A config with no such block still decodes to
     * `Some(defaults)` -- every field has a default, so an absent block parses -- and must read as
