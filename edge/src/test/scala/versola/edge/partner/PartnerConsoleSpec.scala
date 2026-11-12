@@ -32,6 +32,9 @@ object PartnerConsoleSpec extends ZIOSpecDefault:
         Files.writeString(root.resolve(".secret.js"), "hidden")
         Files.createDirectory(root.resolve("assets"))
         Files.writeString(root.resolve("assets").resolve("logo.svg"), "<svg/>")
+        Files.writeString(root.resolve("assets").resolve("versola-partner-ab12.js"), "chunk")
+        Files.writeString(root.resolve("versola-admin.js"), "operator console")
+        Files.writeString(root.resolve("versola-partner.js.map"), "{}")
         Files.writeString(outside.resolve("secret.js"), "outside")
         Files.createSymbolicLink(root.resolve("escape.js"), outside.resolve("secret.js"))
       client <- ZIO.service[Client]
@@ -71,7 +74,7 @@ object PartnerConsoleSpec extends ZIOSpecDefault:
       for
         (_, client) <- console
         script <- client.batched(get("/partner/versola-partner.js"))
-        logo <- client.batched(get("/partner/assets/logo.svg"))
+        logo <- client.batched(get("/partner/assets/versola-partner-ab12.js"))
       yield assertTrue(
         script.status == Status.Ok,
         logo.status == Status.Ok,
@@ -86,6 +89,9 @@ object PartnerConsoleSpec extends ZIOSpecDefault:
         link <- client.batched(get("/partner/escape.js"))
         traversal <- client.batched(get("/partner/..%2F..%2Fetc%2Fpasswd"))
         dotdot <- client.batched(get("/partner/assets/../../x.js"))
+        admin <- client.batched(get("/partner/versola-admin.js"))
+        map <- client.batched(get("/partner/versola-partner.js.map"))
+        svg <- client.batched(get("/partner/assets/logo.svg"))
         missing <- client.batched(get("/partner/nothing.js"))
       yield assertTrue(
         script.status == Status.NotFound,

@@ -14,5 +14,5 @@ object PostgresStaffRepositorySpec extends PostgresSpec, StaffRepositorySpec:
 
   override def beforeEach(env: StaffRepositorySpec.Env) =
     ZIO.serviceWithZIO[TransactorZIO] { xa =>
-      xa.connect(sql"TRUNCATE TABLE partner_staff, partner_staff_invites".update.run())
+      xa.connect(sql"TRUNCATE TABLE partner_staff, partner_staff_invites, partner_staff_config_admins, partner_staff_events".update.run())
     }.unit

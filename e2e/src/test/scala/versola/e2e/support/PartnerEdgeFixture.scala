@@ -91,8 +91,8 @@ object PartnerEdgeFixture:
         key <- ZIO.fromOption(bundle.obj("signingKey")).orElseFail(RuntimeException("the bundle carries no signing key"))
         keyId = key.str("keyId").getOrElse("")
         privateKey = key.str("privateKey").getOrElse("")
-        // the console client signs its users in with a login and a password in this stack
-        _ <- auth.updateClient(Fixtures.clientUpdate(s"$id-console", "authFlow" -> Flows.loginPasswordAuthFlow))
+        // the console client signs its users in with an email and a code: that is what makes the email verified, which a team invite requires
+        _ <- auth.updateClient(Fixtures.clientUpdate(s"$id-console", "authFlow" -> Flows.emailOtpAuthFlow))
         // auth reads the console client at its next reload, which is asked for (`POST /service/configuration/sync`, non-prod) and awaited:
         // auth redirects a client it knows, and answers 400 for one it does not
         _ <- central.postEmpty("/service/configuration/sync")
@@ -155,15 +155,13 @@ object PartnerEdgeFixture:
         api = EdgeApi(client, config.copy(edgeUrl = baseUrl))
       yield PartnerEdgeFixture(id, groupId, edgeId, s"$id-console", baseUrl, api, admin, Fixtures.suiteTenant)
 
-  /** A person at the operator who can sign in with a login and a password and whose `/userinfo` carries a phone number. */
+  /** A person at the operator who signs in with an email and a code, and whose `/userinfo` carries that email with `email_verified`. `phone` is
+    * the identifier the team knows them by: the email. */
   def person(auth: OAuthClient, index: Int): Task[Person] =
     for
       // not `Random`: a test runs with a seeded one, and every person would be the same
       suffix <- ZIO.attempt(java.util.concurrent.ThreadLocalRandom.current().nn.nextInt(1000000, 9999999))
-      login = s"staff-$suffix-$index"
-      phone = s"staff-$suffix-$index@partner.example"
-      password = s"Pass-$suffix-1!"
-      userId <- auth.registerUser(login = Some(login), email = Some(phone))
+      email = s"staff-$suffix-$index@partner.example"
+      userId <- auth.registerUser(email = Some(email))
       _ <- auth.flushUserOutbox()
-      _ <- auth.setUserPassword(userId, password)
-    yield Person(login, password, phone)
+    yield Person(email, "", email)

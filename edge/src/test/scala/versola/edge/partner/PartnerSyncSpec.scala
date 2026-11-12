@@ -5,6 +5,7 @@ import versola.edge.{CentralSyncTokenService, EdgeCertificateHolder, EdgeConfig,
 import versola.util.{EdgeIdentityNames, PrivateClientCertificate, Secret, TestCertificates}
 import zio.*
 import zio.http.*
+import zio.json.ast.Json
 import zio.test.*
 
 import java.security.KeyPairGenerator
@@ -85,6 +86,13 @@ object PartnerSyncSpec extends ZIOSpecDefault:
           clients <- PartnerOAuthClientsSyncClient.Impl(client, config, tokens, holder(None)).getAll
         yield assertTrue(clients.isEmpty)
       },
+      test("a refusal of central (the partner is suspended) leaves no client served, rather than the last it was told of") {
+        for
+          _ <- serve("clients", "", status = Status.Forbidden)
+          client <- ZIO.service[Client]
+          clients <- PartnerOAuthClientsSyncClient.Impl(client, config, tokens, holder(Some(material))).getAll
+        yield assertTrue(clients.isEmpty)
+      },
       test("the permissions of every client are read, served or not, as the first-party sync's are") {
         for
           _ <- serve("clients", s"""{"clients":[${clientJson("acme-keys", "private_key_jwt")}]}""")
@@ -131,6 +139,36 @@ object PartnerSyncSpec extends ZIOSpecDefault:
             tokens,
           ))).exit
         yield assertTrue(mismatch.isInstanceOf[PartnerMeSyncClient.KindMismatch], passed.isSuccess)
+      },
+    ),
+    suite("the state of the partner")(
+      test("a running edge reports the partner suspended once central refuses its /me, and active again when central answers") {
+        val live = PartnerMe(
+          partner = PartnerMe.Partner("acme", "Acme", None, "active", Json.Obj(), None, "t"),
+          operator = PartnerMe.Operator("Bank", None, None, None),
+          console = PartnerMe.Console("acme-console", "acme-console"),
+          edge = PartnerMe.Edge("edge-1", None),
+        )
+        for
+          refused <- Ref.make(false)
+          source = new PartnerMeSyncClient:
+            override def getAll = refused.get.flatMap(r => if r then ZIO.fail(PartnerMeSyncClient.Suspended) else ZIO.succeed(live))
+          result <- ZIO.scoped:
+            for
+              state <- PartnerState.live.build.map(
+                _.get[PartnerState],
+              ).provideSomeLayer[Scope](ZLayer.succeed[PartnerMeSyncClient](source) ++ ZLayer.succeed(config))
+              before <- state.me
+              _ <- refused.set(true)
+              _ <- TestClock.adjust(6.minutes)
+              during <- state.me
+              reachableDuring <- state.centralReachable
+              _ <- refused.set(false)
+              _ <- TestClock.adjust(6.minutes)
+              after <- state.me
+            yield (before, during, reachableDuring, after)
+          (before, during, reachable, after) = result
+        yield assertTrue(before.partner.status == "active", during.partner.status == "suspended", reachable, after.partner.status == "active")
       },
     ),
     suite("bootstrap bundle")(

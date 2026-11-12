@@ -97,15 +97,20 @@ final class PartnerApi(
   private def guarded(level: StaffLevel, request: Request)(run: Run): UIO[Response] =
     (for
       _ <- sameOrigin(request)
-      session <- authenticate(request)
-      // the cookie of a refresh is set on whatever the answer is: the refresh token it replaced is spent, so a browser left with the
-      // old cookie would be sent to sign in again for a call that merely failed
+      console <- consoleOf(request)
+      // the cookie of a refresh is set on whatever the answer is, a refusal of the person included: the refresh token it replaced is
+      // spent, so a browser left with the old cookie would be sent to sign in again for a call that merely failed
       response <- (for
+        session <- memberOf(console)
         _ <- ZIO.fail(Fail(Status.Forbidden, "insufficient_level", extra = List("required" -> Json.Str(level.toString))))
           .unless(session.member.level.atLeast(level))
           .tapError(_ => Observability.setError("insufficient_level"))
+        // a partner central has suspended changes nothing: central refuses it, and so does the edge, which may not have asked yet
+        _ <- ZIO.fail(Fail(Status.Forbidden, "partner_suspended"))
+          .when(request.method != Method.GET && session.me.partner.status == "suspended")
+          .tapError(_ => Observability.setError("partner_suspended"))
         response <- run(session, request)
-      yield response).catchAll(failure(_)).map(response => session.console.rotatedCookie.fold(response)(response.addCookie))
+      yield response).catchAll(failure(_)).map(response => console.rotatedCookie.fold(response)(response.addCookie))
     yield response)
       .catchAll(failure(_))
       .tapErrorCause(cause => ZIO.logErrorCause("partner api", cause))
@@ -126,11 +131,13 @@ final class PartnerApi(
       Observability.setError("origin_mismatch"),
     ).unit
 
-  private def authenticate(request: Request): IO[Fail | Throwable, Session] =
+  private def consoleOf(request: Request): IO[Fail | Throwable, EdgeService.ConsoleSession] =
+    edgeService.consoleSession(request).catchAll:
+      case noSession: EdgeService.NoSession => unauthenticated(noSession.clear)
+      case error: Throwable => ZIO.fail(error)
+
+  private def memberOf(console: EdgeService.ConsoleSession): IO[Fail | Throwable, Session] =
     for
-      console <- edgeService.consoleSession(request).catchAll:
-        case noSession: EdgeService.NoSession => unauthenticated(noSession.clear)
-        case error: Throwable => ZIO.fail(error)
       me <- state.me
       // a session of one of the partner's own applications (an end user of its clients) shares the cookie, and is not staff
       _ <- unauthenticated(None).unless(console.presetId.toString == me.console.presetId && console.claims.clientId.toString == me.console.clientId)
@@ -176,9 +183,9 @@ final class PartnerApi(
           "reviewAt" -> optional(partner.reviewAt),
           "operator" -> Json.Obj(
             "name" -> Json.Str(operator.name),
-            "issuer" -> optional(operator.issuer),
-            "mtlsUrl" -> optional(operator.mtlsUrl),
-            "centralMtlsUrl" -> optional(operator.centralMtlsUrl),
+            "issuer" -> Json.Str(operator.issuer.getOrElse("")),
+            "mtlsUrl" -> Json.Str(operator.mtlsUrl.getOrElse("")),
+            "centralMtlsUrl" -> Json.Str(operator.centralMtlsUrl.getOrElse("")),
           ),
         ),
         "staff" -> Json.Obj(
@@ -188,7 +195,7 @@ final class PartnerApi(
         ),
         "edge" -> Json.Obj(
           "id" -> Json.Str(session.me.edge.id),
-          "publicUrl" -> optional(session.me.edge.publicUrl),
+          "publicUrl" -> Json.Str(session.me.edge.publicUrl.getOrElse("")),
           "central" -> Json.Str(if reachable then "ok" else "unavailable"),
         ),
         "console" -> Json.Obj("clientId" -> Json.Str(session.me.console.clientId), "presetId" -> Json.Str(session.me.console.presetId)),
@@ -421,11 +428,96 @@ final class PartnerApi(
         )
       ok(Json.Obj("revocations" -> Json.Arr(revocations*)))
 
+  /** The partner's trail: central's events (what its staff did through its edges and what the operator decided) with the team's own,
+    * which only the edge holds. The console asks by group (`kind` clients, resources, edges, team, revocations, security; `actor` team,
+    * operator, edges), which central does not know: it matches one kind and one actor exactly. So the edge reads central's pages and
+    * keeps the events of the group, and lays the team's events among them by time. Anything else is passed to central as it is. */
   private def audit(session: Session, request: Request): IO[Fail | Throwable, Response] =
-    val query = List("cursor", "actor", "kind", "q").flatMap(name => request.url.queryParams.getAll(name).headOption.map(name -> _)).toMap
-    forward(session, Method.GET, List("audit"), query = query).map: answer =>
-      val events = arrayOf(answer, "events").map(auditEventDto)
-      ok(Json.Obj("events" -> Json.Arr(events*), "next" -> answer.obj.flatMap(field(_, "next")).getOrElse(Json.Null)))
+    def param(name: String) = request.url.queryParams.getAll(name).headOption.filter(_.nonEmpty)
+    val kind = param("kind")
+    val actor = param("actor")
+    val q = param("q")
+    val cursor = param("cursor").map(AuditCursor.decode)
+    val teamOnly = kind.contains(TeamKind)
+    val localWanted = kind.forall(_ == TeamKind) && actor.forall(a => a == "team" || !Set("operator", "edges").contains(a))
+    val central = kind.filter(_ => !teamOnly).flatMap(AuditGroups.kinds)
+    for
+      displays <- staff.list.map(_.flatMap(entry => entry.subject.map(_ -> entry.display.getOrElse(entry.subject.getOrElse("")))).toMap)
+      fetched <-
+        if teamOnly then ZIO.succeed((Chunk.empty[Json.Obj], Option.empty[String], Option.empty[Instant]))
+        else readCentral(session, cursor.flatMap(_.central), kind, actor, q, central)
+      (events, next, oldest) = fetched
+      before = cursor.flatMap(_.boundary)
+      // the team's events between where the page of central's begins and where the one before it ended; the last page reaches back to the start
+      lower = if next.isDefined then oldest else None
+      local <-
+        if !localWanted then ZIO.succeed(Nil)
+        else
+          staff.events(lower, before, AuditPage).map(_.filter(event => q.forall(text => event.target.contains(text) || event.action.contains(text))))
+      localDtos = local.map(event => (event.at, localEventDto(event, displays)))
+      centralDtos = events.toList.map(event => (Instant.parse(str(event, "at").getOrElse("1970-01-01T00:00:00Z")), auditEventDto(event, displays)))
+      merged = (centralDtos ++ localDtos).sortBy(_._1)(using Ordering[Instant].reverse).map(_._2)
+      nextCursor =
+        if teamOnly then Option.when(local.size == AuditPage)(AuditCursor.encode(AuditCursor(None, local.lastOption.map(_.at))))
+        else next.map(c => AuditCursor.encode(AuditCursor(Some(c), oldest)))
+    yield ok(Json.Obj("events" -> Json.Arr(merged*), "next" -> nextCursor.fold[Json](Json.Null)(Json.Str(_))))
+
+  /** Pages of central's audit until a page's worth of the group is found, or [[AuditPages]] pages were read. `next` is where to go on from,
+    * `oldest` the time of the oldest event read (what the team's events are laid against). */
+  private def readCentral(
+      session: Session,
+      from: Option[String],
+      kind: Option[String],
+      actor: Option[String],
+      q: Option[String],
+      kinds: Option[List[String]],
+  ): IO[Fail | Throwable, (Chunk[Json.Obj], Option[String], Option[Instant])] =
+    // a group is every kind of central's it names, an unknown `kind` is central's own exact one
+    val exact = kind.filter(_ => kinds.isEmpty)
+    def loop(
+        cursor: Option[String],
+        pages: Int,
+        found: Chunk[Json.Obj],
+        oldest: Option[Instant],
+    ): IO[Fail | Throwable, (Chunk[Json.Obj], Option[String], Option[Instant])] =
+      val query = List(
+        cursor.map("cursor" -> _),
+        exact.map("kind" -> _),
+        q.map("q" -> _),
+        actor.filter(a => !Set("team", "operator", "edges").contains(a)).map("actor" -> _),
+      ).flatten.toMap
+      forward(session, Method.GET, List("audit"), query = query).flatMap: answer =>
+        val page = arrayOf(answer, "events")
+        val next = answer.obj.flatMap(str(_, "next"))
+        val kept = page.filter(event =>
+          kinds.forall(ks => str(event, "kind").exists(k => ks.exists(k.contains))) && actor.forall(a => AuditGroups.actor(a, event)),
+        )
+        val times = page.flatMap(event => str(event, "at").flatMap(at => scala.util.Try(Instant.parse(at)).toOption))
+        val lowest = (oldest.toList ++ times.lastOption.toList).minOption
+        val all = found ++ kept
+        if next.isEmpty || all.size >= AuditPage || pages + 1 >= AuditPages then ZIO.succeed((all, next, lowest))
+        else loop(next, pages + 1, all, lowest)
+    loop(from, 0, Chunk.empty, None)
+
+  private def localEventDto(event: TeamEvent, displays: Map[String, String]): Json.Obj =
+    val what = event.action match
+      case "invite" => s"Invited ${event.target} as ${event.detail.getOrElse("")}".trim
+      case "level" => s"Made ${displays.getOrElse(event.target, event.target)} ${event.detail.getOrElse("")}".trim
+      case "remove" => s"Removed ${displays.getOrElse(event.target, event.target)} from the team"
+      case "admit" => s"${event.target} joined the team as ${event.detail.getOrElse("")}".trim
+      case other => other
+    Json.Obj(
+      "id" -> Json.Str(event.id.toString),
+      "at" -> Json.Str(event.at.toString),
+      "kind" -> Json.Str(s"team.${event.action}"),
+      "actor" -> Json.Obj(
+        "sub" -> Json.Str(event.actor),
+        "display" -> Json.Str(if event.actor == StaffService.ByConfiguration then "Configuration" else displays.getOrElse(event.actor, event.actor)),
+      ),
+      "action" -> Json.Str(what),
+      "target" -> Json.Str(event.target),
+      "outcome" -> Json.Str("ok"),
+    )
 
   // ── the team ─────────────────────────────────────────────────────────────────────────────────
 
@@ -513,7 +605,10 @@ final class PartnerApi(
       query: Map[String, String] = Map.empty,
       body: Option[Json] = None,
   ): IO[Fail | Throwable, Answer] =
-    central.call(method, path, query, body, Some(session.principal)).mapError {
+    central.call(method, path, query, body, Some(session.principal)).tapError {
+      case Failure.Suspended => state.noteSuspended
+      case _ => ZIO.unit
+    }.mapError {
       case Failure.Unavailable => Fail(Status.ServiceUnavailable, "central_unavailable")
       case Failure.Suspended => Fail(Status.Forbidden, "partner_suspended")
       case Failure.PrincipalMismatch => Fail(Status.Forbidden, "partner_principal_mismatch")
@@ -535,7 +630,7 @@ final class PartnerApi(
         val body = Json.Obj(
           (List("error" -> (Json.Str(fail.code): Json)) ++
             Option.when(fail.fields.nonEmpty)("fields" -> Json.Arr(fail.fields.map(Json.Str(_))*)) ++
-            fail.message.map(message => "message" -> (Json.Str(message): Json)) ++ fail.extra)*,
+            Some("message" -> (Json.Str(fail.message.getOrElse(defaultMessage(fail.code))): Json)) ++ fail.extra)*,
         )
         // A 4xx or 5xx says why once, through the request's error context, unless the step that failed already did.
         val response = json(fail.status, body)
@@ -549,6 +644,45 @@ final class PartnerApi(
       )
 
 object PartnerApi:
+  private val AuditPage = 50
+  private val AuditPages = 6
+  private val TeamKind = "team"
+
+  /** Where the console's groups of the audit trail are in central's: `kinds` are the substrings of its kinds, `actor` the test of the
+    * actor of an event. A name that is not a group is central's own and is not mapped. */
+  private[partner] object AuditGroups:
+    private val groups: Map[String, List[String]] = Map(
+      "clients" -> List(".partner-client.", ".partner-approval."),
+      "resources" -> List(".partner-resource."),
+      "edges" -> List(".partner-edge."),
+      "revocations" -> List(".partner-revocation."),
+      "security" -> List(".partner.", ".partner-approval."),
+    )
+    def kinds(kind: String): Option[List[String]] = groups.get(kind)
+    def actor(name: String, event: Json.Obj): Boolean =
+      val actorType = str(event, "actorType").getOrElse("")
+      name match
+        case "team" => actorType == "partner-staff"
+        case "operator" => actorType != "partner-staff" && actorType != "edge"
+        case "edges" => actorType == "edge"
+        case _ => true
+
+  /** Where the next page of the audit trail begins: central's own cursor, and the time the page before it began, which the team's events
+    * of the pages in between are cut at. */
+  private[partner] case class AuditCursor(central: Option[String], boundary: Option[Instant])
+  private[partner] object AuditCursor:
+    def encode(cursor: AuditCursor): String =
+      java.util.Base64.getUrlEncoder.withoutPadding.encodeToString(
+        s"${cursor.central.getOrElse("")}|${cursor.boundary.map(_.toString).getOrElse("")}".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+      )
+    def decode(raw: String): AuditCursor =
+      scala.util.Try(String(
+        java.util.Base64.getUrlDecoder.decode(raw),
+        java.nio.charset.StandardCharsets.UTF_8,
+      )).toOption.map(_.split("\\|", -1).toList) match
+        case Some(central :: boundary :: Nil) =>
+          AuditCursor(Some(central).filter(_.nonEmpty), scala.util.Try(Instant.parse(boundary)).toOption)
+        case _ => AuditCursor(Some(raw), None)
   val LoginPath = "/partner/login"
   val LogoutPath = "/partner/logout"
 
@@ -564,6 +698,21 @@ object PartnerApi:
       extra: List[(String, Json)] = Nil,
       clear: Option[zio.http.Cookie.Response] = None,
   )
+
+  /** What the console shows for a code it has no text of its own for (the codes beyond the five of #963). */
+  private[partner] def defaultMessage(code: String): String =
+    code match
+      case "insufficient_level" => "Your level on the team does not allow this."
+      case "not_a_member" => "You are not on this partner's team."
+      case "unauthenticated" => "Your session ended. Sign in again."
+      case "partner_suspended" => "The operator has suspended this organisation: nothing can be changed until it resumes it."
+      case "partner_principal_mismatch" => "Central did not accept your session for this change. Sign in again."
+      case "central_unavailable" => "Central is unavailable right now, so nothing was changed."
+      case "origin_mismatch" => "The request did not come from the console."
+      case "not_supported" => "Not supported for this client."
+      case "conflict" => "This conflicts with what is already there."
+      case "not_found" => "There is no such record."
+      case _ => "The request was not accepted."
 
   private def json(status: Status, body: Json): Response =
     Response(
@@ -757,8 +906,39 @@ object PartnerApi:
       ),
     )
 
-  /** An event of central's audit log as the console's timeline reads it. */
-  private[partner] def auditEventDto(event: Json.Obj): Json.Obj =
+  private val Nouns = Map(
+    "partner-client" -> "client",
+    "partner-resource" -> "resource",
+    "partner-edge" -> "edge",
+    "partner-revocation" -> "revocation",
+    "partner-approval" -> "approval",
+    "partner" -> "organisation",
+  )
+  private val Verbs = Map(
+    "create" -> "Created",
+    "update" -> "Changed",
+    "delete" -> "Deleted",
+    "withdraw" -> "Withdrew",
+    "approve" -> "Approved",
+    "reject" -> "Rejected",
+    "suspend" -> "Suspended",
+    "resume" -> "Resumed",
+    "rotate-secret" -> "Rotated the secret of",
+    "enrollment-tokens" -> "Changed the enrollment token of",
+    "jwks" -> "Replaced the keys of",
+  )
+
+  /** The words for `admin.<resource>.<operation>`; the kind itself where this does not know it. */
+  private[partner] def actionOf(kind: String): String =
+    kind.split('.').toList match
+      case "admin" :: "secret" :: "revealed" :: Nil => "Revealed a secret"
+      case "admin" :: resource :: operation :: Nil if Nouns.contains(resource) && Verbs.contains(operation.stripPrefix("action:")) =>
+        if resource == "partner-revocation" && operation == "create" then "Ended grants of clients"
+        else s"${Verbs(operation.stripPrefix("action:"))} ${Nouns(resource)}"
+      case _ => kind
+
+  /** An event of central's audit log as the console's timeline reads it. `displays` names the members by `sub`. */
+  private[partner] def auditEventDto(event: Json.Obj, displays: Map[String, String]): Json.Obj =
     val actorType = str(event, "actorType").getOrElse("")
     val sub = str(event, "actorId").getOrElse("")
     val outcome = str(event, "outcome") match
@@ -767,15 +947,17 @@ object PartnerApi:
       case _ => "failed"
     val target = List(str(event, "targetType"), str(event, "targetId")).flatten.mkString(":")
     val actor =
-      if actorType == "partner-staff" then Json.Obj("sub" -> Json.Str(sub))
-      else Json.Obj("sub" -> Json.Str(if sub.nonEmpty then sub else "operator"), "byOperator" -> Json.Bool(true))
+      if actorType == "partner-staff" then Json.Obj("sub" -> Json.Str(sub), "display" -> Json.Str(displays.getOrElse(sub, sub)))
+      else if actorType == "edge" then Json.Obj("sub" -> Json.Str(if sub.nonEmpty then sub else "edge"), "display" -> Json.Str(s"Edge ${sub}".trim))
+      else Json.Obj("sub" -> Json.Str(if sub.nonEmpty then sub else "operator"), "display" -> Json.Str("Operator"), "byOperator" -> Json.Bool(true))
     Json.Obj(
       Chunk.fromIterable(
         List[(String, Json)](
           "id" -> Json.Str(str(event, "id").getOrElse("")),
           "at" -> Json.Str(str(event, "at").getOrElse("")),
+          "kind" -> Json.Str(str(event, "kind").getOrElse("")),
           "actor" -> actor,
-          "action" -> Json.Str(str(event, "kind").getOrElse("")),
+          "action" -> Json.Str(actionOf(str(event, "kind").getOrElse(""))),
           "target" -> Json.Str(target),
           "outcome" -> Json.Str(outcome),
         ) ++ str(obj(event, "details"), "edgeId").map(edge => "from" -> (Json.Str(edge): Json)),

@@ -25,7 +25,7 @@ trait StaffRepositorySpec extends DatabaseSpecBase[StaffRepositorySpec.Env]:
       test("a team with nobody on it is empty") {
         for
           members <- env.repository.members
-          invites <- env.repository.invites
+          invites <- env.repository.invites(at)
           found <- env.repository.findMember("nobody")
         yield assertTrue(members.isEmpty, invites.isEmpty, found.isEmpty)
       },
@@ -44,7 +44,7 @@ trait StaffRepositorySpec extends DatabaseSpecBase[StaffRepositorySpec.Env]:
         for
           _ <- env.repository.invite(first)
           _ <- env.repository.invite(again)
-          invites <- env.repository.invites
+          invites <- env.repository.invites(at)
         yield assertTrue(
           invites.size == 1,
           invites.head.id == first.id,
@@ -59,7 +59,7 @@ trait StaffRepositorySpec extends DatabaseSpecBase[StaffRepositorySpec.Env]:
           _ <- env.repository.invite(made)
           admitted <- env.repository.admit(made.id, member("sub-1", StaffLevel.admin))
           found <- env.repository.findMember("sub-1")
-          invites <- env.repository.invites
+          invites <- env.repository.invites(at)
         yield assertTrue(admitted, found.map(_.level) == Some(StaffLevel.admin), invites.isEmpty)
       },
       test("an invite that is gone admits nobody: the second of two sign-ins at once finds it spent") {
@@ -77,7 +77,7 @@ trait StaffRepositorySpec extends DatabaseSpecBase[StaffRepositorySpec.Env]:
           _ <- env.repository.invite(made)
           _ <- env.repository.admit(made.id, member("sub-1", StaffLevel.viewer))
           _ <- env.repository.invite(made.copy(id = UUID.randomUUID()))
-          again <- env.repository.invites
+          again <- env.repository.invites(at)
           _ <- env.repository.admit(again.head.id, member("sub-1", StaffLevel.admin))
           found <- env.repository.findMember("sub-1")
         yield assertTrue(found.map(_.level) == Some(StaffLevel.viewer))
@@ -87,22 +87,83 @@ trait StaffRepositorySpec extends DatabaseSpecBase[StaffRepositorySpec.Env]:
         for
           _ <- env.repository.invite(made)
           invited <- env.repository.setInviteLevel(made.id, StaffLevel.developer)
-          _ <- env.repository.invite(invite("hash-2")).flatMap(_ => env.repository.invites).flatMap(rows =>
+          _ <- env.repository.invite(invite("hash-2")).flatMap(_ => env.repository.invites(at)).flatMap(rows =>
             env.repository.admit(rows.find(_.identifierHash == "hash-2").get.id, member("sub-1", StaffLevel.viewer)),
           )
           set <- env.repository.setMemberLevel("sub-1", StaffLevel.admin)
           missingMember <- env.repository.setMemberLevel("nobody", StaffLevel.admin)
           missingInvite <- env.repository.setInviteLevel(UUID.randomUUID(), StaffLevel.admin)
-          invites <- env.repository.invites
+          invites <- env.repository.invites(at)
           found <- env.repository.findMember("sub-1")
         yield assertTrue(
           invited,
-          set,
-          !missingMember,
+          set == Change.Done,
+          missingMember == Change.Missing,
           !missingInvite,
           invites.head.level == StaffLevel.developer,
           found.map(_.level) == Some(StaffLevel.admin),
         )
+      },
+      test("the last administrator is neither removed nor made a developer, and with another one either can be") {
+        for
+          a <- env.repository.invite(invite("hash-a", StaffLevel.admin)) *> env.repository.invites(at).flatMap(rows =>
+            env.repository.admit(rows.head.id, member("sub-a", StaffLevel.admin)),
+          )
+          lastRemoved <- env.repository.removeMember("sub-a")
+          lastDemoted <- env.repository.setMemberLevel("sub-a", StaffLevel.developer)
+          _ <- env.repository.invite(invite("hash-b", StaffLevel.admin)) *> env.repository.invites(at).flatMap(rows =>
+            env.repository.admit(rows.head.id, member("sub-b", StaffLevel.admin)),
+          )
+          demoted <- env.repository.setMemberLevel("sub-a", StaffLevel.developer)
+          removed <- env.repository.removeMember("sub-a")
+          lastAgain <- env.repository.removeMember("sub-b")
+        yield assertTrue(
+          lastRemoved == Change.LastAdmin,
+          lastDemoted == Change.LastAdmin,
+          demoted == Change.Done,
+          removed == Change.Done,
+          lastAgain == Change.LastAdmin,
+        )
+      },
+      test("two administrators demoting each other at once leave one: the check and the change are one step") {
+        for
+          _ <- ZIO.foreachDiscard(List("a", "b"))(name =>
+            env.repository.invite(invite(s"hash-$name", StaffLevel.admin)) *> env.repository.invites(at).flatMap(rows =>
+              env.repository.admit(rows.find(_.identifierHash == s"hash-$name").get.id, member(s"sub-$name", StaffLevel.admin)),
+            ),
+          )
+          results <-
+            ZIO.collectAllPar(List.fill(8)(List("a", "b")).flatten.map(name => env.repository.setMemberLevel(s"sub-$name", StaffLevel.viewer)))
+          members <- env.repository.members
+        yield assertTrue(members.count(_.level == StaffLevel.admin) == 1, results.count(_ == Change.LastAdmin) >= 1)
+      },
+      test("a configured administrator's invite is made until they have signed in, and never again: a removed person stays removed") {
+        for
+          first <- env.repository.claimConfigAdmin(IdentifierKind.phone, "hash-c", at)
+          again <- env.repository.claimConfigAdmin(IdentifierKind.phone, "hash-c", at)
+          _ <- env.repository.invite(invite("hash-c", StaffLevel.admin)) *> env.repository.invites(at).flatMap(rows =>
+            env.repository.admit(rows.head.id, member("sub-c", StaffLevel.admin)),
+          )
+          afterSignIn <- env.repository.claimConfigAdmin(IdentifierKind.phone, "hash-c", at)
+          other <- env.repository.claimConfigAdmin(IdentifierKind.email, "hash-c", at)
+        yield assertTrue(first, again, !afterSignIn, other)
+      },
+      test("an expired invite is not listed and is purged") {
+        for
+          _ <- env.repository.invite(invite("hash-1"))
+          live <- env.repository.invites(at)
+          late <- env.repository.invites(at.plusSeconds(7200))
+          purged <- env.repository.purgeExpired(at.plusSeconds(7200))
+          found <- env.repository.findInvite(IdentifierKind.phone, "hash-1")
+        yield assertTrue(live.size == 1, late.isEmpty, purged == 1, found.isEmpty)
+      },
+      test("team events are kept and read newest first within a time range") {
+        def event(offset: Long, action: String) = TeamEvent(UUID.randomUUID(), at.plusSeconds(offset), "sub-1", action, "+7••11", None)
+        for
+          _ <- ZIO.foreachDiscard(List(event(0, "invite"), event(10, "admit"), event(20, "remove")))(env.repository.record)
+          all <- env.repository.events(None, None, 10)
+          middle <- env.repository.events(Some(at.plusSeconds(5)), Some(at.plusSeconds(20)), 10)
+        yield assertTrue(all.map(_.action) == List("remove", "admit", "invite"), middle.map(_.action) == List("admit"))
       },
       test("a member and an invite are removed, and removing what is not there is false") {
         val made = invite("hash-1")
@@ -110,12 +171,12 @@ trait StaffRepositorySpec extends DatabaseSpecBase[StaffRepositorySpec.Env]:
           _ <- env.repository.invite(made)
           removedInvite <- env.repository.removeInvite(made.id)
           removedAgain <- env.repository.removeInvite(made.id)
-          _ <- env.repository.invite(invite("hash-2")).flatMap(_ => env.repository.invites).flatMap(rows =>
+          _ <- env.repository.invite(invite("hash-2")).flatMap(_ => env.repository.invites(at)).flatMap(rows =>
             env.repository.admit(rows.head.id, member("sub-1")),
           )
           removedMember <- env.repository.removeMember("sub-1")
           removedMemberAgain <- env.repository.removeMember("sub-1")
-        yield assertTrue(removedInvite, !removedAgain, removedMember, !removedMemberAgain)
+        yield assertTrue(removedInvite, !removedAgain, removedMember == Change.Done, removedMemberAgain == Change.Missing)
       },
     )
 

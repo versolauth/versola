@@ -3,7 +3,7 @@ package versola.edge.partner
 import versola.edge.{CentralSyncTokenService, EdgeConfig, EdgeMode, EdgeService}
 import versola.util.http.Observability
 import zio.http.{Client, Routes}
-import zio.{Scope, Task, URLayer, ZIO, ZLayer}
+import zio.{Schedule, Scope, Task, URLayer, ZIO, ZLayer, durationInt}
 
 import java.nio.file.Path
 
@@ -41,6 +41,11 @@ object PartnerSurface:
           config <- ZIO.service[EdgeConfig]
           staff <- ZIO.service[StaffService]
           _ <- staff.applyAdmins(config.partner.admins)
+          scope <- ZIO.service[Scope]
+          // an invite past its day admits nobody and is not listed: it is removed, hourly
+          _ <- staff.purgeExpired.catchAllCause(cause => ZIO.logWarningCause("purging expired partner staff invites", cause)).repeat(Schedule.fixed(
+            1.hour,
+          )).forkIn(scope)
           state <- ZIO.service[PartnerState]
           central <- ZIO.service[PartnerCentral]
           edgeService <- ZIO.service[EdgeService]

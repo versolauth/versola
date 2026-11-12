@@ -85,6 +85,9 @@ trait PartnerState:
   /** Whether the last attempt to read central succeeded. */
   def centralReachable: UIO[Boolean]
 
+  /** Central has refused this partner's edge on a call other than the refresh of `me`: the partner is suspended, until a read says otherwise. */
+  def noteSuspended: UIO[Unit]
+
 object PartnerState:
   val live: ZLayer[Scope & PartnerMeSyncClient & EdgeConfig, Throwable, PartnerState] =
     ZLayer.fromZIO:
@@ -92,19 +95,27 @@ object PartnerState:
         source <- ZIO.service[PartnerMeSyncClient]
         config <- ZIO.service[EdgeConfig]
         reachable <- Ref.make(true)
+        suspended <- Ref.make(false)
         tracking = new CacheSource[PartnerMe]:
-          override def getAll: Task[PartnerMe] = source.getAll.tap(_ => reachable.set(true)).tapError(_ => reachable.set(false))
+          override def getAll: Task[PartnerMe] =
+            source.getAll.tap(_ => reachable.set(true) *> suspended.set(false)).tapError:
+              // central answered, and refused: the partner is suspended, which the console is told rather than left with the last `active`
+              case PartnerMeSyncClient.Suspended => reachable.set(true) *> suspended.set(true)
+              case _ => reachable.set(false)
         cache <- ReloadingCache.make[PartnerMe](config.configurationCacheRefreshInterval, fromSnapshot = true)
           .provideSomeLayer[Scope](ZLayer.succeed[CacheSource[PartnerMe]](tracking))
       yield new PartnerState:
-        override def me: UIO[PartnerMe] = cache.get
+        override def me: UIO[PartnerMe] =
+          cache.get.zipWith(suspended.get)((me, suspended) => if suspended then me.copy(partner = me.partner.copy(status = "suspended")) else me)
         override def centralReachable: UIO[Boolean] = reachable.get
+        override def noteSuspended: UIO[Unit] = suspended.set(true)
 
   /** The answer for a first-party edge, which has no partner. */
   def fixed(value: PartnerMe, reachable: Boolean): PartnerState =
     new PartnerState:
       override def me: UIO[PartnerMe] = ZIO.succeed(value)
       override def centralReachable: UIO[Boolean] = ZIO.succeed(reachable)
+      override def noteSuspended: UIO[Unit] = ZIO.unit
 
 /** The first read of `/edge/partner/me`, before anything else of the configuration is: a partner edge central does not recognise as
   * one (or has suspended) stops here, naming why, instead of in the first of the caches that is refused. An edge that cannot reach

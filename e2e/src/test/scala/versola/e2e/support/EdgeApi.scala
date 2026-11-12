@@ -209,6 +209,7 @@ final class EdgeApi(client: Client, config: E2EConfig):
       password: String,
       returnTo: Option[String] = None,
       consent: Option[Set[String]] = None,
+      emailOtp: Boolean = false,
   ): Task[EdgeCallback] =
     for
       started <- this.login(presetId, returnTo.map("return_to" -> _).toList*)
@@ -218,7 +219,12 @@ final class EdgeApi(client: Client, config: E2EConfig):
       conversation <- ZIO.fromOption(OAuthClient.extractConversationCookie(authorized))
         .orElseFail(RuntimeException(s"the OP started no conversation (status=${authorized.status})"))
       challenge <- auth.getChallenge(conversation)
-      submitted <- auth.submitLoginPassword(conversation, login, password, challenge.csrf)
+      // `emailOtp`: the client's flow is an email and a code (the fixed one of the test stack), after which the operator holds the email as verified
+      submitted <-
+        if emailOtp then
+          auth.submitEmail(conversation, login, challenge.csrf) *>
+            auth.getChallenge(conversation).flatMap(step => auth.submitOtp(conversation, "123456", step.csrf))
+        else auth.submitLoginPassword(conversation, login, password, challenge.csrf)
       // a client with a consent flow (a partner's) stops the conversation on the consent screen, which the user grants
       afterConsent <- (submitted.response.header(Header.Location).map(_.url.encode), consent) match
         case (Some("/challenge"), Some(scope)) =>
@@ -272,9 +278,16 @@ final class EdgeApi(client: Client, config: E2EConfig):
     yield NativeCallback(back, code, state, iss)
 
   /** Signs a user in the way a browser does, all the way to the `EDGE_SESSION` cookie. */
-  def browserLogin(auth: OAuthClient, presetId: String, login: String, password: String, consent: Option[Set[String]] = None): Task[EdgeSession] =
+  def browserLogin(
+      auth: OAuthClient,
+      presetId: String,
+      login: String,
+      password: String,
+      consent: Option[Set[String]] = None,
+      emailOtp: Boolean = false,
+  ): Task[EdgeSession] =
     for
-      callback <- authorize(auth, presetId, login, password, consent = consent)
+      callback <- authorize(auth, presetId, login, password, consent = consent, emailOtp = emailOtp)
       completed <- complete(callback)
       cookie <- ZIO.fromOption(EdgeApi.sessionCookie(completed))
         .orElseFail(RuntimeException(s"/complete set no EDGE_SESSION cookie (status=${completed.status})"))

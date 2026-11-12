@@ -68,8 +68,11 @@ info:
 
     ## Errors
 
-    Every refusal has the body `{ "error": <code>, "fields"?: [...], "message"?: <text>, ...extra }`
-    with `Content-Type: application/json` and `Cache-Control: no-store` (see `Error`). Codes:
+    Every refusal has the body `{ "error": <code>, "fields"?: [...], "message": <text>, ...extra }`
+    with `Content-Type: application/json` and `Cache-Control: no-store` (see `Error`). `message` is
+    always there: central's own text where it gave one, else a sentence for the code. A partner
+    central has suspended is refused any change by the edge itself with `partner_suspended`, and
+    `/me` then reports `status: suspended`. Codes:
 
     | Status | `error` | When |
     |---|---|---|
@@ -1124,11 +1127,18 @@ paths:
       description: |
         The events about the partner, newest first: what its staff did through its edges and what
         the operator decided about it. A page is at most 50 events; `next` is the cursor of the
-        following page, `null` at the end. `kind` is an audit kind such as
-        `admin.partner-client.create`; `actor` is a staff `sub`; `q` is a free-text search.
-        Other query parameters are ignored.
+        following page, `null` at the end (an opaque cursor of the edge's own). `kind` is a group of
+        the console (`clients`, `resources`, `edges`, `team`, `revocations`, `security`) or, for any
+        other value, one audit kind of central's such as `admin.partner-client.create`; `actor` is
+        `team`, `operator` or `edges`, or one staff `sub`; `q` is a free-text search. A group is
+        matched on the edge against the kinds of central's events, which are read page by page
+        until a page's worth is found (so a page may hold fewer, or a little more, than 50). The
+        events of the team itself (an invite, a change of level, a removal, an admission) are the
+        edge's own and are laid among central's by time; `kind=team` is those alone. Other query
+        parameters are ignored.
 
-        **Minimum level:** viewer. **Served by:** central (`GET /edge/partner/audit`).
+        **Minimum level:** viewer. **Served by:** central (`GET /edge/partner/audit`) and the edge
+        (the team's events).
       tags: [Audit]
       x-staff-level: viewer
       x-served-by: central
@@ -2232,7 +2242,12 @@ components:
           type: string
           description: |
             What the edge is deployed with, as a JSON document in a string. From
-            `POST /partner/api/edges/{id}/enrollment-tokens` it does not hold the signing key.
+            `POST /partner/api/edges/{id}/enrollment-tokens` it does not hold the signing key or the
+            enrollment address, so it cannot be used as `partner.bundle-file` on its own
+            (`bundleComplete` is `false`): the token goes in `central.identity.enrollment`.
+        bundleComplete:
+          type: boolean
+          description: Whether `bundle` can enroll an edge as it is. Only the bundle of `POST /partner/api/edges` can be.
         expiresAt:
           type: [string, 'null']
           format: date-time
@@ -2313,13 +2328,19 @@ components:
             sub:
               type: string
               description: The staff member's `sub`; `operator` (or the operator's actor id) for an operator's action.
+            display:
+              type: string
+              description: The member's name as the team shows it, `Operator`, or `Configuration` for an invite made from `partner.admins`.
             byOperator:
               type: boolean
               const: true
               description: Present when the action was the operator's.
+        kind:
+          type: string
+          description: The audit kind, for example `admin.partner-client.create`, or `team.invite` for an event of the team.
         action:
           type: string
-          description: The audit kind, for example `admin.partner-client.create`.
+          description: What was done, in words ("Created client", "Invited a•••@example.com as developer"); the kind itself where it has none.
         target:
           type: string
           description: '`<targetType>:<targetId>`.'

@@ -32,3 +32,27 @@ CREATE TABLE partner_staff_invites (
     expires_at        TIMESTAMP WITH TIME ZONE NOT NULL,
     UNIQUE (identifier_kind, identifier_hash)
 );
+
+-- The first administrators named in the configuration (`partner.admins`), by the same keyed hash as an invite. A configured identifier is
+-- made an invite at every start until the person has signed in once (`admitted_at`); after that it is not made again, so removing such a
+-- person from the team stays removed across restarts and only an administrator's own invite brings them back.
+CREATE TABLE partner_staff_config_admins (
+    identifier_kind TEXT NOT NULL CHECK (identifier_kind IN ('phone', 'email')),
+    identifier_hash TEXT NOT NULL,
+    applied_at      TIMESTAMP WITH TIME ZONE NOT NULL,
+    admitted_at     TIMESTAMP WITH TIME ZONE,
+    PRIMARY KEY (identifier_kind, identifier_hash)
+);
+
+-- What was done to the team: an invite, a change of level, a removal, an admission. The partner's audit trail shows it next to central's
+-- events, because the team is the one thing central does not hold. `actor` is a `sub` (`config` for a configured administrator's invite);
+-- `target` a `sub` or a masked identifier, never a phone number or an address.
+CREATE TABLE partner_staff_events (
+    id     UUID PRIMARY KEY,
+    at     TIMESTAMP WITH TIME ZONE NOT NULL,
+    actor  TEXT NOT NULL,
+    action TEXT NOT NULL CHECK (action IN ('invite', 'level', 'remove', 'admit')),
+    target TEXT NOT NULL,
+    detail TEXT
+);
+CREATE INDEX partner_staff_events_at ON partner_staff_events (at DESC);

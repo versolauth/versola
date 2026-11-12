@@ -50,7 +50,9 @@ final class PartnerConsole(state: PartnerState, directory: Option[JPath]):
           val base = root.toRealPath().nn
           // the file's own real path, with every link in it followed: one that leaves the directory is not a file of it
           val file = base.resolve(relative).nn.normalize().nn.toRealPath().nn
-          Option.when(file.startsWith(base) && Files.isRegularFile(file) && Files.isReadable(file)):
+          Option.when(
+            file.startsWith(base) && PartnerConsole.served(file.getFileName.toString) && Files.isRegularFile(file) && Files.isReadable(file),
+          ):
             val name = file.getFileName.nn.toString
             val extension = name.substring(name.lastIndexOf('.') + 1)
             (Files.readAllBytes(file).nn, name, extension)
@@ -69,8 +71,15 @@ final class PartnerConsole(state: PartnerState, directory: Option[JPath]):
               case _ => notFound
 
 object PartnerConsole:
-  /** What a console build holds. Anything else in the directory is not served. */
-  val Served: Set[String] = Set("html", "js", "css", "map", "svg", "png", "ico", "woff2", "json", "txt")
+  /** The files of the partner console, by name: the page, its script and style, and what `central-ui`'s partner build names with them.
+    * Nothing else in the directory is served (a whole `dist` also holds the operator's console, which a partner must not be handed), and
+    * no source maps. */
+  private val ConsoleFile = "partner\\.html|versola-partner(-[A-Za-z0-9_]+)?\\.(js|css)".r
+
+  def served(name: String): Boolean = ConsoleFile.matches(name)
+
+  /** Only the three types the console is made of. */
+  val Served: Set[String] = Set("html", "js", "css")
 
   /** The console is its own origin's only script and style, makes requests to itself, and is shown by no one else's page. */
   val SecurityHeaders: Headers = Headers(

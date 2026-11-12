@@ -3,11 +3,11 @@ package versola.edge.partner
 import versola.edge.EdgeConfig
 import versola.util.http.Observability
 import zio.json.ast.Json
-import zio.{Clock, Duration, IO, Task, UIO, URLayer, ZIO, ZLayer}
+import zio.{Clock, Duration, IO, Ref, Task, UIO, URLayer, Unsafe, ZIO, ZLayer}
 
 import java.nio.charset.StandardCharsets
 import java.time.Instant
-import java.util.{HexFormat, UUID}
+import java.util.{HexFormat, Locale, UUID}
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
@@ -27,6 +27,12 @@ trait StaffService:
   def applyAdmins(identifiers: List[String]): Task[Unit]
 
   def list: Task[List[StaffService.Entry]]
+
+  /** Removes the invites that have expired. */
+  def purgeExpired: Task[Unit]
+
+  /** What was done to the team with the time in `[from, before)`, newest first. */
+  def events(from: Option[Instant], before: Option[Instant], limit: Int): Task[List[TeamEvent]]
 
   /** Invites `identifier` (a phone number or an email address) at `level`; renews the invite of the same identifier. */
   def invite(by: String, identifier: String, level: StaffLevel, ttl: Option[Duration]): IO[StaffService.Error | Throwable, StaffService.Entry]
@@ -71,34 +77,64 @@ object StaffService:
       Impl(repository, identifiers, config.partner.inviteTtl),
     )
 
+  /** How long a person who is not on the team is not looked up again: every request of such a session would otherwise ask the operator's
+    * `/userinfo`, which anyone who can sign in through the console client could drive. An invite made on this replica clears it. */
+  private val NegativeTtl: Duration = Duration.fromSeconds(30)
+  private val NegativeLimit = 10_000
+  private val DisplayLimit = 64
+
   class Impl(repository: StaffRepository, identifiers: Identifiers, inviteTtl: Duration) extends StaffService:
+    private val refused: Ref[Map[String, (Instant, Option[String])]] =
+      Unsafe.unsafe(unsafe => Ref.unsafe.make(Map.empty[String, (Instant, Option[String])])(using unsafe))
 
     override def admit(subject: String, userInfo: IO[Throwable, Json.Obj]): IO[Throwable, Admission] =
       repository.findMember(subject).flatMap:
         case Some(member) => ZIO.succeed(Admission.Member(member))
         case None =>
           for
-            info <- userInfo
             now <- Clock.instant
-            claimed = identifiers.claimedBy(info)
-            matched <- firstInvite(claimed, now)
-            admission <- matched match
-              case Some((invite, masked)) =>
-                val member = StaffMember(
-                  subject = subject,
-                  level = invite.level,
-                  display = Identifiers.field(info, "name").flatMap(_.asString).map(_.trim).filter(_.nonEmpty).getOrElse(masked),
-                  addedBy = invite.invitedBy,
-                  addedAt = now,
-                )
-                repository.admit(invite.id, member).flatMap: admitted =>
-                  // the invite was spent a moment ago by this person's other request: the member is there, or the invite was withdrawn
-                  if admitted then ZIO.succeed(Admission.Member(member))
-                  else repository.findMember(subject).map(_.fold(Admission.NotAMember(Some(masked)))(Admission.Member(_)))
-              case None =>
-                Observability.setError("not_a_member") *>
-                  ZIO.succeed(Admission.NotAMember(claimed.headOption.map(_.masked)))
+            known <- refused.get.map(_.get(subject).filter(_._1.isAfter(now)))
+            admission <- known match
+              case Some((_, masked)) => ZIO.succeed(Admission.NotAMember(masked))
+              case None => lookUp(subject, userInfo, now)
           yield admission
+
+    private def lookUp(subject: String, userInfo: IO[Throwable, Json.Obj], now: Instant): IO[Throwable, Admission] =
+      for
+        info <- userInfo
+        // OIDC Core §5.3.2: a `/userinfo` whose `sub` is not the token's is not about this person
+        same = Identifiers.field(info, "sub").flatMap(_.asString).forall(_ == subject)
+        claimed = if same then identifiers.claimedBy(info) else Nil
+        matched <- firstInvite(claimed, now)
+        admission <- matched match
+          case Some((invite, masked)) =>
+            val name = Identifiers.field(info, "name").flatMap(_.asString).map(bounded).filter(_.nonEmpty)
+            val member = StaffMember(
+              subject = subject,
+              level = invite.level,
+              // the name is the person's own to choose, so the identifier they were invited by is shown beside it
+              display = name.fold(masked)(name => s"$name ($masked)"),
+              addedBy = invite.invitedBy,
+              addedAt = now,
+            )
+            repository.admit(invite.id, member).flatMap: admitted =>
+              // the invite was spent a moment ago by this person's other request: the member is there, or the invite was withdrawn
+              if admitted then
+                event(subject, "admit", masked, Some(invite.level.toString), now).as(Admission.Member(member))
+              else repository.findMember(subject).map(_.fold(Admission.NotAMember(Some(masked)))(Admission.Member(_)))
+          case None =>
+            val masked = claimed.headOption.map(_.masked)
+            Observability.setError("not_a_member") *>
+              refused.update(all => (if all.size >= NegativeLimit then Map.empty else all).updated(subject, (now.plus(NegativeTtl), masked))).as(
+                Admission.NotAMember(masked),
+              )
+      yield admission
+
+    /** Control characters out, and no more than [[DisplayLimit]] characters. */
+    private def bounded(name: String): String = name.filterNot(_.isControl).trim.take(DisplayLimit)
+
+    private def event(actor: String, action: String, target: String, detail: Option[String], at: Instant): Task[Unit] =
+      repository.record(TeamEvent(UUID.randomUUID(), at, actor, action, target, detail))
 
     /** The first live invite for the identifiers the sign-in carries, the phone number before the email. */
     private def firstInvite(claimed: List[Identifiers.Claimed], now: Instant): Task[Option[(StaffInvite, String)]] =
@@ -110,30 +146,39 @@ object StaffService:
     override def applyAdmins(identifiers: List[String]): Task[Unit] =
       for
         now <- Clock.instant
+        _ <- repository.purgeExpired(now)
         _ <- ZIO.foreachDiscard(identifiers): raw =>
           for
             parsed <- ZIO.fromEither(this.identifiers.parse(raw)).mapError(reason => IllegalArgumentException(s"partner.admins: $reason"))
-            id <- ZIO.succeed(UUID.randomUUID())
-            _ <- repository.invite(
-              StaffInvite(
-                id = id,
-                kind = parsed.kind,
-                identifierHash = parsed.hash,
-                masked = parsed.masked,
-                level = StaffLevel.admin,
-                invitedBy = ByConfiguration,
-                createdAt = now,
-                expiresAt = now.plus(inviteTtl),
+            // not for a person who has signed in once: removed from the team, they stay removed
+            apply <- repository.claimConfigAdmin(parsed.kind, parsed.hash, now)
+            _ <- ZIO.when(apply)(
+              repository.invite(
+                StaffInvite(
+                  id = UUID.randomUUID(),
+                  kind = parsed.kind,
+                  identifierHash = parsed.hash,
+                  masked = parsed.masked,
+                  level = StaffLevel.admin,
+                  invitedBy = ByConfiguration,
+                  createdAt = now,
+                  expiresAt = now.plus(inviteTtl),
+                ),
               ),
             )
           yield ()
       yield ()
 
+    override def purgeExpired: Task[Unit] = Clock.instant.flatMap(repository.purgeExpired).unit
+
     override def list: Task[List[Entry]] =
       for
+        now <- Clock.instant
         members <- repository.members
-        invites <- repository.invites
+        invites <- repository.invites(now)
       yield members.map(entry) ++ invites.map(entry)
+
+    override def events(from: Option[Instant], before: Option[Instant], limit: Int): Task[List[TeamEvent]] = repository.events(from, before, limit)
 
     private def entry(member: StaffMember): Entry =
       Entry(
@@ -178,38 +223,38 @@ object StaffService:
           expiresAt = now.plus(ttl.getOrElse(inviteTtl)),
         )
         _ <- repository.invite(invite)
+        _ <- refused.set(Map.empty)
+        _ <- event(by, "invite", parsed.masked, Some(level.toString), now)
         // `invite` keeps the id of an invite there already
         stored <- repository.findInvite(parsed.kind, parsed.hash).someOrFail(IllegalStateException("the invite was written and cannot be read"))
       yield entry(stored)
 
     override def setLevel(actor: String, id: String, level: StaffLevel): IO[Error | Throwable, Unit] =
-      repository.findMember(id).flatMap:
-        case Some(member) =>
-          for
-            others <- otherAdmins(id)
-            _ <- ZIO.fail(Error.Conflict("this would leave the team without an administrator"))
-              .when(member.level == StaffLevel.admin && level != StaffLevel.admin && others == 0)
-            _ <- repository.setMemberLevel(id, level)
-          yield ()
-        case None =>
-          inviteId(id).flatMap(invite => repository.setInviteLevel(invite, level)).flatMap(found =>
-            ZIO.fail(Error.NotFound(s"member or invite '$id'")).unless(found).unit,
-          )
+      for
+        now <- Clock.instant
+        changed <- repository.setMemberLevel(id, level)
+        _ <- changed match
+          case Change.Done => event(actor, "level", id, Some(level.toString), now)
+          case Change.LastAdmin => ZIO.fail(Error.Conflict("this would leave the team without an administrator"))
+          case Change.Missing =>
+            inviteId(id).flatMap(invite => repository.setInviteLevel(invite, level)).flatMap(found =>
+              ZIO.fail(Error.NotFound(s"member or invite '$id'")).unless(found).unit *> event(actor, "level", id, Some(level.toString), now),
+            )
+      yield ()
 
     override def remove(actor: String, id: String): IO[Error | Throwable, Unit] =
-      repository.findMember(id).flatMap:
-        case Some(member) =>
-          for
-            _ <- ZIO.fail(Error.Conflict("you cannot remove yourself from the team")).when(id == actor)
-            others <- otherAdmins(id)
-            _ <- ZIO.fail(Error.Conflict("this would leave the team without an administrator")).when(member.level == StaffLevel.admin && others == 0)
-            _ <- repository.removeMember(id)
-          yield ()
-        case None =>
-          inviteId(id).flatMap(repository.removeInvite).flatMap(found => ZIO.fail(Error.NotFound(s"member or invite '$id'")).unless(found).unit)
-
-    private def otherAdmins(subject: String): Task[Int] =
-      repository.members.map(_.count(member => member.level == StaffLevel.admin && member.subject != subject))
+      for
+        _ <- ZIO.fail(Error.Conflict("you cannot remove yourself from the team")).when(id == actor)
+        now <- Clock.instant
+        removed <- repository.removeMember(id)
+        _ <- removed match
+          case Change.Done => event(actor, "remove", id, None, now)
+          case Change.LastAdmin => ZIO.fail(Error.Conflict("this would leave the team without an administrator"))
+          case Change.Missing =>
+            inviteId(id).flatMap(repository.removeInvite).flatMap(found =>
+              ZIO.fail(Error.NotFound(s"member or invite '$id'")).unless(found).unit *> event(actor, "remove", id, None, now),
+            )
+      yield ()
 
     private def inviteId(id: String): IO[Error, UUID] =
       ZIO.attempt(UUID.fromString(id)).orElseFail(Error.NotFound(s"member or invite '$id'"))
@@ -256,7 +301,7 @@ object Identifiers:
     override def parse(raw: String): Either[String, Parsed] =
       val trimmed = raw.trim
       if trimmed.contains('@') then
-        val normal = trimmed.toLowerCase
+        val normal = trimmed.toLowerCase(Locale.ROOT)
         Either.cond(Email.matches(normal), parsed(IdentifierKind.email, normal), "not an email address")
       else
         val normal = trimmed.filterNot(c => c == ' ' || c == '-' || c == '(' || c == ')')
@@ -270,7 +315,7 @@ object Identifiers:
         for
           value <- Identifiers.field(userInfo, name).flatMap(_.asString)
           // an explicit `false` is a refusal; a claim the operator does not state either way is the operator's own account identifier
-          if !Identifiers.field(userInfo, verifiedName).flatMap(_.asBoolean).exists(verified => !verified)
+          if Identifiers.field(userInfo, verifiedName).flatMap(_.asBoolean).contains(true)
           parsed <- parse(value).toOption.filter(_.kind == kind)
         yield Claimed(kind, parsed.hash, parsed.masked)
       List(claim("phone_number", "phone_number_verified", IdentifierKind.phone), claim("email", "email_verified", IdentifierKind.email)).flatten

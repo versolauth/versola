@@ -3,7 +3,7 @@ package versola.edge.partner
 import versola.edge.model.{ApplicationType, ClientCredential, ClientId, OAuthClient, PermissionId}
 import versola.edge.{CentralSyncTokenService, EdgeCertificateHolder, EdgeConfig, OAuthClientsSyncClient}
 import versola.util.http.Observability
-import zio.http.{Client, Header, Request}
+import zio.http.{Client, Header, Request, Status}
 import zio.json.JsonCodec
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
 import zio.{Duration, Task, URLayer, ZIO, ZLayer}
@@ -37,7 +37,11 @@ object PartnerOAuthClientsSyncClient:
       for
         token <- centralSyncTokenService.getToken
         request = Request.get(ClientsURL).addHeader(Header.Authorization.Bearer(token))
-        response <- ZIO.scoped(centralSyncTokenService.syncRequest(httpClient, request).flatMap(_.bodyAs[Response]))
+        response <- ZIO.scoped(
+          centralSyncTokenService.syncRequest(httpClient, request).flatMap: answer =>
+            // 403 is central refusing a suspended partner's edge: it serves none of its clients, rather than the last it was told of
+            if answer.status == Status.Forbidden then ZIO.succeed(Response(Vector.empty)) else answer.bodyAs[Response],
+        )
       yield response
 
     override def getAll: Task[Map[ClientId, OAuthClient]] =

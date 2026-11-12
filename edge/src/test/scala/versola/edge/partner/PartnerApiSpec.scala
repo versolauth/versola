@@ -88,21 +88,39 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
   private def harness(
       level: Option[StaffLevel],
       current: EdgeService.ConsoleSession = session(),
-      userInfo: Json.Obj = Json.Obj("phone_number" -> Json.Str(phone)),
+      userInfo: Json.Obj = Json.Obj("phone_number" -> Json.Str(phone), "phone_number_verified" -> Json.Bool(true)),
       reachable: Boolean = true,
+      suspended: Boolean = false,
+      liveState: Boolean = false,
       answer: (Method, List[String]) => IO[Failure, Answer] = (_, _) => reply(Status.Ok, "{}"),
   ): ZIO[Any, Nothing, Harness] =
     for
       repository <- StaffMemoryRepository.make
       staff = StaffService.Impl(repository, identifiers, 7.days)
       _ <- ZIO.foreachDiscard(level)(level => staff.invite("config", phone, level, None).mapError(error => RuntimeException(error.toString))).orDie
-      _ <- ZIO.foreachDiscard(level)(_ => staff.admit("sub-1", ZIO.succeed(Json.Obj("phone_number" -> Json.Str(phone))))).orDie
+      _ <- ZIO.foreachDiscard(level)(_ =>
+        staff.admit("sub-1", ZIO.succeed(Json.Obj("phone_number" -> Json.Str(phone), "phone_number_verified" -> Json.Bool(true)))),
+      ).orDie
       edge = stub[EdgeService]
       _ <- edge.consoleSession.succeedsWith(current)
       _ <- edge.consoleUserInfo.succeedsWith(userInfo)
       central = FakeCentral(answer)
-      api = PartnerApi(edge, staff, PartnerState.fixed(me, reachable), central, config)
+      partnerState <- if liveState then liveStateOf
+      else ZIO.succeed(PartnerState.fixed(if suspended then me.copy(partner = me.partner.copy(status = "suspended")) else me, reachable))
+      api = PartnerApi(edge, staff, partnerState, central, config)
     yield Harness(api, central, edge, staff)
+
+  /** The real state, over a source that answers `me`, to see what a refusal does to it. */
+  private val liveStateOf: UIO[PartnerState] =
+    ZIO.scoped(
+      PartnerState.live.build.map(_.get[PartnerState]).provideLayer(
+        ZLayer.succeed[PartnerMeSyncClient](new PartnerMeSyncClient { override def getAll = ZIO.succeed(me) }) ++ ZLayer.succeed(
+          config,
+        ) ++ ZLayer.succeed(Scope.global),
+      ),
+    ).orDie
+
+  private def done[A](effect: IO[StaffService.Error | Throwable, A]): UIO[A] = effect.mapError(error => RuntimeException(error.toString)).orDie
 
   private def send(h: Harness, request: Request): ZIO[Scope & TestClient & Client, Throwable, Response] =
     TestClient.addRoutes(h.api.routes.handleError(_ => Response.internalServerError)) *> ZIO.serviceWithZIO[Client](_.batched(request))
@@ -402,6 +420,177 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
         yield assertTrue(response.status == Status.BadRequest)
       },
     ),
+    suite("hardening")(
+      test("every route refuses a level below its own, by a table: viewer, developer and admin against all of them") {
+        val routes: List[(Method, String, StaffLevel)] = List(
+          (Method.GET, "/me", StaffLevel.viewer),
+          (Method.GET, "/clients", StaffLevel.viewer),
+          (Method.POST, "/clients", StaffLevel.developer),
+          (Method.PUT, "/clients/x", StaffLevel.developer),
+          (Method.DELETE, "/clients/x", StaffLevel.developer),
+          (Method.POST, "/clients/x/withdraw", StaffLevel.developer),
+          (Method.POST, "/clients/x/rotate-secret", StaffLevel.developer),
+          (Method.GET, "/resources", StaffLevel.viewer),
+          (Method.POST, "/resources", StaffLevel.developer),
+          (Method.PUT, "/resources/x", StaffLevel.developer),
+          (Method.DELETE, "/resources/x", StaffLevel.developer),
+          (Method.POST, "/resources/x/rotate-secret", StaffLevel.developer),
+          (Method.GET, "/edges", StaffLevel.viewer),
+          (Method.POST, "/edges", StaffLevel.developer),
+          (Method.DELETE, "/edges/x", StaffLevel.developer),
+          (Method.POST, "/edges/x/enrollment-tokens", StaffLevel.developer),
+          (Method.DELETE, "/edges/x/enrollment-tokens", StaffLevel.developer),
+          (Method.POST, "/revocations", StaffLevel.admin),
+          (Method.GET, "/revocations", StaffLevel.admin),
+          (Method.GET, "/audit", StaffLevel.viewer),
+          (Method.GET, "/staff", StaffLevel.admin),
+          (Method.POST, "/staff", StaffLevel.admin),
+          (Method.PUT, "/staff/x", StaffLevel.admin),
+          (Method.DELETE, "/staff/x", StaffLevel.admin),
+          (Method.GET, "/settings", StaffLevel.admin),
+          (Method.PUT, "/settings", StaffLevel.admin),
+          (Method.GET, "/profile", StaffLevel.admin),
+          (Method.PUT, "/profile", StaffLevel.admin),
+        )
+        for
+          results <- ZIO.foreach(StaffLevel.values.toList)(have =>
+            harness(Some(have)).flatMap(h =>
+              ZIO.foreach(routes)((method, path, needs) =>
+                send(
+                  h,
+                  Request(method = method, url = url(path), body = Body.fromString("{}")).addHeader(Header.ContentType(MediaType.application.json)),
+                )
+                  .map(response => (have, method, path, needs, response.status == Status.Forbidden)),
+              ),
+            ),
+          ).map(_.flatten)
+          wrong = results.filter((have, _, _, needs, refused) => refused == have.atLeast(needs))
+        yield assertTrue(wrong.isEmpty, results.size == 3 * routes.size)
+      },
+      test("a state-changing request of any method from another origin is refused: PUT and DELETE too, before anything is read") {
+        for
+          h <- harness(Some(StaffLevel.admin))
+          put <- send(h, write(Method.PUT, "/clients/acme-shop", "{}", origin = Some("https://evil.example")))
+          delete <- send(h, Request.delete(url("/clients/acme-shop")).addHeader(Header.Custom("Origin", "https://evil.example")))
+          post <- send(h, write(Method.POST, "/staff", """{"identifier":"+77010000001","level":"admin"}""", origin = Some("https://evil.example")))
+          calls <- h.central.calls.get
+        yield assertTrue(put.status == Status.Forbidden, delete.status == Status.Forbidden, post.status == Status.Forbidden, calls.isEmpty)
+      },
+      test("a member who is removed, or whose level is lowered, loses what they could do at their next request") {
+        for
+          h <- harness(Some(StaffLevel.admin), answer = (_, _) => reply(Status.Ok, s"""{"clients":[$clientJson]}"""))
+          second <- done(h.staff.invite("sub-1", "+77010000001", StaffLevel.admin, None))
+          _ <- h.staff.admit(
+            "sub-2",
+            ZIO.succeed(Json.Obj("phone_number" -> Json.Str("+77010000001"), "phone_number_verified" -> Json.Bool(true))),
+          ).orDie
+          before <- send(h, write(Method.POST, "/clients", "{}"))
+          _ <- done(h.staff.setLevel("sub-2", "sub-1", StaffLevel.viewer))
+          demoted <- send(h, write(Method.POST, "/clients", "{}"))
+          read <- send(h, get("/clients"))
+          _ <- done(h.staff.setLevel("sub-2", "sub-1", StaffLevel.admin))
+          _ <- done(h.staff.remove("sub-2", "sub-1"))
+          removed <- send(h, get("/clients"))
+        yield assertTrue(
+          before.status != Status.Forbidden,
+          demoted.status == Status.Forbidden,
+          read.status == Status.Ok,
+          removed.status == Status.Forbidden,
+          second.id.nonEmpty,
+        )
+      },
+      test("the cookie a refresh produced is set on a refusal of the person too: not a member, wrong client") {
+        val rotated = Some(Cookie.Response("EDGE_SESSION", "acme-console:next"))
+        for
+          stranger <- harness(None, current = session(rotated = rotated))
+          other <- harness(Some(StaffLevel.admin), current = session(clientId = "acme-shop", rotated = rotated))
+          first <- send(stranger, get("/me"))
+          second <- send(other, get("/me"))
+        yield assertTrue(
+          first.status == Status.Forbidden,
+          first.headers.get("set-cookie").exists(_.contains("acme-console:next")),
+          second.status == Status.Unauthorized,
+        )
+      },
+      test("a suspended partner is refused a change at once by the edge, central is not asked, and /me says so") {
+        for
+          h <- harness(Some(StaffLevel.admin), suspended = true)
+          write <- send(h, write(Method.POST, "/clients", "{}"))
+          read <- send(h, get("/me")).flatMap(_.body.asString)
+          calls <- h.central.calls.get
+          (code, _) <- errorOf(write)
+        yield assertTrue(write.status == Status.Forbidden, code == "partner_suspended", read.contains("\"status\":\"suspended\""), calls.isEmpty)
+      },
+      test("a refusal of central that says suspended is remembered by the state, which then reports it") {
+        for
+          h <- harness(Some(StaffLevel.admin), answer = (_, _) => ZIO.fail(Failure.Suspended), liveState = true)
+          first <- send(h, get("/edges"))
+          me <- send(h, get("/me")).flatMap(_.body.asString)
+        yield assertTrue(first.status == Status.Forbidden, me.contains("\"status\":\"suspended\""))
+      },
+      test("the codes the console has no text for carry one, and the null URLs of /me are empty strings") {
+        for
+          h <- harness(Some(StaffLevel.viewer))
+          refused <- send(h, write(Method.POST, "/clients", "{}"))
+          me <- send(h, get("/me")).flatMap(_.body.asString.map(_.fromJson[Json.Obj].toOption.get))
+          (_, body) <- errorOf(refused)
+        yield assertTrue(
+          body.toJson.contains("\"message\":\"Your level"),
+          me.toJson.contains("\"mtlsUrl\":\"\""),
+          me.toJson.contains("\"centralMtlsUrl\":\"\""),
+        )
+      },
+    ),
+    suite("the audit trail")(
+      test("the console's groups are central's kinds: clients are the events of clients, and the team's own events are laid among them") {
+        val events =
+          """{"events":[
+            |{"id":"1","at":"2026-11-12T10:03:00Z","kind":"admin.partner-client.create","outcome":"success","actorType":"partner-staff","actorId":"sub-1","targetType":"partner-client","targetId":"c","details":{}},
+            |{"id":"2","at":"2026-11-12T10:02:00Z","kind":"admin.partner-resource.create","outcome":"success","actorType":"partner-staff","actorId":"sub-1","targetType":"partner-resource","targetId":"r","details":{}},
+            |{"id":"3","at":"2026-11-12T10:01:00Z","kind":"admin.partner.suspend","outcome":"success","actorType":"admin","actorId":null,"targetType":"partner","targetId":"acme","details":{}}
+            |],"next":null}""".stripMargin
+        for
+          h <- harness(Some(StaffLevel.viewer), answer = (_, _) => reply(Status.Ok, events))
+          clients <- send(h, get("/audit", "?kind=clients")).flatMap(_.body.asString)
+          resources <- send(h, get("/audit", "?kind=resources")).flatMap(_.body.asString)
+          security <- send(h, get("/audit", "?kind=security")).flatMap(_.body.asString)
+          operator <- send(h, get("/audit", "?actor=operator")).flatMap(_.body.asString)
+          team <- send(h, get("/audit", "?actor=team")).flatMap(_.body.asString)
+          calls <- h.central.calls.get
+        yield assertTrue(
+          clients.contains("Created client"),
+          !clients.contains("Created resource"),
+          !clients.contains("Suspended"),
+          resources.contains("Created resource"),
+          !resources.contains("Created client"),
+          security.contains("Suspended organisation"),
+          !security.contains("Created client"),
+          operator.contains("Suspended organisation"),
+          operator.contains("\"byOperator\":true"),
+          !operator.contains("Created client"),
+          team.contains("Created client"),
+          !team.contains("Suspended organisation"),
+          // what central is asked is never the console's group name, which it would match against nothing
+          calls.forall(call => !call._3.contains("kind") && !call._3.get("actor").exists(Set("team", "operator", "edges"))),
+        )
+      },
+      test("what the team did is in the trail with who did it, and the group `team` is that alone, without asking central") {
+        for
+          h <- harness(Some(StaffLevel.admin), answer = (_, _) => reply(Status.Ok, """{"events":[],"next":null}"""))
+          _ <- send(h, write(Method.POST, "/staff", """{"identifier":"+77010000001","level":"developer"}"""))
+          all <- send(h, get("/audit")).flatMap(_.body.asString)
+          team <- send(h, get("/audit", "?kind=team")).flatMap(_.body.asString)
+          clients <- send(h, get("/audit", "?kind=clients")).flatMap(_.body.asString)
+          callsForTeam <- h.central.calls.get.map(_.count(_._2 == List("audit")))
+        yield assertTrue(
+          all.contains("Invited"),
+          team.contains("Invited"),
+          !clients.contains("Invited"),
+          !all.contains("+77010000001"),
+          callsForTeam == 2,
+        )
+      },
+    ),
     suite("shapes")(
       test("an update sends central only what changed, so that renaming nothing is not an approval") {
         val current = clientJson.fromJson[Json.Obj].toOption.get
@@ -461,15 +650,18 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
         val staff = PartnerApi.auditEventDto(
           """{"id":"1","at":"2026-11-12T10:00:00Z","kind":"admin.partner-client.create","outcome":"denied","actorType":"partner-staff","actorId":"sub-1","targetType":"partner-client","targetId":"acme-shop","details":{"edgeId":"edge-1"}}"""
             .fromJson[Json.Obj].toOption.get,
+          Map("sub-1" -> "Ann"),
         )
         val operator = PartnerApi.auditEventDto(
           """{"id":"2","at":"2026-11-12T10:00:00Z","kind":"admin.partner.suspend","outcome":"success","actorType":"admin","actorId":null,"targetType":"partner","targetId":"acme","details":{}}"""
             .fromJson[Json.Obj].toOption.get,
+          Map.empty,
         )
         assertTrue(
           staff.toJson.contains(""""outcome":"refused""""),
           staff.toJson.contains(""""from":"edge-1""""),
-          staff.toJson.contains(""""actor":{"sub":"sub-1"}"""),
+          staff.toJson.contains(""""actor":{"sub":"sub-1","display":"Ann"}"""),
+          staff.toJson.contains(""""action":"Created client""""),
           operator.toJson.contains(""""byOperator":true"""),
           operator.toJson.contains(""""outcome":"ok""""),
         )

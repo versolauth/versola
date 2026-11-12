@@ -54,7 +54,7 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
 
   private def signIn(f: PartnerEdgeFixture, person: PartnerEdgeFixture.Person): ZIO[OAuthClient, Throwable, EdgeSession] =
     ZIO.serviceWithZIO[OAuthClient](auth =>
-      f.api.browserLogin(auth, f.consoleClientId, person.login, person.password, consent = Some(Set("openid", "phone", "email"))),
+      f.api.browserLogin(auth, f.consoleClientId, person.login, person.password, consent = Some(Set("openid", "phone", "email")), emailOtp = true),
     )
 
   /** What the operator sees of the partner's approvals, waiting. */
@@ -214,6 +214,24 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
         preset.status == Status.SeeOther,
       )
     },
+    test("a valid session of the partner's own application is not a staff session: its token is another client's") {
+      for
+        f <- fixture
+        central <- ZIO.service[CentralApi]
+        auth <- ZIO.service[OAuthClient]
+        clientId = s"${f.partnerId}-shop"
+        // the shop signs users in with an email and a code as well, and auth reads that change at once
+        _ <- auth.updateClient(Fixtures.clientUpdate(clientId, "authFlow" -> Flows.emailOtpAuthFlow))
+        shopper <- PartnerEdgeFixture.person(auth, 4)
+        session <- PartnerEdgeFixture.eventually(
+          central.postEmpty("/service/configuration/sync") *>
+            f.api.browserLogin(auth, clientId, shopper.login, "", consent = Some(Set("openid")), emailOtp = true).either,
+          attempts = 20,
+        )(_.isRight).flatMap(ZIO.fromEither(_))
+        me <- call(f, Some(session), Method.GET, "/partner/api/me")
+        clients <- call(f, Some(session), Method.GET, "/partner/api/clients")
+      yield assertTrue(session.presetId == clientId, me._1 == Status.Unauthorized, clients._1 == Status.Unauthorized)
+    },
     test("a revocation is made through central with the staff member's token, and shows in the partner's audit trail") {
       for
         f <- fixture
@@ -238,16 +256,16 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
           Some(Json.Obj("by" -> Json.Str("sid"), "value" -> Json.Str("s"), "clients" -> Json.Arr(Json.Str("x")), "edges" -> Json.Arr())),
         )
         audit <- PartnerEdgeFixture.eventually(call(f, Some(admin), Method.GET, "/partner/api/audit"))(r =>
-          r._2.arr("events").exists(_.str("action").exists(_.contains("partner-revocation"))),
+          r._2.arr("events").exists(_.str("kind").exists(_.contains("partner-revocation"))),
         )
         me <- call(f, Some(admin), Method.GET, "/partner/api/me")
       yield assertTrue(
         revoked._1 == Status.Accepted,
         unsupported._1 == Status.BadRequest,
         audit._2.arr("events").exists(event =>
-          event.str(
-            "action",
-          ).exists(_.contains("partner-revocation")) && event.obj("actor").flatMap(_.str("sub")) == me._2.obj("staff").flatMap(_.str("sub")),
+          event.str("kind").exists(_.contains("partner-revocation")) && event.str("action").contains("Ended grants of clients") && event.obj(
+            "actor",
+          ).flatMap(_.str("sub")) == me._2.obj("staff").flatMap(_.str("sub")),
         ),
       )
     },

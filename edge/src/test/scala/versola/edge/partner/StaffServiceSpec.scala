@@ -19,6 +19,7 @@ object StaffServiceSpec extends ZIOSpecDefault:
 
   private def userInfo(fields: (String, Json)*): Json.Obj = Json.Obj(fields*)
   private val phone = "+77011234511"
+  private def phoneInfo(number: String) = userInfo("phone_number" -> Json.Str(number), "phone_number_verified" -> Json.Bool(true))
 
   /** `admit` with a `/userinfo` that counts how often it is read. */
   private def admit(staff: StaffService, subject: String, info: Json.Obj) =
@@ -34,9 +35,9 @@ object StaffServiceSpec extends ZIOSpecDefault:
         for
           (staff, repository) <- service
           _ <- staff.applyAdmins(List("+7 701 123-45-11", "ops@partner.example"))
-          (admission, _) <- admit(staff, "sub-1", userInfo("phone_number" -> Json.Str(phone)))
+          (admission, _) <- admit(staff, "sub-1", phoneInfo(phone))
           members <- repository.members
-          invites <- repository.invites
+          invites <- Clock.instant.flatMap(repository.invites)
         yield assertTrue(
           admission == StaffService.Admission.Member(members.head),
           members.map(m => (m.subject, m.level, m.addedBy)) == List(("sub-1", StaffLevel.admin, "config")),
@@ -48,7 +49,7 @@ object StaffServiceSpec extends ZIOSpecDefault:
         for
           (staff, _) <- service
           _ <- staff.invite("admin-1", "Dev@Partner.Example", StaffLevel.developer, None)
-          (admission, _) <- admit(staff, "sub-1", userInfo("email" -> Json.Str("dev@partner.example")))
+          (admission, _) <- admit(staff, "sub-1", userInfo("email" -> Json.Str("dev@partner.example"), "email_verified" -> Json.Bool(true)))
         yield assertTrue(
           admission.isInstanceOf[StaffService.Admission.Member],
           admission.asInstanceOf[StaffService.Admission.Member].member.level == StaffLevel.developer,
@@ -58,7 +59,7 @@ object StaffServiceSpec extends ZIOSpecDefault:
         for
           (staff, _) <- service
           _ <- staff.invite("admin-1", phone, StaffLevel.viewer, None)
-          _ <- admit(staff, "sub-1", userInfo("phone_number" -> Json.Str(phone)))
+          _ <- admit(staff, "sub-1", phoneInfo(phone))
           (again, reads) <- admit(staff, "sub-1", userInfo())
         yield assertTrue(again.isInstanceOf[StaffService.Admission.Member], reads == 0)
       },
@@ -68,9 +69,18 @@ object StaffServiceSpec extends ZIOSpecDefault:
         for
           (staff, repository) <- service
           _ <- staff.invite("admin-1", "+77019999999", StaffLevel.admin, None)
-          (admission, _) <- admit(staff, "sub-1", userInfo("phone_number" -> Json.Str(phone), "email" -> Json.Str("someone@else.example")))
+          (admission, _) <- admit(
+            staff,
+            "sub-1",
+            userInfo(
+              "phone_number" -> Json.Str(phone),
+              "phone_number_verified" -> Json.Bool(true),
+              "email" -> Json.Str("someone@else.example"),
+              "email_verified" -> Json.Bool(true),
+            ),
+          )
           members <- repository.members
-          invites <- repository.invites
+          invites <- Clock.instant.flatMap(repository.invites)
         yield assertTrue(
           admission == StaffService.Admission.NotAMember(Some("+7••••••••11")),
           members.isEmpty,
@@ -82,9 +92,24 @@ object StaffServiceSpec extends ZIOSpecDefault:
           (staff, repository) <- service
           _ <- staff.invite("admin-1", phone, StaffLevel.admin, Some(1.hour))
           _ <- TestClock.adjust(2.hours)
-          (admission, _) <- admit(staff, "sub-1", userInfo("phone_number" -> Json.Str(phone)))
+          (admission, _) <- admit(staff, "sub-1", phoneInfo(phone))
           members <- repository.members
         yield assertTrue(admission.isInstanceOf[StaffService.Admission.NotAMember], members.isEmpty)
+      },
+      test(
+        "an identifier whose verified claim is absent does not take the invite: auth leaves it out for an account whose contact was set without a code",
+      ) {
+        for
+          (staff, repository) <- service
+          _ <- staff.invite("admin-1", "dev@partner.example", StaffLevel.admin, None)
+          (absent, _) <- admit(staff, "sub-1", userInfo("email" -> Json.Str("dev@partner.example")))
+          (phoneAbsent, _) <- admit(staff, "sub-2", userInfo("phone_number" -> Json.Str(phone)))
+          members <- repository.members
+        yield assertTrue(
+          absent.isInstanceOf[StaffService.Admission.NotAMember],
+          phoneAbsent.isInstanceOf[StaffService.Admission.NotAMember],
+          members.isEmpty,
+        )
       },
       test("an identifier the operator says is not verified does not take the invite") {
         for
@@ -97,11 +122,11 @@ object StaffServiceSpec extends ZIOSpecDefault:
         for
           (staff, _) <- service
           _ <- staff.invite("admin-1", phone, StaffLevel.admin, None)
-          _ <- admit(staff, "sub-1", userInfo("phone_number" -> Json.Str(phone)))
+          _ <- admit(staff, "sub-1", phoneInfo(phone))
           _ <- staff.invite("admin-1", "+77010000001", StaffLevel.admin, None)
-          _ <- admit(staff, "sub-2", userInfo("phone_number" -> Json.Str("+77010000001")))
+          _ <- admit(staff, "sub-2", phoneInfo("+77010000001"))
           _ <- staff.remove("sub-2", "sub-1")
-          (after, _) <- admit(staff, "sub-1", userInfo("phone_number" -> Json.Str(phone)))
+          (after, _) <- admit(staff, "sub-1", phoneInfo(phone))
         yield assertTrue(after.isInstanceOf[StaffService.Admission.NotAMember])
       },
     ),
@@ -139,9 +164,9 @@ object StaffServiceSpec extends ZIOSpecDefault:
         for
           (staff, _) <- service
           _ <- staff.invite("x", phone, StaffLevel.admin, None)
-          _ <- admit(staff, "sub-1", userInfo("phone_number" -> Json.Str(phone)))
+          _ <- admit(staff, "sub-1", phoneInfo(phone))
           _ <- staff.invite("x", "+77010000001", StaffLevel.admin, None)
-          _ <- admit(staff, "sub-2", userInfo("phone_number" -> Json.Str("+77010000001")))
+          _ <- admit(staff, "sub-2", phoneInfo("+77010000001"))
           error <- staff.remove("sub-1", "sub-1").flip
         yield assertTrue(error == StaffService.Error.Conflict("you cannot remove yourself from the team"))
       },
@@ -149,9 +174,9 @@ object StaffServiceSpec extends ZIOSpecDefault:
         for
           (staff, _) <- service
           _ <- staff.invite("x", phone, StaffLevel.admin, None)
-          _ <- admit(staff, "sub-1", userInfo("phone_number" -> Json.Str(phone)))
+          _ <- admit(staff, "sub-1", phoneInfo(phone))
           _ <- staff.invite("x", "+77010000001", StaffLevel.developer, None)
-          _ <- admit(staff, "sub-2", userInfo("phone_number" -> Json.Str("+77010000001")))
+          _ <- admit(staff, "sub-2", phoneInfo("+77010000001"))
           removed <- staff.remove("sub-2", "sub-1").flip
           demoted <- staff.setLevel("sub-2", "sub-1", StaffLevel.developer).flip
         yield assertTrue(removed.isInstanceOf[StaffService.Error.Conflict], demoted.isInstanceOf[StaffService.Error.Conflict])
@@ -168,6 +193,79 @@ object StaffServiceSpec extends ZIOSpecDefault:
           (staff, _) <- service
           error <- staff.invite("admin-1", "nope", StaffLevel.viewer, None).flip
         yield assertTrue(error.isInstanceOf[StaffService.Error.Invalid])
+      },
+      test("a person removed from the team stays removed though the configuration still names them: the invite is not made again at the next start") {
+        for
+          (staff, repository) <- service
+          _ <- staff.applyAdmins(List(phone))
+          _ <- staff.invite("x", "+77010000001", StaffLevel.admin, None)
+          _ <- admit(staff, "sub-1", phoneInfo(phone))
+          _ <- admit(staff, "sub-2", phoneInfo("+77010000001"))
+          _ <- staff.remove("sub-2", "sub-1")
+          _ <- staff.applyAdmins(List(phone))
+          (after, _) <- admit(staff, "sub-1", phoneInfo(phone))
+          invites <- Clock.instant.flatMap(repository.invites)
+        yield assertTrue(after.isInstanceOf[StaffService.Admission.NotAMember], invites.isEmpty)
+      },
+      test("a configured administrator who has not signed in yet has the invite renewed at every start") {
+        for
+          (staff, repository) <- service
+          _ <- staff.applyAdmins(List(phone))
+          _ <- TestClock.adjust(6.days)
+          _ <- staff.applyAdmins(List(phone))
+          _ <- TestClock.adjust(6.days)
+          (admission, _) <- admit(staff, "sub-1", phoneInfo(phone))
+        yield assertTrue(admission.isInstanceOf[StaffService.Admission.Member])
+      },
+      test("a /userinfo about another sub is not about this person: nothing is taken from it") {
+        for
+          (staff, _) <- service
+          _ <- staff.invite("admin-1", phone, StaffLevel.admin, None)
+          (admission, _) <- admit(staff, "sub-1", phoneInfo(phone).add("sub", Json.Str("someone-else")))
+        yield assertTrue(admission.isInstanceOf[StaffService.Admission.NotAMember])
+      },
+      test("a name the person chose is bounded, stripped of control characters, and shown beside the identifier they were invited by") {
+        for
+          (staff, repository) <- service
+          _ <- staff.invite("admin-1", phone, StaffLevel.viewer, None)
+          _ <- admit(staff, "sub-1", phoneInfo(phone).add("name", Json.Str("Admin\u0000 " + "x" * 200)))
+          member <- repository.findMember("sub-1")
+        yield assertTrue(member.exists(m => m.display.length <= 64 + 3 + 12 && !m.display.contains('\u0000') && m.display.contains("+7")))
+      },
+      test("a person who is not on the team is not looked up at the operator on every request, and a new invite is seen at once") {
+        for
+          (staff, _) <- service
+          (first, firstReads) <- admit(staff, "sub-1", phoneInfo(phone))
+          (second, secondReads) <- admit(staff, "sub-1", phoneInfo(phone))
+          _ <- staff.invite("admin-1", phone, StaffLevel.viewer, None)
+          (third, thirdReads) <- admit(staff, "sub-1", phoneInfo(phone))
+          _ <- TestClock.adjust(1.minute)
+        yield assertTrue(
+          first.isInstanceOf[StaffService.Admission.NotAMember],
+          firstReads == 1,
+          secondReads == 0,
+          third.isInstanceOf[StaffService.Admission.Member],
+          thirdReads == 1,
+        )
+      },
+      test("an expired invite is not listed") {
+        for
+          (staff, _) <- service
+          _ <- staff.invite("admin-1", phone, StaffLevel.viewer, Some(1.hour))
+          before <- staff.list
+          _ <- TestClock.adjust(2.hours)
+          after <- staff.list
+        yield assertTrue(before.size == 1, after.isEmpty)
+      },
+      test("team changes are recorded: who invited, changed and removed whom, and an admission") {
+        for
+          (staff, _) <- service
+          _ <- staff.invite("admin-1", phone, StaffLevel.viewer, None)
+          _ <- admit(staff, "sub-1", phoneInfo(phone))
+          _ <- staff.setLevel("admin-1", "sub-1", StaffLevel.developer).either
+          _ <- staff.remove("admin-1", "sub-1")
+          events <- staff.events(None, None, 10)
+        yield assertTrue(events.map(_.action).toSet == Set("invite", "admit", "level", "remove"), events.forall(_.target != phone))
       },
       test("a first administrator who is not a phone number or an email stops the edge at its start") {
         for
