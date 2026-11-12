@@ -105,6 +105,18 @@ object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         maxAge = None,
       ),
       EdgeFixture.Endpoint(
+        name = "scoped",
+        method = "GET",
+        path = "/scoped",
+        permitted = true,
+        fetchUserInfo = false,
+        allow = Some("request.query['tenant'] == 'acme'"),
+        inject = Nil,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
+      EdgeFixture.Endpoint(
         name = "secret",
         method = "GET",
         path = "/secret",
@@ -325,6 +337,44 @@ object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         response <- edgeApi.proxy(Method.GET, f.resourceId, "/items/a.b/parts", established.auth)
         seen <- stub.lastRequest
       yield assertTrue(response.status == Status.Ok) && assertTrue(seen.map(_.path).contains("/items/a.b/parts"))
+    },
+    test("a rule that reads a query parameter is unsatisfied when the parameter occurs twice") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        stub <- upstream
+        _ <- stub.reset
+        established <- session
+        once <- edgeApi.proxy(Method.GET, f.resourceId, "/scoped", established.auth, query = List("tenant" -> "acme"))
+        _ <- stub.reset
+        twice <- edgeApi.proxy(
+          Method.GET,
+          f.resourceId,
+          "/scoped",
+          established.auth,
+          query = List("tenant" -> "acme", "tenant" -> "other"),
+        )
+        seen <- stub.requests
+      yield assertTrue(once.status == Status.Ok, twice.status == Status.Forbidden, seen.isEmpty)
+        .label("the rule sees one value and the upstream may read another, so a repeated parameter satisfies no rule")
+    },
+    test("a JSON body in which a name occurs twice is refused and does not reach the upstream") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        stub <- upstream
+        _ <- stub.reset
+        established <- session
+        duplicated <- edgeApi.proxy(
+          Method.POST,
+          f.resourceId,
+          "/items",
+          established.auth,
+          rawJson = Some("""{"name":"a","name":"b"}"""),
+        )
+        notJson <- edgeApi.proxy(Method.POST, f.resourceId, "/items", established.auth, rawJson = Some("""{"name":"""))
+        seen <- stub.requests
+      yield assertTrue(duplicated.status == Status.BadRequest, notJson.status == Status.BadRequest, seen.isEmpty)
     },
     test("query parameters reach the upstream") {
       for

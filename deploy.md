@@ -514,6 +514,22 @@ no longer stops at the first digit that differs. The 10 minutes is fixed, not a 
   was sent more than 10 minutes ago needs a new code.
 - **What to check.** A tenant whose conversation TTL is below 10 minutes is unaffected; one above it now has the shorter limit for codes.
 
+#### Behaviour change: what `request.query`, `request.headers` and a JSON body mean to a rule when a name occurs more than once
+
+A rule reads one value and the resource may read another, so where a name occurs more than once the rule no longer guesses:
+
+- **`request.query['x']`** is the value only when the parameter occurs exactly once. A parameter that occurs twice is absent there, and a
+  rule that reads it is unsatisfied (`403`, like any rule that reads missing data). Before, it was the first value, while some resources read
+  the last. `request.queryAll['x']` is unchanged and has every value; a rule that needs repeated parameters reads that.
+- **`request.headers['x']`** joins the lines of a field that was sent more than once with `, ` in the order they came (RFC 9110 §5.3), which is
+  how a resource reads them. Before, a repeated field showed one of its lines. Names are lower case, as before. `request.headersAll` is unchanged.
+- **A JSON body** in which a name occurs twice in one object (at any depth), or that claims `application/json` and is not JSON, is answered
+  `400` with no body and is not sent on. Before, the rules read the last of the two values and the body was forwarded with both; an unreadable
+  body was a `500`.
+
+- **Who can notice.** A rule that reads `request.query` of a parameter clients repeat, and a client that sends duplicate names in a JSON body.
+- **No setting, no migration.**
+
 #### Breaking change (2026-10-25): the access log is set per edge in central, not by environment
 
 `HTTP_ACCESS_LOG`, `HTTP_ACCESS_LOG_SLOW_MS` and `HTTP_ACCESS_LOG_SAMPLE_RATE` are no longer read by any service; a value left
@@ -824,12 +840,19 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   design estimate, to be replaced with the figure measured under load.
 
   A call that reaches central without the query parameters edge adds (`actorId`, `actorTenantId`, `actorClientId`, `actorSessionId`,
-  and `actorIp`, the address of the caller) is not refused: it is recorded as made by a `service` with no id, and counted in `audit_actor_missing_total{reason}` (an alert is in
-  `dashboards/alerts/versola-audit-central.rules.yaml`). Edge adds them to every admin route since this release, and central's
-  bootstrap brings the registrations of the existing `central` resource up to date at start (it adds those inject rules to endpoints
-  an earlier release registered, removes the header rules an earlier form of this feature registered, and leaves what an operator added
-  alone); until edge has synced them, admin actions are recorded without an actor. Edge's sync is the refresh interval (5 minutes by
-  default).
+  and `actorIp`, the address of the caller) names no actor and is refused (below); it is counted in `audit_actor_missing_total{reason}`
+  (an alert is in `dashboards/alerts/versola-audit-central.rules.yaml`). Edge adds them to every admin route since this release, and
+  central's bootstrap brings the registrations of the existing `central` resource up to date at start (it adds those inject rules to
+  endpoints an earlier release registered, removes the header rules an earlier form of this feature registered, and leaves what an
+  operator added alone); until edge has synced them (its sync is the refresh interval, 5 minutes by default), admin calls through it are
+  refused for want of an actor.
+
+  A call of an administrator's route that names no valid actor is refused with `401` and the handler does not run: every route of the
+  admin API except the ones that are not an administrator's call (auth's syncs, the certificate flows `/est/*` and
+  `/users/registrations`, the `/service/*` tooling) needs a valid `actorId` (a user, or the client a client-credentials token was
+  issued to). The refusal is counted in `audit_actor_missing_total{reason}` (`absent`, `invalid`) and in `audit_actor_refused_total{reason}`
+  and, for a change, recorded as a denial with the reason `actor_required`. So a script that holds the central resource secret and calls
+  central directly is refused; it goes through edge, which states who it is.
 
   The `ip` of an `admin.*` row is the address edge found for the caller by its own `client-ip` setting (`socket`, the peer of the
   connection, or `forwarded`, the header named by `client-ip-header`), so it is only as right as that setting: with `socket` behind a
