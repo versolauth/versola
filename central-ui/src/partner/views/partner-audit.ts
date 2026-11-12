@@ -6,7 +6,7 @@ import { statusIcon } from '../../components/status-icon';
 import { resultBadgeStyles } from '../../components/activity-shared';
 import { formatDate } from '../../utils/helpers';
 import { EMPTY_RECORD_ROUTE, type RecordRoute } from '../../utils/record-route';
-import { fetchAudit } from '../partner-api';
+import { fetchAudit, readErrorMessage } from '../partner-api';
 import type { AuditEventRecord, PartnerMe } from '../partner-types';
 import { partnerViewStyles } from '../partner-styles';
 import '../../components/content-header';
@@ -85,7 +85,7 @@ export class VersolaPartnerAudit extends LitElement {
       this.next = page.next ?? null;
     } catch (error) {
       if (!append) this.events = [];
-      this.errorMessage = error instanceof Error ? error.message : 'Failed to load the audit log';
+      this.errorMessage = readErrorMessage(error, 'Failed to load the audit log');
     } finally {
       this.isLoading = false;
     }

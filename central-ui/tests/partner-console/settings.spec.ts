@@ -110,9 +110,10 @@ test('cancelling an editor with a changed draft asks first', async ({ page }) =>
   await expect(page.getByRole('region', { name: 'Contacts' })).toContainText('+7 727 300 1100');
 });
 
-test('a suspended admin reads the settings and changes nothing; a viewer has no Settings', async ({ page }) => {
+test('a suspended admin cannot read the settings (central refuses) and changes nothing; a viewer has no Settings', async ({ page }) => {
   await loadPartnerApp(page, { path: settingsPath, state: suspendedPartner });
-  await expect(page.getByRole('region', { name: 'Your agreement with Acme Retail' })).toContainText('suspended');
+  await expect(page.getByRole('heading', { name: 'Could not load the settings' })).toBeVisible();
+  await expect(page.getByText('nothing can be read here until it resumes you')).toBeVisible();
   await expect(page.getByRole('button', { name: /^Edit|^Request change/ })).toHaveCount(0);
   expect(await scan(page)).toEqual([]);
 

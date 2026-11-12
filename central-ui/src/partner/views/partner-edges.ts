@@ -10,7 +10,7 @@ import { copyToClipboard, formatDate } from '../../utils/helpers';
 import { relativeTime } from '../../utils/user-display';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../../utils/record-route';
 import { validateEdgeId } from '../../utils/validators';
-import { createEdge, deleteEdge, fetchEdges, issueEnrollmentToken, revokeEnrollmentToken, writeErrorMessage } from '../partner-api';
+import { createEdge, deleteEdge, fetchEdges, issueEnrollmentToken, revokeEnrollmentToken, writeErrorMessage, readErrorMessage } from '../partner-api';
 import type { EnrollmentToken, PartnerEdge, PartnerMe, SigningKey } from '../partner-types';
 import { partnerViewStyles } from '../partner-styles';
 import '../../components/content-header';
@@ -106,7 +106,7 @@ export class VersolaPartnerEdges extends LitElement {
       this.edges = await fetchEdges();
     } catch (error) {
       this.edges = [];
-      this.errorMessage = error instanceof Error ? error.message : 'Failed to load edges';
+      this.errorMessage = readErrorMessage(error, 'Failed to load edges');
     } finally {
       this.isLoading = false;
     }

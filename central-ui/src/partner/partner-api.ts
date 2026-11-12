@@ -26,6 +26,14 @@ export function isPartnerApiError(error: unknown, code?: PartnerErrorCode): erro
   return error instanceof PartnerApiError && (code === undefined || error.code === code);
 }
 
+/** What to tell the staff member about a failed read: central being away or the operator having suspended the partner are states, not faults. */
+export function readErrorMessage(error: unknown, fallback: string): string {
+  if (isPartnerApiError(error, 'central_unavailable')) return 'Central is unavailable right now, so this cannot be read. Nothing is shown from an earlier read; try again in a moment.';
+  if (isPartnerApiError(error, 'partner_suspended')) return 'The operator has suspended your organisation: nothing can be read here until it resumes you.';
+  if (isPartnerApiError(error, 'insufficient_level')) return `This needs the ${error.required ?? 'admin'} level: ask an admin of your organisation.`;
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
 /** What to tell the staff member about a failed write, in the console's words. */
 export function writeErrorMessage(error: unknown, fallback = 'The change was not saved.'): string {
   if (isPartnerApiError(error, 'central_unavailable')) {

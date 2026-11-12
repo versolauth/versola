@@ -139,7 +139,8 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
       await refuse(503, 'central_unavailable', { message: 'central is unreachable' });
       return;
     }
-    if (!edgeServed && write && state.me?.partner.status === 'suspended') {
+    // A suspended partner: every write is refused by the edge itself, and so are the management reads (central refuses them); /me and the team still answer.
+    if (!edgeServed && state.me?.partner.status === 'suspended') {
       await refuse(403, 'partner_suspended', { message: 'the operator has suspended the partner' });
       return;
     }

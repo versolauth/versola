@@ -13,7 +13,7 @@ import { confirmDiscardDraft } from '../../utils/draft-guard';
 import { copyToClipboard } from '../../utils/helpers';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../../utils/record-route';
 import { validateResourceId, validateResourceUri } from '../../utils/validators';
-import { createResource, deleteResource, fetchClients, fetchResources, rotateResourceSecret, updateResource, writeErrorMessage } from '../partner-api';
+import { createResource, deleteResource, fetchClients, fetchResources, rotateResourceSecret, updateResource, writeErrorMessage, readErrorMessage } from '../partner-api';
 import type { PartnerClient, PartnerMe, PartnerResource } from '../partner-types';
 import { partnerViewStyles } from '../partner-styles';
 import '../../components/content-header';
@@ -116,7 +116,7 @@ export class VersolaPartnerResources extends LitElement {
       this.clients = clients;
     } catch (error) {
       this.resources = [];
-      this.errorMessage = error instanceof Error ? error.message : 'Failed to load resources';
+      this.errorMessage = readErrorMessage(error, 'Failed to load resources');
     } finally {
       this.isLoading = false;
     }

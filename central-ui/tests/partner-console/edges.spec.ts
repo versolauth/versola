@@ -149,13 +149,11 @@ test('removes an edge through the confirm dialog', async ({ page }) => {
   await expect(page.getByRole('button', { name: '+ Add edge' })).toBeEnabled();
 });
 
-test('suspended: renewals refused on the record, no token actions, no removal', async ({ page }) => {
+test('suspended: central refuses the read, so the list says so and offers no write', async ({ page }) => {
   await loadPartnerApp(page, { path: `${edgesPath}&id=edge-pilot-eu-1`, state: suspendedPartner });
-  const panel = sidePanel(page, 'edge-pilot-eu-1');
-  await expect(panel.getByRole('status').first()).toContainText('Certificate renewal refused: Acme Retail has suspended you');
-  await expect(panel.getByRole('status').first()).toContainText('The certificate expires on Nov 17, 2026');
-  await expect(panel.getByRole('region', { name: 'Certificate' })).toContainText('Refused: suspended');
-  await expect(panel.getByRole('region', { name: 'Remove edge' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Could not load edges' })).toBeVisible();
+  await expect(page.getByText('nothing can be read here until it resumes you')).toBeVisible();
+  await expect(page.getByRole('button', { name: '+ Add edge' })).toHaveCount(0);
   expect(await scan(page)).toEqual([]);
 });
 

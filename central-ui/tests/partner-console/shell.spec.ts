@@ -80,24 +80,28 @@ test('an edge that cannot answer /me shows the load error with Retry', async ({ 
   expect(await scan(page)).toEqual([]);
 });
 
-test('a suspended partner sees the banner on every screen, refused renewals, and no way to write', async ({ page }) => {
+test('a suspended partner sees the banner on every screen, nothing from central, and no way to write', async ({ page }) => {
   await loadPartnerApp(page, { state: suspendedPartner });
   await expect(page.getByRole('alert')).toContainText('Acme Retail has suspended you');
   await expect(page.getByText('Refused: suspended')).toBeVisible();
   await expect(page.getByText('renewals are refused while you are suspended')).toBeVisible();
+  // Central refuses every management read of a suspended partner, so those cards say so.
+  await expect(page.getByRole('region', { name: 'Clients' })).toContainText('Could not be read from central.');
   await expect(page.getByRole('button', { name: '+ Create client' })).toHaveCount(0);
   expect(await scan(page)).toEqual([]);
 
   await page.getByRole('navigation', { name: 'Sections' }).getByRole('button', { name: 'Edges' }).click();
-  await expect(page.getByRole('alert')).toContainText('Acme Retail has suspended you');
-  await expect(page.locator('versola-data-table').getByRole('row').filter({ hasText: 'edge-pilot-eu-1' })).toContainText('Renewal refused');
+  await expect(page.getByRole('alert').first()).toContainText('Acme Retail has suspended you');
+  await expect(page.getByRole('heading', { name: 'Could not load edges' })).toBeVisible();
+  await expect(page.getByText('nothing can be read here until it resumes you')).toBeVisible();
   await expect(page.getByRole('button', { name: '+ Add edge' })).toHaveCount(0);
 
-  await page.goto('/partner.html?view=clients&id=pilot-pay-web');
-  await expect(sidePanel(page, 'Pilot Pay Shop').getByRole('button', { name: /^Edit/ })).toHaveCount(0);
   await page.goto('/partner.html?view=settings');
-  await expect(page.getByRole('region', { name: 'Your agreement with Acme Retail' })).toContainText('suspended');
+  await expect(page.getByRole('heading', { name: 'Could not load the settings' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Request change' })).toHaveCount(0);
+  // The team is the edge's own, so it still answers.
+  await page.goto('/partner.html?view=team');
+  await expect(page.locator('versola-data-table').getByRole('button', { name: /^Open member/ })).toHaveCount(4);
 });
 
 test('central unavailable: who you are still works, everything central answers is a 503 the screens say so', async ({ page }) => {
@@ -110,7 +114,7 @@ test('central unavailable: who you are still works, everything central answers i
 
   await page.goto('/partner.html?view=clients');
   await expect(page.getByRole('heading', { name: 'Could not load clients' })).toBeVisible();
-  await expect(page.getByText('central is unreachable')).toBeVisible();
+  await expect(page.getByText('Central is unavailable right now, so this cannot be read.')).toBeVisible();
   await page.goto('/partner.html?view=edges');
   await expect(page.getByRole('heading', { name: 'Could not load edges' })).toBeVisible();
   expect(api.requests.some(request => request.pathname === '/me')).toBe(true);

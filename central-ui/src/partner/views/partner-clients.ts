@@ -10,7 +10,7 @@ import { confirmDiscardDraft } from '../../utils/draft-guard';
 import { copyToClipboard, formatDate } from '../../utils/helpers';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../../utils/record-route';
 import { approvalFieldLabel, partnerAccessTtlError, redirectUriWithinDomains, ttlCapsLabel, ttlLabel } from '../../utils/partners';
-import { deleteClient, fetchClients, fetchSettings, isPartnerApiError, updateClient, withdrawClient, writeErrorMessage } from '../partner-api';
+import { deleteClient, fetchClients, fetchSettings, isPartnerApiError, updateClient, withdrawClient, writeErrorMessage, readErrorMessage } from '../partner-api';
 import type { PartnerClient, PartnerMe, PartnerSettings } from '../partner-types';
 import { partnerViewStyles } from '../partner-styles';
 import { consentSketchStyles } from './partner-client-wizard';
@@ -116,7 +116,7 @@ export class VersolaPartnerClients extends LitElement {
       this.settings = settings;
     } catch (error) {
       this.clients = [];
-      this.errorMessage = error instanceof Error ? error.message : 'Failed to load clients';
+      this.errorMessage = readErrorMessage(error, 'Failed to load clients');
     } finally {
       this.isLoading = false;
     }

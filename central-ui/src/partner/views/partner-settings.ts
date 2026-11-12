@@ -7,7 +7,7 @@ import { confirmDiscardDraft } from '../../utils/draft-guard';
 import { formatDate } from '../../utils/helpers';
 import { partnerAccessTtlError, ttlCapsLabel, ttlLabel } from '../../utils/partners';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../../utils/record-route';
-import { fetchProfileApproval, fetchSettings, requestProfileChange, updateSettings, writeErrorMessage } from '../partner-api';
+import { fetchProfileApproval, fetchSettings, requestProfileChange, updateSettings, writeErrorMessage, readErrorMessage } from '../partner-api';
 import type { PartnerMe, PartnerSettings, ProfileApproval } from '../partner-types';
 import { partnerViewStyles } from '../partner-styles';
 import '../../components/content-header';
@@ -85,7 +85,7 @@ export class VersolaPartnerSettings extends LitElement {
       this.settings = settings;
       this.approval = approval;
     } catch (error) {
-      this.errorMessage = error instanceof Error ? error.message : 'Failed to load the settings';
+      this.errorMessage = readErrorMessage(error, 'Failed to load the settings');
     } finally {
       this.isLoading = false;
     }

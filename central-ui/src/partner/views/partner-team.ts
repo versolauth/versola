@@ -8,7 +8,7 @@ import { confirmDestructiveAction } from '../../utils/confirm-dialog';
 import { confirmDiscardDraft } from '../../utils/draft-guard';
 import { formatDate } from '../../utils/helpers';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../../utils/record-route';
-import { fetchStaff, inviteStaff, removeStaff, updateStaffLevel, writeErrorMessage } from '../partner-api';
+import { fetchStaff, inviteStaff, removeStaff, updateStaffLevel, writeErrorMessage, readErrorMessage } from '../partner-api';
 import type { PartnerMe, StaffLevel, StaffMember } from '../partner-types';
 import { partnerViewStyles } from '../partner-styles';
 import '../../components/content-header';
@@ -102,7 +102,7 @@ export class VersolaPartnerTeam extends LitElement {
       this.staff = await fetchStaff();
     } catch (error) {
       this.staff = [];
-      this.errorMessage = error instanceof Error ? error.message : 'Failed to load the team';
+      this.errorMessage = readErrorMessage(error, 'Failed to load the team');
     } finally {
       this.isLoading = false;
     }

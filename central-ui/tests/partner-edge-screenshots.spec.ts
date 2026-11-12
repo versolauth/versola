@@ -187,8 +187,8 @@ const shots: Shot[] = [
   { name: 'pt-suspended', app: 'partner', path: '/partner.html?view=overview', state: suspendedPartner, before: async page => {
     await expect(page.getByText(/has suspended you/)).toBeVisible();
   } },
-  { name: 'pt-central-unavailable', app: 'partner', path: '/partner.html?view=clients&id=pilot-pay-web&edit=general', state: centralDown, before: async page => {
-    await page.getByRole('button', { name: 'Save general' }).click();
+  { name: 'pt-central-unavailable', app: 'partner', path: '/partner.html?view=clients', state: centralDown, before: async page => {
+    await expect(page.getByRole('heading', { name: 'Could not load clients' })).toBeVisible();
     await expect(page.getByText(/Central is unavailable right now/).first()).toBeVisible();
   } },
   { name: 'pt-no-access', app: 'partner', path: '/partner.html?view=overview', state: notAMember, narrow: true, before: async page => {
