@@ -478,7 +478,8 @@ final class PartnerApi(
       forward(session, Method.GET, List("audit"), query = query).flatMap: answer =>
         val page = arrayOf(answer, "events")
         val next = answer.obj.flatMap(str(_, "next"))
-        val kept = page.filter(event =>
+        // the operator's reveal of the bundle secret at the partner's creation is the operator's own business, not an event of the partner's trail
+        val kept = page.filter(event => !str(event, "kind").contains("admin.secret.revealed")).filter(event =>
           kinds.forall(ks => str(event, "kind").exists(k => ks.exists(k.contains))) && actor.forall(a => AuditGroups.actor(a, event)),
         )
         val times = page.flatMap(event => str(event, "at").flatMap(at => scala.util.Try(Instant.parse(at)).toOption))

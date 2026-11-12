@@ -66,6 +66,16 @@ info:
     member's access token in a `Versola-Principal` header, which central verifies as a live token
     of the partner's console client and writes into its audit log as the actor.
 
+    ## Optional fields
+
+    A field that a DTO allows to be `null` is **omitted** when it has no value (`logoUri`, `policyUri`,
+    `tosUri`, `backChannelLogoutUri`, `approval.note`, `actor.byOperator`, `from`, ...): read an absent
+    field and `null` alike. `GET /settings` of a partner that has set nothing has `defaults: {}`. The
+    URLs of `GET /me` (`operator.*`, `edge.publicUrl`) are strings, the empty string when central has
+    none. The `bundle` of `POST /edges` and of `POST /edges/{id}/enrollment-tokens` is central's document
+    (for a token alone, assembled from `/me`): its `central` and `auth` members can be missing or `null`
+    where central has no public name configured.
+
     ## Errors
 
     Every refusal has the body `{ "error": <code>, "fields"?: [...], "message": <text>, ...extra }`
@@ -327,7 +337,9 @@ paths:
       description: |
         Registers a client of the partner. It is created waiting for the operator
         (`approval.status` `pending`, `approval.kind` `create`) and is answered `202` with the client
-        as it now stands.
+        as it now stands. Central always sends the display name and the logo to the operator (they are
+        what the consent screen shows), so `approval.waitingFields` names at least `clientName` and
+        `logoUri`, even when everything else is inside the limits.
 
         Exactly the fields of `PartnerClientWrite` that are listed there are read; any other
         field (for example `postLogoutRedirectUris`) is ignored. `clientName` is stored as the

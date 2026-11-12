@@ -600,6 +600,17 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
           calls.forall(call => !call._3.contains("kind") && !call._3.get("actor").exists(Set("team", "operator", "edges"))),
         )
       },
+      test("the operator's reveal of the bundle secret is not in the partner's trail") {
+        val events =
+          """{"events":[
+            |{"id":"1","at":"2026-11-12T10:03:00Z","kind":"admin.secret.revealed","outcome":"success","actorType":"admin","actorId":"op","targetType":"partner","targetId":"acme","details":{}},
+            |{"id":"2","at":"2026-11-12T10:02:00Z","kind":"admin.partner-client.create","outcome":"success","actorType":"partner-staff","actorId":"sub-1","targetType":"partner-client","targetId":"c","details":{}}
+            |],"next":null}""".stripMargin
+        for
+          h <- harness(Some(StaffLevel.viewer), answer = (_, _) => reply(Status.Ok, events))
+          trail <- send(h, get("/audit")).flatMap(_.body.asString)
+        yield assertTrue(!trail.contains("Revealed a secret"), trail.contains("Created client"))
+      },
       test("what the team did is in the trail with who did it, and the group `team` is that alone, without asking central") {
         for
           h <- harness(Some(StaffLevel.admin), answer = (_, _) => reply(Status.Ok, """{"events":[],"next":null}"""))
