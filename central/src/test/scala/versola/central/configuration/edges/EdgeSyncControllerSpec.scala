@@ -2,6 +2,7 @@ package versola.central.configuration.edges
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.audit.TestCertAuditState
 import versola.central.configuration.clients.ApplicationType
 import versola.central.configuration.clients.certificates.{
   ClientCertificateIssuance,
@@ -335,7 +336,15 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
           security = security,
         )
         certificates =
-          ClientCertificateService.Impl(ClientCertificateIssuer.notConfigured, services.clients, NoIssuances, NoEnrollments, config, AuditEvents.noop)
+          ClientCertificateService.Impl(
+            ClientCertificateIssuer.notConfigured,
+            services.clients,
+            NoIssuances,
+            NoEnrollments,
+            config,
+            AuditEvents.noop,
+            TestCertAuditState.renewalFailures(),
+          )
         tracing <- tracingLayer.build
         routes =
           Observability.handleErrors(

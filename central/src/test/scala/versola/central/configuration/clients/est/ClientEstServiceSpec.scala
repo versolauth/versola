@@ -7,16 +7,19 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.bouncycastle.pkcs.PKCS10CertificationRequest
 import org.bouncycastle.pkcs.jcajce.{JcaPKCS10CertificationRequest, JcaPKCS10CertificationRequestBuilder}
 import org.scalamock.stubs.ZIOStubs
+import versola.central.audit.CentralAudit.CertReasons
+import versola.central.audit.CertAuditChecks.detail
 import versola.central.audit.CertAuditChecks.{describe, onlyKnownMembers, withoutPemMaterial}
-import versola.central.audit.{CentralAudit, RecordedAudit}
+import versola.central.audit.{CentralAudit, DenialThrottle, RecordedAudit, TestCertAuditState}
 import versola.central.configuration.CreateClientRequest
 import versola.central.configuration.clients.*
 import versola.central.configuration.clients.certificates.{CertificateSigningRequest, ClientCertificateIssuer, ClientCertificateRequests}
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestCentralConfig}
-import versola.util.audit.ActorType
+import versola.util.audit.{ActorType, AuditOutcome}
 import versola.util.{CertificateSubject, SecureRandom, TestCertificates}
 import zio.*
+import zio.json.*
 import zio.test.*
 
 import java.io.{ByteArrayInputStream, StringReader}
@@ -203,6 +206,7 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
   ):
     val repository = InMemoryEst()
     val audit = RecordedAudit.unsafe
+    val throttle = TestCertAuditState.throttle()
     repository.enabled = enabled.map(_ -> registeredAt).toMap
     val clientService = stub[OAuthClientService]
     val service: URIO[SecureRandom, ClientEstService] =
@@ -210,7 +214,7 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- clientService.findClient.returnsZIO(id => ZIO.succeed(clients.find(_.id == id)))
         _ <- clientService.getAllClients.succeedsWith(clients.toVector)
         random <- ZIO.service[SecureRandom]
-      yield ClientEstService.Impl(repository, clientService, issuer, random, config(autoExtend, renewWindow), audit)
+      yield ClientEstService.Impl(repository, clientService, issuer, random, config(autoExtend, renewWindow), audit, throttle)
 
   private def keyPair(algorithm: String = "EC", size: Int = 2048): KeyPair =
     val generator = KeyPairGenerator.getInstance(algorithm)
@@ -420,6 +424,148 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
         yield assertTrue(failure.isInstanceOf[ClientEstService.Refused], env.repository.certificates.isEmpty)
       },
     ),
+    suite("refused and failed attempts are recorded")(
+      test("credentials that are not good are denied for the client the caller claims, once a minute for each, and for a registered one only") {
+        val env = Env()
+        for
+          _ <- realTime
+          service <- env.service
+          _ <- ZIO.foreachDiscard(1 to 30)(i => service.enroll(s"guess-$i", Some(clientId), csr()).flip)
+          afterFlood <- env.audit.drafts
+          _ <- ZIO.foreachDiscard(1 to 20)(i => service.enroll("guess", Some(ClientId(s"nobody-$i")), csr()).flip)
+          withUnregistered <- env.audit.drafts
+          _ <- TestClock.adjust(DenialThrottle.Interval + 1.second)
+          _ <- service.enroll("guess", Some(clientId), csr()).flip
+          later <- env.audit.drafts
+          kept <- env.throttle.tracked
+        yield assertTrue(
+          afterFlood.map(d => (d.kind, d.outcome, d.reason)) == Vector((
+            CentralAudit.CertEnrolled,
+            AuditOutcome.denied,
+            Some(CertReasons.InvalidCredentials),
+          )),
+          afterFlood.head.actor == Some((CentralAudit.Actors.Client, Some(clientId.toString))),
+          afterFlood.head.target == Some(("client", clientId.toString)),
+          detail(afterFlood.head, "subject").isEmpty,
+          withUnregistered.size == 1,
+          later.size == 2,
+          kept == Set(clientId.toString),
+          !afterFlood.head.details.toJson.toJson.contains("guess"),
+        )
+      },
+      test("a request for another subject is denied as bad_request with the subject the client is registered by, and the token stays good") {
+        val env = Env()
+        for
+          _ <- realTime
+          service <- env.service
+          issued <- service.issueEnrollmentToken(clientId)
+          wrong = csr(subject = "CN=bank-b,OU=tenant-a,O=Versola")
+          _ <- service.enroll(issued.token, None, wrong).flip
+          recorded <- env.audit.drafts
+          _ <- service.enroll(issued.token, None, csr())
+        yield assertTrue(
+          recorded.map(d => (d.kind, d.outcome, d.reason)) == Vector((CentralAudit.CertEnrolled, AuditOutcome.denied, Some(CertReasons.BadRequest))),
+          detail(recorded.head, "subject") == Some(defaultSubject),
+          detail(recorded.head, "operation") == Some("enroll"),
+          withoutPemMaterial(recorded.head, wrong),
+          onlyKnownMembers(recorded.head),
+          // what the request got wrong is not repeated: it describes the request and may quote it
+          !recorded.head.details.toJson.toJson.contains("bank-b"),
+        )
+      },
+      test("a renewal that is too early, reuses the key, or is past the chain's limit is denied, each with its code") {
+        val env = Env(renewWindow = 1.0 / 3)
+        val keys = keyPair()
+        for
+          _ <- realTime
+          service <- env.service
+          first <- enrol(env, service, csr(keys = keys))
+          _ <- service.renew(first.chain, csr()).flip
+          _ <- TestClock.adjust(10.days)
+          _ <- service.renew(first.chain, csr(keys = keys)).flip
+          _ <- service.renew(first.chain, csr(subject = "CN=bank-b,OU=tenant-a,O=Versola")).flip
+          // 11 days: past the chain's 10, inside the certificate's 14
+          _ <- TestClock.adjust(1.day)
+          _ <- service.renew(first.chain, csr()).flip
+          recorded <- env.audit.drafts
+          denied = recorded.filter(_.outcome != AuditOutcome.success)
+        yield assertTrue(
+          denied.map(_.reason) == Vector(
+            Some(CertReasons.Forbidden),
+            Some(CertReasons.BadRequest),
+            Some(CertReasons.BadRequest),
+            Some(CertReasons.Forbidden),
+          ),
+          denied.forall(d => d.kind == CentralAudit.CertRenewed && d.outcome == AuditOutcome.denied),
+          denied.forall(d => detail(d, "operation") == Some("renew") && detail(d, "subject") == Some(defaultSubject)),
+          // the reasons say when the window opens or how to extend the chain: none of that is in the event
+          !denied.exists(d => d.details.toJson.toJson.contains("too early") || d.details.toJson.toJson.contains("extend")),
+        )
+      },
+      suite("a CA that does not answer")(
+        List(
+          (
+            "is unreachable",
+            ClientCertificateIssuer.IssuerFailed.unreachable(java.net.ConnectException("connection refused: ca.internal:9000")),
+            CertReasons.IssuerUnreachable,
+          ),
+          (
+            "refuses",
+            ClientCertificateIssuer.IssuerFailed.refused("step-ca refused the signing request with 400: {\"csr\":\"secret-looking text\"}"),
+            CertReasons.IssuerRefused,
+          ),
+          ("fails in a way nothing names", RuntimeException("boom: stack trace here"), CertReasons.IssuerError),
+          ("is not configured", ClientCertificateIssuer.NotConfigured, CertReasons.CaNotConfigured),
+        ).map: (what, error, reason) =>
+          test(s"a CA that $what fails an enrolment and a renewal, as $reason, and says nothing of what it answered") {
+            class Flaky extends ClientCertificateIssuer:
+              var down = false
+              override def sign(request: CertificateSigningRequest): Task[String] =
+                if down then ZIO.fail(error) else FakeCa().sign(request)
+            val flaky = Flaky()
+            val env = Env(issuer = flaky)
+            for
+              _ <- realTime
+              service <- env.service
+              issued <- service.issueEnrollmentToken(clientId)
+              _ = flaky.down = true
+              _ <- service.enroll(issued.token, None, csr()).flip
+              _ = flaky.down = false
+              first <- service.enroll(issued.token, None, csr())
+              _ = flaky.down = true
+              _ <- service.renew(first.chain, csr()).flip
+              recorded <- env.audit.drafts
+              failures = recorded.filter(_.outcome == AuditOutcome.failure)
+              text = failures.map(_.details.toJson.toJson).mkString + failures.flatMap(_.reason).mkString
+            yield assertTrue(
+              failures.map(d => (d.kind, d.reason)) == Vector(
+                (CentralAudit.CertEnrolled, Some(reason)),
+                (CentralAudit.CertRenewed, Some(reason)),
+              ),
+              failures.forall(d => detail(d, "serial").isEmpty && detail(d, "notAfter").isEmpty && detail(d, "subject") == Some(defaultSubject)),
+              failures.forall(d => d.actor == Some((CentralAudit.Actors.Client, Some(clientId.toString)))),
+              failures.forall(onlyKnownMembers),
+              !text.contains("secret-looking") && !text.contains("stack trace") && !text.contains("ca.internal"),
+            )
+          },
+      ),
+      test("a certificate the CA returns with a name more than the registration is a failure, certificate_rejected") {
+        val env = Env(issuer = FakeCa(addedUri = Some("urn:versola:edge:somebody")))
+        for
+          _ <- realTime
+          service <- env.service
+          _ <- enrol(env, service).flip
+          recorded <- env.audit.drafts
+        yield assertTrue(
+          recorded.map(d => (d.kind, d.outcome, d.reason)) == Vector((
+            CentralAudit.CertEnrolled,
+            AuditOutcome.failure,
+            Some(CertReasons.CertificateRejected),
+          )),
+          !recorded.head.details.toJson.toJson.contains("somebody"),
+        )
+      },
+    ),
     suite("renew")(
       test("a new certificate for the one in hand, with the same subject, and the old one is not revoked") {
         val env = Env()
@@ -462,14 +608,20 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
         yield assertTrue(
           afterRenewal.map(_.kind) == Vector(CentralAudit.CertEnrolled, CentralAudit.CertRenewed),
           afterRenewal.last.actor == Some((CentralAudit.Actors.Client, Some(clientId.toString))),
-          // the refused renewals add the revocation and nothing else
-          all.map(_.kind) == Vector(CentralAudit.CertEnrolled, CentralAudit.CertRenewed, CentralAudit.CertRevoked),
-          all.last.actor == Some((ActorType.system, None)),
+          // the first refused renewal closes the chain (the revocation) and is itself denied; the second is denied as no longer anyone's
+          all.map(d => (d.kind, d.outcome, d.reason)) == Vector(
+            (CentralAudit.CertEnrolled, AuditOutcome.success, None),
+            (CentralAudit.CertRenewed, AuditOutcome.success, None),
+            (CentralAudit.CertRevoked, AuditOutcome.success, None),
+            (CentralAudit.CertRenewed, AuditOutcome.denied, Some(CertReasons.ChainFork)),
+            (CentralAudit.CertRenewed, AuditOutcome.denied, Some(CertReasons.InvalidCredentials)),
+          ),
+          all(2).actor == Some((ActorType.system, None)),
           describe(afterRenewal.last, "renew", Some(clientId.toString), leafOf(second.chain)),
           withoutPemMaterial(afterRenewal.last, renewalRequest, second.chain),
           // the revocation describes the certificate that was presented again: the one the renewal replaced
-          describe(all.last, "revoke", Some(clientId.toString), leafOf(first.chain)),
-          withoutPemMaterial(all.last, first.chain),
+          describe(all(2), "revoke", Some(clientId.toString), leafOf(first.chain)),
+          withoutPemMaterial(all(2), first.chain),
           all.forall(onlyKnownMembers),
         )
       },

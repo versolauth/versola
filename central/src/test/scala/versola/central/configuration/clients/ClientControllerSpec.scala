@@ -2,6 +2,7 @@ package versola.central.configuration.clients
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.audit.TestCertAuditState
 import versola.central.configuration.*
 import versola.central.configuration.clients.certificates.{
   ClientCertificateIssuance,
@@ -369,7 +370,15 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def certificates(service: OAuthClientService): ZEnvironment[ClientCertificateService] =
     ZEnvironment[ClientCertificateService](
-      ClientCertificateService.Impl(ClientCertificateIssuer.notConfigured, service, NoIssuances, Enrollments(), config, AuditEvents.noop),
+      ClientCertificateService.Impl(
+        ClientCertificateIssuer.notConfigured,
+        service,
+        NoIssuances,
+        Enrollments(),
+        config,
+        AuditEvents.noop,
+        TestCertAuditState.renewalFailures(),
+      ),
     )
 
   private def controllerTestCase(

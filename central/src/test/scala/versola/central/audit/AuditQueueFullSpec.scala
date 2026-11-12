@@ -103,6 +103,8 @@ object AuditQueueFullSpec extends ZIOSpecDefault:
               CentralAudit.Actors.Edge,
               Some("edge-1"),
               ("edge", "edge-1"),
+              AuditOutcome.success,
+              None,
               CertAuditDetails(operation = "renew", clientId = None, serial = None, notAfter = None, subject = None),
             ),
           )

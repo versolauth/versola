@@ -1,9 +1,10 @@
 package versola.central.configuration.edges
 
 import versola.central.CentralConfig
-import versola.central.audit.CentralAudit
-import versola.central.configuration.clients.certificates.ClientCertificateRequests
-import versola.util.audit.{AuditEvents, AuditKind, CertAuditDetails}
+import versola.central.audit.CentralAudit.{CertFailure, CertReasons}
+import versola.central.audit.{CentralAudit, DenialThrottle}
+import versola.central.configuration.clients.certificates.{ClientCertificateIssuer, ClientCertificateRequests}
+import versola.util.audit.{AuditEvents, AuditKind, AuditOutcome, CertAuditDetails}
 import versola.util.http.Observability
 import versola.util.{Base64Url, CertificateSubject, EdgeIdentityNames, SecureRandom}
 import zio.*
@@ -88,7 +89,18 @@ object EdgeIdentityService:
     EdgeService & EdgeEnrollmentTokenRepository & EdgeCertificateRepository & EdgeIdentityChainRepository &
       EdgeCertificateIssuer & SecureRandom & CentralConfig & AuditEvents,
     EdgeIdentityService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _))
+  ] = ZLayer.fromZIO:
+    for
+      edges <- ZIO.service[EdgeService]
+      tokens <- ZIO.service[EdgeEnrollmentTokenRepository]
+      issued <- ZIO.service[EdgeCertificateRepository]
+      chains <- ZIO.service[EdgeIdentityChainRepository]
+      issuer <- ZIO.service[EdgeCertificateIssuer]
+      random <- ZIO.service[SecureRandom]
+      config <- ZIO.service[CentralConfig]
+      events <- ZIO.service[AuditEvents]
+      throttle <- DenialThrottle.perMinute
+    yield Impl(edges, tokens, issued, chains, issuer, random, config, events, throttle)
 
   class Impl(
       edges: EdgeService,
@@ -99,9 +111,43 @@ object EdgeIdentityService:
       random: SecureRandom,
       config: CentralConfig,
       events: AuditEvents,
+      throttle: DenialThrottle,
   ) extends EdgeIdentityService:
-    private def certificateEvent(kind: AuditKind, edgeId: EdgeId, details: CertAuditDetails): UIO[Unit] =
-      CentralAudit.certificate(events, kind, CentralAudit.Actors.Edge, Some(edgeId.toString), ("edge", edgeId.toString), details)
+    private def certificateEvent(
+        kind: AuditKind,
+        edgeId: EdgeId,
+        outcome: AuditOutcome,
+        reason: Option[String],
+        details: CertAuditDetails,
+    ): UIO[Unit] =
+      CentralAudit.certificate(
+        events,
+        kind,
+        CentralAudit.Actors.Edge,
+        Some(edgeId.toString),
+        ("edge", edgeId.toString),
+        outcome,
+        reason,
+        details,
+      )
+
+    /** The event of an attempt that gave no certificate: the reason as a code, the subject the edge would have had, and no serial.
+      *
+      * A token that is not good is the one refusal anybody can cause, as the route has no credential before it: it is recorded only for
+      * an edge that is registered, and once a minute for each, so that a flood of guesses is one row and not a row each. */
+    private def failed(kind: AuditKind, operation: String, edgeId: EdgeId, failure: CertFailure[Any]): UIO[Unit] =
+      val record = certificateEvent(
+        kind,
+        edgeId,
+        failure.outcome,
+        Some(failure.reason),
+        CertAuditDetails.refused(operation = operation, clientId = None, subject = failure.subject),
+      )
+      if failure.reason != CertReasons.TokenInvalid then record
+      else
+        edges.find(edgeId).map(_.isDefined).flatMap: registered =>
+          // the key is admitted only for an edge that exists, so that what the throttle keeps is bounded by the registered ones
+          ZIO.when(registered)(throttle.admit(edgeId.toString)).flatMap(admitted => record.when(admitted.contains(true)).unit)
 
     /** What the CA signed: the chain handed to the edge and its leaf, which the event describes. */
     private case class Signed(chain: String, leaf: X509Certificate)
@@ -130,33 +176,63 @@ object EdgeIdentityService:
       yield IssuedToken(token, expiresAt)
 
     override def enroll(edgeId: EdgeId, token: String, csrPem: String): IO[Refused | InvalidToken.type | Throwable, Identity] =
+      enrolling(edgeId, token, csrPem)
+        .tapError(failure => failed(CentralAudit.CertEnrolled, "enroll", edgeId, failure))
+        .mapError(_.error)
+
+    private def enrolling(
+        edgeId: EdgeId,
+        token: String,
+        csrPem: String,
+    ): IO[CertFailure[Refused | InvalidToken.type | Throwable], Identity] =
+      def invalidToken = CertFailure(AuditOutcome.denied, CertReasons.TokenInvalid, InvalidToken, None)
       for
         now <- Clock.instant
         // Nothing is read or parsed on the strength of a token before the token is known good: the request comes from
         // someone not yet authenticated, so an unregistered edge, a registered one and a bad token are one and the
         // same answer, and a garbage request costs a hash and a lookup, not a parse.
-        owner <- tokens.peek(hash(token), now)
-        _ <- ZIO.fail(InvalidToken).unless(owner.contains(edgeId))
-        edge <- edges.find(edgeId).someOrFail(InvalidToken)
+        owner <- tokens.peek(hash(token), now).mapError(CertFailure.unexpected)
+        _ <- ZIO.fail(invalidToken).unless(owner.contains(edgeId))
+        edge <- edges.find(edgeId).someOrFail(invalidToken)
+        subject = Some(subjectFor(edge).principal)
         // Authenticated from here on, so a mistake in the request may be told: and it is checked before the token is
         // spent, so it does not cost the operator a token.
-        _ <- ZIO.fromEither(CertificateSubject.matches(csrPem, subjectFor(edge))).mapError(Refused(_))
-        spent <- tokens.consume(hash(token), now)
+        _ <- ZIO.fromEither(CertificateSubject.matches(csrPem, subjectFor(edge)))
+          .mapError(reason => CertFailure(AuditOutcome.denied, CertReasons.RequestMismatch, Refused(reason), subject))
+        spent <- tokens.consume(hash(token), now).mapError(CertFailure.unexpected)
         // Another caller spent it between the look and now.
-        _ <- ZIO.fail(InvalidToken).unless(spent.contains(edgeId))
+        _ <- ZIO.fail(invalidToken).unless(spent.contains(edgeId))
         signed <- sign(edge, csrPem)
-        _ <- chains.start(edgeId, now)
-        _ <- certificateEvent(CentralAudit.CertEnrolled, edgeId, CertAuditDetails.of("enroll", None, signed.leaf))
+        _ <- chains.start(edgeId, now).mapError(CertFailure.unexpected)
+        _ <- certificateEvent(
+          CentralAudit.CertEnrolled,
+          edgeId,
+          AuditOutcome.success,
+          None,
+          CertAuditDetails.of("enroll", None, signed.leaf),
+        )
       yield Identity(signed.chain, endOf(edge, now))
 
     override def renew(edgeId: EdgeId, csrPem: String, presentedSerial: Option[String]): IO[Refused | Throwable, Identity] =
+      renewing(edgeId, csrPem, presentedSerial)
+        .tapError(failure => failed(CentralAudit.CertRenewed, "renew", edgeId, failure))
+        .mapError(_.error)
+
+    private def renewing(
+        edgeId: EdgeId,
+        csrPem: String,
+        presentedSerial: Option[String],
+    ): IO[CertFailure[Refused | Throwable], Identity] =
       for
-        edge <- edges.find(edgeId).someOrFail(Refused(s"edge '$edgeId' is not registered"))
-        _ <- ZIO.fromEither(CertificateSubject.matches(csrPem, subjectFor(edge))).mapError(Refused(_))
+        edge <- edges.find(edgeId)
+          .someOrFail(CertFailure(AuditOutcome.denied, CertReasons.EdgeUnknown, Refused(s"edge '$edgeId' is not registered"), None))
+        subject = Some(subjectFor(edge).principal)
+        _ <- ZIO.fromEither(CertificateSubject.matches(csrPem, subjectFor(edge)))
+          .mapError(reason => CertFailure(AuditOutcome.denied, CertReasons.RequestMismatch, Refused(reason), subject))
         now <- Clock.instant
-        recorded <- chains.startedAt(edgeId)
+        recorded <- chains.startedAt(edgeId).mapError(CertFailure.unexpected)
         // An edge enrolled before chains were kept has none: its chain begins now.
-        started <- recorded.fold(chains.start(edgeId, now).as(now))(ZIO.succeed(_))
+        started <- recorded.fold(chains.start(edgeId, now).as(now).mapError(CertFailure.unexpected))(ZIO.succeed(_))
         aged = JavaDuration.between(started, now).compareTo(maxAge) > 0
         // At the end of a chain: extend it, or stop, as the operator chose. Never a surprise: stopping happens only when the
         // operator turned extending off, and the edge has been told the date in every answer since its enrollment.
@@ -164,15 +240,26 @@ object EdgeIdentityService:
           if !aged then ZIO.succeed(started)
           else if extendsItself(edge) then
             ZIO.logInfo(s"the certificate chain of edge '$edgeId' reached ${policy.maxAge.toDays} days; extended") *>
-              chains.start(edgeId, now).as(now)
+              chains.start(edgeId, now).as(now).mapError(CertFailure.unexpected)
           else
-            ZIO.fail(Refused(
-              s"the certificate chain of edge '$edgeId' reached its limit (${policy.maxAge.toDays} days since it was enrolled or " +
-                s"last extended): extend it with POST /configuration/edges/extend?edgeId=$edgeId, or enrol it again with a new token",
+            ZIO.fail(CertFailure(
+              AuditOutcome.denied,
+              CertReasons.ChainLimit,
+              Refused(
+                s"the certificate chain of edge '$edgeId' reached its limit (${policy.maxAge.toDays} days since it was enrolled or " +
+                  s"last extended): extend it with POST /configuration/edges/extend?edgeId=$edgeId, or enrol it again with a new token",
+              ),
+              subject,
             ))
         _ <- ZIO.logInfo(s"renewing the certificate of edge '$edgeId' presented as serial ${presentedSerial.getOrElse("unknown")}")
         signed <- sign(edge, csrPem)
-        _ <- certificateEvent(CentralAudit.CertRenewed, edgeId, CertAuditDetails.of("renew", None, signed.leaf))
+        _ <- certificateEvent(
+          CentralAudit.CertRenewed,
+          edgeId,
+          AuditOutcome.success,
+          None,
+          CertAuditDetails.of("renew", None, signed.leaf),
+        )
       yield Identity(signed.chain, endOf(edge, begun))
 
     override def extend(edgeId: EdgeId): IO[Refused | Throwable, Unit] =
@@ -191,18 +278,25 @@ object EdgeIdentityService:
           partners <- edges.getAllEdges.map(_.filter(_.groupKind == EdgeGroupKind.Partner).map(_.id).toSet)
         yield started.view.filterKeys(partners).mapValues(_.plus(maxAge)).toMap
 
-    private def sign(edge: EdgeRecord, csrPem: String): IO[Refused | Throwable, Signed] =
+    private def sign(edge: EdgeRecord, csrPem: String): IO[CertFailure[Refused | Throwable], Signed] =
       val subject = subjectFor(edge)
+      val principal = Some(subject.principal)
       for
-        chain <- issuer.issuer.sign(ClientCertificateRequests.signingRequest(csrPem, subject, validity))
-        leaf <- ZIO.attempt:
+        chain <- issuer.issuer.sign(ClientCertificateRequests.signingRequest(csrPem, subject, validity)).mapError: error =>
+          CertFailure(AuditOutcome.failure, ClientCertificateIssuer.reasonOf(error), error, principal)
+        leaf <- ZIO.attempt(
           CertificateFactory.getInstance("X.509")
             .generateCertificates(ByteArrayInputStream(chain.getBytes(StandardCharsets.UTF_8)))
-            .iterator.next.asInstanceOf[X509Certificate]
+            .iterator.next.asInstanceOf[X509Certificate],
+        ).mapError(error => CertFailure(AuditOutcome.failure, CertReasons.IssuerInvalidAnswer, error, principal))
         // What the CA returned must name exactly this edge and its group, or it would be refused on the listener
         // (or worse, accepted for something else): fail here rather than hand the edge a certificate it cannot use.
-        _ <- ZIO.fail(Refused("the issued certificate does not carry exactly the edge's names"))
-          .unless(EdgeCertificate.uriNames(leaf).toSet == subject.uris.toSet)
+        _ <- ZIO.fail(CertFailure(
+          AuditOutcome.failure,
+          CertReasons.CertificateRejected,
+          Refused("the issued certificate does not carry exactly the edge's names"),
+          principal,
+        )).unless(EdgeCertificate.uriNames(leaf).toSet == subject.uris.toSet)
         now <- Clock.instant
         _ <- issued.record(edge.id, leaf.getSerialNumber.toString(16), leaf.getNotAfter.toInstant, now)
           .catchAll(error => Observability.setError("edge_certificate_not_recorded", Some(s"edge '${edge.id}': $error")))

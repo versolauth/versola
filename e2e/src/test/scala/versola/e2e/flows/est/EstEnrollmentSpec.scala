@@ -263,8 +263,22 @@ object EstEnrollmentSpec extends ZIOSpec[Flows.Setups & CentralApi]:
           again <- estPost(url, body, Some(Header.Authorization.Basic(id, token)))
           freshToken <- enrolmentToken(central, id).map(_._1)
           bearer <- estPost(url, body, Some(Header.Authorization.Bearer(freshToken)))
+          // Central records what it refused, for the client the caller named, and once a minute however many times it tried: the writer
+          // rests up to a second between batches, so wait for the row.
+          denied <- CentralDatabase.auditEvents(id)
+            .repeat(
+              Schedule.spaced(200.millis) *>
+                Schedule.recurUntil[List[CentralDatabase.AuditRow]](_.exists(row => row.kind == "cert.enrolled" && row.outcome == "denied")),
+            )
+            .timeout(20.seconds)
+            .someOrElseZIO(CentralDatabase.auditEvents(id))
+            .map(_.filter(row => row.kind.startsWith("cert.") && row.outcome == "denied"))
           _ <- central.delete("/configuration/clients", "clientId" -> other).ignore
         yield assertTrue(
+          denied.nonEmpty,
+          denied.size <= 2,
+          denied.forall(row => row.reason.contains("invalid_credentials") && row.actorId.contains(id)),
+          !denied.exists(row => row.details.contains("not-a-token") || row.details.contains(token)),
           anonymous._1.status == Status.Unauthorized,
           anonymous._1.rawHeader("WWW-Authenticate").exists(_.startsWith("Basic")),
           wrong._1.status == Status.Unauthorized,

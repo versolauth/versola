@@ -74,7 +74,9 @@ info:
     the edge or the system. Their `details` say which certificate it is: `operation`, the `serial` (hex), `notAfter`
     (an ISO-8601 instant) and the `subject` (RFC 4514), and `clientId` for a client's. A certificate issued when a
     client is registered with `issueEdgeClientCertificate` is a `cert.enrolled` by the administrator. No key, PEM or
-    request is ever in them.
+    request is ever in them. An attempt that gave no certificate is recorded with `denied` (a rule refused it) or `failure`
+    (the issuer or central could not do it), a `reason` that is a code and no `serial`; an automatic renewal that keeps
+    failing is recorded when it starts to fail and not on every pass, and the `cert.renewed` that succeeds ends it.
 
     The administrator is the one edge has authenticated. Edge adds query parameters to every call and removes
     any a client sent under the same names: `actorId` (the `sub` of the access token), `actorTenantId` (its tenant),

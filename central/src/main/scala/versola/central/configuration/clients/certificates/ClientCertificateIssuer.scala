@@ -1,6 +1,8 @@
 package versola.central.configuration.clients.certificates
 
 import versola.central.CentralConfig
+import versola.central.audit.CentralAudit.CertReasons
+import versola.central.configuration.clients.ClientCertificateAuthority
 import zio.*
 import zio.http.Client
 
@@ -40,6 +42,33 @@ object ClientCertificateIssuer:
   case object NotConfigured extends RuntimeException(
       "central has no `client-certificates` configuration, so it cannot issue client certificates",
     )
+
+  /** The CA did not sign: it could not be reached, refused, did not answer in time or answered something that is no certificate.
+    * `reason` is the code the audit log records (one of [[CertReasons]]); `message` is for the operator's log and may quote what the
+    * CA said, so it never goes anywhere else. */
+  class IssuerFailed(val reason: String, message: String) extends RuntimeException(message)
+
+  object IssuerFailed:
+    def refused(message: String): IssuerFailed = IssuerFailed(CertReasons.IssuerRefused, message)
+
+    def timedOut(message: String): IssuerFailed = IssuerFailed(CertReasons.IssuerTimeout, message)
+
+    def invalidAnswer(message: String): IssuerFailed = IssuerFailed(CertReasons.IssuerInvalidAnswer, message)
+
+    /** The request never got an answer: the connection, the handshake or the read failed. */
+    def unreachable(cause: Throwable): IssuerFailed =
+      val failure = IssuerFailed(CertReasons.IssuerUnreachable, Option(cause.getMessage).getOrElse(cause.getClass.getSimpleName))
+      failure.initCause(cause)
+      failure
+
+  /** The reason code of a failure to get a certificate from the CA: a typed one the backends raise, the two states the CA can be in
+    * without being asked (no CA configured, the local CA expired), or `issuer_error` for any other. */
+  def reasonOf(error: Throwable): String =
+    error match
+      case NotConfigured => CertReasons.CaNotConfigured
+      case _: ClientCertificateAuthority.Expired => CertReasons.CaExpired
+      case failure: IssuerFailed => failure.reason
+      case _ => CertReasons.IssuerError
 
   val notConfigured: ClientCertificateIssuer =
     (_: CertificateSigningRequest) => ZIO.fail(NotConfigured)
