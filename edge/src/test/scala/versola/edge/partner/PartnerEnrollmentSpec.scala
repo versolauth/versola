@@ -373,7 +373,12 @@ object PartnerEnrollmentSpec extends ZIOSpecDefault:
                   csr = body.fromJson[Json.Obj].toOption.flatMap(_.get("csr")).flatMap(_.asString).getOrElse("")
                   now <- Clock.instant
                 yield Response.json(
-                  s"""{"certificate":${sign(csr, names, now.minusSeconds(60), now.plusSeconds(86400)).toJson},"edge":{"id":"edge-9","group":"acme"},"central":$central,"auth":$auth}""",
+                  s"""{"certificate":${sign(
+                      csr,
+                      names,
+                      now.minusSeconds(60),
+                      now.plusSeconds(86400),
+                    ).toJson},"edge":{"id":"edge-9","group":"acme"},"central":$central,"auth":$auth}""",
                 )
               },
             ),
