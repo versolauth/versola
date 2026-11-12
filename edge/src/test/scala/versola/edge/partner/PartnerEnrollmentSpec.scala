@@ -363,6 +363,33 @@ object PartnerEnrollmentSpec extends ZIOSpecDefault:
           kept <- Enrolled.read(dir)
         yield assertTrue(failure.getMessage.contains("not understood"), kept.isEmpty)
       },
+      test("an answer without the addresses of central or the issuer is refused, and nothing is kept") {
+        def answered(central: String, auth: String) =
+          TestClient.addRoutes(
+            Routes(
+              Method.POST / "edge" / "enroll" -> handler { (request: Request) =>
+                for
+                  body <- request.body.asString.orDie
+                  csr = body.fromJson[Json.Obj].toOption.flatMap(_.get("csr")).flatMap(_.asString).getOrElse("")
+                  now <- Clock.instant
+                yield Response.json(
+                  s"""{"certificate":${sign(csr, names, now.minusSeconds(60), now.plusSeconds(86400)).toJson},"edge":{"id":"edge-9","group":"acme"},"central":$central,"auth":$auth}""",
+                )
+              },
+            ),
+          )
+        for
+          dir <- directory
+          file <- tokenFile(token)
+          _ <- answered("{}", """{"issuer":"https://idp.example"}""")
+          noCentral <- PartnerEnrollment.resolve(provider(dir, token = Some(file))).flip
+          _ <- answered("""{"mtlsUrl":"https://central-mtls.example"}""", "{}")
+          noIssuer <- PartnerEnrollment.resolve(provider(dir, token = Some(file))).flip
+          kept <- Enrolled.read(dir)
+          holder <- EdgeCertificateHolder.directory(dir)
+          material <- holder.material
+        yield assertTrue(noCentral.getMessage.contains("mutual-TLS"), noIssuer.getMessage.contains("issuer"), kept.isEmpty, material.isEmpty)
+      },
       test("a certificate that has expired is enrolled again with the token, and not without one") {
         for
           dir <- directory

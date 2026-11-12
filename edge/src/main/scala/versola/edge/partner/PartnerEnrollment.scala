@@ -116,8 +116,8 @@ object PartnerEnrollment:
 
   private case class EnrollRequest(token: String, csr: String, signingKey: Json.Obj) derives JsonCodec
   private case class EdgeIdentityResponse(id: String, group: String) derives JsonCodec
-  private case class CentralResponse(mtlsUrl: String) derives JsonCodec
-  private case class AuthResponse(issuer: String, mtlsUrl: Option[String] = None) derives JsonCodec
+  private case class CentralResponse(mtlsUrl: Option[String] = None) derives JsonCodec
+  private case class AuthResponse(issuer: Option[String] = None, mtlsUrl: Option[String] = None) derives JsonCodec
   private case class EnrollResponse(certificate: String, edge: EdgeIdentityResponse, central: CentralResponse, auth: AuthResponse) derives JsonCodec
 
   /** The subject of the request of the first certificate: the edge does not know its own name yet, and central, which resolves it
@@ -212,13 +212,18 @@ object PartnerEnrollment:
       answer <- ZIO.fromEither(text.fromJson[EnrollResponse]).mapError(error =>
         RuntimeException(s"central's answer to the enrollment is not understood: $error"),
       )
+      // without these the edge could not start: say so, rather than fail later with a missing key of the configuration
+      mtlsUrl <- ZIO.fromOption(answer.central.mtlsUrl)
+        .orElseFail(RuntimeException("central did not say where its mutual-TLS listener is: its operator has not configured central's public names"))
+      issuer <- ZIO.fromOption(answer.auth.issuer)
+        .orElseFail(RuntimeException("central did not say what the issuer of the authorization server is: its operator has not configured it"))
       enrolled = Enrolled(
         edgeId = answer.edge.id,
         group = answer.edge.group,
         keyId = keys.keyId,
         privateKey = Base64.getEncoder.encodeToString(keys.privateKey.getEncoded),
-        central = Enrolled.Central(answer.central.mtlsUrl),
-        auth = Enrolled.Auth(answer.auth.issuer, answer.auth.mtlsUrl),
+        central = Enrolled.Central(mtlsUrl),
+        auth = Enrolled.Auth(issuer, answer.auth.mtlsUrl),
       )
       _ <- holder.install(answer.certificate, generated.privateKeyPem)
       _ <- Enrolled.write(directory, enrolled)
