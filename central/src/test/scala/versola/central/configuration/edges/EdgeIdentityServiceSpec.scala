@@ -83,9 +83,10 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
   /** Issues what was asked and remembers the lifetime each request asked for. */
   private class RecordingIssuer extends ClientCertificateIssuer:
     val validities = Unsafe.unsafe(Ref.unsafe.make(Vector.empty[Duration])(using _))
+    val requests = Unsafe.unsafe(Ref.unsafe.make(Vector.empty[CertificateSigningRequest])(using _))
 
     override def sign(request: CertificateSigningRequest): Task[String] =
-      validities.update(_ :+ request.validity) *> honestIssuer.sign(request)
+      validities.update(_ :+ request.validity) *> requests.update(_ :+ request) *> honestIssuer.sign(request)
 
   /** Issues a certificate that names a different edge than the one asked for. */
   private val lyingIssuer: ClientCertificateIssuer =
@@ -517,6 +518,60 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
           fine.chain.contains("BEGIN CERTIFICATE"),
         )
       },
+      test("an edge enrolling with the token alone sends a request that names nothing: the signature is checked, the names are central's") {
+        val edge = keylessPartnerEdge(otherEdgeId)
+        val issuer = RecordingIssuer()
+        val env = Env(List(edge), issuer = issuer)
+        val anonymous = CertificateSubject("CN=enrolling", "enrolling", Nil, Nil, Nil, Nil)
+        for
+          service <- env.service
+          _ <- env.edgeService.setSigningKey.succeedsWith(true)
+          issued <- service.issueEnrollmentToken(otherEdgeId)
+          generated <- CertificateSubject.generate(anonymous).orDie
+          enrolled <- service.enroll(None, issued.token, generated.csrPem, Some(keyA))
+          requests <- issuer.requests.get
+        yield assertTrue(
+          enrolled.chain.contains("BEGIN CERTIFICATE"),
+          // central tells the CA what to name the certificate, whatever the request carries
+          requests.map(_.subjectDn) == Vector(Some(EdgeIdentityService.subjectFor(edge).distinguishedName)),
+          requests.head.uris == EdgeIdentityService.subjectFor(edge).uris,
+        )
+      },
+      test("a token-resolved enrolment still needs a request signed by its own key, in a key worth issuing for") {
+        val edge = keylessPartnerEdge(otherEdgeId)
+        val env = Env(List(edge))
+        for
+          service <- env.service
+          issued <- service.issueEnrollmentToken(otherEdgeId)
+          garbage <- service.enroll(None, issued.token, "not a request", Some(keyA)).flip
+          // a request signed by another key than the one it names is made by editing one: here, a request with its signature cut
+          good <- CertificateSubject.generate(CertificateSubject("CN=enrolling", "enrolling", Nil, Nil, Nil, Nil)).orDie
+          tampered = good.csrPem.replace(
+            "\n",
+            "",
+          ).dropRight(60).grouped(64).mkString("-----BEGIN CERTIFICATE REQUEST-----\n", "\n", "\n-----END CERTIFICATE REQUEST-----\n")
+          broken <- service.enroll(None, issued.token, tampered, Some(keyA)).flip
+        yield assertTrue(garbage.isInstanceOf[EdgeIdentityService.Refused], broken.isInstanceOf[EdgeIdentityService.Refused])
+      },
+      test("an edge that names itself in the body is still held to naming exactly itself") {
+        val edge = keylessPartnerEdge(otherEdgeId)
+        val issuer = RecordingIssuer()
+        val env = Env(List(edge), issuer = issuer)
+        for
+          service <- env.service
+          _ <- env.edgeService.setSigningKey.succeedsWith(true)
+          issued <- service.issueEnrollmentToken(otherEdgeId)
+          anonymous <- CertificateSubject.generate(CertificateSubject("CN=enrolling", "enrolling", Nil, Nil, Nil, Nil)).orDie
+          refused <- service.enroll(Some(otherEdgeId), issued.token, anonymous.csrPem, Some(keyA)).flip
+          csr <- csrFor(edge)
+          enrolled <- service.enroll(Some(otherEdgeId), issued.token, csr, Some(keyA))
+          requests <- issuer.requests.get
+        yield assertTrue(
+          refused.isInstanceOf[EdgeIdentityService.Refused],
+          enrolled.chain.contains("BEGIN CERTIFICATE"),
+          requests.map(_.subjectDn) == Vector(None),
+        )
+      },
       test("a token for another edge enrols nothing, with the right key and the wrong name") {
         val one = keylessPartnerEdge(edgeId)
         val other = keylessPartnerEdge(otherEdgeId)
@@ -527,11 +582,8 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
           issued <- service.issueEnrollmentToken(edgeId)
           csr <- csrFor(other)
           refused <- service.enroll(Some(otherEdgeId), issued.token, csr, Some(keyA)).flip
-          // and the token's own CSR subject is the one that is checked, not the name the caller gave
-          wrongSubject <- service.enroll(None, issued.token, csr, Some(keyA)).flip
         yield assertTrue(
           refused == EdgeIdentityService.InvalidToken,
-          wrongSubject.isInstanceOf[EdgeIdentityService.Refused],
           env.edgeService.setSigningKey.calls.isEmpty,
         )
       },

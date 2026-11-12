@@ -22,7 +22,7 @@ info:
       and `POST /edge/certificate/renew` (an edge's own certificate, over the same listener; the one
       route an edge of either kind reaches, since renewal is always on and a partner's edge is stopped by
       suspending the partner; it accepts an optional new public `signingKey` JWK together with the certificate request,
-      which replaces the edge's key once the certificate is signed), the surface an edge reads with the key it was
+      which replaces the edge's key once the certificate is signed; the key before it stays valid until the next replacement, so a request signed with it as the edge switches is not refused), the surface an edge reads with the key it was
       registered with (a partner's edge registers the public half of a key of its own when it enrols). It is served only on central's
       own mutual-TLS listener (`MPORT`), never on the port this document describes: the handshake must
       present a certificate that chains to the listener's trust anchors, and the certificate must carry
