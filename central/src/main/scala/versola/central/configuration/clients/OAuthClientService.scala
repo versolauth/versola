@@ -92,7 +92,8 @@ trait OAuthClientService:
   def sync(event: SyncEvent.ClientsUpdated): Task[Unit]
 
   /** Reloads the whole cache from the repository now, instead of at the next scheduled
-    * refresh. For bootstrap: this cache is loaded before bootstrap seeds `central-admin`, and
+    * refresh. Used by bootstrap and by `CacheSyncService` when the notification feed resubscribes
+    * (`SyncEvent.Reload`). Bootstrap: this cache is loaded before bootstrap seeds `central-admin`, and
     * the `client_change` notifications the seed fires go out before central starts listening
     * for them -- so without a reload the seeded client is missing from `/configuration/clients/sync`,
     * and its presets from the edge-filtered `/configuration/auth-request-presets/sync`, until

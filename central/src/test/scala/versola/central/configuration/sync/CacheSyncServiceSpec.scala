@@ -63,12 +63,19 @@ object CacheSyncServiceSpec extends UnitSpecBase:
       serverMetadataService,
     )
 
-  private def stubAllReloads(env: Env, roleFails: Boolean = false) =
+  private enum RoleReload:
+    case Succeeds, Fails, Dies, Hangs
+
+  private def stubAllReloads(env: Env, role: RoleReload = RoleReload.Succeeds) =
     for
       _ <- (() => env.tenantService.sync()).succeedsWith(())
       _ <- (() => env.edgeService.sync()).succeedsWith(())
       _ <- (() => env.jwksService.sync()).succeedsWith(())
-      _ <- if roleFails then env.roleService.reload.failsWith(RuntimeException("db down")) else env.roleService.reload.succeedsWith(())
+      _ <- role match
+        case RoleReload.Succeeds => env.roleService.reload.succeedsWith(())
+        case RoleReload.Fails => env.roleService.reload.failsWith(RuntimeException("db down"))
+        case RoleReload.Dies => env.roleService.reload.returnsZIO(_ => ZIO.die(RuntimeException("defect")))
+        case RoleReload.Hangs => env.roleService.reload.returnsZIO(_ => ZIO.never)
       _ <- env.clientService.refreshNow.succeedsWith(())
       _ <- env.scopeService.reload.succeedsWith(())
       _ <- env.authorizationDetailTypeService.reload.succeedsWith(())
@@ -113,13 +120,48 @@ object CacheSyncServiceSpec extends UnitSpecBase:
     test("a cache that fails to reload does not stop the others or the stream") {
       val env = Env(SyncEvent.Reload, SyncEvent.TenantsUpdated)
       for
-        _ <- stubAllReloads(env, roleFails = true)
+        _ <- stubAllReloads(env, RoleReload.Fails)
         _ <- env.service.sync()
       yield assertTrue(
         env.roleService.reload.calls.size == 1,
         env.formService.reload.calls.size == 1,
         (() => env.serverMetadataService.sync()).calls.size == 1,
         // the TenantsUpdated that follows the Reload is still handled
+        (() => env.tenantService.sync()).calls.size == 2,
+      )
+    },
+    test("a cache that dies with a defect while reloading does not stop the others or the stream") {
+      val env = Env(SyncEvent.Reload, SyncEvent.TenantsUpdated)
+      for
+        _ <- stubAllReloads(env, RoleReload.Dies)
+        _ <- env.service.sync()
+      yield assertTrue(
+        env.roleService.reload.calls.size == 1,
+        env.formService.reload.calls.size == 1,
+        (() => env.serverMetadataService.sync()).calls.size == 1,
+        (() => env.tenantService.sync()).calls.size == 2,
+      )
+    },
+    test("a cache whose reload hangs is abandoned after the timeout; the others are reloaded and the stream goes on") {
+      val env = Env(SyncEvent.Reload, SyncEvent.TenantsUpdated)
+      for
+        _ <- stubAllReloads(env, RoleReload.Hangs)
+        fiber <- env.service.sync().fork
+        // While the roles reload is still hanging (far from its timeout), the other caches must already
+        // be reloaded: a sequential loop would still be stuck on roles and never reach forms.
+        _ <- TestClock.adjust(1.second)
+        reloadedMeanwhile = (
+          env.formService.reload.calls.size == 1 &&
+            (() => env.serverMetadataService.sync()).calls.size == 1
+        )
+        stillRunning <- fiber.poll.map(_.isEmpty)
+        _ <- TestClock.adjust(CacheSyncService.ReloadTimeout)
+        _ <- fiber.join
+      yield assertTrue(
+        reloadedMeanwhile,
+        stillRunning,
+        env.roleService.reload.calls.size == 1,
+        // the TenantsUpdated that follows the Reload is handled once the stuck reload timed out
         (() => env.tenantService.sync()).calls.size == 2,
       )
     },

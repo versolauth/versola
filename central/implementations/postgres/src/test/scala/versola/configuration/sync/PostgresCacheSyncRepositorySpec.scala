@@ -23,10 +23,12 @@ object PostgresCacheSyncRepositorySpec extends ZIOSpecDefault:
 
   import PostgresCacheSyncRepository.parseNotification
 
-  def spec = suite("PostgresCacheSyncRepository.parseNotification")(
-    test("a resubscribe of the listener becomes a Reload, so changes missed meanwhile are not left to the timer") {
-      assertTrue(PostgresCacheSyncRepository.toSyncEvent(NotificationEvent.Resubscribed) == SyncEvent.Reload)
-    },
+  def spec = suite("PostgresCacheSyncRepository")(
+    suite("toSyncEvent")(
+      test("a resubscribe of the listener becomes a Reload, so changes missed meanwhile are not left to the timer") {
+        assertTrue(PostgresCacheSyncRepository.toSyncEvent(NotificationEvent.Resubscribed) == SyncEvent.Reload)
+      },
+    ),
     suite("payload-less channels")(
       test("tenant_change ignores the payload") {
         assertTrue(parseNotification("tenant_change", "") == SyncEvent.TenantsUpdated)
