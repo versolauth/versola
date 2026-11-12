@@ -38,7 +38,6 @@ import versola.central.configuration.resources.{ResourceId, ResourceRecord, Reso
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.configuration.{GetAuthorizationPresetsSyncResponse, GetOAuthClientsSyncResponse, GetResourcesSyncResponse, ResourceUri}
-import versola.central.users.{AuthClient, UserId}
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.audit.{ActorType, AuditEvent, AuditEvents, AuditKind, AuditOutcome, AuditSeverity}
 import versola.util.http.Observability
@@ -230,7 +229,6 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       presets: Stub[AuthorizationPresetService],
       jwks: Stub[JwksService],
       metadata: Stub[ServerMetadataService],
-      auth: Stub[AuthClient],
       tenants: Stub[TenantRepository],
       certificates: Stub[EdgeCertificateRepository],
       tokens: Stub[EdgeEnrollmentTokenRepository],
@@ -284,7 +282,6 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           presets = stub[AuthorizationPresetService],
           jwks = stub[JwksService],
           metadata = stub[ServerMetadataService],
-          auth = stub[AuthClient],
           tenants = stub[TenantRepository],
           certificates = stub[EdgeCertificateRepository],
           tokens = stub[EdgeEnrollmentTokenRepository],
@@ -304,7 +301,6 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               ZEnvironment[JwksService](services.jwks) ++
               ZEnvironment[ServerMetadataService](services.metadata) ++
               ZEnvironment[SecurityService](security) ++
-              ZEnvironment[AuthClient](services.auth) ++
               ZEnvironment[TenantRepository](services.tenants) ++
               ZEnvironment[EdgeCertificateRepository](services.certificates) ++
               ZEnvironment[EdgeEnrollmentTokenRepository](services.tokens) ++
@@ -544,7 +540,7 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           ),
       ),
     ),
-    suite("what a partner may register, and how often it may revoke")(
+    suite("what a partner may register")(
       testCase(
         description = "a resource under another host than the partner's own is 400, and nothing is created",
         request = Request.post(
@@ -595,74 +591,6 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         certificate = Some(TestCertificates.generate(uris = List(EdgeCertificate.uriFor(edgeId))).certificate),
         expectedStatus = Status.Unauthorized,
         verify = (_, services) => ZIO.succeed(assertTrue(services.partners.activate.calls.isEmpty)),
-      ),
-      testCase(
-        description = "a second revocation of a whole client within the minute is 429 with Retry-After, and auth is not asked",
-        request = Request.post(
-          partnerPath("revocations"),
-          jsonBody("""{"by":"client","value":"acme-shop","clients":["acme-shop"],"revokeRefresh":true}"""),
-        ).addHeader(Header.ContentType(MediaType.application.json)),
-        principal = Some(staffToken()),
-        expectedStatus = Status.TooManyRequests,
-        setup = _ => ZIO.succeed(PartnerRevocationLimiter.reset()) *> PartnerRevocationLimiter.acquire(acme.id, wholeClient = true).unit,
-        verify = (response, services) =>
-          ZIO.succeed(assertTrue(
-            response.headers.get("Retry-After").exists(_.toLongOption.exists(_ >= 1)),
-            services.auth.revokeRefreshTokensByClient.calls.isEmpty,
-          )),
-      ),
-      testCase(
-        description = "another partner's whole-client revocation is counted on its own",
-        request = Request.post(
-          partnerPath("revocations"),
-          jsonBody("""{"by":"client","value":"acme-shop","clients":["acme-shop"],"revokeRefresh":true}"""),
-        ).addHeader(Header.ContentType(MediaType.application.json)),
-        principal = Some(staffToken()),
-        expectedStatus = Status.Accepted,
-        setup = services =>
-          services.auth.revokeRefreshTokensByClient.succeedsWith(()) *>
-            ZIO.succeed(PartnerRevocationLimiter.reset()) *> PartnerRevocationLimiter.acquire(globex.id, wholeClient = true).unit,
-      ),
-    ),
-    suite("revocations act on the partner's own clients only")(
-      testCase(
-        description = "a client that is not the partner's is refused, and auth is not asked",
-        request = Request.post(
-          partnerPath("revocations"),
-          jsonBody(s"""{"by":"user","value":"${UUID.randomUUID()}","clients":["acme-shop","globex-shop"],"revokeRefresh":true}"""),
-        ).addHeader(Header.ContentType(MediaType.application.json)),
-        principal = Some(staffToken()),
-        expectedStatus = Status.BadRequest,
-        verify = (_, services) =>
-          ZIO.succeed(assertTrue(services.auth.revokeRefreshTokens.calls.isEmpty, services.auth.revokeRefreshTokensByClient.calls.isEmpty)),
-      ),
-      testCase(
-        description = "by user: the user's grants at each named client of the partner are revoked at auth",
-        request = Request.post(
-          partnerPath("revocations"),
-          jsonBody("""{"by":"user","value":"018f0f2a-1c7b-7000-8000-000000000301","clients":["acme-shop","acme-pay"],"revokeRefresh":true}"""),
-        ).addHeader(Header.ContentType(MediaType.application.json)),
-        principal = Some(staffToken()),
-        expectedStatus = Status.Accepted,
-        setup = services => services.auth.revokeRefreshTokens.succeedsWith(()) *> ZIO.succeed(PartnerRevocationLimiter.reset()),
-        verify = (_, services) =>
-          ZIO.succeed(assertTrue(
-            services.auth.revokeRefreshTokens.calls == List(
-              (UserId(UUID.fromString("018f0f2a-1c7b-7000-8000-000000000301")), ClientId("acme-shop")),
-              (UserId(UUID.fromString("018f0f2a-1c7b-7000-8000-000000000301")), ClientId("acme-pay")),
-            ),
-          )),
-      ),
-      testCase(
-        description = "by client: every user's grants of that client",
-        request = Request.post(
-          partnerPath("revocations"),
-          jsonBody("""{"by":"client","value":"acme-shop","clients":["acme-shop"],"revokeRefresh":true}"""),
-        ).addHeader(Header.ContentType(MediaType.application.json)),
-        principal = Some(staffToken()),
-        expectedStatus = Status.Accepted,
-        setup = services => services.auth.revokeRefreshTokensByClient.succeedsWith(()) *> ZIO.succeed(PartnerRevocationLimiter.reset()),
-        verify = (_, services) => ZIO.succeed(assertTrue(services.auth.revokeRefreshTokensByClient.calls == List(ClientId("acme-shop")))),
       ),
     ),
   ) @@ TestAspect.sequential

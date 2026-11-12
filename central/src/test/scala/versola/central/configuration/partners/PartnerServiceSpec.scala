@@ -313,63 +313,41 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
     ),
     suite("the kill switch")(
-      test("suspend records the status, tells auth to reload first, and then ends every grant of every approved client at auth") {
+      test(
+        "suspend records the status, makes it visible at once, tells auth to reload its clients and voids the unused enrollment tokens; it revokes nothing",
+      ) {
         val env = Env()
         for
-          order <- Ref.make(Vector.empty[String])
           _ <- env.registry.findFresh.succeedsWith(Some(acme))
           _ <- env.partners.setStatus.succeedsWith(true)
           _ <- env.registry.refreshNow.succeedsWith(())
-          _ <- env.auth.syncConfiguration().returnsZIO(_ => order.update(_ :+ "sync"))
-          _ <- env.clients.refreshNow.succeedsWith(())
-          _ <- env.clients.getPartnerClients.succeedsWith(Vector(
-            client(ClientId("acme-console"), ClientApproval.Approved),
-            client(ClientId("acme-shop"), ClientApproval.Approved),
-            client(ClientId("acme-pay"), ClientApproval.Pending),
-          ))
-          _ <- env.auth.revokeRefreshTokensByClient.returnsZIO(id => order.update(_ :+ s"revoke $id"))
+          _ <- env.auth.syncConfiguration().succeedsWith(())
           _ <- env.edges.getAllEdges.succeedsWith(Vector(edge(EdgeId("edge-acme-1")), edge(EdgeId("other"), EdgeGroupId("globex"))))
           _ <- env.enrollmentTokens.revoke.succeedsWith(0)
           outcome <- env.service.suspend(acme.id)
-          events <- order.get
         yield assertTrue(
           env.partners.setStatus.calls == List((acme.id, PartnerStatus.Suspended)),
-          // auth drops the clients when it reloads, so it is told before the grants are ended: a code flow completed in between
-          // would otherwise leave a refresh token that nothing revoked
-          events == Vector("sync", "revoke acme-console", "revoke acme-shop"),
-          // a pending client never issued a token: nothing to end
-          env.auth.revokeRefreshTokensByClient.calls == List(ClientId("acme-console"), ClientId("acme-shop")),
-          // the clients are read as stored, and an enrollment token that was printed and not used is void
-          env.clients.refreshNow.calls.size == 1,
+          env.registry.refreshNow.calls.size == 1,
+          env.auth.syncConfiguration().calls.size == 1,
+          // an enrollment token that was printed and not used is void: of the partner's edges only
           env.enrollmentTokens.revoke.calls == List(EdgeId("edge-acme-1")),
-          outcome == PartnerService.SuspendOutcome(authSynced = true, revocationFailed = Nil),
-          outcome.complete,
+          // nothing is deleted or revoked: no client is read, no grant touched
+          env.clients.getPartnerClients.calls.isEmpty,
+          outcome == PartnerService.SuspendOutcome(authSynced = true),
         )
       },
-      test("a client whose grants cannot be revoked does not stop the others, and is named; auth not told is named too") {
+      test("a suspension auth could not be told of is still a suspension, and says so") {
         val env = Env()
         for
           _ <- env.registry.findFresh.succeedsWith(Some(acme))
           _ <- env.partners.setStatus.succeedsWith(true)
           _ <- env.registry.refreshNow.succeedsWith(())
           _ <- env.auth.syncConfiguration().failsWith(RuntimeException("auth is down"))
-          _ <- env.clients.refreshNow.succeedsWith(())
-          _ <- env.clients.getPartnerClients.succeedsWith(Vector(
-            client(ClientId("acme-shop"), ClientApproval.Approved),
-            client(ClientId("acme-pay"), ClientApproval.Approved),
-            client(ClientId("acme-web"), ClientApproval.Approved),
-          ))
-          _ <- env.auth.revokeRefreshTokensByClient.returnsZIO(id =>
-            if id == ClientId("acme-pay") then ZIO.fail(RuntimeException("auth answered 500")) else ZIO.unit,
-          )
           _ <- env.edges.getAllEdges.succeedsWith(Vector.empty)
           outcome <- env.service.suspend(acme.id)
         yield assertTrue(
-          // the partner is suspended whatever else happened, and every client was tried
           env.partners.setStatus.calls == List((acme.id, PartnerStatus.Suspended)),
-          env.auth.revokeRefreshTokensByClient.calls.size == 3,
-          outcome == PartnerService.SuspendOutcome(authSynced = false, revocationFailed = List(ClientId("acme-pay"))),
-          !outcome.complete,
+          outcome == PartnerService.SuspendOutcome(authSynced = false),
         )
       },
       test("resume takes a suspended partner back to active, and refuses one that is not suspended") {

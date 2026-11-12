@@ -151,7 +151,9 @@ object PartnerManagementSpec extends CentralApiSpec:
             ).label("the certificate of another partner's group, or none, does not authenticate this partner's client")
       yield result
     },
-    test("suspending a partner revokes the refresh tokens of its clients, and resuming gives back the client and not the grant") {
+    test(
+      "suspending a partner makes auth forget its clients and revokes nothing: a grant issued before runs out on its own, and works again after resuming",
+    ) {
       for
         central <- api
         result <- fixture(central): (a, _, _) =>
@@ -165,64 +167,28 @@ object PartnerManagementSpec extends CentralApiSpec:
                 header = certificate.urlEncodedPem
                 token <- signIn(auth, clientId, shopRedirect(a), Set("openid", "offline_access"), header, user)
                 refreshToken = token.refreshToken.getOrElse("")
-                before <- auth.refresh(refreshToken, Some(clientId), Some(""), certificate = Some(header))
-                latest = before match
-                  case success: TokenResult.Success => success.refreshToken.getOrElse(refreshToken)
-                  case _ => refreshToken
                 suspended <- central.post("/configuration/partners/suspend", Json.Obj("id" -> Json.Str(a.id), "note" -> Json.Str("e2e")))
                 _ <- authKnows(central, a)(known = false)
-                during <- auth.refresh(latest, Some(clientId), Some(""), certificate = Some(header))
+                // the client is unknown to auth: nothing is refreshed through it, a new code flow does not start
+                during <- auth.refresh(refreshToken, Some(clientId), Some(""), certificate = Some(header))
+                pushedDuring <- auth.pushAuthorizationRequest(clientId, "", shopRedirect(a), certificate = Some(header))
+                // the access token that was issued is not revoked: it keeps working until it expires
+                accessDuring <- auth.userinfo(token.accessToken).either
+                edgeDuring <- onSurface(central, a).get("/edge/partner/me")
                 resumed <- central.post("/configuration/partners/resume", Json.Obj("id" -> Json.Str(a.id)))
                 _ <- authKnows(central, a)(known = true)
-                after <- auth.refresh(latest, Some(clientId), Some(""), certificate = Some(header))
-              yield (before, suspended, during, resumed, after)
-            (before, suspended, during, resumed, after) = outcome
-          yield assertTrue(before.isInstanceOf[TokenResult.Success]).label("the grant is good before the suspension") &&
-            assertTrue(suspended.status == Status.NoContent)
-              .label(s"auth was told and every grant was revoked: ${suspended.status} ${suspended.body}") &&
-            assertTrue(errorOf(during) == "invalid_client").label("a suspended partner's client is unknown to auth") &&
-            assertTrue(resumed.status == Status.NoContent, errorOf(after) == "invalid_grant")
-              .label("the client is back after resuming, and the refresh token that was revoked stays revoked")
-      yield result
-    },
-    test("a partner's staff revoke the grants of its own clients, not as often as a loop would, and not those of another partner's") {
-      for
-        central <- api
-        result <- fixture(central): (a, b, _) =>
-          for
-            (staff, _) <- staffToken(central, a)
-            clientId <- approvedClient(central, a, staff, Set("openid", "offline_access"))
-            outcome <- withAuth(central): auth =>
-              for
-                user <- createUser(auth)
-                certificate <- groupCertificate(a, "replica-1")
-                header = certificate.urlEncodedPem
-                token <- signIn(auth, clientId, shopRedirect(a), Set("openid", "offline_access"), header, user)
-                revocation = Json.Obj(
-                  "by" -> Json.Str("client"),
-                  "value" -> Json.Str(clientId),
-                  "clients" -> Json.Arr(Json.Str(clientId)),
-                  "revokeRefresh" -> Json.Bool(true),
-                )
-                accepted <- asStaff(central, a, staff).post("/edge/partner/revocations", revocation)
-                again <- asStaff(central, a, staff).post("/edge/partner/revocations", revocation)
-                refreshed <- auth.refresh(token.refreshToken.getOrElse(""), Some(clientId), Some(""), certificate = Some(header))
-                // another partner's client is not this partner's to revoke
-                foreign <- asStaff(central, a, staff).post(
-                  "/edge/partner/revocations",
-                  Json.Obj(
-                    "by" -> Json.Str("client"),
-                    "value" -> Json.Str(b.consoleClientId),
-                    "clients" -> Json.Arr(Json.Str(b.consoleClientId)),
-                    "revokeRefresh" -> Json.Bool(true),
-                  ),
-                )
-              yield (accepted, again, refreshed, foreign)
-            (accepted, again, refreshed, foreign) = outcome
-          yield assertTrue(accepted.status == Status.Accepted).label(s"the revocation is taken: ${accepted.status} ${accepted.body}") &&
-            assertTrue(errorOf(refreshed) == "invalid_grant").label("the refresh token is revoked at auth") &&
-            assertTrue(again.status == Status.TooManyRequests).label("a second whole-client revocation within the minute is refused") &&
-            assertTrue(foreign.status == Status.BadRequest).label("another partner's client is refused")
+                // nothing was revoked: the refresh token that was issued before the suspension is good again
+                after <- auth.refresh(refreshToken, Some(clientId), Some(""), certificate = Some(header))
+              yield (suspended, during, pushedDuring, accessDuring, edgeDuring, resumed, after)
+            (suspended, during, pushedDuring, accessDuring, edgeDuring, resumed, after) = outcome
+          yield assertTrue(suspended.status == Status.NoContent).label(s"${suspended.status} ${suspended.body}") &&
+            assertTrue(errorOf(during) == "invalid_client", pushedDuring.isInstanceOf[PushedAuthorizationResult.Failure])
+              .label("a suspended partner's client is unknown to auth, whatever certificate of the group is presented") &&
+            assertTrue(accessDuring.exists(_.isInstanceOf[UserinfoResult.Success]))
+              .label("an access token that was issued is not revoked: it expires on its own") &&
+            assertTrue(edgeDuring.status == Status.Forbidden).label("the partner's edge is refused") &&
+            assertTrue(resumed.status == Status.NoContent, after.isInstanceOf[TokenResult.Success])
+              .label("after resuming the client is back, and the grant that was never revoked works again")
       yield result
     },
   ) @@ TestAspect.sequential @@ TestAspect.timeout(300.seconds)

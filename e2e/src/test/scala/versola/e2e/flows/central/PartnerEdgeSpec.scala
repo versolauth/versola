@@ -15,8 +15,7 @@ import zio.test.*
   * What only this level shows is the whole chain at once: the migration's tables under real Postgres, the operator's creation
   * finding its way through the client service, the preset validation and the edge registration, the group name of a
   * certificate being what scopes an edge's answers, a renewal being signed by the CA central really holds, and a suspension
-  * reaching the sync auth reads, the edge surface and auth's revocation endpoint (a suspension answers only once central has
-  * asked auth to end the grants of the partner's clients).
+  * reaching the sync auth reads and the edge surface (a suspension revokes nothing).
   */
 object PartnerEdgeSpec extends CentralApiSpec:
 
@@ -120,7 +119,7 @@ object PartnerEdgeSpec extends CentralApiSpec:
             again <- central.post("/configuration/partners/resume", Json.Obj("id" -> Json.Str(a.id)))
           yield assertTrue(beforeA, beforeB).label("before: auth knows both partners' console clients") &&
             assertTrue(suspended.status == Status.NoContent)
-              .label("a suspension answers only after central has asked auth to end the grants of the partner's clients") &&
+              .label("a suspension is answered once central has asked auth to reload its clients") &&
             assertTrue(aOnSuspended.status == Status.Forbidden, aSync.status == Status.Forbidden, aRenew.status == Status.Forbidden)
               .label("the suspended partner's edge is refused everywhere, certificate renewal included") &&
             assertTrue(bAfter.status == Status.Ok, bRenew.status == Status.Ok).label("another partner is untouched") &&

@@ -44,11 +44,6 @@ trait AccessTokenRevocationService:
     */
   def announceFamily(client: OAuthClientRecord, family: RefreshTokenFamilyId, subject: String, expiresAt: Instant): Task[Unit]
 
-  /** The same for every family one subject held under the client, in one event (`revoked_fam` is an array), and for a caller
-    * that must not lose it: the delivery waits for room in the outbox rather than being dropped when it is full (#962: every
-    * grant of a partner's client ends at once). */
-  def announceFamilies(client: OAuthClientRecord, families: NonEmptyChunk[RefreshTokenFamilyId], subject: String, expiresAt: Instant): Task[Unit]
-
   /** Whether this token was revoked. Answered from the replica's in-memory list, so it reflects a
     * revocation once its notification has reached this replica (typically within a second), not
     * the instant it was written.
@@ -99,14 +94,6 @@ object AccessTokenRevocationService:
     ): Task[Unit] =
       push(client, subject, expiresAt, "revoked_fam" -> Json.Arr(Json.Str(family)))
 
-    override def announceFamilies(
-        client: OAuthClientRecord,
-        families: NonEmptyChunk[RefreshTokenFamilyId],
-        subject: String,
-        expiresAt: Instant,
-    ): Task[Unit] =
-      push(client, subject, expiresAt, "revoked_fam" -> Json.Arr(families.map(Json.Str(_))), reliably = true)
-
     /** Handed to the outbox rather than delivered here: unlike the single attempt this used to be,
       * the outbox retries, so an `edge` that was unreachable for a moment still learns of the
       * revocation. It stays a notification and not the record of it: the local state the caller
@@ -114,15 +101,9 @@ object AccessTokenRevocationService:
       * `back_channel_logout_uri` has no address to push to, so nothing is delivered. Per RFC 7009
       * the caller gets a success either way.
       */
-    private def push(
-        client: OAuthClientRecord,
-        subject: String,
-        expiresAt: Instant,
-        revoked: (String, Json),
-        reliably: Boolean = false,
-    ): UIO[Unit] =
+    private def push(client: OAuthClientRecord, subject: String, expiresAt: Instant, revoked: (String, Json)): UIO[Unit] =
       ZIO.foreachDiscard(client.backChannelLogoutUri): uri =>
-        (if reliably then outbox.submitAwaiting else outbox.submit) (
+        outbox.submit(
           BackChannelOutbox.Delivery(
             audience = NonEmptyChunk(client.id),
             tenantId = client.tenantId,

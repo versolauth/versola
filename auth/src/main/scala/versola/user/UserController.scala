@@ -325,65 +325,28 @@ object UserController extends Controller:
       for
         _ <- authorizeInternal(request)
         sessionService <- ZIO.service[SessionService]
-        userId <- request.queryZIO[Option[UserId]]("userId")
+        userId <- request.queryZIO[UserId]("userId")
         clientId <- request.queryZIO[ClientId]("clientId")
         actorId <- request.queryZIO[Option[UserId]]("actorId")
         _ <- actedBy(actorId)
-        _ <- ZIO.foreachDiscard(userId)(id => Observability.setUserId(id.toString))
+        _ <- Observability.setUserId(userId.toString)
         _ <- Observability.setClientId(clientId)
-        // Without `userId`, every user of the client (#962: central suspending a partner): the same revocation and the
-        // same announcement, per family, for each user the client held a grant of.
-        families <- userId match
-          case Some(userId) => sessionService.revokeRefreshTokensByUserAndClient(userId, clientId).map(_.map(userId -> _))
-          case None => sessionService.revokeRefreshTokensByClient(clientId)
+        families <- sessionService.revokeRefreshTokensByUserAndClient(userId, clientId)
+        revoked = families.size
         client <- ZIO.serviceWithZIO[OAuthConfigurationService](_.find(clientId))
         now <- Clock.instant
         // The record is already committed; the push is for what checks a JWT on its own signature. A client this
         // deployment no longer knows has no back channel to tell.
         _ <- ZIO.foreachDiscard(client): client =>
-          userId match
-            case Some(_) =>
-              ZIO.foreachDiscard(families): (userId, family) =>
-                ZIO.serviceWithZIO[AccessTokenRevocationService](
-                  _.announceFamily(client, family, subject = userId.toString, expiresAt = now.plus(client.accessTokenTtl)),
-                )
-            // A client of many users: one event per user, with all of that user's families, and none dropped when the
-            // outbox is full -- the call waits for room. Announced from a fiber of its own so that the answer does not wait on
-            // the partner's endpoint: the revocation is committed, and the notice is what the edge learns it from.
-            case None =>
-              ZIO.serviceWithZIO[AccessTokenRevocationService]: service =>
-                ZIO.foreachDiscard(families.groupMap(_._1)(_._2)): (userId, ended) =>
-                  ZIO.foreachDiscard(NonEmptyChunk.fromIterableOption(ended)): ended =>
-                    service.announceFamilies(client, ended, subject = userId.toString, expiresAt = now.plus(client.accessTokenTtl))
-                .catchAllCause(cause => ZIO.logWarningCause(s"Announcing the grants of '$clientId' that ended failed", cause))
-                  .forkDaemon
-        _ <- userId match
-          case Some(userId) =>
-            audited(
-              AuthAuditKinds.TokenRevoked,
-              userId,
-              AuthAuditDetails.TokenRevoked(
-                tokenType = "refresh_token",
-                jti = None,
-                refreshPrefix = None,
-                cause = "admin_revoked",
-                count = Some(families.size),
-              ),
+          ZIO.foreachDiscard(families): family =>
+            ZIO.serviceWithZIO[AccessTokenRevocationService](
+              _.announceFamily(client, family, subject = userId.toString, expiresAt = now.plus(client.accessTokenTtl)),
             )
-          // one event per user whose grant ended, so each user's trail shows it
-          case None =>
-            ZIO.foreachDiscard(families.groupBy(_._1)): (userId, ended) =>
-              audited(
-                AuthAuditKinds.TokenRevoked,
-                userId,
-                AuthAuditDetails.TokenRevoked(
-                  tokenType = "refresh_token",
-                  jti = None,
-                  refreshPrefix = None,
-                  cause = "admin_revoked",
-                  count = Some(ended.size),
-                ),
-              )
+        _ <- audited(
+          AuthAuditKinds.TokenRevoked,
+          userId,
+          AuthAuditDetails.TokenRevoked(tokenType = "refresh_token", jti = None, refreshPrefix = None, cause = "admin_revoked", count = Some(revoked)),
+        )
       yield Response.status(Status.NoContent)
     }
 

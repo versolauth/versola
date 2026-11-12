@@ -60,8 +60,9 @@ trait PartnerService:
       reviewAt: Option[Instant],
   ): IO[PartnerError | Throwable, Unit]
 
-  /** The kill switch (#962 §5): the partner's clients leave the sync to auth and every edge's, their grants are revoked at
-    * auth (which tells the partner edge over the back channel), and the partner's edges are refused everything from here on. */
+  /** The kill switch (#962 §5), which disables the partner's edge and revokes nothing: the partner's clients leave the sync to
+    * auth and every edge's, the partner's edges are refused everything from here on, and unused enrollment tokens are void.
+    * Sessions, refresh tokens and access tokens already issued run out on their own. */
   def suspend(id: PartnerId): IO[PartnerError | Throwable, PartnerService.SuspendOutcome]
 
   def resume(id: PartnerId): IO[PartnerError | Throwable, Unit]
@@ -138,10 +139,9 @@ object PartnerService:
   case class Created(partner: PartnerRecord, edge: EnrolledEdge)
 
   /** What a suspension did besides recording the status, which it always does: whether auth was told to reload its clients
-    * (`authSynced`: until it has, users can still complete a code flow of the partner's clients), and the clients whose grants
-    * could not be revoked at auth (the operator calls again once auth answers: nothing the first call revoked is revoked twice). */
-  case class SuspendOutcome(authSynced: Boolean, revocationFailed: List[ClientId]):
-    def complete: Boolean = authSynced && revocationFailed.isEmpty
+    * (`authSynced`: until it has, auth still knows the partner's clients, and so a certificate of the group still authenticates
+    * them there). */
+  case class SuspendOutcome(authSynced: Boolean)
 
   case class ClientOutsideLimits(clientId: ClientId, fields: List[String])
 
@@ -391,23 +391,15 @@ object PartnerService:
         _ <- partners.setStatus(id, PartnerStatus.Suspended)
         // seen by the next sync of auth and by the next call of the partner's edges, not by the next refresh
         _ <- registry.refreshNow
-        // Auth first: it drops the partner's clients when it reloads them, and until it has, a user can still complete a code
-        // flow and get a refresh token that the revocation below would not have seen (and that would work again on resume).
+        // Auth is asked to reload its clients now, rather than at its next interval: it then omits the partner's, which is what makes a
+        // certificate of the group useless there. Nothing is deleted or revoked: sessions, refresh tokens and access tokens that were
+        // issued run out on their own.
         synced <- auth.syncConfiguration().as(true).catchAll: error =>
           ZIO.logWarning(s"partner '$id' is suspended and auth could not be told to reload its clients: $error").as(false)
-        // The clients as they are stored now: one approved a moment ago is not in a cache that has not heard of it yet.
-        _ <- clients.refreshNow
-        own <- clients.getPartnerClients(id)
-        // Every grant of every client of the partner ends at auth, which tells the partner edge over the back channel; the
-        // access tokens already issued run out within the partner's cap. One client that cannot be reached does not stop the
-        // others, and is named in the answer.
-        results <- ZIO.foreach(own.filter(_.isApproved).map(_.id)): clientId =>
-          auth.revokeRefreshTokensByClient(clientId).as(None).catchAll: error =>
-            ZIO.logWarning(s"the grants of client '$clientId' of suspended partner '$id' could not be revoked: $error").as(Some(clientId))
         // an enrollment token that was printed and not used must not turn into a certificate later
         edgesOfPartner <- edges(record)
         _ <- ZIO.foreachDiscard(edgesOfPartner)(edge => enrollmentTokens.revoke(edge.id))
-      yield SuspendOutcome(synced, results.flatten.toList)
+      yield SuspendOutcome(synced)
 
     override def resume(id: PartnerId): IO[PartnerError | Throwable, Unit] =
       for

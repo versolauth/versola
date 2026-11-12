@@ -123,7 +123,6 @@ object CentralAudit:
     "partner-client",
     "partner-resource",
     "partner-edge",
-    "partner-revocation",
   )
 
   val AdminCreate = "create"
@@ -149,7 +148,7 @@ object CentralAudit:
   /** An action on these is `high` whatever its outcome: each is a way to take over an account or a client, or to change the keys of
     * the system. */
   private val highResources =
-    Set("jwks", "client-secret", "resource-secret", "role", "permission", "edge-key", "user-password", "user-roles", "partner-revocation")
+    Set("jwks", "client-secret", "resource-secret", "role", "permission", "edge-key", "user-password", "user-roles")
 
   private val explicit = Set(AdminUserViewed, AdminSecretRevealed, AdminAuditQueried, SystemBootstrap, CertEnrolled, CertRenewed, CertRevoked)
 

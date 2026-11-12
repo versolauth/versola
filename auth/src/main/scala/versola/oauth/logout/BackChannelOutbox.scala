@@ -19,11 +19,6 @@ trait BackChannelOutbox:
   /** Accepts a delivery. Returns once it has been taken on, not once it has been made. */
   def submit(delivery: BackChannelOutbox.Delivery): UIO[Unit]
 
-  /** The same, for a caller that is not a user waiting for a response and must not lose the event: a delivery that finds the
-    * queue full waits for room instead of being dropped (#962: central suspends a partner and every one of its grants
-    * ends, each to be announced to the partner's edge, which has no feed to catch up from). Returns once taken on. */
-  def submitAwaiting(delivery: BackChannelOutbox.Delivery): UIO[Unit]
-
   /** Completes once every delivery accepted before this call has been attempted, whether it
     * succeeded or was given up on. This is what makes the fan-out observable: a caller that
     * has to see a logout through — a test, or a shutdown finishing its last events — waits
@@ -55,9 +50,6 @@ object BackChannelOutbox:
     * process but failed to acknowledge costs a duplicate rather than a wrong outcome.
     */
   private val DeliveryRetry = Schedule.exponential(200.millis) && Schedule.recurs(3)
-
-  /** How long `submitAwaiting` waits between looks at a full queue. */
-  private val WaitForRoom = 50.millis
 
   /** How long a shutdown gives the deliveries it has already accepted. */
   private val DrainTimeout = 10.seconds
@@ -109,11 +101,6 @@ object BackChannelOutbox:
         _ <- ZIO.unless(accepted):
           settle *> ZIO.logWarning(s"Back-channel outbox is full; dropped the event for '${delivery.uri}'")
       yield ()
-
-    override def submitAwaiting(delivery: Delivery): UIO[Unit] =
-      def attempt: UIO[Unit] =
-        queue.offer(delivery).flatMap(accepted => ZIO.unless(accepted)(ZIO.sleep(WaitForRoom) *> attempt)).unit
-      outstanding.update(_ + 1).commit *> attempt.onInterrupt(settle)
 
     // Retried by the STM runtime when the count changes rather than on a timer, so a drain
     // costs nothing while it waits and observes the last delivery settling immediately.

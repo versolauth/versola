@@ -36,7 +36,6 @@ import versola.central.configuration.{
   ResourceUri,
   UpdateResourceRequest,
 }
-import versola.central.users.{AuthClient, UserId}
 import versola.central.{CentralConfig, PartnerCaller, authorizePartnerEdge}
 import versola.util.audit.{ActorType, AuditContext, AuditDetails, AuditDraft, AuditEvent, AuditEvents, AuditOutcome}
 import versola.util.http.{Controller, Forbidden, Observability, Unauthorized}
@@ -58,7 +57,7 @@ import java.time.Instant
   * with the partner and the edge. */
 object PartnerEdgeController extends Controller:
   type Env = Tracing & CentralConfig & EdgeService & PartnerRegistry & PartnerService & PartnerClientService & OAuthClientService &
-    ResourceService & AuthorizationPresetService & JwksService & ServerMetadataService & SecurityService & AuthClient & TenantRepository &
+    ResourceService & AuthorizationPresetService & JwksService & ServerMetadataService & SecurityService & TenantRepository &
     EdgeCertificateRepository & EdgeEnrollmentTokenRepository & CentralAuditRepository & AuditEvents
 
   def routes: Routes[Env, Throwable] = Routes(
@@ -88,7 +87,6 @@ object PartnerEdgeController extends Controller:
     deleteEdgeEndpoint,
     createEnrollmentTokenEndpoint,
     revokeEnrollmentTokenEndpoint,
-    revocationsEndpoint,
     profileEndpoint,
     getSettingsEndpoint,
     putSettingsEndpoint,
@@ -407,36 +405,6 @@ object PartnerEdgeController extends Controller:
         yield Response.status(Status.NoContent)
       }
 
-  /** Ends grants of the partner's own clients, and of nobody else's: by user (that user's refresh tokens at the named
-    * clients) or by client (every user's). Central asks auth, which revokes the families and sends the back-channel logout
-    * to the client's registered URI -- the partner's edge -- which is how the edge drops the sessions. Access tokens already
-    * issued run out within the partner's cap; there is no pull feed for partners. */
-  val revocationsEndpoint =
-    Method.POST / "edge" / "partner" / "revocations" -> managed("partner-revocation", Some(Audit.create), "/edge/partner/revocations") {
-      (caller, _, request) =>
-        for
-          body <- request.bodyAs[PartnerRevocationRequest]
-          _ <- Audit.targetByText(body.value)
-          own <- ZIO.serviceWithZIO[OAuthClientService](_.getPartnerClients(caller.partner.id)).map(_.map(_.id).toSet)
-          foreign = body.clients.filterNot(own.contains)
-          _ <- ZIO.fail(PartnerError.Invalid(s"not the partner's clients: ${foreign.mkString(", ")}")).when(foreign.nonEmpty)
-          _ <- ZIO.fail(PartnerError.Invalid("clients must name at least one client")).when(body.clients.isEmpty)
-          _ <- ZIO.fail(PartnerError.Invalid("revokeRefresh must be true: central ends grants, and access tokens run out by themselves"))
-            .unless(body.revokeRefresh)
-          // before anything is asked of auth: a revocation of a whole client scans the table of every client's tokens
-          limited <- PartnerRevocationLimiter.acquire(caller.partner.id, wholeClient = body.by == RevocationBy.client)
-          _ <- ZIO.foreachDiscard(limited)(wait => ZIO.fail(PartnerError.TooManyRequests(wait.getSeconds.max(1))))
-          auth <- ZIO.service[AuthClient]
-          _ <- body.by match
-            case RevocationBy.user =>
-              ZIO.fromEither(UserId.parse(body.value)).mapError(_ => PartnerError.Invalid("value must be a user id")).flatMap: userId =>
-                ZIO.foreachDiscard(body.clients)(client => auth.revokeRefreshTokens(userId, client))
-            case RevocationBy.client =>
-              ZIO.fail(PartnerError.Invalid("value must be one of clients")).unless(body.clients.contains(ClientId(body.value))) *>
-                auth.revokeRefreshTokensByClient(ClientId(body.value))
-        yield Response.status(Status.Accepted)
-    }
-
   /** The partner's own name and logo: a `profile_change` request for the operator. */
   val profileEndpoint =
     Method.PUT / "edge" / "partner" / "profile" -> managed("partner", Some(Audit.update), "/edge/partner/profile") { (caller, principal, request) =>
@@ -606,10 +574,6 @@ object PartnerEdgeController extends Controller:
         Observability.setError("partner_not_found", Some(what)).as(Response.text(s"$what does not exist").status(Status.NotFound))
       case PartnerError.Invalid(reason) => Observability.setError("partner_invalid", Some(reason)).as(Response.text(reason).status(Status.BadRequest))
       case PartnerError.Conflict(reason) => Observability.setError("partner_conflict", Some(reason)).as(Response.text(reason).status(Status.Conflict))
-      case PartnerError.TooManyRequests(seconds) =>
-        Observability.setError("partner_rate_limited").as(
-          Response.text(s"too many requests, try again in $seconds seconds").status(Status.TooManyRequests).addHeader("Retry-After", seconds.toString),
-        )
       case error: Throwable => ZIO.fail(error)
 
   /** What an event of this surface says about itself: the route, the status, the partner and the edge, and the names of the fields a
@@ -755,12 +719,6 @@ case class CreatedPartnerEdgeResponse(edge: EdgeResponse, signingKey: SigningKey
 case class EdgeIdRequest(id: EdgeId) derives JsonCodec
 
 case class PartnerEnrollmentTokenResponse(token: String, expiresAt: Instant) derives JsonCodec
-
-enum RevocationBy derives JsonCodec:
-  case user, client
-
-/** `clients` are the partner's own; `value` is the user (`by = user`) or one of `clients` (`by = client`). */
-case class PartnerRevocationRequest(by: RevocationBy, value: String, clients: List[ClientId], revokeRefresh: Boolean) derives JsonCodec
 
 case class PartnerProfileRequest(displayName: String, logoUri: Option[String]) derives Schema, JsonCodec
 

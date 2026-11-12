@@ -105,11 +105,11 @@ object PartnerController extends AuditedController:
           // the log keeps the names of the fields, never their values: that a note came with it, not what it says
           _ <- Audit.changedFields("note" -> body.note.exists(_.nonEmpty))
           outcome <- ZIO.serviceWithZIO[PartnerService](_.suspend(body.id))
-        // The partner is suspended either way. `204` when auth was told and every grant was revoked; `207` when something was
-        // not, naming it, so that the operator can call again once auth answers.
+        // The partner is suspended either way. `204` when auth was told to reload its clients; `207` when it could not be, so that
+        // the operator can call again once auth answers.
         yield
-          if outcome.complete then Response.status(Status.NoContent)
-          else Response.json(SuspendPartnerResponse(outcome.authSynced, outcome.revocationFailed).toJson).status(Status.MultiStatus)).catchAll(
+          if outcome.authSynced then Response.status(Status.NoContent)
+          else Response.json(SuspendPartnerResponse(authSynced = false).toJson).status(Status.MultiStatus)).catchAll(
           failure,
         )
     }
@@ -194,8 +194,6 @@ object PartnerController extends AuditedController:
         Observability.setError("partner_not_found", Some(what)).as(Response.text(s"$what does not exist").status(Status.NotFound))
       case PartnerError.Invalid(reason) => Observability.setError("partner_invalid", Some(reason)).as(Response.text(reason).status(Status.BadRequest))
       case PartnerError.Conflict(reason) => Observability.setError("partner_conflict", Some(reason)).as(Response.text(reason).status(Status.Conflict))
-      case error: PartnerError.TooManyRequests =>
-        Observability.setError("partner_rate_limited").as(Response.text(error.message).status(Status.TooManyRequests))
       case error: Throwable => ZIO.fail(error)
 
 /** A partner as the console shows it. `settings` are the partner's own and are not here. */
@@ -271,8 +269,8 @@ case class UpdatePartnerRequest(
 
 case class SuspendPartnerRequest(id: PartnerId, note: Option[String]) derives Schema, JsonCodec
 
-/** The answer of a suspension that was only partly carried out (`207`): the partner is suspended, and these are what is left. */
-case class SuspendPartnerResponse(authSynced: Boolean, revocationFailed: List[ClientId]) derives Schema, JsonCodec
+/** The answer of a suspension whose auth could not be told to reload (`207`): the partner is suspended all the same. */
+case class SuspendPartnerResponse(authSynced: Boolean) derives Schema, JsonCodec
 
 case class ResumePartnerRequest(id: PartnerId) derives Schema, JsonCodec
 

@@ -34,7 +34,7 @@ info:
       -- its partner's rows only, the clients without secrets or edge credentials -- and manages, on behalf of its
       console, `/edge/partner/clients` (`GET`, `POST`, `PUT`, `DELETE`, `POST .../withdraw`, `POST .../jwks`),
       `/edge/partner/resources` (`GET`, `POST`, `PUT`, `DELETE`, `POST .../rotate-secret`), `/edge/partner/edges`
-      (`GET`, `POST`, `DELETE`, `POST`/`DELETE .../enrollment-tokens`), `POST /edge/partner/revocations`,
+      (`GET`, `POST`, `DELETE`, `POST`/`DELETE .../enrollment-tokens`),
       `PUT /edge/partner/profile`, `GET`/`PUT /edge/partner/settings` and `GET /edge/partner/audit`. A management
       call carries the staff member's access token in `Versola-Principal` besides the edge's bearer token; it is
       verified against auth's keys, the issuer and the partner's console client, and its `sub` is the actor of the
@@ -42,11 +42,12 @@ info:
       through the partner's console client, not that they are of the partner's staff (that is the edge's check), and central
       checks its signature, type, expiry, issuer and client, not a revocation: the console's access tokens live ten minutes
       at most. The certificate the edge presents must name its group as well as the edge (`401` otherwise).
-      `POST /edge/partner/revocations` is limited per partner: `429` with `Retry-After` for a whole client within a minute of
-      the last one, or a user within a second of the last. `GET /edge/partner/audit` shows the operator's events about the
+      Central revokes nothing for a partner (no sessions, refresh tokens or access tokens): a partner ends sessions on its own
+      edges. `GET /edge/partner/audit` shows the operator's events about the
       partner (an approval, a suspension) without the administrator's id, address or browser, and nobody's node or trace.
-      Deleting an edge of a partner does not revoke the certificate it holds: it keeps authenticating the group's clients at
-      auth until it expires (`edge-certificates.partner-validity`); suspending the partner is what ends the group's access. A first-party edge is refused there (`401`
+      Deleting an edge of a partner does **not** revoke the certificate it holds: it names the group, so it keeps
+      authenticating the group's clients at auth until it expires (`edge-certificates.partner-validity`); suspending the
+      partner is what makes it useless there, since auth no longer knows the partner's clients. A first-party edge is refused there (`401`
       `edge_group_first_party`), an edge of a group no partner points at too (`401`), and a suspended partner's edge
       everywhere, `POST /edge/certificate/renew` included (`403` `partner_suspended`). Refusals of the service are
       `400`, `404` and `409` with a `text/plain` reason, as on this document's partner routes.
@@ -2550,20 +2551,19 @@ paths:
       tags: [Partners]
       summary: Suspend a partner (the kill switch)
       description: |
-        From this call on the partner's clients are omitted from the sync to auth (which answers `invalid_client`
-        at `/par`, `/token` and `/introspect`; an access token already issued keeps working at `/userinfo` until it
-        expires, within `limits.accessTokenTtlMax`) and from every edge's sync; every live refresh token of every
-        approved client of the partner is revoked at auth, which sends the back-channel logout to the client's
-        registered URI, that is to the partner's edge; and the partner's edges are refused everything under
-        `/edge/partner/*` and `POST /edge/certificate/renew` with `403`, so their certificates expire within
-        `edge-certificates.partner-validity`; an enrollment token that was not used is void, and one that is presented
-        is refused. Audited: the log keeps that a `note` came with the call, not what it says (it is not stored).
+        Disables the partner's edge, and nothing more. From this call on: the partner's edges are refused everything under
+        `/edge/partner/*` and `POST /edge/certificate/renew` with `403` `partner_suspended`, so their certificates expire
+        within `edge-certificates.partner-validity`, and enrolment is refused (an enrollment token that was not used is
+        void); the partner's clients are omitted from `GET /configuration/clients/sync` (configuration only: nothing is
+        deleted), so auth answers `invalid_client` for them at `/par`, `/token` and `/introspect`, which is what makes a
+        certificate of the group that is still valid useless there. Central and auth **revoke nothing**: sessions, refresh
+        tokens and access tokens that were issued run out on their own (an access token keeps working at `/userinfo` until it
+        expires, within `limits.accessTokenTtlMax`). Audited: the log keeps that a `note` came with the call, not what it says
+        (it is not stored).
 
-        The order is: the status is written, auth is told to reload its clients (so that no code flow of the partner's
-        clients can complete from then on), the clients are read as stored, and the grants of each approved one are
-        revoked. A client that cannot be revoked does not stop the others. When everything was done the answer is `204`;
-        when auth could not be told or some grants could not be revoked it is `207` with what is left: the partner is
-        suspended either way, and the call can be repeated once auth answers (nothing already revoked is revoked twice).
+        The status is written, and auth is asked to reload its clients at once rather than at its next interval. When it
+        could not be asked the answer is `207` (the partner is suspended all the same, and auth omits its clients at its next
+        reload); the call can be repeated.
       operationId: suspendPartner
       requestBody:
         required: true
@@ -2573,11 +2573,9 @@ paths:
               $ref: '#/components/schemas/SuspendPartnerRequest'
       responses:
         '204':
-          description: Partner suspended, auth told, every grant revoked.
+          description: Partner suspended and auth asked to reload its clients.
         '207':
-          description: |
-            Partner suspended, but not everything was done: `authSynced` is `false` when auth could not be told to reload its
-            clients, and `revocationFailed` names the clients whose grants could not be revoked.
+          description: Partner suspended, but auth could not be asked to reload its clients (`authSynced` is `false`).
           content:
             application/json:
               schema:
@@ -2591,7 +2589,7 @@ paths:
     post:
       tags: [Partners]
       summary: Resume a suspended partner
-      description: The clients return to the syncs and the edges are served again. Grants revoked by the suspension stay revoked.
+      description: The clients return to the syncs and the edges are served again.
       operationId: resumePartner
       requestBody:
         required: true
@@ -7284,17 +7282,12 @@ components:
       required: [id]
     SuspendPartnerResponse:
       type: object
-      description: What a suspension left undone (`207`).
+      description: A suspension whose auth could not be asked to reload (`207`).
       properties:
         authSynced:
           type: boolean
-          description: Whether auth was told to reload its clients.
-        revocationFailed:
-          type: array
-          items:
-            $ref: '#/components/schemas/ClientId'
-          description: The clients whose grants could not be revoked.
-      required: [authSynced, revocationFailed]
+          description: Whether auth was asked to reload its clients; `false` here.
+      required: [authSynced]
     ResumePartnerRequest:
       type: object
       properties:

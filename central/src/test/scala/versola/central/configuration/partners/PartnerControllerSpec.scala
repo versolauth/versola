@@ -205,8 +205,17 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
         json("""{"id":"acme","note":"fraud"}"""),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
-      setup = stubs => stubs.service.suspend.succeedsWith(PartnerService.SuspendOutcome(authSynced = true, revocationFailed = Nil)),
+      setup = stubs => stubs.service.suspend.succeedsWith(PartnerService.SuspendOutcome(authSynced = true)),
       verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.service.suspend.calls == List(acme.id))),
+    ),
+    testCase(
+      description = "a suspension auth could not be told of is 207, and the partner is suspended all the same",
+      request = Request.post(
+        URL.root / "configuration" / "partners" / "suspend",
+        json("""{"id":"acme"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.MultiStatus,
+      setup = stubs => stubs.service.suspend.succeedsWith(PartnerService.SuspendOutcome(authSynced = false)),
     ),
     testCase(
       description = "resuming a partner that is not suspended is 409",

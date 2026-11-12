@@ -190,28 +190,6 @@ object SessionServiceSpec extends UnitSpecBase:
         )
       },
     ),
-    suite("revokeRefreshTokensByClient")(
-      test("ends every user's grants of the client under the client's own TTL, answering each family with its user") {
-        val env = Env()
-        for
-          _ <- env.configuration.find.succeedsWith(Some(shortClient))
-          _ <- env.repository.revokeRefreshTokensByClient.succeedsWith(List((userId, RefreshTokenFamilyId("family-1"))))
-          families <- env.service.revokeRefreshTokensByClient(ClientId("short"))
-        yield assertTrue(
-          families == List((userId, RefreshTokenFamilyId("family-1"))),
-          env.repository.revokeRefreshTokensByClient.calls ==
-            List((
-              ClientId("short"),
-              RevocationTerms(
-                cause = RevocationCause.OfflineAccessRevoked,
-                ttl = 5.minutes,
-                tenantId = Some(shortClient.tenantId),
-                ttlByClient = Map.empty,
-              ),
-            )),
-        )
-      },
-    ),
     suite("listByUser")(
       test("produces one entry per session, enriched with its user agent's record and its expiries") {
         val env = Env()

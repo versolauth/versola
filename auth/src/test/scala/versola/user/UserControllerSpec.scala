@@ -733,49 +733,6 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ),
       )
     },
-    test(
-      "DELETE /users/refresh-tokens without userId ends every user's grants of the client and announces each user's families in one event, from a fiber of its own (#962)",
-    ) {
-      val sessions = stub[SessionService]
-      val otherUser = UserId(UUID.fromString("0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f"))
-      for
-        client <- ZIO.service[Client]
-        tracing <- NoopTracing.layer.build
-        token <- validToken(secretKey)
-        _ <- sessions.revokeRefreshTokensByClient.succeedsWith(List(
-          (passkeyUserId, RefreshTokenFamilyId("fam-1")),
-          (otherUser, RefreshTokenFamilyId("fam-2")),
-          (passkeyUserId, RefreshTokenFamilyId("fam-3")),
-        ))
-        configuration <- configured(Some(appClient))
-        revocation = stub[AccessTokenRevocationService]
-        _ <- revocation.announceFamilies.succeedsWith(())
-        now <- Clock.instant
-        _ <- TestClient.addRoutes(routes(tracing, sessionsService = sessions, configuration = configuration, revocation = revocation))
-        resp <- client.batched(
-          Request(
-            method = Method.DELETE,
-            url = (URL.empty / "users" / "refresh-tokens").addQueryParam("clientId", "app"),
-          ).addHeader(Header.Authorization.Bearer(token)),
-        )
-        // announced from a fiber of its own: the answer does not wait for it
-        _ <- ZIO.yieldNow.zipRight(ZIO.succeed(revocation.announceFamilies.calls.size)).repeatUntil(_ >= 2)
-      yield assertTrue(
-        resp.status == Status.NoContent,
-        sessions.revokeRefreshTokensByClient.calls == List(ClientId("app")),
-        sessions.revokeRefreshTokensByUserAndClient.calls.isEmpty,
-        revocation.announceFamily.calls.isEmpty,
-        revocation.announceFamilies.calls.map(call => (call._1.id, call._2.toList.sortBy(identity[String]), call._3, call._4)).toSet == Set(
-          (
-            ClientId("app"),
-            List(RefreshTokenFamilyId("fam-1"), RefreshTokenFamilyId("fam-3")),
-            passkeyUserId.toString,
-            now.plus(appClient.accessTokenTtl),
-          ),
-          (ClientId("app"), List(RefreshTokenFamilyId("fam-2")), otherUser.toString, now.plus(appClient.accessTokenTtl)),
-        ),
-      )
-    },
     test("DELETE /users/refresh-tokens announces nothing when the client held no live token for the user") {
       val sessions = stub[SessionService]
       for
