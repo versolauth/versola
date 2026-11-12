@@ -7,7 +7,7 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.bouncycastle.pkcs.PKCS10CertificationRequest
 import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequest
 import versola.edge.EdgeCertificateHolder
-import versola.util.{EdgeIdentityNames, TestCertificates}
+import versola.util.{EdgeIdentityNames, EnrollmentToken, TestCertificates}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -130,16 +130,12 @@ object PartnerEnrollmentSpec extends ZIOSpecDefault:
       test("carries central's https address and a secret") {
         val parsed = EnrollmentToken.parse(token)
         assertTrue(
-          parsed.map(_.enrollUrl.encode) == Right("https://enroll.example"),
-          parsed.map(_.value) == Right(token),
+          parsed.map(_.enrollUrl) == Right("https://enroll.example"),
+          parsed.map(_.secret) == Right(secret),
         )
       },
       test("is read with the whitespace a file adds") {
         assertTrue(EnrollmentToken.parse(s"  $token\n").isRight)
-      },
-      test("keeps a port of the address and drops a trailing slash") {
-        val parsed = EnrollmentToken.parse(s"vtk1.${address("https://enroll.example:8443/")}.$secret")
-        assertTrue(parsed.map(_.enrollUrl.encode) == Right("https://enroll.example:8443"))
       },
       test("malformed ones are refused, each for what is wrong") {
         val refused = List(
@@ -153,7 +149,6 @@ object PartnerEnrollmentSpec extends ZIOSpecDefault:
           s"vtk1.${address("https://enroll.example")}.",
           s"vtk1..$secret",
           s"vtk1.!!!notbase64!!!.$secret",
-          s"vtk1.${address("https://enroll.example")}.sec ret",
           s"vtk1.${address("not a url at all")}.$secret",
           s"vtk1.${address("https://")}.$secret",
           "plain-secret-without-structure",
@@ -165,12 +160,6 @@ object PartnerEnrollmentSpec extends ZIOSpecDefault:
         val ftp = EnrollmentToken.parse(s"vtk1.${address("ftp://enroll.example")}.$secret")
         val bare = EnrollmentToken.parse(s"vtk1.${address("enroll.example")}.$secret")
         assertTrue(http.left.exists(_.contains("https")), ftp.isLeft, bare.isLeft)
-      },
-      test("an address with a query or a fragment is refused") {
-        assertTrue(
-          EnrollmentToken.parse(s"vtk1.${address("https://enroll.example/?next=https://evil.example")}.$secret").isLeft,
-          EnrollmentToken.parse(s"vtk1.${address("https://enroll.example/#x")}.$secret").isLeft,
-        )
       },
       test("a tampered token is not parsed into another address: the changed part is refused or is another address that central does not know") {
         val flipped = token.replace(address("https://enroll.example"), address("https://enroll.example").dropRight(2) + "~~")

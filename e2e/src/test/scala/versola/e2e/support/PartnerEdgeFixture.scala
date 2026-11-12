@@ -1,5 +1,6 @@
 package versola.e2e.support
 
+import com.nimbusds.jose.jwk.gen.RSAKeyGenerator
 import zio.*
 import zio.http.{Client, Status}
 import zio.json.*
@@ -12,11 +13,14 @@ import java.nio.file.{Files, Path}
   * central and auth, enrolled as the partner's first edge, with its own console files and first administrator (#564).
   *
   * What the operator did is done through central's API (`POST /configuration/partners` creates the partner, its group, its console client
-  * and preset, and the edge with its key); what the staged stack cannot do is the enrollment call itself, which is made to central's
-  * plain-TLS name and so needs an `https` enrollment address the stack does not have. So the edge is handed the certificate that
-  * enrollment would have given it, issued by the CA central issues from and naming the edge and its group, in the identity directory it
-  * would have written it to; everything after that (reading `/edge/partner/me` and the sync over mutual TLS, authenticating the console
-  * client to auth with that certificate through the terminator) is the real thing.
+  * and preset, and the edge, and answers one enrollment token); what the staged stack cannot do is the enrollment call itself, which is
+  * made to central's `https` enrollment address (the token carries it) and the stack has none. So the fixture leaves in the identity
+  * directory what an enrollment leaves: the certificate it would have given (issued by the CA central issues from, naming the edge and
+  * its group) and `enrolled.json` with a signing key the fixture makes, whose public half it registers for the edge as `POST /edge/enroll`
+  * does. The edge is started with no token and none of `id`, `key-id`, `private-key`, `versola-url`, `central.url`, group in its file:
+  * a restart after an enrollment. Everything after that (reading `/edge/partner/me` and the sync over mutual TLS, authenticating the
+  * console client to auth with that certificate through the terminator) is the real thing; the enrollment itself is covered by
+  * `PartnerEnrollmentSpec`.
   */
 final case class PartnerEdgeFixture(
     partnerId: String,
@@ -86,11 +90,13 @@ object PartnerEdgeFixture:
         edgeId = s"$id-edge"
         baseUrl = s"http://localhost:$Port"
         created <- createPartner(central, Fixtures.suiteTenant, id, edgeId, s"https://login.$id.example")
-        bundle <- ZIO.fromEither(created.str("bundle").getOrElse("").fromJson[Json.Obj]).mapError(RuntimeException(_))
-        groupId = bundle.str("group").getOrElse("")
-        key <- ZIO.fromOption(bundle.obj("signingKey")).orElseFail(RuntimeException("the bundle carries no signing key"))
-        keyId = key.str("keyId").getOrElse("")
-        privateKey = key.str("privateKey").getOrElse("")
+        _ <- ZIO.fail(
+          RuntimeException(s"the answer carries no enrollment token: $created"),
+        ).unless(created.str("enrollmentToken").exists(_.startsWith("vtk1.")))
+        groupId <- ZIO.fromOption(created.obj("edge").flatMap(_.str("groupId"))).orElseFail(RuntimeException(s"no group in $created"))
+        // the edge makes its own signing key, and central holds the public half once the edge has enrolled
+        key <- ZIO.attemptBlocking(RSAKeyGenerator(2048).keyID(s"$id-key").generate())
+        _ <- CentralDatabase.registerEdgeKey(edgeId, key.toPublicJWK.toJSONString)
         // the console client signs its users in with an email and a code: that is what makes the email verified, which a team invite requires
         _ <- auth.updateClient(Fixtures.clientUpdate(s"$id-console", "authFlow" -> Flows.emailOtpAuthFlow))
         // auth reads the console client at its next reload, which is asked for (`POST /service/configuration/sync`, non-prod) and awaited:
@@ -107,7 +113,7 @@ object PartnerEdgeFixture:
           uris = List(s"urn:versola:edge:$edgeId", s"urn:versola:edge-group:$groupId"),
         )
         ssl <- certificate.clientSsl(config.centralMutualTlsServerCertificate)
-        token <- EdgeToken.sign(edgeId, keyId, privateKey)
+        token <- EdgeToken.sign(edgeId, key.getKeyID, key.toRSAPrivateKey)
         // central authenticates an edge against a cache that a notification refreshes after the registration commits
         known <- eventually(central.onEdgeSurface(Some(token), Some(ssl)).get("/edge/partner/sync/dpop"), attempts = 100)(_.status == Status.Ok)
         _ <- ZIO.fail(RuntimeException(s"central never served the partner's edge")).unless(known.status == Status.Ok)
@@ -117,6 +123,16 @@ object PartnerEdgeFixture:
           val generation = Files.createDirectory(identity.resolve("gen-0000000001")).nn
           Files.writeString(generation.resolve("edge.crt"), certificate.certificatePem)
           Files.writeString(generation.resolve("edge.key"), certificate.privateKeyPemValue)
+          // what the enrollment answered and the edge kept: who it is, where central and auth are, the signing key it made
+          val enrolled = Json.Obj(
+            "edgeId" -> Json.Str(edgeId),
+            "group" -> Json.Str(groupId),
+            "keyId" -> Json.Str(key.getKeyID),
+            "privateKey" -> Json.Str(java.util.Base64.getEncoder.encodeToString(key.toRSAPrivateKey.getEncoded)),
+            "central" -> Json.Obj("mtlsUrl" -> Json.Str(config.centralMutualTlsUrl)),
+            "auth" -> Json.Obj("issuer" -> Json.Str(config.authUrl)),
+          )
+          Files.writeString(identity.resolve("enrolled.json"), enrolled.toJson)
           // `E2E_PARTNER_CONSOLE_DIR` serves a real console build (central-ui's `dist`) instead of the stub page, for a person to open
           val console = sys.env.get("E2E_PARTNER_CONSOLE_DIR").map(dir => Path.of(dir).nn).getOrElse:
             val stub = Files.createTempDirectory("e2e-partner-console").nn
@@ -125,13 +141,10 @@ object PartnerEdgeFixture:
           (identity, console)
         (identity, console) = directories
         extra =
-          s"""id = "$edgeId"
-             |key-id = "$keyId"
-             |private-key = "$privateKey"
-             |mode = "partner"
+          s"""mode = "partner"
              |configuration-cache-refresh-interval = "2 seconds"
              |edge-url = "$baseUrl"
-             |central { identity { directory = "$identity", group = "$groupId" } }
+             |central { identity { directory = "$identity" } }
              |partner { admins = ["${admin.phone}"], console-directory = "$console" }
              |""".stripMargin
         // the staged first-party edge's configuration, less what a partner's edge refuses or does not hold: the internal secret, and the
@@ -139,6 +152,10 @@ object PartnerEdgeFixture:
         partnerEnvConf <- ZIO.attemptBlocking:
           val text = Files.readString(Path.of(config.edgeEnvConf))
             .replaceAll("(?m)^\\s*internal-secret\\s*=.*$", "")
+            // what the enrollment fixes is not in a partner edge's file: its id, its signing key, central's and auth's addresses
+            .replaceAll("(?ms)^private-key\\s*=\\s*\"\"\".*?\"\"\"", "")
+            .replaceAll("(?m)^(id|key-id|versola-url)\\s*=.*$", "")
+            .replaceAll("(?m)^\\s+url\\s*=\\s*\"https?://[^\"]*\"\\s*$", "")
             .replaceAll("(?m)^\\s*(certificate|private-key)\\s*=\\s*\"[^\"]*edge-client\\.(crt|key)\"\\s*$", "")
           val file = Files.createTempFile("e2e-partner-env", ".conf").nn
           file.toFile.nn.deleteOnExit()

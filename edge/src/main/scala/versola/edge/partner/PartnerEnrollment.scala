@@ -1,7 +1,7 @@
 package versola.edge.partner
 
 import versola.edge.EdgeCertificateHolder
-import versola.util.{CertificateSubject, SecureRandom, SecurityService}
+import versola.util.{CertificateSubject, EnrollmentToken, SecureRandom, SecurityService}
 import zio.*
 import zio.http.{Body, Client, Header, MediaType, Request, Scheme, URL}
 import zio.json.*
@@ -11,32 +11,6 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.attribute.PosixFilePermissions
 import java.nio.file.{Files, Path, StandardCopyOption}
 import java.util.Base64
-
-/** The one string a partner edge is started with: `vtk1.<base64url(enrollUrl)>.<secret>`.
-  *
-  * It carries central's public enrollment address, so that nothing else has to be copied, and the secret that central keeps only a
-  * hash of (single use, 24 hours). The address must be `https`: the token is a credential and goes there.
-  */
-case class EnrollmentToken(enrollUrl: URL, value: String)
-
-object EnrollmentToken:
-  val Prefix = "vtk1"
-
-  private val SecretAlphabet = "[A-Za-z0-9_-]+".r
-
-  def parse(raw: String): Either[String, EnrollmentToken] =
-    raw.trim.split('.') match
-      case Array(Prefix, address, secret) if SecretAlphabet.matches(address) && SecretAlphabet.matches(secret) =>
-        for
-          text <- scala.util.Try(String(Base64.getUrlDecoder.decode(address), StandardCharsets.UTF_8)).toEither.left
-            .map(_ => "the address in the enrollment token is not base64url")
-          url <- URL.decode(text).left.map(_ => "the address in the enrollment token is not a URL")
-          _ <- Either.cond(url.scheme.contains(Scheme.HTTPS), (), "the enrollment address in the token must be https")
-          _ <- Either.cond(url.host.exists(_.nonEmpty), (), "the enrollment address in the token names no host")
-          _ <- Either.cond(url.queryParams.isEmpty && url.fragment.isEmpty, (), "the enrollment address in the token carries a query or a fragment")
-        yield EnrollmentToken(url.copy(path = zio.http.Path.empty), raw.trim)
-      case parts if parts.headOption.exists(_ != Prefix) => Left(s"not an enrollment token: it does not start with $Prefix.")
-      case _ => Left(s"not an enrollment token: expected $Prefix.<address>.<secret>")
 
 /** What central answered the enrollment with, and what the edge keeps in `central.identity.directory` (`enrolled.json`, owner-only)
   * for every later start: who it is, where central and auth are, and the key it signs for central with (generated here, and never
@@ -199,12 +173,14 @@ object PartnerEnrollment:
     * and keeps the answer. The certificate is installed before `enrolled.json` is written, and both before anything else starts. */
   private def enroll(raw: String, holder: EdgeCertificateHolder, directory: Path): ZIO[Client, Throwable, Enrolled] =
     for
-      token <- ZIO.fromEither(EnrollmentToken.parse(raw)).mapError(reason => IllegalArgumentException(reason))
+      parsed <- ZIO.fromEither(EnrollmentToken.parse(raw)).mapError(reason => IllegalArgumentException(s"not an enrollment token: $reason"))
+      enrollUrl <-
+        ZIO.fromEither(URL.decode(parsed.enrollUrl)).mapError(_ => IllegalArgumentException("the enrollment address in the token is not a URL"))
       client <- ZIO.service[Client]
       keys <- ZIO.serviceWithZIO[SecurityService](_.generateRsaKeyPair).provide(SecurityService.live, SecureRandom.live)
       generated <- CertificateSubject.generate(EnrollingSubject)
-      body = EnrollRequest(token = token.value, csr = generated.csrPem, signingKey = keys.toPublicJwk).toJson
-      request = Request.post(token.enrollUrl / "edge" / "enroll", Body.fromString(body)).addHeader(Header.ContentType(MediaType.application.json))
+      body = EnrollRequest(token = raw.trim, csr = generated.csrPem, signingKey = keys.toPublicJwk).toJson
+      request = Request.post(enrollUrl / "edge" / "enroll", Body.fromString(body)).addHeader(Header.ContentType(MediaType.application.json))
       result <- ZIO.scoped(client.request(request).flatMap(response => response.body.asString.map(response.status -> _)))
       (status, text) = result
       _ <-
