@@ -42,6 +42,39 @@ CREATE TRIGGER partners_group_is_partner
 BEFORE INSERT OR UPDATE OF group_id ON partners
 FOR EACH ROW EXECUTE FUNCTION partners_group_is_partner();
 
+-- Which kind a group is, and which group an edge is in, are fixed when they are written (an edge's own settings never said, and no
+-- route moves either): an edge of a partner's group cannot be made the operator's by an UPDATE, nor a partner's group turned
+-- first-party under the partner that points at it. Not changed by anyone short of dropping the trigger.
+CREATE FUNCTION edge_groups_kind_is_fixed()
+RETURNS trigger AS $$
+BEGIN
+  IF NEW.kind <> OLD.kind THEN
+    RAISE EXCEPTION 'the kind of edge group % cannot change (% to %)', OLD.id, OLD.kind, NEW.kind
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER edge_groups_kind_is_fixed
+BEFORE UPDATE OF kind ON edge_groups
+FOR EACH ROW EXECUTE FUNCTION edge_groups_kind_is_fixed();
+
+CREATE FUNCTION edges_group_is_fixed()
+RETURNS trigger AS $$
+BEGIN
+  IF NEW.group_id <> OLD.group_id THEN
+    RAISE EXCEPTION 'edge % cannot move from group % to %', OLD.id, OLD.group_id, NEW.group_id
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER edges_group_is_fixed
+BEFORE UPDATE OF group_id ON edges
+FOR EACH ROW EXECUTE FUNCTION edges_group_is_fixed();
+
 -- partner_change: JSON payload with id and op, as V1009 does for clients; partners are cached in memory and the status is
 -- read on every call of a partner's edge, so a change has to reach the cache at once.
 CREATE FUNCTION notify_partner_change()

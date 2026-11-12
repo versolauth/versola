@@ -130,6 +130,26 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     env.clients.registerClient.returnsZIO((_, _, _, _, _) => ZIO.succeed(versola.central.configuration.clients.RegisteredClient(None, now, None)))
 
   def spec = suite("PartnerClientService")(
+    // Owner requirement (#962): a partner's client is never bound to the operator's tenant edges or group, whatever it sends
+    test("what a partner's client is registered as is the partner's: its tenant, its owner and its group's certificate, for either kind") {
+      val registered =
+        for
+          kind <- List(PartnerClientKind.web, PartnerClientKind.native)
+          method <- List(AuthMethod.tls_client_auth, AuthMethod.private_key_jwt)
+        yield request.copy(kind = kind, authMethod = method).toCreateClientRequest(acme)
+      assertTrue(
+        registered.size == 4,
+        registered.forall(r => r.tenantId == acme.tenantId && r.partnerId.contains(acme.id)),
+        registered.filter(_.authMethod == AuthMethod.tls_client_auth).forall(
+          _.mtlsAuth.contains(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_uri, s"urn:versola:edge-group:${acme.groupId}")),
+        ),
+        registered.filter(_.authMethod != AuthMethod.tls_client_auth).forall(_.mtlsAuth.isEmpty),
+        // no certificate-bound tokens, no edge credentials of the operator's, no certificate issued for it
+        registered.forall(r =>
+          !r.certificateBoundAccessTokens && r.edgeSigningKey.isEmpty && r.edgeClientCertificate.isEmpty && !r.issueEdgeClientCertificate,
+        ),
+      )
+    },
     test(
       "a new client is registered pending, outside the limits or not, and its request names the violations and always the consent screen's fields",
     ) {

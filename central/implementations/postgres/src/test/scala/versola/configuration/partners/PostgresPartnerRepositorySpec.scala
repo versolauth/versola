@@ -33,6 +33,23 @@ object PostgresPartnerRepositorySpec extends PostgresSpec, PartnerRepositorySpec
   /** #962 review: the number of edges a partner may run is the table's to enforce, whatever is created at once. */
   override def implementationCases(env: PartnerRepositorySpec.Env) =
     List(
+      // Owner requirement (#962): a partner cannot be bound to the operator's own edges, at creation or later
+      test("a partner that exists cannot be pointed at a first-party group by an UPDATE, nor its group turned first-party") {
+        val acme = partner("acme", groupA)
+        for
+          xa <- ZIO.service[TransactorZIO]
+          _ <- env.fixtures.group(groupA, EdgeGroupKind.Partner)
+          _ <- env.fixtures.group(firstPartyGroup, EdgeGroupKind.FirstParty)
+          _ <- env.repository.create(acme)
+          moved <- xa.connect(sql"UPDATE partners SET group_id = $firstPartyGroup WHERE id = 'acme'".update.run()).flip
+          turned <- xa.connect(sql"UPDATE edge_groups SET kind = 'first_party' WHERE id = $groupA".update.run()).flip
+          found <- env.repository.find(acme.id)
+        yield assertTrue(
+          moved.getMessage.contains("needs an edge group of kind partner"),
+          turned.getMessage.contains("cannot change"),
+          found.map(_.groupId) == Some(groupA),
+        )
+      },
       test("a partner's edges are as many as its limit and no more, however many are enrolled at once; another group has none") {
         val acme = partner("acme", groupA).copy(limits = limits.copy(maxEdges = 2))
         val jwk = Json.Obj("kty" -> Json.Str("RSA"), "n" -> Json.Str("n"), "e" -> Json.Str("AQAB"))

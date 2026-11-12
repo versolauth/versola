@@ -329,6 +329,202 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def jsonBody(json: String): Body = Body.fromString(json)
 
+  /** The fields no partner may set: where it is served from, which group, who owns it, which tenant, whether it is approved, how it
+    * authenticates. */
+  private val forbiddenFields: List[(String, Json)] = List(
+    "groupId" -> Json.Str("default"),
+    "groupKind" -> Json.Str("first_party"),
+    "partnerId" -> Json.Str("globex"),
+    "edgeId" -> Json.Str("edge-default"),
+    "tenantId" -> Json.Str("other-tenant"),
+    "approval" -> Json.Str("approved"),
+    "mtlsAuth" -> Json.Obj(
+      "type" -> Json.Str("tls_client_auth"),
+      "subjectType" -> Json.Str("san_uri"),
+      "subjectValue" -> Json.Str("urn:versola:edge-group:default"),
+    ),
+  )
+
+  private def withForbidden(body: String): String =
+    Json.Obj(body.fromJson[Json.Obj].toOption.get.fields ++ forbiddenFields).toJson
+
+  /** A write route: its valid body is accepted as `clean`, the body with the forbidden fields is `dirty` (400 where unknown fields
+    * are refused, the clean status where they are ignored), and `check` says what the services were given. */
+  private case class Crossing(
+      name: String,
+      method: Method,
+      path: URL,
+      body: String,
+      clean: Status,
+      dirty: Status,
+      setup: Services => UIO[Unit],
+      check: Services => TestResult,
+  ):
+    private def request(payload: String): Request =
+      Request(method = method, url = path, body = Body.fromString(payload)).addHeader(Header.ContentType(MediaType.application.json))
+
+    def cases = List(
+      testCase(
+        description = s"$name: the valid body is accepted",
+        request = request(body),
+        principal = Some(staffToken()),
+        expectedStatus = clean,
+        setup = setup,
+        verify = (_, services) => ZIO.succeed(check(services)),
+      ),
+      testCase(
+        description = s"$name: the same body with groupId, groupKind, partnerId, edgeId, tenantId, approval and mtlsAuth is " +
+          (if dirty == Status.BadRequest then "refused (400), and nothing is written"
+           else "served as the caller's own partner, and the fields change nothing"),
+        request = request(withForbidden(body)),
+        principal = Some(staffToken()),
+        expectedStatus = dirty,
+        setup = setup,
+        verify = (_, services) =>
+          ZIO.succeed(if dirty == Status.BadRequest then refusedCheck(services) else check(services)),
+      ),
+    )
+
+    private def refusedCheck(services: Services): TestResult =
+      assertTrue(
+        services.partnerClients.create.calls.isEmpty,
+        services.partnerClients.update.calls.isEmpty,
+        services.resources.createResource.calls.isEmpty,
+        services.partners.addEdge.calls.isEmpty,
+      )
+
+  private lazy val crossingRows: List[Crossing] =
+    val json =
+      """{"id":"acme-pay","kind":"web","clientName":{"en":"ACME Pay"},"redirectUris":["https://pay.acme.example/cb"],"scope":["openid"],"authMethod":"tls_client_auth","accessTokenTtl":300}"""
+    List(
+      Crossing(
+        "POST /edge/partner/clients",
+        Method.POST,
+        partnerPath("clients"),
+        json,
+        Status.Accepted,
+        Status.BadRequest,
+        services =>
+          services.partnerClients.create.succeedsWith((acmePending, waitingCreate)) *>
+            services.partnerClients.find.succeedsWith(Some(PartnerClientService.View(
+              acmePending,
+              PartnerClientService.Approval(PartnerClientService.RequestKind.create, PartnerClientService.RequestState.pending, Nil, Some(now), None),
+            ))),
+        services => assertTrue(services.partnerClients.create.calls.forall(call => call._1.id == acme.id && call._1.groupId == acme.groupId)),
+      ),
+      Crossing(
+        "PUT /edge/partner/clients",
+        Method.PUT,
+        partnerPath("clients"),
+        """{"id":"acme-shop","accessTokenTtl":300}""",
+        Status.NoContent,
+        Status.BadRequest,
+        services => services.partnerClients.update.succeedsWith(Right(())),
+        services => assertTrue(services.partnerClients.update.calls.forall(_._1.id == acme.id)),
+      ),
+      Crossing(
+        "POST /edge/partner/clients/withdraw",
+        Method.POST,
+        partnerPath("clients", "withdraw"),
+        """{"id":"acme-pay"}""",
+        Status.NoContent,
+        Status.NoContent,
+        services => services.partnerClients.withdraw.succeedsWith(waitingCreate),
+        services => assertTrue(services.partnerClients.withdraw.calls.map(call => (call._1.id, call._2)) == List((acme.id, ClientId("acme-pay")))),
+      ),
+      Crossing(
+        "POST /edge/partner/clients/jwks",
+        Method.POST,
+        partnerPath("clients", "jwks"),
+        s"""{"id":"acme-shop","jwks":{"keys":[${authKey.toPublicJwk.toJson}]}}""",
+        Status.NoContent,
+        Status.NoContent,
+        services => services.partnerClients.replaceKeys.succeedsWith(()),
+        services => assertTrue(services.partnerClients.replaceKeys.calls.map(call => (call._1.id, call._2)) == List((acme.id, ClientId("acme-shop")))),
+      ),
+      Crossing(
+        "POST /edge/partner/resources",
+        Method.POST,
+        partnerPath("resources"),
+        """{"resourceId":"acme-api-2","resource":"https://api2.acme.example","audience":["acme-shop"],"endpoints":[],"audienceRateLimits":[]}""",
+        Status.Created,
+        Status.Created,
+        services => services.resources.createResource.succeedsWith(Right((ResourceId("acme-api-2"), None))),
+        // the tenant and the owner are the partner's, the resource is internal, whatever the body said
+        services =>
+          assertTrue(
+            services.resources.createResource.calls.map(r => (r.tenantId, r.partnerId, r.internal)) == List((acme.tenantId, Some(acme.id), true)),
+          ),
+      ),
+      Crossing(
+        "PUT /edge/partner/resources",
+        Method.PUT,
+        partnerPath("resources"),
+        """{"resourceId":"acme-api","audience":{"add":[],"remove":[]},"deleteEndpoints":[],"createEndpoints":[]}""",
+        Status.NoContent,
+        Status.NoContent,
+        services => services.resources.updateResource.succeedsWith(Right(())),
+        services => assertTrue(services.resources.updateResource.calls.map(_.resourceId) == List(ResourceId("acme-api"))),
+      ),
+      Crossing(
+        "POST /edge/partner/edges",
+        Method.POST,
+        partnerPath("edges"),
+        """{"id":"edge-acme-2","publicUrl":"https://login2.acme.example"}""",
+        Status.Created,
+        Status.Created,
+        services =>
+          services.partners.addEdge.succeedsWith(PartnerService.EnrolledEdge(partnerEdge, PartnerService.Token("T", now.plusSeconds(86400)))),
+        // the group of a new edge is the caller's partner's, which is where `addEdge` takes it from: it is not given one
+        services =>
+          assertTrue(services.partners.addEdge.calls.map(call => (call._1.id, call._1.groupId, call._2)) == List((
+            acme.id,
+            acme.groupId,
+            EdgeId("edge-acme-2"),
+          ))),
+      ),
+      Crossing(
+        "POST /edge/partner/edges/enrollment-tokens",
+        Method.POST,
+        partnerPath("edges", "enrollment-tokens"),
+        """{"id":"edge-acme-1"}""",
+        Status.Created,
+        Status.Created,
+        services => services.partners.enrollmentToken.succeedsWith(PartnerService.Token("T", now.plusSeconds(86400))),
+        services => assertTrue(services.partners.enrollmentToken.calls.map(call => (call._1.id, call._2)) == List((acme.id, EdgeId("edge-acme-1")))),
+      ),
+      Crossing(
+        "DELETE /edge/partner/edges/enrollment-tokens",
+        Method.DELETE,
+        partnerPath("edges", "enrollment-tokens"),
+        """{"id":"edge-acme-1"}""",
+        Status.NoContent,
+        Status.NoContent,
+        services => services.partners.edges.succeedsWith(Vector(partnerEdge)) *> services.tokens.revoke.succeedsWith(0),
+        services => assertTrue(services.tokens.revoke.calls == List(edgeId)),
+      ),
+      Crossing(
+        "PUT /edge/partner/profile",
+        Method.PUT,
+        partnerPath("profile"),
+        """{"displayName":"ACME Ltd"}""",
+        Status.Accepted,
+        Status.Accepted,
+        services => services.partners.requestProfileChange.succeedsWith(waitingCreate),
+        services => assertTrue(services.partners.requestProfileChange.calls.map(call => (call._1.id, call._3)) == List((acme.id, "ACME Ltd"))),
+      ),
+      Crossing(
+        "PUT /edge/partner/settings",
+        Method.PUT,
+        partnerPath("settings"),
+        """{"contact":{"email":"ops@acme.example"},"defaults":{"backChannelLogoutUri":null,"accessTokenTtl":null,"refreshTokenTtl":null}}""",
+        Status.NoContent,
+        Status.NoContent,
+        services => services.partners.setSettings.succeedsWith(()),
+        services => assertTrue(services.partners.setSettings.calls.map(_._1.id) == List(acme.id)),
+      ),
+    )
+
   def spec = suite("PartnerEdgeController")(
     suite("who gets in")(
       // #962: a partner's edge is registered without a signing key and brings the public half when it enrols, so what it signs is
@@ -617,6 +813,10 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         verify = (_, services) => ZIO.succeed(assertTrue(services.partners.activate.calls.isEmpty)),
       ),
     ),
+    // Owner requirement (#962): a partner has no way to choose first-party anywhere. Every write route of the partner's console is
+    // sent its valid body, which is accepted, and the same body with every field a partner must not be able to set; the second is
+    // refused (400) or the extra fields are ignored, and what the service is given is the caller's own partner and group.
+    suite("a partner cannot choose first-party")(crossingRows.flatMap(row => row.cases)*),
   ) @@ TestAspect.sequential
 
   private def auditEvent(actorType: ActorType, actorId: Option[String], ip: Option[String]) = AuditEvent(

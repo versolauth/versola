@@ -572,6 +572,56 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
           requests.map(_.subjectDn) == Vector(None),
         )
       },
+      // Owner requirement: a partner has no way to choose first-party, and the operator's edge none to join a partner's group.
+      test("a request that names the other kind of group is refused, whichever way: the token's edge decides the group") {
+        val partner = keylessPartnerEdge(otherEdgeId)
+        val own = edgeRecord(edgeId).copy(publicKey = None)
+        val env = Env(List(partner, own))
+        for
+          service <- env.service
+          _ <- env.edgeService.setSigningKey.succeedsWith(true)
+          partnerToken <- service.issueEnrollmentToken(otherEdgeId)
+          ownToken <- service.issueEnrollmentToken(edgeId)
+          // the partner edge's token, a request for the same edge in the operator's group (and the reverse), naming the edge itself
+          asFirstParty <- csrFor(partner.copy(groupId = EdgeGroup.DefaultId, groupKind = EdgeGroupKind.FirstParty))
+          asPartner <- csrFor(own.copy(groupId = partnerGroup, groupKind = EdgeGroupKind.Partner))
+          partnerAsFirstParty <- service.enroll(Some(otherEdgeId), partnerToken.token, asFirstParty, Some(keyA)).flip
+          firstPartyAsPartner <- service.enroll(Some(edgeId), ownToken.token, asPartner, Some(keyB)).flip
+          // a token of one kind used with the other kind's edge id
+          crossed <- service.enroll(Some(edgeId), partnerToken.token, asPartner, Some(keyA)).flip
+          certificates <- env.certificates.all
+        yield assertTrue(
+          partnerAsFirstParty.isInstanceOf[EdgeIdentityService.Refused],
+          firstPartyAsPartner.isInstanceOf[EdgeIdentityService.Refused],
+          crossed == EdgeIdentityService.InvalidToken,
+          certificates.isEmpty,
+          env.edgeService.setSigningKey.calls.isEmpty,
+        )
+      },
+      test("an enrolment with the token alone is issued the names of the token's edge and group, whatever group its request names") {
+        val partner = keylessPartnerEdge(otherEdgeId)
+        val own = edgeRecord(edgeId).copy(publicKey = None)
+        val issuer = RecordingIssuer()
+        val env = Env(List(partner, own), issuer = issuer)
+        for
+          service <- env.service
+          _ <- env.edgeService.setSigningKey.succeedsWith(true)
+          partnerToken <- service.issueEnrollmentToken(otherEdgeId)
+          ownToken <- service.issueEnrollmentToken(edgeId)
+          // each request names the OTHER kind of group, with the right edge name
+          namesFirstParty <- csrFor(partner.copy(groupId = EdgeGroup.DefaultId, groupKind = EdgeGroupKind.FirstParty))
+          namesPartner <- csrFor(own.copy(groupId = partnerGroup, groupKind = EdgeGroupKind.Partner))
+          _ <- service.enroll(None, partnerToken.token, namesFirstParty, Some(keyA))
+          _ <- service.enroll(None, ownToken.token, namesPartner, Some(keyB))
+          requests <- issuer.requests.get
+        yield assertTrue(
+          requests.map(_.uris) == Vector(
+            List("urn:versola:edge:edge-b", "urn:versola:edge-group:partner-acme"),
+            List("urn:versola:edge:edge-a", "urn:versola:edge-group:default"),
+          ),
+          requests.forall(_.subjectDn.isDefined),
+        )
+      },
       test("a token for another edge enrols nothing, with the right key and the wrong name") {
         val one = keylessPartnerEdge(edgeId)
         val other = keylessPartnerEdge(otherEdgeId)

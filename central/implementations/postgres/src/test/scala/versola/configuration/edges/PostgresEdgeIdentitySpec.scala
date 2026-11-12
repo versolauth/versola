@@ -54,6 +54,45 @@ object PostgresEdgeIdentitySpec extends PostgresSpec:
         all <- groups.getAll
       yield assertTrue(first, !second, found == Some(partner), all.map(_.id).toSet == Set(EdgeGroup.DefaultId, partner.id))
     },
+    // Owner requirement (#962): a partner cannot be made first-party, nor its edges the operator's, by any write
+    test("the kind of a group cannot change, to either kind, and a refused change leaves the group as it was") {
+      for
+        _ <- reset
+        (_, groups, _, _) <- repositories
+        _ <- groups.create(partner)
+        xa <- ZIO.service[TransactorZIO]
+        toFirstParty <- xa.connect(sql"UPDATE edge_groups SET kind = 'first_party' WHERE id = ${partner.id}".update.run()).flip
+        toPartner <- xa.connect(sql"UPDATE edge_groups SET kind = 'partner' WHERE id = 'default'".update.run()).flip
+        samePartner <- xa.connect(sql"UPDATE edge_groups SET kind = 'partner' WHERE id = ${partner.id}".update.run())
+        found <- groups.find(partner.id)
+        default <- groups.find(EdgeGroup.DefaultId)
+      yield assertTrue(
+        toFirstParty.getMessage.contains("cannot change"),
+        toPartner.getMessage.contains("cannot change"),
+        samePartner == 1,
+        found == Some(partner),
+        default.map(_.kind) == Some(EdgeGroupKind.FirstParty),
+      )
+    },
+    test("an edge cannot be moved into another group, from a partner's to the operator's or the other way") {
+      for
+        _ <- reset
+        (edges, groups, _, _) <- repositories
+        _ <- groups.create(partner)
+        _ <- edges.createEdge(edgeId, Some(jwk), true, partner.id, None)
+        _ <- edges.createEdge(otherEdgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
+        xa <- ZIO.service[TransactorZIO]
+        out <- xa.connect(sql"UPDATE edges SET group_id = 'default' WHERE id = ${edgeId}".update.run()).flip
+        in <- xa.connect(sql"UPDATE edges SET group_id = ${partner.id} WHERE id = ${otherEdgeId}".update.run()).flip
+        mine <- edges.find(edgeId)
+        other <- edges.find(otherEdgeId)
+      yield assertTrue(
+        out.getMessage.contains("cannot move"),
+        in.getMessage.contains("cannot move"),
+        mine.map(_.groupId) == Some(partner.id),
+        other.map(_.groupId) == Some(EdgeGroup.DefaultId),
+      )
+    },
     test("an edge carries its group and the group's kind") {
       for
         _ <- reset
