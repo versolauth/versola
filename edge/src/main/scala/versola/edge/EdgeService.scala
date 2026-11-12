@@ -90,6 +90,12 @@ trait EdgeService:
     * `/partner/login`. */
   def consoleSession(request: Request): IO[Throwable | EdgeService.NoSession, EdgeService.ConsoleSession]
 
+  /** Ends sessions this edge holds, by the user's `sub`, the SSO session's `sid` or a refresh-token family (`fam`): the tokens are put on the
+    * edge's own revocation list, so the next request with any of them is refused, and the session rows (which hold the refresh tokens) are
+    * deleted. Edge-local: auth is not asked and nothing is sent anywhere, so it works while central is down. Answers how many live sessions
+    * of this edge it ended; a session that left no readable token (stored before the token was kept) is revoked but not counted. */
+  def revokeSessions(by: EdgeService.SessionRevocation): Task[Int]
+
   /** The `/userinfo` of the operator for the person of `session`, asked as a proxied call asks it for a cookie's token: a token bound
     * to the certificate of the client (a partner's client authenticates with the group's, so its tokens are) is presented over that
     * certificate. The console reads the phone number or email from it to match an invite. */
@@ -148,6 +154,12 @@ object EdgeService:
 
   case class ClientNotFound(clientId: ClientId)
     extends RuntimeException(s"OAuth client not found in cache: $clientId")
+
+  /** What an administrator ends: every session of a user, one SSO session, or the sessions of one refresh-token family. */
+  enum SessionRevocation:
+    case User(subject: String)
+    case Session(sid: SessionId)
+    case Family(family: RefreshTokenFamilyId)
 
   /** What the cookie of a console request stands for: the token (which is what the person's session at the operator is, and what
     * the partner's management calls forward as the principal), its verified claims, the preset it was issued for, and the cookie
@@ -553,6 +565,40 @@ object EdgeService:
           case Outcome.Reauthenticate(_, clear) => ZIO.fail(NoSession(Some(clear)))
           case _: Outcome => ZIO.fail(NoSession(None))
           case error: Throwable => ZIO.fail(error)
+
+    override def revokeSessions(by: SessionRevocation): Task[Int] =
+      for
+        now <- Clock.instant
+        keys <- jwksService.getPublicKeys
+        rows <- by match
+          case SessionRevocation.Session(sid) => sessionRepository.findBySessionId(sid).map(_.filter(_.expiresAt.isAfter(now)))
+          case _ => sessionRepository.findLive(now)
+        ended <- ZIO.filter(rows)(row => revocationMatches(row, by, keys))
+        _ <- by match
+          case SessionRevocation.User(subject) => revocationService.revokeUser(subject, now)
+          case SessionRevocation.Session(sid) => revocationService.revokeSession(sid)
+          // a family's tokens are not enumerated, so the entry outlives any of them: a session's whole lifetime
+          case SessionRevocation.Family(family) =>
+            revocationService.revokeTokens(NonEmptyChunk(RevocationKey.Fam(family)), now.plus(config.security.edgeSessions.ttl))
+        // the refresh tokens the rows hold go with them
+        _ <- ZIO.foreachDiscard(ended)(row => sessionRepository.delete(row.accessTokenId))
+      yield ended.size
+
+    /** Whether the live row is of what is being ended: a session by its `sid`, a user or family by the claims of the access token the row
+      * holds (this edge's own, read without the expiry). */
+    private def revocationMatches(row: EdgeSessionRecord, by: SessionRevocation, keys: JWT.PublicKeys): Task[Boolean] =
+      by match
+        case SessionRevocation.Session(_) => ZIO.succeed(true)
+        case _ =>
+          ZIO.foreach(row.encryptedAccessToken)(decryptAccessToken).flatMap: token =>
+            ZIO.foreach(token)(token => JWT.deserialize[AccessTokenClaims](token, keys, JWT.Type.AccessToken, validateExpiry = false).option).map:
+              claims =>
+                claims.flatten.exists(claims =>
+                  by match
+                    case SessionRevocation.User(subject) => claims.subject == subject
+                    case SessionRevocation.Family(family) => claims.family.contains(family)
+                    case SessionRevocation.Session(_) => true,
+                )
 
     override def consoleUserInfo(session: ConsoleSession): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
       fetchUserInfo(session.accessToken, session.claims, BindingCheck.Accept)

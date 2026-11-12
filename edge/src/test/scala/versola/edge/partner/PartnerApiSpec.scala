@@ -351,47 +351,73 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
       },
     ),
     suite("revocation")(
-      test("is a call to central by user or by client, scoped to the named clients, with the refresh tokens revoked: nothing is ended here") {
-        for
-          h <- harness(Some(StaffLevel.admin), answer = (_, _) => reply(Status.Accepted, ""))
-          response <- send(h, write(Method.POST, "/revocations", """{"by":"user","value":"u-1","clients":["acme-shop"],"edges":[]}"""))
-          calls <- h.central.calls.get
-        yield assertTrue(
-          response.status == Status.Accepted,
-          calls.map(c => (c._1, c._2)) == List((Method.POST, List("revocations"))),
-          calls.head._4.exists(_.toJson == """{"by":"user","value":"u-1","clients":["acme-shop"],"revokeRefresh":true}"""),
-          calls.head._5 == Some("staff-access-token"),
-        )
-      },
-      test("with central unavailable it fails, and does not succeed edge-locally") {
+      test("ends the sessions on this edge by user, sid or fam and answers how many, without asking central or auth") {
         for
           h <- harness(Some(StaffLevel.admin), answer = (_, _) => ZIO.fail(Failure.Unavailable))
-          response <- send(h, write(Method.POST, "/revocations", """{"by":"client","value":"acme-shop","clients":["acme-shop"],"edges":[]}"""))
-          (code, _) <- errorOf(response)
-        yield assertTrue(response.status == Status.ServiceUnavailable, code == "central_unavailable")
+          _ <- h.edge.revokeSessions.succeedsWith(3)
+          user <- send(h, write(Method.POST, "/revocations", """{"by":"user","value":"u-1","clients":[],"edges":[]}"""))
+          sid <- send(h, write(Method.POST, "/revocations", """{"by":"sid","value":"s-1"}"""))
+          fam <- send(h, write(Method.POST, "/revocations", """{"by":"fam","value":"f-1"}"""))
+          body <- user.body.asString
+          calls <- h.central.calls.get
+          asked = h.edge.revokeSessions.calls
+        yield assertTrue(
+          user.status == Status.Ok,
+          sid.status == Status.Ok,
+          fam.status == Status.Ok,
+          body == """{"ended":3}""",
+          // central is down and nothing was asked of it
+          calls.isEmpty,
+          asked == List(
+            EdgeService.SessionRevocation.User("u-1"),
+            EdgeService.SessionRevocation.Session(versola.edge.model.SessionId("s-1")),
+            EdgeService.SessionRevocation.Family(versola.edge.model.RefreshTokenFamilyId("f-1")),
+          ),
+        )
       },
-      test("by session or by refresh family is refused, as central does not take them, and central is not asked") {
+      test("is refused to a developer and a viewer, and nothing is ended") {
+        for
+          developer <- harness(Some(StaffLevel.developer))
+          viewer <- harness(Some(StaffLevel.viewer))
+          a <- send(developer, write(Method.POST, "/revocations", """{"by":"user","value":"u-1"}"""))
+          b <- send(viewer, write(Method.POST, "/revocations", """{"by":"user","value":"u-1"}"""))
+          list <- send(viewer, get("/revocations"))
+        yield assertTrue(
+          a.status == Status.Forbidden,
+          b.status == Status.Forbidden,
+          list.status == Status.Forbidden,
+          developer.edge.revokeSessions.calls.isEmpty,
+          viewer.edge.revokeSessions.calls.isEmpty,
+        )
+      },
+      test("by client, or by anything else, and a missing value are 400, and nothing is ended") {
         for
           h <- harness(Some(StaffLevel.admin))
-          bySid <- send(h, write(Method.POST, "/revocations", """{"by":"sid","value":"s","clients":["acme-shop"],"edges":[]}"""))
-          byFam <- send(h, write(Method.POST, "/revocations", """{"by":"fam","value":"f","clients":["acme-shop"],"edges":[]}"""))
-          calls <- h.central.calls.get
-        yield assertTrue(bySid.status == Status.BadRequest, byFam.status == Status.BadRequest, calls.isEmpty)
-      },
-      test("with no client named it is every approved client of the partner, and none approved is refused") {
-        for
-          h <- harness(
-            Some(StaffLevel.admin),
-            answer = (method, path) => if method == Method.GET then reply(Status.Ok, s"""{"clients":[$clientJson]}""") else reply(Status.Accepted, ""),
-          )
-          response <- send(h, write(Method.POST, "/revocations", """{"by":"user","value":"u-1","clients":[],"edges":[]}"""))
-          calls <- h.central.calls.get
-          none <- harness(Some(StaffLevel.admin), answer = (_, _) => reply(Status.Ok, """{"clients":[]}"""))
-          refused <- send(none, write(Method.POST, "/revocations", """{"by":"user","value":"u-1","clients":[],"edges":[]}"""))
+          client <- send(h, write(Method.POST, "/revocations", """{"by":"client","value":"acme-shop","clients":["acme-shop"]}"""))
+          nothing <- send(h, write(Method.POST, "/revocations", """{"by":"user"}"""))
+          unknown <- send(h, write(Method.POST, "/revocations", """{"value":"x"}"""))
         yield assertTrue(
-          response.status == Status.Accepted,
-          calls.last._4.exists(_.toJson.contains("""["acme-shop"]""")),
-          refused.status == Status.BadRequest,
+          client.status == Status.BadRequest,
+          nothing.status == Status.BadRequest,
+          unknown.status == Status.BadRequest,
+          h.edge.revokeSessions.calls.isEmpty,
+        )
+      },
+      test("what an administrator ended is listed, newest first, with who ended it and how many, and is in the audit trail") {
+        for
+          h <- harness(Some(StaffLevel.admin), answer = (_, _) => reply(Status.Ok, """{"events":[],"next":null}"""))
+          _ <- h.edge.revokeSessions.succeedsWith(2)
+          _ <- send(h, write(Method.POST, "/revocations", """{"by":"user","value":"u-1"}"""))
+          listed <- send(h, get("/revocations")).flatMap(_.body.asString)
+          trail <- send(h, get("/audit", "?kind=revocations")).flatMap(_.body.asString)
+          team <- send(h, get("/audit", "?kind=team")).flatMap(_.body.asString)
+        yield assertTrue(
+          listed.contains("\"by_staff\":\"sub-1\""),
+          listed.contains("\"by\":\"user\""),
+          listed.contains("\"value\":\"u-1\""),
+          listed.contains("\"ended\":2"),
+          trail.contains("Ended 2 session(s) by user u-1"),
+          !team.contains("Ended 2"),
         )
       },
     ),

@@ -21,10 +21,10 @@ info:
 
     ## Surfaces
 
-    * **Who is asking** — `/partner/api/me`, `/partner/api/staff`, answered by the edge itself
+    * **Who is asking, the team, revocations** — `/partner/api/me`, `/partner/api/staff`, `/partner/api/revocations`, answered by the edge itself
       (from what central last said about the partner, and from the team the edge keeps in its own
       database).
-    * **Clients, resources, edges, revocations, audit, settings, profile** — each call is a call to
+    * **Clients, resources, edges, audit, settings, profile** — each call is a call to
       central's `/edge/partner/...` surface made by the edge on the staff member's behalf, then
       translated to and from the shapes below. These are not served from a cache: they are
       answered by central or not at all (`503 central_unavailable`).
@@ -1001,32 +1001,31 @@ paths:
   /partner/api/revocations:
     post:
       operationId: createRevocation
-      summary: End grants of the partner's clients
+      summary: End sessions on this edge
       description: |
-        Ends the grants of the partner's own clients, by user or by client. It is a management
-        call like any other: central asks the authorization server, which revokes the
-        refresh-token families and announces it on the back channel; the announcement reaches this
-        edge's `/logout/backchannel`, which is how the edge's own sessions end. Access tokens
-        already issued run out within the partner's cap. **Nothing is revoked by the edge itself**:
-        with central unavailable the answer is `503`.
+        Ends sessions that this edge holds: the next request made with any of them is refused
+        (`401`), and the refresh tokens the edge kept for them are deleted. The sessions are those
+        of the partner's own applications and of the console, which are the only ones this edge has.
 
-        * `by: user` — `value` is a user id; that user's refresh tokens at the named clients end.
-        * `by: client` — `value` is one of the named clients; every user's refresh tokens at it end.
+        **This is local to the edge.** Its own revocation list and session store are used: central
+        and the authorization server are not asked and nothing is sent anywhere, so it works while
+        central is unavailable. Access tokens that the edge does not hold a session for (a native
+        app's, which keeps its own) are not reached.
 
-        `clients` names the partner's own clients; when it is empty or absent it is every
-        client of the partner that is approved. Other `by` values of the console's TypeScript
-        contract (`sid`, `fam`) are refused with `400`: central does not take them yet. `edges`
-        is ignored.
+        * `by: user`: `value` is the user's `sub`; every session of that user here ends, and the
+          user is put on the revocation list (they can sign in again at once).
+        * `by: sid`: `value` is the SSO session id (`sid`); that session ends.
+        * `by: fam`: `value` is a refresh-token family (`fam_id`); the sessions of that family end.
 
-        Differs from the console's TypeScript contract: the answer is `202` with
-        `{ "ended": 0, "accepted": true }`. Central does not count what the authorization server
-        ended, so `ended` is always `0`: the request is accepted, not counted.
+        `ended` is how many live sessions of this edge it ended. A session stored before the edge
+        kept its access token is revoked but not counted. `clients` and `edges` of the console's
+        request are ignored (there is one edge, and its store holds this partner's clients' sessions
+        only), as is any `by` other than the three above (`by: client` is `400`).
 
-        **Minimum level:** admin. **Served by:** central (`POST /edge/partner/revocations`,
-        after a `GET` of the clients when `clients` is not given).
+        **Minimum level:** admin. **Served by:** the edge.
       tags: [Revocations]
       x-staff-level: admin
-      x-served-by: central
+      x-served-by: edge
       requestBody:
         required: true
         content:
@@ -1036,10 +1035,9 @@ paths:
             example:
               by: user
               value: 2f6d0f70-6a0e-4b8e-a2a1-0f7c5b8f7d11
-              clients: [acme-web]
       responses:
-        '202':
-          description: Central accepted the revocation.
+        '200':
+          description: The sessions were ended.
           headers:
             Cache-Control:
               $ref: '#/components/headers/NoStore'
@@ -1049,51 +1047,27 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [ended, accepted]
+                required: [ended]
                 properties:
                   ended:
                     type: integer
-                    const: 0
-                    description: Always `0`, because central does not count what was ended.
-                  accepted:
-                    type: boolean
-                    const: true
-              example:
-                ended: 0
-                accepted: true
-        '400':
-          $ref: '#/components/responses/InvalidRequest'
-        '401':
-          $ref: '#/components/responses/Unauthenticated'
-        '403':
-          $ref: '#/components/responses/ForbiddenCentral'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
-        '500':
-          $ref: '#/components/responses/InternalError'
-        '502':
-          $ref: '#/components/responses/BadGateway'
-        '503':
-          $ref: '#/components/responses/CentralUnavailable'
+                    minimum: 0
+                    description: How many live sessions of this edge were ended.
     get:
       operationId: listRevocations
       summary: List the revocations staff made
       description: |
-        The revocations the partner's staff made, read from central's audit trail of them
-        (kind `admin.partner-revocation.create`); central keeps no list of its own. Only what the
-        audit event holds is known, so, differing from the console's TypeScript contract,
-        `by` is always the empty string, `clients` and `edges` are always empty and `ended` is
-        always `0`. `value` is the audit event's target and `by_staff` its actor.
+        The revocations the partner's administrators made on this edge, newest first, from the
+        edge's own record of them (the same events appear in the audit trail under
+        `kind=revocations`). `clients` and `edges` are always empty.
 
-        **Minimum level:** admin. **Served by:** central (`GET /edge/partner/audit`).
+        **Minimum level:** admin. **Served by:** the edge.
       tags: [Revocations]
       x-staff-level: admin
-      x-served-by: central
+      x-served-by: edge
       responses:
         '200':
-          description: The revocations, newest first, in the audit trail's first page.
+          description: The revocations, newest first.
           headers:
             Cache-Control:
               $ref: '#/components/headers/NoStore'
@@ -2269,25 +2243,17 @@ components:
       properties:
         by:
           type: string
-          enum: [user, client]
-          description: What `value` names. `sid` and `fam` are not accepted.
+          enum: [user, sid, fam]
+          description: What `value` names.
         value:
           type: string
-          description: A user id when `by` is `user`, or one of the named clients when it is `client`.
-        clients:
-          type: array
-          items:
-            type: string
-          description: |
-            The partner's own clients. Absent or empty: every approved client of the partner; if
-            there is none, `400`.
+          description: The user's `sub`, the SSO session id (`sid`) or the refresh-token family (`fam_id`).
 
     Revocation:
       type: object
       required: [id, at, by_staff, by, value, clients, edges, ended]
       description: |
-        A revocation as far as central's audit event tells it. `by` is always empty, `clients`
-        and `edges` are always empty, and `ended` is always `0`.
+        A revocation an administrator made on this edge. `clients` and `edges` are always empty.
       properties:
         id:
           type: string

@@ -44,14 +44,14 @@ CREATE TABLE partner_staff_config_admins (
     PRIMARY KEY (identifier_kind, identifier_hash)
 );
 
--- What was done to the team: an invite, a change of level, a removal, an admission. The partner's audit trail shows it next to central's
+-- What was done to the team: an invite, a change of level, a removal, an admission; and the sessions an administrator ended (`revoke`, `target` the value, `detail` `<by>:<how many>`). The partner's audit trail shows it next to central's
 -- events, because the team is the one thing central does not hold. `actor` is a `sub` (`config` for a configured administrator's invite);
 -- `target` a `sub` or a masked identifier, never a phone number or an address.
 CREATE TABLE partner_staff_events (
     id     UUID PRIMARY KEY,
     at     TIMESTAMP WITH TIME ZONE NOT NULL,
     actor  TEXT NOT NULL,
-    action TEXT NOT NULL CHECK (action IN ('invite', 'level', 'remove', 'admit')),
+    action TEXT NOT NULL CHECK (action IN ('invite', 'level', 'remove', 'admit', 'revoke')),
     target TEXT NOT NULL,
     detail TEXT
 );

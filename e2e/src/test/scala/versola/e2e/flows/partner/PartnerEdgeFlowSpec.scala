@@ -23,7 +23,11 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
     (base >+> Flows.layer.map(_ => ZEnvironment.empty)) >+> PartnerEdgeFixture.layer
 
   override val aspects: Chunk[TestAspectAtLeastR[TestEnvironment]] =
-    Chunk(TestAspect.withLiveClock, TestAspect.sequential, TestAspect.timeout(600.seconds))
+    Chunk(
+      TestAspect.withLiveClock,
+      TestAspect.sequential,
+      TestAspect.timeout(if sys.env.contains("E2E_PARTNER_EDGE_KEEP") then 25.hours else 600.seconds),
+    )
 
   private val fixture = ZIO.service[PartnerEdgeFixture]
 
@@ -232,41 +236,54 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
         clients <- call(f, Some(session), Method.GET, "/partner/api/clients")
       yield assertTrue(session.presetId == clientId, me._1 == Status.Unauthorized, clients._1 == Status.Unauthorized)
     },
-    test("a revocation is made through central with the staff member's token, and shows in the partner's audit trail") {
+    test(
+      "an administrator ends a team member's sessions on the edge: their next request is refused, the administrator's own is not, and it is in the trail",
+    ) {
       for
         f <- fixture
+        auth <- ZIO.service[OAuthClient]
         admin <- signIn(f, f.admin)
-        revoked <- call(
+        member <- PartnerEdgeFixture.person(auth, 6)
+        _ <- call(
           f,
           Some(admin),
           Method.POST,
-          "/partner/api/revocations",
-          Some(Json.Obj(
-            "by" -> Json.Str("client"),
-            "value" -> Json.Str(s"${f.partnerId}-shop"),
-            "clients" -> Json.Arr(Json.Str(s"${f.partnerId}-shop")),
-            "edges" -> Json.Arr(),
-          )),
+          "/partner/api/staff",
+          Some(Json.Obj("identifier" -> Json.Str(member.phone), "level" -> Json.Str("viewer"))),
         )
+        session <- signIn(f, member)
+        before <- call(f, Some(session), Method.GET, "/partner/api/me")
+        sub = before._2.obj("staff").flatMap(_.str("sub")).getOrElse("")
         unsupported <- call(
           f,
           Some(admin),
           Method.POST,
           "/partner/api/revocations",
-          Some(Json.Obj("by" -> Json.Str("sid"), "value" -> Json.Str("s"), "clients" -> Json.Arr(Json.Str("x")), "edges" -> Json.Arr())),
+          Some(Json.Obj("by" -> Json.Str("client"), "value" -> Json.Str("x"), "clients" -> Json.Arr(), "edges" -> Json.Arr())),
         )
-        audit <- PartnerEdgeFixture.eventually(call(f, Some(admin), Method.GET, "/partner/api/audit"))(r =>
-          r._2.arr("events").exists(_.str("kind").exists(_.contains("partner-revocation"))),
+        revoked <- call(
+          f,
+          Some(admin),
+          Method.POST,
+          "/partner/api/revocations",
+          Some(Json.Obj("by" -> Json.Str("user"), "value" -> Json.Str(sub), "clients" -> Json.Arr(), "edges" -> Json.Arr())),
         )
-        me <- call(f, Some(admin), Method.GET, "/partner/api/me")
+        // the edge's own revocation list is read from memory, refreshed by a notification: the refusal is awaited
+        after <- PartnerEdgeFixture.eventually(call(f, Some(session), Method.GET, "/partner/api/me"))(_._1 == Status.Unauthorized)
+        own <- call(f, Some(admin), Method.GET, "/partner/api/me")
+        listed <- call(f, Some(admin), Method.GET, "/partner/api/revocations")
+        trail <- call(f, Some(admin), Method.GET, "/partner/api/audit?kind=revocations")
+        denied <- call(f, Some(session), Method.POST, "/partner/api/revocations", Some(Json.Obj("by" -> Json.Str("user"), "value" -> Json.Str(sub))))
       yield assertTrue(
-        revoked._1 == Status.Accepted,
+        before._1 == Status.Ok,
         unsupported._1 == Status.BadRequest,
-        audit._2.arr("events").exists(event =>
-          event.str("kind").exists(_.contains("partner-revocation")) && event.str("action").contains("Ended grants of clients") && event.obj(
-            "actor",
-          ).flatMap(_.str("sub")) == me._2.obj("staff").flatMap(_.str("sub")),
-        ),
+        revoked._1 == Status.Ok,
+        revoked._2.fields.exists { case ("ended", Json.Num(n)) => n.intValue >= 1; case _ => false },
+        after._1 == Status.Unauthorized,
+        own._1 == Status.Ok,
+        listed._2.arr("revocations").exists(r => r.str("value").contains(sub) && r.str("by").contains("user")),
+        trail._2.arr("events").exists(_.str("action").exists(_.startsWith("Ended"))),
+        denied._1 == Status.Unauthorized,
       )
     },
     test("a suspended partner is 403 partner_suspended on a management call, and its edge serves again once it is resumed") {
@@ -287,4 +304,26 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
         served._2.arr("edges").exists(_.str("id").contains(f.edgeId)),
       )
     },
+    // Not a test: with `E2E_PARTNER_EDGE_KEEP=<minutes>` the partner's edge, started for this spec, is kept up for a person to open the console
+    // against, and where it is and who may sign in is written to the file named by `E2E_PARTNER_EDGE_INFO`. Skipped otherwise.
+    test("keeps the partner's edge up for a person (E2E_PARTNER_EDGE_KEEP)") {
+      for
+        f <- fixture
+        config <- ZIO.service[E2EConfig]
+        minutes = sys.env.get("E2E_PARTNER_EDGE_KEEP").flatMap(_.toIntOption).getOrElse(60)
+        info =
+          s"""partner edge:   ${f.baseUrl}  (console: ${f.baseUrl}/partner/, sign in: ${f.baseUrl}/partner/login)
+             |team admin:     ${f.admin.login}  (an email: auth asks for it, then for the code 123456, then for consent)
+             |partner:        ${f.partnerId}  console client: ${f.consoleClientId}  tenant: ${f.tenantId}
+             |auth:           ${config.authUrl}
+             |central:        ${config.centralUrl}
+             |kept for $minutes minutes
+             |""".stripMargin
+        _ <- ZIO.attemptBlocking(java.nio.file.Files.writeString(
+          java.nio.file.Path.of(sys.env.getOrElse("E2E_PARTNER_EDGE_INFO", "/tmp/partner-edge-info.txt")),
+          info,
+        ))
+        _ <- ZIO.sleep(minutes.minutes)
+      yield assertTrue(true)
+    } @@ TestAspect.ifEnvSet("E2E_PARTNER_EDGE_KEEP") @@ TestAspect.timeout(24.hours),
   )

@@ -43,7 +43,7 @@ enum Change:
   case Done, Missing, LastAdmin
 
 /** One thing done to the team, kept by the edge: it is the partner's trail of who invited, changed and removed whom, which central cannot
-  * keep (the team is the edge's). `action` is `invite`, `level`, `remove` or `admit`; `target` is a `sub` or a masked identifier. */
+  * keep (the team is the edge's). `action` is `invite`, `level`, `remove`, `admit` or `revoke` (sessions ended); `target` is a `sub` or a masked identifier. */
 case class TeamEvent(id: UUID, at: Instant, actor: String, action: String, target: String, detail: Option[String])
 
 /** The partner's team, in the edge's own database (`partner_staff`, `partner_staff_invites`). */

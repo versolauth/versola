@@ -188,6 +188,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         audience: List[String] = List(backendUrl.encode),
         cnfJkt: Option[String] = None,
         cnfX5t: Option[String] = None,
+        family: Option[String] = None,
     ): Task[AccessToken] =
       Clock.instant.flatMap { now =>
         ZIO.attemptBlocking {
@@ -206,6 +207,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
             .claim("role", role)
             .claim("sid", sid)
             .claim("tenant_id", tenantId)
+          family.foreach(value => builder.claim("fam", value))
           // One `cnf` claim carrying whichever bindings were asked for -- a token may be bound to both.
           val cnf = new java.util.LinkedHashMap[String, String]()
           cnfJkt.foreach(cnf.put("jkt", _))
@@ -383,6 +385,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     override def findBySessionId(sid: SessionId): Task[List[session.EdgeSessionRecord]] =
       rows.get.map(_.values.map(_._1).filter(_.publicSessionId == sid).toList)
 
+    override def findLive(now: Instant): Task[List[session.EdgeSessionRecord]] =
+      rows.get.map(_.values.map(_._1).filter(_.expiresAt.isAfter(now)).toList)
+
   private object FakeSessions:
     def make: UIO[FakeSessions] =
       Ref.make(Map.empty[(SessionId, PresetId), (session.EdgeSessionRecord, Option[Instant])]).map(FakeSessions(_))
@@ -471,6 +476,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     rateLimitSuite,
     partnerSuite,
     consoleSessionSuite,
+    revokeSessionsSuite,
   ).provideLayer(TestClient.layer ++ securityServiceLayer) @@ TestAspect.silentLogging
 
   private val usersEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000401"))
@@ -3787,6 +3793,82 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(forged == EdgeService.NoSession(None), revoked == EdgeService.NoSession(None))
     },
   )
+
+  /** `EdgeService.revokeSessions`: what a partner's administrator ends on this edge, by user, session or refresh family. */
+  private val revokeSessionsSuite =
+    def row(env: Env, security: SecurityService, token: AccessToken, jti: String, sid: String, preset: PresetId = presetId) =
+      for
+        now <- Clock.instant
+        key = SecretKeySpec(env.edgeConfig.security.tokenEncryption.key, "AES")
+        sealed_ <- security.encryptAes256(token.getBytes("UTF-8"), key)
+      yield session.EdgeSessionRecord(
+        publicSessionId = SessionId(sid),
+        presetId = preset,
+        accessTokenId = AccessTokenId(jti),
+        encryptedRefreshToken = Some(Secret("rt".getBytes("UTF-8"))),
+        expiresAt = now.plusSeconds(3600),
+        previousAccessTokenId = None,
+        encryptedAccessToken = Some(Secret(sealed_)),
+        rotatedAt = None,
+      )
+
+    def setup(env: Env) =
+      for
+        _ <- env.setupDefaults()
+        _ <- env.revocationService.revokeUser.succeedsWith(())
+        _ <- env.revocationService.revokeSession.succeedsWith(())
+        _ <- env.revocationService.revokeTokens.succeedsWith(())
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        sessions <- FakeSessions.make
+        ann <- env.signToken(sub = "ann", jti = "ann-jti", sid = "sid-ann", family = Some("fam-ann"))
+        bob <- env.signToken(sub = "bob", jti = "bob-jti", sid = "sid-bob", family = Some("fam-bob"))
+        _ <- row(env, security, ann, "ann-jti", "sid-ann").flatMap(sessions.seed(_))
+        _ <- row(env, security, bob, "bob-jti", "sid-bob").flatMap(sessions.seed(_))
+      yield (env.buildService(client, security, sessions = sessions), sessions)
+
+    suite("revokeSessions")(
+      test("by user ends that user's sessions and puts the user on the edge's own revocation list, and no other's") {
+        val env = new Env
+        for
+          (service, sessions) <- setup(env)
+          ended <- service.revokeSessions(EdgeService.SessionRevocation.User("ann"))
+          left <- sessions.findBySessionId(SessionId("sid-ann"))
+          other <- sessions.findBySessionId(SessionId("sid-bob"))
+        yield assertTrue(
+          ended == 1,
+          left.isEmpty,
+          other.size == 1,
+          env.revocationService.revokeUser.calls.map(_._1) == List("ann"),
+          env.revocationService.revokeSession.calls.isEmpty,
+        )
+      },
+      test("by session ends that session, by refresh family the sessions of that family") {
+        val env = new Env
+        for
+          (service, sessions) <- setup(env)
+          bySession <- service.revokeSessions(EdgeService.SessionRevocation.Session(SessionId("sid-ann")))
+          byFamily <- service.revokeSessions(EdgeService.SessionRevocation.Family(RefreshTokenFamilyId("fam-bob")))
+          left <- sessions.findLive(java.time.Instant.EPOCH)
+          unknown <- service.revokeSessions(EdgeService.SessionRevocation.Family(RefreshTokenFamilyId("fam-nobody")))
+        yield assertTrue(
+          bySession == 1,
+          byFamily == 1,
+          unknown == 0,
+          left.isEmpty,
+          env.revocationService.revokeSession.calls == List(SessionId("sid-ann")),
+          env.revocationService.revokeTokens.calls.size == 2,
+        )
+      },
+      test("a session that expired is not counted, and a user with no session here is still put on the list") {
+        val env = new Env
+        for
+          (service, _) <- setup(env)
+          _ <- TestClock.adjust(2.hours)
+          ended <- service.revokeSessions(EdgeService.SessionRevocation.User("ann"))
+        yield assertTrue(ended == 0, env.revocationService.revokeUser.calls.map(_._1) == List("ann"))
+      },
+    )
 
   private val rateLimitSuite = suite("rate limits")(
     test("with no policy configured the limiter is inactive and the request is served as before") {

@@ -31,6 +31,9 @@ trait StaffService:
   /** Removes the invites that have expired. */
   def purgeExpired: Task[Unit]
 
+  /** Records that `actor` ended sessions (`by` user, sid or fam, of `value`), `ended` of them. */
+  def recordRevocation(actor: String, by: String, value: String, ended: Int, at: Instant): Task[Unit]
+
   /** What was done to the team with the time in `[from, before)`, newest first. */
   def events(from: Option[Instant], before: Option[Instant], limit: Int): Task[List[TeamEvent]]
 
@@ -168,6 +171,9 @@ object StaffService:
             )
           yield ()
       yield ()
+
+    override def recordRevocation(actor: String, by: String, value: String, ended: Int, at: Instant): Task[Unit] =
+      event(actor, "revoke", value, Some(s"$by:$ended"), at)
 
     override def purgeExpired: Task[Unit] = Clock.instant.flatMap(repository.purgeExpired).unit
 

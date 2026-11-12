@@ -1,5 +1,6 @@
 package versola.edge.partner
 
+import versola.edge.model.{RefreshTokenFamilyId, SessionId}
 import versola.edge.partner.PartnerCentral.{Answer, Failure}
 import versola.edge.{EdgeConfig, EdgeService, SSOClient}
 import versola.util.audit.AuditEvent
@@ -366,65 +367,45 @@ final class PartnerApi(
 
   // ── revocations, audit ───────────────────────────────────────────────────────────────────────
 
-  /** Ends the grants of the partner's own clients, by user or by client. A management call like any other: central asks auth, which
-    * revokes the refresh-token families and announces them on the back channel, and the announcement reaches this edge's
-    * `/logout/backchannel`, which is how the edge's own sessions end. Nothing is revoked here: with central unavailable it is `503`.
-    *
-    * `sid` and `fam` are what the console's form offers and central does not take yet (#962 §4: `sid` and `jti` later), so they are
-    * refused rather than half done. */
+  /** Ends sessions on this edge: every session of a user (`by = user`, the `sub`), one SSO session (`sid`) or the sessions of one refresh-token
+    * family (`fam`). Local to the edge: its own revocation list and session rows, nothing is asked of central or auth, so it works while
+    * central is down. It only reaches sessions this edge holds, which are the partner's own applications' (and the console's). `ended` is how
+    * many live sessions of the edge it ended. `clients` and `edges` of the console's form are not used: there is one edge here, and the
+    * store holds the sessions of this partner's clients only. */
   private def revoke(session: Session, request: Request): IO[Fail | Throwable, Response] =
     for
       body <- jsonBody(request)
-      by <- ZIO.fromOption(str(body, "by").filter(Set("user", "client"))).orElseFail(
-        Fail(
-          Status.BadRequest,
-          "invalid_request",
-          message = Some("by must be user or client: sessions and refresh families are not revoked through central yet"),
-        ),
-      )
-      value <- ZIO.fromOption(str(body, "value")).orElseFail(Fail(Status.BadRequest, "invalid_request", message = Some("value is missing")))
-      named = field(body, "clients").collect { case Json.Arr(elements) => elements.flatMap(_.asString) }.getOrElse(Chunk.empty)
-      // no client named is every client of the partner that is approved
-      clients <-
-        if named.nonEmpty then ZIO.succeed(named.toList)
-        else
-          forward(session, Method.GET, List("clients")).map(answer =>
-            arrayOf(answer, "clients").toList.filter(client =>
-              obj(client, "approval").fields.exists { case ("status", Json.Str("approved")) => true; case _ => false },
-            ).flatMap(str(_, "id")),
-          )
-      _ <- ZIO.fail(Fail(
-        Status.BadRequest,
-        "invalid_request",
-        message = Some("the partner has no approved client to revoke grants of"),
-      )).when(clients.isEmpty)
-      _ <- forward(
-        session,
-        Method.POST,
-        List("revocations"),
-        body = Some(Json.Obj(
-          "by" -> Json.Str(by),
-          "value" -> Json.Str(value),
-          "clients" -> Json.Arr(clients.map(Json.Str(_))*),
-          "revokeRefresh" -> Json.Bool(true),
-        )),
-      )
-    // central does not count what auth ended
-    yield json(Status.Accepted, Json.Obj("ended" -> Json.Num(0), "accepted" -> Json.Bool(true)))
+      value <- ZIO.fromOption(str(
+        body,
+        "value",
+      ).filter(_.nonEmpty)).orElseFail(Fail(Status.BadRequest, "invalid_request", message = Some("value is missing")))
+      by <- ZIO.fromOption(str(body, "by")).orElseFail(Fail(Status.BadRequest, "invalid_request", message = Some("by must be user, sid or fam")))
+      what <- by match
+        case "user" => ZIO.succeed(EdgeService.SessionRevocation.User(value))
+        case "sid" => ZIO.succeed(EdgeService.SessionRevocation.Session(SessionId(value)))
+        case "fam" => ZIO.succeed(EdgeService.SessionRevocation.Family(RefreshTokenFamilyId(value)))
+        case _ => ZIO.fail(Fail(Status.BadRequest, "invalid_request", message = Some("by must be user, sid or fam")))
+      ended <- edgeService.revokeSessions(what)
+      now <- Clock.instant
+      _ <- staff.recordRevocation(session.sub, by, value, ended, now)
+    yield ok(Json.Obj("ended" -> Json.Num(ended)))
 
-  /** The revocations the partner's staff made, read from central's audit trail of them (central keeps no list of its own). */
+  /** The revocations the partner's administrators made on this edge, newest first (the edge's own record of them). */
   private def listRevocations(session: Session, request: Request): IO[Fail | Throwable, Response] =
-    forward(session, Method.GET, List("audit"), query = Map("kind" -> "admin.partner-revocation.create")).map: answer =>
-      val revocations = arrayOf(answer, "events").map: event =>
+    staff.events(None, None, AuditPage).map: events =>
+      val revocations = events.filter(_.action == "revoke").map: event =>
+        val (by, ended) = event.detail.getOrElse(":0").split(":", 2).toList match
+          case by :: ended :: Nil => by -> ended.toIntOption.getOrElse(0)
+          case _ => "" -> 0
         Json.Obj(
-          "id" -> Json.Str(str(event, "id").getOrElse("")),
-          "at" -> Json.Str(str(event, "at").getOrElse("")),
-          "by_staff" -> Json.Str(str(event, "actorId").getOrElse("")),
-          "by" -> Json.Str(""),
-          "value" -> Json.Str(str(event, "targetId").getOrElse("")),
+          "id" -> Json.Str(event.id.toString),
+          "at" -> Json.Str(event.at.toString),
+          "by_staff" -> Json.Str(event.actor),
+          "by" -> Json.Str(by),
+          "value" -> Json.Str(event.target),
           "clients" -> Json.Arr(),
           "edges" -> Json.Arr(),
-          "ended" -> Json.Num(0),
+          "ended" -> Json.Num(ended),
         )
       ok(Json.Obj("revocations" -> Json.Arr(revocations*)))
 
@@ -438,8 +419,14 @@ final class PartnerApi(
     val actor = param("actor")
     val q = param("q")
     val cursor = param("cursor").map(AuditCursor.decode)
-    val teamOnly = kind.contains(TeamKind)
-    val localWanted = kind.forall(_ == TeamKind) && actor.forall(a => a == "team" || !Set("operator", "edges").contains(a))
+    // the team's and the revocations' events are the edge's own: central is not asked for those groups
+    val teamOnly = kind.exists(Set(TeamKind, "revocations"))
+    val localKind: TeamEvent => Boolean = kind match
+      case Some(TeamKind) => _.action != "revoke"
+      case Some("revocations") => _.action == "revoke"
+      case None => _ => true
+      case Some(_) => _ => false
+    val localWanted = (kind.isEmpty || teamOnly) && actor.forall(a => a == "team" || !Set("operator", "edges").contains(a))
     val central = kind.filter(_ => !teamOnly).flatMap(AuditGroups.kinds)
     for
       displays <- staff.list.map(_.flatMap(entry => entry.subject.map(_ -> entry.display.getOrElse(entry.subject.getOrElse("")))).toMap)
@@ -453,7 +440,9 @@ final class PartnerApi(
       local <-
         if !localWanted then ZIO.succeed(Nil)
         else
-          staff.events(lower, before, AuditPage).map(_.filter(event => q.forall(text => event.target.contains(text) || event.action.contains(text))))
+          staff.events(lower, before, AuditPage).map(_.filter(localKind).filter(event =>
+            q.forall(text => event.target.contains(text) || event.action.contains(text)),
+          ))
       localDtos = local.map(event => (event.at, localEventDto(event, displays)))
       centralDtos = events.toList.map(event => (Instant.parse(str(event, "at").getOrElse("1970-01-01T00:00:00Z")), auditEventDto(event, displays)))
       merged = (centralDtos ++ localDtos).sortBy(_._1)(using Ordering[Instant].reverse).map(_._2)
@@ -505,6 +494,11 @@ final class PartnerApi(
       case "level" => s"Made ${displays.getOrElse(event.target, event.target)} ${event.detail.getOrElse("")}".trim
       case "remove" => s"Removed ${displays.getOrElse(event.target, event.target)} from the team"
       case "admit" => s"${event.target} joined the team as ${event.detail.getOrElse("")}".trim
+      case "revoke" =>
+        val (by, ended) = event.detail.getOrElse(":0").split(":", 2).toList match
+          case by :: ended :: Nil => by -> ended
+          case _ => "" -> "0"
+        s"Ended $ended session(s) by $by ${event.target}"
       case other => other
     Json.Obj(
       "id" -> Json.Str(event.id.toString),
@@ -655,7 +649,6 @@ object PartnerApi:
       "clients" -> List(".partner-client.", ".partner-approval."),
       "resources" -> List(".partner-resource."),
       "edges" -> List(".partner-edge."),
-      "revocations" -> List(".partner-revocation."),
       "security" -> List(".partner.", ".partner-approval."),
     )
     def kinds(kind: String): Option[List[String]] = groups.get(kind)

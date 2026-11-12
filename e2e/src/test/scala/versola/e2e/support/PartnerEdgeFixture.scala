@@ -117,8 +117,11 @@ object PartnerEdgeFixture:
           val generation = Files.createDirectory(identity.resolve("gen-0000000001")).nn
           Files.writeString(generation.resolve("edge.crt"), certificate.certificatePem)
           Files.writeString(generation.resolve("edge.key"), certificate.privateKeyPemValue)
-          val console = Files.createTempDirectory("e2e-partner-console").nn
-          Files.writeString(console.resolve("partner.html"), "<!doctype html><title>partner console</title>")
+          // `E2E_PARTNER_CONSOLE_DIR` serves a real console build (central-ui's `dist`) instead of the stub page, for a person to open
+          val console = sys.env.get("E2E_PARTNER_CONSOLE_DIR").map(dir => Path.of(dir).nn).getOrElse:
+            val stub = Files.createTempDirectory("e2e-partner-console").nn
+            Files.writeString(stub.resolve("partner.html"), "<!doctype html><title>partner console</title>")
+            stub
           (identity, console)
         (identity, console) = directories
         extra =
