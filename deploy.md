@@ -2016,8 +2016,10 @@ notification and refuses to start, naming this setting, if it cannot.
     that and worked will now fail.
   - A `PUT /configuration/delivery-settings` with an `otpProvider.url` that the HTTP client cannot parse is refused with `400`.
   - A block saved in central that `auth` cannot read (a password that does not decrypt under the shared secret, a sender
-    or an address that is not valid) fails the sync. A running `auth` keeps what it has and logs a warning; an `auth` that
-    starts while such a block is saved fails to start, also on a deployment that sends through `auth.conf` only. Correct or
+    or an address that is not valid) fails the refresh. A running `auth` keeps the senders it has and logs the failure at
+    `ERROR` level on every periodic refresh (every `configuration-cache-refresh-interval`), so an alert on `ERROR` catches it.
+    Only the non-prod `POST /service/configuration/sync` logs it as a `WARN` instead, and it still answers `200`; in prod
+    that endpoint is not served. An `auth` that starts while such a block is saved fails to start, also on a deployment that sends through `auth.conf` only. Correct or
     remove the record in the console (or `DELETE /configuration/delivery-settings`) and start it again.
   - An SMTP block with `startTls` on now **requires** the upgrade and verifies the server's certificate against
     `host`: a server that does not offer STARTTLS, or whose certificate is not for its name or not signed by a CA
