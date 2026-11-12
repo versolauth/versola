@@ -6,6 +6,7 @@
  */
 import themeVariableCatalog from '../utils/theme-variables.json' with { type: 'json' };
 import type { ThemeVariableCatalog } from '../utils/theme-variables';
+import { partnerLimitViolations } from '../utils/partners';
 
 export interface MockRequest {
   url(): string;
@@ -54,7 +55,7 @@ type BackendConsentFlow = { allowPartial: boolean; rememberDuration: number | nu
 type AuthMethodDto = 'client_secret' | 'private_key_jwt' | 'tls_client_auth' | 'self_signed_tls_client_auth' | 'none';
 type ClientTemplateDto = { kind: string };
 type ClientKindDto = 'web' | 'device' | 'service';
-export type ClientDto = { kind?: ClientKindDto; id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; authMethod?: AuthMethodDto; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null; template?: ClientTemplateDto | null; createdAt?: string; themeOverrides?: ThemeOverridesDto | null };
+export type ClientDto = { kind?: ClientKindDto; id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; authMethod?: AuthMethodDto; refreshTokenTtl?: number; accessTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null; logoUri?: string | null; policyUri?: string | null; tosUri?: string | null; mtlsAuth?: Record<string, unknown> | null; certificateBoundAccessTokens?: boolean; requirePushedAuthorizationRequests?: boolean; dpopBoundAccessTokens?: boolean; template?: ClientTemplateDto | null; createdAt?: string; themeOverrides?: ThemeOverridesDto | null; partnerId?: string | null; approval?: 'pending' | 'approved' | 'rejected' };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
 export type DeclaredRateLimitDto = { limits: Array<{ limit: number; windowSeconds: number }>; burst?: number; by?: 'subject' | 'client' | 'none'; mode?: 'off' | 'shadow' | 'enforce' };
@@ -66,7 +67,7 @@ type ResourceEndpointDto = {
   stepUpCondition?: string | null; stepUpAcr?: string | null; maxAge?: number | null; rateLimit?: DeclaredRateLimitDto;
 };
 export type AudienceRateLimitDto = { clientId: string; rateLimit: DeclaredRateLimitDto };
-export type ResourceDto = { resourceId: string; resource: string; audience?: string[]; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean; audienceRateLimits?: AudienceRateLimitDto[] };
+export type ResourceDto = { resourceId: string; resource: string; audience?: string[]; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean; audienceRateLimits?: AudienceRateLimitDto[]; partnerId?: string | null };
 export type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
 type AuthorizationDetailTypeDto = { type: string; description: Record<string, string>; schema: Record<string, unknown> };
 /** What `GET /configuration/edges/rate-limits/recommended` serves (`RateLimitPolicies.recommended`). */
@@ -80,7 +81,53 @@ const RECOMMENDED_RATE_LIMITS = {
   ],
 };
 
-type EdgeDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: Record<string, unknown>; accessLogPolicy?: Record<string, unknown>; rateLimitPolicies?: Record<string, unknown>; policyRevisions?: Record<string, number>; tenants?: string[]; clients?: EdgeClientLinkDto[] };
+export type EdgeDto = {
+  id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: Record<string, unknown>; accessLogPolicy?: Record<string, unknown>;
+  rateLimitPolicies?: Record<string, unknown>; policyRevisions?: Record<string, number>; tenants?: string[]; clients?: EdgeClientLinkDto[];
+  // #549: the edge group and, for a partner edge, its partner and certificate. An edge seeded without a group is a first-party one of group `default`.
+  groupId?: string; groupKind?: 'first_party' | 'partner'; partnerId?: string | null; partnerDisplayName?: string | null; partnerTenantId?: string | null; publicUrl?: string; certificateNotAfter?: string; lastRenewedAt?: string;
+};
+
+// ── Partners (#549): the DTOs the P0 backend implements ─────────────────────────────────────
+export type PartnerStatusDto = 'onboarding' | 'active' | 'suspended';
+export type PartnerLimitsDto = {
+  scopes: string[];
+  redirectDomains: string[];
+  maxClients: number; maxEdges: number;
+  accessTokenTtlMax: number; refreshTokenTtlMax: number;
+  clientAuthMethods: Array<'tls_client_auth' | 'private_key_jwt'>;
+  rateLimitPolicy: string;
+};
+export type PartnerDto = {
+  id: string; tenantId: string; displayName: string; logoUri?: string | null;
+  contact: { email: string; phone?: string | null };
+  status: PartnerStatusDto; limits: PartnerLimitsDto; groupId: string; consoleClientId: string;
+  reviewAt?: string | null; createdAt: string;
+};
+export type PartnerApprovalDto = {
+  id: string; partnerId: string; kind: 'client_create' | 'client_change' | 'profile_change';
+  targetId: string;
+  requested: Record<string, unknown>;
+  current?: Record<string, unknown>;
+  outsideLimits: string[];
+  applied?: Record<string, unknown>;
+  requestedBy: string; requestedAt: string;
+  status: 'waiting' | 'approved' | 'rejected' | 'withdrawn';
+  decidedBy?: string; decidedAt?: string; note?: string;
+};
+type CreatePartnerRequestDto = {
+  partner: Omit<PartnerDto, 'status' | 'groupId' | 'consoleClientId' | 'createdAt'>;
+  consoleClient: { redirectUri: string };
+  firstEdge: { id: string; publicUrl: string };
+};
+
+/** An enrollment token as central issues it: `vtk1.<base64url(enroll address)>.<32-byte secret>`. */
+export function enrollmentToken(issuer: string): string {
+  const host = new URL(issuer).host.replace(/^id\./, '');
+  const address = btoa(`https://central.${host}/edge/enroll`).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const secret = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return `vtk1.${address}.${secret}`;
+}
 type EdgeClientLinkDto = { tenantId: string; clientId: string };
 type AuthorizationPresetDto = {
   id: string;
@@ -125,6 +172,7 @@ type SetPatch<T> = { add?: T[]; remove?: T[] };
 type DescriptionPatch = { add?: Record<string, string>; delete?: string[] };
 type CreateClientRequest = {
   tenantId: string;
+  partnerId?: string | null;
   id: string;
   clientName: Record<string, string>;
   redirectUris?: string[];
@@ -398,6 +446,9 @@ export type MockConfigState = {
   resources: Record<string, ResourceDto[]>;
   roles: Record<string, RoleDto[]>;
   edges: EdgeDto[];
+  /** The partners of every tenant (#549) and their approval requests. */
+  partners: PartnerDto[];
+  partnerApprovals: PartnerApprovalDto[];
   /** Makes `PATCH /configuration/edges/policies` answer 400 for the `overload` section with this message, as central does for a policy that fails validation. */
   overloadRejection?: string;
   /** Holds a `PATCH /configuration/edges/policies` that names `overload` for this long, to look at the saving state. */
@@ -490,7 +541,8 @@ export const defaultMyPermissions: MyPermissionsDto = {
         'locales:read', 'locales:manage',
         'tenants:read', 'tenants:manage',
         'edges:read', 'edges:manage',
-        'jwks:read', 'jwks:manage'
+        'jwks:read', 'jwks:manage',
+        'partners:read', 'partners:manage'
       ]
     }
   },
@@ -524,6 +576,8 @@ const defaultState: MockConfigState = {
     'tenant-bravo': [{ id: 'bravo-admin', description: { en: 'Bravo admin' }, permissions: ['bravo:read'], active: true }],
   },
   edges: [],
+  partners: [],
+  partnerApprovals: [],
   authorizationPresets: {},
   users: [],
   userAudit: {},
@@ -563,6 +617,8 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     permissions: clone({ ...defaultState.permissions, ...overrides.permissions }),
     resources: clone({ ...defaultState.resources, ...overrides.resources }),
     edges: clone(overrides.edges ?? defaultState.edges),
+    partners: clone(overrides.partners ?? defaultState.partners),
+    partnerApprovals: clone(overrides.partnerApprovals ?? defaultState.partnerApprovals),
     overloadRejection: overrides.overloadRejection,
     overloadDelayMs: overrides.overloadDelayMs,
     accessLogRejection: overrides.accessLogRejection,
@@ -634,13 +690,13 @@ const CREATE_MEMBERS: Record<ClientKindDto, string[]> = {
     'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
     'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks', 'generateJwks',
     'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'edgeSigningKey', 'edgeClientCertificate',
-    'issueEdgeClientCertificate', 'enrollEdgeClientCertificate', 'themeOverrides', 'estEnrollment',
+    'issueEdgeClientCertificate', 'enrollEdgeClientCertificate', 'themeOverrides', 'estEnrollment', 'partnerId',
   ],
   device: [
     'tenantId', 'id', 'clientName', 'redirectUris', 'allowedScopes', 'accessTokenTtl', 'refreshTokenTtl', 'theme',
     'authFlow', 'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired',
     'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
-    'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'edgeClientCertificate', 'issueEdgeClientCertificate', 'enrollEdgeClientCertificate', 'themeOverrides',
+    'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'edgeClientCertificate', 'issueEdgeClientCertificate', 'enrollEdgeClientCertificate', 'themeOverrides', 'partnerId',
   ],
   service: [
     'tenantId', 'id', 'clientName', 'allowedScopes', 'permissions', 'accessTokenTtl', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
@@ -902,6 +958,24 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           return;
         }
 
+        // A partner-owned client is held to the partner's limits (#549); the operator's own registration is approved at once.
+        const owner = payload.partnerId ? state.partners.find(partner => partner.id === payload.partnerId) : undefined;
+        if (payload.partnerId && !owner) {
+          await route.fulfill(json({ message: `Partner ${payload.partnerId} was not found` }, 404));
+          return;
+        }
+        if (owner) {
+          const outside = partnerLimitViolations(owner.limits, { redirectUris: payload.redirectUris ?? [], scope: payload.allowedScopes, accessTokenTtl: payload.accessTokenTtl, refreshTokenTtl: payload.refreshTokenTtl });
+          if (outside.length > 0) {
+            await route.fulfill(json({ error: 'outside_limits', fields: outside }, 403));
+            return;
+          }
+          if (tenantClients.filter(client => client.partnerId === owner.id).length >= owner.limits.maxClients) {
+            await route.fulfill(json({ error: 'outside_limits', fields: ['maxClients'] }, 403));
+            return;
+          }
+        }
+
         // Central dates the registration itself and hands that back, so the console never
         // has to invent one for the client it just sent.
         const createdAt = new Date().toISOString();
@@ -921,6 +995,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           kind: typedKind ?? (payload.template?.kind as ClientKindDto | undefined),
           createdAt,
           ...(payload.themeOverrides && Object.keys(payload.themeOverrides).length > 0 ? { themeOverrides: payload.themeOverrides } : {}),
+          ...(owner ? { partnerId: owner.id, approval: 'approved' as const } : {}),
         };
 
         state.clients[payload.tenantId] = [createdClient, ...tenantClients];
@@ -1404,7 +1479,11 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
     if (pathname === '/configuration/edges') {
       if (method === 'GET') {
-        await route.fulfill(json({ edges: state.edges }));
+        await route.fulfill(json({ edges: state.edges.map(edge => {
+          // Edges is a global view: a partner edge carries its partner's name and tenant, whichever tenant is selected.
+          const partner = edge.partnerId ? state.partners.find(candidate => candidate.id === edge.partnerId) : undefined;
+          return { groupId: 'default', groupKind: 'first_party', partnerId: null, ...(partner ? { partnerDisplayName: partner.displayName, partnerTenantId: partner.tenantId } : {}), ...edge };
+        }) }));
         return;
       }
 
@@ -1415,7 +1494,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           return;
         }
 
-        state.edges = [{ id: payload.id, hasOldKey: false, requireDpopNonce: true, tenants: [], clients: [] }, ...state.edges];
+        state.edges = [{ id: payload.id, hasOldKey: false, requireDpopNonce: true, tenants: [], clients: [], groupId: 'default', groupKind: 'first_party', partnerId: null }, ...state.edges];
         const mockKeyId = `${new Date().toISOString().split('T')[0]}_12-00-00`;
         const mockPrivateKey = `mock-private-key-${payload.id}-${Date.now()}`;
         await route.fulfill(json({ keyId: mockKeyId, privateKey: mockPrivateKey }, 201));
@@ -1543,6 +1622,167 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
 
       edge.hasOldKey = false;
+      await route.fulfill({ status: 204, body: '' });
+      return;
+    }
+
+    // ── Partners (#549) ──
+    if (pathname === '/configuration/partners') {
+      if (method === 'GET') {
+        await route.fulfill(json({ partners: state.partners.filter(partner => !tenantId || partner.tenantId === tenantId) }));
+        return;
+      }
+
+      if (method === 'POST') {
+        const payload = body as CreatePartnerRequestDto;
+        const draft = payload.partner;
+        if (!draft?.id || !draft.tenantId || !draft.displayName || !draft.contact?.email || !draft.limits || !payload.consoleClient?.redirectUri || !payload.firstEdge?.id) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: 'partner.id, partner.tenantId, partner.displayName, partner.contact.email, partner.limits, consoleClient.redirectUri and firstEdge.id are required' });
+          return;
+        }
+        if (!/^[a-z0-9][a-z0-9-]*$/.test(draft.id)) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: 'partner.id must be a slug: lowercase letters, digits and dashes' });
+          return;
+        }
+        if (state.partners.some(partner => partner.id === draft.id)) {
+          await route.fulfill(json({ message: `Partner ${draft.id} already exists` }, 409));
+          return;
+        }
+        if (state.edges.some(edge => edge.id === payload.firstEdge.id)) {
+          await route.fulfill(json({ message: `Edge ${payload.firstEdge.id} already exists` }, 409));
+          return;
+        }
+        const createdAt = new Date().toISOString();
+        const partner: PartnerDto = {
+          id: draft.id, tenantId: draft.tenantId, displayName: draft.displayName, logoUri: draft.logoUri ?? null,
+          contact: { email: draft.contact.email, phone: draft.contact.phone ?? null },
+          status: 'onboarding',
+          limits: { ...draft.limits, scopes: [...new Set(['openid', ...(draft.limits.scopes ?? [])])] },
+          groupId: draft.id, consoleClientId: `${draft.id}-console`,
+          reviewAt: draft.reviewAt ?? null, createdAt,
+        };
+        state.partners = [...state.partners, partner];
+        const consoleClient: ClientDto = {
+          id: partner.consoleClientId, kind: 'web', clientName: { en: `${partner.displayName} console` },
+          redirectUris: [payload.consoleClient.redirectUri], scope: ['openid', 'phone', 'email'], permissions: [], secretRotation: false,
+          authMethod: 'tls_client_auth', mtlsAuth: { type: 'san_uri', value: `urn:versola:edge-group:${partner.groupId}` },
+          requirePushedAuthorizationRequests: true, certificateBoundAccessTokens: false, accessTokenTtl: 600, refreshTokenTtl: 12 * 3600,
+          authFlow: null, consentFlow: null, template: { kind: 'web' }, createdAt, partnerId: partner.id, approval: 'approved',
+        };
+        state.clients[partner.tenantId] = [consoleClient, ...(state.clients[partner.tenantId] ?? [])];
+        const edge: EdgeDto = {
+          id: payload.firstEdge.id, hasOldKey: false, requireDpopNonce: true, tenants: [], clients: [],
+          groupId: partner.groupId, groupKind: 'partner', partnerId: partner.id, publicUrl: payload.firstEdge.publicUrl,
+        };
+        state.edges = [...state.edges, edge];
+        const issuer = String((state.serverMetadata as { issuer?: string } | null)?.issuer ?? 'https://id.example');
+        await route.fulfill(json({ partner, edge, enrollmentToken: enrollmentToken(issuer) }, 201));
+        return;
+      }
+
+      if (method === 'PUT') {
+        const payload = body as Partial<PartnerDto> & { id: string };
+        const partner = state.partners.find(candidate => candidate.id === payload.id);
+        if (!partner) {
+          await route.fulfill(json({ message: `Partner ${payload.id} was not found` }, 404));
+          return;
+        }
+        if (payload.displayName !== undefined) partner.displayName = payload.displayName;
+        if (payload.logoUri !== undefined) partner.logoUri = payload.logoUri;
+        if (payload.contact !== undefined) partner.contact = { email: payload.contact.email, phone: payload.contact.phone ?? null };
+        if (payload.reviewAt !== undefined) partner.reviewAt = payload.reviewAt;
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/partners/suspend' && method === 'POST') {
+      const payload = body as { id: string; note?: string };
+      const partner = state.partners.find(candidate => candidate.id === payload.id);
+      if (!partner) {
+        await route.fulfill(json({ message: `Partner ${payload.id} was not found` }, 404));
+        return;
+      }
+      if (!payload.note?.trim()) {
+        await route.fulfill({ status: 400, contentType: 'text/plain', body: 'A note is required' });
+        return;
+      }
+      partner.status = 'suspended';
+      await route.fulfill({ status: 204, body: '' });
+      return;
+    }
+
+    if (pathname === '/configuration/partners/resume' && method === 'POST') {
+      const payload = body as { id: string };
+      const partner = state.partners.find(candidate => candidate.id === payload.id);
+      if (!partner) {
+        await route.fulfill(json({ message: `Partner ${payload.id} was not found` }, 404));
+        return;
+      }
+      partner.status = 'active';
+      await route.fulfill({ status: 204, body: '' });
+      return;
+    }
+
+    if (pathname === '/configuration/partners/limits' && method === 'PUT') {
+      const payload = body as { id: string; limits: PartnerLimitsDto };
+      const partner = state.partners.find(candidate => candidate.id === payload.id);
+      if (!partner) {
+        await route.fulfill(json({ message: `Partner ${payload.id} was not found` }, 404));
+        return;
+      }
+      partner.limits = { ...clone(payload.limits), scopes: [...new Set(['openid', ...payload.limits.scopes])] };
+      await route.fulfill({ status: 204, body: '' });
+      return;
+    }
+
+    if (pathname === '/configuration/partners/approvals' && method === 'GET') {
+      const status = url.searchParams.get('status');
+      const partnerIds = new Set(state.partners.filter(partner => !tenantId || partner.tenantId === tenantId).map(partner => partner.id));
+      await route.fulfill(json({ approvals: state.partnerApprovals.filter(approval => partnerIds.has(approval.partnerId) && (!status || approval.status === status)) }));
+      return;
+    }
+
+    const decision = pathname.match(/^\/configuration\/partners\/approvals\/(approve|reject)$/);
+    if (decision && method === 'POST') {
+      const decided = (body ?? {}) as { id?: string };
+      const approval = state.partnerApprovals.find(candidate => candidate.id === decided.id);
+      if (!approval) {
+        await route.fulfill(json({ message: `Approval ${decided.id ?? '(no id)'} was not found` }, 404));
+        return;
+      }
+      if (approval.status !== 'waiting') {
+        await route.fulfill(json({ message: `Approval ${approval.id} is already ${approval.status}` }, 409));
+        return;
+      }
+      const payload = (body ?? {}) as { note?: string; overrides?: Record<string, unknown> };
+      approval.status = decision[1] === 'approve' ? 'approved' : 'rejected';
+      approval.decidedBy = 'operator';
+      approval.decidedAt = new Date().toISOString();
+      approval.note = payload.note ?? '';
+      if (approval.status === 'approved') {
+        const applied = { ...approval.requested, ...(payload.overrides ?? {}) };
+        // What the partner asked for stays on the record; what the operator registered instead is kept apart.
+        if (payload.overrides && Object.keys(payload.overrides).length > 0) approval.applied = applied;
+        const partner = state.partners.find(candidate => candidate.id === approval.partnerId);
+        if (approval.kind === 'profile_change' && partner) {
+          if (typeof applied.displayName === 'string') partner.displayName = applied.displayName;
+          if ('logoUri' in applied) partner.logoUri = (applied.logoUri as string | null) ?? null;
+        } else if (partner) {
+          const client = (state.clients[partner.tenantId] ?? []).find(candidate => candidate.id === approval.targetId);
+          if (client) {
+            client.approval = 'approved';
+            if (typeof applied.clientName === 'string') client.clientName = { ...client.clientName, en: applied.clientName };
+            if (Array.isArray(applied.redirectUris)) client.redirectUris = applied.redirectUris as string[];
+            if (Array.isArray(applied.scope)) client.scope = applied.scope as string[];
+            if ('logoUri' in applied) client.logoUri = (applied.logoUri as string | null) ?? null;
+          }
+        }
+      } else if (approval.kind === 'client_create') {
+        const partner = state.partners.find(candidate => candidate.id === approval.partnerId);
+        const client = partner && (state.clients[partner.tenantId] ?? []).find(candidate => candidate.id === approval.targetId);
+        if (client) client.approval = 'rejected';
+      }
       await route.fulfill({ status: 204, body: '' });
       return;
     }

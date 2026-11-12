@@ -35,6 +35,13 @@ const PLAN_MARKS: Record<PlanLine['state'], StatusIconName> = {
 export class VersolaClientKindStep extends LitElement {
   @property({ attribute: false }) kind: ClientKind | null = null;
   @property({ attribute: false }) profile: SecurityProfile = 'fapi2';
+  /** Kinds the owner rules out (a partner cannot own a service app), drawn but inert, with `disabledReason` under them. */
+  @property({ attribute: false }) disabledKinds: ClientKind[] = [];
+  @property({ type: String }) disabledReason = '';
+  /** The plan to show instead of the kind's own, when the owner changes what the kind sets (a partner, #549). */
+  @property({ attribute: false }) plan: PlanLine[] | null = null;
+  /** Who sets the plan, named in its lead: `Web app, owned by Pilot Pay, sets:`. */
+  @property({ type: String }) planOwner = '';
 
   static styles = [
     theme,
@@ -69,6 +76,11 @@ export class VersolaClientKindStep extends LitElement {
       }
 
       .kind-card:hover { border-color: var(--accent); }
+      .kind-card:disabled { cursor: not-allowed; color: var(--text-muted); }
+      .kind-card:disabled:hover { border-color: var(--border-default); }
+      .kind-card:disabled .kind-name, .kind-card:disabled .kind-gets { color: var(--text-muted); }
+      .kind-card:disabled .kind-icon { color: var(--text-muted); }
+      .kind-card:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 
       .kind-card[aria-pressed='true'] {
         border-color: var(--accent);
@@ -151,6 +163,8 @@ export class VersolaClientKindStep extends LitElement {
             type="button"
             class="kind-card"
             aria-pressed=${k.id === this.kind}
+            ?disabled=${this.disabledKinds.includes(k.id)}
+            title=${this.disabledKinds.includes(k.id) ? this.disabledReason : ''}
             @click=${() => this.selectKind(k.id)}
           >
             <svg class="kind-icon" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
@@ -158,17 +172,17 @@ export class VersolaClientKindStep extends LitElement {
             <span class="kind-name">${k.name}</span>
             <span class="kind-blurb">${k.blurb}</span>
             <ul class="kind-gets">${k.gets.map(item => html`<li>${item}</li>`)}</ul>
-            <span class="kind-type">${k.examples}</span>
+            <span class="kind-type">${this.disabledKinds.includes(k.id) && this.disabledReason ? this.disabledReason : k.examples}</span>
           </button>
         `)}
       </div>
 
       ${kind ? html`
         <div class="lead">
-          ${kind.name} sets:
+          ${kind.name}${this.planOwner ? `, owned by ${this.planOwner},` : ''} sets:
         </div>
         <div class="plan">
-          ${clientPreset(kind.id, this.profile).plan.map(line => this.renderPlanLine(line))}
+          ${(this.plan ?? clientPreset(kind.id, this.profile).plan).map(line => this.renderPlanLine(line))}
         </div>
       ` : html`
         <div class="lead">Pick what you are building to see what it sets.</div>

@@ -96,7 +96,7 @@ test('the navigation lists the tenant items, then the global ones, in the agreed
   const links = page.locator('versola-navigation').getByRole('navigation', { name: 'Sections' }).getByRole('button');
   const labels = (await links.allInnerTexts()).map(text => text.trim()).filter(Boolean);
   expect(labels).toEqual([
-    'Security', 'Clients', 'Resources', 'Scopes', 'Permissions', 'Roles', 'OTP templates', 'Authorization details',
+    'Security', 'Clients', 'Resources', 'Partners', 'Scopes', 'Permissions', 'Roles', 'OTP templates', 'Authorization details',
     'Tenants', 'Edges', 'Users', 'Keys & metadata', 'System settings', 'Delivery', 'Forms', 'Themes',
   ]);
 });
