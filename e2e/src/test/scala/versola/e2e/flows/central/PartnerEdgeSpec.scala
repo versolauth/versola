@@ -1,8 +1,9 @@
 package versola.e2e.flows.central
 
+import versola.e2e.support.PartnerFixture.*
 import versola.e2e.support.{*, given}
 import zio.*
-import zio.http.{Client, ClientSSLConfig, Status}
+import zio.http.Status
 import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
@@ -18,124 +19,6 @@ import zio.test.*
   * asked auth to end the grants of the partner's clients).
   */
 object PartnerEdgeSpec extends CentralApiSpec:
-
-  /** A partner created through the operator API, and what its first edge holds: the key from the bundle and a certificate of
-    * the CA central's listener trusts, naming the edge and its group. */
-  private case class Partner(
-      id: String,
-      groupId: String,
-      consoleClientId: String,
-      edgeId: String,
-      token: String,
-      ssl: ClientSSLConfig,
-  )
-
-  /** A first-party edge in a tenant of its own: what the partners' data must not appear in. */
-  private case class FirstParty(edgeId: String, token: String, ssl: ClientSSLConfig, tenantId: String, clientId: String)
-
-  private def partnerBody(id: String, tenantId: String, edgeId: String): Json.Obj =
-    Json.Obj(
-      "partner" -> Json.Obj(
-        "id" -> Json.Str(id),
-        "tenantId" -> Json.Str(tenantId),
-        "displayName" -> Json.Str(s"Partner $id"),
-        "contact" -> Json.Obj("email" -> Json.Str(s"ops@$id.example")),
-        "limits" -> Json.Obj(
-          "scopes" -> Json.Arr(Json.Str("openid"), Json.Str("email")),
-          "redirectDomains" -> Json.Arr(Json.Str(s"$id.example")),
-          "maxClients" -> Json.Num(5),
-          "maxEdges" -> Json.Num(2),
-          "accessTokenTtlMax" -> Json.Num(600),
-          "refreshTokenTtlMax" -> Json.Num(86400),
-          "clientAuthMethods" -> Json.Arr(Json.Str("tls_client_auth")),
-          "rateLimitPolicy" -> Json.Str("partner-default"),
-        ),
-      ),
-      "consoleClient" -> Json.Obj("redirectUri" -> Json.Str(s"https://console.$id.example/callback")),
-      "firstEdge" -> Json.Obj("id" -> Json.Str(edgeId), "publicUrl" -> Json.Str(s"https://login.$id.example")),
-    )
-
-  private def createPartner(central: CentralApi, tenantId: String): Task[Partner] =
-    for
-      id <- CentralApi.id("e2e-partner")
-      edgeId = s"$id-edge"
-      created <- central.post("/configuration/partners", partnerBody(id, tenantId, edgeId))
-      _ <- ZIO.fail(RuntimeException(s"partner $id was refused: ${created.status} ${created.body}")).unless(created.status == Status.Created)
-      body <- created.obj
-      bundle <- ZIO.fromEither(body.str("bundle").getOrElse("").fromJson[Json.Obj]).mapError(RuntimeException(_))
-      key <- ZIO.fromOption(bundle.obj("signingKey")).orElseFail(RuntimeException("the bundle carries no signing key"))
-      groupId = bundle.str("group").getOrElse("")
-      token <- EdgeToken.sign(edgeId, key.str("keyId").getOrElse(""), key.str("privateKey").getOrElse(""))
-      certificate <- EdgeCertificate.forCentralListener(Some(edgeId), Some(groupId))
-      ssl <- certificate.clientSsl(central.config.centralMutualTlsServerCertificate)
-      partner = Partner(id, groupId, s"$id-console", edgeId, token, ssl)
-      // central authenticates an edge against a cache a Postgres notification refreshes after the registration lands
-      known <- eventually(onSurface(central, partner).get("/edge/partner/sync/dpop"))(_.status == Status.Ok)
-      _ <- ZIO.fail(RuntimeException(s"central never served the edge of $id: ${known.status} ${known.body}")).unless(known.status == Status.Ok)
-    yield partner
-
-  private def createFirstParty(central: CentralApi, tenantId: String): Task[FirstParty] =
-    for
-      edgeId <- CentralApi.id("e2e-edge")
-      clientId <- CentralApi.id("e2e-client")
-      registered <- central.post("/configuration/edges", Json.Obj("id" -> Json.Str(edgeId)))
-      keyId <- registered.stringAt("keyId")
-      privateKey <- registered.stringAt("privateKey")
-      token <- EdgeToken.sign(edgeId, keyId, privateKey)
-      certificate <- EdgeCertificate.forCentralListener(Some(edgeId))
-      ssl <- certificate.clientSsl(central.config.centralMutualTlsServerCertificate)
-      known <- eventually(central.onEdgeSurface(Some(token), Some(ssl)).get("/edge/sync/dpop"))(_.status == Status.Ok)
-      _ <- ZIO.fail(RuntimeException(s"central never authenticated the first-party edge: ${known.status}")).unless(known.status == Status.Ok)
-      _ <- central.post("/configuration/tenants", Fixtures.tenant(tenantId, edgeId = Some(edgeId), securityProfile = Some("standard")))
-        .flatMap(result => ZIO.fail(RuntimeException(s"tenant refused: ${result.status} ${result.body}")).unless(result.status.isSuccess))
-      _ <- SecurityProfiles.awaitProfile(central, tenantId, "standard")
-      _ <- central.post("/configuration/clients", Fixtures.client(clientId, tenantId = tenantId))
-        .flatMap(result => ZIO.fail(RuntimeException(s"client refused: ${result.status} ${result.body}")).unless(result.status.isSuccess))
-    yield FirstParty(edgeId, token, ssl, tenantId, clientId)
-
-  private def onSurface(central: CentralApi, partner: Partner): CentralApi =
-    central.onEdgeSurface(Some(partner.token), Some(partner.ssl))
-
-  private def onSurface(central: CentralApi, edge: FirstParty): CentralApi =
-    central.onEdgeSurface(Some(edge.token), Some(edge.ssl))
-
-  /** The ids in `items` of a document, as the partner's edge reads it; a refusal reads as none. */
-  private def ids(result: ApiResult, items: String, id: String): Task[Set[String]] =
-    if result.status == Status.Ok then result.items(items).map(_.flatMap(_.str(id)).toSet) else ZIO.succeed(Set.empty)
-
-  private def syncedTo(central: CentralApi, partner: Partner, path: String, items: String, id: String)(own: String): Task[Set[String]] =
-    eventually(onSurface(central, partner).get(path).flatMap(ids(_, items, id)))(_.contains(own))
-
-  /** Whether auth knows the console client of `partner`, seen as a browser would: auth sends a client it knows, and which must push
-    * its authorization request (the console does), back to its redirect URI with `invalid_request`; a client it does not know is
-    * answered 400 and not redirected to anything. Auth learns of a change at its next reload, which is asked for, and the answer is polled. */
-  private def authKnows(central: CentralApi, partner: Partner)(known: Boolean): Task[Boolean] =
-    // `POST /service/configuration/sync` (non-prod) makes central tell auth to reload at once rather than at its next interval
-    val status = central.postEmpty("/service/configuration/sync") *>
-      ZIO.serviceWithZIO[OAuthClient](_.authorizeRaw(
-        partner.consoleClientId,
-        s"https://console.${partner.id}.example/callback",
-      ).map(_.response.status))
-        .provide(Client.default, ZLayer.succeed(central.config), OAuthClient.live)
-    eventually(status.map(_ == Status.SeeOther))(_ == known)
-
-  private def renew(central: CentralApi, partner: Partner): Task[ApiResult] =
-    for
-      csr <- EdgeCertificate.renewalRequest(partner.edgeId, partner.groupId)
-      result <- onSurface(central, partner).post("/edge/certificate/renew", Json.Obj("csr" -> Json.Str(csr)))
-    yield result
-
-  private def fixture[A](central: CentralApi)(use: (Partner, Partner, FirstParty) => Task[A]): Task[A] =
-    for
-      tenantId <- CentralApi.id("e2e-partner-tenant")
-      firstParty <- createFirstParty(central, tenantId)
-      a <- createPartner(central, tenantId)
-      b <- createPartner(central, tenantId)
-      result <- use(a, b, firstParty).ensuring:
-        // best effort: a partner has no delete, and its rows are in a database that is thrown away with the stack
-        (central.delete("/configuration/clients", "clientId" -> firstParty.clientId) *>
-          central.delete("/configuration/edges", "edgeId" -> firstParty.edgeId)).ignore
-    yield result
 
   def spec = suite("Central API: the partner edge")(
     test("two partners' edges each read only their own data, and the first-party sync has none of it") {

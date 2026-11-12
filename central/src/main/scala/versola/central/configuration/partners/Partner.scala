@@ -52,6 +52,8 @@ case class PartnerContact(
   *
   * @param scopes            what a partner client may request, as a whole: a client's scope is a subset
   * @param redirectDomains   every redirect URI of a partner client is `https` and under one of these (the domain or a subdomain)
+  * @param resourceDomains   every resource of the partner is `https` and under one of these; absent means the same domains as
+  *                          `redirectDomains` (a partner's API is usually where its applications are)
   * @param maxClients        how many clients the partner may register, pending ones included
   * @param maxEdges          how many edges the partner may enrol in its group
   * @param accessTokenTtlMax the longest access token a partner client may issue, in seconds; it is also how long a token of a
@@ -65,6 +67,7 @@ case class PartnerContact(
 case class PartnerLimits(
     scopes: Set[ScopeToken],
     redirectDomains: Set[String],
+    resourceDomains: Option[Set[String]],
     maxClients: Int,
     maxEdges: Int,
     accessTokenTtlMax: Long,
@@ -74,6 +77,9 @@ case class PartnerLimits(
 ) derives Schema, JsonCodec
 
 object PartnerLimits:
+  /** The domains a partner's resources may be under: its own `resourceDomains`, else its redirect domains. */
+  extension (limits: PartnerLimits) def effectiveResourceDomains: Set[String] = limits.resourceDomains.getOrElse(limits.redirectDomains)
+
   /** The two ways a partner client may authenticate (#549): a certificate of the partner's group, or a key the partner holds.
     * Never a shared secret, and never nothing. */
   val AllowedAuthMethods: Set[AuthMethod] = Set(AuthMethod.tls_client_auth, AuthMethod.private_key_jwt)
@@ -109,6 +115,9 @@ case class PartnerRecord(
     /** A reminder for the operator to look at the partner again; central does nothing at that date. */
     reviewAt: Option[Instant],
     createdAt: Instant,
+    /** Bumped by every write of the row; a write of the profile or the settings names the version it read and loses when the row
+      * has moved on (#962 review: the operator, the partner and an approved profile change write the same row). */
+    version: Long,
 ) derives Schema, CanEqual
 
 object PartnerRecord:

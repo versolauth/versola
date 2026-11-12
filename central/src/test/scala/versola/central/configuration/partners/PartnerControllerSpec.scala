@@ -38,6 +38,7 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtlMax = 86400,
     clientAuthMethods = Set(AuthMethod.tls_client_auth),
     rateLimitPolicy = "partner-default",
+    resourceDomains = None,
   )
 
   private def partner(id: String, tenantId: TenantId) = PartnerRecord(
@@ -53,6 +54,7 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
     settings = PartnerSettings.empty,
     reviewAt = None,
     createdAt = now,
+    version = 0L,
   )
 
   private val acme = partner("acme", tenantA)
@@ -203,7 +205,7 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
         json("""{"id":"acme","note":"fraud"}"""),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
-      setup = stubs => stubs.service.suspend.succeedsWith(()),
+      setup = stubs => stubs.service.suspend.succeedsWith(PartnerService.SuspendOutcome(authSynced = true, revocationFailed = Nil)),
       verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.service.suspend.calls == List(acme.id))),
     ),
     testCase(
@@ -262,7 +264,12 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (response, stubs) =>
         for body <- response.body.asString.flatMap(text => ZIO.fromEither(text.fromJson[GetPartnerApprovalsResponse]).mapError(RuntimeException(_)))
         yield assertTrue(
-          stubs.service.approvals.calls == List((Some(tenantA), Some(ApprovalStatus.Waiting), Some(acme.id))),
+          stubs.service.approvals.calls == List((
+            Some(tenantA),
+            Some(ApprovalStatus.Waiting),
+            Some(acme.id),
+            PartnerController.DefaultApprovalsLimit,
+          )),
           body.approvals.map(_.id) == Vector(ApprovalId("c")),
         ),
     ),

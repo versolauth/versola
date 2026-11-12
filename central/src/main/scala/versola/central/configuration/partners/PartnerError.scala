@@ -11,7 +11,11 @@ enum PartnerError:
   /** The request conflicts with what exists: an id taken, a request already decided (409). */
   case Conflict(reason: String)
 
+  /** The partner asks for something it may only ask for so often (429): it may ask again after `retryAfterSeconds`. */
+  case TooManyRequests(retryAfterSeconds: Long)
+
   def message: String = this match
     case NotFound(what) => s"$what does not exist"
     case Invalid(reason) => reason
     case Conflict(reason) => reason
+    case TooManyRequests(seconds) => s"too many requests, try again in $seconds seconds"

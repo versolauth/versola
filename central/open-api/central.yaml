@@ -38,7 +38,15 @@ info:
       `PUT /edge/partner/profile`, `GET`/`PUT /edge/partner/settings` and `GET /edge/partner/audit`. A management
       call carries the staff member's access token in `Versola-Principal` besides the edge's bearer token; it is
       verified against auth's keys, the issuer and the partner's console client, and its `sub` is the actor of the
-      audit event (`403` `partner_principal_mismatch` otherwise). A first-party edge is refused there (`401`
+      audit event (`403` `partner_principal_mismatch` otherwise). The token proves that a user of the operator signed in
+      through the partner's console client, not that they are of the partner's staff (that is the edge's check), and central
+      checks its signature, type, expiry, issuer and client, not a revocation: the console's access tokens live ten minutes
+      at most. The certificate the edge presents must name its group as well as the edge (`401` otherwise).
+      `POST /edge/partner/revocations` is limited per partner: `429` with `Retry-After` for a whole client within a minute of
+      the last one, or a user within a second of the last. `GET /edge/partner/audit` shows the operator's events about the
+      partner (an approval, a suspension) without the administrator's id, address or browser, and nobody's node or trace.
+      Deleting an edge of a partner does not revoke the certificate it holds: it keeps authenticating the group's clients at
+      auth until it expires (`edge-certificates.partner-validity`); suspending the partner is what ends the group's access. A first-party edge is refused there (`401`
       `edge_group_first_party`), an edge of a group no partner points at too (`401`), and a suspended partner's edge
       everywhere, `POST /edge/certificate/renew` included (`403` `partner_suspended`). Refusals of the service are
       `400`, `404` and `409` with a `text/plain` reason, as on this document's partner routes.
@@ -2548,7 +2556,14 @@ paths:
         approved client of the partner is revoked at auth, which sends the back-channel logout to the client's
         registered URI, that is to the partner's edge; and the partner's edges are refused everything under
         `/edge/partner/*` and `POST /edge/certificate/renew` with `403`, so their certificates expire within
-        `edge-certificates.partner-validity`. Audited. `note` is not stored.
+        `edge-certificates.partner-validity`; an enrollment token that was not used is void, and one that is presented
+        is refused. Audited: the log keeps that a `note` came with the call, not what it says (it is not stored).
+
+        The order is: the status is written, auth is told to reload its clients (so that no code flow of the partner's
+        clients can complete from then on), the clients are read as stored, and the grants of each approved one are
+        revoked. A client that cannot be revoked does not stop the others. When everything was done the answer is `204`;
+        when auth could not be told or some grants could not be revoked it is `207` with what is left: the partner is
+        suspended either way, and the call can be repeated once auth answers (nothing already revoked is revoked twice).
       operationId: suspendPartner
       requestBody:
         required: true
@@ -2558,7 +2573,15 @@ paths:
               $ref: '#/components/schemas/SuspendPartnerRequest'
       responses:
         '204':
-          description: Partner suspended.
+          description: Partner suspended, auth told, every grant revoked.
+        '207':
+          description: |
+            Partner suspended, but not everything was done: `authSynced` is `false` when auth could not be told to reload its
+            clients, and `revocationFailed` names the clients whose grants could not be revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuspendPartnerResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -2618,9 +2641,17 @@ paths:
     get:
       tags: [Partners]
       summary: List the requests partners made
-      description: Newest first. Every filter narrows.
+      description: Newest first, at most `limit` of them (100 unless asked, 500 at the most). Every filter narrows.
       operationId: getPartnerApprovals
       parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
         - name: tenantId
           in: query
           required: false
@@ -7095,10 +7126,21 @@ components:
           type: array
           items:
             type: string
-          description: Every redirect URI of a partner client is `https` and under one of these (the domain or a subdomain).
+          description: |
+            Every redirect URI of a partner client is `https` and under one of these (the domain or a subdomain, never an
+            address). So is its `backChannelLogoutUri`: auth posts a signed logout token there from inside the operator's network.
+        resourceDomains:
+          type: array
+          items:
+            type: string
+          description: |
+            Every resource of the partner is `https`, in lower case, without the default port, and under one of these. Absent
+            means the same domains as `redirectDomains`.
         maxClients:
           type: integer
-          description: How many clients the partner may register, pending ones included.
+          description: |
+            How many clients the partner may register, pending ones included and its console not. Enforced where the rows are
+            written, so that clients created at once cannot pass it together.
         maxEdges:
           type: integer
         accessTokenTtlMax:
@@ -7240,6 +7282,19 @@ components:
           type: string
           description: The operator's reason; not stored in this release.
       required: [id]
+    SuspendPartnerResponse:
+      type: object
+      description: What a suspension left undone (`207`).
+      properties:
+        authSynced:
+          type: boolean
+          description: Whether auth was told to reload its clients.
+        revocationFailed:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClientId'
+          description: The clients whose grants could not be revoked.
+      required: [authSynced, revocationFailed]
     ResumePartnerRequest:
       type: object
       properties:

@@ -397,12 +397,14 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
       refreshTokenTtlMax = 86400,
       clientAuthMethods = Set(AuthMethod.tls_client_auth),
       rateLimitPolicy = "partner-default",
+      resourceDomains = None,
     ),
     groupId = EdgeGroupId("partner-acme"),
     consoleClientId = ClientId("partner-acme-console"),
     settings = PartnerSettings.empty,
     reviewAt = None,
     createdAt = Instant.parse("2026-11-01T00:00:00Z"),
+    version = 0L,
   )
 
   private def sync(resource: String): URL = URL.root / "edge" / "sync" / resource

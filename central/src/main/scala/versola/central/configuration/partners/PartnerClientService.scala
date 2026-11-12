@@ -57,10 +57,19 @@ trait PartnerClientService:
 
   def find(partner: PartnerRecord, clientId: ClientId): Task[Option[PartnerClientService.View]]
 
-  /** The operator approves a client request: `overrides` laid over `requested` is what gets registered, and what comes
-    * back as `applied` when it differs from `requested`. A `client_create` sets the client `approved` and gives it its
-    * preset (`/login/<client id>`). */
-  def applyApproval(approval: PartnerApprovalRecord, overrides: Option[Json.Obj]): IO[PartnerError | Throwable, Option[Json.Obj]]
+  /** What an approval will register, before anything is decided: `overrides` laid over `requested`, as `applied` when it
+    * differs from `requested`. Only the fields a partner may ask for can be overridden (not `id`, `kind` or `authMethod`),
+    * and the result must still be a registration of the client the approval is about. */
+  def checkOverrides(approval: PartnerApprovalRecord, overrides: Option[Json.Obj]): IO[PartnerError, Option[Json.Obj]]
+
+  /** Applies an approval the operator has just won (it is decided in the database first, so that two decisions on one
+    * request cannot both apply): `applied` laid over `requested` is what gets registered. A `client_create` sets the client
+    * `approved` and gives it its preset (`/login/<client id>`). */
+  def applyApproval(approval: PartnerApprovalRecord, applied: Option[Json.Obj]): IO[PartnerError | Throwable, Unit]
+
+  /** Puts a client back to what it was before [[applyApproval]] when applying failed: a `client_create` is `pending` again, so
+    * that a failure never leaves a client that is served and whose approval is not decided. */
+  def revertApproval(approval: PartnerApprovalRecord): Task[Unit]
 
   /** The operator rejects: a `client_create` sets the client `rejected`; a `client_change` leaves it as registered. */
   def rejectApproval(approval: PartnerApprovalRecord): IO[PartnerError | Throwable, Unit]
@@ -78,8 +87,34 @@ object PartnerClientService:
 
   case class View(client: OAuthClientRecord, approval: Approval)
 
-  /** The fields the consent screen shows: a change of them always needs the operator (consent phishing). */
-  val ConsentScreenFields: List[String] = List("clientName", "logoUri")
+  /** What the operator's users see and agree to on the consent screen: the name and logo, the links to the partner's policy and
+    * terms, and how consent is asked for. A change of any of them always needs the operator (consent phishing, weakened consent). */
+  val ConsentScreenFields: List[String] = List("clientName", "logoUri", "policyUri", "tosUri", "consentFlow")
+
+  /** The fields of a request the operator may override when approving it. The identity and the credential of the client are
+    * not among them: they are what the approval is about. */
+  val OverridableFields: Set[String] = Set(
+    "clientName",
+    "logoUri",
+    "policyUri",
+    "tosUri",
+    "redirectUris",
+    "scope",
+    "jwks",
+    "accessTokenTtl",
+    "refreshTokenTtl",
+    "backChannelLogoutUri",
+    "consentFlow",
+  )
+
+  /** How many of a partner's requests a listing reads: the newest ones, which is where the waiting ones and the latest
+    * decisions are. */
+  val HistoryLimit: Int = 500
+
+  /** Whether a failure of a write is one of the triggers that enforce a partner's limits, which name themselves in the message of
+    * the exception (`partner_client_limit`, `partner_edge_limit`), however deep in the causes the database driver put it. */
+  def isLimitViolation(error: Throwable, marker: String): Boolean =
+    Option(error.getMessage).exists(_.contains(marker)) || Option(error.getCause).exists(isLimitViolation(_, marker))
 
   val live: URLayer[OAuthClientService & AuthorizationPresetService & PartnerApprovalRepository, PartnerClientService] =
     ZLayer.fromFunction(Impl(_, _, _))
@@ -97,10 +132,13 @@ object PartnerClientService:
       error match
         case error: InvalidRegistrationConfiguration => ZIO.fail(PartnerError.Invalid(s"Invalid registration configuration: ${error.reason}"))
         case error: ClientAlreadyExists => ZIO.fail(PartnerError.Conflict(s"client '${error.clientId}' already exists"))
+        // the count of clients is enforced by the table (a trigger that locks the partner), where two creations cannot both pass
+        case error: Throwable if PartnerClientService.isLimitViolation(error, "partner_client_limit") =>
+          ZIO.fail(PartnerError.Invalid("the partner has registered as many clients as its limits allow"))
         case error: Throwable => ZIO.fail(error)
 
     private def owned(partner: PartnerRecord, clientId: ClientId): IO[PartnerError | Throwable, OAuthClientRecord] =
-      clients.findClient(clientId).flatMap:
+      clients.findClientFresh(clientId).flatMap:
         case Some(client) if client.partnerId.contains(partner.id) && client.id != partner.consoleClientId => ZIO.succeed(client)
         case _ => ZIO.fail(PartnerError.NotFound(s"client '$clientId'"))
 
@@ -114,9 +152,14 @@ object PartnerClientService:
     ): IO[PartnerError | Throwable, (OAuthClientRecord, PartnerApprovalRecord)] =
       for
         _ <- ZIO.fail(PartnerError.Conflict(s"client '${request.id}' is the partner's console client")).when(request.id == partner.consoleClientId)
+        // `<partner>-console` is the name of a console client, and a client and a preset share one namespace of ids: another partner's
+        // console may not be registered ahead of its partner
+        _ <- ZIO.fail(
+          PartnerError.Invalid(s"a client id may not end in '-console': those are the partners' consoles"),
+        ).when(request.id.endsWith("-console"))
         registration = request.toCreateClientRequest(partner)
         _ <- clients.registerClient(registration, approval = ClientApproval.Pending, allowOutsideLimits = true).catchAll(invalid)
-        client <- clients.findClient(request.id).someOrFail(IllegalStateException(s"client '${request.id}' was registered and cannot be read"))
+        client <- clients.findClientFresh(request.id).someOrFail(IllegalStateException(s"client '${request.id}' was registered and cannot be read"))
         outside = PartnerClientRules.outsideLimits(partner, PartnerClientRules.Subject.of(client)).map(_.field)
         now <- Clock.instant
         id <- nextId
@@ -150,6 +193,8 @@ object PartnerClientService:
         waiting <- approvals.waitingFor(partner.id, request.id)
         _ <- ZIO.fail(PartnerError.Conflict(s"client '${request.id}' already has a change waiting for the operator")).when(waiting.nonEmpty)
         patched = patchedSubject(request, client)
+        // what makes it no partner's client at all (a back-channel address outside the partner's domains) is refused, not queued
+        _ <- ZIO.foreachDiscard(PartnerClientRules.invariant(request.id, partner, patched))(error => invalid(error))
         outside = PartnerClientRules.outsideLimits(partner, patched).map(_.field)
         needsOperator = outside ++ ConsentScreenFields.filter(request.fields.contains)
         result <-
@@ -187,6 +232,11 @@ object PartnerClientService:
         scope = request.scope.getOrElse(subject.scope),
         accessTokenTtl = request.accessTokenTtl.map(Duration.fromSeconds).getOrElse(subject.accessTokenTtl),
         refreshTokenTtl = request.refreshTokenTtl.map(Duration.fromSeconds).getOrElse(subject.refreshTokenTtl),
+        consentFlow = subject.consentFlow || request.consentFlow.isDefined,
+        backChannelLogoutUri = request.backChannelLogoutUri match
+          case Some(Patch.Modified(uri)) => Some(uri)
+          case Some(Patch.Deleted) => None
+          case _ => subject.backChannelLogoutUri,
       )
 
     /** The stored values of the fields a change names, for the operator to see the difference. */
@@ -206,13 +256,16 @@ object PartnerClientService:
 
     override def withdraw(partner: PartnerRecord, clientId: ClientId): IO[PartnerError | Throwable, PartnerApprovalRecord] =
       for
-        client <- owned(partner, clientId)
+        _ <- owned(partner, clientId)
         waiting <- approvals.waitingFor(
           partner.id,
           clientId,
         ).map(_.headOption).someOrFail(PartnerError.NotFound(s"a waiting request about client '$clientId'"))
         now <- Clock.instant
-        _ <- approvals.decide(waiting.id, ApprovalStatus.Withdrawn, None, now, None, None)
+        // Decided first, and only the one that wins goes on: an operator who approved in between has decided it, and an
+        // approved client is not to be deleted by a withdrawal that lost.
+        won <- approvals.decide(waiting.id, ApprovalStatus.Withdrawn, None, now, None, None)
+        _ <- ZIO.fail(PartnerError.Conflict(s"the request about client '$clientId' was decided meanwhile")).unless(won)
         _ <- clients.deleteClient(clientId).when(waiting.kind == ApprovalKind.ClientCreate)
       yield waiting.copy(status = ApprovalStatus.Withdrawn, decidedAt = Some(now))
 
@@ -234,11 +287,14 @@ object PartnerClientService:
     override def list(partner: PartnerRecord): Task[Vector[View]] =
       for
         own <- clients.getPartnerClients(partner.id).map(_.filter(_.id != partner.consoleClientId).sortBy(_.id))
-        requests <- approvals.list(None, None, Some(partner.id))
+        requests <- approvals.list(None, None, Some(partner.id), PartnerClientService.HistoryLimit)
       yield own.map(client => View(client, stateOf(client, requests.filter(_.targetId == client.id))))
 
     override def find(partner: PartnerRecord, clientId: ClientId): Task[Option[View]] =
-      list(partner).map(_.find(_.client.id == clientId))
+      for
+        own <- clients.findClientFresh(clientId).map(_.filter(c => c.partnerId.contains(partner.id) && c.id != partner.consoleClientId))
+        requests <- approvals.forTarget(partner.id, clientId, PartnerClientService.HistoryLimit)
+      yield own.map(client => View(client, stateOf(client, requests)))
 
     /** Where a client stands, from its approval and the requests about it (newest first). */
     private def stateOf(client: OAuthClientRecord, requests: Vector[PartnerApprovalRecord]): Approval =
@@ -253,22 +309,46 @@ object PartnerClientService:
             case Some(change) => Approval(RequestKind.change, RequestState.pending, change.outsideLimits, Some(change.requestedAt), None)
             case None => Approval(RequestKind.create, RequestState.approved, Nil, creation.map(_.requestedAt), creation.flatMap(_.note))
 
-    override def applyApproval(approval: PartnerApprovalRecord, overrides: Option[Json.Obj]): IO[PartnerError | Throwable, Option[Json.Obj]] =
+    private def decode[A: JsonDecoder](json: Json.Obj, what: String): IO[PartnerError, A] =
+      ZIO.fromEither(json.toJson.fromJson[A]).mapError(reason => PartnerError.Invalid(s"the $what cannot be read: $reason"))
+
+    override def checkOverrides(approval: PartnerApprovalRecord, overrides: Option[Json.Obj]): IO[PartnerError, Option[Json.Obj]] =
+      overrides.filter(_.fields.nonEmpty) match
+        case None => ZIO.none
+        case Some(overridden) =>
+          val forbidden = overridden.fields.map(_._1).filterNot(PartnerClientService.OverridableFields.contains)
+          for
+            _ <- ZIO.fail(
+              PartnerError.Invalid(s"${forbidden.mkString(", ")} cannot be overridden: what the approval is about is not the operator's to change"),
+            )
+              .when(forbidden.nonEmpty)
+            _ <- ZIO.fail(PartnerError.Invalid("a profile change has no client fields to override")).when(approval.kind == ApprovalKind.ProfileChange)
+            applied = merge(approval.requested, overridden)
+            // read as what it will be applied as, so that an override that cannot be read refuses before anything is decided
+            _ <- approval.kind match
+              case ApprovalKind.ClientCreate => decode[PartnerClientRequest](applied, "approved registration").unit
+              case _ => decode[PartnerClientUpdate](applied, "approved change").unit
+          yield Some(applied)
+
+    override def applyApproval(approval: PartnerApprovalRecord, applied: Option[Json.Obj]): IO[PartnerError | Throwable, Unit] =
       val clientId = ClientId(approval.targetId)
-      val applied = overrides.filter(_.fields.nonEmpty).map(merge(approval.requested, _))
-      def decode[A: JsonDecoder](json: Json.Obj, what: String): IO[PartnerError, A] =
-        ZIO.fromEither(json.toJson.fromJson[A]).mapError(reason => PartnerError.Invalid(s"the $what cannot be read: $reason"))
       for
-        client <- clients.findClient(clientId).someOrFail(PartnerError.NotFound(s"client '$clientId'"))
+        // as stored now: the preset and the change are computed from what is there, not from a cache that has not seen the
+        // last write
+        client <- clients.findClientFresh(clientId).someOrFail(PartnerError.NotFound(s"client '$clientId'"))
+        _ <- ZIO.fail(PartnerError.NotFound(s"client '$clientId'")).unless(client.partnerId.contains(approval.partnerId))
         _ <- approval.kind match
           case ApprovalKind.ClientCreate =>
             for
               // the overrides are a change to what the partner registered: read as one, so the same rules apply
               _ <- ZIO.foreachDiscard(applied): json =>
                 decode[PartnerClientRequest](json, "approved registration").flatMap: request =>
-                  clients.updateClient(asUpdate(request).toUpdateClientRequest(client), allowOutsideLimits = true).catchAll(invalid)
+                  clients.updateClient(
+                    asUpdate(request.copy(id = clientId)).toUpdateClientRequest(client),
+                    allowOutsideLimits = true,
+                  ).catchAll(invalid)
               _ <- clients.setApproval(clientId, ClientApproval.Approved)
-              approved <- clients.findClient(clientId).someOrFail(PartnerError.NotFound(s"client '$clientId'"))
+              approved <- clients.findClientFresh(clientId).someOrFail(PartnerError.NotFound(s"client '$clientId'"))
               _ <- loginPreset(approved)
             yield ()
           case ApprovalKind.ClientChange =>
@@ -276,7 +356,12 @@ object PartnerClientService:
               clients.updateClient(request.copy(id = clientId).toUpdateClientRequest(client), allowOutsideLimits = true).catchAll(invalid)
           case ApprovalKind.ProfileChange =>
             ZIO.fail(PartnerError.Invalid("a profile change is not a client request"))
-      yield applied
+      yield ()
+
+    override def revertApproval(approval: PartnerApprovalRecord): Task[Unit] =
+      approval.kind match
+        case ApprovalKind.ClientCreate => clients.setApproval(ClientId(approval.targetId), ClientApproval.Pending).unit
+        case _ => ZIO.unit
 
     override def rejectApproval(approval: PartnerApprovalRecord): IO[PartnerError | Throwable, Unit] =
       approval.kind match

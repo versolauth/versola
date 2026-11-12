@@ -1,6 +1,6 @@
 package versola.central.configuration.partners
 
-import versola.central.configuration.clients.{ApplicationType, PartnerClientRules}
+import versola.central.configuration.clients.{ApplicationType, AuthFlow, PartnerClientRules}
 import versola.central.configuration.clients.{AuthMethod, ClientId, ClientKind, ClientTemplate, OAuthClientRecord}
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.{
@@ -53,7 +53,9 @@ case class PartnerClientRequest(
       accessTokenTtl = accessTokenTtl,
       refreshTokenTtl = refreshTokenTtl,
       theme = "default",
-      authFlow = None,
+      // how the operator's users sign in is the operator's to say, per client (`PUT /configuration/clients/web`); until it does, the
+      // default of the platform: a client with none is "not configured for sign-in" at auth
+      authFlow = Some(AuthFlow.default),
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,

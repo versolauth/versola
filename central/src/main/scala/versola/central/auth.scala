@@ -90,6 +90,10 @@ def authorizePartnerEdge(request: Request): ZIO[CentralConfig & EdgeService & Pa
   for
     edge <- authorizeAnyEdge(request)
     _ <- (Observability.setError("edge_group_first_party") *> ZIO.fail(Unauthorized)).when(edge.groupKind != EdgeGroupKind.Partner)
+    // a partner's edge presents a certificate that names its group: one that names only the edge says nothing of who it speaks for
+    _ <- (Observability.setError("edge_certificate_without_group") *> ZIO.fail(Unauthorized)).unless(
+      request.remoteCertificate.exists(EdgeCertificate.isIssuedToMemberOf(_, edge.id, edge.groupId)),
+    )
     partner <- unsuspendedPartnerOf(edge)
   yield PartnerCaller(edge, partner)
 

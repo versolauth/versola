@@ -341,10 +341,22 @@ object UserController extends Controller:
         // The record is already committed; the push is for what checks a JWT on its own signature. A client this
         // deployment no longer knows has no back channel to tell.
         _ <- ZIO.foreachDiscard(client): client =>
-          ZIO.foreachDiscard(families): (userId, family) =>
-            ZIO.serviceWithZIO[AccessTokenRevocationService](
-              _.announceFamily(client, family, subject = userId.toString, expiresAt = now.plus(client.accessTokenTtl)),
-            )
+          userId match
+            case Some(_) =>
+              ZIO.foreachDiscard(families): (userId, family) =>
+                ZIO.serviceWithZIO[AccessTokenRevocationService](
+                  _.announceFamily(client, family, subject = userId.toString, expiresAt = now.plus(client.accessTokenTtl)),
+                )
+            // A client of many users: one event per user, with all of that user's families, and none dropped when the
+            // outbox is full -- the call waits for room. Announced from a fiber of its own so that the answer does not wait on
+            // the partner's endpoint: the revocation is committed, and the notice is what the edge learns it from.
+            case None =>
+              ZIO.serviceWithZIO[AccessTokenRevocationService]: service =>
+                ZIO.foreachDiscard(families.groupMap(_._1)(_._2)): (userId, ended) =>
+                  ZIO.foreachDiscard(NonEmptyChunk.fromIterableOption(ended)): ended =>
+                    service.announceFamilies(client, ended, subject = userId.toString, expiresAt = now.plus(client.accessTokenTtl))
+                .catchAllCause(cause => ZIO.logWarningCause(s"Announcing the grants of '$clientId' that ended failed", cause))
+                  .forkDaemon
         _ <- userId match
           case Some(userId) =>
             audited(

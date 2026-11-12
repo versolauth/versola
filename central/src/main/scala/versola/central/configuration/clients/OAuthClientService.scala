@@ -100,6 +100,10 @@ trait OAuthClientService:
   /** The stored client, read through the repository when it has not reached the cache yet. */
   def findClient(clientId: ClientId): Task[Option[OAuthClientRecord]]
 
+  /** The client as stored now, not as the cache last saw it: what a decision about the client (an approval, a change that is
+    * computed against what is there) must be made on. */
+  def findClientFresh(clientId: ClientId): Task[Option[OAuthClientRecord]]
+
   def rotateClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Secret]
 
   def deletePreviousClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Unit]
@@ -286,7 +290,11 @@ object OAuthClientService:
     ): IO[InvalidRegistrationConfiguration, Unit] =
       ZIO.foreachDiscard(partner): partner =>
         ZIO.foreachDiscard(PartnerClientRules.invariant(clientId, partner, subject))(ZIO.fail(_)) *>
-          ZIO.foreachDiscard(PartnerClientRules.validateLimits(clientId, partner, subject).filterNot(_ => allowOutsideLimits))(ZIO.fail(_))
+          // the partner's console is the operator's own doing, with the scope the console needs: not held to the partner's limits, at
+          // registration or when the operator changes it afterwards
+          ZIO.foreachDiscard(PartnerClientRules.validateLimits(clientId, partner, subject).filterNot(_ =>
+            allowOutsideLimits || clientId == partner.consoleClientId,
+          ))(ZIO.fail(_))
 
     private def register(
         request: CreateClientRequest,
@@ -298,7 +306,8 @@ object OAuthClientService:
       for
         partner <- partnerOf(request.id, request.partnerId)
         _ <- ZIO.foreachDiscard(partner): partner =>
-          cache.get.map(_.count(_.partnerId.contains(partner.id))).flatMap: existing =>
+          // the console client is the partner's own, registered with it, and is not one of the clients its limit counts
+          cache.get.map(_.count(c => c.partnerId.contains(partner.id) && c.id != partner.consoleClientId)).flatMap: existing =>
             ZIO.foreachDiscard(PartnerClientRules.validateClientCount(request.id, partner, existing))(ZIO.fail(_))
         _ <- validateConsentUris(
           "logoUri" -> request.logoUri,
@@ -572,6 +581,9 @@ object OAuthClientService:
       cache.get.map(_.find(_.id == clientId)).flatMap:
         case some @ Some(_) => ZIO.succeed(some)
         case None => clientRepository.find(clientId).flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, clientSecretsKey)))
+
+    override def findClientFresh(clientId: ClientId): Task[Option[OAuthClientRecord]] =
+      clientRepository.find(clientId).flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, clientSecretsKey)))
 
     override def rotateClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Secret] =
       for

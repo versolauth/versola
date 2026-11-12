@@ -33,12 +33,14 @@ object PartnerClientRulesSpec extends ZIOSpecDefault:
       refreshTokenTtlMax = 86400,
       clientAuthMethods = Set(AuthMethod.tls_client_auth, AuthMethod.private_key_jwt),
       rateLimitPolicy = "partner-default",
+      resourceDomains = None,
     ),
     groupId = group,
     consoleClientId = ClientId("acme-console"),
     settings = PartnerSettings.empty,
     reviewAt = None,
     createdAt = Instant.EPOCH,
+    version = 0L,
   )
 
   private val groupAuth = MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_uri, EdgeCertificate.groupUriFor(group))
@@ -54,6 +56,7 @@ object PartnerClientRulesSpec extends ZIOSpecDefault:
     scope = Set(ScopeToken("openid"), ScopeToken("phone")),
     accessTokenTtl = 600.seconds,
     refreshTokenTtl = 86400.seconds,
+    backChannelLogoutUri = None,
   )
 
   private def invariant(subject: PartnerClientRules.Subject) = PartnerClientRules.invariant(clientId, partner, subject).map(_.reason)
@@ -112,6 +115,58 @@ object PartnerClientRulesSpec extends ZIOSpecDefault:
           Set(RedirectUri("https://acme.example/cb"), RedirectUri("https://A.B.ACME.EXAMPLE/cb"), RedirectUri("https://shop.acme.app/x")),
         )
         assertTrue(outside(under).isEmpty)
+      },
+      test("what is under the domain is read from the host the URI names: user info, a port, a trailing dot, an address, a look-alike") {
+        def under(uri: String) = PartnerClientRules.underDomains(uri, Set("acme.example"))
+        assertTrue(
+          // the host is what follows the `@`: the user part is no domain
+          !under("https://acme.example@evil.test/cb"),
+          under("https://evil.test@acme.example/cb"),
+          under("https://acme.example:8443/cb"),
+          // a trailing dot, another spelling of the same name, is not the domain's own spelling
+          !under("https://acme.example./cb"),
+          !under("https://10.0.0.1/cb"),
+          !under("https://[::1]/cb"),
+          !under("https://127.1/cb"),
+          !under("https://xn--acme-9ua.example/cb"),
+          !under("https://acme.example.evil.test/cb"),
+          !under("https://evilacme.example/cb"),
+          !under("http://acme.example/cb"),
+          !under("//acme.example/cb"),
+        )
+      },
+      test("a back-channel logout address is the partner's own: https, a name under its domains, never an address or localhost") {
+        def refused(uri: String) = invariant(conforming.copy(backChannelLogoutUri = Some(uri))).exists(_.contains("backChannelLogoutUri"))
+        assertTrue(
+          invariant(conforming.copy(backChannelLogoutUri = Some("https://shop.acme.example/logout"))).isEmpty,
+          invariant(conforming.copy(backChannelLogoutUri = None)).isEmpty,
+          refused("https://internal.example/logout"),
+          refused("http://shop.acme.example/logout"),
+          refused("https://10.1.2.3/logout"),
+          refused("https://localhost/logout"),
+          refused("https://169.254.169.254/latest/meta-data"),
+          refused("https://[::1]:8443/logout"),
+        )
+      },
+      test("a resource of a partner is https, under its resource domains (else its redirect domains), in the one spelling") {
+        def violation(uri: String, p: PartnerRecord = partner) = PartnerClientRules.resourceUriViolation(p, uri)
+        val own = partner.copy(limits = partner.limits.copy(resourceDomains = Some(Set("api.acme.example"))))
+        assertTrue(
+          violation("https://api.acme.example").isEmpty,
+          violation("https://v2.api.acme.example").isEmpty,
+          violation("https://acme.example").isEmpty,
+          violation("https://acme.example:8443").isEmpty,
+          violation("http://acme.example").isDefined,
+          violation("https://operator.example").isDefined,
+          violation("https://API.acme.example").exists(_.contains("lower case")),
+          violation("https://acme.example:443").exists(_.contains("default port")),
+          violation("https://10.0.0.1").isDefined,
+          violation("https://localhost").isDefined,
+          violation("https://acme.example./").isDefined,
+          // its own resource domains replace the redirect domains for resources
+          violation("https://acme.example", own).isDefined,
+          violation("https://api.acme.example", own).isEmpty,
+        )
       },
       test("a scope the partner was not granted names scope") {
         assertTrue(outside(conforming.copy(scope = Set(ScopeToken("openid"), ScopeToken("email")))) == List("scope"))

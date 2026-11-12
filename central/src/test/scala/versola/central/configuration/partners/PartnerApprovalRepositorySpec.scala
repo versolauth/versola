@@ -51,10 +51,10 @@ trait PartnerApprovalRepositorySpec extends DatabaseSpecBase[PartnerApprovalRepo
           _ <- env.repository.create(second)
           _ <- env.repository.create(other)
           _ <- env.repository.decide(ApprovalId("a-1"), ApprovalStatus.Rejected, Some("admin-1"), now.plusSeconds(90), Some("no"), None)
-          all <- env.repository.list(None, None, None)
-          tenant <- env.repository.list(Some(tenantA), None, None)
-          waiting <- env.repository.list(None, Some(ApprovalStatus.Waiting), None)
-          ofGlobex <- env.repository.list(None, None, Some(globex))
+          all <- env.repository.list(None, None, None, 100)
+          tenant <- env.repository.list(Some(tenantA), None, None, 100)
+          waiting <- env.repository.list(None, Some(ApprovalStatus.Waiting), None, 100)
+          ofGlobex <- env.repository.list(None, None, Some(globex), 100)
           waitingFor <- env.repository.waitingFor(acme, s"$acme-shop")
           found <- env.repository.find(ApprovalId("a-1"))
         yield assertTrue(
@@ -89,6 +89,49 @@ trait PartnerApprovalRepositorySpec extends DatabaseSpecBase[PartnerApprovalRepo
           found.map(_.applied) == Some(Some(applied)),
           found.map(_.requested) == Some(request.requested),
           found.flatMap(_.decidedBy) == Some("admin-1"),
+        )
+      },
+      test("a listing is bounded: the newest `limit`, and the requests about one target alone") {
+        for
+          _ <- env.fixtures.partner(acme, tenantA)
+          _ <- ZIO.foreachDiscard(1 to 5)(n => env.repository.create(approval(s"a-$n", acme, now.plusSeconds(n.toLong))))
+          _ <- env.repository.create(approval("a-other", acme, now.plusSeconds(60)).copy(targetId = "acme-pay"))
+          newest <- env.repository.list(None, None, Some(acme), 2)
+          forShop <- env.repository.forTarget(acme, s"$acme-shop", 3)
+          forPay <- env.repository.forTarget(acme, "acme-pay", 3)
+        yield assertTrue(
+          newest.map(_.id) == Vector(ApprovalId("a-other"), ApprovalId("a-5")),
+          forShop.map(_.id) == Vector(ApprovalId("a-5"), ApprovalId("a-4"), ApprovalId("a-3")),
+          forPay.map(_.id) == Vector(ApprovalId("a-other")),
+        )
+      },
+      test("a decision that could not be carried out is taken back, once, and only from the status it was made in") {
+        val request = approval("a-1", acme, now)
+        for
+          _ <- env.fixtures.partner(acme, tenantA)
+          _ <- env.repository.create(request)
+          wrong <- env.repository.reopen(ApprovalId("a-1"), ApprovalStatus.Approved)
+          _ <- env.repository.decide(
+            ApprovalId("a-1"),
+            ApprovalStatus.Approved,
+            Some("admin-1"),
+            now.plusSeconds(10),
+            Some("ok"),
+            Some(Json.Obj("scope" -> Json.Arr())),
+          )
+          wrongStatus <- env.repository.reopen(ApprovalId("a-1"), ApprovalStatus.Rejected)
+          reopened <- env.repository.reopen(ApprovalId("a-1"), ApprovalStatus.Approved)
+          twice <- env.repository.reopen(ApprovalId("a-1"), ApprovalStatus.Approved)
+          found <- env.repository.find(ApprovalId("a-1"))
+          decidedAgain <- env.repository.decide(ApprovalId("a-1"), ApprovalStatus.Rejected, Some("admin-2"), now.plusSeconds(20), Some("no"), None)
+        yield assertTrue(
+          !wrong,
+          !wrongStatus,
+          reopened,
+          !twice,
+          found == Some(request),
+          // waiting again, so it can be decided once more
+          decidedAgain,
         )
       },
     )

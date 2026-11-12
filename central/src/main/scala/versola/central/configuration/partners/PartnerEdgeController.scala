@@ -1,7 +1,14 @@
 package versola.central.configuration.partners
 
 import versola.central.audit.{Audit, AuditCursor, CentralAudit, CentralAuditRepository}
-import versola.central.configuration.clients.{AuthorizationPresetService, ClientController, ClientId, OAuthClientRecord, OAuthClientService}
+import versola.central.configuration.clients.{
+  AuthorizationPresetService,
+  ClientController,
+  ClientId,
+  OAuthClientRecord,
+  OAuthClientService,
+  PartnerClientRules,
+}
 import versola.central.configuration.edges.{
   EdgeAccessLogSyncResponse,
   EdgeCertificateRepository,
@@ -31,7 +38,7 @@ import versola.central.configuration.{
 }
 import versola.central.users.{AuthClient, UserId}
 import versola.central.{CentralConfig, PartnerCaller, authorizePartnerEdge}
-import versola.util.audit.{AuditContext, AuditDetails, AuditDraft, AuditEvent, AuditEvents, AuditOutcome}
+import versola.util.audit.{ActorType, AuditContext, AuditDetails, AuditDraft, AuditEvent, AuditEvents, AuditOutcome}
 import versola.util.http.{Controller, Forbidden, Observability, Unauthorized}
 import versola.util.{Base64Url, JsonWebKeySet, SecurityService}
 import zio.http.*
@@ -272,6 +279,7 @@ object PartnerEdgeController extends Controller:
         for
           body <- request.bodyAs[PartnerResourceRequest]
           _ <- Audit.target(body.resourceId)
+          _ <- resourceUriAllowed(caller.partner, body.resource)
           _ <- audienceOwned(caller.partner, body.audience)
           result <- ZIO.serviceWithZIO[ResourceService](_.createResource(CreateResourceRequest(
             tenantId = caller.partner.tenantId,
@@ -301,8 +309,12 @@ object PartnerEdgeController extends Controller:
           _ <- Audit.target(body.resourceId)
           _ <- Audit.changed(body, "resourceId")
           current <- ownResource(caller.partner, body.resourceId)
+          _ <- ZIO.foreachDiscard(body.resource)(resourceUriAllowed(caller.partner, _))
           _ <- audienceOwned(caller.partner, body.audience.patch(current.audience))
-          result <- ZIO.serviceWithZIO[ResourceService](_.updateResource(body))
+          result <- ZIO.serviceWithZIO[ResourceService](_.updateResource(body)).catchSome {
+            // a new `resource` that another resource of the tenant already has
+            case error: SQLException if error.getSQLState == "23505" => ZIO.fail(PartnerError.Conflict("that resource exists in the tenant"))
+          }
           response <- result match
             case Right(()) => ZIO.succeed(Response.status(Status.NoContent))
             case Left(error) => ZIO.fail(PartnerError.Invalid(error.toString.take(500)))
@@ -411,6 +423,9 @@ object PartnerEdgeController extends Controller:
           _ <- ZIO.fail(PartnerError.Invalid("clients must name at least one client")).when(body.clients.isEmpty)
           _ <- ZIO.fail(PartnerError.Invalid("revokeRefresh must be true: central ends grants, and access tokens run out by themselves"))
             .unless(body.revokeRefresh)
+          // before anything is asked of auth: a revocation of a whole client scans the table of every client's tokens
+          limited <- PartnerRevocationLimiter.acquire(caller.partner.id, wholeClient = body.by == RevocationBy.client)
+          _ <- ZIO.foreachDiscard(limited)(wait => ZIO.fail(PartnerError.TooManyRequests(wait.getSeconds.max(1))))
           auth <- ZIO.service[AuthClient]
           _ <- body.by match
             case RevocationBy.user =>
@@ -468,10 +483,28 @@ object PartnerEdgeController extends Controller:
         ))
         next =
           Option.when(events.size == AuditPageSize)(events.last).map(last => AuditCursor.encode(AuditCursor(last.at, last.id, centralOnly = true)))
-      yield Response.json(PartnerAuditResponse(events, next).toJson)
+      yield Response.json(PartnerAuditResponse(events.map(forPartner), next).toJson)
     }
 
   val AuditPageSize = 50
+
+  /** An event as the partner is shown it. The operator's own events about the partner (an approval, a suspension, new limits) say
+    * that the operator did it, and what, but not who: the administrator's id, address and browser are the operator's. The
+    * internal ids of the node and the trace are nobody else's, whoever acted. */
+  def forPartner(event: AuditEvent): AuditEvent =
+    val shown = event.copy(nodeId = "central", traceId = None)
+    if event.actorType == CentralAudit.Actors.PartnerStaff then shown
+    else
+      shown.copy(
+        actorType = ActorType("operator"),
+        actorId = None,
+        userId = None,
+        clientId = None,
+        sessionId = None,
+        ip = None,
+        userAgent = None,
+        details = Json.Obj(event.details.fields.filter((name, _) => name == "partnerId" || name == "changed")),
+      )
 
   // ── scoping ───────────────────────────────────────────────────────────────────────────────────
 
@@ -488,6 +521,9 @@ object PartnerEdgeController extends Controller:
     ZIO.serviceWithZIO[PartnerService](_.edges(partner)).map(_.find(_.id == id)).someOrFail(PartnerError.NotFound(s"edge '$id'"))
 
   /** A resource's audience is the partner's own clients and no other's. */
+  private def resourceUriAllowed(partner: PartnerRecord, resource: ResourceUri): IO[PartnerError, Unit] =
+    ZIO.foreachDiscard(PartnerClientRules.resourceUriViolation(partner, resource))(reason => ZIO.fail(PartnerError.Invalid(reason)))
+
   private def audienceOwned(partner: PartnerRecord, audience: List[ClientId]): ZIO[OAuthClientService, PartnerError | Throwable, Unit] =
     ZIO.serviceWithZIO[OAuthClientService](_.getPartnerClients(partner.id)).flatMap: own =>
       val ids = own.map(_.id).toSet
@@ -570,6 +606,10 @@ object PartnerEdgeController extends Controller:
         Observability.setError("partner_not_found", Some(what)).as(Response.text(s"$what does not exist").status(Status.NotFound))
       case PartnerError.Invalid(reason) => Observability.setError("partner_invalid", Some(reason)).as(Response.text(reason).status(Status.BadRequest))
       case PartnerError.Conflict(reason) => Observability.setError("partner_conflict", Some(reason)).as(Response.text(reason).status(Status.Conflict))
+      case PartnerError.TooManyRequests(seconds) =>
+        Observability.setError("partner_rate_limited").as(
+          Response.text(s"too many requests, try again in $seconds seconds").status(Status.TooManyRequests).addHeader("Retry-After", seconds.toString),
+        )
       case error: Throwable => ZIO.fail(error)
 
   /** What an event of this surface says about itself: the route, the status, the partner and the edge, and the names of the fields a

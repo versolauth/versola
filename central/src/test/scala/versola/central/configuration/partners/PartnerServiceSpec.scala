@@ -21,6 +21,7 @@ import versola.central.configuration.clients.{
 }
 import versola.central.configuration.edges.{
   EdgeCertificate,
+  EdgeEnrollmentTokenRepository,
   EdgeGroupId,
   EdgeGroupKind,
   EdgeGroupRecord,
@@ -61,6 +62,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtlMax = 86400,
     clientAuthMethods = Set(AuthMethod.tls_client_auth),
     rateLimitPolicy = "partner-default",
+    resourceDomains = None,
   )
 
   private val newPartner = PartnerService.NewPartner(
@@ -89,6 +91,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
     settings = PartnerSettings.empty,
     reviewAt = None,
     createdAt = now,
+    version = 0L,
   )
 
   private val keyPair: RsaKeyPair =
@@ -162,11 +165,27 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val groups = stub[EdgeGroupService]
     val edges = stub[EdgeService]
     val identity = stub[EdgeIdentityService]
+    val enrollmentTokens = stub[EdgeEnrollmentTokenRepository]
     val tenants = stub[TenantRepository]
     val auth = stub[AuthClient]
     val metadata = stub[ServerMetadataService]
     val service =
-      PartnerService.Impl(partners, registry, approvals, partnerClients, clients, presets, groups, edges, identity, tenants, auth, metadata, config)
+      PartnerService.Impl(
+        partners,
+        registry,
+        approvals,
+        partnerClients,
+        clients,
+        presets,
+        groups,
+        edges,
+        identity,
+        enrollmentTokens,
+        tenants,
+        auth,
+        metadata,
+        config,
+      )
 
     /** Nothing exists yet: what a creation finds. */
     def empty: UIO[Unit] =
@@ -229,6 +248,10 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           registration._1.allowedScopes == PartnerService.ConsoleScope,
           registration._1.redirectUris == Set(newPartner.consoleRedirectUri),
           registration._1.consentFlow.isDefined,
+          // a client with no auth flow is "not configured for sign-in" at auth: until the operator sets one, the platform's default
+          registration._1.authFlow == Some(AuthFlow.default),
+          // the staff token the console is issued authorises management calls and nothing revokes it: minutes
+          registration._1.accessTokenTtl <= PartnerService.ConsoleAccessTokenTtlMax,
           !registration._1.certificateBoundAccessTokens,
           registration._5,
           env.presets.savePresets.calls.head.presets.map(p => (p.id, p.redirectUri)) == List((
@@ -290,24 +313,63 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
     ),
     suite("the kill switch")(
-      test("suspend records the status, makes it visible at once, and ends every grant of every approved client at auth") {
+      test("suspend records the status, tells auth to reload first, and then ends every grant of every approved client at auth") {
         val env = Env()
         for
+          order <- Ref.make(Vector.empty[String])
           _ <- env.registry.findFresh.succeedsWith(Some(acme))
           _ <- env.partners.setStatus.succeedsWith(true)
           _ <- env.registry.refreshNow.succeedsWith(())
+          _ <- env.auth.syncConfiguration().returnsZIO(_ => order.update(_ :+ "sync"))
+          _ <- env.clients.refreshNow.succeedsWith(())
           _ <- env.clients.getPartnerClients.succeedsWith(Vector(
             client(ClientId("acme-console"), ClientApproval.Approved),
             client(ClientId("acme-shop"), ClientApproval.Approved),
             client(ClientId("acme-pay"), ClientApproval.Pending),
           ))
-          _ <- env.auth.revokeRefreshTokensByClient.succeedsWith(())
-          _ <- env.service.suspend(acme.id)
+          _ <- env.auth.revokeRefreshTokensByClient.returnsZIO(id => order.update(_ :+ s"revoke $id"))
+          _ <- env.edges.getAllEdges.succeedsWith(Vector(edge(EdgeId("edge-acme-1")), edge(EdgeId("other"), EdgeGroupId("globex"))))
+          _ <- env.enrollmentTokens.revoke.succeedsWith(0)
+          outcome <- env.service.suspend(acme.id)
+          events <- order.get
         yield assertTrue(
           env.partners.setStatus.calls == List((acme.id, PartnerStatus.Suspended)),
-          env.registry.refreshNow.calls.size == 1,
+          // auth drops the clients when it reloads, so it is told before the grants are ended: a code flow completed in between
+          // would otherwise leave a refresh token that nothing revoked
+          events == Vector("sync", "revoke acme-console", "revoke acme-shop"),
           // a pending client never issued a token: nothing to end
           env.auth.revokeRefreshTokensByClient.calls == List(ClientId("acme-console"), ClientId("acme-shop")),
+          // the clients are read as stored, and an enrollment token that was printed and not used is void
+          env.clients.refreshNow.calls.size == 1,
+          env.enrollmentTokens.revoke.calls == List(EdgeId("edge-acme-1")),
+          outcome == PartnerService.SuspendOutcome(authSynced = true, revocationFailed = Nil),
+          outcome.complete,
+        )
+      },
+      test("a client whose grants cannot be revoked does not stop the others, and is named; auth not told is named too") {
+        val env = Env()
+        for
+          _ <- env.registry.findFresh.succeedsWith(Some(acme))
+          _ <- env.partners.setStatus.succeedsWith(true)
+          _ <- env.registry.refreshNow.succeedsWith(())
+          _ <- env.auth.syncConfiguration().failsWith(RuntimeException("auth is down"))
+          _ <- env.clients.refreshNow.succeedsWith(())
+          _ <- env.clients.getPartnerClients.succeedsWith(Vector(
+            client(ClientId("acme-shop"), ClientApproval.Approved),
+            client(ClientId("acme-pay"), ClientApproval.Approved),
+            client(ClientId("acme-web"), ClientApproval.Approved),
+          ))
+          _ <- env.auth.revokeRefreshTokensByClient.returnsZIO(id =>
+            if id == ClientId("acme-pay") then ZIO.fail(RuntimeException("auth answered 500")) else ZIO.unit,
+          )
+          _ <- env.edges.getAllEdges.succeedsWith(Vector.empty)
+          outcome <- env.service.suspend(acme.id)
+        yield assertTrue(
+          // the partner is suspended whatever else happened, and every client was tried
+          env.partners.setStatus.calls == List((acme.id, PartnerStatus.Suspended)),
+          env.auth.revokeRefreshTokensByClient.calls.size == 3,
+          outcome == PartnerService.SuspendOutcome(authSynced = false, revocationFailed = List(ClientId("acme-pay"))),
+          !outcome.complete,
         )
       },
       test("resume takes a suspended partner back to active, and refuses one that is not suspended") {
@@ -344,16 +406,20 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     suite("decisions")(
-      test("approving a client request applies it through the client service and records the decision with what was applied") {
+      test("approving decides the request first, and then applies what was decided through the client service") {
         val env = Env()
         val applied = Json.Obj("clientName" -> Json.Obj("en" -> Json.Str("ACME Shop (verified)")))
         for
+          order <- Ref.make(Vector.empty[String])
           _ <- env.approvals.find.succeedsWith(Some(waiting))
-          _ <- env.partnerClients.applyApproval.succeedsWith(Some(applied))
-          _ <- env.approvals.decide.succeedsWith(true)
+          _ <- env.partnerClients.checkOverrides.succeedsWith(Some(applied))
+          _ <- env.approvals.decide.returnsZIO((_, _, _, _, _, _) => order.update(_ :+ "decide").as(true))
+          _ <- env.partnerClients.applyApproval.returnsZIO((_, _) => order.update(_ :+ "apply"))
           decided <- env.service.approve(waiting.id, Some("admin-1"), Some("ok"), Some(applied))
+          events <- order.get
           call = env.approvals.decide.calls.head
         yield assertTrue(
+          events == Vector("decide", "apply"),
           env.partnerClients.applyApproval.calls == List((waiting, Some(applied))),
           call._2 == ApprovalStatus.Approved,
           call._3 == Some("admin-1"),
@@ -364,7 +430,48 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           decided.requested == waiting.requested,
         )
       },
-      test("a profile change is applied to the partner itself") {
+      test("an approval that lost the race to another decision changes nothing") {
+        val env = Env()
+        for
+          _ <- env.approvals.find.succeedsWith(Some(waiting))
+          _ <- env.partnerClients.checkOverrides.succeedsWith(None)
+          _ <- env.approvals.decide.succeedsWith(false)
+          lost <- env.service.approve(waiting.id, Some("admin-1"), None, None).flip
+        yield assertTrue(
+          lost.isInstanceOf[PartnerError.Conflict],
+          env.partnerClients.applyApproval.calls.isEmpty,
+          env.partnerClients.revertApproval.calls.isEmpty,
+        )
+      },
+      test("an approval that cannot be applied is taken back: the client is pending again and the request waits") {
+        val env = Env()
+        for
+          _ <- env.approvals.find.succeedsWith(Some(waiting))
+          _ <- env.partnerClients.checkOverrides.succeedsWith(None)
+          _ <- env.approvals.decide.succeedsWith(true)
+          _ <- env.partnerClients.applyApproval.failsWith(PartnerError.Conflict("the login preset cannot be created"))
+          _ <- env.partnerClients.revertApproval.succeedsWith(())
+          _ <- env.approvals.reopen.succeedsWith(true)
+          failed <- env.service.approve(waiting.id, Some("admin-1"), None, None).flip
+        yield assertTrue(
+          failed.isInstanceOf[PartnerError.Conflict],
+          env.partnerClients.revertApproval.calls == List(waiting),
+          env.approvals.reopen.calls == List((waiting.id, ApprovalStatus.Approved)),
+        )
+      },
+      test("an override that is not the operator's to make is refused before anything is decided") {
+        val env = Env()
+        for
+          _ <- env.approvals.find.succeedsWith(Some(waiting))
+          _ <- env.partnerClients.checkOverrides.failsWith(PartnerError.Invalid("id cannot be overridden"))
+          refused <- env.service.approve(waiting.id, Some("admin-1"), None, Some(Json.Obj("id" -> Json.Str("other-client")))).flip
+        yield assertTrue(
+          refused.isInstanceOf[PartnerError.Invalid],
+          env.approvals.decide.calls.isEmpty,
+          env.partnerClients.applyApproval.calls.isEmpty,
+        )
+      },
+      test("a profile change is applied to the name and logo of the partner itself, and to nothing else") {
         val env = Env()
         val profile = waiting.copy(
           kind = ApprovalKind.ProfileChange,
@@ -373,17 +480,21 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         )
         for
           _ <- env.approvals.find.succeedsWith(Some(profile))
+          _ <- env.partnerClients.checkOverrides.succeedsWith(None)
           _ <- env.registry.findFresh.succeedsWith(Some(acme))
-          _ <- env.partners.updateProfile.succeedsWith(true)
+          _ <- env.partners.setNameAndLogo.succeedsWith(true)
           _ <- env.registry.refreshNow.succeedsWith(())
           _ <- env.approvals.decide.succeedsWith(true)
           _ <- env.service.approve(profile.id, Some("admin-1"), None, None)
         yield assertTrue(
-          env.partners.updateProfile.calls == List((acme.id, "ACME Ltd", Some("https://acme.example/new.png"), acme.contact, acme.reviewAt)),
+          env.partners.setNameAndLogo.calls == List((acme.id, "ACME Ltd", Some("https://acme.example/new.png"))),
+          env.partners.updateProfile.calls.isEmpty,
           env.partnerClients.applyApproval.calls.isEmpty,
         )
       },
-      test("rejecting hands the request to the client service and records the note; a decided request is decided once") {
+      test(
+        "rejecting decides the request first, records the note, and only the rejection that won reaches the client; a decided request is decided once",
+      ) {
         val env = Env()
         for
           _ <- env.approvals.find.succeedsWith(Some(waiting))
@@ -392,6 +503,9 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           rejected <- env.service.reject(waiting.id, Some("admin-1"), "not ours")
           _ <- env.approvals.find.succeedsWith(Some(waiting.copy(status = ApprovalStatus.Approved)))
           again <- env.service.reject(waiting.id, Some("admin-1"), "late").flip
+          _ <- env.approvals.find.succeedsWith(Some(waiting))
+          _ <- env.approvals.decide.succeedsWith(false)
+          lost <- env.service.reject(waiting.id, Some("admin-1"), "lost").flip
           _ <- env.approvals.find.succeedsWith(None)
           missing <- env.service.approve(waiting.id, None, None, None).flip
         yield assertTrue(
@@ -399,6 +513,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           rejected.note == Some("not ours"),
           env.partnerClients.rejectApproval.calls == List(waiting),
           again.isInstanceOf[PartnerError.Conflict],
+          lost.isInstanceOf[PartnerError.Conflict],
           missing == PartnerError.NotFound("approval 'c'"),
         )
       },
@@ -407,11 +522,19 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
       test("the first call of an onboarding partner's edge makes it active, and an active one stays as it is") {
         val env = Env()
         for
-          _ <- env.partners.setStatus.succeedsWith(true)
+          _ <- env.partners.activate.succeedsWith(true)
           _ <- env.registry.refreshNow.succeedsWith(())
           _ <- env.service.activate(acme.copy(status = PartnerStatus.Onboarding))
           _ <- env.service.activate(acme)
-        yield assertTrue(env.partners.setStatus.calls == List((acme.id, PartnerStatus.Active)))
+        yield assertTrue(env.partners.activate.calls == List(acme.id), env.partners.setStatus.calls.isEmpty)
+      },
+      test("an activation that finds the partner suspended meanwhile changes nothing, and nothing is reloaded") {
+        val env = Env()
+        for
+          // the read said `onboarding`; the row says otherwise, and the conditional update is what decides
+          _ <- env.partners.activate.succeedsWith(false)
+          _ <- env.service.activate(acme.copy(status = PartnerStatus.Onboarding))
+        yield assertTrue(env.partners.activate.calls == List(acme.id), env.registry.refreshNow.calls.isEmpty, env.partners.setStatus.calls.isEmpty)
       },
       test("a profile change is a request for the operator, and only one at a time") {
         val env = Env()
@@ -453,6 +576,32 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           enrolled.signingKey.keyId == "edge-key",
           full.isInstanceOf[PartnerError.Invalid],
           plain.isInstanceOf[PartnerError.Invalid],
+        )
+      },
+      test("an edge the table has no room for is the partner's 400, whatever the cache said") {
+        val env = Env()
+        for
+          _ <- env.edges.getAllEdges.succeedsWith(Vector.empty)
+          _ <- env.edges.findFresh.succeedsWith(None)
+          _ <- env.edges.registerEdge.failsWith(java.sql.SQLException("ERROR: partner_edge_limit: partner acme may run at most 2 edges", "23514"))
+          full <- env.service.addEdge(acme, EdgeId("edge-acme-2"), "https://login2.acme.example").flip
+        yield assertTrue(full.isInstanceOf[PartnerError.Invalid], env.identity.issueEnrollmentToken.calls.isEmpty)
+      },
+      test("a profile or settings write that finds the row moved on is 409, and writes nothing") {
+        val env = Env()
+        for
+          _ <- env.registry.findFresh.succeedsWith(Some(acme.copy(version = 4L)))
+          _ <- env.partners.updateProfile.succeedsWith(false)
+          _ <- env.partners.setSettings.succeedsWith(false)
+          profile <- env.service.updateProfile(acme.id, "ACME", None, acme.contact, None).flip
+          settings <- env.service.setSettings(acme, acme.contact, PartnerSettings.empty).flip
+        yield assertTrue(
+          profile.isInstanceOf[PartnerError.Conflict],
+          settings.isInstanceOf[PartnerError.Conflict],
+          // each names the version it read
+          env.partners.updateProfile.calls.map(_._2) == List(4L),
+          env.partners.setSettings.calls.map(_._2) == List(4L),
+          env.registry.refreshNow.calls.isEmpty,
         )
       },
       test("a token for an edge of the partner's group lives a day; an edge of another group is not the partner's") {

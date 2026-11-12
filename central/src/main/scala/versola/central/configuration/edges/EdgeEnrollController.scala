@@ -28,6 +28,8 @@ object EdgeEnrollController extends Controller:
         .catchAll:
           case EdgeIdentityService.InvalidToken =>
             Observability.setError("edge_enrollment_invalid_token") *> ZIO.succeed(Response.status(Status.Unauthorized))
+          case EdgeIdentityService.PartnerSuspended =>
+            Observability.setError("partner_suspended") *> ZIO.succeed(Response.status(Status.Forbidden))
           case error: EdgeIdentityService.Refused =>
             Observability.setError("edge_enrollment_refused", Some(error.getMessage)) *>
               ZIO.succeed(Response.text(error.getMessage).status(Status.UnprocessableEntity))

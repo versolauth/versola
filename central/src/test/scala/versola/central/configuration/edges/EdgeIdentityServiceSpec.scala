@@ -3,6 +3,18 @@ package versola.central.configuration.edges
 import org.scalamock.stubs.ZIOStubs
 import versola.central.audit.{CentralAudit, RecordedAudit}
 import versola.central.configuration.clients.certificates.{CertificateSigningRequest, ClientCertificateIssuer}
+import versola.central.configuration.clients.{AuthMethod, ClientId}
+import versola.central.configuration.partners.{
+  PartnerContact,
+  PartnerId,
+  PartnerLimits,
+  PartnerRecord,
+  PartnerRegistry,
+  PartnerSettings,
+  PartnerStatus,
+}
+import versola.central.configuration.scopes.ScopeToken
+import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.{CertificateSubject, SecureRandom, TestCertificates}
 import zio.*
@@ -80,8 +92,10 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
       edges: List[EdgeRecord],
       issuer: ClientCertificateIssuer = honestIssuer,
       config: CentralConfig = TestCentralConfig.config,
+      partnerStatus: PartnerStatus = PartnerStatus.Active,
   ):
     val edgeService = stub[EdgeService]
+    val partners = stub[PartnerRegistry]
     val tokens = InMemoryTokens(Unsafe.unsafe(Ref.unsafe.make(Map.empty[String, (EdgeId, Instant, Boolean)])(using _)))
     val certificates = InMemoryCertificates(Unsafe.unsafe(Ref.unsafe.make(Vector.empty[(EdgeId, String)])(using _)))
     val audit = RecordedAudit.unsafe
@@ -89,6 +103,7 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- edgeService.find.returnsZIO(id => ZIO.succeed(edges.find(_.id == id)))
         _ <- edgeService.getAllEdges.succeedsWith(edges.toVector)
+        _ <- partners.findByGroup.returnsZIO(group => ZIO.succeed(Some(partnerRecord(group, partnerStatus))))
         random <- ZIO.service[SecureRandom]
       yield EdgeIdentityService.Impl(
         edgeService,
@@ -98,7 +113,34 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         random,
         config,
         audit,
+        partners,
       )
+
+  private def partnerRecord(group: EdgeGroupId, status: PartnerStatus) = PartnerRecord(
+    id = PartnerId(group),
+    tenantId = TenantId("tenant-a"),
+    displayName = "Acme",
+    logoUri = None,
+    contact = PartnerContact("ops@acme.example", None),
+    status = status,
+    limits = PartnerLimits(
+      scopes = Set(ScopeToken("openid")),
+      redirectDomains = Set("acme.example"),
+      resourceDomains = None,
+      maxClients = 5,
+      maxEdges = 2,
+      accessTokenTtlMax = 600,
+      refreshTokenTtlMax = 86400,
+      clientAuthMethods = Set(AuthMethod.tls_client_auth),
+      rateLimitPolicy = "partner-default",
+    ),
+    groupId = group,
+    consoleClientId = ClientId(s"$group-console"),
+    settings = PartnerSettings.empty,
+    reviewAt = None,
+    createdAt = Instant.EPOCH,
+    version = 0L,
+  )
 
   private def partnerEdge(id: EdgeId) = edgeRecord(id, partnerGroup, EdgeGroupKind.Partner)
 
@@ -318,6 +360,17 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         csr <- csrFor(edge)
         chain <- service.enroll(edgeId, issued.token, csr)
       yield assertTrue(chain.chain.contains("BEGIN CERTIFICATE"))
+    },
+    test("an edge of a suspended partner is given no certificate, and keeps its token") {
+      val edge = edgeRecord(edgeId, partnerGroup, EdgeGroupKind.Partner)
+      val env = Env(List(edge), partnerStatus = PartnerStatus.Suspended)
+      for
+        service <- env.service
+        issued <- service.issueEnrollmentToken(edgeId)
+        csr <- csrFor(edge)
+        refused <- service.enroll(edgeId, issued.token, csr).flip
+        certificates <- env.certificates.all
+      yield assertTrue(refused == EdgeIdentityService.PartnerSuspended, certificates.isEmpty)
     },
     test("renewal answers the edge's own request with a new certificate, and refuses another name") {
       val edge = edgeRecord(edgeId)

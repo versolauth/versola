@@ -159,6 +159,36 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           entries.keySet == Set(RevocationKey.Fam(familyId1), RevocationKey.Fam(RefreshTokenFamilyId("family-other-user"))),
         )
       },
+      // #962: a partner's client may hold tens of thousands of families; one transaction locking each could exhaust the lock table.
+      test("revokeRefreshTokensByClient revokes a client of more families than one batch holds, in several, and leaves the others") {
+        val families = 450
+        for
+          now <- Clock.instant
+          _ <- ZIO.foreachDiscard(1 to families): n =>
+            env.repository.createRefreshToken(
+              MAC(Array.fill(32)(7.toByte).updated(0, (n >> 8).toByte).updated(1, n.toByte)),
+              None,
+              tokenRecord1(now, refreshTtl).copy(familyId = RefreshTokenFamilyId(s"bulk-family-$n")),
+              None,
+            )
+          _ <- env.repository.createRefreshToken(
+            refreshToken3,
+            None,
+            tokenRecord1(now, refreshTtl).copy(clientId = clientId2, familyId = RefreshTokenFamilyId("family-other-client")),
+            None,
+          )
+          revoked <- env.repository.revokeRefreshTokensByClient(clientId1, offlineTerms)
+          entries <- env.revocations.activeSince(RevocationCursor.Beginning, 1000).map(_.revocations)
+          kept <- env.repository.findToken(refreshToken3)
+          again <- env.repository.revokeRefreshTokensByClient(clientId1, offlineTerms)
+        yield assertTrue(
+          revoked.size == families,
+          revoked.map(_._2).toSet.size == families,
+          entries.size == families,
+          kept.isDefined,
+          again.isEmpty,
+        )
+      },
       test("revokeRefreshTokensByUserAndClient records nothing when the client holds no live token for the user") {
         for
           now <- Clock.instant

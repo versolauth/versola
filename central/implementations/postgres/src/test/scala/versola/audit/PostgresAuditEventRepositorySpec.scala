@@ -108,6 +108,7 @@ object PostgresAuditEventRepositorySpec extends PostgresSpec, CentralAuditReposi
           written(id).copy(
             at = at,
             kind = AuditKind(kind),
+            actorType = CentralAudit.Actors.PartnerStaff,
             actorId = Some(actor),
             targetId = Some(target),
             details = Json.Obj("partnerId" -> Json.Str(partner)),
@@ -146,6 +147,46 @@ object PostgresAuditEventRepositorySpec extends PostgresSpec, CentralAuditReposi
           page.map(_.id) == List(third.id, second.id),
           next.map(_.id) == List(first.id),
           nobody.isEmpty,
+        )
+      },
+      test("a partner's search text is text, not a pattern, and the operator's staff are not found through it") {
+        def about(id: String, actorType: versola.util.audit.ActorType, actor: String, target: String, at: Instant) =
+          written(id).copy(
+            at = at,
+            kind = AuditKind("partner.client.create"),
+            actorType = actorType,
+            actorId = Some(actor),
+            targetId = Some(target),
+            details = Json.Obj("partnerId" -> Json.Str("acme")),
+          )
+        val percent = about("00000000-0000-7000-8000-000000000021", CentralAudit.Actors.PartnerStaff, "partner-staff:alice", "100%-shop", oldAt)
+        val plain =
+          about("00000000-0000-7000-8000-000000000022", CentralAudit.Actors.PartnerStaff, "partner-staff:bob", "1000-shop", oldAt.plusSeconds(1))
+        val underscore =
+          about("00000000-0000-7000-8000-000000000023", CentralAudit.Actors.PartnerStaff, "partner-staff:carol", "a_b", oldAt.plusSeconds(2))
+        val other = about("00000000-0000-7000-8000-000000000024", CentralAudit.Actors.PartnerStaff, "partner-staff:dave", "axb", oldAt.plusSeconds(3))
+        val operator = about("00000000-0000-7000-8000-000000000025", CentralAudit.Actors.Admin, "secret-admin-id", "acme", oldAt.plusSeconds(4))
+        for
+          xa <- ZIO.service[TransactorZIO]
+          _ <- dropOldDayPartition(xa)
+          _ <- env.repository.insertBatch(List(percent, plain, underscore, other, operator))
+          byPercent <- env.repository.partnerEvents("acme", None, None, None, Some("%"), 10)
+          byHundredPercent <- env.repository.partnerEvents("acme", None, None, None, Some("100%"), 10)
+          byUnderscore <- env.repository.partnerEvents("acme", None, None, None, Some("a_b"), 10)
+          byBang <- env.repository.partnerEvents("acme", None, None, None, Some("!"), 10)
+          // the operator's administrator is neither found by name nor filtered by id: the partner may not probe for them
+          byOperatorText <- env.repository.partnerEvents("acme", None, None, None, Some("secret-admin"), 10)
+          byOperatorActor <- env.repository.partnerEvents("acme", None, Some("secret-admin-id"), None, None, 10)
+          byStaff <- env.repository.partnerEvents("acme", None, Some("partner-staff:bob"), None, None, 10)
+          _ <- dropOldDayPartition(xa)
+        yield assertTrue(
+          byPercent.map(_.id) == List(percent.id),
+          byHundredPercent.map(_.id) == List(percent.id),
+          byUnderscore.map(_.id) == List(underscore.id),
+          byBang.isEmpty,
+          byOperatorText.isEmpty,
+          byOperatorActor.isEmpty,
+          byStaff.map(_.id) == List(plain.id),
         )
       },
       test("the service is the owner of the table, so that it may maintain the partitions") {

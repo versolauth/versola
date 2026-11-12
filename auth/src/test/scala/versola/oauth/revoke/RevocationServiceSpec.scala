@@ -86,6 +86,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
   )
 
   def tokenRecord(now: Instant) = RefreshTokenRecord(
@@ -443,6 +444,23 @@ object RevocationServiceSpec extends UnitSpecBase:
               "revoked_exp" -> Json.Num(payload.expiresAt.getEpochSecond),
               "events" -> Json.Obj("versola:event:access-token-revocation" -> Json.Obj()),
             ),
+          )
+        },
+        test("announceFamilies tells the back channel of every family of the subject in one event, by the reliable submit") {
+          val repository = stub[AuthRevocationRepository]
+          val outbox = stub[BackChannelOutbox]
+          val backChannelUri = URL.decode("https://rp.example/backchannel").toOption.get
+          val client = testClient.copy(backChannelLogoutUri = Some(backChannelUri))
+          val service = AccessTokenRevocationService.Impl(outbox, repository, stub[RevocationCache])
+          for
+            now <- Clock.instant
+            _ <- outbox.submitAwaiting.succeedsWith(())
+            _ <- service.announceFamilies(client, NonEmptyChunk(RefreshTokenFamilyId("fam-1"), RefreshTokenFamilyId("fam-2")), userId1.toString, now)
+          yield assertTrue(
+            outbox.submit.calls.isEmpty,
+            outbox.submitAwaiting.calls.map(_.uri) == List(backChannelUri),
+            outbox.submitAwaiting.calls.head.customClaims.fields.collectFirst { case ("revoked_fam", value) => value } ==
+              Some(Json.Arr(Json.Str("fam-1"), Json.Str("fam-2"))),
           )
         },
         test("records the token even when the client registered no back-channel URI, and pushes nothing") {

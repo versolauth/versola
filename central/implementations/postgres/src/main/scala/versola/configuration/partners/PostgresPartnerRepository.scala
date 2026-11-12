@@ -35,7 +35,7 @@ class PostgresPartnerRepository(xa: TransactorZIO) extends PartnerRepository, Ba
   given DbCodec[PartnerRecord] = DbCodec.derived
 
   private val columns = SqlLiteral(
-    "id, tenant_id, display_name, logo_uri, contact, status, limits, group_id, console_client_id, settings, review_at, created_at",
+    "id, tenant_id, display_name, logo_uri, contact, status, limits, group_id, console_client_id, settings, review_at, created_at, version",
   )
 
   override def getAll: Task[Vector[PartnerRecord]] =
@@ -55,7 +55,7 @@ class PostgresPartnerRepository(xa: TransactorZIO) extends PartnerRepository, Ba
       sql"""
         INSERT INTO partners ($columns)
         VALUES (${record.id}, ${record.tenantId}, ${record.displayName}, ${record.logoUri}, ${record.contact}, ${record.status},
-                ${record.limits}, ${record.groupId}, ${record.consoleClientId}, ${record.settings}, ${record.reviewAt}, ${record.createdAt})
+                ${record.limits}, ${record.groupId}, ${record.consoleClientId}, ${record.settings}, ${record.reviewAt}, ${record.createdAt}, ${record.version})
       """.update.run()
     .unit
       .mapError {
@@ -65,6 +65,7 @@ class PostgresPartnerRepository(xa: TransactorZIO) extends PartnerRepository, Ba
 
   override def updateProfile(
       id: PartnerId,
+      expectedVersion: Long,
       displayName: String,
       logoUri: Option[String],
       contact: PartnerContact,
@@ -72,21 +73,33 @@ class PostgresPartnerRepository(xa: TransactorZIO) extends PartnerRepository, Ba
   ): Task[Boolean] =
     xa.connectMeasured("update-partner-profile"):
       sql"""
-        UPDATE partners SET display_name = $displayName, logo_uri = $logoUri, contact = $contact, review_at = $reviewAt
-        WHERE id = $id
+        UPDATE partners
+        SET display_name = $displayName, logo_uri = $logoUri, contact = $contact, review_at = $reviewAt, version = version + 1
+        WHERE id = $id AND version = $expectedVersion
       """.update.run() > 0
+
+  override def setNameAndLogo(id: PartnerId, displayName: String, logoUri: Option[String]): Task[Boolean] =
+    xa.connectMeasured("set-partner-name-and-logo"):
+      sql"UPDATE partners SET display_name = $displayName, logo_uri = $logoUri, version = version + 1 WHERE id = $id".update.run() > 0
 
   override def setStatus(id: PartnerId, status: PartnerStatus): Task[Boolean] =
     xa.connectMeasured("set-partner-status"):
-      sql"UPDATE partners SET status = $status WHERE id = $id".update.run() > 0
+      sql"UPDATE partners SET status = $status, version = version + 1 WHERE id = $id".update.run() > 0
+
+  override def activate(id: PartnerId): Task[Boolean] =
+    xa.connectMeasured("activate-partner"):
+      sql"UPDATE partners SET status = 'active', version = version + 1 WHERE id = $id AND status = 'onboarding'".update.run() > 0
 
   override def setLimits(id: PartnerId, limits: PartnerLimits): Task[Boolean] =
     xa.connectMeasured("set-partner-limits"):
-      sql"UPDATE partners SET limits = $limits WHERE id = $id".update.run() > 0
+      sql"UPDATE partners SET limits = $limits, version = version + 1 WHERE id = $id".update.run() > 0
 
-  override def setSettings(id: PartnerId, contact: PartnerContact, settings: PartnerSettings): Task[Boolean] =
+  override def setSettings(id: PartnerId, expectedVersion: Long, contact: PartnerContact, settings: PartnerSettings): Task[Boolean] =
     xa.connectMeasured("set-partner-settings"):
-      sql"UPDATE partners SET contact = $contact, settings = $settings WHERE id = $id".update.run() > 0
+      sql"""
+        UPDATE partners SET contact = $contact, settings = $settings, version = version + 1
+        WHERE id = $id AND version = $expectedVersion
+      """.update.run() > 0
 
 object PostgresPartnerRepository:
   def live: ZLayer[TransactorZIO, Nothing, PartnerRepository] =

@@ -31,6 +31,7 @@ trait PartnerRepositorySpec extends DatabaseSpecBase[PartnerRepositorySpec.Env]:
     refreshTokenTtlMax = 86400,
     clientAuthMethods = Set(AuthMethod.tls_client_auth),
     rateLimitPolicy = "partner-default",
+    resourceDomains = None,
   )
 
   def partner(id: String, groupId: EdgeGroupId): PartnerRecord =
@@ -47,6 +48,7 @@ trait PartnerRepositorySpec extends DatabaseSpecBase[PartnerRepositorySpec.Env]:
       settings = PartnerSettings.empty,
       reviewAt = None,
       createdAt = now,
+      version = 0L,
     )
 
   override def testCases(env: PartnerRepositorySpec.Env) =
@@ -90,10 +92,11 @@ trait PartnerRepositorySpec extends DatabaseSpecBase[PartnerRepositorySpec.Env]:
         for
           _ <- env.fixtures.group(groupA, EdgeGroupKind.Partner)
           _ <- env.repository.create(acme)
-          profile <- env.repository.updateProfile(acme.id, "ACME Ltd", Some("https://acme.example/logo.png"), contact, Some(now.plusSeconds(86400)))
+          profile <-
+            env.repository.updateProfile(acme.id, 0L, "ACME Ltd", Some("https://acme.example/logo.png"), contact, Some(now.plusSeconds(86400)))
           status <- env.repository.setStatus(acme.id, PartnerStatus.Suspended)
           changed <- env.repository.setLimits(acme.id, limits.copy(maxClients = 9))
-          own <- env.repository.setSettings(acme.id, contact.copy(phone = None), settings)
+          own <- env.repository.setSettings(acme.id, 3L, contact.copy(phone = None), settings)
           nobody <- env.repository.setStatus(PartnerId("nobody"), PartnerStatus.Active)
           found <- env.repository.find(acme.id)
         yield assertTrue(
@@ -110,8 +113,45 @@ trait PartnerRepositorySpec extends DatabaseSpecBase[PartnerRepositorySpec.Env]:
             limits = limits.copy(maxClients = 9),
             settings = settings,
             reviewAt = Some(now.plusSeconds(86400)),
+            // every write of the row bumped it: the profile, the status, the limits and the settings
+            version = 4L,
           )),
         )
+      },
+      test("a write that names an old version loses and changes nothing; the name and logo alone are written without a version") {
+        val acme = partner("acme", groupA)
+        val contact = PartnerContact(email = "security@acme.example", phone = None)
+        for
+          _ <- env.fixtures.group(groupA, EdgeGroupKind.Partner)
+          _ <- env.repository.create(acme)
+          first <- env.repository.updateProfile(acme.id, 0L, "ACME Ltd", None, contact, None)
+          // the same version again, as a second writer that read before the first wrote
+          stale <- env.repository.updateProfile(acme.id, 0L, "ACME Inc", None, contact.copy(email = "other@acme.example"), None)
+          staleSettings <- env.repository.setSettings(acme.id, 0L, contact.copy(email = "other@acme.example"), PartnerSettings.empty)
+          named <- env.repository.setNameAndLogo(acme.id, "ACME Group", Some("https://acme.example/new.png"))
+          found <- env.repository.find(acme.id)
+        yield assertTrue(
+          first,
+          !stale,
+          !staleSettings,
+          named,
+          // the contact is the first writer's, and the name and logo came without touching it
+          found.exists(p => p.displayName == "ACME Group" && p.logoUri.contains("https://acme.example/new.png") && p.contact == contact),
+          found.exists(_.version == 2L),
+        )
+      },
+      test("activation is from onboarding and from nothing else, as the row says now") {
+        val acme = partner("acme", groupA)
+        for
+          _ <- env.fixtures.group(groupA, EdgeGroupKind.Partner)
+          _ <- env.repository.create(acme)
+          first <- env.repository.activate(acme.id)
+          _ <- env.repository.setStatus(acme.id, PartnerStatus.Suspended)
+          // a stale read of `onboarding` that gets here after a suspension
+          late <- env.repository.activate(acme.id)
+          found <- env.repository.find(acme.id)
+          nobody <- env.repository.activate(PartnerId("nobody"))
+        yield assertTrue(first, !late, !nobody, found.exists(_.status == PartnerStatus.Suspended))
       },
     )
 

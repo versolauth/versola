@@ -107,4 +107,21 @@ object BackChannelOutboxSpec extends UnitSpecBase:
           _ <- outbox.awaitDrained
         yield assertTrue(dispatcher.dispatch.calls.nonEmpty, dispatcher.dispatch.calls.size < 5)
     },
+    // #962: a suspension ends every grant of a partner's client at once; each notice is the only way its edge learns of it.
+    test("submitAwaiting waits for room and drops nothing, where submit would have dropped") {
+      val dispatcher = stub[BackChannelDispatcher]
+      ZIO.scoped:
+        for
+          released <- Promise.make[Nothing, Unit]
+          _ <- dispatcher.dispatch.returnsZIO((_, _, _, _, _) => released.await)
+          outbox <- BackChannelOutbox.make(dispatcher, workers = 1, capacity = 1, retry = immediateRetry)
+          submitting <- ZIO.foreachDiscard(List.fill(5)(uriA))(uri => outbox.submitAwaiting(delivery(uri))).fork
+          // the caller is held back while the RP does not answer, and finishes once it does
+          _ <- ZIO.sleep(200.millis)
+          stillWaiting <- submitting.poll.map(_.isEmpty)
+          _ <- released.succeed(())
+          _ <- submitting.join
+          _ <- outbox.awaitDrained
+        yield assertTrue(stillWaiting, dispatcher.dispatch.calls.size == 5)
+    },
   ) @@ TestAspect.withLiveClock @@ TestAspect.timeout(30.seconds)

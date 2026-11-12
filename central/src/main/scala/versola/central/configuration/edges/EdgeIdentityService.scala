@@ -3,6 +3,7 @@ package versola.central.configuration.edges
 import versola.central.CentralConfig
 import versola.central.audit.CentralAudit
 import versola.central.configuration.clients.certificates.ClientCertificateRequests
+import versola.central.configuration.partners.{PartnerRegistry, PartnerStatus}
 import versola.util.audit.{AuditEvents, AuditKind}
 import versola.util.http.Observability
 import versola.util.{Base64Url, CertificateSubject, EdgeIdentityNames, SecureRandom}
@@ -44,7 +45,10 @@ trait EdgeIdentityService:
       edgeId: EdgeId,
       token: String,
       csrPem: String,
-  ): IO[EdgeIdentityService.Refused | EdgeIdentityService.InvalidToken.type | Throwable, EdgeIdentityService.Identity]
+  ): IO[
+    EdgeIdentityService.Refused | EdgeIdentityService.InvalidToken.type | EdgeIdentityService.PartnerSuspended.type | Throwable,
+    EdgeIdentityService.Identity,
+  ]
 
   /** A new certificate for an edge that proved who it is on the mutual-TLS listener. `presentedSerial` is the
     * certificate it proved it with, for the log. */
@@ -71,15 +75,18 @@ object EdgeIdentityService:
   /** The token is unknown, already spent, expired or for another edge; from outside these are not told apart. */
   case object InvalidToken extends RuntimeException("the token is not valid")
 
+  /** The edge belongs to a partner that is suspended (#962): it is given no certificate, whatever token it holds. */
+  case object PartnerSuspended extends RuntimeException("the partner is suspended")
+
   /** What the certificate of `edge` must say. */
   def subjectFor(edge: EdgeRecord): CertificateSubject =
     EdgeIdentityNames.subject(edgeId = edge.id, groupId = edge.groupId)
 
   val live: URLayer[
     EdgeService & EdgeEnrollmentTokenRepository & EdgeCertificateRepository & EdgeCertificateIssuer & SecureRandom & CentralConfig &
-      AuditEvents,
+      AuditEvents & PartnerRegistry,
     EdgeIdentityService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
+  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _))
 
   class Impl(
       edges: EdgeService,
@@ -89,6 +96,7 @@ object EdgeIdentityService:
       random: SecureRandom,
       config: CentralConfig,
       events: AuditEvents,
+      partners: PartnerRegistry,
   ) extends EdgeIdentityService:
     private def certificateEvent(kind: AuditKind, edgeId: EdgeId): UIO[Unit] =
       CentralAudit.certificate(events, kind, CentralAudit.Actors.Edge, Some(edgeId.toString), ("edge", edgeId.toString))
@@ -104,7 +112,11 @@ object EdgeIdentityService:
         _ <- tokens.create(hash(token), edgeId, expiresAt)
       yield IssuedToken(token, expiresAt)
 
-    override def enroll(edgeId: EdgeId, token: String, csrPem: String): IO[Refused | InvalidToken.type | Throwable, Identity] =
+    override def enroll(
+        edgeId: EdgeId,
+        token: String,
+        csrPem: String,
+    ): IO[Refused | InvalidToken.type | PartnerSuspended.type | Throwable, Identity] =
       for
         now <- Clock.instant
         // Nothing is read or parsed on the strength of a token before the token is known good: the request comes from
@@ -113,6 +125,10 @@ object EdgeIdentityService:
         owner <- tokens.peek(hash(token), now)
         _ <- ZIO.fail(InvalidToken).unless(owner.contains(edgeId))
         edge <- edges.find(edgeId).someOrFail(InvalidToken)
+        // the token is good, so this may be told: a suspended partner's edge is given no certificate (its unused tokens are also
+        // revoked at suspension, which this covers for one issued while the suspension was being made)
+        _ <- ZIO.when(edge.groupKind == EdgeGroupKind.Partner):
+          partners.findByGroup(edge.groupId).flatMap(partner => ZIO.fail(PartnerSuspended).when(partner.exists(_.status == PartnerStatus.Suspended)))
         // Authenticated from here on, so a mistake in the request may be told: and it is checked before the token is
         // spent, so it does not cost the operator a token.
         _ <- ZIO.fromEither(CertificateSubject.matches(csrPem, subjectFor(edge))).mapError(Refused(_))

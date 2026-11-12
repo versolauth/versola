@@ -283,42 +283,47 @@ class PostgresSessionRepository(xa: TransactorZIO)
         revokeFamiliesTokens(families, now, revocation)
         families
 
+  /** Every user's live refresh tokens of one client, in bounded batches: a client of a partner may hold tens of thousands of
+    * families, and one transaction that takes an advisory lock per family (held to its end) for all of them could exhaust
+    * `max_locks_per_transaction` and roll back with nothing revoked. Each batch is a transaction of its own, of at most
+    * [[PostgresSessionRepository.RevokeBatchSize]] families, found through `refresh_tokens_client_live_idx`: the families are
+    * locked in a fixed order (so two of these cannot wait on each other), and only those are expired, so what is expired
+    * was locked, and a rotation racing a batch either commits first and has its successor expired below, or waits and finds
+    * its token dead. A family created while the batches run is found by a later batch; the loop ends when a batch finds
+    * none, or after [[PostgresSessionRepository.MaxRevokeBatches]] (a grant storm: the rest is left to the family-level
+    * `fam:` records that were written for what was ended). A batch that fails ends the call with the families of the earlier
+    * ones already revoked and recorded; calling again continues.
+    */
   override def revokeRefreshTokensByClient(
       clientId: ClientId,
       revocation: RevocationTerms,
   ): Task[List[(UserId, RefreshTokenFamilyId)]] =
     Clock.instant.flatMap: now =>
-      xa.transactMeasured("revoke-refresh-tokens-by-client"):
-        // The same locking rounds as `revokeRefreshTokensByUserAndClient`, over every user of the client at once.
-        def liveFamilies: Set[RefreshTokenFamilyId] =
-          sql"""
+      val batch: Task[List[(UserId, RefreshTokenFamilyId)]] =
+        xa.transactMeasured("revoke-refresh-tokens-by-client-batch"):
+          val families = sql"""
             SELECT DISTINCT family_id FROM refresh_tokens
             WHERE client_id = $clientId AND expires_at > $now AND rotated_at IS NULL
-          """.query[RefreshTokenFamilyId].run().toSet
+            ORDER BY family_id
+            LIMIT ${PostgresSessionRepository.RevokeBatchSize}
+          """.query[RefreshTokenFamilyId].run().toList
+          families.foreach(lockFamilyById)
+          val ended = families.flatMap: family =>
+            sql"""
+              UPDATE refresh_tokens SET expires_at = $now
+              WHERE client_id = $clientId AND family_id = $family AND expires_at > $now AND rotated_at IS NULL
+              RETURNING user_id, family_id
+            """.query[(UserId, RefreshTokenFamilyId)].run().toList
+          revokeFamiliesTokens(ended.map(_._2).distinct, now, revocation)
+          ended.distinct
 
-        def expireLive: Set[(UserId, RefreshTokenFamilyId)] =
-          sql"""
-            UPDATE refresh_tokens SET expires_at = $now
-            WHERE client_id = $clientId AND expires_at > $now AND rotated_at IS NULL
-            RETURNING user_id, family_id
-          """.query[(UserId, RefreshTokenFamilyId)].run().toSet
+      def loop(done: List[(UserId, RefreshTokenFamilyId)], batchesLeft: Int): Task[List[(UserId, RefreshTokenFamilyId)]] =
+        if batchesLeft == 0 then ZIO.succeed(done)
+        else
+          batch.flatMap: ended =>
+            if ended.isEmpty then ZIO.succeed(done) else loop(done ++ ended, batchesLeft - 1)
 
-        @tailrec
-        def revokeLocked(
-            locked: Set[RefreshTokenFamilyId],
-            ended: Set[(UserId, RefreshTokenFamilyId)],
-            roundsLeft: Int,
-        ): Set[(UserId, RefreshTokenFamilyId)] =
-          val toLock = (liveFamilies -- locked).toList.sortBy(identity[String])
-          toLock.foreach(lockFamilyById)
-          val expired = expireLive
-          val unlocked = expired.map(_._2) -- locked -- toLock
-          if unlocked.isEmpty || roundsLeft == 0 then ended ++ expired
-          else revokeLocked(locked ++ toLock, ended ++ expired, roundsLeft - 1)
-
-        val ended = revokeLocked(Set.empty, Set.empty, roundsLeft = PostgresSessionRepository.MaxRevokeRounds).toList.sortBy(_._2: String)
-        revokeFamiliesTokens(ended.map(_._2).distinct, now, revocation)
-        ended
+      loop(Nil, PostgresSessionRepository.MaxRevokeBatches).map(_.sortBy(_._2: String))
 
   /** What a user's own password change does when they ask to be signed out elsewhere: ends every session of
     * the user but `keep` and every refresh token not held under it, and records `sid:` for each session ended.
@@ -785,6 +790,13 @@ object PostgresSessionRepository:
     * locked. One round is the normal case; a second one happens only when a grant for the same user and client
     * was being created at that very moment. */
   private val MaxRevokeRounds: Int = 3
+
+  /** The families one batch of `revokeRefreshTokensByClient` locks, expires and records: well under what a transaction may
+    * hold in locks, large enough that a client of a few thousand families takes a few batches. */
+  private val RevokeBatchSize: Int = 200
+
+  /** The batches one call runs at most: with [[RevokeBatchSize]], two hundred thousand families. */
+  private val MaxRevokeBatches: Int = 1000
 
   /** Signals a rotation that lost its race, from inside the transaction body. */
   private case object RotationLost extends RuntimeException("refresh token already exchanged")

@@ -1555,7 +1555,15 @@ listener) so that the bundle and `/edge/partner/me` tell the partner's edge wher
 operator fills the addresses in by hand. `POST /configuration/partners/suspend` is the kill switch: the partner's
 clients are omitted from what `auth` reads, their refresh tokens are revoked (`DELETE
 /users/refresh-tokens?clientId=` on `auth`), and the partner's edges are refused with `403` everywhere, certificate
-renewal included; `POST /configuration/partners/resume` reverses it. Access tokens already issued run out within the
+renewal included; `POST /configuration/partners/resume` reverses it. The answer is `204` when auth was told to reload
+its clients and every grant was revoked, and `207` naming what was not (call it again once auth answers). Deleting an edge
+of a partner does **not** revoke the certificate it holds: the certificate names the group, so it keeps authenticating the
+group's clients at auth until it expires (`edge-certificates.partner-validity`, 14 days by default); to cut a partner off
+suspend it. The console's access token, which authorises a partner's management calls, lives ten minutes at most and
+central does not check it for revocation; it proves a user of the operator signed in through the partner's console, not
+that they are of the partner's staff (the partner's edge decides that). The `backChannelLogoutUri` of a partner's client is
+restricted to the partner's redirect domains, because auth posts a signed logout token to it from inside the operator's
+network and does not filter addresses: where a partner's domain could resolve to an internal address, filter egress. Access tokens already issued run out within the
 partner's `accessTokenTtlMax`.
 
 **Behaviour change and breaking items** (read before upgrading; `central`, `auth` and every `edge`

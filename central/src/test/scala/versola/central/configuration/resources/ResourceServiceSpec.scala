@@ -3,6 +3,7 @@ package versola.central.configuration.resources
 import org.scalamock.stubs.ZIOStubs
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeId
+import versola.central.configuration.partners.PartnerId
 import versola.central.configuration.sync.SyncEvent
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.configuration.{
@@ -230,6 +231,18 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         ))
         result <- env.service.getResourcesForSync(Some(syncEdgeId))
       yield assertTrue(result == Vector(resource))
+    },
+    // #962: a partner's resource (upstream secret, endpoint rules) is not served to the operator's own edge, even in a tenant bound to it.
+    test("getResourcesForSync with an edge leaves out a partner's resources, in a tenant bound to the edge too") {
+      val syncEdgeId = EdgeId("edge-1")
+      val partnersResource = resource.copy(resourceId = ResourceId("partner-resource"), partnerId = Some(PartnerId("acme")))
+      val env = new Env(Vector(resource, partnersResource))
+
+      for
+        _ <- env.tenantRepository.getAll.succeedsWith(Vector(TenantRecord(tenantId, "tenant a", Some(syncEdgeId))))
+        forEdge <- env.service.getResourcesForSync(Some(syncEdgeId))
+        forAuth <- env.service.getResourcesForSync(None)
+      yield assertTrue(forEdge == Vector(resource), forAuth == Vector(resource, partnersResource))
     },
     // Gap: ResourceService.live's ZLayer wiring (the reloading cache and the
     // secret-decrypting CacheSource built on top of the repository) was never built by any

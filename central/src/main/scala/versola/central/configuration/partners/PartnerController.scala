@@ -20,6 +20,10 @@ import java.time.Instant
 /** The operator's side of partners (#962 §3), on the main listener: the registry, the kill switch, the limits and the queue of
   * requests. Query parameters, not path parameters, as every route of central. */
 object PartnerController extends AuditedController:
+  /** How many requests the operator's queue shows unless it asks for fewer or more (`limit`), and the most it can ask for. */
+  val DefaultApprovalsLimit: Int = 100
+  val MaxApprovalsLimit: Int = 500
+
   type Env = Tracing & PartnerService & PartnerRegistry & ResourceService & EdgeCertificateRepository & CentralConfig
 
   def endpoints = List(
@@ -98,8 +102,16 @@ object PartnerController extends AuditedController:
           body <- request.bodyAs[SuspendPartnerRequest]
           _ <- Audit.target(body.id)
           _ <- Audit.partner(body.id)
-          _ <- ZIO.serviceWithZIO[PartnerService](_.suspend(body.id))
-        yield Response.status(Status.NoContent)).catchAll(failure)
+          // the log keeps the names of the fields, never their values: that a note came with it, not what it says
+          _ <- Audit.changedFields("note" -> body.note.exists(_.nonEmpty))
+          outcome <- ZIO.serviceWithZIO[PartnerService](_.suspend(body.id))
+        // The partner is suspended either way. `204` when auth was told and every grant was revoked; `207` when something was
+        // not, naming it, so that the operator can call again once auth answers.
+        yield
+          if outcome.complete then Response.status(Status.NoContent)
+          else Response.json(SuspendPartnerResponse(outcome.authSynced, outcome.revocationFailed).toJson).status(Status.MultiStatus)).catchAll(
+          failure,
+        )
     }
 
   val resumeEndpoint =
@@ -134,7 +146,15 @@ object PartnerController extends AuditedController:
         tenantId <- request.url.queryZIO[Option[TenantId]]("tenantId")
         partnerId <- request.url.queryZIO[Option[PartnerId]]("partnerId")
         status <- request.url.queryZIO[Option[ApprovalStatus]]("status")
-        approvals <- ZIO.serviceWithZIO[PartnerService](_.approvals(tenantId, status, partnerId))
+        limit <- request.url.queryZIO[Option[Int]]("limit")
+        approvals <- ZIO.serviceWithZIO[PartnerService](
+          _.approvals(
+            tenantId,
+            status,
+            partnerId,
+            limit.fold(PartnerController.DefaultApprovalsLimit)(_.max(1).min(PartnerController.MaxApprovalsLimit)),
+          ),
+        )
       yield Response.json(GetPartnerApprovalsResponse(approvals.map(PartnerApprovalResponse.of)).toJson)
     }
 
@@ -174,6 +194,8 @@ object PartnerController extends AuditedController:
         Observability.setError("partner_not_found", Some(what)).as(Response.text(s"$what does not exist").status(Status.NotFound))
       case PartnerError.Invalid(reason) => Observability.setError("partner_invalid", Some(reason)).as(Response.text(reason).status(Status.BadRequest))
       case PartnerError.Conflict(reason) => Observability.setError("partner_conflict", Some(reason)).as(Response.text(reason).status(Status.Conflict))
+      case error: PartnerError.TooManyRequests =>
+        Observability.setError("partner_rate_limited").as(Response.text(error.message).status(Status.TooManyRequests))
       case error: Throwable => ZIO.fail(error)
 
 /** A partner as the console shows it. `settings` are the partner's own and are not here. */
@@ -248,6 +270,9 @@ case class UpdatePartnerRequest(
 ) derives Schema, JsonCodec
 
 case class SuspendPartnerRequest(id: PartnerId, note: Option[String]) derives Schema, JsonCodec
+
+/** The answer of a suspension that was only partly carried out (`207`): the partner is suspended, and these are what is left. */
+case class SuspendPartnerResponse(authSynced: Boolean, revocationFailed: List[ClientId]) derives Schema, JsonCodec
 
 case class ResumePartnerRequest(id: PartnerId) derives Schema, JsonCodec
 

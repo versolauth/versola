@@ -85,6 +85,9 @@ case class OAuthClientRecord(
     applicationType: ApplicationType,
     /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
     themeOverrides: Option[ThemeOverrides],
+    /** The partner that owns the client (#549, #962), as central names it; `None` for a first-party client. Only what
+      * [[bindsAccessTokens]] needs: auth knows nothing else of partners. */
+    partnerId: Option[String],
 ) derives CanEqual, Equal:
 
   /** Whether this client's credential card can lead to account creation: it asks for an email or
@@ -128,8 +131,12 @@ case class OAuthClientRecord(
     * certificate is edge's, the same for every installation of the app, so a token bound to
     * it would be replayable by anyone who can reach edge. Its `cnf` carries only the device's
     * `jkt`, which `dpopBoundAccessTokens` -- enforced for it at registration -- guarantees.
+    *
+    * A partner's client is the other (#549, #962): it authenticates with the certificate of its edge group, and every edge of
+    * the group holds a certificate of its own, so a token bound to the one that asked for it would be refused through every
+    * other replica. Central keeps `certificateBoundAccessTokens` off for it; this is the same rule, read from the sync.
     */
   def bindsAccessTokens: Boolean =
-    (mtlsAuth.nonEmpty && !isEdgeFrontedNative) || certificateBoundAccessTokens
+    (mtlsAuth.nonEmpty && !isEdgeFrontedNative && partnerId.isEmpty) || certificateBoundAccessTokens
 
   def isPublic: Boolean = !isConfidential
