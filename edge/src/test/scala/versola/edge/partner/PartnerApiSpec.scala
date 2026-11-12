@@ -567,6 +567,24 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
         )
       },
     ),
+    suite("enrollment")(
+      test("a re-issued token's bundle says it cannot enroll alone, and the bundle of a new edge says it can") {
+        for
+          h <- harness(
+            Some(StaffLevel.developer),
+            answer = (method, path) =>
+              if path == List("edges", "enrollment-tokens") then reply(Status.Created, """{"token":"t","expiresAt":"2026-11-13T10:00:00Z"}""")
+              else
+                reply(
+                  Status.Created,
+                  """{"edge":{"id":"e","publicUrl":"https://x.example"},"signingKey":{"keyId":"k","privateKey":"p"},"token":"t","expiresAt":"2026-11-13T10:00:00Z","bundle":"{}"}""",
+                ),
+          )
+          token <- send(h, write(Method.POST, "/edges/e/enrollment-tokens", "{}")).flatMap(_.body.asString)
+          created <- send(h, write(Method.POST, "/edges", """{"id":"e","publicUrl":"https://x.example"}""")).flatMap(_.body.asString)
+        yield assertTrue(token.contains("\"bundleComplete\":false"), created.contains("\"bundleComplete\":true"))
+      },
+    ),
     suite("the audit trail")(
       test("the console's groups are central's kinds: clients are the events of clients, and the team's own events are laid among them") {
         val events =

@@ -331,6 +331,7 @@ final class PartnerApi(
         "signingKey" -> field(created, "signingKey").getOrElse(Json.Null),
         "token" -> field(created, "token").getOrElse(Json.Null),
         "bundle" -> field(created, "bundle").getOrElse(Json.Null),
+        "bundleComplete" -> Json.Bool(true),
         "expiresAt" -> field(created, "expiresAt").getOrElse(Json.Null),
       ),
     )
@@ -354,7 +355,13 @@ final class PartnerApi(
       )
       json(
         Status.Created,
-        Json.Obj("token" -> Json.Str(token), "bundle" -> Json.Str(bundle.toJson), "expiresAt" -> field(issued, "expiresAt").getOrElse(Json.Null)),
+        Json.Obj(
+          "token" -> Json.Str(token),
+          "bundle" -> Json.Str(bundle.toJson),
+          // no signing key and no enrollment address in it: it cannot enroll an edge on its own
+          "bundleComplete" -> Json.Bool(false),
+          "expiresAt" -> field(issued, "expiresAt").getOrElse(Json.Null),
+        ),
       )
 
   private def revokeToken(id: String, session: Session, request: Request): IO[Fail | Throwable, Response] =
