@@ -4,12 +4,6 @@ How Versola is deployed to production (`id.versola.io`). For local development s
 [`develop.md`](develop.md); for Kubernetes see [`k8s/README.md`](k8s/README.md) (it shares the
 configuration *format* with this path and nothing else).
 
-Local demo upgrades: releases with the docker-local loopback fix publish the diagnostic ports
-(`8091`, `8081`, `8096`) on `127.0.0.1` only. To apply it to an existing local installation, run
-`versola bootstrap local <version>` with such a release; it regenerates the Compose file and
-recreates the affected containers. Restarting an old bundle does not change its port bindings.
-Monitoring from another machine can no longer reach those ports directly.
-
 Production is one VM (Debian 12) and a managed PostgreSQL 18 cluster in the same private network.
 Versola runs on the VM under [`versola-cli`](https://github.com/versolauth/versola-cli):
 `versola configure vps`, `versola migrate`, `versola up` pull the release, generate its
