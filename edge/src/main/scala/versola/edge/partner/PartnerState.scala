@@ -46,7 +46,7 @@ object PartnerMeSyncClient:
     extends IllegalStateException(
       s"mode = $configured, but central does not hold this edge in a group of that kind: a first-party edge is configured " +
         "mode = first-party, and a partner's edge mode = partner (central refused /edge/partner/me for the edge's group). " +
-        "Check mode and central.identity.group.",
+        "Check mode (the group of this edge is the one it enrolled in).",
     )
 
   /** Central refuses this partner's edges everything (`403`, `partner_suspended`): the operator has suspended it. */

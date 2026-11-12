@@ -7,7 +7,8 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.bouncycastle.pkcs.PKCS10CertificationRequest
 import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequest
 import versola.edge.model.EdgeId
-import versola.util.{CertificateSubject, EdgeIdentityNames, PrivateClientCertificate, Secret, TestCertificates}
+import versola.edge.partner.Enrolled
+import versola.util.{CertificateSubject, EdgeIdentityNames, PrivateClientCertificate, Secret, SecureRandom, SecurityService, TestCertificates}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -76,7 +77,8 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
         identity = Some(
           EdgeConfig.CentralIdentity(
             directory = directory.toString,
-            enrollment = tokenFile.map(file => EdgeConfig.CentralEnrollment(URL.decode("https://central.example").toOption.get, file.toString)),
+            enrollment =
+              tokenFile.map(file => EdgeConfig.CentralEnrollment(Some(URL.decode("https://central.example").toOption.get), Some(file.toString))),
           ),
         ),
       ),
@@ -127,6 +129,16 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
         ),
       )
     yield Calls(enroll, renew)
+
+  private def enrolled(keys: versola.util.RsaKeyPair): Enrolled =
+    Enrolled(
+      edgeId = edgeId,
+      group = "default",
+      keyId = keys.keyId,
+      privateKey = Base64.getEncoder.encodeToString(keys.privateKey.getEncoded),
+      central = Enrolled.Central("https://central-mtls.example"),
+      auth = Enrolled.Auth("https://idp.example", None),
+    )
 
   private def tokenFile(content: String): Task[Path] =
     ZIO.attemptBlocking:
@@ -199,8 +211,9 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
           file <- tokenFile("TOKEN")
           calls <- central(lifetime = 14.days)
           client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
           holder <- openHolder(ZLayer.succeed(config(directory, Some(file))))
-          _ <- EdgeIdentityEnrollment.Impl(config(directory, Some(file)), client, holder, tokens).ensureCertificate
+          _ <- EdgeIdentityEnrollment.Impl(config(directory, Some(file)), client, holder, tokens, security).ensureCertificate
           asked <- calls.enroll.get
           material <- holder.material
           body = asked.head.fromJson[zio.json.ast.Json.Obj].toOption.get
@@ -219,12 +232,13 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
           file <- tokenFile("TOKEN")
           calls <- central(lifetime = 14.days)
           client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
           layer = ZLayer.succeed(config(directory, Some(file)))
           holder <- openHolder(layer)
-          enrollment = EdgeIdentityEnrollment.Impl(config(directory, Some(file)), client, holder, tokens)
+          enrollment = EdgeIdentityEnrollment.Impl(config(directory, Some(file)), client, holder, tokens, security)
           _ <- enrollment.ensureCertificate
           restarted <- openHolder(layer)
-          _ <- EdgeIdentityEnrollment.Impl(config(directory, Some(file)), client, restarted, tokens).ensureCertificate
+          _ <- EdgeIdentityEnrollment.Impl(config(directory, Some(file)), client, restarted, tokens, security).ensureCertificate
           asked <- calls.enroll.get
         yield assertTrue(asked.size == 1)
       },
@@ -234,13 +248,14 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
           file <- tokenFile("TOKEN")
           calls <- central(lifetime = 14.days)
           client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
           holder <- openHolder(ZLayer.succeed(config(directory, Some(file))))
           generated <- CertificateSubject.generate(subject)
           _ <- holder.install(
             sign(generated.csrPem, subject.uris, Instant.now.minusSeconds(7200), Instant.now.minusSeconds(3600)),
             generated.privateKeyPem,
           )
-          _ <- EdgeIdentityEnrollment.Impl(config(directory, Some(file)), client, holder, tokens).ensureCertificate
+          _ <- EdgeIdentityEnrollment.Impl(config(directory, Some(file)), client, holder, tokens, security).ensureCertificate
           asked <- calls.enroll.get
         yield assertTrue(asked.size == 1)
       },
@@ -248,8 +263,9 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
         for
           directory <- tempDirectory
           client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
           holder <- openHolder(ZLayer.succeed(config(directory, None)))
-          failure <- EdgeIdentityEnrollment.Impl(config(directory, None), client, holder, tokens).ensureCertificate.flip
+          failure <- EdgeIdentityEnrollment.Impl(config(directory, None), client, holder, tokens, security).ensureCertificate.flip
         yield assertTrue(failure.getMessage.contains("no enrollment configured"))
       },
       test("a token central refuses is an edge that does not start") {
@@ -258,8 +274,9 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
           file <- tokenFile("SPENT")
           _ <- central(lifetime = 14.days, status = Status.Unauthorized)
           client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
           holder <- openHolder(ZLayer.succeed(config(directory, Some(file))))
-          failure <- EdgeIdentityEnrollment.Impl(config(directory, Some(file)), client, holder, tokens).ensureCertificate.flip
+          failure <- EdgeIdentityEnrollment.Impl(config(directory, Some(file)), client, holder, tokens, security).ensureCertificate.flip
           material <- holder.material
         yield assertTrue(failure.getMessage.contains("Unauthorized") || failure.getMessage.contains("401"), material.isEmpty)
       },
@@ -268,6 +285,7 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
           directory <- tempDirectory
           calls <- central(lifetime = 14.days)
           client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
           holder <- openHolder(ZLayer.succeed(config(directory, None)))
           generated <- CertificateSubject.generate(subject)
           // 30 days long, 5 left: due
@@ -276,7 +294,7 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
             generated.privateKeyPem,
           )
           before <- holder.material
-          _ <- EdgeIdentityEnrollment.Impl(config(directory, None), client, holder, tokens).renewIfDue
+          _ <- EdgeIdentityEnrollment.Impl(config(directory, None), client, holder, tokens, security).renewIfDue
           after <- holder.material
           asked <- calls.renew.get
         yield assertTrue(
@@ -291,13 +309,14 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
           directory <- tempDirectory
           calls <- central(lifetime = 14.days)
           client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
           holder <- openHolder(ZLayer.succeed(config(directory, None)))
           generated <- CertificateSubject.generate(subject)
           _ <- holder.install(
             sign(generated.csrPem, subject.uris, Instant.now.minusSeconds(86400), Instant.now.plusSeconds(29 * 86400)),
             generated.privateKeyPem,
           )
-          _ <- EdgeIdentityEnrollment.Impl(config(directory, None), client, holder, tokens).renewIfDue
+          _ <- EdgeIdentityEnrollment.Impl(config(directory, None), client, holder, tokens, security).renewIfDue
           asked <- calls.renew.get
         yield assertTrue(asked.isEmpty)
       },
@@ -306,6 +325,7 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
           directory <- tempDirectory
           _ <- central(lifetime = 14.days, status = Status.UnprocessableEntity)
           client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
           holder <- openHolder(ZLayer.succeed(config(directory, None)))
           generated <- CertificateSubject.generate(subject)
           _ <- holder.install(
@@ -313,8 +333,89 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
             generated.privateKeyPem,
           )
           before = holder.paths
-          failure <- EdgeIdentityEnrollment.Impl(config(directory, None), client, holder, tokens).renewIfDue.flip
+          failure <- EdgeIdentityEnrollment.Impl(config(directory, None), client, holder, tokens, security).renewIfDue.flip
         yield assertTrue(failure.getMessage.contains("renewal"), holder.paths == before)
       },
-    ).provideSomeLayer(TestClient.layer),
+      suite("of a partner edge")(
+        test("the request for the new certificate carries a new public signing key, and the edge switches to it after the answer") {
+          for
+            directory <- tempDirectory
+            calls <- central(lifetime = 14.days)
+            client <- ZIO.service[Client]
+            security <- ZIO.service[SecurityService]
+            holder <- openHolder(ZLayer.succeed(config(directory, None)))
+            generated <- CertificateSubject.generate(subject)
+            _ <- holder.install(
+              sign(generated.csrPem, subject.uris, Instant.now.minusSeconds(25 * 86400), Instant.now.plusSeconds(5 * 86400)),
+              generated.privateKeyPem,
+            )
+            old <- security.generateRsaKeyPair
+            _ <- Enrolled.write(directory, enrolled(old))
+            switched <- Ref.make(List.empty[(String, java.security.PrivateKey)])
+            recording = new CentralSyncTokenService:
+              override def getToken: UIO[String] = ZIO.succeed("BEARER")
+              override def switchKey(keyId: String, privateKey: java.security.PrivateKey): UIO[Unit] = switched.update(_ :+ (keyId -> privateKey))
+            partner = config(directory, None).copy(mode = EdgeMode.Partner)
+            _ <- EdgeIdentityEnrollment.Impl(partner, client, holder, recording, security).renewIfDue
+            asked <- calls.renew.get
+            body = asked.head._2.fromJson[zio.json.ast.Json.Obj].toOption.get
+            sent = body.get("signingKey").flatMap(_.asObject).get
+            kept <- Enrolled.read(directory).someOrFail(RuntimeException("enrolled.json is gone"))
+            now <- switched.get
+          yield assertTrue(
+            sent.get("kty").flatMap(_.asString).contains("RSA"),
+            // a public key only: nothing of the private half is sent
+            !sent.keys.exists(Set("d", "p", "q", "dp", "dq", "qi")),
+            sent.get("kid").flatMap(_.asString).exists(_ != old.keyId),
+            now.map(_._1) == List(sent.get("kid").flatMap(_.asString).get),
+            kept.keyId == now.head._1,
+            kept.keyId != old.keyId,
+            kept.privateKey == Base64.getEncoder.encodeToString(now.head._2.getEncoded),
+            // the rest of what was kept is as it was
+            kept.copy(keyId = old.keyId, privateKey = enrolled(old).privateKey) == enrolled(old),
+          )
+        },
+        test("an edge of the first party sends no signing key and keeps its own") {
+          for
+            directory <- tempDirectory
+            calls <- central(lifetime = 14.days)
+            client <- ZIO.service[Client]
+            security <- ZIO.service[SecurityService]
+            holder <- openHolder(ZLayer.succeed(config(directory, None)))
+            generated <- CertificateSubject.generate(subject)
+            _ <- holder.install(
+              sign(generated.csrPem, subject.uris, Instant.now.minusSeconds(25 * 86400), Instant.now.plusSeconds(5 * 86400)),
+              generated.privateKeyPem,
+            )
+            _ <- EdgeIdentityEnrollment.Impl(config(directory, None), client, holder, tokens, security).renewIfDue
+            asked <- calls.renew.get
+            body = asked.head._2.fromJson[zio.json.ast.Json.Obj].toOption.get
+          yield assertTrue(!body.keys.contains("signingKey"))
+        },
+        test("a renewal central refuses switches nothing") {
+          for
+            directory <- tempDirectory
+            _ <- central(lifetime = 14.days, status = Status.UnprocessableEntity)
+            client <- ZIO.service[Client]
+            security <- ZIO.service[SecurityService]
+            holder <- openHolder(ZLayer.succeed(config(directory, None)))
+            generated <- CertificateSubject.generate(subject)
+            _ <- holder.install(
+              sign(generated.csrPem, subject.uris, Instant.now.minusSeconds(25 * 86400), Instant.now.plusSeconds(5 * 86400)),
+              generated.privateKeyPem,
+            )
+            old <- security.generateRsaKeyPair
+            _ <- Enrolled.write(directory, enrolled(old))
+            switched <- Ref.make(0)
+            recording = new CentralSyncTokenService:
+              override def getToken: UIO[String] = ZIO.succeed("BEARER")
+              override def switchKey(keyId: String, privateKey: java.security.PrivateKey): UIO[Unit] = switched.update(_ + 1)
+            partner = config(directory, None).copy(mode = EdgeMode.Partner)
+            _ <- EdgeIdentityEnrollment.Impl(partner, client, holder, recording, security).renewIfDue.flip
+            kept <- Enrolled.read(directory)
+            count <- switched.get
+          yield assertTrue(count == 0, kept.contains(enrolled(old)))
+        },
+      ),
+    ).provideSomeLayer(TestClient.layer ++ (SecureRandom.live >>> SecurityService.live)),
   ) @@ TestAspect.silentLogging @@ TestAspect.sequential @@ TestAspect.withLiveClock

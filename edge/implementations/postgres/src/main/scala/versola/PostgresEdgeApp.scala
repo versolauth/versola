@@ -6,7 +6,7 @@ import versola.cleanup.PostgresCleanupManager
 import versola.edge.dpop.{DpopPolicyService, DpopProofRepository, DpopReplayGuard, DpopVerifier}
 import versola.edge.login.LoginRepository
 import versola.edge.nativeapp.{NativeAuthClient, NativeController, NativeService}
-import versola.edge.partner.{PartnerSurface, PostgresStaffRepository, StaffRepository}
+import versola.edge.partner.{PartnerEnrollment, PartnerSurface, PostgresStaffRepository, StaffRepository}
 import versola.edge.revocation.{EdgeRevocationRepository, RevocationFeedClient, RevocationFeedPuller, TokenRevocationService}
 import versola.edge.session.EdgeSessionRepository
 import versola.edge.{
@@ -19,6 +19,7 @@ import versola.edge.{
   EdgeConfig,
   EdgeController,
   EdgeIdentity,
+  EdgeMode,
   EdgeRateLimiter,
   EdgeService,
   InternalSurface,
@@ -160,7 +161,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     // EdgeConfig.validated rejects a `versola-internal-trusted-certificates` that names a CA
     // rather than the leaf it is documented to require -- see that field's own comment.
-    (parseConfig[EdgeConfig] >>> EdgeConfig.validated) >++>
+    (edgeConfig >>> EdgeConfig.validated) >++>
       // `>++>` rather than `>>>`: PostgresRevocationNotifications needs the PostgresConfig the
       // transactor loaded, to open a connection of its own to park on LISTEN.
       (PostgresHikariDataSource.transactor(serviceName = Some("edge"), migrate = runMigrations) >++>
@@ -208,6 +209,16 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       PartnerSurface.live >++>
       SSOClientWarmUp.live
 
+  /** The configuration of the file, and for a partner edge the values its enrollment fixed (`id`, group, central's and auth's
+    * addresses, the signing key: see [[versola.edge.partner.PartnerEnrollment]]), which enrolls first where it has to. */
+  private def edgeConfig: ZLayer[ConfigProvider & Client, Throwable, EdgeConfig] =
+    ZLayer.fromZIO:
+      for
+        base <- ZIO.service[ConfigProvider]
+        provider <- PartnerEnrollment.resolve(base)
+        config <- provider.load(deriveConfig[EdgeConfig])
+      yield config
+
   /** Keyed off this edge's private key; the records are prefixed with the edge id, so two edges
     * on one database keep their own. See [[ConfigSnapshot]].
     */
@@ -217,7 +228,10 @@ object PostgresEdgeApp extends VersolaApp("edge"):
         for
           repository <- ZIO.service[ConfigSnapshot.Repository]
           config <- ZIO.service[EdgeConfig]
-          snapshot <- ConfigSnapshot.make(repository, config.privateKey.getEncoded, keyPrefix = s"${config.id}:")
+          // a partner edge replaces its signing key at every renewal, and a snapshot MAC'd with it would not survive one: its own
+          // secret, which is stable, is the key of the snapshot
+          material = if config.mode == EdgeMode.Partner then config.security.tokenEncryption.key else config.privateKey.getEncoded
+          snapshot <- ConfigSnapshot.make(repository, material, keyPrefix = s"${config.id}:")
         yield snapshot
 
   given DeriveConfig[versola.edge.model.EdgeId] = DeriveConfig[String].map(versola.edge.model.EdgeId(_))
@@ -234,7 +248,5 @@ object PostgresEdgeApp extends VersolaApp("edge"):
   given DeriveConfig[URL] = DeriveConfig[String]
     .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))
 
-  // The key of a bootstrap bundle is written in the URL-safe alphabet (`signingKey.privateKey`); `private-key` takes either, so it
-  // can be copied from the bundle as it is.
   given DeriveConfig[java.security.PrivateKey] = DeriveConfig[String]
-    .mapOrFail(raw => SecretConfig.rsaPrivateKey(raw).orElse(SecretConfig.rsaPrivateKey(raw.replace('-', '+').replace('_', '/'))))
+    .mapOrFail(SecretConfig.rsaPrivateKey)

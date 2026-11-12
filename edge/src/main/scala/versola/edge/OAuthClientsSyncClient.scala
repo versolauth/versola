@@ -137,7 +137,8 @@ object OAuthClientsSyncClient:
         // Hybrid, matching ClientController's transportEncrypt: a generated client secret
         // fits in one RSA-OAEP block, but edgeSigningKey's stored JWK document does not, and
         // this decrypts both.
-        decrypted <- securityService.decryptRsaHybrid(encrypted, config.privateKey)
+        keys <- centralSyncTokenService.decryptionKeys(config.privateKey)
+        decrypted <- CentralSyncTokenService.firstDecrypting(keys)(securityService.decryptRsaHybrid(encrypted, _))
       yield Secret(decrypted)
 
     private case class SyncOAuthClientRecord(

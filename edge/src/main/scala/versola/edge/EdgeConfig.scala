@@ -1,7 +1,6 @@
 package versola.edge
 
 import versola.edge.model.EdgeId
-import versola.edge.partner.BootstrapBundle
 import versola.util.http.ClientIpSource
 import versola.util.revocation.RevocationConfig
 import versola.util.{EnvName, JWT, RsaKeyPair, Secret}
@@ -95,8 +94,8 @@ case class EdgeConfig(
     // How many edge pods share the traffic, for the per-pod share of a rate limit: `dns:<name>`, see [[ReplicaCounter]]. Absent: the `replicas` of
     // the policy set in central.
     replicasFrom: Option[String] = None,
-    // What only a partner edge (#564) is told: who its first administrators are, where its console's files are, and the
-    // bootstrap bundle it was enrolled with. Refused outright on a first-party edge, where none of it means anything.
+    // What only a partner edge (#564) is told: who its first administrators are, where its console's files are, and how long
+    // an invite lives. Refused outright on a first-party edge, where none of it means anything.
     partner: EdgeConfig.Partner = EdgeConfig.Partner(),
 ):
   def internalUrl: URL = versolaInternalUrl.getOrElse(versolaUrl)
@@ -233,30 +232,23 @@ object EdgeConfig:
     def invalid(message: String): Task[Unit] = ZIO.fail(IllegalArgumentException(message))
     config.mode match
       case EdgeMode.FirstParty =>
-        invalid("partner.admins, partner.console-directory and partner.bundle-file are for a partner edge: set mode = \"partner\" or remove them")
-          .when(config.partner.admins.nonEmpty || config.partner.consoleDirectory.isDefined || config.partner.bundleFile.isDefined)
+        invalid("partner.admins and partner.console-directory are for a partner edge: set mode = \"partner\" or remove them")
+          .when(config.partner.admins.nonEmpty || config.partner.consoleDirectory.isDefined)
           .unit
       case EdgeMode.Partner =>
         if config.central.identity.isEmpty then
           invalid(
-            "mode = partner needs central.identity: a partner edge holds a certificate central issued to it (enrolled with the " +
-              "token of its bootstrap bundle and renewed by itself), not one it was deployed with",
+            "mode = partner needs central.identity: a partner edge holds a certificate central issued to it (enrolled with its " +
+              "enrollment token and renewed by itself), not one it was deployed with",
           )
         else if config.security.internalSecret.isDefined then
           invalid(
             "mode = partner refuses security.internal-secret: it authorizes the /service/* surface, which a partner edge does not serve",
           )
         else if config.partner.admins.exists(_.isBlank) then invalid("partner.admins names a blank phone number or email")
-        else refuseForeignBundle(config)
-
-  /** A bundle that is there must be this edge's: its edge, group and addresses are the configuration's. One that is gone is not
-    * an error here (it is read once, to enroll, and may have been removed since); enrolling without one says so. */
-  private def refuseForeignBundle(config: EdgeConfig): Task[Unit] =
-    ZIO.foreachDiscard(config.partner.bundleFile.filter(file => Files.exists(Path.of(file)))): file =>
-      BootstrapBundle.read(file).flatMap: bundle =>
-        val problems = bundle.disagreements(config)
-        ZIO.fail(IllegalArgumentException(s"partner.bundle-file $file does not describe this edge: ${problems.mkString("; ")}"))
-          .when(problems.nonEmpty).unit
+        else if config.central.identity.flatMap(_.enrollment).exists(_.url.isDefined) then
+          invalid("central.identity.enrollment.url is not set on a partner edge: the enrollment token carries the address")
+        else ZIO.unit
 
   /** The native flow is DPoP end to end -- every client it serves is registered
     * `dpopBoundAccessTokens`, `/native/start` verifies and replay-guards the device's proof,
@@ -311,8 +303,9 @@ object EdgeConfig:
       invalid("the certificate this edge presents to central is not named: set central.mutual-tls.certificate and private-key, or central.identity")
     else
       ZIO.foreachDiscard(central.identity.flatMap(_.enrollment)): enrollment =>
-        invalid("central.identity.enrollment.url must be https")
-          .unless(enrollment.url.scheme.contains(Scheme.HTTPS))
+        enrollment.url match
+          case Some(url) => invalid("central.identity.enrollment.url must be https").unless(url.scheme.contains(Scheme.HTTPS))
+          case None => ZIO.unit
 
   private def refuseEmptyPins(name: String, pins: Set[String]): Task[Unit] =
     ZIO.fail(IllegalArgumentException(s"$name must name at least one certificate")).when(pins.isEmpty).unit
@@ -360,15 +353,11 @@ object EdgeConfig:
     * @param consoleDirectory where the static files of the partner console are (`partner.html`, `versola-partner.js`),
     *   built from `central-ui`'s second entry and served under `/partner/`. Absent serves none: `/partner/` answers 404 and the
     *   API still works.
-    * @param bundleFile the bootstrap bundle the partner's operator was given when the edge was created (`BootstrapBundle`).
-    *   Read at the first enrollment (its token and the address central's enrollment is at), and checked against this
-    *   configuration at every start so that a bundle for another edge or group is noticed.
     * @param inviteTtl how long an invite lives, from the moment an administrator makes it and from every start for `admins`.
     */
   case class Partner(
       admins: List[String] = Nil,
       consoleDirectory: Option[String] = None,
-      bundleFile: Option[String] = None,
       inviteTtl: Duration = Duration.fromSeconds(7L * 24 * 3600),
   )
 
@@ -460,8 +449,9 @@ object EdgeConfig:
     *   in the environment or the config. Read once, when there is no certificate yet.
     */
   case class CentralEnrollment(
-      url: URL,
-      tokenFile: String,
+      url: Option[URL] = None,
+      tokenFile: Option[String] = None,
+      token: Option[String] = None,
   )
 
   /** RFC 9449 proof validation at the resource server: the parts that are facts about this

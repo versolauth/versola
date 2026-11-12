@@ -181,9 +181,17 @@ object SecurityService:
       // tell a pod that has capacity from one whose permits are all taken.
       metrics.admitted[Any, Throwable, MAC](effect => hashingSemaphore.withPermit(effect))(hashEffect)
 
+    /** `yyyy-MM-dd_HH-mm-ss-<6 hex>`: the second alone is not unique (two keys generated within one second, as a partner edge and
+      * the key of a client may be, would collide in a JWKS, where `kid` must be), so a random suffix follows. Existing ids are
+      * untouched and nothing orders keys by it. */
+    private def newKeyId(now: java.time.Instant): UIO[String] =
+      secureRandom.nextHex(6).map: suffix =>
+        DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss").format(now.atZone(ZoneOffset.UTC)) + "-" + suffix
+
     override def generateRsaKeyPair: UIO[RsaKeyPair] =
       for
         now <- Clock.instant
+        keyId <- newKeyId(now)
         keyPair <- ZIO.succeedBlocking:
           val gen = KeyPairGenerator.getInstance("RSA")
           gen.initialize(2048)
@@ -191,10 +199,6 @@ object SecurityService:
       yield
         val publicKey = keyPair.getPublic.asInstanceOf[RSAPublicKey]
         val privateKey = keyPair.getPrivate.asInstanceOf[RSAPrivateKey]
-
-        // Format timestamp as YYYY-MM-DD_HH-MM-SS (up to seconds precision)
-        val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")
-        val keyId = formatter.format(now.atZone(ZoneOffset.UTC))
 
         RsaKeyPair(
           keyId = keyId,
@@ -205,15 +209,13 @@ object SecurityService:
     override def generateEcKeyPair: UIO[EcKeyPair] =
       for
         now <- Clock.instant
+        keyId <- newKeyId(now)
         keyPair <- ZIO.succeedBlocking:
           val gen = KeyPairGenerator.getInstance("EC")
           gen.initialize(ECGenParameterSpec("secp256r1"))
           gen.generateKeyPair()
-      yield
-        val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")
-
-        EcKeyPair(
-          keyId = formatter.format(now.atZone(ZoneOffset.UTC)),
-          publicKey = keyPair.getPublic.asInstanceOf[ECPublicKey],
-          privateKey = keyPair.getPrivate.asInstanceOf[ECPrivateKey],
-        )
+      yield EcKeyPair(
+        keyId = keyId,
+        publicKey = keyPair.getPublic.asInstanceOf[ECPublicKey],
+        privateKey = keyPair.getPrivate.asInstanceOf[ECPrivateKey],
+      )

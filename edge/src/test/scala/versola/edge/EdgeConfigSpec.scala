@@ -277,7 +277,7 @@ object EdgeConfigSpec extends ZIOSpecDefault:
             .load(edgeConfigDescriptor)
         yield assertTrue(config.mode == EdgeMode.Partner)
       },
-      test("reads the partner block, and a file without one has no administrators, no console files and no bundle") {
+      test("reads the partner block, and a file without one has no administrators and no console files") {
         def load(extra: String) =
           TypesafeConfigProvider
             .fromHoconString(hocon(includeInternalUrl = false, modeLine = """mode = "partner"""") + "\n" + extra)
@@ -288,14 +288,12 @@ object EdgeConfigSpec extends ZIOSpecDefault:
           set <- load("""partner {
                         |  admins = ["+77010000000", "ops@partner.example"]
                         |  console-directory = "/srv/console"
-                        |  bundle-file = "/etc/edge/bundle.json"
                         |  invite-ttl = "3 days"
                         |}""".stripMargin)
         yield assertTrue(
           plain.partner == EdgeConfig.Partner(),
           set.partner.admins == List("+77010000000", "ops@partner.example"),
           set.partner.consoleDirectory.contains("/srv/console"),
-          set.partner.bundleFile.contains("/etc/edge/bundle.json"),
           set.partner.inviteTtl == 3.days,
         )
       },
@@ -493,7 +491,7 @@ object EdgeConfigSpec extends ZIOSpecDefault:
       test("accepts a certificate that central issues, in place of one deployed with the edge") {
         val identity = EdgeConfig.CentralIdentity(
           directory = "/var/lib/edge/identity",
-          enrollment = Some(EdgeConfig.CentralEnrollment(URL.decode("https://central.example").toOption.get, "/run/token")),
+          enrollment = Some(EdgeConfig.CentralEnrollment(Some(URL.decode("https://central.example").toOption.get), Some("/run/token"))),
         )
         val base = baseConfig(None)
         val config = base.copy(central =
@@ -537,7 +535,7 @@ object EdgeConfigSpec extends ZIOSpecDefault:
             identity = Some(
               EdgeConfig.CentralIdentity(
                 directory = "/var/lib/edge/identity",
-                enrollment = Some(EdgeConfig.CentralEnrollment(URL.decode("http://central.example").toOption.get, "/run/token")),
+                enrollment = Some(EdgeConfig.CentralEnrollment(Some(URL.decode("http://central.example").toOption.get), Some("/run/token"))),
               ),
             ),
           ),
@@ -622,40 +620,35 @@ object EdgeConfigSpec extends ZIOSpecDefault:
             .flip
         yield assertTrue(error.getMessage.contains("partner"))
       },
-      test("refuses a bootstrap bundle of another edge, the configuration of which it cannot be") {
+      test("refuses an enrollment address in the file of a partner edge: the token carries it") {
         for
-          directory <- ZIO.attemptBlocking(Files.createTempDirectory("bundle"))
-          file = directory.resolve("bundle.json")
-          _ <- ZIO.attemptBlocking(
-            Files.writeString(
-              file,
-              """{"edgeId":"edge-someone-else","group":"acme","central":{"enrollUrl":"https://enroll.example","mtlsUrl":"https://central:8093"},"auth":{},"token":"t"}""",
-            ),
-          )
           error <- ZIO.service[EdgeConfig]
-            .provideLayer(ZLayer.succeed(partnerConfig.copy(partner = EdgeConfig.Partner(bundleFile = Some(file.toString)))) >>> EdgeConfig.validated)
-            .flip
-        yield assertTrue(error.getMessage.contains("does not describe this edge"), error.getMessage.contains("edge-someone-else"))
-      },
-      test("accepts the bundle of this edge, and a bundle file that is gone once the edge is enrolled") {
-        for
-          directory <- ZIO.attemptBlocking(Files.createTempDirectory("bundle"))
-          file = directory.resolve("bundle.json")
-          _ <- ZIO.attemptBlocking(
-            Files.writeString(
-              file,
-              """{"edgeId":"edge-default","group":"acme","central":{"enrollUrl":"https://enroll.example","mtlsUrl":"https://central:8093"},"auth":{"issuer":"http://localhost:8080"},"signingKey":{"keyId":"test-key","privateKey":"x"},"token":"t"}""",
-            ),
-          )
-          present <- ZIO.service[EdgeConfig]
-            .provideLayer(ZLayer.succeed(partnerConfig.copy(partner = EdgeConfig.Partner(bundleFile = Some(file.toString)))) >>> EdgeConfig.validated)
-          absent <- ZIO.service[EdgeConfig]
             .provideLayer(
-              ZLayer.succeed(partnerConfig.copy(partner =
-                EdgeConfig.Partner(bundleFile = Some(directory.resolve("gone.json").toString)),
-              )) >>> EdgeConfig.validated,
+              ZLayer.succeed(
+                partnerConfig.copy(central =
+                  partnerConfig.central.copy(identity =
+                    partnerConfig.central.identity.map(_.copy(enrollment =
+                      Some(EdgeConfig.CentralEnrollment(url = Some(URL.decode("https://enroll.example").toOption.get), token = Some("t"))),
+                    )),
+                  ),
+                ),
+              ) >>> EdgeConfig.validated,
             )
-        yield assertTrue(present.mode == EdgeMode.Partner, absent.mode == EdgeMode.Partner)
+            .flip
+        yield assertTrue(error.getMessage.contains("enrollment.url"), error.getMessage.contains("token"))
+      },
+      test("accepts a partner edge whose enrollment is the token alone, from the file or the environment") {
+        def withEnrollment(enrollment: Option[EdgeConfig.CentralEnrollment]) =
+          ZIO.service[EdgeConfig].provideLayer(
+            ZLayer.succeed(
+              partnerConfig.copy(central = partnerConfig.central.copy(identity = partnerConfig.central.identity.map(_.copy(enrollment = enrollment)))),
+            ) >>> EdgeConfig.validated,
+          )
+        for
+          file <- withEnrollment(Some(EdgeConfig.CentralEnrollment(tokenFile = Some("/run/secrets/token"))))
+          environment <- withEnrollment(Some(EdgeConfig.CentralEnrollment(token = Some("vtk1.x.y"))))
+          none <- withEnrollment(None)
+        yield assertTrue(file.mode == EdgeMode.Partner, environment.mode == EdgeMode.Partner, none.mode == EdgeMode.Partner)
       },
       test("the sync of a partner edge is read from /edge/partner/sync, a first-party edge's from /edge/sync") {
         assertTrue(

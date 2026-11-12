@@ -26,6 +26,12 @@ object SecurityServiceSpec extends ZIOSpecDefault:
       else ZIO.sleep(zio.Duration.fromMillis(1)) *> eventually(condition, attempts - 1)
 
   def spec = suite("SecurityService")(
+    test("keys generated within one second have distinct ids") {
+      for
+        service <- ZIO.service[SecurityService]
+        ids <- ZIO.foreach((1 to 200).toList)(_ => service.generateEcKeyPair.map(_.keyId))
+      yield assertTrue(ids.distinct.size == ids.size)
+    }.provide(SecurityService.live, SecureRandom.live),
     test("generateRsaKeyPair produces valid 2048-bit RSA key pair with timestamp-based ID") {
       for
         service <- ZIO.service[SecurityService]
@@ -33,16 +39,16 @@ object SecurityServiceSpec extends ZIOSpecDefault:
       yield
         val jwk = keyPair.toPublicJwk
         val fieldsMap = jwk.fields.toMap
-        val timestampPattern = "\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}".r
+        val timestampPattern = "\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}-[0-9a-f]{6}".r
 
         assertTrue(
           // Key properties
           keyPair.publicKey.getAlgorithm == "RSA",
           keyPair.privateKey.getAlgorithm == "RSA",
           keyPair.publicKey.getModulus.bitLength() == 2048,
-          // Key ID format (YYYY-MM-DD_HH-MM-SS)
+          // Key ID format (YYYY-MM-DD_HH-MM-SS-<6 hex>)
           timestampPattern.matches(keyPair.keyId),
-          keyPair.keyId.length == 19,
+          keyPair.keyId.length == 26,
           // JWK structure
           fieldsMap.contains("kty"),
           fieldsMap.contains("kid"),
@@ -173,7 +179,7 @@ object SecurityServiceSpec extends ZIOSpecDefault:
         keyPair <- service.generateEcKeyPair
       yield
         val fieldsMap = keyPair.toPublicJwk.fields.toMap
-        val timestampPattern = "\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}".r
+        val timestampPattern = "\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}-[0-9a-f]{6}".r
 
         assertTrue(
           keyPair.publicKey.getAlgorithm == "EC",
@@ -181,7 +187,7 @@ object SecurityServiceSpec extends ZIOSpecDefault:
           // ES256 is defined on P-256 only, so the curve is part of the contract.
           keyPair.publicKey.getParams.getCurve.getField.getFieldSize == 256,
           timestampPattern.matches(keyPair.keyId),
-          keyPair.keyId.length == 19,
+          keyPair.keyId.length == 26,
           fieldsMap.get("kty") == Some(zio.json.ast.Json.Str("EC")),
           fieldsMap.get("crv") == Some(zio.json.ast.Json.Str("P-256")),
           fieldsMap.get("alg") == Some(zio.json.ast.Json.Str("ES256")),

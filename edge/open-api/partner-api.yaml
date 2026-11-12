@@ -72,9 +72,9 @@ info:
     `tosUri`, `backChannelLogoutUri`, `approval.note`, `actor.byOperator`, `from`, ...): read an absent
     field and `null` alike. `GET /settings` of a partner that has set nothing has `defaults: {}`. The
     URLs of `GET /me` (`operator.*`, `edge.publicUrl`) are strings, the empty string when central has
-    none. The `bundle` of `POST /edges` and of `POST /edges/{id}/enrollment-tokens` is central's document
-    (for a token alone, assembled from `/me`): its `central` and `auth` members can be missing or `null`
-    where central has no public name configured.
+    none. There is nothing to copy but the enrollment `token` of `POST /edges` and of
+    `POST /edges/{id}/enrollment-tokens` (`vtk1.<address>.<secret>`: central's enrollment address is in it): the
+    edge generates its own signing key and learns everything else from central when it enrols.
 
     ## Errors
 
@@ -847,10 +847,11 @@ paths:
       operationId: createEdge
       summary: Register an edge
       description: |
-        Registers an edge in the partner's group and issues its signing key and its first
-        enrollment token. The private half of the key, the token and the bundle are **shown once**:
-        the operator does not keep the private key. The number of edges is limited by the partner's
-        limits (`maxEdges`); central answers `400`/`409` beyond it.
+        Registers an edge in the partner's group and issues its enrollment token, the one string the
+        edge is started with (`central.identity.enrollment.token-file` or `token`). The token is
+        **shown once**. The edge generates its own signing key when it enrols and no private key
+        is shown anywhere. The number of edges is limited by the partner's limits (`maxEdges`);
+        central answers `400`/`409` beyond it.
 
         **Minimum level:** developer. **Served by:** central (`POST /edge/partner/edges`).
       tags: [Edges]
@@ -940,11 +941,8 @@ paths:
       operationId: issueEnrollmentToken
       summary: Issue an enrollment token
       description: |
-        Issues a fresh enrollment token for an edge that exists. The token is **shown once**.
-        `bundle` is a JSON document, as a string, that carries what the edge is deployed with
-        (`edgeId`, `group`, central's and the authorization server's mutual-TLS addresses and
-        issuer, and the token). It does **not** carry the signing key, which is shown only when the
-        edge is created. No body.
+        Issues a fresh enrollment token for an edge that exists (single use, 24 hours). The token is
+        **shown once**. No body.
 
         **Minimum level:** developer. **Served by:** central
         (`POST /edge/partner/edges/enrollment-tokens`).
@@ -2207,33 +2205,15 @@ components:
               type: object
               additionalProperties: true
 
-    SigningKey:
-      type: object
-      required: [keyId, privateKey]
-      description: The edge's signing key, created with it and shown once; the operator does not keep the private half.
-      properties:
-        keyId:
-          type: string
-        privateKey:
-          type: string
-
     EnrollmentToken:
       type: object
-      required: [token, bundle, expiresAt]
+      required: [token, expiresAt]
       properties:
         token:
           type: string
-          description: Shown once.
-        bundle:
-          type: string
           description: |
-            What the edge is deployed with, as a JSON document in a string. From
-            `POST /partner/api/edges/{id}/enrollment-tokens` it does not hold the signing key or the
-            enrollment address, so it cannot be used as `partner.bundle-file` on its own
-            (`bundleComplete` is `false`): the token goes in `central.identity.enrollment`.
-        bundleComplete:
-          type: boolean
-          description: Whether `bundle` can enroll an edge as it is. Only the bundle of `POST /partner/api/edges` can be.
+            `vtk1.<base64url(enrollment address)>.<secret>`: central's public enrollment address and a
+            single-use secret. Shown once. The edge parses the address out of it (`https` only).
         expiresAt:
           type: [string, 'null']
           format: date-time
@@ -2242,12 +2222,10 @@ components:
       allOf:
         - $ref: '#/components/schemas/EnrollmentToken'
         - type: object
-          required: [edge, signingKey]
+          required: [edge]
           properties:
             edge:
               $ref: '#/components/schemas/PartnerEdge'
-            signingKey:
-              $ref: '#/components/schemas/SigningKey'
 
     RevocationRequest:
       type: object

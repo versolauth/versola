@@ -171,35 +171,4 @@ object PartnerSyncSpec extends ZIOSpecDefault:
         yield assertTrue(before.partner.status == "active", during.partner.status == "suspended", reachable, after.partner.status == "active")
       },
     ),
-    suite("bootstrap bundle")(
-      test("reads central's bundle, with the token under either name, and finds the address of enrollment") {
-        val bundle = BootstrapBundle.parse(
-          """{"edgeId":"edge-1","group":"acme","central":{"enrollUrl":"https://enroll.example","mtlsUrl":"https://central.example"},"auth":{"issuer":"https://idp.example","mtlsUrl":null},"signingKey":{"keyId":"edge-key","privateKey":"AAAA"},"token":"one-time"}""",
-        ).toOption.get
-        val named = BootstrapBundle.parse("""{"edgeId":"e","group":"g","central":{},"auth":{},"enrollmentToken":"other"}""").toOption.get
-        assertTrue(
-          bundle.enrollment.contains("one-time"),
-          bundle.enrollUrl.map(_.encode) == Right("https://enroll.example"),
-          named.enrollment.contains("other"),
-          named.enrollUrl.isLeft,
-          bundle.disagreements(config.copy(central = config.central.copy(identity = Some(EdgeConfig.CentralIdentity("/d", "acme", None))))) == Nil,
-        )
-      },
-      test("names what is not this edge's: the edge, the group, the key, central's address and the issuer") {
-        val bundle = BootstrapBundle.parse(
-          """{"edgeId":"edge-2","group":"other","central":{"mtlsUrl":"https://elsewhere.example"},"auth":{"issuer":"https://other.example"},"signingKey":{"keyId":"k2","privateKey":"AAAA"},"token":"t"}""",
-        ).toOption.get
-        val problems =
-          bundle.disagreements(config.copy(central = config.central.copy(identity = Some(EdgeConfig.CentralIdentity("/d", "acme", None)))))
-        assertTrue(problems.size == 5)
-      },
-      test("an enrollment address that is not https is refused: the one-time token would travel in clear") {
-        val bundle =
-          BootstrapBundle.parse("""{"edgeId":"e","group":"g","central":{"enrollUrl":"http://enroll.example"},"auth":{},"token":"t"}""").toOption.get
-        assertTrue(bundle.enrollUrl.isLeft)
-      },
-      test("what is not a bundle is refused") {
-        assertTrue(BootstrapBundle.parse("""{"nothing":true}""").isLeft)
-      },
-    ),
   ).provide(TestClient.layer) @@ TestAspect.silentLogging

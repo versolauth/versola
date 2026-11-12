@@ -568,21 +568,34 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
       },
     ),
     suite("enrollment")(
-      test("a re-issued token's bundle says it cannot enroll alone, and the bundle of a new edge says it can") {
+      test("an edge is created with its token and nothing else to copy: the edge, the token and when it expires") {
         for
           h <- harness(
             Some(StaffLevel.developer),
-            answer = (method, path) =>
-              if path == List("edges", "enrollment-tokens") then reply(Status.Created, """{"token":"t","expiresAt":"2026-11-13T10:00:00Z"}""")
-              else
-                reply(
-                  Status.Created,
-                  """{"edge":{"id":"e","publicUrl":"https://x.example"},"signingKey":{"keyId":"k","privateKey":"p"},"token":"t","expiresAt":"2026-11-13T10:00:00Z","bundle":"{}"}""",
-                ),
+            answer = (_, _) =>
+              reply(
+                Status.Created,
+                """{"edge":{"id":"e","publicUrl":"https://x.example"},"token":"vtk1.a.b","expiresAt":"2026-11-13T10:00:00Z","signingKey":{"keyId":"k","privateKey":"p"},"bundle":"{}"}""",
+              ),
           )
-          token <- send(h, write(Method.POST, "/edges/e/enrollment-tokens", "{}")).flatMap(_.body.asString)
-          created <- send(h, write(Method.POST, "/edges", """{"id":"e","publicUrl":"https://x.example"}""")).flatMap(_.body.asString)
-        yield assertTrue(token.contains("\"bundleComplete\":false"), created.contains("\"bundleComplete\":true"))
+          created <- send(
+            h,
+            write(Method.POST, "/edges", """{"id":"e","publicUrl":"https://x.example"}"""),
+          ).flatMap(_.body.asString.map(_.fromJson[Json.Obj].toOption.get))
+        yield assertTrue(
+          created.keys.toSet == Set("edge", "token", "expiresAt"),
+          created.get("token").flatMap(_.asString).contains("vtk1.a.b"),
+          created.get("expiresAt").flatMap(_.asString).contains("2026-11-13T10:00:00Z"),
+        )
+      },
+      test("a new token for an edge is the token and when it expires") {
+        for
+          h <- harness(
+            Some(StaffLevel.developer),
+            answer = (_, _) => reply(Status.Created, """{"token":"vtk1.a.c","expiresAt":"2026-11-13T10:00:00Z","bundle":"{}"}"""),
+          )
+          issued <- send(h, write(Method.POST, "/edges/e/enrollment-tokens", "{}")).flatMap(_.body.asString.map(_.fromJson[Json.Obj].toOption.get))
+        yield assertTrue(issued.keys.toSet == Set("token", "expiresAt"), issued.get("token").flatMap(_.asString).contains("vtk1.a.c"))
       },
     ),
     suite("the audit trail")(
@@ -618,7 +631,7 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
           calls.forall(call => !call._3.contains("kind") && !call._3.get("actor").exists(Set("team", "operator", "edges"))),
         )
       },
-      test("the operator's reveal of the bundle secret is not in the partner's trail") {
+      test("the operator's reveal of a secret is not in the partner's trail") {
         val events =
           """{"events":[
             |{"id":"1","at":"2026-11-12T10:03:00Z","kind":"admin.secret.revealed","outcome":"success","actorType":"admin","actorId":"op","targetType":"partner","targetId":"acme","details":{}},

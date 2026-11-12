@@ -328,10 +328,7 @@ final class PartnerApi(
       Status.Created,
       Json.Obj(
         "edge" -> edgeDto(obj(created, "edge"), session.me),
-        "signingKey" -> field(created, "signingKey").getOrElse(Json.Null),
         "token" -> field(created, "token").getOrElse(Json.Null),
-        "bundle" -> field(created, "bundle").getOrElse(Json.Null),
-        "bundleComplete" -> Json.Bool(true),
         "expiresAt" -> field(created, "expiresAt").getOrElse(Json.Null),
       ),
     )
@@ -339,27 +336,14 @@ final class PartnerApi(
   private def deleteEdge(id: String, session: Session, request: Request): IO[Fail | Throwable, Response] =
     forward(session, Method.DELETE, List("edges"), query = Map("id" -> id)).as(Response.status(Status.NoContent))
 
-  /** A token for an edge that exists. Central's answer is the token and its expiry; the key is shown once, at creation, and is not
-    * here, so the bundle carries everything else the edge is deployed with. */
+  /** A token for an edge that exists, which is all there is to start it with: central's answer is the token and its expiry. */
   private def issueToken(id: String, session: Session, request: Request): IO[Fail | Throwable, Response] =
     forward(session, Method.POST, List("edges", "enrollment-tokens"), body = Some(Json.Obj("id" -> Json.Str(id)))).map: answer =>
       val issued = answer.obj.getOrElse(Json.Obj())
-      val token = str(issued, "token").getOrElse("")
-      val operator = session.me.operator
-      val bundle = Json.Obj(
-        "edgeId" -> Json.Str(id),
-        "group" -> Json.Str(session.me.partner.id),
-        "central" -> Json.Obj("mtlsUrl" -> optional(operator.centralMtlsUrl)),
-        "auth" -> Json.Obj("issuer" -> optional(operator.issuer), "mtlsUrl" -> optional(operator.mtlsUrl)),
-        "token" -> Json.Str(token),
-      )
       json(
         Status.Created,
         Json.Obj(
-          "token" -> Json.Str(token),
-          "bundle" -> Json.Str(bundle.toJson),
-          // no signing key and no enrollment address in it: it cannot enroll an edge on its own
-          "bundleComplete" -> Json.Bool(false),
+          "token" -> field(issued, "token").getOrElse(Json.Null),
           "expiresAt" -> field(issued, "expiresAt").getOrElse(Json.Null),
         ),
       )
