@@ -76,7 +76,6 @@ object PartnerController extends AuditedController:
             edge = EdgeResponse.of(created.edge.edge, Some(created.partner.id), certificates.get(created.edge.edge.id)),
             enrollmentToken = created.edge.token.token,
             expiresAt = created.edge.token.expiresAt,
-            bundle = created.edge.bundle,
           )
         yield Response.json(response.toJson).status(Status.Created)).catchAll(failure)
     }
@@ -250,13 +249,13 @@ case class CreatePartnerRequest(
     firstEdge: FirstEdgeRequest,
 ) derives Schema, JsonCodec
 
-/** What the operator hands to the partner: the token and the bundle are shown here and never again. */
+/** What the operator hands to the partner: the enrollment token, shown here and never again. The partner starts its edge with that
+  * token alone; central holds no key for the edge and shows none. */
 case class CreatedPartnerResponse(
     partner: PartnerResponse,
     edge: EdgeResponse,
     enrollmentToken: String,
     expiresAt: Instant,
-    bundle: String,
 ) derives Schema, JsonCodec
 
 case class UpdatePartnerRequest(

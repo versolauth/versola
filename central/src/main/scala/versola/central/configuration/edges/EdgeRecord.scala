@@ -12,7 +12,9 @@ import java.security.interfaces.RSAPublicKey
  * Stored edge - infrastructure/deployment unit.
  *
  * `publicKey` and `oldPublicKey` are JWK JSON objects stored in the database.
- * `oldPublicKey` is populated only during a key rotation window.
+ * `oldPublicKey` is populated only during a key rotation window. `publicKey` is `None` for a partner's edge that has been registered
+ * and has not enrolled yet: the edge makes its own signing key and hands the public half over when it enrols (#962), so until then
+ * nothing it signs is accepted.
  *
  * Edges are infrastructure units. Tenants declare which edge they use.
  * Clients inherit their edge from their tenant.
@@ -41,7 +43,7 @@ import java.security.interfaces.RSAPublicKey
  */
 case class EdgeRecord(
     id: EdgeId,
-    publicKey: Json.Obj,
+    publicKey: Option[Json.Obj],
     oldPublicKey: Option[Json.Obj],
     requireDpopNonce: Boolean,
     overloadPolicy: Option[OverloadPolicy],
@@ -55,11 +57,15 @@ case class EdgeRecord(
     publicUrl: Option[String],
 ):
   def asPublicKeys: JWT.PublicKeys =
-    val keys = Json.Arr((publicKey +: oldPublicKey.toVector)*)
+    val keys = Json.Arr((publicKey.toVector ++ oldPublicKey.toVector)*)
     JWT.PublicKeys.fromJson(Json.Obj("keys" -> keys))
 
+  def hasSigningKey: Boolean = publicKey.isDefined
+
+  /** The key secrets are encrypted to. Only an edge that has a key has one; the edges that are sent secrets are the operator's, which
+    * are registered with theirs. */
   def activeRsaPublicKey: RSAPublicKey =
-    RSAKey.parse(publicKey.toJson).toRSAPublicKey
+    RSAKey.parse(publicKey.getOrElse(throw IllegalStateException(s"edge '$id' has no signing key")).toJson).toRSAPublicKey
 
 object EdgeRecord:
   /** What a newly registered edge requires: edge has demanded a nonce on every proxied call

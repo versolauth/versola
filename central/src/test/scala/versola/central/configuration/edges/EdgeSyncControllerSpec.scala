@@ -128,7 +128,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val edgeRecord = EdgeRecord(
     edgeId,
-    edgeKeyPair.toPublicJwk,
+    Some(edgeKeyPair.toPublicJwk),
     None,
     requireDpopNonce = true,
     overloadPolicy = None,
@@ -778,14 +778,29 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         request = Request.post(URL.root / "edge" / "certificate" / "renew", Body.fromString("""{"csr":"REQUEST"}"""))
           .addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.Ok,
-        setup = services => services.identity.renew.succeedsWith(EdgeIdentityService.Identity("CHAIN")),
+        setup = services => services.identity.renew.succeedsWith(EdgeIdentityService.Identity("CHAIN", edgeRecord)),
         verify = (response, services) =>
           for body <- decodeBody[SignEdgeCertificateResponse](response)
           yield assertTrue(
             body.certificate == "CHAIN",
             services.identity.renew.calls.map(call => (call._1, call._2)) == List((edgeId, "REQUEST")),
             services.identity.renew.calls.head._3.isDefined,
+            services.identity.renew.calls.head._4.isEmpty,
           ),
+      ),
+      testCase(
+        description = "certificate renewal: a new public signing key sent with the request is handed to the service, and none when none is sent",
+        request = Request.post(
+          URL.root / "edge" / "certificate" / "renew",
+          Body.fromString("""{"csr":"REQUEST","signingKey":{"kty":"RSA","kid":"next"}}"""),
+        ).addHeader(Header.ContentType(MediaType.application.json)),
+        expectedStatus = Status.Ok,
+        setup = services => services.identity.renew.succeedsWith(EdgeIdentityService.Identity("CHAIN", edgeRecord)),
+        verify = (_, services) =>
+          ZIO.succeed(assertTrue(
+            services.identity.renew.calls.map(_._4) ==
+              List(Some(Json.Obj("kty" -> Json.Str("RSA"), "kid" -> Json.Str("next")))),
+          )),
       ),
       // #549 decision 8: the one route both kinds reach. The partner edge presents the certificate central issued it,
       // which names its group.
@@ -798,10 +813,19 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         expectedStatus = Status.Ok,
         setup = services =>
           services.registry.findByGroup.succeedsWith(Some(partnerRecord(PartnerStatus.Active))) *>
-            services.identity.renew.succeedsWith(EdgeIdentityService.Identity("CHAIN")),
+            services.identity.renew.succeedsWith(EdgeIdentityService.Identity("CHAIN", edgeRecord)),
         verify = (_, services) => ZIO.succeed(assertTrue(services.identity.renew.calls.map(_._1) == List(edgeId))),
       ),
       // The kill switch (#962): a suspended partner's edge is not given a new certificate.
+      testCase(
+        description = "certificate renewal: an edge that has no signing key yet (it has not enrolled) is 401, and nothing is signed",
+        request = Request.post(URL.root / "edge" / "certificate" / "renew", Body.fromString("""{"csr":"REQUEST"}"""))
+          .addHeader(Header.ContentType(MediaType.application.json)),
+        edge = edgeRecord.copy(publicKey = None, groupId = EdgeGroupId("partner-acme"), groupKind = EdgeGroupKind.Partner),
+        certificate = Some(otherGroupCertificate.certificate),
+        expectedStatus = Status.Unauthorized,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.identity.renew.calls.isEmpty)),
+      ),
       testCase(
         description = "certificate renewal: an edge of a suspended partner is 403, and nothing is signed",
         request = Request.post(URL.root / "edge" / "certificate" / "renew", Body.fromString("""{"csr":"REQUEST"}"""))

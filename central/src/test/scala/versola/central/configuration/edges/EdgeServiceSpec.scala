@@ -93,7 +93,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = Env()
       val stored = EdgeRecord(
         edgeId,
-        testJwk,
+        Some(testJwk),
         None,
         requireDpopNonce = true,
         overloadPolicy = None,
@@ -137,7 +137,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = Env()
       val stored = EdgeRecord(
         edgeId,
-        testJwk,
+        Some(testJwk),
         None,
         requireDpopNonce = true,
         overloadPolicy = None,
@@ -158,7 +158,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = Env()
       val stored = EdgeRecord(
         edgeId,
-        testJwk,
+        Some(testJwk),
         None,
         requireDpopNonce = true,
         overloadPolicy = None,
@@ -195,7 +195,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = Env()
       val stored = EdgeRecord(
         edgeId,
-        testJwk,
+        Some(testJwk),
         None,
         requireDpopNonce = true,
         overloadPolicy = None,
@@ -215,7 +215,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val edges = Vector(
         EdgeRecord(
           edge2Id,
-          testJwk,
+          Some(testJwk),
           None,
           requireDpopNonce = true,
           overloadPolicy = None,
@@ -228,7 +228,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         ),
         EdgeRecord(
           edgeId,
-          testJwk,
+          Some(testJwk),
           None,
           requireDpopNonce = true,
           overloadPolicy = None,
@@ -250,7 +250,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("find returns edge from cache") {
       val edges = Vector(EdgeRecord(
         edgeId,
-        testJwk,
+        Some(testJwk),
         None,
         requireDpopNonce = true,
         overloadPolicy = None,
@@ -273,7 +273,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("sync reloads cache from repository") {
       val edges = Vector(EdgeRecord(
         edgeId,
-        testJwk,
+        Some(testJwk),
         None,
         requireDpopNonce = true,
         overloadPolicy = None,

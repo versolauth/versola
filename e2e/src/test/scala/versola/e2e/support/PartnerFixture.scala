@@ -1,12 +1,14 @@
 package versola.e2e.support
 
+import com.nimbusds.jose.jwk.RSAKey
+import com.nimbusds.jose.jwk.gen.RSAKeyGenerator
 import zio.*
 import zio.http.{Client, ClientSSLConfig, Status}
 import zio.json.*
 import zio.json.ast.Json
 
 /** What the partner-edge e2e specs share (#549, #962): partners created through the operator API in a tenant of their own with a
-  * first-party edge bound to it, what a partner's edge holds (the key from the bundle, a certificate that names its group), a
+  * first-party edge bound to it, what a partner's edge holds (the key it made, a certificate that names its group), a
   * staff member's access token for the partner's console, and the group's certificate as auth is shown it.
   *
   * The tenant is given the setting that tells auth where to read a client certificate from, as the suite tenant is: a partner's
@@ -14,8 +16,8 @@ import zio.json.ast.Json
   * header a proxy would forward. */
 object PartnerFixture:
 
-  /** A partner created through the operator API, and what its first edge holds: the key from the bundle and a certificate of the
-    * CA central's listener trusts, naming the edge and its group. */
+  /** A partner created through the operator API, and what its first edge holds: the signing key the edge made (central has only the
+    * public half) and a certificate of the CA central's listener trusts, naming the edge and its group. */
   case class Partner(
       id: String,
       tenantId: String,
@@ -60,25 +62,61 @@ object PartnerFixture:
       "firstEdge" -> Json.Obj("id" -> Json.Str(edgeId), "publicUrl" -> Json.Str(s"https://login.$id.example")),
     )
 
-  def createPartner(central: CentralApi, tenantId: String): Task[Partner] =
+  /** A partner as the operator's creation leaves it: the one token it answers, and an edge that has made its own signing key and not
+    * enrolled yet, so central holds no key for it. */
+  case class Unenrolled(
+      id: String,
+      tenantId: String,
+      groupId: String,
+      edgeId: String,
+      enrollmentToken: String,
+      key: RSAKey,
+      ssl: ClientSSLConfig,
+  ):
+    def partner(token: String): Partner = Partner(id, tenantId, groupId, s"$id-console", edgeId, token, ssl)
+
+  def registerPartner(central: CentralApi, tenantId: String): Task[Unenrolled] =
     for
       id <- CentralApi.id("e2e-partner")
       edgeId = s"$id-edge"
       created <- central.post("/configuration/partners", partnerBody(id, tenantId, edgeId))
       _ <- ZIO.fail(RuntimeException(s"partner $id was refused: ${created.status} ${created.body}")).unless(created.status == Status.Created)
       body <- created.obj
-      bundle <- ZIO.fromEither(body.str("bundle").getOrElse("").fromJson[Json.Obj]).mapError(RuntimeException(_))
-      key <- ZIO.fromOption(bundle.obj("signingKey")).orElseFail(RuntimeException("the bundle carries no signing key"))
-      groupId = bundle.str("group").getOrElse("")
-      token <- EdgeToken.sign(edgeId, key.str("keyId").getOrElse(""), key.str("privateKey").getOrElse(""))
+      token = body.str("enrollmentToken").getOrElse("")
+      // one string: vtk1.<base64url of central's enrollment address>.<secret>, and nothing else is handed over (no key of the edge's)
+      _ <- ZIO.fail(RuntimeException(s"the answer carries no enrollment token of the one-token form: ${created.body}"))
+        .unless(token.startsWith("vtk1.") && token.count(_ == '.') == 2)
+      _ <- ZIO.fail(RuntimeException(s"the answer still carries a bundle or a key: ${created.body}"))
+        .when(body.fields.exists(field => Set("bundle", "signingKey", "bundleComplete").contains(field._1)))
+      groupId <- ZIO.fromOption(body.obj("edge").flatMap(_.str("groupId"))).orElseFail(RuntimeException(s"no group in ${created.body}"))
+      // the edge makes its own key, as it makes the key of its TLS certificate
+      key <- ZIO.attemptBlocking(RSAKeyGenerator(2048).keyID(s"$id-key").generate())
       certificate <- EdgeCertificate.forCentralListener(Some(edgeId), Some(groupId))
       ssl <- certificate.clientSsl(central.config.centralMutualTlsServerCertificate)
-      partner = Partner(id, tenantId, groupId, s"$id-console", edgeId, token, ssl)
+    yield Unenrolled(id, tenantId, groupId, edgeId, token, key, ssl)
+
+  /** What an enrolment does to central's state of the edge: its public key is registered. (The enrolment itself needs central's
+    * enrollment listener and a CA to sign edge certificates with, which the staged stack does not have; the unit and Postgres specs
+    * cover it, and a certificate of the CA the listener trusts stands in for the one it would be given.) */
+  def enrol(central: CentralApi, unenrolled: Unenrolled): Task[Partner] =
+    for
+      token <- EdgeToken.sign(unenrolled.edgeId, unenrolled.key.getKeyID, unenrolled.key.toRSAPrivateKey)
+      partner = unenrolled.partner(token)
+      _ <- CentralDatabase.registerEdgeKey(unenrolled.edgeId, unenrolled.key.toPublicJWK.toJSONString)
       // central authenticates an edge against a cache a Postgres notification refreshes after the registration lands; the probe is
       // a read that does not make the partner active, as `/edge/partner/me` does
       known <- eventually(onSurface(central, partner).get("/edge/partner/sync/dpop"))(_.status == Status.Ok)
-      _ <- ZIO.fail(RuntimeException(s"central never served the edge of $id: ${known.status} ${known.body}")).unless(known.status == Status.Ok)
+      _ <- ZIO.fail(RuntimeException(s"central never served the edge of ${unenrolled.id}: ${known.status} ${known.body}"))
+        .unless(known.status == Status.Ok)
     yield partner
+
+  /** A token signed with the key the edge made, before it enrolled: central holds nothing to verify it with. */
+  def asUnenrolled(central: CentralApi, unenrolled: Unenrolled): Task[CentralApi] =
+    EdgeToken.sign(unenrolled.edgeId, unenrolled.key.getKeyID, unenrolled.key.toRSAPrivateKey)
+      .map(token => central.onEdgeSurface(Some(token), Some(unenrolled.ssl)))
+
+  def createPartner(central: CentralApi, tenantId: String): Task[Partner] =
+    registerPartner(central, tenantId).flatMap(enrol(central, _))
 
   def createFirstParty(central: CentralApi, tenantId: String): Task[FirstParty] =
     for

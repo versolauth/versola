@@ -90,6 +90,13 @@ object SecurityService:
       yield Impl(secureRandom, hashingSemaphore, metrics)
     }
 
+  private val KeyIdTimestamp = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")
+
+  /** `yyyy-MM-dd_HH-mm-ss-<6 hex>`: the second the key was made in (UTC) and three random bytes. The timestamp alone made two keys
+    * generated within one second collide, and `kid` has to be unique in a JWKS and in a client's key set. */
+  private[util] def keyId(now: java.time.Instant, suffix: Array[Byte]): String =
+    s"${KeyIdTimestamp.format(now.atZone(ZoneOffset.UTC))}-${suffix.map(b => f"${b & 0xff}%02x").mkString}"
+
   class Impl(secureRandom: SecureRandom, hashingSemaphore: Semaphore, metrics: AdmissionMetrics = AdmissionMetrics.default) extends SecurityService:
 
     private val Algorithm = "AES"
@@ -181,6 +188,8 @@ object SecurityService:
       // tell a pod that has capacity from one whose permits are all taken.
       metrics.admitted[Any, Throwable, MAC](effect => hashingSemaphore.withPermit(effect))(hashEffect)
 
+    private def keyIdSuffix: UIO[Array[Byte]] = secureRandom.nextBytes(3)
+
     override def generateRsaKeyPair: UIO[RsaKeyPair] =
       for
         now <- Clock.instant
@@ -188,16 +197,13 @@ object SecurityService:
           val gen = KeyPairGenerator.getInstance("RSA")
           gen.initialize(2048)
           gen.generateKeyPair()
+        suffix <- keyIdSuffix
       yield
         val publicKey = keyPair.getPublic.asInstanceOf[RSAPublicKey]
         val privateKey = keyPair.getPrivate.asInstanceOf[RSAPrivateKey]
 
-        // Format timestamp as YYYY-MM-DD_HH-MM-SS (up to seconds precision)
-        val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")
-        val keyId = formatter.format(now.atZone(ZoneOffset.UTC))
-
         RsaKeyPair(
-          keyId = keyId,
+          keyId = SecurityService.keyId(now, suffix),
           publicKey = publicKey,
           privateKey = privateKey,
         )
@@ -209,11 +215,9 @@ object SecurityService:
           val gen = KeyPairGenerator.getInstance("EC")
           gen.initialize(ECGenParameterSpec("secp256r1"))
           gen.generateKeyPair()
-      yield
-        val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")
-
-        EcKeyPair(
-          keyId = formatter.format(now.atZone(ZoneOffset.UTC)),
-          publicKey = keyPair.getPublic.asInstanceOf[ECPublicKey],
-          privateKey = keyPair.getPrivate.asInstanceOf[ECPrivateKey],
-        )
+        suffix <- keyIdSuffix
+      yield EcKeyPair(
+        keyId = SecurityService.keyId(now, suffix),
+        publicKey = keyPair.getPublic.asInstanceOf[ECPublicKey],
+        privateKey = keyPair.getPrivate.asInstanceOf[ECPrivateKey],
+      )

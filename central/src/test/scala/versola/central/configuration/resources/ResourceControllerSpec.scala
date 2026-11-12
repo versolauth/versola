@@ -156,7 +156,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
     )
   private val edgeRecord = EdgeRecord(
     edgeId,
-    edgeKeyPair.toPublicJwk,
+    Some(edgeKeyPair.toPublicJwk),
     None,
     requireDpopNonce = true,
     overloadPolicy = None,

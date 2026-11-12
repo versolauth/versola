@@ -6,8 +6,9 @@ import versola.central.configuration.clients.certificates.ClientCertificateReque
 import versola.central.configuration.partners.{PartnerRegistry, PartnerStatus}
 import versola.util.audit.{AuditEvents, AuditKind}
 import versola.util.http.Observability
-import versola.util.{Base64Url, CertificateSubject, EdgeIdentityNames, SecureRandom}
+import versola.util.{Base64Url, CertificateSubject, EdgeIdentityNames, EnrollmentToken, SecureRandom}
 import zio.*
+import zio.json.ast.Json
 
 import java.io.ByteArrayInputStream
 import java.nio.charset.StandardCharsets
@@ -32,30 +33,38 @@ import java.time.Instant
   */
 trait EdgeIdentityService:
   /** A token for `edgeId` to enrol with, valid for `validity` (an hour by default, at most
-    * [[EdgeIdentityService.MaxTokenValidity]]: a bundle handed to someone on another continent may need longer than an
+    * [[EdgeIdentityService.MaxTokenValidity]]: a token handed to someone on another continent may need longer than an
     * hour, and no token should wait for days) and for one use. The token is returned here and never again: only its
-    * hash is kept. */
+    * hash is kept. It is `vtk1.<base64url(enrollUrl)>.<secret>` ([[EnrollmentToken]]) where central has a public enrollment
+    * address (`central.public-urls.enroll`), so that the edge needs nothing else to find central; where it has none, the bare
+    * secret, as before. */
   def issueEnrollmentToken(
       edgeId: EdgeId,
       validity: Duration = EdgeIdentityService.TokenValidity,
   ): IO[EdgeIdentityService.Refused | Throwable, EdgeIdentityService.IssuedToken]
 
-  /** The edge's first certificate, for the token it was given. */
+  /** The edge's first certificate, for the token it was given, and the signing key it registers with it. The edge is the token's:
+    * `edgeId`, when given (first-party edges name theirs), must be that edge, and the token alone says which when it is not.
+    * `signingKey` is the edge's public JWK: required for an edge registered without a key (a partner's), and refused for one that
+    * has a key already. */
   def enroll(
-      edgeId: EdgeId,
+      edgeId: Option[EdgeId],
       token: String,
       csrPem: String,
+      signingKey: Option[Json.Obj] = None,
   ): IO[
     EdgeIdentityService.Refused | EdgeIdentityService.InvalidToken.type | EdgeIdentityService.PartnerSuspended.type | Throwable,
     EdgeIdentityService.Identity,
   ]
 
   /** A new certificate for an edge that proved who it is on the mutual-TLS listener. `presentedSerial` is the
-    * certificate it proved it with, for the log. */
+    * certificate it proved it with, for the log. `signingKey` is a new public JWK for the edge: when given, it replaces the
+    * edge's key once the certificate is signed (the edge switches after it has installed the certificate). */
   def renew(
       edgeId: EdgeId,
       csrPem: String,
       presentedSerial: Option[String] = None,
+      signingKey: Option[Json.Obj] = None,
   ): IO[EdgeIdentityService.Refused | Throwable, EdgeIdentityService.Identity]
 
 object EdgeIdentityService:
@@ -65,8 +74,8 @@ object EdgeIdentityService:
 
   case class IssuedToken(token: String, expiresAt: Instant)
 
-  /** An issued certificate chain, leaf first. */
-  case class Identity(chain: String)
+  /** An issued certificate chain, leaf first, and the edge it was issued to. */
+  case class Identity(chain: String, edge: EdgeRecord)
 
   /** Central will not do what was asked: an unknown edge, a request that says something other than the edge's names.
     * A refusal rather than a fault -- retrying does not change it. */
@@ -106,47 +115,83 @@ object EdgeIdentityService:
         _ <- ZIO.fail(Refused(s"a token is valid for at most ${MaxTokenValidity.toHours} hours")).when(validity > MaxTokenValidity)
         _ <- ZIO.fail(Refused("a token must be valid for a positive time")).when(validity <= Duration.Zero)
         _ <- edges.find(edgeId).someOrFail(Refused(s"edge '$edgeId' is not registered"))
-        token <- random.nextBytes(32).map(Base64Url.encode)
+        secret <- random.nextBytes(32).map(Base64Url.encode)
+        token = config.publicUrls.fold(secret.toString)(urls => EnrollmentToken.encode(urls.enroll.encode, secret))
         now <- Clock.instant
         expiresAt = now.plus(validity)
         _ <- tokens.create(hash(token), edgeId, expiresAt)
       yield IssuedToken(token, expiresAt)
 
     override def enroll(
-        edgeId: EdgeId,
+        edgeId: Option[EdgeId],
         token: String,
         csrPem: String,
+        signingKey: Option[Json.Obj],
     ): IO[Refused | InvalidToken.type | PartnerSuspended.type | Throwable, Identity] =
       for
         now <- Clock.instant
         // Nothing is read or parsed on the strength of a token before the token is known good: the request comes from
         // someone not yet authenticated, so an unregistered edge, a registered one and a bad token are one and the
         // same answer, and a garbage request costs a hash and a lookup, not a parse.
-        owner <- tokens.peek(hash(token), now)
-        _ <- ZIO.fail(InvalidToken).unless(owner.contains(edgeId))
-        edge <- edges.find(edgeId).someOrFail(InvalidToken)
+        owner <- tokens.peek(hash(token), now).someOrFail(InvalidToken)
+        // a token for another edge than the one named is no token
+        _ <- ZIO.fail(InvalidToken).unless(edgeId.forall(_ == owner))
+        edge <- edges.find(owner).someOrFail(InvalidToken)
         // the token is good, so this may be told: a suspended partner's edge is given no certificate (its unused tokens are also
         // revoked at suspension, which this covers for one issued while the suspension was being made)
         _ <- ZIO.when(edge.groupKind == EdgeGroupKind.Partner):
           partners.findByGroup(edge.groupId).flatMap(partner => ZIO.fail(PartnerSuspended).when(partner.exists(_.status == PartnerStatus.Suspended)))
         // Authenticated from here on, so a mistake in the request may be told: and it is checked before the token is
         // spent, so it does not cost the operator a token.
+        key <- enrollmentKey(edge, signingKey)
         _ <- ZIO.fromEither(CertificateSubject.matches(csrPem, subjectFor(edge))).mapError(Refused(_))
         spent <- tokens.consume(hash(token), now)
         // Another caller spent it between the look and now.
-        _ <- ZIO.fail(InvalidToken).unless(spent.contains(edgeId))
+        _ <- ZIO.fail(InvalidToken).unless(spent.contains(edge.id))
         chain <- sign(edge, csrPem)
-        _ <- certificateEvent(CentralAudit.CertEnrolled, edgeId)
-      yield Identity(chain)
+        // after the certificate, so that a CA that is down costs the token (as it always did) and not the key: the edge asks again with
+        // a new token and the same key
+        _ <- ZIO.foreachDiscard(key): jwk =>
+          edges.setSigningKey(edge.id, jwk).flatMap(set => ZIO.fail(Refused("the edge has a signing key already")).unless(set))
+        _ <- certificateEvent(CentralAudit.CertEnrolled, edge.id)
+      yield Identity(chain, edge)
 
-    override def renew(edgeId: EdgeId, csrPem: String, presentedSerial: Option[String]): IO[Refused | Throwable, Identity] =
+    /** The key an enrolment registers: none for an edge that has one (and none sent), the edge's own for one that has none. */
+    private def enrollmentKey(edge: EdgeRecord, signingKey: Option[Json.Obj]): IO[Refused | Throwable, Option[Json.Obj]] =
+      (edge.publicKey, signingKey) match
+        case (Some(_), Some(_)) => ZIO.fail(Refused("the edge has a signing key already"))
+        case (Some(_), None) => ZIO.none
+        case (None, None) => ZIO.fail(Refused("signingKey is required: the public JWK of the key this edge signs with"))
+        case (None, Some(jwk)) => checkedKey(edge.id, jwk).asSome
+
+    /** `jwk` if it is a public key central may trust for `edgeId` and no other edge has it. */
+    private def checkedKey(edgeId: EdgeId, jwk: Json.Obj): IO[Refused | Throwable, Json.Obj] =
+      for
+        valid <- ZIO.fromEither(EdgeSigningKey.validate(jwk)).mapError(Refused(_))
+        others <- edges.getAllEdges.map(_.filter(_.id != edgeId))
+        mine = EdgeSigningKey.thumbprint(valid)
+        _ <- ZIO.fail(Refused("the signing key is registered for another edge"))
+          .when(others.exists(other =>
+            (other.publicKey.toVector ++ other.oldPublicKey.toVector).exists(known => EdgeSigningKey.thumbprint(known) == mine),
+          ))
+      yield valid
+
+    override def renew(
+        edgeId: EdgeId,
+        csrPem: String,
+        presentedSerial: Option[String],
+        signingKey: Option[Json.Obj],
+    ): IO[Refused | Throwable, Identity] =
       for
         edge <- edges.find(edgeId).someOrFail(Refused(s"edge '$edgeId' is not registered"))
+        key <- ZIO.foreach(signingKey)(checkedKey(edgeId, _))
         _ <- ZIO.fromEither(CertificateSubject.matches(csrPem, subjectFor(edge))).mapError(Refused(_))
         _ <- ZIO.logInfo(s"renewing the certificate of edge '$edgeId' presented as serial ${presentedSerial.getOrElse("unknown")}")
         chain <- sign(edge, csrPem)
+        // the key is replaced once there is a certificate to go with it
+        _ <- ZIO.foreachDiscard(key)(jwk => edges.replaceSigningKey(edgeId, jwk))
         _ <- certificateEvent(CentralAudit.CertRenewed, edgeId)
-      yield Identity(chain)
+      yield Identity(chain, edge)
 
     private def sign(edge: EdgeRecord, csrPem: String): IO[Refused | Throwable, String] =
       val subject = subjectFor(edge)

@@ -80,7 +80,7 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def edgeRecord(groupId: EdgeGroupId, kind: EdgeGroupKind) = EdgeRecord(
     id = edgeId,
-    publicKey = edgeKey.toPublicJwk,
+    publicKey = Some(edgeKey.toPublicJwk),
     oldPublicKey = None,
     requireDpopNonce = true,
     overloadPolicy = None,
@@ -331,6 +331,30 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   def spec = suite("PartnerEdgeController")(
     suite("who gets in")(
+      // #962: a partner's edge is registered without a signing key and brings the public half when it enrols, so what it signs is
+      // verified against nothing until then: not the token it signs with the key it will register, nor any other.
+      testCase(
+        description = "an edge that has not enrolled has no key: a token it signs is refused on every route, with the right certificate",
+        request = Request.get(partnerPath("me")),
+        edge = partnerEdge.copy(publicKey = None),
+        certificate = Some(partnerCertificate),
+        expectedStatus = Status.Unauthorized,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.partners.activate.calls.isEmpty)),
+      ),
+      testCase(
+        description = "an edge that has not enrolled is refused the partner's data as well",
+        request = Request.get(partnerPath("sync", "clients")),
+        edge = partnerEdge.copy(publicKey = None),
+        certificate = Some(partnerCertificate),
+        expectedStatus = Status.Unauthorized,
+      ),
+      testCase(
+        description = "an edge that has not enrolled cannot manage anything either",
+        request = Request.get(partnerPath("clients")),
+        edge = partnerEdge.copy(publicKey = None),
+        certificate = Some(partnerCertificate),
+        expectedStatus = Status.Unauthorized,
+      ),
       testCase(
         description = "a first-party edge is refused: its surface is /edge/sync",
         request = Request.get(partnerPath("me")),

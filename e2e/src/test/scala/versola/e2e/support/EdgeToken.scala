@@ -10,14 +10,17 @@ import java.security.spec.PKCS8EncodedKeySpec
 import java.time.Instant
 import java.util.{Base64, Date, UUID}
 
-/** What edge's `CentralSyncTokenService` presents to central: `RS256` with the key central minted at registration, naming the
+/** What edge's `CentralSyncTokenService` presents to central: `RS256` with the edge's own signing key, naming the
   * edge in the `edge_id` header, and a `jti`, which central's verifier insists on. Built with Nimbus directly, since e2e has
   * no access to the services' own `JWT` helper. */
 object EdgeToken:
 
   def sign(edgeId: String, keyId: String, privateKey: String): Task[String] =
+    ZIO.attempt(KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(Base64.getUrlDecoder.decode(privateKey))).nn)
+      .flatMap(sign(edgeId, keyId, _))
+
+  def sign(edgeId: String, keyId: String, key: java.security.PrivateKey): Task[String] =
     ZIO.attempt:
-      val key = KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(Base64.getUrlDecoder.decode(privateKey)))
       val now = Instant.now()
       val claims = JWTClaimsSet.Builder()
         .issuer("edge")

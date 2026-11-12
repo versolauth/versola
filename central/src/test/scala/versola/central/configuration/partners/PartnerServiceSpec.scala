@@ -31,7 +31,6 @@ import versola.central.configuration.edges.{
   EdgeRecord,
   EdgeService,
 }
-import versola.central.configuration.metadata.ServerMetadataService
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.users.AuthClient
@@ -102,7 +101,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def edge(id: EdgeId, groupId: EdgeGroupId = EdgeGroupId("acme")) = EdgeRecord(
     id = id,
-    publicKey = keyPair.toPublicJwk,
+    publicKey = None, // a partner edge brings its key when it enrols
     oldPublicKey = None,
     requireDpopNonce = true,
     overloadPolicy = None,
@@ -155,7 +154,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
       approval = approval,
     )
 
-  private class Env(config: CentralConfig = TestCentralConfig.config):
+  private class Env(config: CentralConfig = configured):
     val partners = stub[PartnerRepository]
     val registry = stub[PartnerRegistry]
     val approvals = stub[PartnerApprovalRepository]
@@ -168,7 +167,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val enrollmentTokens = stub[EdgeEnrollmentTokenRepository]
     val tenants = stub[TenantRepository]
     val auth = stub[AuthClient]
-    val metadata = stub[ServerMetadataService]
     val service =
       PartnerService.Impl(
         partners,
@@ -183,7 +181,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         enrollmentTokens,
         tenants,
         auth,
-        metadata,
         config,
       )
 
@@ -194,8 +191,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         groups.find.succeedsWith(None) *>
         clients.findClient.succeedsWith(None) *>
         edges.findFresh.succeedsWith(None) *>
-        registry.refreshNow.succeedsWith(()) *>
-        metadata.getMetadata.succeedsWith(Some(Json.Obj("issuer" -> Json.Str("https://id.example.com"))))
+        registry.refreshNow.succeedsWith(())
 
   private val configured = TestCentralConfig.config.copy(
     auth = TestCentralConfig.config.auth.copy(mtlsUrl = Some(URL.decode("https://id-mtls.example.com").toOption.get)),
@@ -207,7 +203,9 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   def spec = suite("PartnerService")(
     suite("create")(
-      test("creates the group, the partner, the console client with its preset, the first edge and a 24-hour token, and answers the bundle") {
+      test(
+        "creates the group, the partner, the console client with its preset, the first edge without a key and a 24-hour token, and answers the token alone",
+      ) {
         val env = Env(configured)
         val console = client(ClientId("acme-console"), ClientApproval.Approved)
         for
@@ -221,16 +219,15 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           )
           _ <- env.clients.refreshNow.succeedsWith(())
           _ <- env.presets.savePresets.succeedsWith(Right(()))
-          _ <- env.edges.registerEdge.succeedsWith(keyPair)
+          _ <- env.edges.registerEdgeWithoutKey.succeedsWith(())
           _ <- env.edges.sync().succeedsWith(())
           // the edge is read back after it was registered, and not before: the pre-check must find none
           _ <- env.edges.findFresh.returnsZIO(id =>
-            ZIO.succeed(Option.when(id == EdgeId("edge-acme-1") && env.edges.registerEdge.calls.nonEmpty)(edge(id))),
+            ZIO.succeed(Option.when(id == EdgeId("edge-acme-1") && env.edges.registerEdgeWithoutKey.calls.nonEmpty)(edge(id))),
           )
           _ <- env.identity.issueEnrollmentToken.succeedsWith(EdgeIdentityService.IssuedToken("TOKEN", now.plusSeconds(86400)))
           created <- env.service.create(newPartner)
           registration = env.clients.registerClient.calls.head
-          bundle <- ZIO.fromEither(created.edge.bundle.fromJson[Json.Obj]).mapError(RuntimeException(_))
         yield assertTrue(
           env.groups.create.calls == List(EdgeGroupRecord(EdgeGroupId("acme"), EdgeGroupKind.Partner)),
           env.partners.create.calls.map(p => (p.id, p.status, p.groupId, p.consoleClientId, p.limits.scopes)) ==
@@ -258,18 +255,12 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
             PresetId("acme-console"),
             newPartner.consoleRedirectUri,
           )),
-          env.edges.registerEdge.calls == List((EdgeId("edge-acme-1"), EdgeGroupId("acme"), Some("https://login.acme.example"))),
+          env.edges.registerEdgeWithoutKey.calls == List((EdgeId("edge-acme-1"), EdgeGroupId("acme"), Some("https://login.acme.example"))),
           env.identity.issueEnrollmentToken.calls == List((EdgeId("edge-acme-1"), 24.hours)),
           created.edge.token.token == "TOKEN",
-          bundle.get("edgeId") == Some(Json.Str("edge-acme-1")),
-          bundle.get("group") == Some(Json.Str("acme")),
-          bundle.get("token") == Some(Json.Str("TOKEN")),
-          bundle.get("central") == Some(Json.Obj(
-            "enrollUrl" -> Json.Str("https://central.example.com"),
-            "mtlsUrl" -> Json.Str("https://central-mtls.example.com"),
-          )),
-          bundle.get("auth") == Some(Json.Obj("issuer" -> Json.Str("https://id.example.com"), "mtlsUrl" -> Json.Str("https://id-mtls.example.com"))),
-          bundle.get("signingKey").flatMap(_.asObject).flatMap(_.get("keyId")) == Some(Json.Str("edge-key")),
+          // no key is made or shown for the edge: it makes its own and registers the public half when it enrols
+          env.edges.registerEdge.calls.isEmpty,
+          created.edge.edge.publicKey.isEmpty,
         )
       },
       test(
@@ -533,25 +524,25 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           empty.isInstanceOf[PartnerError.Invalid],
         )
       },
-      test("another edge is enrolled within maxEdges, in the partner's group, with its key, token and bundle; one over the limit is refused") {
+      test("another edge is enrolled within maxEdges, in the partner's group, without a key, with a token; one over the limit is refused") {
         val env = Env()
         for
           _ <- env.edges.getAllEdges.succeedsWith(Vector(edge(EdgeId("other"), EdgeGroupId("globex"))))
           _ <- env.edges.findFresh.returnsZIO(id =>
-            ZIO.succeed(Option.when(id == EdgeId("edge-acme-2"))(edge(id)).filter(_ => env.edges.registerEdge.calls.nonEmpty)),
+            ZIO.succeed(Option.when(id == EdgeId("edge-acme-2"))(edge(id)).filter(_ => env.edges.registerEdgeWithoutKey.calls.nonEmpty)),
           )
-          _ <- env.edges.registerEdge.succeedsWith(keyPair)
+          _ <- env.edges.registerEdgeWithoutKey.succeedsWith(())
           _ <- env.edges.sync().succeedsWith(())
           _ <- env.identity.issueEnrollmentToken.succeedsWith(EdgeIdentityService.IssuedToken("TOKEN", now.plusSeconds(86400)))
-          _ <- env.metadata.getMetadata.succeedsWith(None)
           enrolled <- env.service.addEdge(acme, EdgeId("edge-acme-2"), "https://login2.acme.example")
           _ <- env.edges.getAllEdges.succeedsWith(Vector(edge(EdgeId("edge-acme-1"))))
           full <- env.service.addEdge(acme, EdgeId("edge-acme-3"), "https://login3.acme.example").flip
           plain <- env.service.addEdge(acme.copy(limits = limits.copy(maxEdges = 5)), EdgeId("edge-acme-4"), "http://login4.acme.example").flip
         yield assertTrue(
-          env.edges.registerEdge.calls == List((EdgeId("edge-acme-2"), EdgeGroupId("acme"), Some("https://login2.acme.example"))),
+          env.edges.registerEdgeWithoutKey.calls == List((EdgeId("edge-acme-2"), EdgeGroupId("acme"), Some("https://login2.acme.example"))),
           enrolled.token.token == "TOKEN",
-          enrolled.signingKey.keyId == "edge-key",
+          enrolled.edge.publicKey.isEmpty,
+          env.edges.registerEdge.calls.isEmpty,
           full.isInstanceOf[PartnerError.Invalid],
           plain.isInstanceOf[PartnerError.Invalid],
         )
@@ -561,7 +552,10 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           _ <- env.edges.getAllEdges.succeedsWith(Vector.empty)
           _ <- env.edges.findFresh.succeedsWith(None)
-          _ <- env.edges.registerEdge.failsWith(java.sql.SQLException("ERROR: partner_edge_limit: partner acme may run at most 2 edges", "23514"))
+          _ <- env.edges.registerEdgeWithoutKey.failsWith(java.sql.SQLException(
+            "ERROR: partner_edge_limit: partner acme may run at most 2 edges",
+            "23514",
+          ))
           full <- env.service.addEdge(acme, EdgeId("edge-acme-2"), "https://login2.acme.example").flip
         yield assertTrue(full.isInstanceOf[PartnerError.Invalid], env.identity.issueEnrollmentToken.calls.isEmpty)
       },

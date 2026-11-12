@@ -21,7 +21,9 @@ info:
       `auth-request-presets`, `server-metadata`, `overload`, `access-log`, `rate-limits`), `POST /edge/clients/edge-certificate/sign`
       and `POST /edge/certificate/renew` (an edge's own certificate, over the same listener; the one
       route an edge of either kind reaches, since renewal is always on and a partner's edge is stopped by
-      suspending the partner), the surface an edge reads with the key it was registered with. It is served only on central's
+      suspending the partner; it accepts an optional new public `signingKey` JWK together with the certificate request,
+      which replaces the edge's key once the certificate is signed), the surface an edge reads with the key it was
+      registered with (a partner's edge registers the public half of a key of its own when it enrols). It is served only on central's
       own mutual-TLS listener (`MPORT`), never on the port this document describes: the handshake must
       present a certificate that chains to the listener's trust anchors, and the certificate must carry
       the URI name `urn:versola:edge:<id>` for the edge the token names, or the call is `401`. An edge
@@ -34,7 +36,9 @@ info:
       -- its partner's rows only, the clients without secrets or edge credentials -- and manages, on behalf of its
       console, `/edge/partner/clients` (`GET`, `POST`, `PUT`, `DELETE`, `POST .../withdraw`, `POST .../jwks`),
       `/edge/partner/resources` (`GET`, `POST`, `PUT`, `DELETE`, `POST .../rotate-secret`), `/edge/partner/edges`
-      (`GET`, `POST`, `DELETE`, `POST`/`DELETE .../enrollment-tokens`),
+      (`GET`, `POST` answering `{edge, token, expiresAt}`, `DELETE`, `POST .../enrollment-tokens` answering
+      `{token, expiresAt}`, `DELETE .../enrollment-tokens`; a token is shown once and nothing else is, since central holds no
+      key for an edge: it is registered without one and is refused everywhere until it has enrolled),
       `PUT /edge/partner/profile`, `GET`/`PUT /edge/partner/settings` and `GET /edge/partner/audit`. A management
       call carries the staff member's access token in `Versola-Principal` besides the edge's bearer token; it is
       verified against auth's keys, the issuer and the partner's console client, and its `sub` is the actor of the
@@ -52,10 +56,18 @@ info:
       everywhere, `POST /edge/certificate/renew` included (`403` `partner_suspended`). Refusals of the service are
       `400`, `404` and `409` with a `text/plain` reason, as on this document's partner routes.
     * `POST /edge/enroll`, which an edge reaches before it has a certificate: it trades a one-time
-      token (`POST /configuration/edges/enrollment-tokens`) and a certificate request for its first
-      certificate. It is served alone on central's additional listener (`APORT`, plain HTTP meant to
-      sit behind the TLS terminator of the public name for central), with no client certificate;
-      an unknown, spent, expired or other-edge token is one and the same `401`.
+      token (`POST /configuration/edges/enrollment-tokens`, or the one a partner is given) and a certificate request for its
+      first certificate. The body is `{token, csr, signingKey}`: `signingKey` is the edge's **public** JWK (RSA of 2048 to 8192
+      bits or EC on P-256, with a `kid`; the edge generated the pair and keeps the private half, which no response of central
+      carries), required for an edge registered without a key (a partner's) and refused for one that has a key; `edgeId` is
+      optional, accepted for first-party edges, and must be the token's edge when given. The token is
+      `vtk1.<base64url(address)>.<secret>`, where the address is `public-urls.enroll`: an edge needs nothing else to find
+      central (central keeps a hash of the whole string and resolves the edge from it). The answer is `{certificate, edge: {id,
+      group}, central: {mtlsUrl}, auth: {issuer, mtlsUrl}}` (an address is absent where not configured). It is served alone on
+      central's additional listener (`APORT`, plain HTTP meant to sit behind the TLS terminator of the public name for central),
+      with no client certificate; an unknown, spent, expired or other-edge token is one and the same `401`; a suspended
+      partner's token is `403`; a request that names something else than the token's edge, a key central cannot accept
+      (private, small, without a `kid`) or one that another edge has is `422` with the reason, before the token is spent.
 
     * `POST /est/enroll` and `POST /est/renew`, which auth calls after it has authenticated an EST
       (RFC 7030) request of a client registered with `estEnrollment`: central checks the request
@@ -2497,14 +2509,16 @@ paths:
         central), its edge group (`id` = partner id, kind `partner`), its console client `<id>-console` (web, scope
         `openid phone email`, no consent, `tls_client_auth` by the group's `san_uri`, the one redirect URI given, with
         its preset `<id>-console`, so the console signs in at `/login/<id>-console`), the first edge in the group with
-        its `publicUrl` and signing key, and one enrollment token valid 24 hours. `openid` is always added to
+        its `publicUrl` (registered without a signing key: the edge makes its own and registers the public half when it enrols),
+        and one enrollment token valid 24 hours. `openid` is always added to
         `limits.scopes`. Nothing is written when any part is refused (an id taken: `409`; bad limits or a plain-HTTP
         edge URL: `400`; an unknown tenant: `404`).
 
-        The answer carries the token and the `bundle` (a JSON string: `{edgeId, group, central: {enrollUrl, mtlsUrl},
-        auth: {issuer, mtlsUrl}, signingKey: {keyId, privateKey}, token}`) once; neither is kept. `central.*` come from
-        `public-urls { enroll, mtls }`, `auth.mtlsUrl` from `auth.mtls-url`, `auth.issuer` from the server metadata;
-        each is absent where not configured.
+        The answer is `{partner, edge, enrollmentToken, expiresAt}`: the one string, shown once and never kept (only its hash
+        is), that the partner starts its edge with. It is `vtk1.<base64url(address)>.<secret>`, the address being central's
+        `public-urls.enroll`; the edge's group, central's and auth's addresses and the issuer are given to the edge when it
+        enrols. No key of the edge is made, shown or held by central. `public-urls { enroll, mtls }` has to be set: without it
+        no partner is created (`400`), since a token that does not say where to enrol is of no use.
       operationId: createPartner
       requestBody:
         required: true
@@ -2741,8 +2755,9 @@ paths:
       summary: Create a one-time token for an edge to enrol with
       description: |
         The edge trades the token, once and within an hour (`validityHours` asks for longer, up
-        to 24: a bundle handed to someone far away may need it), together with a certificate
-        request, for its first certificate (`POST /edge/enroll` on the enrollment listener). Only a
+        to 24: a token handed to someone far away may need it), together with a certificate
+        request, for its first certificate (`POST /edge/enroll` on the enrollment listener). The token is
+        `vtk1.<base64url(address)>.<secret>` when central has a `public-urls.enroll`, the bare secret when it has not. Only a
         hash of the token is kept: it is shown here and never again. The certificate is renewed by
         the edge itself over the mutual-TLS listener (`POST /edge/certificate/renew`), for as long as the
         edge is registered; an edge of a `partner` group is refused there once its partner is suspended.
@@ -7246,16 +7261,13 @@ components:
           $ref: '#/components/schemas/EdgeResponse'
         enrollmentToken:
           type: string
-          description: Shown once; only its hash is stored. Valid 24 hours.
+          description: |
+            Shown once; only its hash is stored. Valid 24 hours. `vtk1.<base64url(central's enrollment address)>.<secret>`: the
+            only thing the partner is given, and all it starts its edge with.
         expiresAt:
           type: string
           format: date-time
-        bundle:
-          type: string
-          description: |
-            A JSON string the partner pastes into its edge: `{edgeId, group, central: {enrollUrl, mtlsUrl}, auth: {issuer, mtlsUrl},
-            signingKey: {keyId, privateKey}, token}`. Shown once.
-      required: [partner, edge, enrollmentToken, expiresAt, bundle]
+      required: [partner, edge, enrollmentToken, expiresAt]
     UpdatePartnerRequest:
       type: object
       properties:

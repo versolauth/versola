@@ -42,10 +42,10 @@ object PostgresPartnerRepositorySpec extends PostgresSpec, PartnerRepositorySpec
           _ <- env.fixtures.group(groupA, EdgeGroupKind.Partner)
           _ <- env.fixtures.group(groupB, EdgeGroupKind.Partner)
           _ <- env.repository.create(acme)
-          results <- ZIO.foreachPar(1 to 8)(n => edges.createEdge(EdgeId(s"acme-edge-$n"), jwk, true, groupA, None).either)
+          results <- ZIO.foreachPar(1 to 8)(n => edges.createEdge(EdgeId(s"acme-edge-$n"), Some(jwk), true, groupA, None).either)
           stored <- xa.connect(sql"SELECT COUNT(*) FROM edges WHERE group_id = $groupA".query[Long].run().head)
           // a group no partner points at has no limit
-          free <- ZIO.foreach(1 to 4)(n => edges.createEdge(EdgeId(s"free-edge-$n"), jwk, true, groupB, None).either)
+          free <- ZIO.foreach(1 to 4)(n => edges.createEdge(EdgeId(s"free-edge-$n"), Some(jwk), true, groupB, None).either)
           _ <- xa.connect(sql"TRUNCATE TABLE edges CASCADE".update.run())
         yield assertTrue(
           results.count(_.isRight) == 2,

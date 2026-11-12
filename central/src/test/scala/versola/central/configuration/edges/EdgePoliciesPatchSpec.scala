@@ -17,7 +17,7 @@ object EdgePoliciesPatchSpec extends ZIOSpecDefault:
 
   private val record = EdgeRecord(
     EdgeId("edge-1"),
-    Json.Obj(),
+    Some(Json.Obj()),
     None,
     requireDpopNonce = true,
     overloadPolicy = None,

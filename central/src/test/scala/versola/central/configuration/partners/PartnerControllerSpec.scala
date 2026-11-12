@@ -68,7 +68,7 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val edge = EdgeRecord(
     id = EdgeId("edge-acme-1"),
-    publicKey = keyPair.toPublicJwk,
+    publicKey = Some(keyPair.toPublicJwk),
     oldPublicKey = None,
     requireDpopNonce = true,
     overloadPolicy = None,
@@ -162,13 +162,13 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus = Status.Unauthorized,
     ),
     testCase(
-      description = "POST /configuration/partners creates everything in one request and answers the token and the bundle once",
+      description = "POST /configuration/partners creates everything in one request and answers the enrollment token once",
       request = Request.post(URL.root / "configuration" / "partners", json(createBody)).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
       setup = stubs =>
         stubs.service.create.succeedsWith(PartnerService.Created(
           acme.copy(status = PartnerStatus.Onboarding),
-          PartnerService.EnrolledEdge(edge, keyPair, PartnerService.Token("TOKEN", now.plusSeconds(86400)), """{"edgeId":"edge-acme-1"}"""),
+          PartnerService.EnrolledEdge(edge, PartnerService.Token("TOKEN", now.plusSeconds(86400))),
         )),
       verify = (response, stubs) =>
         for body <- response.body.asJson[CreatedPartnerResponse]
@@ -179,7 +179,7 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
           body.edge.id == EdgeId("edge-acme-1"),
           body.edge.partnerId == Some(PartnerId("acme")),
           body.enrollmentToken == "TOKEN",
-          body.bundle.contains("edge-acme-1"),
+          body.edge.id == EdgeId("edge-acme-1"),
         ),
     ),
     testCase(

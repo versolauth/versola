@@ -250,6 +250,7 @@ object EdgeSyncController extends Controller:
           edge.id,
           body.csr,
           request.remoteCertificate.collect { case certificate: X509Certificate => certificate.getSerialNumber.toString(16) },
+          body.signingKey,
         ))
       yield Response.json(EdgeIdentityResponse(identity.chain).toJson))
         .catchAll {
@@ -299,6 +300,9 @@ object EdgeSyncController extends Controller:
       )
     }
 
+/** `signingKey` is a new public JWK for the edge to sign with: central replaces the edge's key with it once the certificate is
+  * signed, and the edge switches after it has installed the certificate. */
 case class RenewEdgeCertificateRequest(
     csr: String,
+    signingKey: Option[Json.Obj] = None,
 ) derives JsonCodec, Schema

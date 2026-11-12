@@ -78,6 +78,11 @@ ALTER TABLE resources ADD COLUMN partner_id TEXT REFERENCES partners(id);
 -- registered without one, which is every first-party edge so far.
 ALTER TABLE edges ADD COLUMN public_url TEXT;
 
+-- A partner's edge is registered without a signing key: it generates its own and sends the public half when it enrols
+-- (#962), so central never holds a private key for it. NULL until then, and an edge with no key authenticates nowhere.
+-- Every edge so far has one.
+ALTER TABLE edges ALTER COLUMN public_key_jwk DROP NOT NULL;
+
 -- What a partner asked the operator for and what the operator decided (#549 decision 7): creating a client always
 -- needs approval, so does a change of its name or logo (consent phishing) or anything outside the partner's limits;
 -- a profile change is the partner's own name and logo. `requested` is what the partner sent and is never rewritten;

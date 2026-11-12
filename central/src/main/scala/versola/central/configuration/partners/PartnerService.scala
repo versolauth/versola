@@ -29,7 +29,6 @@ import versola.central.configuration.edges.{
   EdgeRecord,
   EdgeService,
 }
-import versola.central.configuration.metadata.ServerMetadataService
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{AuthorizationPresetInput, ConsentFlowDto, CreateClientRequest, SaveAuthorizationPresetsRequest}
@@ -48,8 +47,8 @@ import java.time.temporal.ChronoUnit
 trait PartnerService:
 
   /** Creates the partner (`onboarding`), its edge group (`id = partner id`, kind `partner`), its console client and preset,
-    * its first edge with its signing key, and one 24-hour enrollment token. The bundle is what the partner's operator pastes
-    * into the edge. */
+    * its first edge (without a signing key: the edge makes its own and registers the public half when it enrols), and one
+    * 24-hour enrollment token, which is all the partner's operator is given. */
   def create(request: PartnerService.NewPartner): IO[PartnerError | Throwable, PartnerService.Created]
 
   def updateProfile(
@@ -109,7 +108,7 @@ trait PartnerService:
   def edges(partner: PartnerRecord): UIO[Vector[EdgeRecord]]
 
 object PartnerService:
-  /** Enrollment tokens of partner edges live a day: a bundle travels to another organisation. */
+  /** Enrollment tokens of partner edges live a day: a token travels to another organisation. */
   val TokenValidity: Duration = 24.hours
 
   /** The longest access token of a console client, in seconds: the staff member's token authorises management calls (central checks
@@ -133,8 +132,9 @@ object PartnerService:
 
   case class Token(token: String, expiresAt: Instant)
 
-  /** An edge with the one-time material its bundle carries: the signing key and the enrollment token. */
-  case class EnrolledEdge(edge: EdgeRecord, signingKey: RsaKeyPair, token: Token, bundle: String)
+  /** An edge with the one thing shown once: its enrollment token. The edge has no signing key yet, and central never holds a private
+    * one for it. */
+  case class EnrolledEdge(edge: EdgeRecord, token: Token)
 
   case class Created(partner: PartnerRecord, edge: EnrolledEdge)
 
@@ -145,27 +145,11 @@ object PartnerService:
 
   case class ClientOutsideLimits(clientId: ClientId, fields: List[String])
 
-  /** What the partner's operator pastes into a new edge: who it is, where central and auth are, its signing key and its
-    * token. Pins of the listeners' certificates are P3. */
-  case class Bundle(
-      edgeId: EdgeId,
-      group: EdgeGroupId,
-      central: Bundle.Central,
-      auth: Bundle.Auth,
-      signingKey: Bundle.SigningKey,
-      token: String,
-  ) derives JsonCodec
-
-  object Bundle:
-    case class Central(enrollUrl: Option[String], mtlsUrl: Option[String]) derives JsonCodec
-    case class Auth(issuer: Option[String], mtlsUrl: Option[String]) derives JsonCodec
-    case class SigningKey(keyId: String, privateKey: String) derives JsonCodec
-
   val live: URLayer[
     PartnerRepository & PartnerRegistry & PartnerApprovalRepository & PartnerClientService & OAuthClientService & AuthorizationPresetService &
-      EdgeGroupService & EdgeService & EdgeIdentityService & EdgeEnrollmentTokenRepository & TenantRepository & AuthClient & ServerMetadataService & CentralConfig,
+      EdgeGroupService & EdgeService & EdgeIdentityService & EdgeEnrollmentTokenRepository & TenantRepository & AuthClient & CentralConfig,
     PartnerService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _))
+  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _))
 
   /** What the operator may set as limits. */
   def validateLimits(limits: PartnerLimits): Option[PartnerError] =
@@ -194,7 +178,6 @@ object PartnerService:
       enrollmentTokens: EdgeEnrollmentTokenRepository,
       tenants: TenantRepository,
       auth: AuthClient,
-      metadata: ServerMetadataService,
       config: CentralConfig,
   ) extends PartnerService:
 
@@ -213,6 +196,7 @@ object PartnerService:
       val groupId = EdgeGroupId(request.id)
       val consoleId = PartnerRecord.consoleClientId(request.id)
       for
+        _ <- requireEnrollmentAddress
         _ <- ZIO.foreachDiscard(validateLimits(request.limits))(ZIO.fail(_))
         _ <- tenants.getAll.map(
           _.exists(_.id == request.tenantId),
@@ -331,11 +315,12 @@ object PartnerService:
         case Right(()) => ZIO.unit
         case Left(error) => ZIO.fail(PartnerError.Conflict(s"the preset of the console client cannot be created: $error"))
 
-    /** Registers an edge in the partner's group with its key, and issues its token and bundle. */
+    /** Registers an edge in the partner's group, without a signing key, and issues its token. */
     private def enrol(partner: PartnerRecord, id: EdgeId, publicUrl: String): IO[PartnerError | Throwable, EnrolledEdge] =
       for
+        _ <- requireEnrollmentAddress
         // the count of edges is enforced by the table (a trigger that locks the partner), where two enrolments cannot both pass
-        keyPair <- edgeService.registerEdge(id, partner.groupId, Some(publicUrl)).catchAll:
+        _ <- edgeService.registerEdgeWithoutKey(id, partner.groupId, Some(publicUrl)).catchAll:
           case error if PartnerClientService.isLimitViolation(error, "partner_edge_limit") =>
             ZIO.fail(PartnerError.Invalid(s"partner '${partner.id}' may run at most ${partner.limits.maxEdges} edges"))
           case error => ZIO.fail(error)
@@ -344,8 +329,13 @@ object PartnerService:
         // the edge is read back from the row so that the answer is what was stored
         edge <- edgeService.findFresh(id).someOrFail(IllegalStateException(s"edge '$id' was registered and cannot be read"))
         token <- issueToken(id)
-        bundle <- bundleFor(edge, keyPair, token)
-      yield EnrolledEdge(edge, keyPair, token, bundle)
+      yield EnrolledEdge(edge, token)
+
+    /** The token carries central's enrollment address, which is how an edge finds central: without one a token is of no use to a
+      * partner, so no partner or edge is created. */
+    private def requireEnrollmentAddress: IO[PartnerError, Unit] =
+      ZIO.fail(PartnerError.Invalid("central.public-urls is not configured: an enrollment token would not say where to enrol"))
+        .when(config.publicUrls.isEmpty).unit
 
     private def issueToken(id: EdgeId): IO[PartnerError | Throwable, Token] =
       identity.issueEnrollmentToken(id, TokenValidity).mapBoth(
@@ -355,21 +345,6 @@ object PartnerService:
         },
         issued => Token(issued.token, issued.expiresAt),
       )
-
-    private def bundleFor(edge: EdgeRecord, keyPair: RsaKeyPair, token: Token): UIO[String] =
-      metadata.getMetadata.map: document =>
-        val issuer = document.flatMap(_.get("issuer")).collect { case Json.Str(value) => value }
-        Bundle(
-          edgeId = edge.id,
-          group = edge.groupId,
-          central = Bundle.Central(
-            enrollUrl = config.publicUrls.map(_.enroll.encode),
-            mtlsUrl = config.publicUrls.map(_.mtls.encode),
-          ),
-          auth = Bundle.Auth(issuer = issuer, mtlsUrl = config.auth.mtlsUrl.map(_.encode)),
-          signingKey = Bundle.SigningKey(keyId = keyPair.keyId, privateKey = Base64Url.encode(keyPair.privateKey.getEncoded)),
-          token = token.token,
-        ).toJson
 
     override def updateProfile(
         id: PartnerId,
@@ -542,6 +517,7 @@ object PartnerService:
       for
         own <- edges(partner)
         _ <- ZIO.fail(PartnerError.NotFound(s"edge '$edgeId'")).unless(own.exists(_.id == edgeId))
+        _ <- requireEnrollmentAddress
         token <- issueToken(edgeId)
       yield token
 

@@ -55,6 +55,37 @@ object PartnerEdgeSpec extends CentralApiSpec:
               .label("a partner's edge is not served /edge/sync, which is the operator's")
       yield result
     },
+    test(
+      "the operator is given one token and nothing else: an edge that has not enrolled has no key and is refused everywhere, an enrolled one is served",
+    ) {
+      for
+        central <- api
+        result <- fixture(central): (_, _, firstParty) =>
+          for
+            unenrolled <- registerPartner(central, firstParty.tenantId)
+            edge <- asUnenrolled(central, unenrolled)
+            me <- edge.get("/edge/partner/me")
+            clients <- edge.get("/edge/partner/sync/clients")
+            managed <- edge.get("/edge/partner/clients")
+            renewed <- EdgeCertificate.renewalRequest(unenrolled.edgeId, unenrolled.groupId)
+              .flatMap(csr => edge.post("/edge/certificate/renew", Json.Obj("csr" -> Json.Str(csr))))
+            listed <- central.get("/configuration/edges").flatMap(_.items("edges"))
+            // the key the edge made is registered as an enrolment does it, and then the same token is accepted
+            partner <- enrol(central, unenrolled)
+            served <- onSurface(central, partner).get("/edge/partner/me")
+            refreshed <- renew(central, partner)
+          yield assertTrue(
+            me.status == Status.Unauthorized,
+            clients.status == Status.Unauthorized,
+            managed.status == Status.Unauthorized,
+            renewed.status == Status.Unauthorized,
+          ).label("an edge that is registered and has not enrolled has no key: nothing it signs is accepted, renewal included") &&
+            assertTrue(listed.exists(_.str("id").contains(unenrolled.edgeId)))
+              .label("it is registered all the same: the operator sees it, without a key") &&
+            assertTrue(served.status == Status.Ok, refreshed.status == Status.Ok)
+              .label("once its key is registered, the edge is served and renews")
+      yield result
+    },
     test("a partner's first call makes it active, and an edge presenting another partner's group is refused") {
       for
         central <- api

@@ -1545,14 +1545,21 @@ is only a declaration: at start the edge compares it with the group in its crede
 start on a mismatch. A partner group never reaches `/edge/sync/*`, so a partner edge cannot read
 `central`'s configuration of the operator's own tenants; it reads `/edge/partner/*` on the mutual-TLS listener
 of `central` instead, which serves its partner's rows only. Onboarding: `POST /configuration/partners`
-creates the partner with its group, console client and first edge, and answers the enrollment token and the
-bundle once; the partner's edge enrols with them, and its staff register the partner's clients, which wait for
-the operator's approval (`GET /configuration/partners/approvals`, `POST .../approve`, `POST .../reject`) before
-auth knows them. A partner client authenticates with `tls_client_auth` (the group's certificate) or
-`private_key_jwt`, never with a shared secret. Set `central.public-urls { enroll, mtls }` (the public names of
-`central`'s enrollment and mutual-TLS listeners) and `auth.mtls-url` (the public name of `auth`'s mutual-TLS
-listener) so that the bundle and `/edge/partner/me` tell the partner's edge where everything is; without them the
-operator fills the addresses in by hand. `POST /configuration/partners/suspend` disables the partner's edge, and nothing more. It does: the partner's edges are
+creates the partner with its group, console client and first edge, and answers **one string**, the enrollment
+token (`vtk1.<base64url(address)>.<secret>`, valid 24 hours, shown once, of which `central` keeps a hash), and nothing
+else: no bundle, no key. The partner starts its edge with that token alone (a secret or a file, `central.identity.enrollment`
+on the edge); the edge makes its own signing key pair as it makes the key of its TLS certificate, and sends the public half
+with its certificate request to `POST /edge/enroll`, where `central` registers it for the edge (a partner's edge is registered
+without a key and is refused everywhere until it has enrolled) and answers the certificate with the edge's id and group, the
+mutual-TLS address of `central`, and the issuer and the mutual-TLS address of `auth`, so the edge needs nothing else; it renews
+its certificate with a new public key whenever it likes (`POST /edge/certificate/renew` takes an optional `signingKey`). Its
+staff register the partner's clients, which wait for the operator's approval
+(`GET /configuration/partners/approvals`, `POST .../approve`, `POST .../reject`) before auth knows them. A partner client
+authenticates with `tls_client_auth` (the group's certificate) or `private_key_jwt`, never with a shared secret. **Set
+`public-urls { enroll, mtls }`** in `central`'s configuration (the public names of its enrollment and mutual-TLS listeners; the
+first is the address inside every token, and no partner or partner edge can be created without it) and `auth.mtls-url` (the public
+name of `auth`'s mutual-TLS listener) so that the enrollment answer and `/edge/partner/me` tell the partner's edge where
+everything is. A token is single use: to enrol an edge again (a lost identity directory), delete the edge and register it anew. `POST /configuration/partners/suspend` disables the partner's edge, and nothing more. It does: the partner's edges are
 refused with `403` on everything under `/edge/partner/*` and on certificate renewal, enrolment is refused and unused
 enrollment tokens stop working, and the partner's clients are omitted from `GET /configuration/clients/sync`, so `auth`
 answers `invalid_client` for them at `/par`, `/token` and `/introspect` (this is configuration only, nothing is deleted; it
@@ -1590,6 +1597,10 @@ move together and `configure` is re-run)
   "edge reaches `/userinfo` with its own certificate" below.)
 - The migration creates the group `default` (`first_party`) and puts every existing edge in it, so an
   upgrade changes nothing for existing edges.
+- **Changed (#962):** `POST /edge/enroll` takes `{token, csr, signingKey}` (`edgeId` is optional; the response only gains fields) and
+  `POST /edge/certificate/renew` an optional `signingKey`; a first-party edge that sends neither keeps working. The key ids of
+  newly generated signing keys (JWKS, client key sets, edges) gain a random suffix, `yyyy-MM-dd_HH-mm-ss-<6 hex>`, because two keys
+  generated in one second had the same id; ids that exist are untouched.
 - **Breaking (#962):** an edge's identity no longer has a chain that ends. The keys `edge-identity.auto-extend` and
   `edge-identity.max-age` are no longer read (a deployment that set `auto-extend = false` simply loses the setting: its
   edges renew for as long as they are registered, and the way to stop one is to delete it or, for a partner's, to suspend

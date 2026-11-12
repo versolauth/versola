@@ -351,7 +351,8 @@ object PartnerEdgeController extends Controller:
       yield Response.json(PartnerEdgesResponse(edges.map(edge => EdgeResponse.of(edge, Some(caller.partner.id), certificates.get(edge.id)))).toJson)
     }
 
-  /** Another edge of the partner, within `maxEdges`: the edge, its signing key, its token and its bundle in one answer. */
+  /** Another edge of the partner, within `maxEdges`: the edge (without a signing key, which it registers when it enrols) and its
+    * enrollment token, in one answer. */
   val createEdgeEndpoint =
     Method.POST / "edge" / "partner" / "edges" -> managed("partner-edge", Some(Audit.create), "/edge/partner/edges") { (caller, _, request) =>
       for
@@ -361,11 +362,8 @@ object PartnerEdgeController extends Controller:
         certificates <- ZIO.serviceWithZIO[EdgeCertificateRepository](_.latest)
         response = CreatedPartnerEdgeResponse(
           edge = EdgeResponse.of(enrolled.edge, Some(caller.partner.id), certificates.get(enrolled.edge.id)),
-          signingKey =
-            SigningKeyResponse(keyId = enrolled.signingKey.keyId, privateKey = Base64Url.encode(enrolled.signingKey.privateKey.getEncoded)),
           token = enrolled.token.token,
           expiresAt = enrolled.token.expiresAt,
-          bundle = enrolled.bundle,
         )
       yield Response.json(response.toJson).status(Status.Created)
     }
@@ -393,7 +391,7 @@ object PartnerEdgeController extends Controller:
         yield Response.json(PartnerEnrollmentTokenResponse(token = token.token, expiresAt = token.expiresAt).toJson).status(Status.Created)
       }
 
-  /** Voids the unspent tokens of an edge: a bundle that was printed and must not work. */
+  /** Voids the unspent tokens of an edge: a token that was copied somewhere it must not work from. */
   val revokeEnrollmentTokenEndpoint =
     Method.DELETE / "edge" / "partner" / "edges" / "enrollment-tokens" ->
       managed("partner-edge", Some(Audit.action("enrollment-tokens")), "/edge/partner/edges/enrollment-tokens") { (caller, _, request) =>
@@ -710,11 +708,8 @@ case class PartnerEdgesResponse(edges: Vector[EdgeResponse]) derives Schema, Jso
 
 case class CreatePartnerEdgeRequest(id: EdgeId, publicUrl: String) derives JsonCodec
 
-case class SigningKeyResponse(keyId: String, privateKey: String) derives JsonCodec
-
-/** An edge with everything shown once: its signing key, its token and the bundle that carries both. */
-case class CreatedPartnerEdgeResponse(edge: EdgeResponse, signingKey: SigningKeyResponse, token: String, expiresAt: Instant, bundle: String)
-  derives JsonCodec
+/** An edge with the one thing shown once: its enrollment token. The edge makes its own signing key. */
+case class CreatedPartnerEdgeResponse(edge: EdgeResponse, token: String, expiresAt: Instant) derives JsonCodec
 
 case class EdgeIdRequest(id: EdgeId) derives JsonCodec
 
