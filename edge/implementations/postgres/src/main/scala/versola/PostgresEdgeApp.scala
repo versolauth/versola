@@ -6,6 +6,7 @@ import versola.cleanup.PostgresCleanupManager
 import versola.edge.dpop.{DpopPolicyService, DpopProofRepository, DpopReplayGuard, DpopVerifier}
 import versola.edge.login.LoginRepository
 import versola.edge.nativeapp.{NativeAuthClient, NativeController, NativeService}
+import versola.edge.partner.{PartnerSurface, PostgresStaffRepository, StaffRepository}
 import versola.edge.revocation.{EdgeRevocationRepository, RevocationFeedClient, RevocationFeedPuller, TokenRevocationService}
 import versola.edge.session.EdgeSessionRepository
 import versola.edge.{
@@ -89,7 +90,8 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       DpopVerifier &
       EdgeService &
       NativeAuthClient &
-      NativeService
+      NativeService &
+      PartnerSurface
 
   override protected def admissionTiers = Some(versola.edge.EdgeAdmission.tierOf)
 
@@ -148,7 +150,12 @@ object PostgresEdgeApp extends VersolaApp("edge"):
     )
 
   override def mountedRoutes: ZIO[Dependencies, Throwable, Routes[Dependencies & Tracing & EnvName, Throwable]] =
-    ZIO.serviceWith[EdgeConfig](config => routes ++ InternalSurface.routes(config.mode))
+    for
+      config <- ZIO.service[EdgeConfig]
+      surface <- ZIO.service[PartnerSurface]
+    yield routes ++ InternalSurface.routes(config.mode) ++
+      // the partner console's API and files, on the plain listener like the rest of what browsers reach; absent on a first-party edge
+      AddressLimit[Dependencies & Tracing & EnvName, Throwable](surface.routes, AddressLimit.Listener.Plain)
 
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     // EdgeConfig.validated rejects a `versola-internal-trusted-certificates` that names a CA
@@ -161,6 +168,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
           ZLayer.fromFunction(PostgresEdgeSessionRepository(_)) ++
           PostgresEdgeRevocationRepository.live ++
           PostgresRevocationCursorRepository.live ++
+          PostgresStaffRepository.live ++
           PostgresDpopProofRepository.live ++
           PostgresCleanupManager.live ++
           PostgresWalMetrics.live())) >++>
@@ -197,6 +205,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       EdgeService.live >++>
       NativeAuthClient.live >++>
       NativeService.live >++>
+      PartnerSurface.live >++>
       SSOClientWarmUp.live
 
   /** Keyed off this edge's private key; the records are prefixed with the edge id, so two edges
@@ -225,5 +234,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
   given DeriveConfig[URL] = DeriveConfig[String]
     .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))
 
+  // The key of a bootstrap bundle is written in the URL-safe alphabet (`signingKey.privateKey`); `private-key` takes either, so it
+  // can be copied from the bundle as it is.
   given DeriveConfig[java.security.PrivateKey] = DeriveConfig[String]
-    .mapOrFail(SecretConfig.rsaPrivateKey)
+    .mapOrFail(raw => SecretConfig.rsaPrivateKey(raw).orElse(SecretConfig.rsaPrivateKey(raw.replace('-', '+').replace('_', '/'))))

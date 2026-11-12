@@ -1,5 +1,6 @@
 package versola.edge
 
+import versola.edge.partner.BootstrapBundle
 import versola.util.http.Observability
 import versola.util.{CertificateSubject, EdgeIdentityNames}
 import zio.*
@@ -70,19 +71,37 @@ object EdgeIdentityEnrollment:
           case None => enroll
       yield ()
 
+    /** Where the first certificate is asked and the token it is paid with: `central.identity.enrollment`, else the bootstrap
+      * bundle of a partner edge (`partner.bundle-file`), which carries both. */
+    private def enrollmentSource: Task[(URL, String)] =
+      config.central.identity.flatMap(_.enrollment) match
+        case Some(enrollment) =>
+          ZIO.attemptBlocking(Files.readString(Path.of(enrollment.tokenFile)).trim)
+            .mapError(error => RuntimeException(s"cannot read the enrollment token at ${enrollment.tokenFile}: ${error.getMessage}"))
+            .map(enrollment.url -> _)
+        case None =>
+          config.partner.bundleFile match
+            case Some(file) =>
+              for
+                bundle <- BootstrapBundle.read(file)
+                url <- ZIO.fromEither(bundle.enrollUrl).mapError(reason => RuntimeException(s"the bootstrap bundle at $file: $reason"))
+                token <- ZIO.fromOption(bundle.enrollment).orElseFail(RuntimeException(s"the bootstrap bundle at $file carries no token"))
+              yield url -> token
+            case None =>
+              ZIO.fail(
+                RuntimeException(
+                  "this edge has no valid certificate and no enrollment configured: create a token with `POST /configuration/edges/enrollment-tokens` " +
+                    "and set central.identity.enrollment, give the bootstrap bundle as partner.bundle-file, or restore the identity directory",
+                ),
+              )
+
     private def enroll: Task[Unit] =
       for
-        enrollment <- ZIO.fromOption(config.central.identity.flatMap(_.enrollment)).orElseFail(
-          RuntimeException(
-            "this edge has no valid certificate and no enrollment configured: create a token with `POST /configuration/edges/enrollment-tokens` " +
-              "and set central.identity.enrollment, or restore the identity directory",
-          ),
-        )
-        token <- ZIO.attemptBlocking(Files.readString(Path.of(enrollment.tokenFile)).trim)
-          .mapError(error => RuntimeException(s"cannot read the enrollment token at ${enrollment.tokenFile}: ${error.getMessage}"))
+        source <- enrollmentSource
+        (url, token) = source
         generated <- CertificateSubject.generate(subject)
         body = EnrollRequest(edgeId = config.id, token = token, csr = generated.csrPem).toJson
-        request = Request.post(enrollment.url / "edge" / "enroll", Body.fromString(body))
+        request = Request.post(url / "edge" / "enroll", Body.fromString(body))
           .addHeader(Header.ContentType(MediaType.application.json))
         issued <- send(request, client, "enrollment")
         _ <- holder.install(issued.certificate, generated.privateKeyPem)

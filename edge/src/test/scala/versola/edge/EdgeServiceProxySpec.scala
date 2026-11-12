@@ -469,6 +469,8 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
   def spec = suite("EdgeService.proxy")(
     proxySuite,
     rateLimitSuite,
+    partnerSuite,
+    consoleSessionSuite,
   ).provideLayer(TestClient.layer ++ securityServiceLayer) @@ TestAspect.silentLogging
 
   private val usersEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000401"))
@@ -3672,6 +3674,119 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
   private def decisions(policy: String, result: String): UIO[Double] =
     Metric.counter("edge_rate_limit_decisions_total")
       .tagged(Set(MetricLabel("policy", policy), MetricLabel("result", result))).value.map(_.count)
+
+  /** A partner has no roles and no permissions (#962 §4): what lets a call through an endpoint of its resource is the endpoint's own
+    * `allow` rule, and an endpoint without one lets nobody through. A first-party edge keeps the permission check it always had. */
+  private val partnerSuite = suite("partner mode")(
+    test("an endpoint with an allow rule that holds is served, and the roles and permissions are not consulted") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        upstream <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(allow = Some("token.sub == 'user-1'"))))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security, config = env.edgeConfig.copy(mode = EdgeMode.Partner))
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        reached <- upstream.get
+      yield assertTrue(
+        response.status == Status.Ok,
+        reached.isDefined,
+        env.permissionService.getAllowedEndpointsForRoles.calls.isEmpty,
+        env.permissionService.getAllowedEndpointsForClient.calls.isEmpty,
+      )
+    },
+    test("an endpoint without an allow rule is 403, whatever permissions would have let it through: deny by default") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        upstream <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(allow = None)))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security, config = env.edgeConfig.copy(mode = EdgeMode.Partner))
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        reached <- upstream.get
+      yield assertTrue(response.status == Status.Forbidden, reached.isEmpty)
+    },
+    test("an allow rule that does not hold is 403") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(allow = Some("token.sub == 'someone-else'"))))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security, config = env.edgeConfig.copy(mode = EdgeMode.Partner))
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(response.status == Status.Forbidden)
+    },
+    test("a first-party edge still refuses an endpoint its roles do not grant, though its allow rule holds") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        _ <- env.permissionService.getAllowedEndpointsForRoles.succeedsWith(Set.empty)
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(allow = Some("token.sub == 'user-1'"))))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(response.status == Status.Forbidden)
+    },
+  )
+
+  /** `EdgeService.consoleSession`: the cookie of the partner's console, checked as a proxied call checks it, and nothing else. */
+  private val consoleSessionSuite = suite("consoleSession")(
+    test("a live token in the cookie is the session: its claims, the preset of the cookie and the token itself") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        token <- env.signToken(clientId = "acme-console", sub = "staff-1")
+        service = env.buildService(client, security)
+        session <- service.consoleSession(Request.get(URL.empty / "partner").addCookie(sessionCookie(token)))
+      yield assertTrue(
+        session.claims.subject == "staff-1",
+        session.claims.clientId == ClientId("acme-console"),
+        session.presetId == presetId,
+        session.accessToken == token,
+        session.rotatedCookie.isEmpty,
+      )
+    },
+    test("no cookie is no session, and a bearer token in Authorization is not a console session") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        token <- env.signToken()
+        service = env.buildService(client, security)
+        none <- service.consoleSession(Request.get(URL.empty / "partner")).flip
+        bearer <- service.consoleSession(Request.get(URL.empty / "partner").addHeader(Header.Authorization.Bearer(token))).flip
+      yield assertTrue(none == EdgeService.NoSession(None), bearer == EdgeService.NoSession(None))
+    },
+    test("a token that does not verify, and one that has been revoked, are no session") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        token <- env.signToken(jti = "revoked-jti")
+        service = env.buildService(client, security)
+        forged <- service.consoleSession(Request.get(URL.empty / "partner").addCookie(sessionCookie("not.a.token"))).flip
+        _ <- env.revocationService.isRevoked.succeedsWith(true)
+        revoked <- service.consoleSession(Request.get(URL.empty / "partner").addCookie(sessionCookie(token))).flip
+      yield assertTrue(forged == EdgeService.NoSession(None), revoked == EdgeService.NoSession(None))
+    },
+  )
 
   private val rateLimitSuite = suite("rate limits")(
     test("with no policy configured the limiter is inactive and the request is served as before") {

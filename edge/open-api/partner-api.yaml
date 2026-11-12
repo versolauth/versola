@@ -1,0 +1,2449 @@
+openapi: 3.1.0
+
+info:
+  title: Versola Partner Console API
+  version: '1.0'
+  description: |
+    The API of the partner console: what a partner's own edge serves, on its own origin, to the
+    people who run that partner's integration with the operator's Versola. Through it a partner's
+    staff register OAuth clients and resources, enrol edges, end grants of their own clients, read
+    the audit trail and manage their team.
+
+    **This API is served only by an edge started with `mode = "partner"`.** A first-party edge
+    (`mode = "first-party"`, the default) does not mount any of these paths and answers `404` to
+    them. The first-party edge's own reference, `edge/open-api/edge.yaml`, is unchanged and does not
+    describe anything here.
+
+    This reference covers `/partner/api/*`, plus the three fixed paths of the console that sit
+    beside it: `GET /partner/login`, `GET /partner/logout` and the static console under
+    `GET /partner/`. The proxied traffic, the browser login (`/login/{presetId}`, `/complete`),
+    the native endpoints and the operations endpoints of a partner edge are those of `edge.yaml`.
+
+    ## Surfaces
+
+    * **Who is asking** — `/partner/api/me`, `/partner/api/staff`, answered by the edge itself
+      (from what central last said about the partner, and from the team the edge keeps in its own
+      database).
+    * **Clients, resources, edges, revocations, audit, settings, profile** — each call is a call to
+      central's `/edge/partner/...` surface made by the edge on the staff member's behalf, then
+      translated to and from the shapes below. These are not served from a cache: they are
+      answered by central or not at all (`503 central_unavailable`).
+    * **Console** — `/partner/login`, `/partner/logout` and the static files under `/partner/`.
+
+    ## Authentication and authorization
+
+    Every `/partner/api/*` call carries the `EDGE_SESSION` cookie (see `securitySchemes`): the
+    session of a person who signed in at the operator's authorization server through the
+    console's own preset (`/partner/login` starts that). A `Bearer` or `DPoP` token in
+    `Authorization` is not a console session and is ignored. When the access token inside the
+    cookie has expired, the edge refreshes it and, on a successful answer, replies with the
+    rotated `EDGE_SESSION` cookie.
+
+    Before an operation runs, the edge checks, in this order, and refuses at the first that fails:
+
+    1. **Origin.** A state-changing request (any method but `GET` and `HEAD`) that carries an
+       `Origin` header other than the edge's own origin is refused `403 origin_mismatch`. A request
+       with no `Origin` is not a browser's and is let through to the next check.
+    2. **Session.** No cookie, or a token that is not valid, expired beyond refresh or revoked:
+       `401 unauthenticated`. A valid session of the partner's *own applications* (an end user of
+       one of its clients, which shares the cookie name) is not a staff session and is `401` too:
+       the token must have been issued to the console's client through the console's preset.
+    3. **Team.** The person must be on the partner's team. Nobody is until they sign in: an
+       invitation made by phone number or email address waits for the first sign-in whose
+       `/userinfo` carries that verified identifier, and then becomes the member, known from then on
+       by `sub`. Anyone else: `403 not_a_member`, which names the (masked) identifier the sign-in
+       carried and the partner.
+    4. **Level.** A member has a level, ordered `admin` > `developer` > `viewer`, and a level also
+       has what the ones below it have. Each operation names the lowest level it needs; a lower one
+       is `403 insufficient_level`, naming the level required.
+       * `viewer` reads clients, resources, edges and the audit trail.
+       * `developer` also changes clients, resources and edges.
+       * `admin` also manages revocations, the team, the settings and the profile.
+
+    Every operation below states its minimum level (`x-staff-level`) and whether it is answered
+    by the edge itself (`x-served-by: edge`) or is a call to central (`x-served-by: central`).
+    A call to central is made over the edge's own mutual-TLS identity and carries the staff
+    member's access token in a `Versola-Principal` header, which central verifies as a live token
+    of the partner's console client and writes into its audit log as the actor.
+
+    ## Errors
+
+    Every refusal has the body `{ "error": <code>, "fields"?: [...], "message"?: <text>, ...extra }`
+    with `Content-Type: application/json` and `Cache-Control: no-store` (see `Error`). Codes:
+
+    | Status | `error` | When |
+    |---|---|---|
+    | 400 | `invalid_request` | The body is not a JSON object, a required field is missing or invalid, the path and body ids differ, or central refused the request as invalid (its text is in `message`). |
+    | 401 | `unauthenticated` | No usable staff session. Carries `loginPath`; the console goes there. |
+    | 403 | `not_a_member` | Signed in, not on the team. Carries `identifier` (masked) and `partner`. |
+    | 403 | `insufficient_level` | The member's level is below the operation's. Carries `required`. |
+    | 403 | `origin_mismatch` | A state-changing request from another origin. |
+    | 403 | `partner_suspended` | The operator has suspended the partner: central refuses everything of it. Central operations only. |
+    | 403 | `partner_principal_mismatch` | Central does not accept the staff member's token as a live token of the partner's console. Central operations only. |
+    | 404 | `not_found` | The client, resource, edge or team entry does not exist (for the partner). |
+    | 409 | `conflict` | A team change that would leave no administrator, or remove oneself. Also central's `409`. |
+    | 409 | `not_supported` | The operation does not exist for a partner (rotating a client's secret). |
+    | 500 | `internal_error` | An unexpected failure; the body is only `{ "error": "internal_error" }`. |
+    | 502 | `central_unreadable` | Central answered a success the edge could not read. |
+    | 502 | `central_answered_<status>` | Central answered a status the edge does not translate. `message` holds the start of its body. |
+    | 503 | `central_unavailable` | Central cannot be reached, timed out, answered `5xx`, or refused the edge itself. Nothing was changed. |
+
+    A rotated session cookie is set only on a successful answer: a refusal, whatever its status,
+    does not carry one.
+  license:
+    name: Versola Community License v1.0
+    url: https://github.com/versolauth/versola/blob/main/LICENCE.md
+
+externalDocs:
+  description: Versola documentation
+  url: https://docs.versola.io
+
+servers:
+  - url: '{edgeBaseUrl}'
+    description: |
+      The public origin of the partner's edge — its `edge-url`. The console is served from this
+      origin and calls this API on it; the `Origin` check above is made against it.
+    variables:
+      edgeBaseUrl:
+        default: https://edge.partner.example.com
+
+security:
+  - sessionCookie: []
+
+tags:
+  - name: Console
+    description: The fixed sign-in and sign-out paths, and the static files of the console.
+  - name: Me
+    description: Who is signed in and what the edge knows of the partner.
+  - name: Clients
+    description: The partner's OAuth clients. Registration and some changes wait for the operator.
+  - name: Resources
+    description: The partner's resource servers and their endpoints.
+  - name: Edges
+    description: The edges of the partner's group and their enrollment tokens.
+  - name: Revocations
+    description: Ending the grants of the partner's own clients.
+  - name: Audit
+    description: The partner's audit trail, as kept by central.
+  - name: Staff
+    description: The partner's team, kept in the edge's own database.
+  - name: Organisation
+    description: The partner's settings and profile.
+
+paths:
+  /partner/login:
+    get:
+      operationId: partnerLogin
+      summary: Sign in to the console
+      description: |
+        Redirects the browser to `/login/{presetId}` of the console's preset, which starts the
+        authorization-code flow at the operator's authorization server. The console cannot know the
+        preset before it has signed in, which is why this path is fixed and the edge looks it up.
+        Both this path and the redirect target are served by the edge on its own origin.
+
+        Not authenticated, and not served from central: the preset is the one central last
+        reported for this partner (`GET /edge/partner/me`), held by the edge.
+      tags: [Console]
+      security: []
+      responses:
+        '303':
+          description: Redirect to `/login/{presetId}`.
+          headers:
+            Location:
+              description: The login path of the console's preset, for example `/login/console`.
+              schema:
+                type: string
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+        '500':
+          description: The preset's identifier could not be made into a redirect target (not expected in practice).
+
+  /partner/logout:
+    get:
+      operationId: partnerLogout
+      summary: Sign out of the console
+      description: |
+        Redirects the browser to `/logout/{presetId}` of the console's preset, which ends the
+        session at the operator's authorization server and clears the cookie (see `edge.yaml`).
+        Not authenticated.
+      tags: [Console]
+      security: []
+      responses:
+        '303':
+          description: Redirect to `/logout/{presetId}`.
+          headers:
+            Location:
+              description: The logout path of the console's preset, for example `/logout/console`.
+              schema:
+                type: string
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+        '500':
+          description: The preset's identifier could not be made into a redirect target (not expected in practice).
+
+  /partner:
+    get:
+      operationId: partnerConsole
+      summary: The console
+      description: |
+        The static console: `/partner` and `/partner/` answer the console's HTML page, and any other
+        path under `/partner/` (for example `/partner/versola-partner.js`) a plain file from the
+        directory the edge is configured with (`partner.console-directory`). Only plain files
+        with a known extension (`html`, `js`, `css`, `map`, `svg`, `png`, `ico`, `woff2`, `json`,
+        `txt`) are served; a path under `/partner/api` is never a file, a path with an empty or
+        dot-leading segment is refused, and a symbolic link out of the directory is not a file of it.
+        When no directory is configured, or the file is missing, the answer is `404`.
+
+        The page is served with a strict `Content-Security-Policy` (own origin only, no framing)
+        and `X-Content-Type-Options`, `X-Frame-Options` and `Referrer-Policy` headers.
+        Not authenticated: the files hold no data; the API does.
+      tags: [Console]
+      security: []
+      responses:
+        '200':
+          description: The page or file, with the security headers above and `Cache-Control` set to `no-cache`.
+          content:
+            text/html:
+              schema:
+                type: string
+            '*/*':
+              schema: {}
+        '404':
+          description: No console directory is configured, or no such servable file.
+
+  /partner/api/me:
+    get:
+      operationId: getMe
+      summary: Who is signed in
+      description: |
+        The partner, where the operator's services are, the signed-in staff member and their
+        level, this edge, and the console's own client and preset.
+
+        **Minimum level:** viewer. **Served by:** the edge itself, from what central last said
+        (`GET /edge/partner/me`) and the team it keeps. It stays available while central is
+        unreachable, and says so in `edge.central`; the partner data is then the last read, or
+        the configuration snapshot's.
+      tags: [Me]
+      x-staff-level: viewer
+      x-served-by: edge
+      responses:
+        '200':
+          description: The signed-in member and their partner.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerMe'
+              example:
+                partner:
+                  id: acme
+                  displayName: Acme Corp
+                  logoUri: https://acme.example.com/logo.png
+                  status: active
+                  limits:
+                    scopes: [openid, profile, orders.read]
+                    redirectDomains: [acme.example.com]
+                    maxClients: 5
+                    maxEdges: 2
+                    accessTokenTtlMax: 3600
+                    refreshTokenTtlMax: 2592000
+                    clientAuthMethods: [tls_client_auth, private_key_jwt]
+                    rateLimitPolicy: standard
+                  reviewAt: null
+                  operator:
+                    name: Versola
+                    issuer: https://auth.example.com
+                    mtlsUrl: https://mtls.auth.example.com
+                    centralMtlsUrl: https://mtls.central.example.com
+                staff:
+                  sub: 7a1c2f0e-5c5b-4f10-9e3f-2d6c1c8d0b11
+                  display: Aigul S.
+                  level: admin
+                edge:
+                  id: acme-edge-1
+                  publicUrl: https://edge.partner.example.com
+                  central: ok
+                console:
+                  clientId: acme-console
+                  presetId: acme-console
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /partner/api/clients:
+    get:
+      operationId: listClients
+      summary: List the partner's clients
+      description: |
+        Every client of the partner, those waiting for the operator included. The name is one
+        string (English if the client has an English name, otherwise any locale's). `jwks` and
+        `dpopBoundAccessTokens` are not shown.
+
+        **Minimum level:** viewer. **Served by:** central (`GET /edge/partner/clients`).
+      tags: [Clients]
+      x-staff-level: viewer
+      x-served-by: central
+      responses:
+        '200':
+          description: The partner's clients.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [clients]
+                properties:
+                  clients:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PartnerClient'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+    post:
+      operationId: createClient
+      summary: Register a client
+      description: |
+        Registers a client of the partner. It is created waiting for the operator
+        (`approval.status` `pending`, `approval.kind` `create`) and is answered `202` with the client
+        as it now stands.
+
+        Exactly the fields of `PartnerClientWrite` that are listed there are read; any other
+        field (for example `postLogoutRedirectUris`) is ignored. `clientName` is stored as the
+        English name. `authMethod` defaults to `tls_client_auth`; a partner client has no secret
+        and no keys held by the operator. A blank `logoUri`, `policyUri`, `tosUri` or
+        `backChannelLogoutUri` is stored as absent. Whether the values are inside the partner's
+        limits is decided by central, which answers `400`; the text is in `message` (the
+        `outside_limits` and `needs_approval` codes of the console's TypeScript contract are not
+        sent by this edge).
+
+        **Minimum level:** developer. **Served by:** central (`POST /edge/partner/clients`).
+      tags: [Clients]
+      x-staff-level: developer
+      x-served-by: central
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PartnerClientWrite'
+            example:
+              id: acme-web
+              kind: web
+              clientName: Acme web shop
+              redirectUris: [https://acme.example.com/callback]
+              scope: [openid, profile]
+              accessTokenTtl: 900
+              refreshTokenTtl: 86400
+              backChannelLogoutUri: https://acme.example.com/logout/backchannel
+      responses:
+        '202':
+          description: The client was registered and waits for the operator.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerClient'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+
+  /partner/api/clients/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ClientId'
+    put:
+      operationId: updateClient
+      summary: Change a client
+      description: |
+        The console sends the client whole; the edge works out what changed against the client as
+        central has it, and sends central only that. The fields compared are `clientName`,
+        `logoUri`, `policyUri`, `tosUri`, `backChannelLogoutUri`, `redirectUris`, `scope`,
+        `accessTokenTtl` and `refreshTokenTtl`; `kind` and `authMethod` are not changed by this
+        call. A body `id`, if given, must equal the path's, else `400 invalid_request`.
+
+        Inside the partner's limits and away from what the consent screen shows the change
+        applies: `200`, with the client read back. A change of the name or the logo, or one
+        outside what the operator lets through, waits for the operator: `202`, with the client
+        and its `approval` naming the `waitingFields`.
+
+        **Minimum level:** developer. **Served by:** central (`GET` then `PUT /edge/partner/clients`,
+        then `GET` again).
+      tags: [Clients]
+      x-staff-level: developer
+      x-served-by: central
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PartnerClientWrite'
+      responses:
+        '200':
+          description: The change applied; the client as it now stands.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerClient'
+        '202':
+          description: The change waits for the operator; the client, with its `approval`.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerClient'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+    delete:
+      operationId: deleteClient
+      summary: Delete a client
+      description: |
+        **Minimum level:** developer. **Served by:** central (`DELETE /edge/partner/clients`).
+      tags: [Clients]
+      x-staff-level: developer
+      x-served-by: central
+      responses:
+        '204':
+          description: The client is deleted.
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+
+  /partner/api/clients/{id}/withdraw:
+    parameters:
+      - $ref: '#/components/parameters/ClientId'
+    post:
+      operationId: withdrawClient
+      summary: Withdraw a client's pending request
+      description: |
+        Withdraws a request of the client that waits for the operator. A client that was never
+        approved is gone afterwards, and the answer is what it was, with `approval.status`
+        `rejected`; an approved client whose change was withdrawn is read back as it stands. No
+        body.
+
+        **Minimum level:** developer. **Served by:** central (`POST /edge/partner/clients/withdraw`,
+        around two reads of the client).
+      tags: [Clients]
+      x-staff-level: developer
+      x-served-by: central
+      responses:
+        '200':
+          description: The client after the withdrawal.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerClient'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+
+  /partner/api/clients/{id}/rotate-secret:
+    parameters:
+      - $ref: '#/components/parameters/ClientId'
+    post:
+      operationId: rotateClientSecret
+      summary: Rotate a client's secret (not supported)
+      description: |
+        A partner client has no secret: it authenticates with the group's certificate, which
+        central issues and the edge renews, or with a key the partner holds. There is nothing to
+        rotate, so this always answers `409 not_supported`. (The path exists because the console's
+        contract names it; the TypeScript contract's `{ jwksUri, rotatedAt }` answer is never
+        produced.) Central is not called.
+
+        **Minimum level:** developer. **Served by:** the edge itself.
+      tags: [Clients]
+      x-staff-level: developer
+      x-served-by: edge
+      responses:
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Always `not_supported`.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: not_supported
+                message: 'a partner client authenticates with the group''s certificate: it has no secret to rotate'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /partner/api/resources:
+    get:
+      operationId: listResources
+      summary: List the partner's resources
+      description: |
+        The partner's resource servers. `internal`, `partnerId` and `audienceRateLimits` of
+        central's resource are not shown: a partner's resource is always internal (the edge
+        authenticates to it with a secret), is owned by the partner, and takes no audience limits
+        here. The secret itself is never listed.
+
+        **Minimum level:** viewer. **Served by:** central (`GET /edge/partner/resources`).
+      tags: [Resources]
+      x-staff-level: viewer
+      x-served-by: central
+      responses:
+        '200':
+          description: The partner's resources.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [resources]
+                properties:
+                  resources:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PartnerResource'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+    post:
+      operationId: createResource
+      summary: Register a resource
+      description: |
+        Registers a resource of the partner, with its endpoints. The audience must be the
+        partner's own clients (central refuses others with `400`). An endpoint with no `id` is given
+        a fresh UUID. The answer carries the resource as central now has it and the secret the edge
+        authenticates to the upstream with, **shown once**.
+
+        **Minimum level:** developer. **Served by:** central (`POST /edge/partner/resources`, then
+        `GET` to read the resource back).
+      tags: [Resources]
+      x-staff-level: developer
+      x-served-by: central
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PartnerResourceWrite'
+            example:
+              resourceId: orders-api
+              resource: https://orders.acme.example.com
+              audience: [acme-web]
+              endpoints:
+                - method: GET
+                  path: /orders
+                  fetchUserInfo: false
+                  allow: 'true'
+                  inject: []
+      responses:
+        '201':
+          description: The resource was created.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedResource'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+
+  /partner/api/resources/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    put:
+      operationId: updateResource
+      summary: Replace a resource
+      description: |
+        The console sends the resource whole; central takes a change, so the edge works it out
+        against the resource as central has it: the audience becomes the clients added and removed,
+        and an endpoint that is new, or is not what it was, is created (the one it replaces
+        deleted first). `resource` is sent only if it changed. A body `resourceId`, if given, must
+        equal the path's, else `400 invalid_request`. Audience rate limits are not changed here.
+
+        **Minimum level:** developer. **Served by:** central (`GET`, `PUT /edge/partner/resources`,
+        `GET`).
+      tags: [Resources]
+      x-staff-level: developer
+      x-served-by: central
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PartnerResourceWrite'
+      responses:
+        '200':
+          description: The resource as it now stands.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerResource'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+    delete:
+      operationId: deleteResource
+      summary: Delete a resource
+      description: |
+        **Minimum level:** developer. **Served by:** central (`DELETE /edge/partner/resources`).
+      tags: [Resources]
+      x-staff-level: developer
+      x-served-by: central
+      responses:
+        '204':
+          description: The resource is deleted.
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+
+  /partner/api/resources/{id}/rotate-secret:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      operationId: rotateResourceSecret
+      summary: Rotate a resource's secret
+      description: |
+        Issues a new secret for the edge to authenticate to the resource's upstream with. The new
+        secret is **shown once**. No body.
+
+        **Minimum level:** developer. **Served by:** central
+        (`POST /edge/partner/resources/rotate-secret`).
+      tags: [Resources]
+      x-staff-level: developer
+      x-served-by: central
+      responses:
+        '200':
+          description: The new secret.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [secret]
+                properties:
+                  secret:
+                    type: [string, 'null']
+                    description: The new secret; `null` only if central did not return one.
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+
+  /partner/api/edges:
+    get:
+      operationId: listEdges
+      summary: List the partner's edges
+      description: |
+        The edges of the partner's group. An edge is `waiting` until central has issued it a
+        certificate, then `enrolled`; every edge of a suspended partner is `suspended`. The group's
+        policies are the operator's and read-only. `replicas` is always `0`: central does not count
+        the replicas behind an edge.
+
+        **Minimum level:** viewer. **Served by:** central (`GET /edge/partner/edges`).
+      tags: [Edges]
+      x-staff-level: viewer
+      x-served-by: central
+      responses:
+        '200':
+          description: The partner's edges.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [edges]
+                properties:
+                  edges:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PartnerEdge'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+    post:
+      operationId: createEdge
+      summary: Register an edge
+      description: |
+        Registers an edge in the partner's group and issues its signing key and its first
+        enrollment token. The private half of the key, the token and the bundle are **shown once**:
+        the operator does not keep the private key. The number of edges is limited by the partner's
+        limits (`maxEdges`); central answers `400`/`409` beyond it.
+
+        **Minimum level:** developer. **Served by:** central (`POST /edge/partner/edges`).
+      tags: [Edges]
+      x-staff-level: developer
+      x-served-by: central
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, publicUrl]
+              properties:
+                id:
+                  type: string
+                  description: The edge's identifier, unique at the operator.
+                publicUrl:
+                  type: string
+                  format: uri
+                  description: Where browsers reach the edge.
+            example:
+              id: acme-edge-2
+              publicUrl: https://edge2.partner.example.com
+      responses:
+        '201':
+          description: The edge was registered.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedEdge'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+
+  /partner/api/edges/{id}:
+    parameters:
+      - $ref: '#/components/parameters/EdgeId'
+    delete:
+      operationId: deleteEdge
+      summary: Delete an edge
+      description: |
+        **Minimum level:** developer. **Served by:** central (`DELETE /edge/partner/edges`).
+      tags: [Edges]
+      x-staff-level: developer
+      x-served-by: central
+      responses:
+        '204':
+          description: The edge is deleted.
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+
+  /partner/api/edges/{id}/enrollment-tokens:
+    parameters:
+      - $ref: '#/components/parameters/EdgeId'
+    post:
+      operationId: issueEnrollmentToken
+      summary: Issue an enrollment token
+      description: |
+        Issues a fresh enrollment token for an edge that exists. The token is **shown once**.
+        `bundle` is a JSON document, as a string, that carries what the edge is deployed with
+        (`edgeId`, `group`, central's and the authorization server's mutual-TLS addresses and
+        issuer, and the token). It does **not** carry the signing key, which is shown only when the
+        edge is created. No body.
+
+        **Minimum level:** developer. **Served by:** central
+        (`POST /edge/partner/edges/enrollment-tokens`).
+      tags: [Edges]
+      x-staff-level: developer
+      x-served-by: central
+      responses:
+        '201':
+          description: The token was issued.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnrollmentToken'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+    delete:
+      operationId: revokeEnrollmentToken
+      summary: Revoke the enrollment token
+      description: |
+        Revokes the edge's enrollment token that was issued and not used yet. Sent to central as
+        a `DELETE` with a JSON body naming the edge.
+
+        **Minimum level:** developer. **Served by:** central
+        (`DELETE /edge/partner/edges/enrollment-tokens`).
+      tags: [Edges]
+      x-staff-level: developer
+      x-served-by: central
+      responses:
+        '204':
+          description: The token is revoked.
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+
+  /partner/api/revocations:
+    post:
+      operationId: createRevocation
+      summary: End grants of the partner's clients
+      description: |
+        Ends the grants of the partner's own clients, by user or by client. It is a management
+        call like any other: central asks the authorization server, which revokes the
+        refresh-token families and announces it on the back channel; the announcement reaches this
+        edge's `/logout/backchannel`, which is how the edge's own sessions end. Access tokens
+        already issued run out within the partner's cap. **Nothing is revoked by the edge itself**:
+        with central unavailable the answer is `503`.
+
+        * `by: user` — `value` is a user id; that user's refresh tokens at the named clients end.
+        * `by: client` — `value` is one of the named clients; every user's refresh tokens at it end.
+
+        `clients` names the partner's own clients; when it is empty or absent it is every
+        client of the partner that is approved. Other `by` values of the console's TypeScript
+        contract (`sid`, `fam`) are refused with `400`: central does not take them yet. `edges`
+        is ignored.
+
+        Differs from the console's TypeScript contract: the answer is `202` with
+        `{ "ended": 0, "accepted": true }`. Central does not count what the authorization server
+        ended, so `ended` is always `0`: the request is accepted, not counted.
+
+        **Minimum level:** admin. **Served by:** central (`POST /edge/partner/revocations`,
+        after a `GET` of the clients when `clients` is not given).
+      tags: [Revocations]
+      x-staff-level: admin
+      x-served-by: central
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevocationRequest'
+            example:
+              by: user
+              value: 2f6d0f70-6a0e-4b8e-a2a1-0f7c5b8f7d11
+              clients: [acme-web]
+      responses:
+        '202':
+          description: Central accepted the revocation.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ended, accepted]
+                properties:
+                  ended:
+                    type: integer
+                    const: 0
+                    description: Always `0`, because central does not count what was ended.
+                  accepted:
+                    type: boolean
+                    const: true
+              example:
+                ended: 0
+                accepted: true
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+    get:
+      operationId: listRevocations
+      summary: List the revocations staff made
+      description: |
+        The revocations the partner's staff made, read from central's audit trail of them
+        (kind `admin.partner-revocation.create`); central keeps no list of its own. Only what the
+        audit event holds is known, so, differing from the console's TypeScript contract,
+        `by` is always the empty string, `clients` and `edges` are always empty and `ended` is
+        always `0`. `value` is the audit event's target and `by_staff` its actor.
+
+        **Minimum level:** admin. **Served by:** central (`GET /edge/partner/audit`).
+      tags: [Revocations]
+      x-staff-level: admin
+      x-served-by: central
+      responses:
+        '200':
+          description: The revocations, newest first, in the audit trail's first page.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revocations]
+                properties:
+                  revocations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Revocation'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+
+  /partner/api/audit:
+    get:
+      operationId: listAudit
+      summary: Read the audit trail
+      description: |
+        The events about the partner, newest first: what its staff did through its edges and what
+        the operator decided about it. A page is at most 50 events; `next` is the cursor of the
+        following page, `null` at the end. `kind` is an audit kind such as
+        `admin.partner-client.create`; `actor` is a staff `sub`; `q` is a free-text search.
+        Other query parameters are ignored.
+
+        **Minimum level:** viewer. **Served by:** central (`GET /edge/partner/audit`).
+      tags: [Audit]
+      x-staff-level: viewer
+      x-served-by: central
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: The `next` of the previous page. An invalid cursor is `400 invalid_request`.
+        - name: actor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Only events of this actor (a staff `sub`).
+        - name: kind
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Only events of this audit kind.
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Free-text filter.
+      responses:
+        '200':
+          description: A page of events.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditPage'
+              example:
+                events:
+                  - id: 8d3a3b0a-9c1f-4a3e-a7a7-5a3b5d0f1c11
+                    at: '2026-11-10T09:14:21Z'
+                    actor:
+                      sub: 7a1c2f0e-5c5b-4f10-9e3f-2d6c1c8d0b11
+                    action: admin.partner-client.create
+                    target: partner-client:acme-web
+                    outcome: ok
+                    from: acme-edge-1
+                  - id: 1b9e4d3f-2c70-4c4e-8f5c-0d3b9a7e6a22
+                    at: '2026-11-10T10:02:05Z'
+                    actor:
+                      sub: operator
+                      byOperator: true
+                    action: admin.partner-approval.update
+                    target: partner-approval:3f1c
+                    outcome: ok
+                next: null
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+
+  /partner/api/staff:
+    get:
+      operationId: listStaff
+      summary: List the team
+      description: |
+        The partner's team: members (those who have signed in) and invitations nobody has taken
+        yet. Neither the identifier an invitation names nor its hash is returned, only its masked
+        form.
+
+        **Minimum level:** admin. **Served by:** the edge itself (its own database).
+      tags: [Staff]
+      x-staff-level: admin
+      x-served-by: edge
+      responses:
+        '200':
+          description: Members and pending invitations.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [staff]
+                properties:
+                  staff:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StaffMember'
+              example:
+                staff:
+                  - id: 7a1c2f0e-5c5b-4f10-9e3f-2d6c1c8d0b11
+                    subject: 7a1c2f0e-5c5b-4f10-9e3f-2d6c1c8d0b11
+                    display: Aigul S.
+                    level: admin
+                    state: member
+                    addedBy: config
+                    addedAt: '2026-11-01T08:00:00Z'
+                  - id: 4e2c8a58-0b4a-4d0e-8c53-0f3d5a8a9b33
+                    identifier:
+                      kind: email
+                      masked: d•••@acme.example.com
+                    level: developer
+                    state: invited
+                    addedBy: 7a1c2f0e-5c5b-4f10-9e3f-2d6c1c8d0b11
+                    addedAt: '2026-11-10T09:00:00Z'
+                    expiresAt: '2026-11-17T09:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: inviteStaff
+      summary: Invite a person
+      description: |
+        Invites a person by phone number (international format, `+7701...`) or email address. The
+        invitation waits for the first sign-in whose `/userinfo` carries that identifier, verified:
+        a claim the operator says is not verified (`phone_number_verified` or `email_verified`
+        false) does not take an invitation. Inviting an identifier that already has an invitation
+        renews it: its level, inviter and expiry are the new ones and its `id` stays.
+
+        `expiresInDays` (1 to 90) sets the lifetime of the invitation; a value outside the range
+        is ignored and the edge's configured lifetime used. Nothing is sent to the person.
+
+        **Minimum level:** admin. **Served by:** the edge itself (its own database).
+      tags: [Staff]
+      x-staff-level: admin
+      x-served-by: edge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StaffInvite'
+            example:
+              identifier: dev@acme.example.com
+              level: developer
+              expiresInDays: 7
+      responses:
+        '201':
+          description: The invitation.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaffMember'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /partner/api/staff/{id}:
+    parameters:
+      - $ref: '#/components/parameters/StaffId'
+    put:
+      operationId: updateStaff
+      summary: Change a member's level
+      description: |
+        Changes the level of a member (`id` is their `sub`) or of a pending invitation (`id` is
+        the invitation's id). The last administrator cannot be demoted: `409 conflict`.
+
+        **Minimum level:** admin. **Served by:** the edge itself (its own database).
+      tags: [Staff]
+      x-staff-level: admin
+      x-served-by: edge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [level]
+              properties:
+                level:
+                  $ref: '#/components/schemas/StaffLevel'
+      responses:
+        '200':
+          description: The entry as it now stands.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaffMember'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: removeStaff
+      summary: Remove a member or invitation
+      description: |
+        Removes a member (`id` is their `sub`) or withdraws an invitation (`id` is its id). One
+        cannot remove oneself, and the last administrator cannot be removed: `409 conflict`. A
+        removed member loses access at their next request, since the team is checked on every
+        call; their session at the authorization server is not ended.
+
+        **Minimum level:** admin. **Served by:** the edge itself (its own database).
+      tags: [Staff]
+      x-staff-level: admin
+      x-served-by: edge
+      responses:
+        '204':
+          description: Removed.
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /partner/api/settings:
+    get:
+      operationId: getSettings
+      summary: Read the partner's settings
+      description: |
+        The partner's contact and the defaults its console offers for new clients. Central does
+        not apply the defaults by itself.
+
+        **Minimum level:** admin. **Served by:** central (`GET /edge/partner/settings`).
+      tags: [Organisation]
+      x-staff-level: admin
+      x-served-by: central
+      responses:
+        '200':
+          description: The settings.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerSettings'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+    put:
+      operationId: putSettings
+      summary: Replace the partner's settings
+      description: |
+        Replaces the settings. The body is sent to central unchanged and validated there
+        (`400 invalid_request` with central's text in `message`).
+
+        **Minimum level:** admin. **Served by:** central (`PUT /edge/partner/settings`).
+      tags: [Organisation]
+      x-staff-level: admin
+      x-served-by: central
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PartnerSettings'
+      responses:
+        '204':
+          description: Saved.
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+
+  /partner/api/profile:
+    get:
+      operationId: getProfile
+      summary: Read the pending profile change
+      description: |
+        What waits for the operator of a profile change. Central does not serve it for the partner
+        to read back (the answer of the change itself is the only place it is told), so this
+        **always answers `{ "approval": null }`** until central does. The partner's current name and
+        logo are in `GET /partner/api/me`.
+
+        **Minimum level:** admin. **Served by:** the edge itself (central is not called).
+      tags: [Organisation]
+      x-staff-level: admin
+      x-served-by: edge
+      responses:
+        '200':
+          description: Always no approval.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [approval]
+                properties:
+                  approval:
+                    type: 'null'
+              example:
+                approval: null
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: requestProfileChange
+      summary: Request a change of the partner's name or logo
+      description: |
+        Asks the operator to change the partner's display name or logo. The change does not
+        apply until the operator approves it; the answer names the request, always `waiting`.
+
+        **Minimum level:** admin. **Served by:** central (`PUT /edge/partner/profile`).
+      tags: [Organisation]
+      x-staff-level: admin
+      x-served-by: central
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileChange'
+            example:
+              displayName: Acme Corporation
+              logoUri: https://acme.example.com/logo-new.png
+      responses:
+        '202':
+          description: The request waits for the operator.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [approval]
+                properties:
+                  approval:
+                    $ref: '#/components/schemas/ProfileApproval'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: EDGE_SESSION
+      description: |
+        The console's session: `EDGE_SESSION=<presetId>:<accessToken>`, set by the edge's
+        `/complete` after a sign-in started at `/partner/login`. `Secure`, `HttpOnly`,
+        `SameSite=Strict`. The token must have been issued to the partner's console client through
+        the console's preset; a session of any other preset or client shares the cookie name but
+        is not a staff session. When the access token has expired the edge refreshes it and
+        replies with a rotated cookie.
+
+  headers:
+    NoStore:
+      description: Always `no-store`.
+      schema:
+        type: string
+        example: no-store
+    RotatedSession:
+      description: |
+        Present only when the edge refreshed the session's expired access token while handling
+        the call: the new `EDGE_SESSION` cookie (same attributes as the one `/complete` sets).
+      schema:
+        type: string
+
+  parameters:
+    ClientId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: A client of the partner.
+    ResourceId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: The `resourceId` of a resource of the partner.
+    EdgeId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: An edge of the partner's group.
+    StaffId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: |
+        A team entry: a member's `sub`, or the id of a pending invitation (the `id` of a
+        `StaffMember`).
+
+  responses:
+    Unauthenticated:
+      description: |
+        No usable staff session: no `EDGE_SESSION` cookie, a token that is invalid, expired beyond
+        refresh or revoked, or a session that is not the console's. The console goes to
+        `loginPath`. When the cookie holds a session that can never be refreshed the response
+        carries a `Set-Cookie` that clears it.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+        Set-Cookie:
+          description: Clears `EDGE_SESSION`, when there is a cookie that cannot be used.
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: unauthenticated
+            loginPath: /partner/login
+    Forbidden:
+      description: |
+        Refused: `origin_mismatch` (a state-changing request from another origin, checked before
+        the session), `not_a_member` (signed in, not on the team; carries the masked
+        `identifier` the sign-in named and the `partner`), or `insufficient_level` (carries the level
+        `required`; only on an operation whose minimum level is above `viewer`).
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            notAMember:
+              value:
+                error: not_a_member
+                identifier: +7••••••••01
+                partner: Acme Corp
+            insufficientLevel:
+              value:
+                error: insufficient_level
+                required: admin
+            originMismatch:
+              value:
+                error: origin_mismatch
+    ForbiddenCentral:
+      description: |
+        As `Forbidden`, and, for a call to central: `partner_suspended` (the operator has suspended
+        the partner) or `partner_principal_mismatch` (central does not accept the staff member's
+        token as a live token of the partner's console client).
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            partnerSuspended:
+              value:
+                error: partner_suspended
+            partnerPrincipalMismatch:
+              value:
+                error: partner_principal_mismatch
+            insufficientLevel:
+              value:
+                error: insufficient_level
+                required: developer
+            notAMember:
+              value:
+                error: not_a_member
+                identifier: d•••@acme.example.com
+                partner: Acme Corp
+            originMismatch:
+              value:
+                error: origin_mismatch
+    InvalidRequest:
+      description: |
+        The body is not a JSON object, a field is missing or invalid, a path id and a body id
+        differ, or central refused the request as invalid (its text, up to 500 characters, is
+        in `message`).
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: invalid_request
+            message: kind must be web or native
+    NotFound:
+      description: |
+        The client, resource, edge or team entry does not exist for the partner. For a call to
+        central, `message` holds the start of central's answer.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: not_found
+    Conflict:
+      description: |
+        `conflict`: a change central refused as conflicting (`message` holds the start of its
+        answer), or, for the team, a change that would leave no administrator or remove oneself.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: conflict
+            message: this would leave the team without an administrator
+    BadGateway:
+      description: |
+        Central answered a success the edge could not read (`central_unreadable`), or a status the
+        edge does not translate (`central_answered_<status>`; `message` holds the start of its
+        body).
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: central_answered_422
+            message: '{"error":"unprocessable"}'
+    CentralUnavailable:
+      description: |
+        Central cannot be used: it is unreachable, timed out (15 seconds), answered `5xx`, or
+        refused the edge's own token or certificate. Nothing was changed. The edge's own sessions
+        and its proxying carry on from their last snapshot.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: central_unavailable
+    InternalError:
+      description: An unexpected failure; the body carries only the code.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: internal_error
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      description: |
+        A refusal. `error` is the code (see the table in the description of the API). `fields`
+        names the fields at fault, when the edge knows them (central's refusals are relayed as
+        text in `message`, so it is rarely present). `message` is a human-readable reason, and
+        for a relayed refusal the start of central's answer. Further properties are specific to the
+        code.
+      properties:
+        error:
+          type: string
+          description: |
+            One of `invalid_request`, `unauthenticated`, `not_a_member`, `insufficient_level`,
+            `origin_mismatch`, `partner_suspended`, `partner_principal_mismatch`, `not_found`,
+            `conflict`, `not_supported`, `central_unreadable`, `central_answered_<status>`,
+            `central_unavailable`, `internal_error`.
+        fields:
+          type: array
+          items:
+            type: string
+        message:
+          type: string
+        loginPath:
+          type: string
+          description: '`unauthenticated` only: where to sign in, `/partner/login`.'
+        identifier:
+          type: string
+          description: |
+            `not_a_member` only: the identifier the sign-in carried, masked so that a person can
+            tell which account they used (for example `+7••••••••01` or `d•••@acme.example.com`);
+            empty if the sign-in carried none.
+        partner:
+          type: string
+          description: '`not_a_member` only: the display name of the partner.'
+        required:
+          $ref: '#/components/schemas/StaffLevel'
+      additionalProperties: true
+
+    StaffLevel:
+      type: string
+      enum: [admin, developer, viewer]
+      description: |
+        A member's level, ordered `admin` > `developer` > `viewer`; a level has what the ones below
+        it have.
+
+    PartnerStatus:
+      type: string
+      enum: [onboarding, active, suspended]
+      description: |
+        `onboarding` until the partner's first edge has called central, then `active`; `suspended`
+        is the operator's kill switch.
+
+    PartnerLimits:
+      type: object
+      description: What the operator lets the partner have, as central holds it. Shown for hints.
+      properties:
+        scopes:
+          type: array
+          items:
+            type: string
+          description: What a partner client may request, as a whole.
+        redirectDomains:
+          type: array
+          items:
+            type: string
+          description: Every redirect URI of a client is `https` and under one of these.
+        maxClients:
+          type: integer
+        maxEdges:
+          type: integer
+        accessTokenTtlMax:
+          type: integer
+          description: Seconds.
+        refreshTokenTtlMax:
+          type: integer
+          description: Seconds.
+        clientAuthMethods:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartnerClientAuthMethod'
+        rateLimitPolicy:
+          type: string
+
+    PartnerClientAuthMethod:
+      type: string
+      enum: [tls_client_auth, private_key_jwt]
+
+    PartnerMe:
+      type: object
+      required: [partner, staff, edge, console]
+      properties:
+        partner:
+          type: object
+          required: [id, displayName, status, limits, operator]
+          properties:
+            id:
+              type: string
+            displayName:
+              type: string
+            logoUri:
+              type: [string, 'null']
+              format: uri
+            status:
+              $ref: '#/components/schemas/PartnerStatus'
+            limits:
+              $ref: '#/components/schemas/PartnerLimits'
+            reviewAt:
+              type: [string, 'null']
+              format: date-time
+              description: When the operator next reviews the partner, if it set a date.
+            operator:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                issuer:
+                  type: [string, 'null']
+                  description: The operator's authorization server's issuer.
+                mtlsUrl:
+                  type: [string, 'null']
+                  description: Where the partner's clients authenticate with the group's certificate.
+                centralMtlsUrl:
+                  type: [string, 'null']
+                  description: Central's mutual-TLS address, where an edge's enrollment ends up.
+        staff:
+          type: object
+          required: [sub, display, level]
+          properties:
+            sub:
+              type: string
+            display:
+              type: string
+              description: The name from the sign-in, or the masked identifier when it had none.
+            level:
+              $ref: '#/components/schemas/StaffLevel'
+        edge:
+          type: object
+          required: [id, central]
+          properties:
+            id:
+              type: string
+            publicUrl:
+              type: [string, 'null']
+            central:
+              type: string
+              enum: [ok, unavailable]
+              description: Whether the edge's last read of central succeeded.
+        console:
+          type: object
+          required: [clientId, presetId]
+          description: The partner's own console client and its authorization preset.
+          properties:
+            clientId:
+              type: string
+            presetId:
+              type: string
+
+    PartnerClientApproval:
+      type: object
+      required: [kind, status, waitingFields]
+      properties:
+        kind:
+          type: string
+          enum: [create, change]
+          description: Whether the request is the client's creation or a change to an approved client.
+        status:
+          type: string
+          enum: [pending, approved, rejected]
+        waitingFields:
+          type: array
+          items:
+            type: string
+          description: The fields that wait for the operator.
+        requestedAt:
+          type: [string, 'null']
+          format: date-time
+        note:
+          type: [string, 'null']
+          description: The operator's note, if it left one.
+
+    PartnerClient:
+      type: object
+      required: [id, kind, clientName, redirectUris, scope, accessTokenTtl, refreshTokenTtl, loginPath, createdAt, approval, fixed, limits]
+      description: |
+        A client as the partner sees it: what it may read and change, what waits for the operator,
+        and what is fixed. `jwks` and `dpopBoundAccessTokens` of central's client are not shown.
+      properties:
+        id:
+          type: string
+        kind:
+          $ref: '#/components/schemas/PartnerClientKind'
+        clientName:
+          type: string
+          description: One string; central keeps a map of locales, of which English is shown if there is one.
+        logoUri:
+          type: [string, 'null']
+        policyUri:
+          type: [string, 'null']
+        tosUri:
+          type: [string, 'null']
+        redirectUris:
+          type: array
+          items:
+            type: string
+        scope:
+          type: array
+          items:
+            type: string
+        authMethod:
+          $ref: '#/components/schemas/PartnerClientAuthMethod'
+        accessTokenTtl:
+          type: integer
+          description: Seconds.
+        refreshTokenTtl:
+          type: integer
+          description: Seconds.
+        backChannelLogoutUri:
+          type: [string, 'null']
+        consentFlow:
+          type:
+            - object
+            - 'null'
+          description: The client's consent flow as central holds it. Not set through this API.
+        createdAt:
+          type: string
+          format: date-time
+        loginPath:
+          type: string
+          description: |
+            `/login/<clientId>` on the partner's own edge: the edge keeps one authorization preset
+            per approved partner client. Prefix it with the edge's public URL.
+        approval:
+          $ref: '#/components/schemas/PartnerClientApproval'
+        fixed:
+          type: object
+          required: [consent, flow, authMethod, group]
+          description: What is the same for every partner client.
+          properties:
+            consent:
+              type: boolean
+              const: true
+            flow:
+              type: string
+              const: code+pkce+par
+            authMethod:
+              $ref: '#/components/schemas/PartnerClientAuthMethod'
+            group:
+              type: string
+              description: The partner's edge group.
+        limits:
+          $ref: '#/components/schemas/PartnerLimits'
+
+    PartnerClientKind:
+      type: string
+      enum: [web, native]
+
+    PartnerClientWrite:
+      type: object
+      required: [id, kind, clientName, redirectUris, scope, accessTokenTtl]
+      description: |
+        A client as the partner writes it. On create `id`, `kind`, `clientName`, `redirectUris`,
+        `scope` and `accessTokenTtl` are required; on update the console sends the whole client and
+        the edge changes what differs (see `updateClient`). Fields not listed here, and server-owned
+        ones (`createdAt`, `approval`, `fixed`, `loginPath`), are ignored.
+      properties:
+        id:
+          type: string
+        kind:
+          $ref: '#/components/schemas/PartnerClientKind'
+        clientName:
+          type: string
+          description: Stored as the English name; may not be blank.
+        logoUri:
+          type: [string, 'null']
+          description: Blank is stored as absent.
+        policyUri:
+          type: [string, 'null']
+        tosUri:
+          type: [string, 'null']
+        redirectUris:
+          type: array
+          items:
+            type: string
+          description: Must be `https` and under one of the partner's `redirectDomains`; central decides.
+        scope:
+          type: array
+          items:
+            type: string
+          description: A subset of the partner's `limits.scopes`; central decides.
+        accessTokenTtl:
+          type: integer
+          description: Seconds, up to `limits.accessTokenTtlMax`.
+        refreshTokenTtl:
+          type: [integer, 'null']
+          description: Seconds, up to `limits.refreshTokenTtlMax`.
+        backChannelLogoutUri:
+          type: [string, 'null']
+          description: Blank is stored as absent.
+        authMethod:
+          $ref: '#/components/schemas/PartnerClientAuthMethod'
+
+    InjectRule:
+      type: object
+      required: [target, name, expression]
+      properties:
+        target:
+          type: string
+          enum: [header, query, body]
+        name:
+          type: string
+        expression:
+          type: string
+          description: A CEL expression evaluated for the request.
+
+    ResourceEndpoint:
+      type: object
+      required: [method, path]
+      description: An endpoint of a resource, as central has it.
+      properties:
+        id:
+          oneOf:
+            - type: string
+            - type: integer
+          description: Assigned by the edge (a UUID) when a new endpoint has none.
+        method:
+          type: string
+        path:
+          type: string
+        fetchUserInfo:
+          type: boolean
+          default: false
+        allow:
+          type: [string, 'null']
+          description: A CEL expression that decides whether the request is allowed.
+        inject:
+          type: array
+          items:
+            $ref: '#/components/schemas/InjectRule'
+          default: []
+        stepUpCondition:
+          type: [string, 'null']
+        stepUpAcr:
+          type: [string, 'null']
+        maxAge:
+          type: [integer, 'null']
+        rateLimit:
+          type: [object, 'null']
+          description: |
+            A limit on how often the endpoint is called (`limits`, `burst`, `by`, `mode`), as in
+            the central API.
+          additionalProperties: true
+
+    PartnerResource:
+      type: object
+      required: [resourceId, resource, audience, endpoints, secretRotation]
+      description: |
+        A resource of the partner as the console reads it: no `internal` (always true for a
+        partner), no owner, no audience limits.
+      properties:
+        resourceId:
+          type: string
+        resource:
+          type: string
+          description: The resource's URI, the upstream the edge proxies to.
+        audience:
+          type: array
+          items:
+            type: string
+          description: Identifiers of the partner's clients that may call it.
+        endpoints:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResourceEndpoint'
+        secretRotation:
+          type: boolean
+          description: Whether a previous secret is still accepted after a rotation.
+
+    PartnerResourceWrite:
+      type: object
+      required: [resourceId, resource, audience]
+      properties:
+        resourceId:
+          type: string
+        resource:
+          type: string
+        audience:
+          type: array
+          items:
+            type: string
+        endpoints:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResourceEndpoint'
+
+    CreatedResource:
+      type: object
+      required: [resource, secret]
+      properties:
+        resource:
+          $ref: '#/components/schemas/PartnerResource'
+        secret:
+          type: [string, 'null']
+          description: The secret the edge authenticates to the upstream with. Shown once.
+
+    PartnerEdge:
+      type: object
+      required: [id, publicUrl, status, replicas, policies]
+      properties:
+        id:
+          type: string
+        publicUrl:
+          type: string
+          description: Empty if none was registered.
+        status:
+          type: string
+          enum: [waiting, enrolled, suspended]
+          description: |
+            `waiting` until central has issued the edge a certificate, then `enrolled`;
+            `suspended` for every edge of a suspended partner.
+        certificateNotAfter:
+          type: [string, 'null']
+          format: date-time
+          description: When the edge's current certificate expires; absent until it enrolled.
+        lastRenewedAt:
+          type: [string, 'null']
+          format: date-time
+        replicas:
+          type: integer
+          const: 0
+          description: Always `0`, because central does not count the replicas behind an edge.
+        policies:
+          type: object
+          required: [overload, accessLog, rateLimits]
+          description: The operator's policies for the group, read-only; `{}` for one that is not set.
+          properties:
+            overload:
+              type: object
+              additionalProperties: true
+            accessLog:
+              type: object
+              additionalProperties: true
+            rateLimits:
+              type: object
+              additionalProperties: true
+
+    SigningKey:
+      type: object
+      required: [keyId, privateKey]
+      description: The edge's signing key, created with it and shown once; the operator does not keep the private half.
+      properties:
+        keyId:
+          type: string
+        privateKey:
+          type: string
+
+    EnrollmentToken:
+      type: object
+      required: [token, bundle, expiresAt]
+      properties:
+        token:
+          type: string
+          description: Shown once.
+        bundle:
+          type: string
+          description: |
+            What the edge is deployed with, as a JSON document in a string. From
+            `POST /partner/api/edges/{id}/enrollment-tokens` it does not hold the signing key.
+        expiresAt:
+          type: [string, 'null']
+          format: date-time
+
+    CreatedEdge:
+      allOf:
+        - $ref: '#/components/schemas/EnrollmentToken'
+        - type: object
+          required: [edge, signingKey]
+          properties:
+            edge:
+              $ref: '#/components/schemas/PartnerEdge'
+            signingKey:
+              $ref: '#/components/schemas/SigningKey'
+
+    RevocationRequest:
+      type: object
+      required: [by, value]
+      properties:
+        by:
+          type: string
+          enum: [user, client]
+          description: What `value` names. `sid` and `fam` are not accepted.
+        value:
+          type: string
+          description: A user id when `by` is `user`, or one of the named clients when it is `client`.
+        clients:
+          type: array
+          items:
+            type: string
+          description: |
+            The partner's own clients. Absent or empty: every approved client of the partner; if
+            there is none, `400`.
+
+    Revocation:
+      type: object
+      required: [id, at, by_staff, by, value, clients, edges, ended]
+      description: |
+        A revocation as far as central's audit event tells it. `by` is always empty, `clients`
+        and `edges` are always empty, and `ended` is always `0`.
+      properties:
+        id:
+          type: string
+        at:
+          type: string
+          format: date-time
+        by_staff:
+          type: string
+          description: The `sub` of the staff member.
+        by:
+          type: string
+        value:
+          type: string
+        clients:
+          type: array
+          items:
+            type: string
+        edges:
+          type: array
+          items:
+            type: string
+        ended:
+          type: integer
+
+    AuditEvent:
+      type: object
+      required: [id, at, actor, action, target, outcome]
+      properties:
+        id:
+          type: string
+        at:
+          type: string
+          format: date-time
+        actor:
+          type: object
+          required: [sub]
+          properties:
+            sub:
+              type: string
+              description: The staff member's `sub`; `operator` (or the operator's actor id) for an operator's action.
+            byOperator:
+              type: boolean
+              const: true
+              description: Present when the action was the operator's.
+        action:
+          type: string
+          description: The audit kind, for example `admin.partner-client.create`.
+        target:
+          type: string
+          description: '`<targetType>:<targetId>`.'
+        outcome:
+          type: string
+          enum: [ok, refused, failed]
+          description: Central's `success`, `denied` and `failure`.
+        from:
+          type: string
+          description: The edge the action came through, when the event names one.
+
+    AuditPage:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEvent'
+        next:
+          type: [string, 'null']
+          description: Cursor of the next page; `null` at the end.
+
+    StaffMember:
+      type: object
+      required: [id, level, state, addedBy, addedAt]
+      description: A row of the team, either a member or an invitation nobody has taken yet.
+      properties:
+        id:
+          type: string
+          description: The `sub` of a member, the invitation's id while it is an invitation.
+        subject:
+          type: string
+          description: A member's `sub`; absent for an invitation.
+        identifier:
+          type: object
+          required: [kind, masked]
+          description: An invitation's identifier, masked; absent for a member.
+          properties:
+            kind:
+              type: string
+              enum: [phone, email]
+            masked:
+              type: string
+        display:
+          type: string
+          description: A member's name; absent for an invitation.
+        level:
+          $ref: '#/components/schemas/StaffLevel'
+        state:
+          type: string
+          enum: [member, invited]
+        addedBy:
+          type: string
+          description: The `sub` of whoever invited them, or `config` for a first administrator named in the edge's configuration.
+        addedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          description: When an invitation lapses; absent for a member.
+
+    StaffInvite:
+      type: object
+      required: [identifier, level]
+      properties:
+        identifier:
+          type: string
+          description: A phone number in international format (`+7701...`) or an email address.
+        level:
+          $ref: '#/components/schemas/StaffLevel'
+        expiresInDays:
+          type: integer
+          minimum: 1
+          maximum: 90
+          description: Lifetime of the invitation; outside the range it is ignored, and the configured one used.
+
+    PartnerSettings:
+      type: object
+      required: [contact, defaults]
+      properties:
+        contact:
+          type: object
+          required: [email]
+          properties:
+            email:
+              type: string
+            phone:
+              type: [string, 'null']
+        defaults:
+          type: object
+          description: What the console offers for a new client; central applies none of it by itself.
+          properties:
+            backChannelLogoutUri:
+              type: [string, 'null']
+            accessTokenTtl:
+              type: [integer, 'null']
+              description: Seconds.
+            refreshTokenTtl:
+              type: [integer, 'null']
+              description: Seconds.
+
+    ProfileChange:
+      type: object
+      required: [displayName]
+      properties:
+        displayName:
+          type: string
+        logoUri:
+          type: [string, 'null']
+
+    ProfileApproval:
+      type: object
+      required: [id, status, requestedAt, requested]
+      properties:
+        id:
+          type: string
+          description: The id of the operator's approval request; empty if central did not name one.
+        status:
+          type: string
+          const: waiting
+        requestedAt:
+          type: [string, 'null']
+          format: date-time
+        requested:
+          $ref: '#/components/schemas/ProfileChange'

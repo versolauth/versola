@@ -83,6 +83,13 @@ trait EdgeService:
       resourceIds: List[ResourceId],
   ): UIO[EdgeService.PermissionsResponse]
 
+  /** The signed-in person behind the `EDGE_SESSION` cookie of `request`, for the partner console (`/partner/api`): the same checks
+    * a proxied call makes of a cookie's token (signature, expiry with the refresh of an expired one, revocation, binding), and
+    * nothing of what a resource adds. Only the cookie is read: a bearer token in `Authorization` is not a console session. Fails
+    * with [[EdgeService.NoSession]] when there is none that can be used, which the console answers by sending the person to
+    * `/partner/login`. */
+  def consoleSession(request: Request): IO[Throwable | EdgeService.NoSession, EdgeService.ConsoleSession]
+
   /** Front-channel logout, either OP-initiated (`iss`/`sid` query params, rendered in an
     * iframe) or first-party (the browser navigating to the endpoint itself). The presented
     * EDGE_SESSION cookie is the only credential that authorizes a revocation: `sid` alone
@@ -136,6 +143,20 @@ object EdgeService:
 
   case class ClientNotFound(clientId: ClientId)
     extends RuntimeException(s"OAuth client not found in cache: $clientId")
+
+  /** What the cookie of a console request stands for: the token (which is what the person's session at the operator is, and what
+    * the partner's management calls forward as the principal), its verified claims, the preset it was issued for, and the cookie
+    * to set when the request refreshed it. */
+  case class ConsoleSession(
+      accessToken: AccessToken,
+      claims: AccessTokenClaims,
+      presetId: PresetId,
+      rotatedCookie: Option[Cookie.Response],
+  )
+
+  /** No usable session: no cookie, a token that does not verify, revoked or whose refresh failed. `clear` is the cookie to drop
+    * when the edge knows the session is over. */
+  case class NoSession(clear: Option[Cookie.Response]) extends RuntimeException("no usable console session")
 
   /** The `jti` and `sid` claims of the access token. Both are minted by auth
     * for every token issued to an authenticated session, so neither is optional.
@@ -499,6 +520,34 @@ object EdgeService:
           perms <- ZIO.foreach(claims.tenantId)(permissionService.getPermissionsForRoles(_, roles, endpointIds))
         yield Some(resourceId -> ResourcePermissions(perms.getOrElse(Set.empty)))
       .map(entries => PermissionsResponse(entries.flatten.toMap, env.isProd))
+
+    override def consoleSession(request: Request): IO[Throwable | NoSession, ConsoleSession] =
+      (for
+        cookie <- ZIO.fromOption(request.cookie(EdgeSessionCookie.name)).orElseFail(Outcome.Unauthorized)
+          .tapError(_ => Observability.setError("token_missing"))
+        (presetId, accessToken) = EdgeSessionCookie.parse(cookie.content)
+        authSource = AuthSource.Cookie(presetId)
+        publicKeys <- jwksService.getPublicKeys
+        now <- Clock.instant
+        session <- JWT.deserialize[Json.Obj](accessToken, publicKeys, JWT.Type.AccessToken)
+          .foldZIO(
+            {
+              case JWT.Error.Expired(jti) =>
+                refuseIfRevoked(accessToken, publicKeys, presetId) *> refreshSession(AccessTokenId(jti), presetId, now)
+              case _ =>
+                Observability.setError("token_invalid") *> ZIO.fail(Outcome.Unauthorized)
+            },
+            claims => ZIO.succeed(ActiveSession(accessToken, claims, None)),
+          )
+        typedClaims <- ZIO.fromEither(session.claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
+        _ <- logAccessTokenClaims(typedClaims)
+        _ <- checkRevoked(typedClaims)
+        _ <- checkTokenBinding(request, session.accessToken, typedClaims, authSource)
+      yield ConsoleSession(session.accessToken, typedClaims, presetId, session.rotatedCookie))
+        .catchAll:
+          case Outcome.Reauthenticate(_, clear) => ZIO.fail(NoSession(Some(clear)))
+          case _: Outcome => ZIO.fail(NoSession(None))
+          case error: Throwable => ZIO.fail(error)
 
     override def frontChannelLogout(
         iss: Option[String],
@@ -925,16 +974,24 @@ object EdgeService:
         endpoint: ResourceEndpoint,
     ): IO[Outcome, Unit] =
       val isServiceToken = claims.subject == claims.clientId
-      for
-        allowed <-
-          if isServiceToken then
-            permissionService.getAllowedEndpointsForClient(claims.clientId)
-          else
-            permissionService.getAllowedEndpointsForRoles(claims.tenantId, claims.roles)
+      config.mode match
+        // A partner has no roles and no permissions (#962 §4): what its endpoint lets through is the `allow` rule written on the
+        // token's scopes and claims. An endpoint without one lets nobody through, the deny-by-default of the permission check
+        // it stands in for.
+        case EdgeMode.Partner =>
+          (Observability.setError("permission_denied", Some("the endpoint of a partner's resource has no allow rule")) *>
+            ZIO.fail(Outcome.Forbidden)).unless(endpoint.allow.exists(_.trim.nonEmpty)).unit
+        case EdgeMode.FirstParty =>
+          for
+            allowed <-
+              if isServiceToken then
+                permissionService.getAllowedEndpointsForClient(claims.clientId)
+              else
+                permissionService.getAllowedEndpointsForRoles(claims.tenantId, claims.roles)
 
-        _ <- (Observability.setError("permission_denied") *> ZIO.fail(Outcome.Forbidden))
-          .unless(allowed.contains(endpoint.id))
-      yield ()
+            _ <- (Observability.setError("permission_denied") *> ZIO.fail(Outcome.Forbidden))
+              .unless(allowed.contains(endpoint.id))
+          yield ()
 
     private def checkAudience(
         resource: Resource,

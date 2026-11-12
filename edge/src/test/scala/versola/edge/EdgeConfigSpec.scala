@@ -110,6 +110,17 @@ object EdgeConfigSpec extends ZIOSpecDefault:
     dpop = Some(EdgeConfig.Dpop.default(Secret.Bytes32.fromBase64Url(secret32).toOption.get)),
   )
 
+  /** A partner edge as it validates: the certificate comes from central (no static one in `mutual-tls`) and there is no internal secret. */
+  private def partnerConfig: EdgeConfig =
+    val base = baseConfig(None)
+    base.copy(
+      mode = EdgeMode.Partner,
+      central = base.central.copy(
+        mutualTls = base.central.mutualTls.map(_.copy(certificate = None, privateKey = None)),
+        identity = Some(EdgeConfig.CentralIdentity(directory = "/var/lib/edge/identity", group = "acme", enrollment = None)),
+      ),
+    )
+
   private def nativeConfig(trustedCertificates: String*) = EdgeConfig.Native(
     authMutualTlsUrl = URL.decode("https://auth:8083").toOption.get,
     trustedCertificates = trustedCertificates.toSet,
@@ -265,6 +276,28 @@ object EdgeConfigSpec extends ZIOSpecDefault:
             .kebabCase
             .load(edgeConfigDescriptor)
         yield assertTrue(config.mode == EdgeMode.Partner)
+      },
+      test("reads the partner block, and a file without one has no administrators, no console files and no bundle") {
+        def load(extra: String) =
+          TypesafeConfigProvider
+            .fromHoconString(hocon(includeInternalUrl = false, modeLine = """mode = "partner"""") + "\n" + extra)
+            .kebabCase
+            .load(edgeConfigDescriptor)
+        for
+          plain <- load("")
+          set <- load("""partner {
+                        |  admins = ["+77010000000", "ops@partner.example"]
+                        |  console-directory = "/srv/console"
+                        |  bundle-file = "/etc/edge/bundle.json"
+                        |  invite-ttl = "3 days"
+                        |}""".stripMargin)
+        yield assertTrue(
+          plain.partner == EdgeConfig.Partner(),
+          set.partner.admins == List("+77010000000", "ops@partner.example"),
+          set.partner.consoleDirectory.contains("/srv/console"),
+          set.partner.bundleFile.contains("/etc/edge/bundle.json"),
+          set.partner.inviteTtl == 3.days,
+        )
       },
       test("rate limit keys: client-ip, its header and replicas-from are read; a file without them is socket, X-Real-IP and no source") {
         def load(extra: String) =
@@ -549,17 +582,85 @@ object EdgeConfigSpec extends ZIOSpecDefault:
           config <- ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(baseConfig(None)) >>> EdgeConfig.validated)
         yield assertTrue(config.versolaInternalTrustedCertificates.isEmpty)
       },
-      // #555 names the mode before #564 implements it: an edge told to be a partner must say
-      // so at startup, not sync from central and vouch to auth as the first-party edge it was
-      // not configured to be.
-      test("refuses partner mode as not implemented, at startup") {
+      // #564: what a partner edge needs and must not have
+      test("accepts partner mode with a certificate central issues and no internal secret") {
+        for
+          config <- ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(partnerConfig) >>> EdgeConfig.validated)
+        yield assertTrue(config.mode == EdgeMode.Partner)
+      },
+      test("refuses partner mode without central.identity: a partner edge holds a certificate central issued, never one it was deployed with") {
         for
           error <- ZIO.service[EdgeConfig]
-            .provideLayer(ZLayer.succeed(baseConfig(None).copy(mode = EdgeMode.Partner)) >>> EdgeConfig.validated)
+            .provideLayer(ZLayer.succeed(partnerConfig.copy(central = partnerConfig.central.copy(identity = None))) >>> EdgeConfig.validated)
             .flip
-        yield assertTrue(
-          error == EdgeMode.NotImplemented(EdgeMode.Partner),
-          error.getMessage.contains("mode = partner is not implemented yet"),
+        yield assertTrue(error.getMessage.contains("central.identity"))
+      },
+      test("refuses partner mode with security.internal-secret, which authorizes a surface a partner edge does not serve") {
+        for
+          error <- ZIO.service[EdgeConfig]
+            .provideLayer(
+              ZLayer.succeed(
+                partnerConfig.copy(security = partnerConfig.security.copy(internalSecret = Some(Secret.fromBase64Url(secret32).toOption.get))),
+              ) >>> EdgeConfig.validated,
+            )
+            .flip
+        yield assertTrue(error.getMessage.contains("internal-secret"))
+      },
+      test("refuses a blank entry of partner.admins") {
+        for
+          error <- ZIO.service[EdgeConfig]
+            .provideLayer(ZLayer.succeed(partnerConfig.copy(partner = EdgeConfig.Partner(admins = List(" ")))) >>> EdgeConfig.validated)
+            .flip
+        yield assertTrue(error.getMessage.contains("partner.admins"))
+      },
+      test("refuses the partner block on a first-party edge, where it would be silently ignored") {
+        for
+          error <- ZIO.service[EdgeConfig]
+            .provideLayer(
+              ZLayer.succeed(baseConfig(None).copy(partner = EdgeConfig.Partner(admins = List("+77010000000")))) >>> EdgeConfig.validated,
+            )
+            .flip
+        yield assertTrue(error.getMessage.contains("partner"))
+      },
+      test("refuses a bootstrap bundle of another edge, the configuration of which it cannot be") {
+        for
+          directory <- ZIO.attemptBlocking(Files.createTempDirectory("bundle"))
+          file = directory.resolve("bundle.json")
+          _ <- ZIO.attemptBlocking(
+            Files.writeString(
+              file,
+              """{"edgeId":"edge-someone-else","group":"acme","central":{"enrollUrl":"https://enroll.example","mtlsUrl":"https://central:8093"},"auth":{},"token":"t"}""",
+            ),
+          )
+          error <- ZIO.service[EdgeConfig]
+            .provideLayer(ZLayer.succeed(partnerConfig.copy(partner = EdgeConfig.Partner(bundleFile = Some(file.toString)))) >>> EdgeConfig.validated)
+            .flip
+        yield assertTrue(error.getMessage.contains("does not describe this edge"), error.getMessage.contains("edge-someone-else"))
+      },
+      test("accepts the bundle of this edge, and a bundle file that is gone once the edge is enrolled") {
+        for
+          directory <- ZIO.attemptBlocking(Files.createTempDirectory("bundle"))
+          file = directory.resolve("bundle.json")
+          _ <- ZIO.attemptBlocking(
+            Files.writeString(
+              file,
+              """{"edgeId":"edge-default","group":"acme","central":{"enrollUrl":"https://enroll.example","mtlsUrl":"https://central:8093"},"auth":{"issuer":"http://localhost:8080"},"signingKey":{"keyId":"test-key","privateKey":"x"},"token":"t"}""",
+            ),
+          )
+          present <- ZIO.service[EdgeConfig]
+            .provideLayer(ZLayer.succeed(partnerConfig.copy(partner = EdgeConfig.Partner(bundleFile = Some(file.toString)))) >>> EdgeConfig.validated)
+          absent <- ZIO.service[EdgeConfig]
+            .provideLayer(
+              ZLayer.succeed(partnerConfig.copy(partner =
+                EdgeConfig.Partner(bundleFile = Some(directory.resolve("gone.json").toString)),
+              )) >>> EdgeConfig.validated,
+            )
+        yield assertTrue(present.mode == EdgeMode.Partner, absent.mode == EdgeMode.Partner)
+      },
+      test("the sync of a partner edge is read from /edge/partner/sync, a first-party edge's from /edge/sync") {
+        assertTrue(
+          partnerConfig.syncUrl("clients").encode == "https://central:8093/edge/partner/sync/clients",
+          baseConfig(None).syncUrl("clients").encode == "https://central:8093/edge/sync/clients",
         )
       },
       test("passes the first-party mode through, as the mode every existing edge runs in") {
