@@ -36,8 +36,8 @@ info:
     session of a person who signed in at the operator's authorization server through the
     console's own preset (`/partner/login` starts that). A `Bearer` or `DPoP` token in
     `Authorization` is not a console session and is ignored. When the access token inside the
-    cookie has expired, the edge refreshes it and, on a successful answer, replies with the
-    rotated `EDGE_SESSION` cookie.
+    cookie has expired, the edge refreshes it and replies with the rotated `EDGE_SESSION`
+    cookie, whatever the status of the answer (the refresh token it replaced is spent).
 
     Before an operation runs, the edge checks, in this order, and refuses at the first that fails:
 
@@ -88,8 +88,8 @@ info:
     | 502 | `central_answered_<status>` | Central answered a status the edge does not translate. `message` holds the start of its body. |
     | 503 | `central_unavailable` | Central cannot be reached, timed out, answered `5xx`, or refused the edge itself. Nothing was changed. |
 
-    A rotated session cookie is set only on a successful answer: a refusal, whatever its status,
-    does not carry one.
+    A rotated session cookie is set on every answer to a request that refreshed the session, a refusal
+    included; a refusal before the session is established (`401`, `403 origin_mismatch`) carries none.
   license:
     name: Versola Community License v1.0
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md

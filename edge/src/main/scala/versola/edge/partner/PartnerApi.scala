@@ -7,7 +7,7 @@ import versola.util.http.Observability
 import zio.http.*
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps}
-import zio.{Chunk, Clock, Duration, IO, Task, UIO, ZIO}
+import zio.{Chunk, Clock, Duration, IO, Schedule, Task, UIO, ZIO, durationInt}
 
 import java.time.Instant
 import java.util.UUID
@@ -30,7 +30,6 @@ import java.util.UUID
   */
 final class PartnerApi(
     edgeService: EdgeService,
-    ssoClient: SSOClient,
     staff: StaffService,
     state: PartnerState,
     central: PartnerCentral,
@@ -155,7 +154,7 @@ final class PartnerApi(
     ZIO.fail(Fail(Status.Unauthorized, "unauthenticated", extra = List("loginPath" -> Json.Str(LoginPath)), clear = clear))
 
   private def userInfo(console: EdgeService.ConsoleSession): IO[Throwable, Json.Obj] =
-    ssoClient.userInfo(console.accessToken, SSOClient.TokenBinding.Unbound).catchAll:
+    edgeService.consoleUserInfo(console).catchAll:
       case SSOClient.UserInfoUnauthorized => ZIO.fail(UserInfoRefused)
       case error: Throwable => ZIO.fail(error)
 
@@ -210,8 +209,14 @@ final class PartnerApi(
     for
       body <- jsonBody(request)
       payload <- ZIO.fromEither(clientForCentral(body)).mapError(reason => Fail(Status.BadRequest, "invalid_request", message = Some(reason)))
-      answer <- forward(session, Method.POST, List("clients"), body = Some(payload))
-      created <- ZIO.fromOption(answer.obj).orElseFail(Fail(Status.BadGateway, "central_unreadable"))
+      id <- ZIO.fromOption(str(body, "id")).orElseFail(Fail(Status.BadRequest, "invalid_request", message = Some("id is missing")))
+      answer <- forward(session, Method.POST, List("clients"), body = Some(payload)).map(Some(_)).catchSome:
+        // central answers the creation with the client it reads back from a cache that is refreshed after the commit, so for a moment
+        // it can answer 404 for the client it has just registered: the client is read until it is there
+        case Fail(Status.NotFound, _, _, _, _, _) => ZIO.none
+      created <- answer.flatMap(_.obj) match
+        case Some(created) => ZIO.succeed(created)
+        case None => clientOf(session, id).retry(Schedule.spaced(200.millis) && Schedule.recurs(15))
     yield json(Status.Accepted, clientDto(created, session.me))
 
   private def updateClient(id: String, session: Session, request: Request): IO[Fail | Throwable, Response] =

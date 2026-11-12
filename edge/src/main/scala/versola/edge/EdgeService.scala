@@ -90,6 +90,11 @@ trait EdgeService:
     * `/partner/login`. */
   def consoleSession(request: Request): IO[Throwable | EdgeService.NoSession, EdgeService.ConsoleSession]
 
+  /** The `/userinfo` of the operator for the person of `session`, asked as a proxied call asks it for a cookie's token: a token bound
+    * to the certificate of the client (a partner's client authenticates with the group's, so its tokens are) is presented over that
+    * certificate. The console reads the phone number or email from it to match an invite. */
+  def consoleUserInfo(session: EdgeService.ConsoleSession): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj]
+
   /** Front-channel logout, either OP-initiated (`iss`/`sid` query params, rendered in an
     * iframe) or first-party (the browser navigating to the endpoint itself). The presented
     * EDGE_SESSION cookie is the only credential that authorizes a revocation: `sid` alone
@@ -548,6 +553,9 @@ object EdgeService:
           case Outcome.Reauthenticate(_, clear) => ZIO.fail(NoSession(Some(clear)))
           case _: Outcome => ZIO.fail(NoSession(None))
           case error: Throwable => ZIO.fail(error)
+
+    override def consoleUserInfo(session: ConsoleSession): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
+      fetchUserInfo(session.accessToken, session.claims, BindingCheck.Accept)
 
     override def frontChannelLogout(
         iss: Option[String],

@@ -1,6 +1,6 @@
 package versola.edge.partner
 
-import versola.edge.{CentralSyncTokenService, EdgeConfig, EdgeMode, EdgeService, SSOClient}
+import versola.edge.{CentralSyncTokenService, EdgeConfig, EdgeMode, EdgeService}
 import versola.util.http.Observability
 import zio.http.{Client, Routes}
 import zio.{Scope, Task, URLayer, ZIO, ZLayer}
@@ -21,7 +21,7 @@ object PartnerSurface:
     override def routes: Routes[Any, Throwable] = Routes.empty
 
   type Requirements =
-    Scope & Client & EdgeConfig & CentralSyncTokenService & StaffRepository & EdgeService & SSOClient
+    Scope & Client & EdgeConfig & CentralSyncTokenService & StaffRepository & EdgeService
 
   val live: ZLayer[Requirements & versola.util.ConfigSnapshot, Throwable, PartnerSurface] =
     ZLayer.service[EdgeConfig].flatMap(config => forMode(config.get.mode))
@@ -44,8 +44,7 @@ object PartnerSurface:
           state <- ZIO.service[PartnerState]
           central <- ZIO.service[PartnerCentral]
           edgeService <- ZIO.service[EdgeService]
-          sso <- ZIO.service[SSOClient]
-          api = PartnerApi(edgeService = edgeService, ssoClient = sso, staff = staff, state = state, central = central, config = config)
+          api = PartnerApi(edgeService = edgeService, staff = staff, state = state, central = central, config = config)
           console = PartnerConsole(state, config.partner.consoleDirectory.map(Path.of(_).nn))
         yield new PartnerSurface:
           override def routes: Routes[Any, Throwable] = api.routes ++ console.routes

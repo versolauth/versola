@@ -82,7 +82,7 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
   private def session(clientId: String = "acme-console", preset: String = "acme-console", rotated: Option[Cookie.Response] = None) =
     EdgeService.ConsoleSession(AccessToken("staff-access-token"), claims(clientId), PresetId(preset), rotated)
 
-  private case class Harness(api: PartnerApi, central: FakeCentral, edge: Stub[EdgeService], sso: Stub[SSOClient], staff: StaffService)
+  private case class Harness(api: PartnerApi, central: FakeCentral, edge: Stub[EdgeService], staff: StaffService)
 
   /** The console of `acme`, with a team of one person at `level` signed in as `sub-1`, unless `member` is false. */
   private def harness(
@@ -98,12 +98,11 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
       _ <- ZIO.foreachDiscard(level)(level => staff.invite("config", phone, level, None).mapError(error => RuntimeException(error.toString))).orDie
       _ <- ZIO.foreachDiscard(level)(_ => staff.admit("sub-1", ZIO.succeed(Json.Obj("phone_number" -> Json.Str(phone))))).orDie
       edge = stub[EdgeService]
-      sso = stub[SSOClient]
       _ <- edge.consoleSession.succeedsWith(current)
-      _ <- sso.userInfo.succeedsWith(userInfo)
+      _ <- edge.consoleUserInfo.succeedsWith(userInfo)
       central = FakeCentral(answer)
-      api = PartnerApi(edge, sso, staff, PartnerState.fixed(me, reachable), central, config)
-    yield Harness(api, central, edge, sso, staff)
+      api = PartnerApi(edge, staff, PartnerState.fixed(me, reachable), central, config)
+    yield Harness(api, central, edge, staff)
 
   private def send(h: Harness, request: Request): ZIO[Scope & TestClient & Client, Throwable, Response] =
     TestClient.addRoutes(h.api.routes.handleError(_ => Response.internalServerError)) *> ZIO.serviceWithZIO[Client](_.batched(request))
@@ -146,7 +145,7 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
           byClient.status == Status.Unauthorized,
           byPreset.status == Status.Unauthorized,
           // not even the team was consulted: /userinfo was not read for it
-          other.sso.userInfo.calls.isEmpty,
+          other.edge.consoleUserInfo.calls.isEmpty,
           callsClient.isEmpty,
           callsPreset.isEmpty,
         )
@@ -169,7 +168,7 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
       test("the operator no longer honouring the token ends the session instead of failing it") {
         for
           h <- harness(None)
-          _ <- h.sso.userInfo.failsWith(SSOClient.UserInfoUnauthorized)
+          _ <- h.edge.consoleUserInfo.failsWith(SSOClient.UserInfoUnauthorized)
           response <- send(h, get("/me"))
         yield assertTrue(response.status == Status.Unauthorized)
       },
@@ -290,6 +289,26 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
           second.status == Status.Forbidden,
           mismatchCode == "partner_principal_mismatch",
         )
+      },
+      test(
+        "central answering 404 to the creation of a client it has just registered (it reads it back from a cache) is read until the client is there",
+      ) {
+        for
+          h <- harness(
+            Some(StaffLevel.developer),
+            answer = (method, _) =>
+              if method == Method.POST then reply(Status.NotFound, "client 'acme-shop' does not exist") else reply(Status.Ok, clientJson),
+          )
+          response <- send(
+            h,
+            write(
+              Method.POST,
+              "/clients",
+              """{"id":"acme-shop","kind":"web","clientName":"Acme Shop","redirectUris":["https://shop.acme.example/cb"],"scope":["openid"],"accessTokenTtl":600}""",
+            ),
+          )
+          body <- response.body.asString
+        yield assertTrue(response.status == Status.Accepted, body.contains("acme-shop"))
       },
       test("a refusal of central's own validation is passed on as 400, and what is not there as 404") {
         for
