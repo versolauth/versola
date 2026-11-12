@@ -193,7 +193,7 @@ export class VersolaPartnerConsole extends LitElement {
         <div class="banner info" role="status">
           <div class="banner-text">
             <div class="banner-title">${statusIcon('info')}Onboarding: your first edge has not enrolled yet</div>
-            <div>Start it with the bootstrap bundle the operator gave you${me.partner.reviewAt ? `; the agreement is reviewed on ${formatDate(me.partner.reviewAt)}` : ''}.</div>
+            <div>Start it with its enrollment token${me.partner.reviewAt ? `; the agreement is reviewed on ${formatDate(me.partner.reviewAt)}` : ''}.</div>
           </div>
         </div>`;
     }

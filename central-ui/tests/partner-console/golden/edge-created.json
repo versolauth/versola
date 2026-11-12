@@ -12,12 +12,6 @@
       "rateLimits": {}
     }
   },
-  "signingKey": {
-    "keyId": "2026-11-12_15-18-29",
-    "privateKey": "REDACTED-PRIVATE-KEY"
-  },
   "token": "REDACTED-ENROLLMENT-TOKEN",
-  "bundle": "{\"edgeId\":\"edge-walk-edge-mwdoyyuq\",\"group\":\"e2e-partner-faf53869a4\",\"central\":{},\"auth\":{\"issuer\":\"http://localhost:9003\"},\"signingKey\":{\"keyId\":\"2026-11-12_15-18-29\",\"privateKey\":\"REDACTED-PRIVATE-KEY\"},\"token\":\"REDACTED-ENROLLMENT-TOKEN\"}",
-  "expiresAt": "2026-11-13T15:18:29.344551Z",
-  "bundleComplete": true
+  "expiresAt": "2026-11-13T15:18:29.344551Z"
 }

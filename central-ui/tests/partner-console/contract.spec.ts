@@ -44,14 +44,14 @@ test('withdrawing a change to an approved client keeps the client; withdrawing i
   await expect(page.getByRole('dialog', { name: 'Withdraw the request' })).toContainText('The client is removed');
 });
 
-test('adding an edge is one write that returns the edge with its token and bundle', async ({ page }) => {
+test('adding an edge is one write that returns the edge with its token', async ({ page }) => {
   const api = await loadPartnerApp(page, { path: '/partner.html?view=edges&new=1', state: { edges: partnerSeedState.edges.slice(0, 1) } });
   const editor = sidePanel(page, 'Add edge');
   await editor.getByLabel('Edge ID *').fill('pilot-us-1');
   await editor.getByLabel('Public URL *').fill('https://login-us.pilotpay.example');
   await editor.getByRole('button', { name: 'Add edge' }).click();
   const panel = sidePanel(page, 'edge-pilot-us-1');
-  await expect(panel.locator('.secret-value').first()).toHaveText(/^vtk_pilot-pay_/);
+  await expect(panel.locator('.secret-value').first()).toHaveText(/^vtk1\./);
   expect(api.requests.filter(request => request.method === 'POST').map(request => request.pathname)).toEqual(['/edges']);
 });
 

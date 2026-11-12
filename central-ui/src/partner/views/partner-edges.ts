@@ -11,7 +11,7 @@ import { relativeTime } from '../../utils/user-display';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../../utils/record-route';
 import { validateEdgeId } from '../../utils/validators';
 import { createEdge, deleteEdge, fetchEdges, issueEnrollmentToken, revokeEnrollmentToken, writeErrorMessage, readErrorMessage } from '../partner-api';
-import type { EnrollmentToken, PartnerEdge, PartnerMe, SigningKey } from '../partner-types';
+import type { EnrollmentToken, PartnerEdge, PartnerMe } from '../partner-types';
 import { partnerViewStyles } from '../partner-styles';
 import '../../components/content-header';
 import '../../components/danger-card';
@@ -23,12 +23,12 @@ import '../../components/record-card';
 import '../../components/record-header';
 import '../../components/side-panel';
 
-type Issued = EnrollmentToken & { edgeId: string; signingKey?: SigningKey };
+type Issued = EnrollmentToken & { edgeId: string };
 
 /**
  * Edges, the partner's own deployments in its group: the table (id, public URL, status,
  * certificate), Add edge up to `maxEdges`, which ends on the new record with the
- * enrollment token and the bootstrap bundle shown once; the record with the link to the operator,
+ * enrollment token shown once; the record with the link to the operator,
  * the certificate and the operator's policies read-only; Revoke an unused token.
  */
 @customElement('versola-partner-edges')
@@ -140,15 +140,15 @@ export class VersolaPartnerEdges extends LitElement {
 
   private async closePanel() {
     const key = this.route.id;
-    if (this.issued && !await this.confirmLeaveBundle()) return;
+    if (this.issued && !await this.confirmLeaveToken()) return;
     dispatchRecordRoute(this, { id: null, edit: null, create: false, layout: null });
     if (key) void this.updateComplete.then(() => this.table?.focusRow(key));
   }
 
-  private confirmLeaveBundle(): Promise<boolean> {
+  private confirmLeaveToken(): Promise<boolean> {
     return confirmDestructiveAction({
-      title: 'Leave without saving the bundle?',
-      message: 'The enrollment token and the bootstrap bundle are shown only once. After you leave you would have to revoke the token and issue a new one.',
+      title: 'Leave without saving the token?',
+      message: 'The enrollment token is shown only once. After you leave you would have to revoke the token and issue a new one.',
       confirmLabel: 'Leave',
       cancelLabel: 'Stay',
     });
@@ -169,7 +169,7 @@ export class VersolaPartnerEdges extends LitElement {
     try {
       const { edge, ...token } = await createEdge({ id: this.edgeId, publicUrl: this.draftUrl.trim().replace(/\/$/, '') });
       this.edges = [...this.edges, edge];
-      this.issued = { ...token, bundleComplete: token.bundleComplete ?? true, edgeId: edge.id };
+      this.issued = { ...token, edgeId: edge.id };
       this.copyFeedback = '';
       dispatchRecordRoute(this, { id: edge.id, edit: null, create: false });
     } catch (error) {
@@ -183,7 +183,7 @@ export class VersolaPartnerEdges extends LitElement {
     this.errorMessage = '';
     try {
       const token = await issueEnrollmentToken(edge.id);
-      this.issued = { ...token, bundleComplete: token.bundleComplete ?? false, edgeId: edge.id };
+      this.issued = { ...token, edgeId: edge.id };
       this.copyFeedback = '';
     } catch (error) {
       this.errorMessage = writeErrorMessage(error);
@@ -195,7 +195,7 @@ export class VersolaPartnerEdges extends LitElement {
       title: 'Revoke enrollment token',
       messagePrefix: 'Revoke the unused enrollment token of ',
       messageSubject: edge.id,
-      messageSuffix: '? Whoever holds the bundle can no longer enroll with it. Issue a new one when you are ready.',
+      messageSuffix: '? Whoever holds it can no longer enroll with it. Issue a new one when you are ready.',
       confirmLabel: 'Revoke token',
     });
     if (!confirmed) return;
@@ -227,10 +227,10 @@ export class VersolaPartnerEdges extends LitElement {
     }
   }
 
-  private async copy(what: 'token' | 'bundle') {
+  private async copy() {
     if (!this.issued) return;
-    const copied = await copyToClipboard(what === 'token' ? this.issued.token : this.issued.bundle);
-    this.copyFeedback = copied ? `${what === 'token' ? 'Token' : 'Bundle'} copied.` : `Could not copy the ${what}.`;
+    const copied = await copyToClipboard(this.issued.token);
+    this.copyFeedback = copied ? 'Token copied.' : 'Could not copy the token.';
   }
 
   // ── list ──
@@ -271,25 +271,19 @@ export class VersolaPartnerEdges extends LitElement {
     return html`<versola-record-row .label=${label} .fixed=${fixed} .value=${value}></versola-record-row>`;
   }
 
-  /** What is shown once after a token is issued: a complete bootstrap bundle (a new edge) or just the token (an edge that already has its identity). */
+  /** What is shown once after a token is issued: the token, nothing else. The edge makes its own keys and asks the operator for a certificate with it. */
   private renderIssued(edge: PartnerEdge, issued: Issued) {
-    const complete = issued.bundleComplete === true;
     const until = issued.expiresAt ? html` until ${formatDate(issued.expiresAt)} (${relativeTime(issued.expiresAt)})` : '';
     return html`
       <div class="banner ok key-banner" role="status">
         <div class="banner-text">
-          <div class="banner-title">${statusIcon('check')}${complete ? 'Bootstrap bundle created. It is shown once.' : 'Enrollment token created. It is shown once.'}</div>
-          ${complete
-            ? html`<div>The token is good for one enrollment${until}. Put the bundle next to the edge as <span class="mono">bootstrap.json</span> and start it with <span class="mono">mode = "partner"</span>; it asks the operator for a certificate that names <span class="mono">${edge.id}</span> and your group.${issued.signingKey ? html` The signing key is created with the edge and the operator does not keep its private half.` : ''}</div>`
-            : html`<div>The token is good for one enrollment${until}. It does not make a <span class="mono">bootstrap.json</span>: put it in <span class="mono">central.identity.enrollment</span> (a token file) of an edge that already has its identity. A complete bundle and the signing key are given only when an edge is added.</div>`}
+          <div class="banner-title">${statusIcon('check')}Enrollment token created. It is shown once.</div>
+          <div>The token is good for one enrollment${until}. Put it in a secret and start the edge <span class="mono">${edge.id}</span> with it.</div>
           <div class="secret-rows">
-            <div><div class="secret-label">Enrollment token</div><pre class="secret-value">${issued.token}</pre></div>
-            ${issued.signingKey ? html`<div><div class="secret-label">Signing key ${issued.signingKey.keyId}</div><pre class="secret-value" tabindex="0" role="region" aria-label="Signing key">${issued.signingKey.privateKey}</pre></div>` : ''}
-            ${complete ? html`<div><div class="secret-label">Bootstrap bundle</div><pre class="secret-value" tabindex="0" role="region" aria-label="Bootstrap bundle">${issued.bundle}</pre></div>` : ''}
+            <div><div class="secret-label">Enrollment token</div><pre class="secret-value" tabindex="0" role="region" aria-label="Enrollment token">${issued.token}</pre></div>
           </div>
           <div class="banner-actions">
-            <button type="button" class="btn btn-primary btn-sm" @click=${() => this.copy('token')}>Copy token</button>
-            ${complete ? html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.copy('bundle')}>Copy bundle</button>` : ''}
+            <button type="button" class="btn btn-primary btn-sm" @click=${() => this.copy()}>Copy token</button>
             <button type="button" class="btn btn-secondary btn-sm" @click=${() => { this.issued = null; }}>Done</button>
             ${this.copyFeedback ? html`<span class="copy-feedback" role="status">${this.copyFeedback}</span>` : ''}
           </div>
@@ -364,7 +358,7 @@ export class VersolaPartnerEdges extends LitElement {
         ${this.formError ? html`<div class="editor-error" role="alert">${this.formError}</div>` : ''}
         <div class="editor-box">
           <h3>New edge</h3>
-          <p class="editor-sub">Registered in your group with the operator; the token and the bootstrap bundle are shown once on the record.</p>
+          <p class="editor-sub">Registered in your group with the operator; the enrollment token is shown once on the record.</p>
           <div class="form-group">
             <label for="edge-id">Edge ID *</label>
             <div class="input-with-prefix">
@@ -428,7 +422,7 @@ export class VersolaPartnerEdges extends LitElement {
       ${this.isLoading ? html`<versola-loading-cards .count=${3}></versola-loading-cards>`
         : this.errorMessage && this.edges.length === 0 ? html`<versola-error-card heading="Could not load edges" .message=${this.errorMessage} @retry=${() => this.loadData()}></versola-error-card>`
           : this.edges.length === 0 ? html`
-            <versola-empty-state heading="No edges yet" text=${this.canManage ? 'Add your first edge to get its bootstrap bundle.' : 'No edges in your group.'}>
+            <versola-empty-state heading="No edges yet" text=${this.canManage ? 'Add your first edge to get its enrollment token.' : 'No edges in your group.'}>
               ${this.canManage ? html`<button class="btn btn-primary" @click=${() => dispatchRecordRoute(this, { id: null, edit: null, create: true, layout: null })}>+ Add edge</button>` : ''}
             </versola-empty-state>`
             : this.renderTable()}

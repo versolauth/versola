@@ -403,11 +403,11 @@ a note field, and `Approve as requested`, `Approve with overrides…` (the rows 
 inputs) and `Reject` (a note is required: the partner reads it). A decided request drops the buttons and shows
 who decided, when, and the note. Reference: `partner-approvals.ts`, `approvalDiff` in `utils/partners.ts`.
 
-**One-time token and bundle page.** Anything shown once (a partner enrollment token, the bootstrap bundle, a
+**One-time token page.** Anything shown once (an edge enrollment token, a
 resource secret) is a `banner ok key-banner` on the record the action ended on: a title that says it is shown
 once, one `pre.secret-value` per secret (`tabindex="0"` and `role="region"` with a label when it can scroll, so
 a keyboard user can reach it), Copy buttons with a `role="status"` feedback line, and a `Done` / `I've saved it`
-button. While it is showing, leaving the record asks first ("Leave without saving the bundle?"), and a reload
+button. While it is showing, leaving the record asks first ("Leave without saving the token?"), and a reload
 loses it, which is the point. An unused token is revoked from the record, never re-shown. Reference:
 `partner-edges.ts` (`renderBanners`), `partners-list.ts`.
 

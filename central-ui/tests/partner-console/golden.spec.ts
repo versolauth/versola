@@ -122,7 +122,7 @@ test('a created client and a created edge have the edge\'s shape', async ({ page
   expect(created.edge.status).toBe(201);
   expect(created.token.status).toBe(201);
   conforms('POST /clients', created.client.body, clientCreated as Json, ['POST /clients.consentFlow', 'POST /clients.policyUri', 'POST /clients.tosUri', 'POST /clients.logoUri'], problems);
-  conforms('POST /edges', created.edge.body, edgeCreated as Json, ['POST /edges.edge.certificateNotAfter', 'POST /edges.edge.lastRenewedAt', 'POST /edges.bundleComplete'], problems);
+  conforms('POST /edges', created.edge.body, edgeCreated as Json, ['POST /edges.edge.certificateNotAfter', 'POST /edges.edge.lastRenewedAt'], problems);
   conforms('POST /edges/{id}/enrollment-tokens', created.token.body, enrollmentToken as Json, [], problems);
   expect(problems).toEqual([]);
 });

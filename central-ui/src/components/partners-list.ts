@@ -44,7 +44,7 @@ type LimitsDraft = {
  * Table + side panel, like Edges: the record's groups (organisation, limits, edge group, clients,
  * approvals, activity, Fixed) each with their editor in the panel, Suspend / Resume in the danger
  * card, and `?tab=approvals` for the queue of what partners asked for beyond their limits. The
- * `Add partner` wizard is a page (`&new=1`) that ends on the one-time token and bundle page.
+ * `Add partner` wizard is a page (`&new=1`) that ends on the one-time token page.
  */
 @customElement('versola-partners-list')
 export class VersolaPartnersList extends LitElement {
@@ -258,7 +258,7 @@ export class VersolaPartnersList extends LitElement {
         this.draftKey = draftKey;
         if (mode !== 'view') this.resetDraft();
       }
-      // The token and bundle are for the partner just created; leaving its page is the one chance gone.
+      // The token is for the partner just created; leaving its page is the one chance gone.
       if (this.created && changed.has('route') && this.route.id !== this.created.partner.id) this.created = null;
     }
   }
@@ -321,7 +321,7 @@ export class VersolaPartnersList extends LitElement {
 
   private async closePanel() {
     const key = this.route.id;
-    if (this.created && !await this.confirmLeaveBundle()) return;
+    if (this.created && !await this.confirmLeaveToken()) return;
     dispatchRecordRoute(this, { id: null, edit: null, create: false, layout: null });
     if (key) void this.updateComplete.then(() => this.table?.focusRow(key));
   }
@@ -347,10 +347,10 @@ export class VersolaPartnersList extends LitElement {
     this.dispatchEvent(new CustomEvent('navigate-view', { detail: { view, id }, bubbles: true, composed: true }));
   }
 
-  private async confirmLeaveBundle(): Promise<boolean> {
+  private async confirmLeaveToken(): Promise<boolean> {
     return confirmDestructiveAction({
-      title: 'Leave without saving the bundle?',
-      message: 'The enrollment token and the bootstrap bundle are shown only once. After you leave they cannot be retrieved; you would have to issue a new token from the edge.',
+      title: 'Leave without saving the token?',
+      message: 'The enrollment token is shown only once. After you leave they cannot be retrieved; you would have to issue a new token from the edge.',
       confirmLabel: 'Leave',
       cancelLabel: 'Stay',
     });
@@ -497,10 +497,10 @@ export class VersolaPartnersList extends LitElement {
     void fetchAllClients(created.partner.tenantId).then(clients => { this.clients = clients; }).catch(() => undefined);
   }
 
-  private async handleCopy(what: 'token' | 'bundle') {
+  private async handleCopy() {
     if (!this.created) return;
-    const copied = await copyToClipboard(what === 'token' ? this.created.enrollmentToken : this.created.bundle);
-    this.copyFeedback = copied ? `${what === 'token' ? 'Enrollment token' : 'Bootstrap bundle'} copied.` : `Could not copy the ${what}.`;
+    const copied = await copyToClipboard(this.created.enrollmentToken);
+    this.copyFeedback = copied ? 'Enrollment token copied.' : 'Could not copy the enrollment token.';
   }
 
   // ── derived ──
@@ -617,7 +617,7 @@ export class VersolaPartnersList extends LitElement {
   private renderBanners(partner: Partner) {
     const waiting = this.waitingOf(partner);
     return html`
-      ${this.created?.partner.id === partner.id ? this.renderBundleBanner(this.created) : ''}
+      ${this.created?.partner.id === partner.id ? this.renderTokenBanner(this.created) : ''}
       ${partner.status === 'suspended' ? html`
         <div class="banner warn" role="status">
           <div class="banner-text">
@@ -629,7 +629,7 @@ export class VersolaPartnersList extends LitElement {
         <div class="banner info" role="status">
           <div class="banner-text">
             <div class="banner-title">${statusIcon('info')}Onboarding: no edge has enrolled yet</div>
-            <div>The partner becomes active when its first edge enrolls with the bootstrap bundle. The partner can sign in to its console only after that (the console client is served by its own edge), so expect no approval requests before.</div>
+            <div>The partner becomes active when its first edge enrolls with its enrollment token. The partner can sign in to its console only after that (the console client is served by its own edge), so expect no approval requests before.</div>
           </div>
         </div>` : ''}
       ${waiting.map(approval => html`
@@ -643,20 +643,18 @@ export class VersolaPartnersList extends LitElement {
     `;
   }
 
-  private renderBundleBanner(created: CreatedPartner) {
+  private renderTokenBanner(created: CreatedPartner) {
     return html`
       <div class="banner ok key-banner" role="status">
         <div class="banner-text">
-          <div class="banner-title">${statusIcon('check')}Partner created. Save the enrollment token and the bootstrap bundle now.</div>
-          <div>They are not shown again. The token is single-use and expires in 24 hours; the bundle goes next to the edge <span class="mono">${created.edge.id}</span> as <span class="mono">bootstrap.json</span>, started with <span class="mono">mode = "partner"</span>.</div>
+          <div class="banner-title">${statusIcon('check')}Partner created. Save the enrollment token now.</div>
+          <div>It is not shown again. It is single-use and expires in 24 hours: put it in a secret and start the edge <span class="mono">${created.edge.id}</span> with it.</div>
           <div class="secret-rows">
-            <div><div class="secret-label">Enrollment token</div><pre class="secret-value">${created.enrollmentToken}</pre></div>
-            <div><div class="secret-label">Bootstrap bundle</div><pre class="secret-value" tabindex="0" role="region" aria-label="Bootstrap bundle">${created.bundle}</pre></div>
+            <div><div class="secret-label">Enrollment token</div><pre class="secret-value" tabindex="0" role="region" aria-label="Enrollment token">${created.enrollmentToken}</pre></div>
           </div>
           <div class="banner-actions">
-            <button type="button" class="btn btn-primary btn-sm" @click=${() => this.handleCopy('token')}>Copy token</button>
-            <button type="button" class="btn btn-secondary btn-sm" @click=${() => this.handleCopy('bundle')}>Copy bundle</button>
-            <button type="button" class="btn btn-secondary btn-sm" @click=${() => { this.created = null; }}>I've saved them</button>
+            <button type="button" class="btn btn-primary btn-sm" @click=${() => this.handleCopy()}>Copy token</button>
+            <button type="button" class="btn btn-secondary btn-sm" @click=${() => { this.created = null; }}>I've saved it</button>
             ${this.copyFeedback ? html`<span class="copy-feedback" role="status">${this.copyFeedback}</span>` : ''}
           </div>
         </div>

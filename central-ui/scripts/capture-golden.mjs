@@ -3,8 +3,8 @@
 //   EDGE_URL=https://edge.partner.example.com COOKIE='EDGE_SESSION=…' node scripts/capture-golden.mjs
 //
 // Reads only (GET); the answers that need a write (a created client, a created edge) are not captured here: make the call by hand
-// with the session and save the body as client-created.json or edge-created.json. Signing key, token and bundle in such a body are
-// secrets: blank them before the file is committed.
+// with the session and save the body as client-created.json or edge-created.json. The token in such a body is a
+// secret: blank them before the file is committed.
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

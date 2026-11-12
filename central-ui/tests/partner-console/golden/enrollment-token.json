@@ -1,6 +1,4 @@
 {
   "token": "REDACTED-ENROLLMENT-TOKEN",
-  "bundle": "{\"edgeId\":\"e2e-partner-faf53869a4-edge\",\"group\":\"e2e-partner-faf53869a4\",\"central\":{\"mtlsUrl\":null},\"auth\":{\"issuer\":\"http://localhost:9003\",\"mtlsUrl\":null},\"token\":\"REDACTED-ENROLLMENT-TOKEN\"}",
-  "expiresAt": "2026-11-13T15:24:23.535783Z",
-  "bundleComplete": false
+  "expiresAt": "2026-11-13T15:24:23.535783Z"
 }

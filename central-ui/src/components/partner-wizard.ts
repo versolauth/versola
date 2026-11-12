@@ -23,7 +23,7 @@ const STEP_LABELS = ['Organisation', 'Limits', 'Edge & console', 'Review'];
 /**
  * Add partner (#549): four steps on the client wizard's shell. One request creates the partner,
  * its edge group, its console client, its first edge and the enrollment token; the list shows the
- * token and the bootstrap bundle once, on the new record. Fires `created` with what central
+ * token once, on the new record. Fires `created` with what central
  * answered, `cancel` to go back to the list.
  */
 @customElement('versola-partner-wizard')
@@ -406,7 +406,7 @@ export class VersolaPartnerWizard extends LitElement {
         <p class="editor-sub">The partner adds further edges itself, up to its limit.</p>
         ${this.prefixedEdgeField()}
         ${this.field(3, 'edgePublicUrl', 'Public URL *', 'Where users reach the edge; back-channel logout goes there too.', { type: 'url', placeholder: 'https://login.pilotpay.example' })}
-        <div class="hint">The enrollment token is single-use and valid for 24 hours. The bundle is shown once after this wizard; send it over a channel you trust.</div>
+        <div class="hint">The enrollment token is single-use and valid for 24 hours. It is shown once after this wizard; send it over a channel you trust.</div>
       </div>
       <div class="form-actions">
         <span class="wizard-actions-note">Step 3 of 4</span>
@@ -457,7 +457,7 @@ export class VersolaPartnerWizard extends LitElement {
         <div class="aside">
           <section class="review-group" aria-label="What the partner gets">
             <div class="review-head"><h2>What the partner gets</h2></div>
-            <div class="review-row"><span>Bootstrap bundle for <span class="mono">${this.edgeId}</span></span><span class="chip">shown once</span></div>
+            <div class="review-row"><span>Enrollment token for <span class="mono">${this.edgeId}</span></span><span class="chip">shown once</span></div>
             <div class="review-row"><span>Partner console at its own domain</span><span class="chip ok">after enrollment</span></div>
             <div class="review-row"><span>Access to central or this console</span><span class="chip danger">never</span></div>
           </section>

@@ -162,12 +162,12 @@ const shots: Shot[] = [
   { name: 'pt-edge-record', app: 'partner', path: '/partner.html?view=edges&id=edge-pilot-eu-1&layout=page', fullPage: true, before: async page => {
     await expect(page.getByRole('region', { name: "The operator's policies" })).toBeVisible();
   } },
-  { name: 'pt-edge-bundle', app: 'partner', path: '/partner.html?view=edges', state: { edges: partnerSeedState.edges.slice(0, 2) }, before: async page => {
+  { name: 'pt-edge-token', app: 'partner', path: '/partner.html?view=edges', state: { edges: partnerSeedState.edges.slice(0, 2) }, before: async page => {
     await page.getByRole('button', { name: '+ Add edge' }).click();
     await page.getByLabel('Edge ID *').fill('pilot-us-1');
     await page.getByLabel('Public URL *').fill('https://login-us.pilotpay.example');
     await page.getByRole('button', { name: 'Add edge', exact: true }).click();
-    await expect(page.getByText('Bootstrap bundle created')).toBeVisible();
+    await expect(page.getByText('Enrollment token created')).toBeVisible();
   } },
   { name: 'pt-revocation', app: 'partner', path: '/partner.html?view=revocation', narrow: true, before: async page => {
     await expect(page.getByRole('heading', { name: 'Sessions & revocation' })).toBeVisible();

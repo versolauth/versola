@@ -6,7 +6,7 @@ import { PARTNER_NOW, asLevel, partnerSeedState, suspendedPartner } from './part
 
 /**
  * Edges, the partner's deployments in its group: the table with the certificates, Add edge up to
- * the cap ending on the token and the bundle shown once, the record with the operator's policies
+ * the cap ending on the token shown once, the record with the operator's policies
  * read-only, revoke an unused token, remove an edge, and the suspended state.
  */
 const edgesPath = '/partner.html?view=edges';
@@ -65,7 +65,7 @@ test('an enrolled edge: the link to the operator, the certificate names, the pol
   expect(await scan(page)).toEqual([]);
 });
 
-test('adds an edge: the token and the bootstrap bundle are shown once, and leaving asks first', async ({ page }) => {
+test('adds an edge: the one enrollment token is shown once, and leaving asks first', async ({ page }) => {
   const api = await loadPartnerApp(page, { path: edgesPath, state: { edges: partnerSeedState.edges.slice(0, 2) } });
   await page.getByRole('button', { name: '+ Add edge' }).click();
   const editor = sidePanel(page, 'Add edge');
@@ -82,25 +82,25 @@ test('adds an edge: the token and the bootstrap bundle are shown once, and leavi
   await editor.getByRole('button', { name: 'Add edge' }).click();
 
   expect((await findRequest(api.requests, 'POST', '/edges')).body).toEqual({ id: 'edge-pilot-us-1', publicUrl: 'https://login-us.pilotpay.example' });
-  // One write: the edge comes back with its first token and bundle, no second call.
+  // One write: the edge comes back with its first token, no second call.
   expect(api.requests.filter(request => request.method === 'POST').map(request => request.pathname)).toEqual(['/edges']);
   const panel = sidePanel(page, 'edge-pilot-us-1');
-  await expect(panel.getByRole('status').first()).toContainText('Bootstrap bundle created. It is shown once.');
-  await expect(panel.getByRole('status').first()).toContainText('bootstrap.json');
-  await expect(panel.locator('.secret-value').first()).toHaveText(/^vtk_pilot-pay_/);
-  const bundle = panel.getByRole('region', { name: 'Bootstrap bundle' });
-  await expect(bundle).toContainText('"edgeId": "edge-pilot-us-1"');
-  // The signing key comes back with the edge, in the same write, and is shown once.
-  await expect(panel.getByRole('region', { name: 'Signing key' })).toContainText('BEGIN PRIVATE KEY');
-  await expect(bundle).toContainText('"group": "pilot-pay"');
-  await expect(bundle).toContainText('https://central-mtls.acme.example');
+  await expect(panel.getByRole('status').first()).toContainText('Enrollment token created. It is shown once.');
+  await expect(panel.getByRole('status').first()).toContainText('Put it in a secret and start the edge edge-pilot-us-1 with it.');
+  const token = panel.getByRole('region', { name: 'Enrollment token' });
+  await expect(token).toHaveText(/^vtk1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/);
+  // The token is all there is: no bundle, no signing key (the edge makes its own).
+  await expect(panel.locator('.secret-value')).toHaveCount(1);
+  await expect(panel.getByRole('region', { name: 'Bootstrap bundle' })).toHaveCount(0);
+  await expect(panel.getByRole('region', { name: 'Signing key' })).toHaveCount(0);
+  await expect(panel.getByRole('button', { name: 'Copy bundle' })).toHaveCount(0);
   await expect(panel.getByRole('region', { name: 'Certificate' })).toContainText('Not enrolled');
   expect(await scan(page)).toEqual([]);
 
   await panel.getByRole('button', { name: 'Copy token' }).click();
   await expect(panel.locator('.copy-feedback')).toHaveText(/Token copied\.|Could not copy the token\./);
   await page.getByRole('button', { name: 'Close panel' }).click();
-  const leave = page.getByRole('dialog', { name: 'Leave without saving the bundle?' });
+  const leave = page.getByRole('dialog', { name: 'Leave without saving the token?' });
   await expect(leave).toBeVisible();
   await leave.getByRole('button', { name: 'Stay' }).click();
   await expect(panel.locator('.secret-value').first()).toBeVisible();
@@ -129,11 +129,10 @@ test('a waiting edge: revoke the unused token, issue a new one', async ({ page }
   await certificate.getByRole('button', { name: 'Issue enrollment token' }).click();
   await findRequest(api.requests, 'POST', '/edges/edge-pilot-kz-1/enrollment-tokens');
   await expect(panel.getByRole('status').first()).toContainText('Enrollment token created. It is shown once.');
-  await expect(panel.getByRole('status').first()).toContainText('central.identity.enrollment');
-  // A token issued on its own has an incomplete bundle: no bundle to save and no signing key.
-  await expect(panel.getByRole('region', { name: 'Bootstrap bundle' })).toHaveCount(0);
-  await expect(panel.getByRole('button', { name: 'Copy bundle' })).toHaveCount(0);
-  await expect(panel.locator('.secret-value').first()).toHaveText(/^vtk_pilot-pay_/);
+  // The same one block as when the edge was added: the token, nothing else.
+  await expect(panel.getByRole('status').first()).toContainText('Put it in a secret and start the edge edge-pilot-kz-1 with it.');
+  await expect(panel.locator('.secret-value')).toHaveCount(1);
+  await expect(panel.getByRole('region', { name: 'Enrollment token' })).toHaveText(/^vtk1\./);
   await expect(panel.getByRole('status').first()).toContainText('until');
   // An edge that already enrolled has nothing to issue a token for.
 });

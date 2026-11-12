@@ -521,8 +521,8 @@ export interface CreatePartnerRequest {
 export interface CreatedPartner {
   partner: Partner;
   edge: Edge;
+  /** `vtk1.<enroll address>.<secret>`: the one thing the operator copies, shown once. */
   enrollmentToken: string;
-  bundle: string;
 }
 
 export interface ServiceKey {

@@ -121,15 +121,12 @@ type CreatePartnerRequestDto = {
   firstEdge: { id: string; publicUrl: string };
 };
 
-/** The bootstrap bundle an edge is started with, as the operator console shows it once. */
-export function bootstrapBundle(edgeId: string, groupId: string, token: string, issuer: string): string {
+/** An enrollment token as central issues it: `vtk1.<base64url(enroll address)>.<32-byte secret>`. */
+export function enrollmentToken(issuer: string): string {
   const host = new URL(issuer).host.replace(/^id\./, '');
-  return JSON.stringify({
-    edgeId, group: groupId,
-    central: { enrollUrl: `https://central.${host}/edge/enroll`, mtlsUrl: `https://central-mtls.${host}`, pins: ['sha256/4f3a0c7e9b2d…c1', 'sha256/9b2e51a8d0f4…77'] },
-    auth: { issuer, mtlsUrl: `https://id-mtls.${host}`, pins: ['sha256/a1d08c3f5e27…e5'] },
-    token,
-  }, null, 2);
+  const address = btoa(`https://central.${host}/edge/enroll`).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const secret = Array.from({ length: 43 }, () => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_'[Math.floor(Math.random() * 64)]).join('');
+  return `vtk1.${address}.${secret}`;
 }
 type EdgeClientLinkDto = { tenantId: string; clientId: string };
 type AuthorizationPresetDto = {
@@ -1678,9 +1675,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           groupId: partner.groupId, groupKind: 'partner', partnerId: partner.id, publicUrl: payload.firstEdge.publicUrl,
         };
         state.edges = [...state.edges, edge];
-        const enrollmentToken = `vtk_${partner.id}_${Math.random().toString(36).slice(2, 10)}${Math.random().toString(36).slice(2, 10)}`;
         const issuer = String((state.serverMetadata as { issuer?: string } | null)?.issuer ?? 'https://id.example');
-        await route.fulfill(json({ partner, edge, enrollmentToken, bundle: bootstrapBundle(edge.id, partner.groupId, enrollmentToken, issuer) }, 201));
+        await route.fulfill(json({ partner, edge, enrollmentToken: enrollmentToken(issuer) }, 201));
         return;
       }
 

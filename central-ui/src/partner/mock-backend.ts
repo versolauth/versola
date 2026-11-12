@@ -58,15 +58,12 @@ function readBody(request: MockRequest): unknown {
   return body ? JSON.parse(body) : undefined;
 }
 
-/** The bootstrap bundle the partner console shows once for a new edge. */
-export function partnerBundle(edgeId: string, me: PartnerMe, token: string): string {
-  const central = (me.partner.operator.centralMtlsUrl ?? '').replace('central-mtls.', 'central.');
-  return JSON.stringify({
-    edgeId, group: me.partner.id,
-    central: { enrollUrl: `${central}/edge/enroll`, mtlsUrl: me.partner.operator.centralMtlsUrl, pins: ['sha256/4f3a0c7e9b2d…c1', 'sha256/9b2e51a8d0f4…77'] },
-    auth: { issuer: me.partner.operator.issuer, mtlsUrl: me.partner.operator.mtlsUrl, pins: ['sha256/a1d08c3f5e27…e5'] },
-    token,
-  }, null, 2);
+/** `vtk1.<base64url(enroll address)>.<secret>`: what the edge is started with; the address is the operator's public enrollment one. */
+export function partnerToken(me: PartnerMe): string {
+  const central = (me.partner.operator.centralMtlsUrl ?? 'https://central-mtls.example').replace('central-mtls.', 'central.');
+  const address = btoa(`${central}/edge/enroll`).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const secret = Array.from({ length: 43 }, () => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_'[Math.floor(Math.random() * 64)]).join('');
+  return `vtk1.${address}.${secret}`;
 }
 
 /** What central refuses for any client, partner or not: an access token lifetime outside its rule (at most 24 h, at least 1 h when DPoP-bound, as a device client's are). */
@@ -97,10 +94,10 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
   const nowIso = () => new Date(nowMs()).toISOString();
   const issueToken = (edge: PartnerEdge): EnrollmentToken => {
     const me = state.me!;
-    const token = `vtk_${me.partner.id}_${Math.random().toString(36).slice(2, 10)}${Math.random().toString(36).slice(2, 10)}`;
+    const token = partnerToken(me);
     // An enrollment token lives 24 hours.
     const expiresAt = new Date(nowMs() + 24 * 60 * 60_000).toISOString();
-    const issued = { token, bundle: partnerBundle(edge.id, me, token), bundleComplete: false, expiresAt };
+    const issued = { token, expiresAt };
     state.pendingTokens = { ...(state.pendingTokens ?? {}), [edge.id]: expiresAt };
     return issued;
   };
@@ -328,8 +325,7 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
         // One write: the edge and its first enrollment token, so a failure between the two cannot leave an edge without a token.
         const issued = issueToken(edge);
         state.edges = [...state.edges, edge];
-        const keyId = nowIso().slice(0, 19).replace('T', '_').replace(/:/g, '-');
-        const created: CreatedEdge = { edge, signingKey: { keyId, privateKey: `-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC…${edge.id}\n-----END PRIVATE KEY-----` }, ...issued, bundleComplete: true };
+        const created: CreatedEdge = { edge, ...issued };
         await route.fulfill(json(created, 201));
         return;
       }

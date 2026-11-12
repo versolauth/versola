@@ -7,7 +7,7 @@ import { PARTNER_NOW, beeMarket, nomadTravel, partnerState, partnersPath, pilotP
  * Partners (#549, #963) on the table + side panel pattern: the list with status, group, clients,
  * edges and the review date; the record with its groups; the editors for the organisation, the
  * limits and the suspension; resume; the Add partner wizard end to end with the one-time token and
- * bundle page; the read-only console; the sheet below 720px; axe on every screen.
+ * token page; the read-only console; the sheet below 720px; axe on every screen.
  */
 const readOnly = { resources: { central: { permissions: ['partners:read', 'oauth:read', 'edges:read', 'resources:read'] } }, isProd: false };
 
@@ -170,7 +170,7 @@ test('edits the organisation and sends the review date as an instant', async ({ 
   await expect(sidePanel(page, 'Pilot Pay Ltd').getByRole('region', { name: 'Organisation' })).toContainText('Mar 14, 2027');
 });
 
-test('the Add partner wizard creates everything in one request and lands on the one-time token and bundle', async ({ page }) => {
+test('the Add partner wizard creates everything in one request and lands on the one-time token', async ({ page }) => {
   const api = await loadAdminApp(page, { path: partnersPath, state: partnerState });
   await page.getByRole('button', { name: '+ Add partner' }).click();
   await expect(page).toHaveURL(/new=1/);
@@ -237,21 +237,23 @@ test('the Add partner wizard creates everything in one request and lands on the 
 
   const record = sidePanel(page, 'Nomad Air');
   await expect(page).toHaveURL(/id=nomad-air/);
-  await expect(record.getByText('Partner created. Save the enrollment token and the bootstrap bundle now.')).toBeVisible();
-  await expect(record.locator('.secret-value')).toHaveCount(2);
-  await expect(record.locator('.secret-value').nth(1)).toContainText('"edgeId": "edge-eu-1"');
+  await expect(record.getByText('Partner created. Save the enrollment token now.')).toBeVisible();
+  // One block: the token (no bundle, no signing key), carrying central's enrollment address.
+  await expect(record.locator('.secret-value')).toHaveCount(1);
+  await expect(record.getByRole('region', { name: 'Enrollment token' })).toHaveText(/^vtk1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/);
+  await expect(record.getByText('put it in a secret and start the edge edge-eu-1 with it', { exact: false })).toBeVisible();
   await expect(record.getByRole('button', { name: 'Copy token' })).toBeVisible();
   await expect(record.getByText('Onboarding: no edge has enrolled yet')).toBeVisible();
   await expect(page.locator('versola-data-table')).toContainText('Nomad Air');
   expect(await scan(page)).toEqual([]);
 
-  // Leaving the record asks first, since the bundle is shown once.
+  // Leaving the record asks first, since the token is shown once.
   await page.keyboard.press('Escape');
-  const confirm = page.getByRole('dialog', { name: 'Leave without saving the bundle?' });
+  const confirm = page.getByRole('dialog', { name: 'Leave without saving the token?' });
   await confirm.getByRole('button', { name: 'Stay' }).click();
-  await expect(record.getByText('Partner created. Save the enrollment token and the bootstrap bundle now.')).toBeVisible();
-  await record.getByRole('button', { name: "I've saved them" }).click();
-  await expect(record.getByText('Partner created. Save the enrollment token and the bootstrap bundle now.')).toHaveCount(0);
+  await expect(record.getByText('Partner created. Save the enrollment token now.')).toBeVisible();
+  await record.getByRole('button', { name: "I've saved it" }).click();
+  await expect(record.getByText('Partner created. Save the enrollment token now.')).toHaveCount(0);
 });
 
 test('read-only with partners:read: no Add partner, no Edit, no suspend, no resume', async ({ page }) => {

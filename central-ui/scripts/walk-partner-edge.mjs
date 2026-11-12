@@ -134,8 +134,7 @@ if (process.env.FLOWS) {
 
 // The golden files of tests/partner-console/golden, from what this run saw. The one-time secrets are replaced; everything else is as sent.
 const redact = (name, body) => {
-  if (name === 'edge-created') body = { ...body, token: 'REDACTED-ENROLLMENT-TOKEN', signingKey: { ...body.signingKey, privateKey: 'REDACTED-PRIVATE-KEY' }, bundle: body.bundle.replace(/"privateKey":"[^"]*"/, '"privateKey":"REDACTED-PRIVATE-KEY"').replace(/"token":"[^"]*"/, '"token":"REDACTED-ENROLLMENT-TOKEN"') };
-  if (name === 'enrollment-token') body = { ...body, token: 'REDACTED-ENROLLMENT-TOKEN', bundle: body.bundle.replace(/"token":"[^"]*"/, '"token":"REDACTED-ENROLLMENT-TOKEN"') };
+  if (name === 'edge-created' || name === 'enrollment-token') body = { ...body, token: 'REDACTED-ENROLLMENT-TOKEN' };
   return body;
 };
 const goldenSources = {

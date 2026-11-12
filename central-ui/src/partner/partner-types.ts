@@ -100,14 +100,11 @@ export type PartnerEdge = {
   policies: { overload: Record<string, unknown>; accessLog: Record<string, unknown>; rateLimits: Record<string, unknown> };
 };
 
-/** `bundleComplete` is false for a token issued on its own: that bundle has no signing key and no enroll URL and cannot be saved as `bootstrap.json`; only `POST /partner/api/edges` returns a complete one. */
-export type EnrollmentToken = { token: string; bundle: string; bundleComplete?: boolean; expiresAt: string | null };
+/** `vtk1.<base64url(enroll address)>.<secret>`: registering an edge is this one string, shown once. The edge makes its own keys. */
+export type EnrollmentToken = { token: string; expiresAt: string | null };
 
 /** `POST /partner/api/edges`: the edge and its first enrollment token in one write. */
-export type CreatedEdge = EnrollmentToken & { edge: PartnerEdge; signingKey: SigningKey };
-
-/** The edge's signing key, created with it and shown once: the private half is never kept by the operator. */
-export type SigningKey = { keyId: string; privateKey: string };
+export type CreatedEdge = EnrollmentToken & { edge: PartnerEdge };
 
 /** What a partner may end on the edge that serves its console: the sessions of a user, one session, or one refresh-token family (`fam_id`). The tokens live in the edge's sessions; auth is never contacted. */
 export type RevocationBy = 'user' | 'sid' | 'fam';
