@@ -6,11 +6,12 @@ import versola.central.configuration.clients.*
 import versola.central.configuration.edges.{EdgeCertificate, EdgeId}
 import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
 import versola.util.CertificateSubject
-import versola.util.audit.{ActorType, AuditContext, AuditEvents}
+import versola.util.audit.{ActorType, AuditContext, AuditEvents, AuditKind, CertAuditDetails}
 import versola.util.http.Observability
 import versola.util.{Patch, PrivateClientCertificate}
 import zio.*
 
+import java.security.cert.X509Certificate
 import java.time.Instant
 import scala.jdk.CollectionConverters.*
 
@@ -90,7 +91,9 @@ object ClientCertificateService:
             ),
           )
 
-    private case class Issued(certificate: PrivateClientCertificate, serial: String, notAfter: Instant)
+    private case class Issued(certificate: PrivateClientCertificate, leaf: X509Certificate):
+      def serial: String = leaf.getSerialNumber.toString(16)
+      def notAfter: Instant = leaf.getNotAfter.toInstant
 
     override def register(
         request: CreateClientRequest,
@@ -125,7 +128,17 @@ object ClientCertificateService:
               ZIO.logError(s"could not record the certificate issued to '${request.id}', removing the client: $error") *>
                 clients.deleteClient(request.id).ignore,
             )
+          // The registration stands only now. By the administrator whose request registered the client, as `renewIssued` does.
+          _ <- certificateEvent(CentralAudit.CertEnrolled, request.id, CertAuditDetails.of("issue", Some(request.id.toString), issued.leaf))
         yield registered
+
+    /** A certificate event of a client that central itself issued: by the administrator whose request started it, or by the system
+      * when no request did (the automatic renewal). */
+    private def certificateEvent(kind: AuditKind, clientId: ClientId, details: CertAuditDetails): UIO[Unit] =
+      for
+        actor <- AuditContext.current.map(_.actor.getOrElse((ActorType.system, None)))
+        _ <- CentralAudit.certificate(events, kind, actor._1, actor._2, ("client", clientId.toString), details)
+      yield ()
 
     /** The edge generates the key and asks for the certificate later; registration only records that
       * it will, after checking the client could be recognised by what it would ask for. */
@@ -219,6 +232,7 @@ object ClientCertificateService:
             CentralAudit.Actors.Edge,
             Some(edgeId.toString),
             ("client", clientId.toString),
+            CertAuditDetails.of("sign", Some(clientId.toString), leaf),
           ))
           .catchAll(error => Observability.setError("edge_certificate_not_recorded", Some(s"client '$clientId': $error")))
         _ <- ZIO.logInfo(
@@ -277,9 +291,7 @@ object ClientCertificateService:
             _ <- clients.updateClient(update(clientId, issued.certificate))
             now <- Clock.instant
             _ <- issuances.replace(ClientCertificateIssuance(clientId, issued.serial, issued.notAfter, now))
-            // By the administrator whose request renewed it, or by the system when the renewal came due.
-            actor <- AuditContext.current.map(_.actor.getOrElse((ActorType.system, None)))
-            _ <- CentralAudit.certificate(events, CentralAudit.CertRenewed, actor._1, actor._2, ("client", clientId.toString))
+            _ <- certificateEvent(CentralAudit.CertRenewed, clientId, CertAuditDetails.of("renew", Some(clientId.toString), issued.leaf))
             _ <- ZIO.logInfo(s"issued certificate ${issued.serial} to client '$clientId', valid until ${issued.notAfter}")
           yield ()
       yield ()
@@ -311,7 +323,7 @@ object ClientCertificateService:
               if !material.subjectValues(subjectType.toString).contains(value) =>
             Some(RuntimeException(s"the issued certificate carries no $subjectType of '$value'"))
           case _ => None)(ZIO.fail(_))
-      yield Issued(certificate, material.leaf.getSerialNumber.toString(16), material.leaf.getNotAfter.toInstant)
+      yield Issued(certificate, material.leaf)
 
     private def update(clientId: ClientId, certificate: PrivateClientCertificate): UpdateClientRequest =
       UpdateClientRequest(

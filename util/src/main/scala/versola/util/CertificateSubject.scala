@@ -146,6 +146,13 @@ object CertificateSubject:
       case _: RSAPublicKey => Left(s"the request's RSA key is shorter than $MinRsaBits bits")
       case other => Left(s"the request's key is ${other.getAlgorithm}, which is neither EC P-256 nor RSA")
 
+  /** The subject a request names, `None` when `csrPem` is not a readable PKCS#10. Not checked against anything: for the log of a
+    * request that was refused. */
+  def requestSubject(csrPem: String): Option[X500Principal] =
+    scala.util.Try(
+      JcaPKCS10CertificationRequest(PEMParser(StringReader(csrPem)).readObject().asInstanceOf[PKCS10CertificationRequest]).getSubject.getEncoded,
+    ).toOption.map(X500Principal(_))
+
   /** Whether two public keys are the same key, by their key material and not their encoding: the same EC point on the
     * same curve, or the same RSA modulus and exponent, however each was written down. */
   def sameKey(a: PublicKey, b: PublicKey): Boolean =

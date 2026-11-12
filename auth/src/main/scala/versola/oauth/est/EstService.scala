@@ -1,9 +1,8 @@
 package versola.oauth.est
 
 import versola.audit.AuditSupport.*
-import versola.audit.AuthAuditDetails
 import versola.audit.{AuthActors, AuthAuditKinds}
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome, CertAuditDetails}
 import versola.util.{CertificateSubject, CoreConfig}
 import zio.*
 import zio.metrics.{Metric, MetricLabel}
@@ -11,6 +10,7 @@ import zio.metrics.{Metric, MetricLabel}
 import java.nio.file.{Files, Path}
 import java.security.cert.X509Certificate
 import java.time.Instant
+import javax.security.auth.x500.X500Principal
 
 /** EST (RFC 7030) as auth serves it: a client registered with `estEnrollment` gets and renews its mTLS client certificate.
   *
@@ -74,7 +74,7 @@ object EstService:
       ZIO.fromOption(ca).orElseFail(EstError.Disabled)
 
     override def enroll(credentials: Credentials, body: String): IO[EstError | Throwable, Issued] =
-      counted("enroll", credentials.clientId):
+      counted("enroll", credentials.clientId, EstCodec.requestPem(body).toOption.flatMap(CertificateSubject.requestSubject)):
         for
           _ <- caCertificates
           admitted <- limiter.admit(credentials.clientId.getOrElse(""))
@@ -85,7 +85,11 @@ object EstService:
         yield result
 
     override def reenroll(presented: X509Certificate, body: String): IO[EstError | Throwable, Issued] =
-      counted("reenroll", CertificateSubject.commonNameOf(presented.getSubjectX500Principal)):
+      counted(
+        "reenroll",
+        CertificateSubject.commonNameOf(presented.getSubjectX500Principal),
+        EstCodec.requestPem(body).toOption.flatMap(CertificateSubject.requestSubject),
+      ):
         for
           _ <- caCertificates
           now <- Clock.instant
@@ -110,7 +114,7 @@ object EstService:
 
     /** What a refused request is called and how it counts in the audit log: a caller that could not prove who it is, or may not, is
       * `denied`; a request that was throttled or malformed is `failure`. A refusal that is the server's own (central down) is not an event. */
-    private def auditRefused(operation: String, clientId: Option[String], error: EstError): IO[Throwable, Unit] =
+    private def auditRefused(operation: String, clientId: Option[String], error: EstError, requested: => Option[X500Principal]): IO[Throwable, Unit] =
       val classified = error match
         case EstError.Unauthorized => Some((AuditOutcome.denied, "est_unauthorized"))
         case _: EstError.Forbidden => Some((AuditOutcome.denied, "est_forbidden"))
@@ -126,18 +130,26 @@ object EstService:
             actor = Some((AuthActors.client, clientId)),
             userId = None,
             target = None,
-            details = AuthAuditDetails.Cert(operation = operation, clientId = clientId, serial = None, notAfter = None, csrCn = None),
+            // Nothing was issued, so there is no serial or validity; the subject is what the request asked for, read only for a
+            // request that was not throttled (a flood past the limit costs a refusal, not a parse).
+            details = CertAuditDetails.refused(
+              operation = operation,
+              clientId = clientId,
+              subject = if error == EstError.TooManyRequests then None else requested,
+            ),
           ),
         )
 
-    private def counted[A](operation: String, clientId: Option[String])(effect: IO[EstError | Throwable, A]): IO[EstError | Throwable, A] =
+    private def counted[A](operation: String, clientId: Option[String], requested: => Option[X500Principal])(
+        effect: IO[EstError | Throwable, A],
+    ): IO[EstError | Throwable, A] =
       effect.tapBoth(
         {
           case EstError.Disabled => ZIO.unit
-          case EstError.Unauthorized => count(operation, "unauthorized") *> auditRefused(operation, clientId, EstError.Unauthorized)
-          case EstError.TooManyRequests => count(operation, "rate_limited") *> auditRefused(operation, clientId, EstError.TooManyRequests)
-          case error: EstError.BadRequest => count(operation, "bad_request") *> auditRefused(operation, clientId, error)
-          case error: EstError.Forbidden => count(operation, "forbidden") *> auditRefused(operation, clientId, error)
+          case EstError.Unauthorized => count(operation, "unauthorized") *> auditRefused(operation, clientId, EstError.Unauthorized, requested)
+          case EstError.TooManyRequests => count(operation, "rate_limited") *> auditRefused(operation, clientId, EstError.TooManyRequests, requested)
+          case error: EstError.BadRequest => count(operation, "bad_request") *> auditRefused(operation, clientId, error, requested)
+          case error: EstError.Forbidden => count(operation, "forbidden") *> auditRefused(operation, clientId, error, requested)
           case _ => count(operation, "error")
         },
         _ => count(operation, "issued"),

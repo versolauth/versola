@@ -231,6 +231,11 @@ object EstEnrollmentSpec extends ZIOSpec[Flows.Setups & CentralApi]:
         yield assertTrue(
           certificates.map(row => (row.kind, row.actorType, row.actorId)) ==
             List(("cert.enrolled", "client", Some(id)), ("cert.renewed", "client", Some(id))),
+          // which certificate each event is about: the serial openssl reads from it (details is stored as jsonb, so the text has spaces)
+          certificates.map(row => """"serial":\s*"([0-9a-f]+)"""".r.findFirstMatchIn(row.details).map(_.group(1))) ==
+            List(firstSerial, secondSerial).map(serial => Some(serial.stripPrefix("serial=").toLowerCase.dropWhile(_ == '0'))),
+          certificates.forall(row => row.details.contains("\"subject\"") && row.details.contains("\"notAfter\"")),
+          certificates.forall(row => !row.details.contains("PRIVATE KEY") && !row.details.contains("BEGIN")),
           enrolled._1.status == Status.Ok,
           enrolled._1.rawHeader("Content-Type").exists(_.startsWith("application/pkcs7-mime")),
           enrolled._1.rawHeader("Content-Transfer-Encoding").contains("base64"),

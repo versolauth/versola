@@ -1,6 +1,7 @@
 package versola.central.configuration.edges
 
 import org.scalamock.stubs.ZIOStubs
+import versola.central.audit.CertAuditChecks.{describe, leafOf, onlyKnownMembers, withoutPemMaterial}
 import versola.central.audit.{CentralAudit, RecordedAudit}
 import versola.central.configuration.clients.certificates.{CertificateSigningRequest, ClientCertificateIssuer}
 import versola.central.{CentralConfig, TestCentralConfig}
@@ -111,7 +112,7 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         csr <- csrFor(edge)
         refused <- service.enroll(edgeId, "not-a-token", csr).flip
         none <- env.audit.drafts
-        _ <- service.enroll(edgeId, issued.token, csr)
+        identity <- service.enroll(edgeId, issued.token, csr)
         recorded <- env.audit.drafts
       yield assertTrue(
         refused == EdgeIdentityService.InvalidToken,
@@ -119,6 +120,10 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         recorded.map(_.kind) == Vector(CentralAudit.CertEnrolled),
         recorded.head.actor == Some((CentralAudit.Actors.Edge, Some(edgeId.toString))),
         recorded.head.target == Some(("edge", edgeId.toString)),
+        // which certificate: its serial, end of validity and subject, and nothing of the request or the chain
+        describe(recorded.head, "enroll", None, leafOf(identity.chain)),
+        withoutPemMaterial(recorded.head, csr, identity.chain),
+        onlyKnownMembers(recorded.head),
       )
     },
     test("renewing records cert.renewed by that edge, and a request that names another edge records nothing") {
@@ -130,12 +135,16 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         csr <- csrFor(edge)
         _ <- service.enroll(edgeId, issued.token, csr)
         refused <- csrFor(edgeRecord(otherEdgeId)).flatMap(service.renew(edgeId, _)).flip
-        _ <- csrFor(edge).flatMap(service.renew(edgeId, _))
+        renewalCsr <- csrFor(edge)
+        renewed <- service.renew(edgeId, renewalCsr, None)
         recorded <- env.audit.drafts
       yield assertTrue(
         refused.isInstanceOf[EdgeIdentityService.Refused],
         recorded.map(_.kind) == Vector(CentralAudit.CertEnrolled, CentralAudit.CertRenewed),
         recorded.last.actor == Some((CentralAudit.Actors.Edge, Some(edgeId.toString))),
+        describe(recorded.last, "renew", None, leafOf(renewed.chain)),
+        withoutPemMaterial(recorded.last, renewalCsr, renewed.chain),
+        onlyKnownMembers(recorded.last),
       )
     },
     test("the certificate of an edge names the edge and its group, and nothing else") {

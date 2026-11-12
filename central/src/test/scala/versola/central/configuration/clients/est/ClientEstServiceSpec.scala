@@ -7,6 +7,7 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.bouncycastle.pkcs.PKCS10CertificationRequest
 import org.bouncycastle.pkcs.jcajce.{JcaPKCS10CertificationRequest, JcaPKCS10CertificationRequestBuilder}
 import org.scalamock.stubs.ZIOStubs
+import versola.central.audit.CertAuditChecks.{describe, onlyKnownMembers, withoutPemMaterial}
 import versola.central.audit.{CentralAudit, RecordedAudit}
 import versola.central.configuration.CreateClientRequest
 import versola.central.configuration.clients.*
@@ -289,13 +290,17 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           issued <- service.issueEnrollmentToken(clientId)
           _ <- service.enroll("not-a-token", None, csr()).flip
           none <- env.audit.drafts
-          _ <- service.enroll(issued.token, None, csr())
+          request = csr()
+          identity <- service.enroll(issued.token, None, request)
           recorded <- env.audit.drafts
         yield assertTrue(
           none.isEmpty,
           recorded.map(_.kind) == Vector(CentralAudit.CertEnrolled),
           recorded.head.actor == Some((CentralAudit.Actors.Client, Some(clientId.toString))),
           recorded.head.target == Some(("client", clientId.toString)),
+          describe(recorded.head, "enroll", Some(clientId.toString), leafOf(identity.chain)),
+          withoutPemMaterial(recorded.head, request, identity.chain),
+          onlyKnownMembers(recorded.head),
         )
       },
       test("a token is good once") {
@@ -447,7 +452,8 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- realTime
           service <- env.service
           first <- enrol(env, service)
-          second <- service.renew(first.chain, csr())
+          renewalRequest = csr()
+          second <- service.renew(first.chain, renewalRequest)
           afterRenewal <- env.audit.drafts
           _ <- TestClock.adjust(ClientEstService.ForkGrace + 1.minute)
           _ <- service.renew(first.chain, csr()).flip
@@ -459,6 +465,12 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // the refused renewals add the revocation and nothing else
           all.map(_.kind) == Vector(CentralAudit.CertEnrolled, CentralAudit.CertRenewed, CentralAudit.CertRevoked),
           all.last.actor == Some((ActorType.system, None)),
+          describe(afterRenewal.last, "renew", Some(clientId.toString), leafOf(second.chain)),
+          withoutPemMaterial(afterRenewal.last, renewalRequest, second.chain),
+          // the revocation describes the certificate that was presented again: the one the renewal replaced
+          describe(all.last, "revoke", Some(clientId.toString), leafOf(first.chain)),
+          withoutPemMaterial(all.last, first.chain),
+          all.forall(onlyKnownMembers),
         )
       },
       test("a certificate that was replaced and renews again after the grace closes the chain, for both holders of the key") {

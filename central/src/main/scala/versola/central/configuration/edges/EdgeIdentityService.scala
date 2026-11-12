@@ -3,7 +3,7 @@ package versola.central.configuration.edges
 import versola.central.CentralConfig
 import versola.central.audit.CentralAudit
 import versola.central.configuration.clients.certificates.ClientCertificateRequests
-import versola.util.audit.{AuditEvents, AuditKind}
+import versola.util.audit.{AuditEvents, AuditKind, CertAuditDetails}
 import versola.util.http.Observability
 import versola.util.{Base64Url, CertificateSubject, EdgeIdentityNames, SecureRandom}
 import zio.*
@@ -100,8 +100,11 @@ object EdgeIdentityService:
       config: CentralConfig,
       events: AuditEvents,
   ) extends EdgeIdentityService:
-    private def certificateEvent(kind: AuditKind, edgeId: EdgeId): UIO[Unit] =
-      CentralAudit.certificate(events, kind, CentralAudit.Actors.Edge, Some(edgeId.toString), ("edge", edgeId.toString))
+    private def certificateEvent(kind: AuditKind, edgeId: EdgeId, details: CertAuditDetails): UIO[Unit] =
+      CentralAudit.certificate(events, kind, CentralAudit.Actors.Edge, Some(edgeId.toString), ("edge", edgeId.toString), details)
+
+    /** What the CA signed: the chain handed to the edge and its leaf, which the event describes. */
+    private case class Signed(chain: String, leaf: X509Certificate)
 
     private val validity: Duration = EdgeCertificateIssuer.validity(config)
     private val policy = config.edgeIdentity
@@ -141,10 +144,10 @@ object EdgeIdentityService:
         spent <- tokens.consume(hash(token), now)
         // Another caller spent it between the look and now.
         _ <- ZIO.fail(InvalidToken).unless(spent.contains(edgeId))
-        chain <- sign(edge, csrPem)
+        signed <- sign(edge, csrPem)
         _ <- chains.start(edgeId, now)
-        _ <- certificateEvent(CentralAudit.CertEnrolled, edgeId)
-      yield Identity(chain, endOf(edge, now))
+        _ <- certificateEvent(CentralAudit.CertEnrolled, edgeId, CertAuditDetails.of("enroll", None, signed.leaf))
+      yield Identity(signed.chain, endOf(edge, now))
 
     override def renew(edgeId: EdgeId, csrPem: String, presentedSerial: Option[String]): IO[Refused | Throwable, Identity] =
       for
@@ -168,9 +171,9 @@ object EdgeIdentityService:
                 s"last extended): extend it with POST /configuration/edges/extend?edgeId=$edgeId, or enrol it again with a new token",
             ))
         _ <- ZIO.logInfo(s"renewing the certificate of edge '$edgeId' presented as serial ${presentedSerial.getOrElse("unknown")}")
-        chain <- sign(edge, csrPem)
-        _ <- certificateEvent(CentralAudit.CertRenewed, edgeId)
-      yield Identity(chain, endOf(edge, begun))
+        signed <- sign(edge, csrPem)
+        _ <- certificateEvent(CentralAudit.CertRenewed, edgeId, CertAuditDetails.of("renew", None, signed.leaf))
+      yield Identity(signed.chain, endOf(edge, begun))
 
     override def extend(edgeId: EdgeId): IO[Refused | Throwable, Unit] =
       for
@@ -188,7 +191,7 @@ object EdgeIdentityService:
           partners <- edges.getAllEdges.map(_.filter(_.groupKind == EdgeGroupKind.Partner).map(_.id).toSet)
         yield started.view.filterKeys(partners).mapValues(_.plus(maxAge)).toMap
 
-    private def sign(edge: EdgeRecord, csrPem: String): IO[Refused | Throwable, String] =
+    private def sign(edge: EdgeRecord, csrPem: String): IO[Refused | Throwable, Signed] =
       val subject = subjectFor(edge)
       for
         chain <- issuer.issuer.sign(ClientCertificateRequests.signingRequest(csrPem, subject, validity))
@@ -206,7 +209,7 @@ object EdgeIdentityService:
         _ <- ZIO.logInfo(
           s"issued certificate ${leaf.getSerialNumber.toString(16)} to edge '${edge.id}' (group '${edge.groupId}'), valid until ${leaf.getNotAfter.toInstant}",
         )
-      yield chain
+      yield Signed(chain, leaf)
 
     private def hash(token: String): String =
       MessageDigest.getInstance("SHA-256").digest(token.getBytes(StandardCharsets.UTF_8)).map(b => f"${b & 0xff}%02x").mkString

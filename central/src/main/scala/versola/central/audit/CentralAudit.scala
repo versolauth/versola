@@ -1,6 +1,6 @@
 package versola.central.audit
 
-import versola.util.audit.{ActorType, AuditCatalog, AuditDetails, AuditDraft, AuditEvents, AuditKind, AuditOutcome, AuditSource}
+import versola.util.audit.{ActorType, AuditCatalog, AuditDraft, AuditEvents, AuditKind, AuditOutcome, AuditSource, CertAuditDetails}
 import zio.metrics.{Metric, MetricLabel}
 import zio.{UIO, ZIO}
 
@@ -43,7 +43,14 @@ object CentralAudit:
 
   /** An event of a certificate flow: no administrator's request starts it, its actor is the holder of the certificate (a client, an
     * edge) or the system, and its target is the client or the edge the certificate is of. */
-  def certificate(events: AuditEvents, kind: AuditKind, actor: ActorType, actorId: Option[String], target: (String, String)): UIO[Unit] =
+  def certificate(
+      events: AuditEvents,
+      kind: AuditKind,
+      actor: ActorType,
+      actorId: Option[String],
+      target: (String, String),
+      details: CertAuditDetails,
+  ): UIO[Unit] =
     events.recordBestEffort(
       AuditDraft(
         kind = kind,
@@ -52,7 +59,7 @@ object CentralAudit:
         actor = Some((actor, actorId)),
         userId = None,
         target = Some(target),
-        details = AuditDetails.empty,
+        details = details,
       ),
     )
 

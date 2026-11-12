@@ -7,6 +7,7 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.bouncycastle.pkcs.PKCS10CertificationRequest
 import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequest
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.audit.CertAuditChecks.{detail, onlyKnownMembers, withoutPemMaterial}
 import versola.central.audit.{CentralAudit, RecordedAudit}
 import versola.central.configuration.clients.*
 import versola.central.configuration.edges.EdgeId
@@ -14,7 +15,7 @@ import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.CertificateSubject
-import versola.util.audit.{ActorType, AuditEvents}
+import versola.util.audit.{ActorType, AuditContext, AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.{Patch, PrivateClientCertificate, TestCertificates}
 import zio.*
 import zio.test.*
@@ -23,6 +24,7 @@ import java.io.StringReader
 import java.math.BigInteger
 import java.time.Instant
 import java.util.Date
+import javax.security.auth.x500.X500Principal
 
 object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
@@ -223,6 +225,52 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
         issuances.rows.get(clientId).exists(_.notAfter.isAfter(Instant.now().plusSeconds(13 * 24 * 3600L))),
       )
     },
+    test("a certificate issued at registration is recorded as cert.enrolled by the administrator, with its serial, validity and subject") {
+      val clients = stub[OAuthClientService]
+      val issuances = Issuances()
+      val audit = RecordedAudit.unsafe
+      val service = ClientCertificateService.Impl(FakeCa(), clients, issuances, Enrollments(), config, audit)
+      for
+        _ <- clients.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None))
+        _ <- service.register(createRequest)
+        recorded <- audit.drafts
+        issuance = issuances.rows(clientId)
+        sent = clients.registerClient.calls.head._1
+        material = sent.edgeClientCertificate.get.material.toOption.get
+      yield assertTrue(
+        recorded.map(_.kind) == Vector(CentralAudit.CertEnrolled),
+        recorded.head.outcome == AuditOutcome.success,
+        recorded.head.target == Some(("client", clientId.toString)),
+        detail(recorded.head, "operation") == Some("issue"),
+        detail(recorded.head, "clientId") == Some(clientId.toString),
+        detail(recorded.head, "serial") == Some(issuance.serial),
+        detail(recorded.head, "notAfter") == Some(issuance.notAfter.toString),
+        detail(recorded.head, "subject") == Some(material.subjectDn),
+        withoutPemMaterial(recorded.head, material.privateKeyPem, material.certificateChain),
+        onlyKnownMembers(recorded.head),
+      )
+    },
+    test("the administrator whose request registered the client is the actor of cert.enrolled") {
+      val clients = stub[OAuthClientService]
+      val audit = RecordedAudit.unsafe
+      val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config, audit)
+      for
+        _ <- clients.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None))
+        _ <- AuditContext.reset(AuditContext.State.empty):
+          AuditContext.setActor(CentralAudit.Actors.Admin, Some("admin-1")) *> service.register(createRequest)
+        recorded <- audit.drafts
+      yield assertTrue(recorded.map(_.actor) == Vector(Some((CentralAudit.Actors.Admin, Some("admin-1")))))
+    },
+    test("a registration that fails records no certificate event") {
+      val clients = stub[OAuthClientService]
+      val audit = RecordedAudit.unsafe
+      val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config, audit)
+      for
+        _ <- clients.registerClient.failsWith(RuntimeException("database down"))
+        exit <- service.register(createRequest).exit
+        recorded <- audit.drafts
+      yield assertTrue(exit.isFailure, recorded.isEmpty)
+    },
     test("passes a registration that asks for no certificate straight through, issuing nothing") {
       val clients = stub[OAuthClientService]
       val fakeCa = FakeCa()
@@ -292,10 +340,18 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- clients.updateClient.succeedsWith(())
         _ <- service.renewDue
         recorded <- audit.drafts
+        renewed = clients.updateClient.calls.head._1.edgeClientCertificate.collect { case Patch.Modified(c) => c }.flatMap(_.material.toOption).get
       yield assertTrue(
         recorded.map(_.kind) == Vector(CentralAudit.CertRenewed),
         recorded.head.actor == Some((ActorType.system, None)),
         recorded.head.target == Some(("client", clientId.toString)),
+        detail(recorded.head, "operation") == Some("renew"),
+        detail(recorded.head, "clientId") == Some(clientId.toString),
+        detail(recorded.head, "serial") == issuances.rows.get(clientId).map(_.serial),
+        detail(recorded.head, "notAfter") == issuances.rows.get(clientId).map(_.notAfter.toString),
+        detail(recorded.head, "subject") == Some(renewed.subjectDn),
+        withoutPemMaterial(recorded.head, renewed.privateKeyPem, renewed.certificateChain),
+        onlyKnownMembers(recorded.head),
       )
     },
     test("renews only the certificates inside the renewal window") {
@@ -449,6 +505,13 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
           recorded.map(_.kind) == Vector(CentralAudit.CertRenewed),
           recorded.head.actor == Some((CentralAudit.Actors.Edge, Some("edge-1"))),
           recorded.head.target == Some(("client", clientId.toString)),
+          detail(recorded.head, "operation") == Some("sign"),
+          detail(recorded.head, "clientId") == Some(clientId.toString),
+          detail(recorded.head, "serial") == enrollments.issued.headOption.map(_._2),
+          detail(recorded.head, "notAfter").exists(Instant.parse(_).isAfter(Instant.now().plusSeconds(13 * 24 * 3600L))),
+          detail(recorded.head, "subject") == Some(subject.principal.getName(X500Principal.RFC2253)),
+          withoutPemMaterial(recorded.head, generated.privateKeyPem, generated.csrPem),
+          onlyKnownMembers(recorded.head),
         )
       },
       // Even a CA that signs a name nobody asked for must not yield a certificate that passes for an edge.
