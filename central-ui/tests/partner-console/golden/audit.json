@@ -1,59 +1,8 @@
 {
   "events": [
     {
-      "id": "01a1d05a-9589-7648-933f-6615b3593eea",
-      "at": "2026-11-12T15:22:39.881778Z",
-      "kind": "admin.partner-edge.action:enrollment-tokens",
-      "actor": {
-        "sub": "01a1d028-3d7b-7a44-ba23-5cddafec3ac5",
-        "display": "s•••@partner.example"
-      },
-      "action": "Changed the enrollment token of edge",
-      "target": "partner-edge:e2e-partner-faf53869a4-edge",
-      "outcome": "ok",
-      "from": "e2e-partner-faf53869a4-edge"
-    },
-    {
-      "id": "7ee0ce1f-d1b2-4b95-8168-e244787656f0",
-      "at": "2026-11-12T15:22:38.438629Z",
-      "kind": "team.invite",
-      "actor": {
-        "sub": "01a1d028-3d7b-7a44-ba23-5cddafec3ac5",
-        "display": "s•••@partner.example"
-      },
-      "action": "Invited w•••@partner.example as viewer",
-      "target": "w•••@partner.example",
-      "outcome": "ok"
-    },
-    {
-      "id": "01a1d05a-8c2e-7f36-bfac-1bd020e30ca9",
-      "at": "2026-11-12T15:22:37.486745Z",
-      "kind": "admin.partner-client.create",
-      "actor": {
-        "sub": "01a1d028-3d7b-7a44-ba23-5cddafec3ac5",
-        "display": "s•••@partner.example"
-      },
-      "action": "Created client",
-      "target": "partner-client:walk-mwdp5lwc",
-      "outcome": "failed",
-      "from": "e2e-partner-faf53869a4-edge"
-    },
-    {
-      "id": "01a1d056-c2e6-7a40-8a96-52132f79c386",
-      "at": "2026-11-12T15:18:29.350843Z",
-      "kind": "admin.partner-edge.create",
-      "actor": {
-        "sub": "01a1d028-3d7b-7a44-ba23-5cddafec3ac5",
-        "display": "s•••@partner.example"
-      },
-      "action": "Created edge",
-      "target": "partner-edge:edge-walk-edge-mwdoyyuq",
-      "outcome": "ok",
-      "from": "e2e-partner-faf53869a4-edge"
-    },
-    {
-      "id": "01a1d028-b653-7ffd-9e61-1d498adfbb46",
-      "at": "2026-11-12T14:28:11.475546Z",
+      "id": "01a1d073-2038-726d-8867-92404974553f",
+      "at": "2026-11-12T15:49:28.248528Z",
       "kind": "admin.partner.action:resume",
       "actor": {
         "sub": "e2e",
@@ -61,41 +10,27 @@
         "byOperator": true
       },
       "action": "Resumed organisation",
-      "target": "partner:e2e-partner-faf53869a4",
+      "target": "partner:e2e-partner-40a539e82b",
       "outcome": "ok"
     },
     {
-      "id": "01a1d028-b250-7c99-9e39-4546a5382d3b",
-      "at": "2026-11-12T14:28:10.448766Z",
-      "kind": "admin.partner-revocation.create",
+      "id": "7e448300-c052-43f8-aab1-a38c9cbb3aaa",
+      "at": "2026-11-12T15:49:28.062596Z",
+      "kind": "team.revoke",
       "actor": {
-        "sub": "01a1d028-3d7b-7a44-ba23-5cddafec3ac5",
+        "sub": "01a1d072-ab02-7211-bb45-c481c6871034",
         "display": "s•••@partner.example"
       },
-      "action": "Ended grants of clients",
-      "target": "partner-revocation:e2e-partner-faf53869a4-shop",
-      "outcome": "ok",
-      "from": "e2e-partner-faf53869a4-edge"
-    },
-    {
-      "id": "01a1d028-afa8-72e5-bd8f-963d4c7865fd",
-      "at": "2026-11-12T14:28:09.768548Z",
-      "kind": "admin.partner-approval.action:approve",
-      "actor": {
-        "sub": "e2e",
-        "display": "Operator",
-        "byOperator": true
-      },
-      "action": "Approved approval",
-      "target": "partner-approval:fe9b0573-b7d0-4ce7-bb16-f228e27ae3d2",
+      "action": "Ended 1 session(s) by user 01a1d073-1ea7-77c3-9748-874de4c12350",
+      "target": "01a1d073-1ea7-77c3-9748-874de4c12350",
       "outcome": "ok"
     },
     {
-      "id": "ce60087c-aa4f-4979-9b6a-42a61bd87579",
-      "at": "2026-11-12T14:28:09.516844Z",
+      "id": "885e2bde-3577-4694-8161-aa562ed921a8",
+      "at": "2026-11-12T15:49:27.980647Z",
       "kind": "team.admit",
       "actor": {
-        "sub": "01a1d028-ae2b-7389-94b5-7fc78fd7005b",
+        "sub": "01a1d073-1ea7-77c3-9748-874de4c12350",
         "display": "s•••@partner.example"
       },
       "action": "s•••@partner.example joined the team as viewer",
@@ -103,16 +38,54 @@
       "outcome": "ok"
     },
     {
-      "id": "01a1d028-3a2e-789a-9860-4184210f9878",
-      "at": "2026-11-12T14:27:39.694434Z",
-      "kind": "admin.secret.revealed",
+      "id": "915f78c4-9f64-46ab-a853-8d0bc1863ec4",
+      "at": "2026-11-12T15:49:27.878885Z",
+      "kind": "team.invite",
+      "actor": {
+        "sub": "01a1d072-ab02-7211-bb45-c481c6871034",
+        "display": "s•••@partner.example"
+      },
+      "action": "Invited s•••@partner.example as viewer",
+      "target": "s•••@partner.example",
+      "outcome": "ok"
+    },
+    {
+      "id": "01a1d073-1bc5-7439-83de-f4b953a542bb",
+      "at": "2026-11-12T15:49:27.109171Z",
+      "kind": "admin.partner-approval.action:approve",
       "actor": {
         "sub": "e2e",
         "display": "Operator",
         "byOperator": true
       },
-      "action": "Revealed a secret",
-      "target": "partner:e2e-partner-faf53869a4",
+      "action": "Approved approval",
+      "target": "partner-approval:478d8d2c-103e-486a-ad89-7382abcd7904",
+      "outcome": "ok"
+    },
+    {
+      "id": "01a1d073-1b85-7e53-9c86-60137f1fb612",
+      "at": "2026-11-12T15:49:27.045622Z",
+      "kind": "admin.partner-client.create",
+      "actor": {
+        "sub": "01a1d072-ab02-7211-bb45-c481c6871034",
+        "display": "s•••@partner.example"
+      },
+      "action": "Created client",
+      "target": "partner-client:e2e-partner-40a539e82b-shop",
+      "outcome": "ok",
+      "from": "e2e-partner-40a539e82b-edge"
+    },
+    {
+      "id": "01a1d072-a69f-732f-ada9-fe7d8ba5a658",
+      "at": "2026-11-12T15:48:57.119606Z",
+      "kind": "admin.partner.create",
+      "actor": {
+        "sub": "e2e",
+        "display": "Operator",
+        "byOperator": true
+      },
+      "action": "Created organisation",
+      "target": "partner:e2e-partner-40a539e82b",
       "outcome": "ok"
     }
   ],

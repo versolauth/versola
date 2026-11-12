@@ -9,6 +9,7 @@ import errorInsufficient from './golden/error-insufficient-level.json' with { ty
 import errorNotFound from './golden/error-not-found.json' with { type: 'json' };
 import me from './golden/me.json' with { type: 'json' };
 import resources from './golden/resources.json' with { type: 'json' };
+import revocations from './golden/revocations.json' with { type: 'json' };
 import settings from './golden/settings.json' with { type: 'json' };
 import staff from './golden/staff.json' with { type: 'json' };
 import { loadPartnerApp } from './fixtures';
@@ -98,6 +99,7 @@ test('what the mock answers to the reads has the shape of the edge\'s answers', 
   await check('/edges', edges as Json, ['/edges.edges[].certificateNotAfter', '/edges.edges[].lastRenewedAt']);
   await check('/audit', audit as Json, ['/audit.events[].from', '/audit.events[].actor.byOperator']);
   await check('/staff', staff as Json);
+  await check('/revocations', revocations as Json);
   await check('/settings', settings as Json);
   expect(problems).toEqual([]);
 });

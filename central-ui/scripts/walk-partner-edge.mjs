@@ -112,9 +112,23 @@ if (process.env.FLOWS) {
     await page.getByRole('button', { name: 'Copy token' }).waitFor({ timeout: 8000 });
   });
   await step('revoke', async () => {
+    // A team member other than the signed-in admin (who would end their own session): by user, then by an id the edge does not know.
+    const staff = answers.findLast(a => a.method === 'GET' && a.path === '/partner/api/staff' && a.status === 200);
+    const viewer = JSON.parse(staff.body).staff.find(member => member.level === 'viewer' && member.subject);
     await page.goto(`${edge}/partner/?view=revocation`);
-    await page.getByLabel(/User \(sub\)/).fill('u_walk');
-    await page.getByRole('button', { name: 'End sessions' }).click();
+    const end = async (what, value) => {
+      await page.getByRole('button', { name: what, exact: true }).click().catch(() => undefined);
+      await page.getByLabel(/\*$/).first().fill(value);
+      await page.getByRole('button', { name: 'End sessions', exact: true }).click();
+      await page.getByRole('dialog', { name: 'End sessions' }).getByRole('button', { name: 'End sessions' }).click();
+      await page.getByRole('status').or(page.getByRole('alert')).first().waitFor({ timeout: 8000 });
+      await page.waitForTimeout(400);
+    };
+    await end('A user', viewer.subject);
+    await shot('flow-revoke-user');
+    await end('A session', 'sid_unknown');
+    await shot('flow-revoke-sid');
+    await end('A refresh family', 'fam_unknown');
   });
 }
 
