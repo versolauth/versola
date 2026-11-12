@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
 import { scan } from './axe';
-import { loadPartnerApp, sidePanelDialog } from './fixtures';
+import { loadPartnerApp, sidePanelDialog, test } from './fixtures';
 import { PARTNER_NOW, partnerSeedState } from './partner-fixtures';
 
 /** Overview: the link to the operator, the edges, what needs attention, the limits, and the last events. */

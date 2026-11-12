@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
 import audit from './golden/audit.json' with { type: 'json' };
 import clientCreated from './golden/client-created.json' with { type: 'json' };
 import clients from './golden/clients.json' with { type: 'json' };
@@ -12,7 +12,7 @@ import resources from './golden/resources.json' with { type: 'json' };
 import revocations from './golden/revocations.json' with { type: 'json' };
 import settings from './golden/settings.json' with { type: 'json' };
 import staff from './golden/staff.json' with { type: 'json' };
-import { loadPartnerApp } from './fixtures';
+import { loadPartnerApp, test } from './fixtures';
 import { PARTNER_NOW, asLevel, partnerSeedState } from './partner-fixtures';
 
 /**

@@ -215,7 +215,14 @@ builds (`npm run build` runs `vite build` and `vite build --mode partner`), each
 partner's `versola-partner.js` shares no chunk with `versola-admin.js`. The guarantee is on the output:
 `npm run check:bundles` (a CI step after the build) fails if `dist` holds anything but those two files or the
 partner file mentions `/configuration/`, `/users/`, `permissions/me` or `/central/`, so a shared util cannot
-carry an operator path into a partner's browser. Reference: `partner-app.ts`, `partner-navigation.ts`, `views/partner-no-access.ts`.
+carry an operator path into a partner's browser. **A partner has no way to choose, or see, "first-party"** as an edge, a group
+kind, an owner or a binding: the edge fixes the group from the partner's certificate, so Add edge takes an ID and a public URL, the
+client wizard has no owner or edge field, and the group is only told, as a locked row. Three guards keep it so: a unit test greps the
+sources of `src/partner` and of every file it imports (`no-first-party.test.ts`) and the built file when there is one, `check:bundles`
+greps the built partner file for `first-party`, `groupKind`, the Owner step's copy, and a Playwright spec walks every view, editor and
+wizard step, shadow roots included (`tests/partner-console/no-first-party.spec.ts`); after each partner-console spec, every write its
+page sent is checked against the contract table in `tests/partner-console/write-contract.ts` (only contract fields, never a group, a
+group kind, an owner, a binding or a party). Reference: `partner-app.ts`, `partner-navigation.ts`, `views/partner-no-access.ts`.
 
 Page header: `content-header` with `title`, an optional `description` (one line under the title)
 and the single primary action in its `actions` slot. A record page uses `versola-record-header`
