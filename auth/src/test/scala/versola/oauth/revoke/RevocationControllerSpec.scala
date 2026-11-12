@@ -63,6 +63,7 @@ object RevocationControllerSpec extends UnitSpecBase:
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
   )
 
   def authHeader(clientId: ClientId, secret: Secret): Header.Authorization =

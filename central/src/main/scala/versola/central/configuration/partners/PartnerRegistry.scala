@@ -40,10 +40,7 @@ object PartnerRegistry:
 
     override def findByGroup(groupId: EdgeGroupId): UIO[Option[PartnerRecord]] = cache.get.map(_.find(_.groupId == groupId))
 
-    override def findFresh(id: PartnerId): Task[Option[PartnerRecord]] =
-      cache.get.map(_.find(_.id == id)).flatMap:
-        case some @ Some(_) => ZIO.succeed(some)
-        case None => repository.find(id)
+    override def findFresh(id: PartnerId): Task[Option[PartnerRecord]] = repository.find(id)
 
     override def sync(event: SyncEvent.PartnersUpdated): Task[Unit] =
       SyncOps.syncCache(event)(cache, repository.find(event.id))

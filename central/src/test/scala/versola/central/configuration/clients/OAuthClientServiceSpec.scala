@@ -234,12 +234,14 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       refreshTokenTtlMax = 86400,
       clientAuthMethods = Set(AuthMethod.tls_client_auth),
       rateLimitPolicy = "partner-default",
+      resourceDomains = None,
     ),
     groupId = EdgeGroupId("acme"),
     consoleClientId = ClientId("acme-console"),
     settings = PartnerSettings.empty,
     reviewAt = None,
     createdAt = Instant.EPOCH,
+    version = 0L,
   )
 
   private val createRequest = CreateClientRequest(
@@ -2400,6 +2402,59 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             case error: InvalidRegistrationConfiguration => error.reason.contains("redirectUris")
             case _ => false,
           env.repository.updateClient.calls.isEmpty,
+        )
+      },
+      test("the partner's console is not held to its limits when the operator changes it, nor counted among its clients") {
+        val console = partnerClient("acme-console", ClientApproval.Approved)
+        val own = Vector(partnerClient("acme-one", ClientApproval.Approved), partnerClient("acme-two", ClientApproval.Pending))
+        val env = new Env(console +: own)
+        def patch(clientId: ClientId) = UpdateClientRequest(
+          clientId = clientId,
+          clientName = None,
+          redirectUris = PatchClientRedirectUris(Set.empty, Set.empty),
+          scope = PatchClientScope(Set(ScopeToken("phone")), Set.empty),
+          permissions = PatchPermissions(Set.empty, Set.empty),
+          accessTokenTtl = None,
+          refreshTokenTtl = None,
+          theme = None,
+          authFlow = None,
+          otpTemplateId = None,
+          frontChannelLogoutUri = None,
+          frontChannelLogoutSessionRequired = None,
+          backChannelLogoutUri = None,
+          logoUri = None,
+          policyUri = None,
+          tosUri = None,
+          consentFlow = None,
+          dpopBoundAccessTokens = None,
+          dpopSigningAlgs = None,
+          dpopMinRsaKeySize = None,
+          authMethod = None,
+          mtlsAuth = None,
+          certificateBoundAccessTokens = None,
+          jwks = None,
+          requireSignedRequestObject = None,
+          requirePushedAuthorizationRequests = None,
+          edgeSigningKey = None,
+          edgeClientCertificate = None,
+          applicationType = None,
+          themeOverrides = None,
+        )
+        for
+          _ <- env.partners.findFresh.succeedsWith(Some(acme))
+          _ <- env.repository.updateClient.succeedsWith(())
+          // `phone` is not among the partner's scopes: for its console that is the operator's own choice
+          console <- env.service.updateClient(patch(ClientId("acme-console"))).either
+          // a client of the partner's own is held to them
+          client <- env.service.updateClient(patch(ClientId("acme-one"))).either
+          // two clients are what the limit counts: the console is the third row, and does not take a slot
+          _ <- env.repository.createClient.succeedsWith(())
+          refused <- env.service.registerClient(partnerRequest.copy(id = ClientId("acme-three"))).either
+        yield assertTrue(
+          console.isRight,
+          client.isLeft,
+          env.repository.updateClient.calls.map(_._1) == List(ClientId("acme-console")),
+          refused.isLeft,
         )
       },
       test("the sync to auth leaves out a pending client and every client of a suspended partner; a first-party edge gets none of a partner's") {

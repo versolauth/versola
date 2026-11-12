@@ -86,6 +86,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
   )
 
   def tokenRecord(now: Instant) = RefreshTokenRecord(

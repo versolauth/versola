@@ -1,7 +1,14 @@
 package versola.central.configuration.partners
 
 import versola.central.audit.{Audit, AuditCursor, CentralAudit, CentralAuditRepository}
-import versola.central.configuration.clients.{AuthorizationPresetService, ClientController, ClientId, OAuthClientRecord, OAuthClientService}
+import versola.central.configuration.clients.{
+  AuthorizationPresetService,
+  ClientController,
+  ClientId,
+  OAuthClientRecord,
+  OAuthClientService,
+  PartnerClientRules,
+}
 import versola.central.configuration.edges.{
   EdgeAccessLogSyncResponse,
   EdgeCertificateRepository,
@@ -29,9 +36,8 @@ import versola.central.configuration.{
   ResourceUri,
   UpdateResourceRequest,
 }
-import versola.central.users.{AuthClient, UserId}
 import versola.central.{CentralConfig, PartnerCaller, authorizePartnerEdge}
-import versola.util.audit.{AuditContext, AuditDetails, AuditDraft, AuditEvent, AuditEvents, AuditOutcome}
+import versola.util.audit.{ActorType, AuditContext, AuditDetails, AuditDraft, AuditEvent, AuditEvents, AuditOutcome}
 import versola.util.http.{Controller, Forbidden, Observability, Unauthorized}
 import versola.util.{Base64Url, JsonWebKeySet, SecurityService}
 import zio.http.*
@@ -51,7 +57,7 @@ import java.time.Instant
   * with the partner and the edge. */
 object PartnerEdgeController extends Controller:
   type Env = Tracing & CentralConfig & EdgeService & PartnerRegistry & PartnerService & PartnerClientService & OAuthClientService &
-    ResourceService & AuthorizationPresetService & JwksService & ServerMetadataService & SecurityService & AuthClient & TenantRepository &
+    ResourceService & AuthorizationPresetService & JwksService & ServerMetadataService & SecurityService & TenantRepository &
     EdgeCertificateRepository & EdgeEnrollmentTokenRepository & CentralAuditRepository & AuditEvents
 
   def routes: Routes[Env, Throwable] = Routes(
@@ -81,7 +87,6 @@ object PartnerEdgeController extends Controller:
     deleteEdgeEndpoint,
     createEnrollmentTokenEndpoint,
     revokeEnrollmentTokenEndpoint,
-    revocationsEndpoint,
     profileEndpoint,
     getSettingsEndpoint,
     putSettingsEndpoint,
@@ -272,6 +277,7 @@ object PartnerEdgeController extends Controller:
         for
           body <- request.bodyAs[PartnerResourceRequest]
           _ <- Audit.target(body.resourceId)
+          _ <- resourceUriAllowed(caller.partner, body.resource)
           _ <- audienceOwned(caller.partner, body.audience)
           result <- ZIO.serviceWithZIO[ResourceService](_.createResource(CreateResourceRequest(
             tenantId = caller.partner.tenantId,
@@ -301,8 +307,12 @@ object PartnerEdgeController extends Controller:
           _ <- Audit.target(body.resourceId)
           _ <- Audit.changed(body, "resourceId")
           current <- ownResource(caller.partner, body.resourceId)
+          _ <- ZIO.foreachDiscard(body.resource)(resourceUriAllowed(caller.partner, _))
           _ <- audienceOwned(caller.partner, body.audience.patch(current.audience))
-          result <- ZIO.serviceWithZIO[ResourceService](_.updateResource(body))
+          result <- ZIO.serviceWithZIO[ResourceService](_.updateResource(body)).catchSome {
+            // a new `resource` that another resource of the tenant already has
+            case error: SQLException if error.getSQLState == "23505" => ZIO.fail(PartnerError.Conflict("that resource exists in the tenant"))
+          }
           response <- result match
             case Right(()) => ZIO.succeed(Response.status(Status.NoContent))
             case Left(error) => ZIO.fail(PartnerError.Invalid(error.toString.take(500)))
@@ -341,7 +351,8 @@ object PartnerEdgeController extends Controller:
       yield Response.json(PartnerEdgesResponse(edges.map(edge => EdgeResponse.of(edge, Some(caller.partner.id), certificates.get(edge.id)))).toJson)
     }
 
-  /** Another edge of the partner, within `maxEdges`: the edge, its signing key, its token and its bundle in one answer. */
+  /** Another edge of the partner, within `maxEdges`: the edge (without a signing key, which it registers when it enrols) and its
+    * enrollment token, in one answer. */
   val createEdgeEndpoint =
     Method.POST / "edge" / "partner" / "edges" -> managed("partner-edge", Some(Audit.create), "/edge/partner/edges") { (caller, _, request) =>
       for
@@ -351,11 +362,8 @@ object PartnerEdgeController extends Controller:
         certificates <- ZIO.serviceWithZIO[EdgeCertificateRepository](_.latest)
         response = CreatedPartnerEdgeResponse(
           edge = EdgeResponse.of(enrolled.edge, Some(caller.partner.id), certificates.get(enrolled.edge.id)),
-          signingKey =
-            SigningKeyResponse(keyId = enrolled.signingKey.keyId, privateKey = Base64Url.encode(enrolled.signingKey.privateKey.getEncoded)),
           token = enrolled.token.token,
           expiresAt = enrolled.token.expiresAt,
-          bundle = enrolled.bundle,
         )
       yield Response.json(response.toJson).status(Status.Created)
     }
@@ -383,7 +391,7 @@ object PartnerEdgeController extends Controller:
         yield Response.json(PartnerEnrollmentTokenResponse(token = token.token, expiresAt = token.expiresAt).toJson).status(Status.Created)
       }
 
-  /** Voids the unspent tokens of an edge: a bundle that was printed and must not work. */
+  /** Voids the unspent tokens of an edge: a token that was copied somewhere it must not work from. */
   val revokeEnrollmentTokenEndpoint =
     Method.DELETE / "edge" / "partner" / "edges" / "enrollment-tokens" ->
       managed("partner-edge", Some(Audit.action("enrollment-tokens")), "/edge/partner/edges/enrollment-tokens") { (caller, _, request) =>
@@ -394,33 +402,6 @@ object PartnerEdgeController extends Controller:
           _ <- ZIO.serviceWithZIO[EdgeEnrollmentTokenRepository](_.revoke(body.id))
         yield Response.status(Status.NoContent)
       }
-
-  /** Ends grants of the partner's own clients, and of nobody else's: by user (that user's refresh tokens at the named
-    * clients) or by client (every user's). Central asks auth, which revokes the families and sends the back-channel logout
-    * to the client's registered URI -- the partner's edge -- which is how the edge drops the sessions. Access tokens already
-    * issued run out within the partner's cap; there is no pull feed for partners. */
-  val revocationsEndpoint =
-    Method.POST / "edge" / "partner" / "revocations" -> managed("partner-revocation", Some(Audit.create), "/edge/partner/revocations") {
-      (caller, _, request) =>
-        for
-          body <- request.bodyAs[PartnerRevocationRequest]
-          _ <- Audit.targetByText(body.value)
-          own <- ZIO.serviceWithZIO[OAuthClientService](_.getPartnerClients(caller.partner.id)).map(_.map(_.id).toSet)
-          foreign = body.clients.filterNot(own.contains)
-          _ <- ZIO.fail(PartnerError.Invalid(s"not the partner's clients: ${foreign.mkString(", ")}")).when(foreign.nonEmpty)
-          _ <- ZIO.fail(PartnerError.Invalid("clients must name at least one client")).when(body.clients.isEmpty)
-          _ <- ZIO.fail(PartnerError.Invalid("revokeRefresh must be true: central ends grants, and access tokens run out by themselves"))
-            .unless(body.revokeRefresh)
-          auth <- ZIO.service[AuthClient]
-          _ <- body.by match
-            case RevocationBy.user =>
-              ZIO.fromEither(UserId.parse(body.value)).mapError(_ => PartnerError.Invalid("value must be a user id")).flatMap: userId =>
-                ZIO.foreachDiscard(body.clients)(client => auth.revokeRefreshTokens(userId, client))
-            case RevocationBy.client =>
-              ZIO.fail(PartnerError.Invalid("value must be one of clients")).unless(body.clients.contains(ClientId(body.value))) *>
-                auth.revokeRefreshTokensByClient(ClientId(body.value))
-        yield Response.status(Status.Accepted)
-    }
 
   /** The partner's own name and logo: a `profile_change` request for the operator. */
   val profileEndpoint =
@@ -468,10 +449,28 @@ object PartnerEdgeController extends Controller:
         ))
         next =
           Option.when(events.size == AuditPageSize)(events.last).map(last => AuditCursor.encode(AuditCursor(last.at, last.id, centralOnly = true)))
-      yield Response.json(PartnerAuditResponse(events, next).toJson)
+      yield Response.json(PartnerAuditResponse(events.map(forPartner), next).toJson)
     }
 
   val AuditPageSize = 50
+
+  /** An event as the partner is shown it. The operator's own events about the partner (an approval, a suspension, new limits) say
+    * that the operator did it, and what, but not who: the administrator's id, address and browser are the operator's. The
+    * internal ids of the node and the trace are nobody else's, whoever acted. */
+  def forPartner(event: AuditEvent): AuditEvent =
+    val shown = event.copy(nodeId = "central", traceId = None)
+    if event.actorType == CentralAudit.Actors.PartnerStaff then shown
+    else
+      shown.copy(
+        actorType = ActorType("operator"),
+        actorId = None,
+        userId = None,
+        clientId = None,
+        sessionId = None,
+        ip = None,
+        userAgent = None,
+        details = Json.Obj(event.details.fields.filter((name, _) => name == "partnerId" || name == "changed")),
+      )
 
   // ── scoping ───────────────────────────────────────────────────────────────────────────────────
 
@@ -488,6 +487,9 @@ object PartnerEdgeController extends Controller:
     ZIO.serviceWithZIO[PartnerService](_.edges(partner)).map(_.find(_.id == id)).someOrFail(PartnerError.NotFound(s"edge '$id'"))
 
   /** A resource's audience is the partner's own clients and no other's. */
+  private def resourceUriAllowed(partner: PartnerRecord, resource: ResourceUri): IO[PartnerError, Unit] =
+    ZIO.foreachDiscard(PartnerClientRules.resourceUriViolation(partner, resource))(reason => ZIO.fail(PartnerError.Invalid(reason)))
+
   private def audienceOwned(partner: PartnerRecord, audience: List[ClientId]): ZIO[OAuthClientService, PartnerError | Throwable, Unit] =
     ZIO.serviceWithZIO[OAuthClientService](_.getPartnerClients(partner.id)).flatMap: own =>
       val ids = own.map(_.id).toSet
@@ -706,21 +708,12 @@ case class PartnerEdgesResponse(edges: Vector[EdgeResponse]) derives Schema, Jso
 
 case class CreatePartnerEdgeRequest(id: EdgeId, publicUrl: String) derives JsonCodec
 
-case class SigningKeyResponse(keyId: String, privateKey: String) derives JsonCodec
-
-/** An edge with everything shown once: its signing key, its token and the bundle that carries both. */
-case class CreatedPartnerEdgeResponse(edge: EdgeResponse, signingKey: SigningKeyResponse, token: String, expiresAt: Instant, bundle: String)
-  derives JsonCodec
+/** An edge with the one thing shown once: its enrollment token. The edge makes its own signing key. */
+case class CreatedPartnerEdgeResponse(edge: EdgeResponse, token: String, expiresAt: Instant) derives JsonCodec
 
 case class EdgeIdRequest(id: EdgeId) derives JsonCodec
 
 case class PartnerEnrollmentTokenResponse(token: String, expiresAt: Instant) derives JsonCodec
-
-enum RevocationBy derives JsonCodec:
-  case user, client
-
-/** `clients` are the partner's own; `value` is the user (`by = user`) or one of `clients` (`by = client`). */
-case class PartnerRevocationRequest(by: RevocationBy, value: String, clients: List[ClientId], revokeRefresh: Boolean) derives JsonCodec
 
 case class PartnerProfileRequest(displayName: String, logoUri: Option[String]) derives Schema, JsonCodec
 

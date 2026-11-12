@@ -52,12 +52,14 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       refreshTokenTtlMax = 86400,
       clientAuthMethods = Set(AuthMethod.tls_client_auth),
       rateLimitPolicy = "partner-default",
+      resourceDomains = None,
     ),
     groupId = group,
     consoleClientId = ClientId("acme-console"),
     settings = PartnerSettings.empty,
     reviewAt = None,
     createdAt = now,
+    version = 0L,
   )
 
   private val request = PartnerClientRequest(
@@ -135,7 +137,7 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val wide = request.copy(scope = Set(ScopeToken("openid"), ScopeToken("email")))
       for
         _ <- registered(env)
-        _ <- env.clients.findClient.succeedsWith(Some(client(request.id, ClientApproval.Pending).copy(scope = wide.scope)))
+        _ <- env.clients.findClientFresh.succeedsWith(Some(client(request.id, ClientApproval.Pending).copy(scope = wide.scope)))
         _ <- env.approvals.create.succeedsWith(())
         (created, approval) <- env.service.create(acme, wide, requestedBy = "staff-1")
         registration = env.clients.registerClient.calls.head
@@ -144,6 +146,7 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         registration._1.mtlsAuth == Some(groupAuth),
         registration._1.requirePushedAuthorizationRequests,
         registration._1.consentFlow == Some(PartnerClientRequest.DefaultConsent),
+        registration._1.authFlow == Some(AuthFlow.default),
         registration._4 == ClientApproval.Pending,
         registration._5,
         created.approval == ClientApproval.Pending,
@@ -151,7 +154,7 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         approval.status == ApprovalStatus.Waiting,
         approval.targetId == "acme-shop",
         approval.requestedBy == "staff-1",
-        approval.outsideLimits == List("scope", "clientName", "logoUri"),
+        approval.outsideLimits == List("scope", "clientName", "logoUri", "policyUri", "tosUri", "consentFlow"),
         approval.requested.get("id") == Some(Json.Str("acme-shop")),
         env.approvals.create.calls.size == 1,
       )
@@ -174,7 +177,7 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = Env()
       val stored = client(request.id, ClientApproval.Approved)
       for
-        _ <- env.clients.findClient.succeedsWith(Some(stored))
+        _ <- env.clients.findClientFresh.succeedsWith(Some(stored))
         _ <- env.approvals.waitingFor.succeedsWith(Vector.empty)
         _ <- env.clients.updateClient.returnsZIO((_, _, _, _) => ZIO.unit)
         result <- env.service.update(
@@ -194,7 +197,7 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = Env()
       val stored = client(request.id, ClientApproval.Approved)
       for
-        _ <- env.clients.findClient.succeedsWith(Some(stored))
+        _ <- env.clients.findClientFresh.succeedsWith(Some(stored))
         _ <- env.approvals.waitingFor.succeedsWith(Vector.empty)
         _ <- env.approvals.create.succeedsWith(())
         renamed <- env.service.update(acme, PartnerClientUpdate.of(request.id).copy(clientName = Some(Map("en" -> "ACME Pay"))), "staff-1")
@@ -210,11 +213,11 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("a client that is not the partner's, or still pending, or already waiting for a change, cannot be changed") {
       val env = Env()
       for
-        _ <- env.clients.findClient.succeedsWith(Some(client(request.id, ClientApproval.Approved, partnerId = Some(PartnerId("globex")))))
+        _ <- env.clients.findClientFresh.succeedsWith(Some(client(request.id, ClientApproval.Approved, partnerId = Some(PartnerId("globex")))))
         foreign <- env.service.update(acme, PartnerClientUpdate.of(request.id), "staff-1").flip
-        _ <- env.clients.findClient.succeedsWith(Some(client(request.id, ClientApproval.Pending)))
+        _ <- env.clients.findClientFresh.succeedsWith(Some(client(request.id, ClientApproval.Pending)))
         pending <- env.service.update(acme, PartnerClientUpdate.of(request.id), "staff-1").flip
-        _ <- env.clients.findClient.succeedsWith(Some(client(request.id, ClientApproval.Approved)))
+        _ <- env.clients.findClientFresh.succeedsWith(Some(client(request.id, ClientApproval.Approved)))
         _ <- env.approvals.waitingFor.succeedsWith(Vector(waitingChange))
         busy <- env.service.update(acme, PartnerClientUpdate.of(request.id), "staff-1").flip
       yield assertTrue(
@@ -226,12 +229,12 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("withdrawing a creation deletes the client; withdrawing a change leaves it as registered") {
       val env = Env()
       for
-        _ <- env.clients.findClient.succeedsWith(Some(client(request.id, ClientApproval.Pending)))
+        _ <- env.clients.findClientFresh.succeedsWith(Some(client(request.id, ClientApproval.Pending)))
         _ <- env.approvals.waitingFor.succeedsWith(Vector(waitingCreate))
         _ <- env.approvals.decide.succeedsWith(true)
         _ <- env.clients.deleteClient.succeedsWith(())
         creation <- env.service.withdraw(acme, request.id)
-        _ <- env.clients.findClient.succeedsWith(Some(client(request.id, ClientApproval.Approved)))
+        _ <- env.clients.findClientFresh.succeedsWith(Some(client(request.id, ClientApproval.Approved)))
         _ <- env.approvals.waitingFor.succeedsWith(Vector(waitingChange))
         change <- env.service.withdraw(acme, request.id)
       yield assertTrue(
@@ -241,16 +244,164 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.approvals.decide.calls.map(_._2) == List(ApprovalStatus.Withdrawn, ApprovalStatus.Withdrawn),
       )
     },
-    test("approving a creation applies the operator's overrides, sets the client approved and gives it its login preset") {
+    test("a change of the policy or terms link, or of the consent flow, waits for the operator as the name does") {
       val env = Env()
-      val stored = client(request.id, ClientApproval.Pending)
+      val stored = client(request.id, ClientApproval.Approved)
       for
-        _ <- env.clients.findClient.succeedsWith(Some(stored))
+        _ <- env.clients.findClientFresh.succeedsWith(Some(stored))
+        _ <- env.approvals.waitingFor.succeedsWith(Vector.empty)
+        _ <- env.approvals.create.succeedsWith(())
+        policy <- env.service.update(
+          acme,
+          PartnerClientUpdate.of(request.id).copy(policyUri = Some(versola.util.Patch.Modified("https://acme.example/privacy"))),
+          "staff-1",
+        )
+        terms <- env.service.update(
+          acme,
+          PartnerClientUpdate.of(request.id).copy(tosUri = Some(versola.util.Patch.Modified("https://acme.example/terms"))),
+          "staff-1",
+        )
+        consent <- env.service.update(
+          acme,
+          PartnerClientUpdate.of(request.id).copy(consentFlow = Some(PartnerClientRequest.DefaultConsent.copy(allowPartial = true))),
+          "staff-1",
+        )
+      yield assertTrue(
+        policy.left.toOption.exists(_.outsideLimits == List("policyUri")),
+        terms.left.toOption.exists(_.outsideLimits == List("tosUri")),
+        consent.left.toOption.exists(_.outsideLimits == List("consentFlow")),
+        env.clients.updateClient.calls.isEmpty,
+      )
+    },
+    test("a back-channel address outside the partner's domains is refused, not queued; one under them is a change like any other") {
+      val env = Env()
+      val stored = client(request.id, ClientApproval.Approved)
+      for
+        _ <- env.clients.findClientFresh.succeedsWith(Some(stored))
+        _ <- env.approvals.waitingFor.succeedsWith(Vector.empty)
+        _ <- env.clients.updateClient.returnsZIO((_, _, _, _) => ZIO.unit)
+        outside <- ZIO.foreach(List(
+          "https://internal.example/logout",
+          "https://10.0.0.5/logout",
+          "http://shop.acme.example/logout",
+          "https://localhost/logout",
+        )): uri =>
+          env.service.update(
+            acme,
+            PartnerClientUpdate.of(request.id).copy(backChannelLogoutUri = Some(versola.util.Patch.Modified(uri))),
+            "staff-1",
+          ).flip
+        inside <- env.service.update(
+          acme,
+          PartnerClientUpdate.of(request.id).copy(backChannelLogoutUri = Some(versola.util.Patch.Modified("https://shop.acme.example/logout"))),
+          "staff-1",
+        )
+      yield assertTrue(
+        outside.forall(_.isInstanceOf[PartnerError.Invalid]),
+        env.clients.updateClient.calls.size == 1,
+        inside == Right(()),
+      )
+    },
+    test("a client id that ends in -console is no partner's to register, and a database that is full is the partner's 400") {
+      val env = Env()
+      for
+        console <- env.service.create(acme, request.copy(id = ClientId("globex-console")), "staff-1").flip
+        _ <- env.clients.registerClient.returnsZIO((_, _, _, _, _) =>
+          ZIO.fail(java.sql.SQLException("ERROR: partner_client_limit: partner acme may register at most 5 clients", "23514")),
+        )
+        full <- env.service.create(acme, request, "staff-1").flip
+      yield assertTrue(console.isInstanceOf[PartnerError.Invalid], full.isInstanceOf[PartnerError.Invalid], env.approvals.create.calls.isEmpty)
+    },
+    test("a withdrawal that lost to the operator's decision deletes nothing") {
+      val env = Env()
+      for
+        _ <- env.clients.findClientFresh.succeedsWith(Some(client(request.id, ClientApproval.Pending)))
+        _ <- env.approvals.waitingFor.succeedsWith(Vector(waitingCreate))
+        // the operator approved between the read and the decision
+        _ <- env.approvals.decide.succeedsWith(false)
+        lost <- env.service.withdraw(acme, request.id).flip
+      yield assertTrue(lost.isInstanceOf[PartnerError.Conflict], env.clients.deleteClient.calls.isEmpty)
+    },
+    test("only what a partner asked for can be overridden: not the id, the kind or the way the client authenticates") {
+      val env = Env()
+      for
+        id <- env.service.checkOverrides(waitingCreate, Some(Json.Obj("id" -> Json.Str("globex-shop")))).flip
+        kind <- env.service.checkOverrides(waitingCreate, Some(Json.Obj("kind" -> Json.Str("native")))).flip
+        method <- env.service.checkOverrides(waitingCreate, Some(Json.Obj("authMethod" -> Json.Str("none")))).flip
+        profile <- env.service.checkOverrides(waitingCreate.copy(kind = ApprovalKind.ProfileChange), Some(Json.Obj("scope" -> Json.Arr()))).flip
+        ok <- env.service.checkOverrides(
+          waitingCreate.copy(requested =
+            Json.Obj(
+              "id" -> Json.Str("acme-shop"),
+              "kind" -> Json.Str("web"),
+              "clientName" -> Json.Obj("en" -> Json.Str("ACME Shop")),
+              "redirectUris" -> Json.Arr(Json.Str("https://shop.acme.example/cb")),
+              "scope" -> Json.Arr(Json.Str("openid")),
+              "authMethod" -> Json.Str("tls_client_auth"),
+              "accessTokenTtl" -> Json.Num(300),
+            ),
+          ),
+          Some(Json.Obj("accessTokenTtl" -> Json.Num(600))),
+        )
+        none <- env.service.checkOverrides(waitingCreate, Some(Json.Obj()))
+      yield assertTrue(
+        id.isInstanceOf[PartnerError.Invalid],
+        kind.isInstanceOf[PartnerError.Invalid],
+        method.isInstanceOf[PartnerError.Invalid],
+        profile.isInstanceOf[PartnerError.Invalid],
+        ok.exists(_.get("accessTokenTtl") == Some(Json.Num(600))),
+        none.isEmpty,
+      )
+    },
+    test("an approval with a new redirect URI is applied from the client as stored now: the preset is the new first URI") {
+      val env = Env()
+      val before = client(request.id, ClientApproval.Pending)
+      val overridden = before.copy(redirectUris = Set(RedirectUri("https://other.acme.example/cb")))
+      val approved = overridden.copy(approval = ClientApproval.Approved)
+      val applied = Some(Json.Obj(
+        "id" -> Json.Str("acme-shop"),
+        "kind" -> Json.Str("web"),
+        "clientName" -> Json.Obj("en" -> Json.Str("ACME Shop")),
+        "redirectUris" -> Json.Arr(Json.Str("https://other.acme.example/cb")),
+        "scope" -> Json.Arr(Json.Str("openid")),
+        "authMethod" -> Json.Str("tls_client_auth"),
+        "accessTokenTtl" -> Json.Num(300),
+      ))
+      for
+        // the first read is before the update, the second after: the second is what the preset is made from
+        _ <- env.clients.findClientFresh.returnsZIOOnCall:
+          case 1 => ZIO.succeed(Some(before))
+          case _ => ZIO.succeed(Some(approved))
         _ <- env.clients.updateClient.returnsZIO((_, _, _, _) => ZIO.unit)
         _ <- env.clients.setApproval.succeedsWith(true)
         _ <- env.clients.refreshNow.succeedsWith(())
         _ <- env.presets.savePresets.succeedsWith(Right(()))
-        applied <- env.service.applyApproval(waitingCreate, Some(Json.Obj("clientName" -> Json.Obj("en" -> Json.Str("ACME Shop (verified)")))))
+        _ <- env.service.applyApproval(waitingCreate, applied)
+      yield assertTrue(
+        env.clients.updateClient.calls.head._1.redirectUris.add == Set(RedirectUri("https://other.acme.example/cb")),
+        env.presets.savePresets.calls.head.presets.head.redirectUri == RedirectUri("https://other.acme.example/cb"),
+        env.clients.setApproval.calls == List((request.id, ClientApproval.Approved)),
+      )
+    },
+    test("reverting an approval puts a created client back to pending, and leaves a change alone") {
+      val env = Env()
+      for
+        _ <- env.clients.setApproval.succeedsWith(true)
+        _ <- env.service.revertApproval(waitingCreate)
+        _ <- env.service.revertApproval(waitingChange)
+      yield assertTrue(env.clients.setApproval.calls == List((request.id, ClientApproval.Pending)))
+    },
+    test("approving a creation applies the operator's overrides, sets the client approved and gives it its login preset") {
+      val env = Env()
+      val stored = client(request.id, ClientApproval.Pending)
+      for
+        _ <- env.clients.findClientFresh.succeedsWith(Some(stored))
+        _ <- env.clients.updateClient.returnsZIO((_, _, _, _) => ZIO.unit)
+        _ <- env.clients.setApproval.succeedsWith(true)
+        _ <- env.clients.refreshNow.succeedsWith(())
+        _ <- env.presets.savePresets.succeedsWith(Right(()))
+        applied <- env.service.checkOverrides(waitingCreate, Some(Json.Obj("clientName" -> Json.Obj("en" -> Json.Str("ACME Shop (verified)")))))
+        _ <- env.service.applyApproval(waitingCreate, applied)
         update = env.clients.updateClient.calls.head
         preset = env.presets.savePresets.calls.head
       yield assertTrue(
@@ -269,19 +420,21 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("approving a creation as asked changes nothing but the approval, and records no `applied`") {
       val env = Env()
       for
-        _ <- env.clients.findClient.succeedsWith(Some(client(request.id, ClientApproval.Pending)))
+        _ <- env.clients.findClientFresh.succeedsWith(Some(client(request.id, ClientApproval.Pending)))
         _ <- env.clients.setApproval.succeedsWith(true)
         _ <- env.clients.refreshNow.succeedsWith(())
         _ <- env.presets.savePresets.succeedsWith(Right(()))
-        applied <- env.service.applyApproval(waitingCreate, None)
+        applied <- env.service.checkOverrides(waitingCreate, None)
+        _ <- env.service.applyApproval(waitingCreate, applied)
       yield assertTrue(applied.isEmpty, env.clients.updateClient.calls.isEmpty, env.clients.setApproval.calls.size == 1)
     },
     test("approving a change applies what was asked, with the overrides over it, outside the limits or not") {
       val env = Env()
       for
-        _ <- env.clients.findClient.succeedsWith(Some(client(request.id, ClientApproval.Approved)))
+        _ <- env.clients.findClientFresh.succeedsWith(Some(client(request.id, ClientApproval.Approved)))
         _ <- env.clients.updateClient.returnsZIO((_, _, _, _) => ZIO.unit)
-        applied <- env.service.applyApproval(waitingChange, Some(Json.Obj("accessTokenTtl" -> Json.Num(900))))
+        applied <- env.service.checkOverrides(waitingChange, Some(Json.Obj("accessTokenTtl" -> Json.Num(900))))
+        _ <- env.service.applyApproval(waitingChange, applied)
         update = env.clients.updateClient.calls.head
       yield assertTrue(
         update._1.clientName == Some(Map("en" -> "ACME Pay")),
@@ -329,7 +482,7 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         views(0).approval.note == Some("no"),
         views(1).approval.waitingFields == List("scope", "clientName", "logoUri"),
         views(2).approval.waitingFields == List("clientName"),
-        env.approvals.list.calls == List((None, None, Some(acme.id))),
+        env.approvals.list.calls == List((None, None, Some(acme.id), PartnerClientService.HistoryLimit)),
       )
     },
   ) @@ TestAspect.silentLogging

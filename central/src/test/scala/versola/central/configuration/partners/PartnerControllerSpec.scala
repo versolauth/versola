@@ -38,6 +38,7 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtlMax = 86400,
     clientAuthMethods = Set(AuthMethod.tls_client_auth),
     rateLimitPolicy = "partner-default",
+    resourceDomains = None,
   )
 
   private def partner(id: String, tenantId: TenantId) = PartnerRecord(
@@ -53,6 +54,7 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
     settings = PartnerSettings.empty,
     reviewAt = None,
     createdAt = now,
+    version = 0L,
   )
 
   private val acme = partner("acme", tenantA)
@@ -66,7 +68,7 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val edge = EdgeRecord(
     id = EdgeId("edge-acme-1"),
-    publicKey = keyPair.toPublicJwk,
+    publicKey = Some(keyPair.toPublicJwk),
     oldPublicKey = None,
     requireDpopNonce = true,
     overloadPolicy = None,
@@ -160,13 +162,13 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus = Status.Unauthorized,
     ),
     testCase(
-      description = "POST /configuration/partners creates everything in one request and answers the token and the bundle once",
+      description = "POST /configuration/partners creates everything in one request and answers the enrollment token once",
       request = Request.post(URL.root / "configuration" / "partners", json(createBody)).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
       setup = stubs =>
         stubs.service.create.succeedsWith(PartnerService.Created(
           acme.copy(status = PartnerStatus.Onboarding),
-          PartnerService.EnrolledEdge(edge, keyPair, PartnerService.Token("TOKEN", now.plusSeconds(86400)), """{"edgeId":"edge-acme-1"}"""),
+          PartnerService.EnrolledEdge(edge, PartnerService.Token("TOKEN", now.plusSeconds(86400))),
         )),
       verify = (response, stubs) =>
         for body <- response.body.asJson[CreatedPartnerResponse]
@@ -177,7 +179,7 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
           body.edge.id == EdgeId("edge-acme-1"),
           body.edge.partnerId == Some(PartnerId("acme")),
           body.enrollmentToken == "TOKEN",
-          body.bundle.contains("edge-acme-1"),
+          body.edge.id == EdgeId("edge-acme-1"),
         ),
     ),
     testCase(
@@ -203,8 +205,17 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
         json("""{"id":"acme","note":"fraud"}"""),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
-      setup = stubs => stubs.service.suspend.succeedsWith(()),
+      setup = stubs => stubs.service.suspend.succeedsWith(PartnerService.SuspendOutcome(authSynced = true)),
       verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.service.suspend.calls == List(acme.id))),
+    ),
+    testCase(
+      description = "a suspension auth could not be told of is 207, and the partner is suspended all the same",
+      request = Request.post(
+        URL.root / "configuration" / "partners" / "suspend",
+        json("""{"id":"acme"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.MultiStatus,
+      setup = stubs => stubs.service.suspend.succeedsWith(PartnerService.SuspendOutcome(authSynced = false)),
     ),
     testCase(
       description = "resuming a partner that is not suspended is 409",
@@ -262,7 +273,12 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (response, stubs) =>
         for body <- response.body.asString.flatMap(text => ZIO.fromEither(text.fromJson[GetPartnerApprovalsResponse]).mapError(RuntimeException(_)))
         yield assertTrue(
-          stubs.service.approvals.calls == List((Some(tenantA), Some(ApprovalStatus.Waiting), Some(acme.id))),
+          stubs.service.approvals.calls == List((
+            Some(tenantA),
+            Some(ApprovalStatus.Waiting),
+            Some(acme.id),
+            PartnerController.DefaultApprovalsLimit,
+          )),
           body.approvals.map(_.id) == Vector(ApprovalId("c")),
         ),
     ),

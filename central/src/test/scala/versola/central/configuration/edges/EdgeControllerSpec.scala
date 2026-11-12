@@ -173,7 +173,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val edgeRecord = EdgeRecord(
     edgeId,
-    publicJwk,
+    Some(publicJwk),
     oldPublicKey = None,
     requireDpopNonce = true,
     overloadPolicy = None,
@@ -252,7 +252,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Vector(
             EdgeRecord(
               edgeId,
-              Json.Obj(),
+              Some(Json.Obj()),
               oldPublicKey = None,
               requireDpopNonce = true,
               overloadPolicy = None,
@@ -265,7 +265,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             ),
             EdgeRecord(
               EdgeId("edge-2"),
-              Json.Obj(),
+              Some(Json.Obj()),
               oldPublicKey = Some(Json.Obj()),
               requireDpopNonce = false,
               overloadPolicy = None,
@@ -377,7 +377,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             edgeRecord,
             EdgeRecord(
               EdgeId("edge-2"),
-              publicJwk,
+              Some(publicJwk),
               oldPublicKey = Some(publicJwk),
               requireDpopNonce = true,
               overloadPolicy = None,
@@ -392,7 +392,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             // so the registry leaves it out whatever tenants point at it.
             EdgeRecord(
               EdgeId("edge-partner"),
-              publicJwk,
+              Some(publicJwk),
               oldPublicKey = None,
               requireDpopNonce = true,
               overloadPolicy = None,

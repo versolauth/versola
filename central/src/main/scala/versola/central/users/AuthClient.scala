@@ -61,10 +61,6 @@ trait AuthClient:
   /** Revokes the offline access `clientId` holds for the user: its live refresh tokens. */
   def revokeRefreshTokens(userId: UserId, clientId: ClientId): Task[Unit]
 
-  /** Revokes every live refresh token of `clientId`, for every user: what suspending a partner does to each of its clients
-    * (#962). Auth ends the families and tells the client's back channel, which is the partner's edge. */
-  def revokeRefreshTokensByClient(clientId: ClientId): Task[Unit]
-
   /** Every currently-live refresh token issued to the user. Not derivable from
     * [[getUserSessions]]: a refresh token's expiry is fixed at issuance and independent of a
     * session's, so a token routinely outlives the session it was issued under. */
@@ -385,15 +381,6 @@ object AuthClient:
         Request(
           method = Method.DELETE,
           url = refreshTokensUrl.addQueryParam("userId", userId.toString).addQueryParam("clientId", clientId),
-          body = Body.empty,
-        ),
-      )
-
-    override def revokeRefreshTokensByClient(clientId: ClientId): Task[Unit] =
-      send(
-        Request(
-          method = Method.DELETE,
-          url = refreshTokensUrl.addQueryParam("clientId", clientId),
           body = Body.empty,
         ),
       )

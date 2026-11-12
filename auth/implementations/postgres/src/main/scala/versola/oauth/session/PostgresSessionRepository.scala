@@ -283,43 +283,6 @@ class PostgresSessionRepository(xa: TransactorZIO)
         revokeFamiliesTokens(families, now, revocation)
         families
 
-  override def revokeRefreshTokensByClient(
-      clientId: ClientId,
-      revocation: RevocationTerms,
-  ): Task[List[(UserId, RefreshTokenFamilyId)]] =
-    Clock.instant.flatMap: now =>
-      xa.transactMeasured("revoke-refresh-tokens-by-client"):
-        // The same locking rounds as `revokeRefreshTokensByUserAndClient`, over every user of the client at once.
-        def liveFamilies: Set[RefreshTokenFamilyId] =
-          sql"""
-            SELECT DISTINCT family_id FROM refresh_tokens
-            WHERE client_id = $clientId AND expires_at > $now AND rotated_at IS NULL
-          """.query[RefreshTokenFamilyId].run().toSet
-
-        def expireLive: Set[(UserId, RefreshTokenFamilyId)] =
-          sql"""
-            UPDATE refresh_tokens SET expires_at = $now
-            WHERE client_id = $clientId AND expires_at > $now AND rotated_at IS NULL
-            RETURNING user_id, family_id
-          """.query[(UserId, RefreshTokenFamilyId)].run().toSet
-
-        @tailrec
-        def revokeLocked(
-            locked: Set[RefreshTokenFamilyId],
-            ended: Set[(UserId, RefreshTokenFamilyId)],
-            roundsLeft: Int,
-        ): Set[(UserId, RefreshTokenFamilyId)] =
-          val toLock = (liveFamilies -- locked).toList.sortBy(identity[String])
-          toLock.foreach(lockFamilyById)
-          val expired = expireLive
-          val unlocked = expired.map(_._2) -- locked -- toLock
-          if unlocked.isEmpty || roundsLeft == 0 then ended ++ expired
-          else revokeLocked(locked ++ toLock, ended ++ expired, roundsLeft - 1)
-
-        val ended = revokeLocked(Set.empty, Set.empty, roundsLeft = PostgresSessionRepository.MaxRevokeRounds).toList.sortBy(_._2: String)
-        revokeFamiliesTokens(ended.map(_._2).distinct, now, revocation)
-        ended
-
   /** What a user's own password change does when they ask to be signed out elsewhere: ends every session of
     * the user but `keep` and every refresh token not held under it, and records `sid:` for each session ended.
     * Runs in the caller's transaction, the password's, so a password is never changed without its sessions

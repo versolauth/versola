@@ -33,6 +33,8 @@ object PartnerClientRules:
       scope: Set[ScopeToken],
       accessTokenTtl: Duration,
       refreshTokenTtl: Duration,
+      /** Where auth POSTs a signed logout token (back-channel logout, and the notices of a revocation). */
+      backChannelLogoutUri: Option[String],
   )
 
   object Subject:
@@ -48,6 +50,7 @@ object PartnerClientRules:
         scope = client.scope,
         accessTokenTtl = client.accessTokenTtl,
         refreshTokenTtl = client.refreshTokenTtl,
+        backChannelLogoutUri = client.backChannelLogoutUri.map(_.encode),
       )
 
   /** The `mtlsAuth` of a partner's `tls_client_auth` client: the group's name, which every edge of the group carries. */
@@ -73,12 +76,16 @@ object PartnerClientRules:
       )
     else if subject.certificateBoundAccessTokens then
       invalid("cannot set certificateBoundAccessTokens - every edge of the partner's group presents a certificate of its own")
+    else if subject.backChannelLogoutUri.exists(uri => !underDomains(uri, partner.limits.redirectDomains)) then
+      // Auth POSTs a signed logout token to this address from inside the operator's network: an address of the partner's own
+      // domains only (https, a name, never an IP or localhost), or the partner could point auth at the operator's internal hosts.
+      invalid(s"backChannelLogoutUri must be https and under one of ${partner.limits.redirectDomains.toList.sorted.mkString(", ")}")
     else None
 
   /** Where the client is outside the partner's limits, field by field: an operator may approve it anyway, with overrides. */
   def outsideLimits(partner: PartnerRecord, subject: Subject): List[Violation] =
     val limits = partner.limits
-    val uris = subject.redirectUris.toList.sortBy(uri => uri: String).filterNot(underDomains(_, limits.redirectDomains))
+    val uris = subject.redirectUris.toList.sortBy(uri => uri: String).filterNot(uri => underDomains(uri, limits.redirectDomains))
     val scope = (subject.scope -- limits.scopes).toList.sorted
     List(
       Option.when(uris.nonEmpty)(
@@ -112,9 +119,27 @@ object PartnerClientRules:
     Option.when(existing >= partner.limits.maxClients):
       InvalidRegistrationConfiguration(clientId, s"partner '${partner.id}' may register at most ${partner.limits.maxClients} clients")
 
-  /** `https`, and the host is one of `domains` or below one of them. A domain is compared case-insensitively, as DNS is. */
-  def underDomains(uri: RedirectUri, domains: Set[String]): Boolean =
+  /** `https`, and the host is one of `domains` or below one of them. A domain is compared case-insensitively, as DNS is; an
+    * address (IPv4 or IPv6 literal) is no domain, and a name with a trailing dot or in another spelling than the domain's own
+    * is not under it (the comparison is on the text of the host, so it errs on the side of refusing). */
+  def underDomains(uri: String, domains: Set[String]): Boolean =
     URL.decode(uri).toOption.exists: url =>
       url.scheme.contains(Scheme.HTTPS) && url.host.exists: host =>
         val lower = host.toLowerCase(Locale.ROOT)
+        !isAddress(lower) &&
         domains.map(_.toLowerCase(Locale.ROOT)).exists(domain => lower == domain || lower.endsWith(s".$domain"))
+
+  /** Why `resource` is no resource of the partner, if it is not: https, a host under the partner's resource domains (never an
+    * address, never localhost), and the one spelling of it: lower case, no explicit default port. A resource is the audience of
+    * the tokens issued for it, and the upstream the operator's own edge calls with the resource's secret, so a partner's may not
+    * name a host that is not its own, nor one that a variant spelling would make a second name of someone else's. */
+  def resourceUriViolation(partner: PartnerRecord, resource: String): Option[String] =
+    val domains = partner.limits.resourceDomains.getOrElse(partner.limits.redirectDomains)
+    if !underDomains(resource, domains) then
+      Some(s"resource must be https and under one of ${domains.toList.sorted.mkString(", ")}")
+    else if resource != resource.toLowerCase(Locale.ROOT) then Some("resource must be written in lower case")
+    else if resource.stripPrefix("https://").endsWith(":443") then Some("resource must not name the default port")
+    else None
+
+  private def isAddress(host: String): Boolean =
+    host.contains(':') || host.startsWith("[") || host.forall(c => c.isDigit || c == '.')

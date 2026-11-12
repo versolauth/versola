@@ -9,11 +9,20 @@ trait EdgeRepository extends CacheSource[Vector[EdgeRecord]]:
 
   def find(id: EdgeId): Task[Option[EdgeRecord]]
 
-  def createEdge(id: EdgeId, publicKeyJwk: Json.Obj, requireDpopNonce: Boolean, groupId: EdgeGroupId, publicUrl: Option[String]): Task[Unit]
+  /** `publicKeyJwk` is `None` for a partner's edge, which brings its own key when it enrols ([[setPublicKey]]). */
+  def createEdge(id: EdgeId, publicKeyJwk: Option[Json.Obj], requireDpopNonce: Boolean, groupId: EdgeGroupId, publicUrl: Option[String]): Task[Unit]
 
   def rotateEdgeKey(id: EdgeId, newPublicKeyJwk: Json.Obj): Task[Unit]
 
   def deleteOldEdgeKey(id: EdgeId): Task[Unit]
+
+  /** The first key of an edge registered without one, in one statement: `false` when the edge has a key already (or is not there),
+    * so two enrolments cannot both register one. */
+  def setPublicKey(id: EdgeId, publicKeyJwk: Json.Obj): Task[Boolean]
+
+  /** The key of an edge, replaced (no key is kept from before, unlike [[rotateEdgeKey]]): what an edge that renews its certificate
+    * with a new key of its own is left with. `false`: no such edge. */
+  def replacePublicKey(id: EdgeId, publicKeyJwk: Json.Obj): Task[Boolean]
 
   def setRequireDpopNonce(id: EdgeId, requireDpopNonce: Boolean): Task[Unit]
 

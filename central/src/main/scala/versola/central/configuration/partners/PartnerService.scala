@@ -3,6 +3,7 @@ package versola.central.configuration.partners
 import versola.central.CentralConfig
 import versola.central.configuration.clients.{
   ApplicationType,
+  AuthFlow,
   AuthMethod,
   AuthorizationPresetService,
   ClientAlreadyExists,
@@ -18,6 +19,7 @@ import versola.central.configuration.clients.{
   ResponseType,
 }
 import versola.central.configuration.edges.{
+  EdgeEnrollmentTokenRepository,
   EdgeGroupId,
   EdgeGroupKind,
   EdgeGroupRecord,
@@ -27,7 +29,6 @@ import versola.central.configuration.edges.{
   EdgeRecord,
   EdgeService,
 }
-import versola.central.configuration.metadata.ServerMetadataService
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{AuthorizationPresetInput, ConsentFlowDto, CreateClientRequest, SaveAuthorizationPresetsRequest}
@@ -46,8 +47,8 @@ import java.time.temporal.ChronoUnit
 trait PartnerService:
 
   /** Creates the partner (`onboarding`), its edge group (`id = partner id`, kind `partner`), its console client and preset,
-    * its first edge with its signing key, and one 24-hour enrollment token. The bundle is what the partner's operator pastes
-    * into the edge. */
+    * its first edge (without a signing key: the edge makes its own and registers the public half when it enrols), and one
+    * 24-hour enrollment token, which is all the partner's operator is given. */
   def create(request: PartnerService.NewPartner): IO[PartnerError | Throwable, PartnerService.Created]
 
   def updateProfile(
@@ -58,16 +59,22 @@ trait PartnerService:
       reviewAt: Option[Instant],
   ): IO[PartnerError | Throwable, Unit]
 
-  /** The kill switch (#962 §5): the partner's clients leave the sync to auth and every edge's, their grants are revoked at
-    * auth (which tells the partner edge over the back channel), and the partner's edges are refused everything from here on. */
-  def suspend(id: PartnerId): IO[PartnerError | Throwable, Unit]
+  /** The kill switch (#962 §5), which disables the partner's edge and revokes nothing: the partner's clients leave the sync to
+    * auth and every edge's, the partner's edges are refused everything from here on, and unused enrollment tokens are void.
+    * Sessions, refresh tokens and access tokens already issued run out on their own. */
+  def suspend(id: PartnerId): IO[PartnerError | Throwable, PartnerService.SuspendOutcome]
 
   def resume(id: PartnerId): IO[PartnerError | Throwable, Unit]
 
   /** New limits; the partner's clients now outside them are answered, not changed. */
   def setLimits(id: PartnerId, limits: PartnerLimits): IO[PartnerError | Throwable, Vector[PartnerService.ClientOutsideLimits]]
 
-  def approvals(tenantId: Option[TenantId], status: Option[ApprovalStatus], partnerId: Option[PartnerId]): Task[Vector[PartnerApprovalRecord]]
+  def approvals(
+      tenantId: Option[TenantId],
+      status: Option[ApprovalStatus],
+      partnerId: Option[PartnerId],
+      limit: Int,
+  ): Task[Vector[PartnerApprovalRecord]]
 
   def approve(
       id: ApprovalId,
@@ -81,7 +88,7 @@ trait PartnerService:
   /** `onboarding` becomes `active`: the partner's first edge has called central. Nothing for any other status. */
   def activate(partner: PartnerRecord): Task[Unit]
 
-  def setSettings(partner: PartnerRecord, contact: PartnerContact, settings: PartnerSettings): Task[Unit]
+  def setSettings(partner: PartnerRecord, contact: PartnerContact, settings: PartnerSettings): IO[PartnerError | Throwable, Unit]
 
   /** The partner asks to change its own name or logo: a `profile_change` request, applied by [[approve]]. */
   def requestProfileChange(
@@ -101,8 +108,12 @@ trait PartnerService:
   def edges(partner: PartnerRecord): UIO[Vector[EdgeRecord]]
 
 object PartnerService:
-  /** Enrollment tokens of partner edges live a day: a bundle travels to another organisation. */
+  /** Enrollment tokens of partner edges live a day: a token travels to another organisation. */
   val TokenValidity: Duration = 24.hours
+
+  /** The longest access token of a console client, in seconds: the staff member's token authorises management calls (central checks
+    * its signature, expiry, issuer and client, not a revocation), so it lives minutes. */
+  val ConsoleAccessTokenTtlMax: Long = 600
 
   val ConsoleScope: Set[ScopeToken] = Set(ScopeToken("openid"), ScopeToken("phone"), ScopeToken("email"))
 
@@ -121,32 +132,22 @@ object PartnerService:
 
   case class Token(token: String, expiresAt: Instant)
 
-  /** An edge with the one-time material its bundle carries: the signing key and the enrollment token. */
-  case class EnrolledEdge(edge: EdgeRecord, signingKey: RsaKeyPair, token: Token, bundle: String)
+  /** An edge with the one thing shown once: its enrollment token. The edge has no signing key yet, and central never holds a private
+    * one for it. */
+  case class EnrolledEdge(edge: EdgeRecord, token: Token)
 
   case class Created(partner: PartnerRecord, edge: EnrolledEdge)
 
+  /** What a suspension did besides recording the status, which it always does: whether auth was told to reload its clients
+    * (`authSynced`: until it has, auth still knows the partner's clients, and so a certificate of the group still authenticates
+    * them there). */
+  case class SuspendOutcome(authSynced: Boolean)
+
   case class ClientOutsideLimits(clientId: ClientId, fields: List[String])
-
-  /** What the partner's operator pastes into a new edge: who it is, where central and auth are, its signing key and its
-    * token. Pins of the listeners' certificates are P3. */
-  case class Bundle(
-      edgeId: EdgeId,
-      group: EdgeGroupId,
-      central: Bundle.Central,
-      auth: Bundle.Auth,
-      signingKey: Bundle.SigningKey,
-      token: String,
-  ) derives JsonCodec
-
-  object Bundle:
-    case class Central(enrollUrl: Option[String], mtlsUrl: Option[String]) derives JsonCodec
-    case class Auth(issuer: Option[String], mtlsUrl: Option[String]) derives JsonCodec
-    case class SigningKey(keyId: String, privateKey: String) derives JsonCodec
 
   val live: URLayer[
     PartnerRepository & PartnerRegistry & PartnerApprovalRepository & PartnerClientService & OAuthClientService & AuthorizationPresetService &
-      EdgeGroupService & EdgeService & EdgeIdentityService & TenantRepository & AuthClient & ServerMetadataService & CentralConfig,
+      EdgeGroupService & EdgeService & EdgeIdentityService & EdgeEnrollmentTokenRepository & TenantRepository & AuthClient & CentralConfig,
     PartnerService,
   ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _))
 
@@ -157,6 +158,8 @@ object PartnerService:
       Some(PartnerError.Invalid(s"limits.clientAuthMethods must be a non-empty subset of ${PartnerLimits.AllowedAuthMethods.mkString(", ")}"))
     else if limits.redirectDomains.isEmpty || limits.redirectDomains.exists(_.trim.isEmpty) then
       Some(PartnerError.Invalid("limits.redirectDomains must name at least one domain"))
+    else if limits.resourceDomains.exists(domains => domains.isEmpty || domains.exists(_.trim.isEmpty)) then
+      Some(PartnerError.Invalid("limits.resourceDomains, when given, must name at least one domain"))
     else if limits.maxClients < 1 || limits.maxEdges < 1 then Some(PartnerError.Invalid("limits.maxClients and limits.maxEdges must be at least 1"))
     else if limits.accessTokenTtlMax < 1 || limits.refreshTokenTtlMax < 1 then
       Some(PartnerError.Invalid("limits.accessTokenTtlMax and limits.refreshTokenTtlMax must be positive"))
@@ -172,9 +175,9 @@ object PartnerService:
       groups: EdgeGroupService,
       edgeService: EdgeService,
       identity: EdgeIdentityService,
+      enrollmentTokens: EdgeEnrollmentTokenRepository,
       tenants: TenantRepository,
       auth: AuthClient,
-      metadata: ServerMetadataService,
       config: CentralConfig,
   ) extends PartnerService:
 
@@ -193,6 +196,7 @@ object PartnerService:
       val groupId = EdgeGroupId(request.id)
       val consoleId = PartnerRecord.consoleClientId(request.id)
       for
+        _ <- requireEnrollmentAddress
         _ <- ZIO.foreachDiscard(validateLimits(request.limits))(ZIO.fail(_))
         _ <- tenants.getAll.map(
           _.exists(_.id == request.tenantId),
@@ -225,6 +229,7 @@ object PartnerService:
           settings = PartnerSettings.empty,
           reviewAt = request.reviewAt,
           createdAt = now,
+          version = 0L,
         )
         created <- groups.create(EdgeGroupRecord(groupId, EdgeGroupKind.Partner))
         _ <- ZIO.fail(PartnerError.Conflict(s"edge group '$groupId' already exists")).unless(created)
@@ -251,10 +256,14 @@ object PartnerService:
         redirectUris = Set(redirectUri),
         allowedScopes = ConsoleScope,
         permissions = Set.empty,
-        accessTokenTtl = partner.limits.accessTokenTtlMax.min(InvalidRegistrationConfiguration.MaxAccessTokenTtl.toSeconds).toInt,
+        // short: the staff token the console is issued is what a management call is authorised by, and nothing revokes it
+        accessTokenTtl = partner.limits.accessTokenTtlMax.min(
+          PartnerService.ConsoleAccessTokenTtlMax,
+        ).min(InvalidRegistrationConfiguration.MaxAccessTokenTtl.toSeconds).toInt,
         refreshTokenTtl = Some(partner.limits.refreshTokenTtlMax.min(Int.MaxValue.toLong).toInt),
         theme = "default",
-        authFlow = None,
+        // the default of the platform until the operator says how its users sign in to the console (`PUT /configuration/clients/web`)
+        authFlow = Some(AuthFlow.default),
         otpTemplateId = "default",
         frontChannelLogoutUri = None,
         frontChannelLogoutSessionRequired = false,
@@ -306,17 +315,27 @@ object PartnerService:
         case Right(()) => ZIO.unit
         case Left(error) => ZIO.fail(PartnerError.Conflict(s"the preset of the console client cannot be created: $error"))
 
-    /** Registers an edge in the partner's group with its key, and issues its token and bundle. */
+    /** Registers an edge in the partner's group, without a signing key, and issues its token. */
     private def enrol(partner: PartnerRecord, id: EdgeId, publicUrl: String): IO[PartnerError | Throwable, EnrolledEdge] =
       for
-        keyPair <- edgeService.registerEdge(id, partner.groupId, Some(publicUrl))
+        _ <- requireEnrollmentAddress
+        // the count of edges is enforced by the table (a trigger that locks the partner), where two enrolments cannot both pass
+        _ <- edgeService.registerEdgeWithoutKey(id, partner.groupId, Some(publicUrl)).catchAll:
+          case error if PartnerClientService.isLimitViolation(error, "partner_edge_limit") =>
+            ZIO.fail(PartnerError.Invalid(s"partner '${partner.id}' may run at most ${partner.limits.maxEdges} edges"))
+          case error => ZIO.fail(error)
         // the token is issued for an edge the cache knows, which it learns through a notification after the commit: reloaded now
         _ <- edgeService.sync()
         // the edge is read back from the row so that the answer is what was stored
         edge <- edgeService.findFresh(id).someOrFail(IllegalStateException(s"edge '$id' was registered and cannot be read"))
         token <- issueToken(id)
-        bundle <- bundleFor(edge, keyPair, token)
-      yield EnrolledEdge(edge, keyPair, token, bundle)
+      yield EnrolledEdge(edge, token)
+
+    /** The token carries central's enrollment address, which is how an edge finds central: without one a token is of no use to a
+      * partner, so no partner or edge is created. */
+    private def requireEnrollmentAddress: IO[PartnerError, Unit] =
+      ZIO.fail(PartnerError.Invalid("central.public-urls is not configured: an enrollment token would not say where to enrol"))
+        .when(config.publicUrls.isEmpty).unit
 
     private def issueToken(id: EdgeId): IO[PartnerError | Throwable, Token] =
       identity.issueEnrollmentToken(id, TokenValidity).mapBoth(
@@ -327,21 +346,6 @@ object PartnerService:
         issued => Token(issued.token, issued.expiresAt),
       )
 
-    private def bundleFor(edge: EdgeRecord, keyPair: RsaKeyPair, token: Token): UIO[String] =
-      metadata.getMetadata.map: document =>
-        val issuer = document.flatMap(_.get("issuer")).collect { case Json.Str(value) => value }
-        Bundle(
-          edgeId = edge.id,
-          group = edge.groupId,
-          central = Bundle.Central(
-            enrollUrl = config.publicUrls.map(_.enroll.encode),
-            mtlsUrl = config.publicUrls.map(_.mtls.encode),
-          ),
-          auth = Bundle.Auth(issuer = issuer, mtlsUrl = config.auth.mtlsUrl.map(_.encode)),
-          signingKey = Bundle.SigningKey(keyId = keyPair.keyId, privateKey = Base64Url.encode(keyPair.privateKey.getEncoded)),
-          token = token.token,
-        ).toJson
-
     override def updateProfile(
         id: PartnerId,
         displayName: String,
@@ -349,22 +353,28 @@ object PartnerService:
         contact: PartnerContact,
         reviewAt: Option[Instant],
     ): IO[PartnerError | Throwable, Unit] =
-      partners.updateProfile(id, displayName, logoUri, contact, reviewAt).flatMap(found =>
-        ZIO.fail(PartnerError.NotFound(s"partner '$id'")).unless(found),
-      ).unit
+      for
+        record <- partner(id)
+        updated <- partners.updateProfile(id, record.version, displayName, logoUri, contact, reviewAt)
+        _ <- ZIO.fail(PartnerError.Conflict(s"partner '$id' was changed meanwhile; read it again")).unless(updated)
+        _ <- registry.refreshNow
+      yield ()
 
-    override def suspend(id: PartnerId): IO[PartnerError | Throwable, Unit] =
+    override def suspend(id: PartnerId): IO[PartnerError | Throwable, SuspendOutcome] =
       for
         record <- partner(id)
         _ <- partners.setStatus(id, PartnerStatus.Suspended)
         // seen by the next sync of auth and by the next call of the partner's edges, not by the next refresh
         _ <- registry.refreshNow
-        own <- clients.getPartnerClients(id)
-        // Every grant of every client of the partner ends at auth, which tells the partner edge over the back channel; the
-        // access tokens already issued run out within the partner's cap. The record is written first, so a client that
-        // cannot be reached at auth is still omitted from the sync and refused at /token.
-        _ <- ZIO.foreachDiscard(own.filter(_.isApproved))(client => auth.revokeRefreshTokensByClient(client.id))
-      yield ()
+        // Auth is asked to reload its clients now, rather than at its next interval: it then omits the partner's, which is what makes a
+        // certificate of the group useless there. Nothing is deleted or revoked: sessions, refresh tokens and access tokens that were
+        // issued run out on their own.
+        synced <- auth.syncConfiguration().as(true).catchAll: error =>
+          ZIO.logWarning(s"partner '$id' is suspended and auth could not be told to reload its clients: $error").as(false)
+        // an enrollment token that was printed and not used must not turn into a certificate later
+        edgesOfPartner <- edges(record)
+        _ <- ZIO.foreachDiscard(edgesOfPartner)(edge => enrollmentTokens.revoke(edge.id))
+      yield SuspendOutcome(synced)
 
     override def resume(id: PartnerId): IO[PartnerError | Throwable, Unit] =
       for
@@ -393,8 +403,9 @@ object PartnerService:
         tenantId: Option[TenantId],
         status: Option[ApprovalStatus],
         partnerId: Option[PartnerId],
+        limit: Int,
     ): Task[Vector[PartnerApprovalRecord]] =
-      approvals.list(tenantId, status, partnerId)
+      approvals.list(tenantId, status, partnerId, limit)
 
     private def waiting(id: ApprovalId): IO[PartnerError | Throwable, PartnerApprovalRecord] =
       approvals.find(id).someOrFail(PartnerError.NotFound(s"approval '$id'")).flatMap: approval =>
@@ -408,35 +419,56 @@ object PartnerService:
     ): IO[PartnerError | Throwable, PartnerApprovalRecord] =
       for
         approval <- waiting(id)
-        applied <- approval.kind match
-          case ApprovalKind.ProfileChange =>
-            for
-              record <- partner(approval.partnerId)
-              change <- ZIO.fromEither(approval.requested.toJson.fromJson[ProfileChange])
-                .mapError(reason => PartnerError.Invalid(s"the profile change cannot be read: $reason"))
-              _ <- partners.updateProfile(record.id, change.displayName, change.logoUri, record.contact, record.reviewAt)
-              _ <- registry.refreshNow
-            yield None
-          case _ => partnerClients.applyApproval(approval, overrides)
+        // refused before anything is decided: a field that is not the operator's to override, or one that cannot be read
+        applied <- partnerClients.checkOverrides(approval, overrides)
         now <- Clock.instant
-        decided <- approvals.decide(id, ApprovalStatus.Approved, decidedBy, now, note, applied)
-        _ <- ZIO.fail(PartnerError.Conflict(s"approval '$id' was decided meanwhile")).unless(decided)
+        // The decision is the gate: `UPDATE ... WHERE status = 'waiting'`, so that of two decisions on one request (an approval
+        // and a rejection, an approval and the partner withdrawing) exactly one is made, and only the one that was made goes on
+        // to change the client. If applying it then fails, the decision is taken back and the client put back to pending, so
+        // that a failure never leaves a client that is served while its request is undecided.
+        won <- approvals.decide(id, ApprovalStatus.Approved, decidedBy, now, note, applied)
+        _ <- ZIO.fail(PartnerError.Conflict(s"approval '$id' was decided meanwhile")).unless(won)
+        _ <- applyDecision(approval, applied).tapError: error =>
+          ZIO.logWarning(s"approval '$id' could not be applied and is waiting again: $error") *>
+            partnerClients.revertApproval(approval).ignore *> approvals.reopen(id, ApprovalStatus.Approved).ignore
       yield approval.copy(status = ApprovalStatus.Approved, decidedBy = decidedBy, decidedAt = Some(now), note = note, applied = applied)
+
+    private def applyDecision(approval: PartnerApprovalRecord, applied: Option[Json.Obj]): IO[PartnerError | Throwable, Unit] =
+      approval.kind match
+        case ApprovalKind.ProfileChange =>
+          for
+            record <- partner(approval.partnerId)
+            change <- ZIO.fromEither(approval.requested.toJson.fromJson[ProfileChange])
+              .mapError(reason => PartnerError.Invalid(s"the profile change cannot be read: $reason"))
+            // the name and the logo alone: what either side has written to the contact since is not overwritten
+            _ <- partners.setNameAndLogo(record.id, change.displayName, change.logoUri)
+            _ <- registry.refreshNow
+          yield ()
+        case _ => partnerClients.applyApproval(approval, applied)
 
     override def reject(id: ApprovalId, decidedBy: Option[String], note: String): IO[PartnerError | Throwable, PartnerApprovalRecord] =
       for
         approval <- waiting(id)
-        _ <- partnerClients.rejectApproval(approval)
         now <- Clock.instant
-        decided <- approvals.decide(id, ApprovalStatus.Rejected, decidedBy, now, Some(note), None)
-        _ <- ZIO.fail(PartnerError.Conflict(s"approval '$id' was decided meanwhile")).unless(decided)
+        // decided first, as an approval is: a request that was approved meanwhile stays approved
+        won <- approvals.decide(id, ApprovalStatus.Rejected, decidedBy, now, Some(note), None)
+        _ <- ZIO.fail(PartnerError.Conflict(s"approval '$id' was decided meanwhile")).unless(won)
+        _ <- partnerClients.rejectApproval(approval)
       yield approval.copy(status = ApprovalStatus.Rejected, decidedBy = decidedBy, decidedAt = Some(now), note = Some(note))
 
     override def activate(partner: PartnerRecord): Task[Unit] =
-      ZIO.when(partner.status == PartnerStatus.Onboarding)(partners.setStatus(partner.id, PartnerStatus.Active) *> registry.refreshNow).unit
+      // conditional in the database: a read of `onboarding` that a suspension has since made stale must not undo it
+      ZIO.when(partner.status == PartnerStatus.Onboarding)(partners.activate(partner.id).flatMap(activated =>
+        registry.refreshNow.when(activated),
+      )).unit
 
-    override def setSettings(partner: PartnerRecord, contact: PartnerContact, settings: PartnerSettings): Task[Unit] =
-      partners.setSettings(partner.id, contact, settings) *> registry.refreshNow
+    override def setSettings(partner: PartnerRecord, contact: PartnerContact, settings: PartnerSettings): IO[PartnerError | Throwable, Unit] =
+      for
+        record <- this.partner(partner.id)
+        updated <- partners.setSettings(partner.id, record.version, contact, settings)
+        _ <- ZIO.fail(PartnerError.Conflict(s"partner '${partner.id}' was changed meanwhile; read the settings again")).unless(updated)
+        _ <- registry.refreshNow
+      yield ()
 
     override def requestProfileChange(
         partner: PartnerRecord,
@@ -485,6 +517,7 @@ object PartnerService:
       for
         own <- edges(partner)
         _ <- ZIO.fail(PartnerError.NotFound(s"edge '$edgeId'")).unless(own.exists(_.id == edgeId))
+        _ <- requireEnrollmentAddress
         token <- issueToken(edgeId)
       yield token
 

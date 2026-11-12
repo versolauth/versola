@@ -832,6 +832,9 @@ case class SyncOAuthClientRecord(
     edgeCertificateSubject: Option[CertificateSubject],
     /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
     themeOverrides: Option[ThemeOverrides],
+    /** The partner that owns the client (#549); `auth` binds no token of a partner's client to the certificate (every edge of
+      * the group holds one of its own), see its `OAuthClientRecord.bindsAccessTokens`. Absent from a central that predates it. */
+    partnerId: Option[PartnerId],
 ) derives JsonCodec, Schema
 
 /** An edge's request for a certificate for a client it holds the key of (#463). */

@@ -17,5 +17,5 @@ trait EdgeEnrollmentTokenRepository:
     * past `expiresAt`. Two concurrent calls with the same token cannot both succeed. */
   def consume(tokenHash: String, now: Instant): Task[Option[EdgeId]]
 
-  /** Forgets the unspent tokens of `edgeId`: for a partner that printed a bundle and wants it void. The number forgotten. */
+  /** Forgets the unspent tokens of `edgeId`: for a partner that copied a token somewhere it must not work from and wants it void. The number forgotten. */
   def revoke(edgeId: EdgeId): Task[Int]

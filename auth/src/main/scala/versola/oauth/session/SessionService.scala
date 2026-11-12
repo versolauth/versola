@@ -72,10 +72,6 @@ trait SessionService:
    *  ended. */
   def revokeRefreshTokensByUserAndClient(userId: UserId, clientId: ClientId): Task[List[RefreshTokenFamilyId]]
 
-  /** The same for every user of one client: what central asks when it suspends a partner (#962). Returns each family ended
-    * with the user it belonged to. */
-  def revokeRefreshTokensByClient(clientId: ClientId): Task[List[(UserId, RefreshTokenFamilyId)]]
-
 object SessionService:
   def live = ZLayer.fromFunction(Impl(_, _, _, _, _))
 
@@ -185,14 +181,4 @@ object SessionService:
           case Some(client) => RevocationTerms.forFamily(client, RevocationCause.OfflineAccessRevoked)
           case None => RevocationTerms.widest(RevocationCause.OfflineAccessRevoked, ttls)
         families <- repository.revokeRefreshTokensByUserAndClient(userId, clientId, terms)
-      yield families
-
-    override def revokeRefreshTokensByClient(clientId: ClientId): Task[List[(UserId, RefreshTokenFamilyId)]] =
-      for
-        client <- configuration.find(clientId)
-        ttls <- configuration.accessTokenTtls
-        terms = client match
-          case Some(client) => RevocationTerms.forFamily(client, RevocationCause.OfflineAccessRevoked)
-          case None => RevocationTerms.widest(RevocationCause.OfflineAccessRevoked, ttls)
-        families <- repository.revokeRefreshTokensByClient(clientId, terms)
       yield families

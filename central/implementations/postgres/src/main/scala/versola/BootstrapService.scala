@@ -1762,7 +1762,7 @@ object BootstrapService:
           case Some(_) => ZIO.unit
           case None => edgeRepo.createEdge(
               id = seed.id,
-              publicKeyJwk = seed.publicKeyJwk,
+              publicKeyJwk = Some(seed.publicKeyJwk),
               requireDpopNonce = EdgeRecord.DefaultRequireDpopNonce,
               groupId = EdgeGroup.DefaultId,
               publicUrl = None,

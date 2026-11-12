@@ -46,6 +46,7 @@ class PostgresPartnerApprovalRepository(xa: TransactorZIO) extends PartnerApprov
       tenantId: Option[TenantId],
       status: Option[ApprovalStatus],
       partnerId: Option[PartnerId],
+      limit: Int,
   ): Task[Vector[PartnerApprovalRecord]] =
     xa.connectMeasured("list-partner-approvals"):
       // Each filter is written as "absent or equal", so one statement serves every combination.
@@ -57,6 +58,16 @@ class PostgresPartnerApprovalRepository(xa: TransactorZIO) extends PartnerApprov
           AND (${status.isEmpty} OR a.status = ${status.getOrElse(ApprovalStatus.Waiting)})
           AND (${partnerId.isEmpty} OR a.partner_id = ${partnerId.getOrElse(PartnerId(""))})
         ORDER BY a.requested_at DESC, a.id DESC
+        LIMIT $limit
+      """.query[PartnerApprovalRecord].run()
+
+  override def forTarget(partnerId: PartnerId, targetId: String, limit: Int): Task[Vector[PartnerApprovalRecord]] =
+    xa.connectMeasured("partner-approvals-for-target"):
+      sql"""
+        SELECT $columns FROM partner_approvals a
+        WHERE a.partner_id = $partnerId AND a.target_id = $targetId
+        ORDER BY a.requested_at DESC, a.id DESC
+        LIMIT $limit
       """.query[PartnerApprovalRecord].run()
 
   override def waitingFor(partnerId: PartnerId, targetId: String): Task[Vector[PartnerApprovalRecord]] =
@@ -66,6 +77,14 @@ class PostgresPartnerApprovalRepository(xa: TransactorZIO) extends PartnerApprov
         WHERE a.partner_id = $partnerId AND a.target_id = $targetId AND a.status = 'waiting'
         ORDER BY a.requested_at DESC, a.id DESC
       """.query[PartnerApprovalRecord].run()
+
+  override def reopen(id: ApprovalId, from: ApprovalStatus): Task[Boolean] =
+    xa.connectMeasured("reopen-partner-approval"):
+      sql"""
+        UPDATE partner_approvals
+        SET status = 'waiting', decided_by = NULL, decided_at = NULL, note = NULL, applied = NULL
+        WHERE id = $id AND status = $from
+      """.update.run() > 0
 
   override def decide(
       id: ApprovalId,

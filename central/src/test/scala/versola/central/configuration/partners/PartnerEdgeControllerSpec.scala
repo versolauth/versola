@@ -38,9 +38,8 @@ import versola.central.configuration.resources.{ResourceId, ResourceRecord, Reso
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.configuration.{GetAuthorizationPresetsSyncResponse, GetOAuthClientsSyncResponse, GetResourcesSyncResponse, ResourceUri}
-import versola.central.users.{AuthClient, UserId}
 import versola.central.{CentralConfig, TestCentralConfig}
-import versola.util.audit.{AuditEvents, AuditOutcome}
+import versola.util.audit.{ActorType, AuditEvent, AuditEvents, AuditKind, AuditOutcome, AuditSeverity}
 import versola.util.http.Observability
 import versola.util.{JWT, RedirectUri, RsaKeyPair, Secret, SecureRandom, SecurityService, TestCertificates}
 import zio.*
@@ -81,7 +80,7 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def edgeRecord(groupId: EdgeGroupId, kind: EdgeGroupKind) = EdgeRecord(
     id = edgeId,
-    publicKey = edgeKey.toPublicJwk,
+    publicKey = Some(edgeKey.toPublicJwk),
     oldPublicKey = None,
     requireDpopNonce = true,
     overloadPolicy = None,
@@ -116,12 +115,14 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       refreshTokenTtlMax = 86400,
       clientAuthMethods = Set(AuthMethod.tls_client_auth),
       rateLimitPolicy = "partner-default",
+      resourceDomains = None,
     ),
     groupId = EdgeGroupId(id),
     consoleClientId = ClientId(s"$id-console"),
     settings = PartnerSettings.empty,
     reviewAt = None,
     createdAt = now,
+    version = 0L,
   )
 
   private val acme = partner("acme")
@@ -228,7 +229,6 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       presets: Stub[AuthorizationPresetService],
       jwks: Stub[JwksService],
       metadata: Stub[ServerMetadataService],
-      auth: Stub[AuthClient],
       tenants: Stub[TenantRepository],
       certificates: Stub[EdgeCertificateRepository],
       tokens: Stub[EdgeEnrollmentTokenRepository],
@@ -282,7 +282,6 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           presets = stub[AuthorizationPresetService],
           jwks = stub[JwksService],
           metadata = stub[ServerMetadataService],
-          auth = stub[AuthClient],
           tenants = stub[TenantRepository],
           certificates = stub[EdgeCertificateRepository],
           tokens = stub[EdgeEnrollmentTokenRepository],
@@ -302,7 +301,6 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               ZEnvironment[JwksService](services.jwks) ++
               ZEnvironment[ServerMetadataService](services.metadata) ++
               ZEnvironment[SecurityService](security) ++
-              ZEnvironment[AuthClient](services.auth) ++
               ZEnvironment[TenantRepository](services.tenants) ++
               ZEnvironment[EdgeCertificateRepository](services.certificates) ++
               ZEnvironment[EdgeEnrollmentTokenRepository](services.tokens) ++
@@ -333,6 +331,30 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   def spec = suite("PartnerEdgeController")(
     suite("who gets in")(
+      // #962: a partner's edge is registered without a signing key and brings the public half when it enrols, so what it signs is
+      // verified against nothing until then: not the token it signs with the key it will register, nor any other.
+      testCase(
+        description = "an edge that has not enrolled has no key: a token it signs is refused on every route, with the right certificate",
+        request = Request.get(partnerPath("me")),
+        edge = partnerEdge.copy(publicKey = None),
+        certificate = Some(partnerCertificate),
+        expectedStatus = Status.Unauthorized,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.partners.activate.calls.isEmpty)),
+      ),
+      testCase(
+        description = "an edge that has not enrolled is refused the partner's data as well",
+        request = Request.get(partnerPath("sync", "clients")),
+        edge = partnerEdge.copy(publicKey = None),
+        certificate = Some(partnerCertificate),
+        expectedStatus = Status.Unauthorized,
+      ),
+      testCase(
+        description = "an edge that has not enrolled cannot manage anything either",
+        request = Request.get(partnerPath("clients")),
+        edge = partnerEdge.copy(publicKey = None),
+        certificate = Some(partnerCertificate),
+        expectedStatus = Status.Unauthorized,
+      ),
       testCase(
         description = "a first-party edge is refused: its surface is /edge/sync",
         request = Request.get(partnerPath("me")),
@@ -513,48 +535,115 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           yield assertTrue(drafts.map(_.outcome) == Vector(AuditOutcome.failure), drafts.head.reason == Some("partner_not_found")),
       ),
     ),
-    suite("revocations act on the partner's own clients only")(
+    suite("the audit feed")(
       testCase(
-        description = "a client that is not the partner's is refused, and auth is not asked",
+        description = "the operator's events about the partner show that the operator acted, not who; nobody's node or trace is shown",
+        request = Request.get(partnerPath("audit")),
+        principal = Some(staffToken()),
+        expectedStatus = Status.Ok,
+        setup = services => services.auditRepository.partnerEvents.succeedsWith(List(operatorEvent, staffEvent)),
+        verify = (response, services) =>
+          for body <- decodeBody[PartnerAuditResponse](response)
+          yield assertTrue(
+            services.auditRepository.partnerEvents.calls.map(_._1) == List(acme.id.toString),
+            body.events.size == 2,
+            body.events.head.actorType == ActorType("operator"),
+            body.events.head.actorId.isEmpty,
+            body.events.head.userId.isEmpty,
+            body.events.head.ip.isEmpty,
+            body.events.head.userAgent.isEmpty,
+            body.events.head.details == Json.Obj("partnerId" -> Json.Str("acme"), "changed" -> Json.Arr()),
+            body.events.head.kind == operatorEvent.kind,
+            body.events.head.targetId == operatorEvent.targetId,
+            // the partner's own staff are named, with the address the call came from
+            body.events(1).actorType == CentralAudit.Actors.PartnerStaff,
+            body.events(1).actorId == Some("staff-1"),
+            body.events(1).ip == Some("203.0.113.9"),
+            body.events.forall(_.nodeId == "central"),
+            body.events.forall(_.traceId.isEmpty),
+          ),
+      ),
+    ),
+    suite("what a partner may register")(
+      testCase(
+        description = "a resource under another host than the partner's own is 400, and nothing is created",
         request = Request.post(
-          partnerPath("revocations"),
-          jsonBody(s"""{"by":"user","value":"${UUID.randomUUID()}","clients":["acme-shop","globex-shop"],"revokeRefresh":true}"""),
+          partnerPath("resources"),
+          jsonBody("""{"resourceId":"acme-evil","resource":"https://operator.example","audience":[],"endpoints":[],"audienceRateLimits":[]}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         principal = Some(staffToken()),
         expectedStatus = Status.BadRequest,
-        verify = (_, services) =>
-          ZIO.succeed(assertTrue(services.auth.revokeRefreshTokens.calls.isEmpty, services.auth.revokeRefreshTokensByClient.calls.isEmpty)),
+        verify = (_, services) => ZIO.succeed(assertTrue(services.resources.createResource.calls.isEmpty)),
       ),
       testCase(
-        description = "by user: the user's grants at each named client of the partner are revoked at auth",
+        description = "a resource in another spelling than the one form, an address or http is 400 too",
         request = Request.post(
-          partnerPath("revocations"),
-          jsonBody("""{"by":"user","value":"018f0f2a-1c7b-7000-8000-000000000301","clients":["acme-shop","acme-pay"],"revokeRefresh":true}"""),
+          partnerPath("resources"),
+          jsonBody("""{"resourceId":"acme-evil","resource":"https://API.acme.example","audience":[],"endpoints":[],"audienceRateLimits":[]}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         principal = Some(staffToken()),
-        expectedStatus = Status.Accepted,
-        setup = services => services.auth.revokeRefreshTokens.succeedsWith(()),
-        verify = (_, services) =>
-          ZIO.succeed(assertTrue(
-            services.auth.revokeRefreshTokens.calls == List(
-              (UserId(UUID.fromString("018f0f2a-1c7b-7000-8000-000000000301")), ClientId("acme-shop")),
-              (UserId(UUID.fromString("018f0f2a-1c7b-7000-8000-000000000301")), ClientId("acme-pay")),
-            ),
-          )),
+        expectedStatus = Status.BadRequest,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.resources.createResource.calls.isEmpty)),
       ),
       testCase(
-        description = "by client: every user's grants of that client",
-        request = Request.post(
-          partnerPath("revocations"),
-          jsonBody("""{"by":"client","value":"acme-shop","clients":["acme-shop"],"revokeRefresh":true}"""),
+        description = "changing a resource to a host that is not the partner's is 400, and to one another resource has is 409",
+        request = Request.put(
+          partnerPath("resources"),
+          jsonBody(
+            """{"resourceId":"acme-api","resource":"https://elsewhere.example","audience":{"add":[],"remove":[]},"deleteEndpoints":[],"createEndpoints":[]}""",
+          ),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         principal = Some(staffToken()),
-        expectedStatus = Status.Accepted,
-        setup = services => services.auth.revokeRefreshTokensByClient.succeedsWith(()),
-        verify = (_, services) => ZIO.succeed(assertTrue(services.auth.revokeRefreshTokensByClient.calls == List(ClientId("acme-shop")))),
+        expectedStatus = Status.BadRequest,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.resources.updateResource.calls.isEmpty)),
+      ),
+      testCase(
+        description = "a new resource that the tenant already has is 409, not a 500",
+        request = Request.put(
+          partnerPath("resources"),
+          jsonBody(
+            """{"resourceId":"acme-api","resource":"https://other.acme.example","audience":{"add":[],"remove":[]},"deleteEndpoints":[],"createEndpoints":[]}""",
+          ),
+        ).addHeader(Header.ContentType(MediaType.application.json)),
+        principal = Some(staffToken()),
+        expectedStatus = Status.Conflict,
+        setup = services => services.resources.updateResource.failsWith(java.sql.SQLException("duplicate key", "23505")),
+      ),
+      testCase(
+        description = "an edge whose certificate names only the edge, not its group, is 401",
+        request = Request.get(partnerPath("me")),
+        certificate = Some(TestCertificates.generate(uris = List(EdgeCertificate.uriFor(edgeId))).certificate),
+        expectedStatus = Status.Unauthorized,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.partners.activate.calls.isEmpty)),
       ),
     ),
+  ) @@ TestAspect.sequential
+
+  private def auditEvent(actorType: ActorType, actorId: Option[String], ip: Option[String]) = AuditEvent(
+    id = UUID.fromString("018f0f2a-1c7b-7000-8000-0000000004a1"),
+    at = now,
+    tenantId = Some("tenant-a"),
+    source = CentralAudit.Source,
+    nodeId = "central-node-7",
+    kind = AuditKind("admin.partner.suspend"),
+    outcome = AuditOutcome.success,
+    reason = None,
+    severity = AuditSeverity.info,
+    actorType = actorType,
+    actorId = actorId,
+    userId = Some(UUID.fromString("018f0f2a-1c7b-7000-8000-0000000004b2")),
+    clientId = Some("central-admin"),
+    sessionId = Some("sid-1"),
+    ip = ip,
+    userAgent = Some("Mozilla/5.0"),
+    traceId = Some("trace-9"),
+    targetType = Some("partner"),
+    targetId = Some("acme"),
+    details = Json.Obj("partnerId" -> Json.Str("acme"), "changed" -> Json.Arr(), "internalNote" -> Json.Str("operator only")),
   )
+
+  private val operatorEvent = auditEvent(CentralAudit.Actors.Admin, Some("admin-user-id"), Some("198.51.100.4"))
+  private val staffEvent = auditEvent(CentralAudit.Actors.PartnerStaff, Some("staff-1"), Some("203.0.113.9"))
 
   private val waitingCreate = PartnerApprovalRecord(
     id = ApprovalId("c"),

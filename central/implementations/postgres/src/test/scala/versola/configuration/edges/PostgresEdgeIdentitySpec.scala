@@ -59,8 +59,8 @@ object PostgresEdgeIdentitySpec extends PostgresSpec:
         _ <- reset
         (edges, groups, _, _) <- repositories
         _ <- groups.create(partner)
-        _ <- edges.createEdge(edgeId, jwk, true, partner.id, None)
-        _ <- edges.createEdge(otherEdgeId, jwk, true, EdgeGroup.DefaultId, None)
+        _ <- edges.createEdge(edgeId, Some(jwk), true, partner.id, None)
+        _ <- edges.createEdge(otherEdgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
         mine <- edges.find(edgeId)
         other <- edges.find(otherEdgeId)
         all <- edges.getAll
@@ -74,14 +74,14 @@ object PostgresEdgeIdentitySpec extends PostgresSpec:
       for
         _ <- reset
         (edges, _, _, _) <- repositories
-        failure <- edges.createEdge(edgeId, jwk, true, EdgeGroupId("nobody"), None).flip
+        failure <- edges.createEdge(edgeId, Some(jwk), true, EdgeGroupId("nobody"), None).flip
       yield assertTrue(failure.getMessage.contains("edge_groups") || failure.getMessage.contains("violates foreign key"))
     },
     test("a token is spent once, and only for the edge it was created for") {
       for
         _ <- reset
         (edges, _, tokens, _) <- repositories
-        _ <- edges.createEdge(edgeId, jwk, true, EdgeGroup.DefaultId, None)
+        _ <- edges.createEdge(edgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
         _ <- tokens.create("hash-1", edgeId, now.plusSeconds(3600))
         first <- tokens.consume("hash-1", now)
         second <- tokens.consume("hash-1", now)
@@ -91,7 +91,7 @@ object PostgresEdgeIdentitySpec extends PostgresSpec:
       for
         _ <- reset
         (edges, _, tokens, _) <- repositories
-        _ <- edges.createEdge(edgeId, jwk, true, EdgeGroup.DefaultId, None)
+        _ <- edges.createEdge(edgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
         _ <- tokens.create("hash-1", edgeId, now.plusSeconds(10))
         expired <- tokens.consume("hash-1", now.plusSeconds(10))
         unknown <- tokens.consume("hash-2", now)
@@ -102,7 +102,7 @@ object PostgresEdgeIdentitySpec extends PostgresSpec:
       for
         _ <- reset
         (edges, _, tokens, _) <- repositories
-        _ <- edges.createEdge(edgeId, jwk, true, EdgeGroup.DefaultId, None)
+        _ <- edges.createEdge(edgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
         _ <- tokens.create("hash-1", edgeId, now.plusSeconds(10))
         first <- tokens.peek("hash-1", now)
         again <- tokens.peek("hash-1", now)
@@ -116,7 +116,7 @@ object PostgresEdgeIdentitySpec extends PostgresSpec:
       for
         _ <- reset
         (edges, _, tokens, _) <- repositories
-        _ <- edges.createEdge(edgeId, jwk, true, EdgeGroup.DefaultId, None)
+        _ <- edges.createEdge(edgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
         _ <- tokens.create("hash-1", edgeId, now.plusSeconds(3600))
         results <- ZIO.foreachPar(1 to 8)(_ => tokens.consume("hash-1", now))
       yield assertTrue(results.count(_.isDefined) == 1)
@@ -125,8 +125,8 @@ object PostgresEdgeIdentitySpec extends PostgresSpec:
       for
         _ <- reset
         (edges, _, tokens, _) <- repositories
-        _ <- edges.createEdge(edgeId, jwk, true, EdgeGroup.DefaultId, None)
-        _ <- edges.createEdge(otherEdgeId, jwk, true, EdgeGroup.DefaultId, None)
+        _ <- edges.createEdge(edgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
+        _ <- edges.createEdge(otherEdgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
         _ <- tokens.create("hash-1", edgeId, now.plusSeconds(3600))
         _ <- tokens.create("hash-2", edgeId, now.plusSeconds(3600))
         _ <- tokens.create("hash-3", otherEdgeId, now.plusSeconds(3600))
@@ -141,8 +141,8 @@ object PostgresEdgeIdentitySpec extends PostgresSpec:
       for
         _ <- reset
         (edges, _, _, certificates) <- repositories
-        _ <- edges.createEdge(edgeId, jwk, true, EdgeGroup.DefaultId, None)
-        _ <- edges.createEdge(otherEdgeId, jwk, true, EdgeGroup.DefaultId, None)
+        _ <- edges.createEdge(edgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
+        _ <- edges.createEdge(otherEdgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
         _ <- certificates.record(edgeId, "ab12", now.plusSeconds(86400), now)
         _ <- certificates.record(edgeId, "cd34", now.plusSeconds(172800), now.plusSeconds(3600))
         _ <- certificates.record(otherEdgeId, "ef56", now.plusSeconds(86400), now)
@@ -157,7 +157,7 @@ object PostgresEdgeIdentitySpec extends PostgresSpec:
       for
         _ <- reset
         (edges, _, tokens, certificates) <- repositories
-        _ <- edges.createEdge(edgeId, jwk, true, EdgeGroup.DefaultId, None)
+        _ <- edges.createEdge(edgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
         _ <- tokens.create("hash-1", edgeId, now.plusSeconds(3600))
         _ <- certificates.record(edgeId, "ab12", now.plusSeconds(86400), now)
         _ <- certificates.record(edgeId, "ab12", now.plusSeconds(86400), now)

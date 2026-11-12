@@ -2,6 +2,7 @@ package versola.central.configuration.edges
 
 import versola.central.CentralConfig
 import versola.util.{ReloadingCache, RsaKeyPair, SecurityService}
+import zio.json.ast.Json
 import zio.{Clock, Schedule, Scope, Task, UIO, ZIO, ZLayer}
 
 trait EdgeService:
@@ -11,6 +12,17 @@ trait EdgeService:
 
   /** Registers an edge in `groupId`, which it never leaves. The group has to exist ([[EdgeGroupService.find]]). */
   def registerEdge(id: EdgeId, groupId: EdgeGroupId, publicUrl: Option[String]): Task[RsaKeyPair]
+
+  /** Registers an edge of a partner's group with no signing key: the edge generates its own and registers the public half when
+    * it enrols ([[setSigningKey]]), so central never holds or shows a private key for it (#962). Until then nothing it signs is
+    * accepted. */
+  def registerEdgeWithoutKey(id: EdgeId, groupId: EdgeGroupId, publicUrl: Option[String]): Task[Unit]
+
+  /** The first signing key of an edge registered without one; `false` when it has one already. */
+  def setSigningKey(id: EdgeId, publicKeyJwk: Json.Obj): Task[Boolean]
+
+  /** Replaces the signing key of the edge with `publicKeyJwk` and forgets the one before. */
+  def replaceSigningKey(id: EdgeId, publicKeyJwk: Json.Obj): Task[Boolean]
 
   def rotateEdgeKey(id: EdgeId): Task[RsaKeyPair]
 
@@ -56,12 +68,27 @@ object EdgeService:
         keyPair <- securityService.generateRsaKeyPair
         _ <- edgeRepository.createEdge(
           id = id,
-          publicKeyJwk = keyPair.toPublicJwk,
+          publicKeyJwk = Some(keyPair.toPublicJwk),
           requireDpopNonce = EdgeRecord.DefaultRequireDpopNonce,
           groupId = groupId,
           publicUrl = publicUrl,
         )
       yield keyPair
+
+    override def registerEdgeWithoutKey(id: EdgeId, groupId: EdgeGroupId, publicUrl: Option[String]): Task[Unit] =
+      edgeRepository.createEdge(
+        id = id,
+        publicKeyJwk = None,
+        requireDpopNonce = EdgeRecord.DefaultRequireDpopNonce,
+        groupId = groupId,
+        publicUrl = publicUrl,
+      )
+
+    override def setSigningKey(id: EdgeId, publicKeyJwk: Json.Obj): Task[Boolean] =
+      edgeRepository.setPublicKey(id, publicKeyJwk).tap(set => sync().when(set))
+
+    override def replaceSigningKey(id: EdgeId, publicKeyJwk: Json.Obj): Task[Boolean] =
+      edgeRepository.replacePublicKey(id, publicKeyJwk).tap(replaced => sync().when(replaced))
 
     override def rotateEdgeKey(id: EdgeId): Task[RsaKeyPair] =
       for

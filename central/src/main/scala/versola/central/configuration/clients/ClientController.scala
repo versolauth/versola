@@ -210,6 +210,7 @@ object ClientController extends AuditedController:
       applicationType = client.applicationType,
       edgeCertificateSubject = edgeCertificateSubject,
       themeOverrides = client.themeOverrides,
+      partnerId = client.partnerId,
     )
 
   // ── One registration and one update per kind of client ─────────────────────────────────────
@@ -254,6 +255,8 @@ object ClientController extends AuditedController:
         create = toRequest(body)
         _ <- Audit.target(create.id)
         _ <- Audit.tenant(create.tenantId)
+        // a client of a partner is in the partner's audit feed as well
+        _ <- ZIO.foreachDiscard(create.partnerId)(Audit.partner)
         _ <- ZIO.when(create.frontChannelLogoutUri.isDefined && create.backChannelLogoutUri.isDefined):
           ZIO.fail(InvalidClientLogoutConfiguration(create.id))
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateKindRegistration(kind, create))(ZIO.fail(_))
@@ -291,6 +294,7 @@ object ClientController extends AuditedController:
               ).status(Status.Conflict)
           case Some(client) =>
             for
+              _ <- ZIO.foreachDiscard(client.partnerId)(Audit.partner)
               enrolled <- certificates.isEnrolled(client.id)
               edgeFronted = client.edgeClientCertificate.nonEmpty || enrolled
               _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateKindUpdate(kind, update, client, edgeFronted))(ZIO.fail(_))

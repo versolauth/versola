@@ -94,6 +94,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
   )
 
   val baseRequest = AuthorizeRequest(

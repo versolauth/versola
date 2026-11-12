@@ -46,8 +46,9 @@ case class CentralConfig(
       * records admin actions for 7 days. */
     audit: CentralConfig.AuditConfig = CentralConfig.AuditConfig(),
     /** Where a partner's edge reaches central from outside (#549): the enrollment listener and the mutual-TLS listener by
-      * their public names. Written into the bundle a new partner edge is bootstrapped with; absent, the bundle names no
-      * address and the operator fills it in by hand. */
+      * their public names. `enroll` is the address inside every enrollment token (`vtk1.<base64url(enroll)>.<secret>`) and
+      * `mtls` is told to the edge when it enrols; absent, no partner (or partner edge) can be created, because a token has to
+      * say where to enrol. */
     publicUrls: Option[CentralConfig.PublicUrlsConfig] = None,
 ):
   /** `client-certificates` only where it names a CA. A config with no such block still decodes to
@@ -65,7 +66,7 @@ object CentralConfig:
   val defaultTenantId: TenantId = TenantId("default")
 
   /** @param mtlsUrl the public name of auth's mutual-TLS listener (`MPORT`), where a partner's edge authenticates its clients
-    *                with the group's certificate; told to the edge in `/edge/partner/me` and in the bundle. */
+    *                with the group's certificate; told to the edge in `/edge/partner/me` and when it enrols. */
   case class AuthConfig(url: URL, mtlsUrl: Option[URL] = None)
 
   case class PublicUrlsConfig(enroll: URL, mtls: URL)

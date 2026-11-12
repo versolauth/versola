@@ -20,6 +20,10 @@ import java.time.Instant
 /** The operator's side of partners (#962 §3), on the main listener: the registry, the kill switch, the limits and the queue of
   * requests. Query parameters, not path parameters, as every route of central. */
 object PartnerController extends AuditedController:
+  /** How many requests the operator's queue shows unless it asks for fewer or more (`limit`), and the most it can ask for. */
+  val DefaultApprovalsLimit: Int = 100
+  val MaxApprovalsLimit: Int = 500
+
   type Env = Tracing & PartnerService & PartnerRegistry & ResourceService & EdgeCertificateRepository & CentralConfig
 
   def endpoints = List(
@@ -72,7 +76,6 @@ object PartnerController extends AuditedController:
             edge = EdgeResponse.of(created.edge.edge, Some(created.partner.id), certificates.get(created.edge.edge.id)),
             enrollmentToken = created.edge.token.token,
             expiresAt = created.edge.token.expiresAt,
-            bundle = created.edge.bundle,
           )
         yield Response.json(response.toJson).status(Status.Created)).catchAll(failure)
     }
@@ -98,8 +101,16 @@ object PartnerController extends AuditedController:
           body <- request.bodyAs[SuspendPartnerRequest]
           _ <- Audit.target(body.id)
           _ <- Audit.partner(body.id)
-          _ <- ZIO.serviceWithZIO[PartnerService](_.suspend(body.id))
-        yield Response.status(Status.NoContent)).catchAll(failure)
+          // the log keeps the names of the fields, never their values: that a note came with it, not what it says
+          _ <- Audit.changedFields("note" -> body.note.exists(_.nonEmpty))
+          outcome <- ZIO.serviceWithZIO[PartnerService](_.suspend(body.id))
+        // The partner is suspended either way. `204` when auth was told to reload its clients; `207` when it could not be, so that
+        // the operator can call again once auth answers.
+        yield
+          if outcome.authSynced then Response.status(Status.NoContent)
+          else Response.json(SuspendPartnerResponse(authSynced = false).toJson).status(Status.MultiStatus)).catchAll(
+          failure,
+        )
     }
 
   val resumeEndpoint =
@@ -134,7 +145,15 @@ object PartnerController extends AuditedController:
         tenantId <- request.url.queryZIO[Option[TenantId]]("tenantId")
         partnerId <- request.url.queryZIO[Option[PartnerId]]("partnerId")
         status <- request.url.queryZIO[Option[ApprovalStatus]]("status")
-        approvals <- ZIO.serviceWithZIO[PartnerService](_.approvals(tenantId, status, partnerId))
+        limit <- request.url.queryZIO[Option[Int]]("limit")
+        approvals <- ZIO.serviceWithZIO[PartnerService](
+          _.approvals(
+            tenantId,
+            status,
+            partnerId,
+            limit.fold(PartnerController.DefaultApprovalsLimit)(_.max(1).min(PartnerController.MaxApprovalsLimit)),
+          ),
+        )
       yield Response.json(GetPartnerApprovalsResponse(approvals.map(PartnerApprovalResponse.of)).toJson)
     }
 
@@ -230,13 +249,13 @@ case class CreatePartnerRequest(
     firstEdge: FirstEdgeRequest,
 ) derives Schema, JsonCodec
 
-/** What the operator hands to the partner: the token and the bundle are shown here and never again. */
+/** What the operator hands to the partner: the enrollment token, shown here and never again. The partner starts its edge with that
+  * token alone; central holds no key for the edge and shows none. */
 case class CreatedPartnerResponse(
     partner: PartnerResponse,
     edge: EdgeResponse,
     enrollmentToken: String,
     expiresAt: Instant,
-    bundle: String,
 ) derives Schema, JsonCodec
 
 case class UpdatePartnerRequest(
@@ -248,6 +267,9 @@ case class UpdatePartnerRequest(
 ) derives Schema, JsonCodec
 
 case class SuspendPartnerRequest(id: PartnerId, note: Option[String]) derives Schema, JsonCodec
+
+/** The answer of a suspension whose auth could not be told to reload (`207`): the partner is suspended all the same. */
+case class SuspendPartnerResponse(authSynced: Boolean) derives Schema, JsonCodec
 
 case class ResumePartnerRequest(id: PartnerId) derives Schema, JsonCodec
 

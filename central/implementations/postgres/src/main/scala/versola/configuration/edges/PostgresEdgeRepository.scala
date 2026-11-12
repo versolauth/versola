@@ -40,7 +40,7 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
 
   override def createEdge(
       id: EdgeId,
-      publicKeyJwk: Json.Obj,
+      publicKeyJwk: Option[Json.Obj],
       requireDpopNonce: Boolean,
       groupId: EdgeGroupId,
       publicUrl: Option[String],
@@ -95,6 +95,25 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
             WHERE id = $id
           """.update.run()
           updated
+
+  override def setPublicKey(id: EdgeId, publicKeyJwk: Json.Obj): Task[Boolean] =
+    xa.connectMeasured("set-edge-public-key"):
+      sql"""
+        UPDATE edges
+        SET public_key_jwk = $publicKeyJwk
+        WHERE id = $id AND public_key_jwk IS NULL
+      """.update.run()
+    .map(_ > 0)
+
+  override def replacePublicKey(id: EdgeId, publicKeyJwk: Json.Obj): Task[Boolean] =
+    xa.connectMeasured("replace-edge-public-key"):
+      sql"""
+        UPDATE edges
+        SET public_key_jwk = $publicKeyJwk,
+            old_public_key_jwk = NULL
+        WHERE id = $id
+      """.update.run()
+    .map(_ > 0)
 
   override def deleteOldEdgeKey(id: EdgeId): Task[Unit] =
     xa.connectMeasured("delete-old-edge-key"):
