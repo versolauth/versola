@@ -144,11 +144,17 @@ object EdgeIdentityService:
         // Authenticated from here on, so a mistake in the request may be told: and it is checked before the token is
         // spent, so it does not cost the operator a token.
         key <- enrollmentKey(edge, signingKey)
-        _ <- ZIO.fromEither(CertificateSubject.matches(csrPem, subjectFor(edge))).mapError(Refused(_))
+        // An edge enrolling with the token alone does not know its own id or group, so its request cannot name them: central then
+        // checks only that the request is signed by the key it names, and the certificate carries the names central chose. An edge
+        // that names itself is held to naming exactly what it is.
+        tokenResolved = edgeId.isEmpty
+        _ <- ZIO.fromEither(
+          if tokenResolved then CertificateSubject.provesPossession(csrPem) else CertificateSubject.matches(csrPem, subjectFor(edge)),
+        ).mapError(Refused(_))
         spent <- tokens.consume(hash(token), now)
         // Another caller spent it between the look and now.
         _ <- ZIO.fail(InvalidToken).unless(spent.contains(edge.id))
-        chain <- sign(edge, csrPem)
+        chain <- sign(edge, csrPem, namedByCentral = tokenResolved)
         // after the certificate, so that a CA that is down costs the token (as it always did) and not the key: the edge asks again with
         // a new token and the same key
         _ <- ZIO.foreachDiscard(key): jwk =>
@@ -193,11 +199,11 @@ object EdgeIdentityService:
         _ <- certificateEvent(CentralAudit.CertRenewed, edgeId)
       yield Identity(chain, edge)
 
-    private def sign(edge: EdgeRecord, csrPem: String): IO[Refused | Throwable, String] =
+    private def sign(edge: EdgeRecord, csrPem: String, namedByCentral: Boolean = false): IO[Refused | Throwable, String] =
       val subject = subjectFor(edge)
       for
         chain <- issuer.issuer.sign(
-          ClientCertificateRequests.signingRequest(csrPem, subject, EdgeCertificateIssuer.validity(config, edge.groupKind)),
+          ClientCertificateRequests.signingRequest(csrPem, subject, EdgeCertificateIssuer.validity(config, edge.groupKind), namedByCentral),
         )
         leaf <- ZIO.attempt:
           CertificateFactory.getInstance("X.509")

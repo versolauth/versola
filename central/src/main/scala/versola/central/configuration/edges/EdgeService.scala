@@ -21,7 +21,7 @@ trait EdgeService:
   /** The first signing key of an edge registered without one; `false` when it has one already. */
   def setSigningKey(id: EdgeId, publicKeyJwk: Json.Obj): Task[Boolean]
 
-  /** Replaces the signing key of the edge with `publicKeyJwk` and forgets the one before. */
+  /** Replaces the signing key of the edge with `publicKeyJwk`; the one before stays valid as its old key until the next replacement. */
   def replaceSigningKey(id: EdgeId, publicKeyJwk: Json.Obj): Task[Boolean]
 
   def rotateEdgeKey(id: EdgeId): Task[RsaKeyPair]

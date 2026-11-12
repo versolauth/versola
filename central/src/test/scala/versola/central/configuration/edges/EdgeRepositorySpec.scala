@@ -100,18 +100,25 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
           !missing,
         )
       },
-      test("replacePublicKey puts the new key in place and keeps no key from before") {
+      test("replacePublicKey puts the new key in place and keeps the one before as the old key, until the next replacement") {
         for
           _ <- env.repository.createEdge(edgeId, Some(sampleJwk), EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId, None)
           _ <- env.repository.rotateEdgeKey(edgeId, newJwk)
           replaced <- env.repository.replacePublicKey(edgeId, sampleJwk)
           after <- env.repository.find(edgeId)
           missing <- env.repository.replacePublicKey(edge2Id, sampleJwk)
+          _ <- env.repository.replacePublicKey(edgeId, newJwk)
+          next <- env.repository.find(edgeId)
         yield assertTrue(
           replaced,
           after.exists(_.publicKey.contains(sampleJwk)),
-          after.exists(_.oldPublicKey.isEmpty),
+          // the key it replaced (the one the rotation made) is the old key, so both verify
+          after.exists(_.oldPublicKey.contains(newJwk)),
+          after.exists(_.asPublicKeys.keys.getKeys.size == 2),
           !missing,
+          // and the old key is the previous one again after the next replacement: no longer chain of old keys
+          next.exists(_.publicKey.contains(newJwk)),
+          next.exists(_.oldPublicKey.contains(sampleJwk)),
         )
       },
       test("deleteEdge removes edge") {

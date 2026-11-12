@@ -109,8 +109,8 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
     xa.connectMeasured("replace-edge-public-key"):
       sql"""
         UPDATE edges
-        SET public_key_jwk = $publicKeyJwk,
-            old_public_key_jwk = NULL
+        SET old_public_key_jwk = public_key_jwk,
+            public_key_jwk = $publicKeyJwk
         WHERE id = $id
       """.update.run()
     .map(_ > 0)

@@ -20,7 +20,8 @@ trait EdgeRepository extends CacheSource[Vector[EdgeRecord]]:
     * so two enrolments cannot both register one. */
   def setPublicKey(id: EdgeId, publicKeyJwk: Json.Obj): Task[Boolean]
 
-  /** The key of an edge, replaced (no key is kept from before, unlike [[rotateEdgeKey]]): what an edge that renews its certificate
+  /** The key of an edge, replaced; the key before it stays valid as the old key (as [[rotateEdgeKey]] leaves it) until the next
+    * replacement, so that a request signed with it just before the edge switched is not refused: what an edge that renews its certificate
     * with a new key of its own is left with. `false`: no such edge. */
   def replacePublicKey(id: EdgeId, publicKeyJwk: Json.Obj): Task[Boolean]
 
