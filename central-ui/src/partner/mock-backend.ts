@@ -381,10 +381,10 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
           await refuse(400, 'invalid_request', { message: 'Only your own enrolled edges can end sessions' });
           return;
         }
-        const ended = payload.by === 'sid' || payload.by === 'fam' ? 1 : payload.by === 'client' ? 1284 : 3;
+        const ended = payload.by === 'sid' || payload.by === 'fam' ? 1 : 3;
         const revocation: Revocation = { id: `rv-${Date.now()}`, at: nowIso(), by_staff: me.staff.sub, ...payload, ended };
         state.revocations = [revocation, ...state.revocations];
-        recordAudit('revocations.create', `ended the sessions of ${payload.by === 'client' ? 'a client' : payload.by === 'user' ? 'a user' : 'a session'}`, `${payload.clients.join(', ')} · ${payload.value}`);
+        recordAudit('revocations.create', `ended the sessions of ${payload.by === 'user' ? 'a user' : payload.by === 'fam' ? 'a refresh family' : 'a session'}`, `${payload.clients.join(', ')} · ${payload.value}`);
         await route.fulfill(json({ ended }));
         return;
       }

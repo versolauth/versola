@@ -96,7 +96,7 @@ export function partnerSeed(now = Date.now()): MockPartnerState {
     pendingTokens: { 'edge-pilot-kz-1': at(0, 11) },
     revocations: [
       { id: 'rv-1', at: at(-1, 10), by_staff: 'u_2b91d4e0', by: 'user', value: 'u_2b91d4e0', clients: ['pilot-pay-web'], edges: ['edge-pilot-eu-1', 'edge-pilot-eu-2'], ended: 3 },
-      { id: 'rv-2', at: at(-9, 16), by_staff: 'u_7f3a9c2e', by: 'client', value: 'pilot-pay-ios', clients: ['pilot-pay-ios'], edges: ['edge-pilot-eu-1', 'edge-pilot-eu-2'], ended: 1284 },
+      { id: 'rv-2', at: at(-9, 16), by_staff: 'u_7f3a9c2e', by: 'fam', value: 'fam_4e7b', clients: ['pilot-pay-ios'], edges: ['edge-pilot-eu-1', 'edge-pilot-eu-2'], ended: 1 },
     ],
     // What the edge relays of the audit trail: a kind, the action in words, the actor with the name the edge found, and the team's own events.
     audit: [

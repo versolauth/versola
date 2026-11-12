@@ -20,7 +20,7 @@ test('ends a user\'s sessions on chosen edges and clients after a confirm, witho
   const api = await loadPartnerApp(page, { path: revocationPath });
   await expect(page.getByRole('heading', { level: 1, name: 'Sessions & revocation' })).toBeVisible();
   const scope = page.getByRole('group', { name: 'What to end' });
-  await expect(scope.getByRole('button')).toHaveText(['A user', 'A session', 'A client', 'A refresh family']);
+  await expect(scope.getByRole('button')).toHaveText(['A user', 'A session', 'A refresh family']);
   const clients = page.getByRole('group', { name: 'Clients *' });
   await expect(clients.getByRole('checkbox')).toHaveCount(2);
   await expect(clients).not.toContainText('pilot-pay-checkout');
@@ -29,11 +29,12 @@ test('ends a user\'s sessions on chosen edges and clients after a confirm, witho
   await expect(edges).not.toContainText('edge-pilot-kz-1');
   const what = page.getByRole('region', { name: 'What it does' });
   await expect(what).toContainText('not contacted');
+  await expect(what).toContainText('until it expires');
   await expect(what).not.toContainText('back-channel');
   await expect(page.getByRole('checkbox', { name: /refresh tokens/ })).toHaveCount(0);
   const recent = page.getByRole('region', { name: 'Recently ended' });
   await expect(recent.getByRole('row').filter({ hasText: 'Marat Lee' })).toContainText('3 sessions');
-  await expect(recent.getByRole('row').filter({ hasText: 'Dana Kim' })).toContainText('1284 sessions');
+  await expect(recent.getByRole('row').filter({ hasText: 'Dana Kim' })).toContainText('1 session');
   await expect(recent.getByRole('row').filter({ hasText: 'Dana Kim' })).toContainText('edge-pilot-eu-2');
   expect(await scan(page)).toEqual([]);
 
@@ -56,16 +57,9 @@ test('ends a user\'s sessions on chosen edges and clients after a confirm, witho
   await expect(page.getByLabel('User (sub) *')).toHaveValue('');
 });
 
-test('a client scope needs no value; a session and a refresh family take an id', async ({ page }) => {
+test('a session and a refresh family take an id; there is no way to end a client', async ({ page }) => {
   const api = await loadPartnerApp(page, { path: revocationPath });
   const scope = page.getByRole('group', { name: 'What to end' });
-  await scope.getByRole('button', { name: 'A client' }).click();
-  await expect(page.getByLabel('User (sub) *')).toHaveCount(0);
-  await page.getByRole('button', { name: 'End sessions', exact: true }).click();
-  await page.getByRole('dialog', { name: 'End sessions' }).getByRole('button', { name: 'End sessions' }).click();
-  expect((await findRequest(api.requests, 'POST', '/revocations')).body).toMatchObject({ by: 'client', value: 'pilot-pay-web,pilot-pay-ios', clients: ['pilot-pay-web', 'pilot-pay-ios'], edges: ['edge-pilot-eu-1', 'edge-pilot-eu-2'] });
-  await expect(page.getByRole('status').filter({ hasText: 'Ended 1284 sessions' })).toBeVisible();
-
   await scope.getByRole('button', { name: 'A refresh family' }).click();
   await expect(page.getByText('One refresh-token family, as the fam_id claim names it.')).toBeVisible();
   await page.getByLabel('Family (fam_id) *').fill('fam_8c1d');

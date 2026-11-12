@@ -17,7 +17,6 @@ import '../../components/loading-cards';
 const BY_LABELS: Record<RevocationBy, { label: string; field: string; hint: string; placeholder: string; what: string }> = {
   user: { label: 'A user', field: 'User (sub)', hint: 'The sub as it appears in your tokens and /userinfo. Every session of the user on the clients chosen below.', placeholder: 'u_7f3a9c2e', what: 'the sessions of user' },
   sid: { label: 'A session', field: 'Session (sid)', hint: 'One session, as the sid claim names it.', placeholder: 'sid_…', what: 'session' },
-  client: { label: 'A client', field: 'Client', hint: 'Every session of the client chosen below.', placeholder: '', what: 'every session of' },
   fam: { label: 'A refresh family', field: 'Family (fam_id)', hint: 'One refresh-token family, as the fam_id claim names it. Your edge stops using it and the session that holds it ends.', placeholder: 'fam_…', what: 'refresh family' },
 };
 
@@ -84,7 +83,6 @@ export class VersolaPartnerRevocation extends LitElement {
   }
 
   private get valueError(): string {
-    if (this.by === 'client') return this.selected.length ? '' : 'Pick at least one client.';
     if (!this.value.trim()) return 'A value is required.';
     return '';
   }
@@ -103,7 +101,7 @@ export class VersolaPartnerRevocation extends LitElement {
     this.submitted = true;
     if (this.valueError || this.clientsError || this.edgesError) return;
     const spec = BY_LABELS[this.by];
-    const what = this.by === 'client' ? `${spec.what} ${this.selected.join(', ')}` : `${spec.what} ${this.value.trim()} on ${this.selected.join(', ')}`;
+    const what = `${spec.what} ${this.value.trim()} on ${this.selected.join(', ')}`;
     const where = this.selectedEdges.join(', ');
     const confirmed = await confirmDestructiveAction({
       title: 'End sessions',
@@ -114,7 +112,7 @@ export class VersolaPartnerRevocation extends LitElement {
     this.isSaving = true;
     this.formError = '';
     try {
-      const response = await revoke({ by: this.by, value: this.by === 'client' ? this.selected.join(',') : this.value.trim(), clients: this.selected, edges: this.selectedEdges });
+      const response = await revoke({ by: this.by, value: this.value.trim(), clients: this.selected, edges: this.selectedEdges });
       this.result = { ended: response.ended, what };
       this.value = '';
       this.submitted = false;
@@ -148,13 +146,12 @@ export class VersolaPartnerRevocation extends LitElement {
                     @click=${() => { this.by = by; this.value = ''; this.submitted = false; }}>${BY_LABELS[by].label}</button>`)}
               </div>
             </div>
-            ${this.by === 'client' ? '' : html`
-              <div class="form-group">
+            <div class="form-group">
                 <label for="revoke-value">${spec.field} *</label>
                 <input type="text" id="revoke-value" class="compact-input mono ${valueError ? 'input-error' : ''}" .value=${this.value} placeholder=${spec.placeholder} ?disabled=${!this.canManage}
                   aria-invalid=${valueError ? 'true' : nothing} aria-describedby="revoke-value-hint" @input=${(e: Event) => this.value = (e.target as HTMLInputElement).value} />
                 ${valueError ? html`<div class="error-message" id="revoke-value-hint" role="alert">${valueError}</div>` : html`<div class="hint" id="revoke-value-hint">${spec.hint}</div>`}
-              </div>`}
+              </div>
             <div class="form-group">
               <span class="checkbox-list" role="group" aria-labelledby="revoke-clients-label">
                 <label id="revoke-clients-label">Clients *</label>
@@ -212,7 +209,7 @@ export class VersolaPartnerRevocation extends LitElement {
 
   render() {
     return html`
-      <content-header title="Sessions & revocation" description="End sessions on your own edges: a user's, one session, a client's, or one refresh family. The tokens live in those sessions and are discarded with them. The operator's auth is not contacted, so a token already issued stays valid there until it expires; users of other partners are never visible here."></content-header>
+      <content-header title="Sessions & revocation" description="End sessions on your own edges: every session of a user, one session, or one refresh family. The tokens live in those sessions and are discarded with them. The operator's auth is not contacted, so a token already issued stays valid there until it expires; users of other partners are never visible here."></content-header>
       <div class="grid-2">
         ${this.renderForm()}
         <versola-record-card heading="What it does" .body=${html`

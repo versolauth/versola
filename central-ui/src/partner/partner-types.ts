@@ -110,7 +110,7 @@ export type CreatedEdge = EnrollmentToken & { edge: PartnerEdge; signingKey: Sig
 export type SigningKey = { keyId: string; privateKey: string };
 
 /** What a partner may end on its own edges: the sessions of a user, one session, every session of a client, or one refresh-token family (`fam_id`). The tokens live in the edge's sessions; auth is never contacted. */
-export type RevocationBy = 'user' | 'sid' | 'client' | 'fam';
+export type RevocationBy = 'user' | 'sid' | 'fam';
 
 export type RevocationRequest = { by: RevocationBy; value: string; clients: string[]; edges: string[] };
 
