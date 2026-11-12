@@ -17,7 +17,7 @@ test('lists the events newest first, marks the operator and security, and pages 
   const table = page.getByRole('table', { name: 'Audit events' });
   await expect(table.getByRole('columnheader')).toHaveText(['When', 'Who', 'Event', 'Target', 'Outcome', 'From']);
   await expect(table.locator('tbody tr')).toHaveCount(8);
-  await expect(table.locator('tbody tr').first()).toContainText('ended the sessions of a user');
+  await expect(table.locator('tbody tr').first()).toContainText('Ended 3 sessions by user u_2b91d4e0');
   await expect(table.locator('tbody tr').filter({ hasText: 'set the review date' })).toContainText('operator');
   await expect(table.locator('tbody tr').filter({ hasText: 'not a member' })).toContainText('security');
   await expect(table.locator('tbody tr').filter({ hasText: 'not a member' })).toContainText('refused');
@@ -73,7 +73,7 @@ test('exports what is loaded as CSV named after the partner', async ({ page }) =
   const lines = text.split('\n');
   expect(lines[0]).toBe('at,actor,sub,action,target,outcome,from');
   expect(lines).toHaveLength(9);
-  expect(lines[1]).toContain('"ended the sessions of a user"');
+  expect(lines[1]).toContain('"Ended 3 sessions by user u_2b91d4e0"');
 });
 
 test('an edge that cannot read its log shows the error card; below 720px the rows stack', async ({ page }) => {

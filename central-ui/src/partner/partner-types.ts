@@ -109,12 +109,14 @@ export type CreatedEdge = EnrollmentToken & { edge: PartnerEdge; signingKey: Sig
 /** The edge's signing key, created with it and shown once: the private half is never kept by the operator. */
 export type SigningKey = { keyId: string; privateKey: string };
 
-/** What a partner may end on its own edges: the sessions of a user, one session, every session of a client, or one refresh-token family (`fam_id`). The tokens live in the edge's sessions; auth is never contacted. */
+/** What a partner may end on the edge that serves its console: the sessions of a user, one session, or one refresh-token family (`fam_id`). The tokens live in the edge's sessions; auth is never contacted. */
 export type RevocationBy = 'user' | 'sid' | 'fam';
 
-export type RevocationRequest = { by: RevocationBy; value: string; clients: string[]; edges: string[] };
+/** The edge ignores `clients` and `edges` if they are sent: it ends sessions of its own store only. */
+export type RevocationRequest = { by: RevocationBy; value: string };
 
-export type Revocation = RevocationRequest & { id: string; at: string; by_staff: string; ended: number };
+/** `clients` and `edges` are always empty lists on the real edge; `by` may be empty on rows an older edge recorded. */
+export type Revocation = RevocationRequest & { id: string; at: string; by_staff: string; clients: string[]; edges: string[]; ended: number };
 
 /** `sub` is the staff member's, `operator` for the operator's own actions; `display` is the name the edge found for it. */
 export type AuditActor = { sub: string; display?: string; byOperator?: true };

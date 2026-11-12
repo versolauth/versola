@@ -372,19 +372,14 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
       }
       if (method === 'POST') {
         const payload = body as RevocationRequest;
-        const ownEdges = state.edges.filter(edge => edge.status === 'enrolled').map(edge => edge.id);
-        if (!payload.value?.trim() || !payload.clients?.length || !payload.edges?.length) {
-          await refuse(400, 'invalid_request', { message: 'value, clients and edges are required' });
-          return;
-        }
-        if (payload.edges.some(id => !ownEdges.includes(id))) {
-          await refuse(400, 'invalid_request', { message: 'Only your own enrolled edges can end sessions' });
+        if (!payload.value?.trim() || !['user', 'sid', 'fam'].includes(payload.by)) {
+          await refuse(400, 'invalid_request', { message: 'by is user, sid or fam, and value is required' });
           return;
         }
         const ended = payload.by === 'sid' || payload.by === 'fam' ? 1 : 3;
-        const revocation: Revocation = { id: `rv-${Date.now()}`, at: nowIso(), by_staff: me.staff.sub, ...payload, ended };
+        const revocation: Revocation = { id: `rv-${Date.now()}`, at: nowIso(), by_staff: me.staff.sub, by: payload.by, value: payload.value.trim(), clients: [], edges: [], ended };
         state.revocations = [revocation, ...state.revocations];
-        recordAudit('revocations.create', `ended the sessions of ${payload.by === 'user' ? 'a user' : payload.by === 'fam' ? 'a refresh family' : 'a session'}`, `${payload.clients.join(', ')} · ${payload.value}`);
+        recordAudit('team.revoke', `Ended ${ended} ${ended === 1 ? 'session' : 'sessions'} by ${payload.by === 'user' ? 'user' : payload.by === 'fam' ? 'refresh family' : 'session'} ${revocation.value}`, revocation.value);
         await route.fulfill(json({ ended }));
         return;
       }
@@ -400,7 +395,7 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
       const isEdge = (sub: string) => sub.startsWith('edge-');
       const matches = state.audit
         .filter(event => !actor || (actor === 'operator' ? !!event.actor.byOperator : actor === 'edges' ? isEdge(event.actor.sub) : actor === 'team' ? !event.actor.byOperator && !isEdge(event.actor.sub) && event.actor.sub !== 'anonymous' : event.actor.sub === actor))
-        .filter(event => !kind || (kind === 'security' ? event.outcome !== 'ok' : event.kind === kind || event.kind.startsWith(`${kind}.`)))
+        .filter(event => !kind || (kind === 'security' ? event.outcome !== 'ok' : (kind === 'revocations' ? event.kind === 'team.revoke' : event.kind === kind || (event.kind.startsWith(`${kind}.`) && event.kind !== 'team.revoke'))))
         .filter(event => !q || `${event.actor.display ?? ''} ${event.actor.sub} ${event.action} ${event.target}`.toLowerCase().includes(q));
       const start = cursor ? Math.max(0, matches.findIndex(event => event.id === cursor)) : 0;
       const pageEvents = matches.slice(start, start + AUDIT_PAGE);

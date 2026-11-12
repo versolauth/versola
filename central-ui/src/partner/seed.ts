@@ -95,12 +95,12 @@ export function partnerSeed(now = Date.now()): MockPartnerState {
     // The edges whose enrollment token was issued and not used yet: the DTO does not say, only Revoke token needs to know.
     pendingTokens: { 'edge-pilot-kz-1': at(0, 11) },
     revocations: [
-      { id: 'rv-1', at: at(-1, 10), by_staff: 'u_2b91d4e0', by: 'user', value: 'u_2b91d4e0', clients: ['pilot-pay-web'], edges: ['edge-pilot-eu-1', 'edge-pilot-eu-2'], ended: 3 },
-      { id: 'rv-2', at: at(-9, 16), by_staff: 'u_7f3a9c2e', by: 'fam', value: 'fam_4e7b', clients: ['pilot-pay-ios'], edges: ['edge-pilot-eu-1', 'edge-pilot-eu-2'], ended: 1 },
+      { id: 'rv-1', at: at(-1, 10), by_staff: 'u_2b91d4e0', by: 'user', value: 'u_2b91d4e0', clients: [], edges: [], ended: 3 },
+      { id: 'rv-2', at: at(-9, 16), by_staff: 'u_7f3a9c2e', by: 'fam', value: 'fam_4e7b', clients: [], edges: [], ended: 1 },
     ],
     // What the edge relays of the audit trail: a kind, the action in words, the actor with the name the edge found, and the team's own events.
     audit: [
-      { id: 'ev-12', kind: 'revocations.create', at: at(-1, 10), actor: { sub: 'u_2b91d4e0', display: 'Marat Lee' }, action: 'ended the sessions of a user', target: 'pilot-pay-web · u_2b91d4e0', outcome: 'ok', from: 'edge-pilot-eu-1' },
+      { id: 'ev-12', kind: 'team.revoke', at: at(-1, 10), actor: { sub: 'u_2b91d4e0', display: 'Marat Lee' }, action: 'Ended 3 sessions by user u_2b91d4e0', target: 'u_2b91d4e0', outcome: 'ok', from: 'edge-pilot-eu-1' },
       { id: 'ev-11', kind: 'team.invite', at: at(-1, 9), actor: { sub: 'u_7f3a9c2e', display: 'Dana Kim' }, action: 'invited a member (admin)', target: 'ops@…', outcome: 'ok', from: 'edge-pilot-eu-1' },
       { id: 'ev-10', kind: 'clients.create', at: at(-2, 14), actor: { sub: 'u_7f3a9c2e', display: 'Dana Kim' }, action: 'submitted a client for approval', target: 'pilot-pay-checkout', outcome: 'ok', from: 'edge-pilot-eu-1' },
       { id: 'ev-9', kind: 'edges.renew', at: at(-4, 2), actor: { sub: 'edge-pilot-eu-1', display: 'edge-pilot-eu-1' }, action: 'renewed its certificate', target: 'serial 4f3a…', outcome: 'ok' },

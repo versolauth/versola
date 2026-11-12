@@ -5,7 +5,7 @@ import { loadPartnerApp } from './fixtures';
 import { PARTNER_NOW, asLevel, centralDown, partnerSeedState } from './partner-fixtures';
 
 /**
- * Sessions & revocation: a partner ends sessions on its own edges only. The tokens live in those
+ * Sessions & revocation: a partner ends the sessions held by the edge that serves its console. The tokens live in those
  * sessions, so the operator's auth is never contacted and central is not needed. Admins only.
  */
 const revocationPath = '/partner.html?view=revocation';
@@ -16,42 +16,36 @@ test.beforeEach(async ({ page }) => {
   await page.clock.install({ time: new Date(PARTNER_NOW) });
 });
 
-test('ends a user\'s sessions on chosen edges and clients after a confirm, without touching auth', async ({ page }) => {
+test('ends a user\'s sessions on this edge after a confirm, without touching auth', async ({ page }) => {
   const api = await loadPartnerApp(page, { path: revocationPath });
   await expect(page.getByRole('heading', { level: 1, name: 'Sessions & revocation' })).toBeVisible();
   const scope = page.getByRole('group', { name: 'What to end' });
   await expect(scope.getByRole('button')).toHaveText(['A user', 'A session', 'A refresh family']);
-  const clients = page.getByRole('group', { name: 'Clients *' });
-  await expect(clients.getByRole('checkbox')).toHaveCount(2);
-  await expect(clients).not.toContainText('pilot-pay-checkout');
-  const edges = page.getByRole('group', { name: 'Edges *' });
-  await expect(edges.getByRole('checkbox')).toHaveCount(2);
-  await expect(edges).not.toContainText('edge-pilot-kz-1');
+  await expect(page.getByText('On the edge that serves this console, edge-pilot-eu-1')).toBeVisible();
+  // The edge ends sessions of its own store only: nothing to choose from, no client, no edge.
+  await expect(page.getByRole('group', { name: 'Clients *' })).toHaveCount(0);
+  await expect(page.getByRole('group', { name: 'Edges *' })).toHaveCount(0);
   const what = page.getByRole('region', { name: 'What it does' });
   await expect(what).toContainText('not contacted');
   await expect(what).toContainText('until it expires');
-  await expect(what).not.toContainText('back-channel');
-  await expect(page.getByRole('checkbox', { name: /refresh tokens/ })).toHaveCount(0);
+  await expect(what).toContainText('your other edges');
   const recent = page.getByRole('region', { name: 'Recently ended' });
+  await expect(recent.getByRole('columnheader')).toHaveText(['When', 'By', 'What', 'Ended']);
   await expect(recent.getByRole('row').filter({ hasText: 'Marat Lee' })).toContainText('3 sessions');
   await expect(recent.getByRole('row').filter({ hasText: 'Dana Kim' })).toContainText('1 session');
-  await expect(recent.getByRole('row').filter({ hasText: 'Dana Kim' })).toContainText('edge-pilot-eu-2');
   expect(await scan(page)).toEqual([]);
 
   await page.getByRole('button', { name: 'End sessions', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveText('A value is required.');
   expect(api.requests.some(request => request.method === 'POST')).toBe(false);
   await page.getByLabel('User (sub) *').fill('u_2b91d4e0');
-  await clients.getByRole('checkbox', { name: /pilot-pay-ios/ }).uncheck();
-  await edges.getByRole('checkbox', { name: /edge-pilot-eu-2/ }).uncheck();
   await page.getByRole('button', { name: 'End sessions', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'End sessions' });
-  await expect(dialog).toContainText('End the sessions of user u_2b91d4e0 on pilot-pay-web on edge-pilot-eu-1?');
+  await expect(dialog).toContainText('End the sessions of user u_2b91d4e0 on this edge?');
   await expect(dialog).toContainText("The operator's auth is not contacted");
   await dialog.getByRole('button', { name: 'End sessions' }).click();
 
-  expect((await findRequest(api.requests, 'POST', '/revocations')).body).toEqual({ by: 'user', value: 'u_2b91d4e0', clients: ['pilot-pay-web'], edges: ['edge-pilot-eu-1'] });
-  expect(api.requests.every(request => request.pathname !== '/me' || request.method === 'GET')).toBe(true);
+  expect((await findRequest(api.requests, 'POST', '/revocations')).body).toEqual({ by: 'user', value: 'u_2b91d4e0' });
   await expect(page.getByRole('status').filter({ hasText: 'Ended 3 sessions' })).toBeVisible();
   await expect(recent.getByRole('row').filter({ hasText: 'u_2b91d4e0' }).first()).toContainText('3 sessions');
   await expect(page.getByLabel('User (sub) *')).toHaveValue('');
@@ -65,20 +59,11 @@ test('a session and a refresh family take an id; there is no way to end a client
   await page.getByLabel('Family (fam_id) *').fill('fam_8c1d');
   await page.getByRole('button', { name: 'End sessions', exact: true }).click();
   await page.getByRole('dialog', { name: 'End sessions' }).getByRole('button', { name: 'End sessions' }).click();
-  expect((await findRequest(api.requests, 'POST', '/revocations')).body).toMatchObject({ by: 'fam', value: 'fam_8c1d' });
+  expect((await findRequest(api.requests, 'POST', '/revocations')).body).toEqual({ by: 'fam', value: 'fam_8c1d' });
   await expect(page.getByRole('status').filter({ hasText: 'Ended 1 session' })).toBeVisible();
 
   await scope.getByRole('button', { name: 'A session' }).click();
   await expect(page.getByLabel('Session (sid) *')).toBeVisible();
-});
-
-test('at least one client and one edge must stay chosen', async ({ page }) => {
-  const api = await loadPartnerApp(page, { path: revocationPath });
-  await page.getByLabel('User (sub) *').fill('u_1');
-  for (const name of [/edge-pilot-eu-1/, /edge-pilot-eu-2/]) await page.getByRole('group', { name: 'Edges *' }).getByRole('checkbox', { name }).uncheck();
-  await page.getByRole('button', { name: 'End sessions', exact: true }).click();
-  await expect(page.getByRole('alert')).toHaveText('Pick at least one edge.');
-  expect(api.requests.some(request => request.method === 'POST')).toBe(false);
 });
 
 test('a developer sees the recent list and cannot end sessions', async ({ page }) => {
@@ -91,25 +76,23 @@ test('a developer sees the recent list and cannot end sessions', async ({ page }
   expect(await scan(page)).toEqual([]);
 });
 
-test('with central unavailable the form cannot read the clients and edges it chooses from, and says so', async ({ page }) => {
-  await loadPartnerApp(page, { path: revocationPath, state: centralDown });
-  await expect(page.getByRole('alert')).toContainText('Your clients and edges could not be read, so there is nothing to choose from.');
-  await expect(page.getByRole('alert')).toContainText('Central is unavailable right now');
-  await expect(page.getByRole('group', { name: 'Clients *' })).toContainText('No approved clients yet.');
-  expect(await scan(page)).toEqual([]);
-});
-
-test('with no enrolled edge there is nothing to end sessions on; with none ended the list says so', async ({ page }) => {
-  await loadPartnerApp(page, { path: revocationPath, state: { revocations: [], edges: partnerSeedState.edges.filter(edge => edge.status === 'waiting') } });
-  await expect(page.getByRole('region', { name: 'Recently ended' })).toContainText('Nothing ended yet.');
-  await expect(page.getByRole('group', { name: 'Edges *' })).toContainText('No enrolled edge yet.');
+test('central being unavailable changes nothing here: the edge ends its own sessions', async ({ page }) => {
+  const api = await loadPartnerApp(page, { path: revocationPath, state: centralDown });
+  await expect(page.getByRole('alert')).toHaveCount(0);
   await page.getByLabel('User (sub) *').fill('u_1');
   await page.getByRole('button', { name: 'End sessions', exact: true }).click();
-  await expect(page.getByRole('alert')).toHaveText('No enrolled edge to end sessions on.');
+  await page.getByRole('dialog', { name: 'End sessions' }).getByRole('button', { name: 'End sessions' }).click();
+  await findRequest(api.requests, 'POST', '/revocations');
+  await expect(page.getByRole('status').filter({ hasText: 'Ended 3 sessions' })).toBeVisible();
   expect(await scan(page)).toEqual([]);
 });
 
-test('a recent row the edge sent without a kind or clients still lists, as the real edge sends them', async ({ page }) => {
+test('with none ended the list says so', async ({ page }) => {
+  await loadPartnerApp(page, { path: revocationPath, state: { revocations: [] } });
+  await expect(page.getByRole('region', { name: 'Recently ended' })).toContainText('Nothing ended yet.');
+});
+
+test('a recent row an older edge recorded, without a kind, still lists', async ({ page }) => {
   const [first] = partnerSeedState.revocations;
   await loadPartnerApp(page, { path: revocationPath, state: { revocations: [{ ...first, by: '' as never, clients: undefined as never, edges: undefined as never }] } });
   const recent = page.getByRole('region', { name: 'Recently ended' });
