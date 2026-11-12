@@ -305,6 +305,13 @@ versola migrate    # applies central's, auth's and edge's migrations from one th
 versola up         # central → auth, edge → versola-proxy, then checks a request reaches auth
 ```
 
+`versola migrate` runs Flyway in version order, without `outOfOrder`: a migration that was never applied and whose version is below
+one already applied is refused, not applied silently. Releases only add higher versions (CI refuses a pull request that does otherwise),
+so this does not trigger on an upgrade; if it does, a database ran an unreleased build or its schema
+history was changed by hand.
+Flyway used to warn `outOfOrder mode is active` on every `versola migrate`; that warning is gone. (The services' own startup
+Flyway, used by `RUN_MIGRATIONS=true` in development, is unchanged.)
+
 Services never migrate on their own startup ([`RUN_MIGRATIONS`](#run_migrations)). `versola up` ends
 by printing where the admin's bootstrap password is ([First admin login](#first-admin-login)).
 `versola bootstrap vps <version> --auth-url … --postgres-host …` runs configure, migrate and up in
@@ -366,7 +373,10 @@ nothing.
 1. **Cut a release.** GitHub → Releases → new tag (no `v`), target `main` → *Generate release notes*
    → *Publish*.
 2. **Wait for the images:** `docker-tools`, `docker-auth`, `docker-central`, `docker-edge` green.
-3. **Check the release does not *edit* an applied migration** — only adding is safe. On a clone with
+3. **Check the release does not *edit* an applied migration** — only adding is safe. CI already enforces this on
+   every pull request (`.github/scripts/check-migrations-immutable.sh`: a migration of the latest release must stay
+   byte for byte, and a new one must have a version above `main`'s), so this is the check of what is about to be
+   published, for a release cut from something other than a green `main`. On a clone with
    both tags: `git diff --name-status <old>..<new> -- '*/postgres/migrations/*'` must show only `A`
    lines (or check *Files changed* at `…/versola/compare/<old>...<new>`). Keep the trailing `/*`:
    migrations live deeper (for example `auth/implementations/postgres/migrations/V0015__….sql`), and
