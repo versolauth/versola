@@ -20,7 +20,7 @@ const PARTNER_BASE_PATH = '/partner/';
  * (blocked, and a visit to a partner's console is not for Google to see): the mono font falls back to the system's.
  */
 async function forPartnerEdge(html: string, outputDir: string, projectRoot: string): Promise<string> {
-  const inline = html.match(/<script>([\s\S]*?)<\/script>/);
+  const inline = html.match(/<script>([\s\S]*?)<\/script\s*>/i);
   if (!inline) throw new Error('dist-index-html: partner.html has no inline pre-paint script to move into a file.');
   // The dark icon is a file the edge does not serve; the pre-paint script only swaps to it.
   const script = inline[1].split('\n').filter(line => !/favicon/.test(line)).join('\n');
