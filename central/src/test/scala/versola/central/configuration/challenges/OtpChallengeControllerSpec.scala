@@ -42,6 +42,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       securityProfile: SecurityProfile = SecurityProfile.fapi2,
       logoLight: Option[String] = None,
       logoDark: Option[String] = None,
+      auditSettings: AuditSettings = AuditSettings.default,
   ): ChallengeSettingsRecord =
     ChallengeSettingsRecord(
       tenantId = tenantId,
@@ -67,6 +68,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       securityProfile = securityProfile,
       logoLight = logoLight,
       logoDark = logoDark,
+      auditSettings = auditSettings,
     )
 
   private val syncToken = Unsafe.unsafe { unsafe ?=>
@@ -142,6 +144,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       defaultRoles: Set[RoleId] = Set(ChallengeSettingsRecord.DefaultRoleId),
       logoLight: Option[Patch[String]] = None,
       logoDark: Option[Patch[String]] = None,
+      auditSettings: Option[AuditSettings] = None,
   ): Request =
     Request(
       method = Method.PUT,
@@ -171,6 +174,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           securityProfile = profile,
           logoLight = logoLight,
           logoDark = logoDark,
+          auditSettings = auditSettings,
         ).toJson,
       ),
     ).addHeader(Header.ContentType(MediaType.application.json))
@@ -213,6 +217,39 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           service.upsertSettings.calls.map(r => (r.logoLight, r.logoDark)) ==
             List((Some("https://cdn.example/light.svg"), Some("https://cdn.example/dark.png"))),
         )),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings stores the audit switches it names",
+      request = upsertWithProfile(None, auditSettings = Some(AuditSettings(log = false, tokenRefresh = true))),
+      expectedStatus = Status.NoContent,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(Some(settings())) *>
+          service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
+          service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        ZIO.succeed(assertTrue(service.upsertSettings.calls.map(_.auditSettings) == List(AuditSettings(log = false, tokenRefresh = true)))),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings that leaves the audit switches out keeps the stored ones",
+      request = upsertWithProfile(None),
+      expectedStatus = Status.NoContent,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(Some(settings(auditSettings = AuditSettings(log = false, tokenRefresh = true)))) *>
+          service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
+          service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        ZIO.succeed(assertTrue(service.upsertSettings.calls.map(_.auditSettings) == List(AuditSettings(log = false, tokenRefresh = true)))),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings for a tenant with no settings starts the audit log on, without the refreshes",
+      request = upsertWithProfile(None),
+      expectedStatus = Status.NoContent,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(None) *>
+          service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
+          service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        ZIO.succeed(assertTrue(service.upsertSettings.calls.map(_.auditSettings) == List(AuditSettings.default))),
     ),
     controllerTestCase(
       description = "PUT challenge-settings refuses a single logo file",
@@ -548,6 +585,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             securityProfile = None,
             logoLight = None,
             logoDark = None,
+            auditSettings = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -601,6 +639,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             securityProfile = None,
             logoLight = None,
             logoDark = None,
+            auditSettings = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -646,6 +685,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             securityProfile = None,
             logoLight = None,
             logoDark = None,
+            auditSettings = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -687,6 +727,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             securityProfile = None,
             logoLight = None,
             logoDark = None,
+            auditSettings = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -727,6 +768,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             securityProfile = None,
             logoLight = None,
             logoDark = None,
+            auditSettings = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -769,6 +811,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             securityProfile = None,
             logoLight = None,
             logoDark = None,
+            auditSettings = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -812,6 +855,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             securityProfile = None,
             logoLight = None,
             logoDark = None,
+            auditSettings = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -857,6 +901,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             securityProfile = None,
             logoLight = None,
             logoDark = None,
+            auditSettings = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -896,6 +941,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             securityProfile = None,
             logoLight = None,
             logoDark = None,
+            auditSettings = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -937,6 +983,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             securityProfile = None,
             logoLight = None,
             logoDark = None,
+            auditSettings = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -979,6 +1026,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             securityProfile = None,
             logoLight = None,
             logoDark = None,
+            auditSettings = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),

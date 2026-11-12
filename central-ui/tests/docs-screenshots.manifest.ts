@@ -1048,7 +1048,7 @@ const consoleShots: DocsShot[] = [
       await expect(page.getByLabel("This tenant's reverse proxy terminates mutual TLS")).toBeChecked();
     },
   },
-  ...(['methods', 'codes', 'passkeys', 'registration', 'stepup', 'sessions', 'logout', 'limits'] as const).map((group): DocsShot => ({
+  ...(['methods', 'codes', 'passkeys', 'registration', 'stepup', 'sessions', 'logout', 'limits', 'audit'] as const).map((group): DocsShot => ({
     name: `console/security-edit-${group}`, kind: 'frame', fullPage: true, path: `/?view=security&tenant=${tenant}&edit=${group}`, state: alpha,
     before: async page => { await expect(page.getByRole('button', { name: /^Save / })).toBeVisible(); },
   })),

@@ -147,7 +147,13 @@ object PostgresAuditStopSpec extends PostgresSpec:
           .liveWith(sizing)(source, "node-1", AuditCatalog.of(Set(kind)), Table)
           .build
           .map(_.get[AuditEvents])
-          .provideSome[Scope](ZLayer.succeed[AuditEventRepository](repository), ZLayer.succeed(settings), tracingLayer, SecureRandom.live),
+          .provideSome[Scope](
+            ZLayer.succeed[AuditEventRepository](repository),
+            ZLayer.succeed(settings),
+            ZLayer.succeed[AuditTenants](AuditTenants.none),
+            tracingLayer,
+            SecureRandom.live,
+          ),
       )
       // One event, then a burst: the writer takes the first at once and the rest as one batch when it is done with it.
       _ <- events.record(draftWith("held")).ignore

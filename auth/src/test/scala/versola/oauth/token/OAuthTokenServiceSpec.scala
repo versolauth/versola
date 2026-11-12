@@ -290,6 +290,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val authCodeRepo = stub[AuthorizationCodeRepository]
     val clientService = stub[OAuthConfigurationService]
     clientService.getResourcesForClient.returnsWith(ZIO.succeed(Nil))
+    // the tenant has not asked for refreshes to be recorded unless a case says so
+    clientService.auditTokenRefresh.returnsWith(ZIO.succeed(false))
     // Only the mutual-TLS path looks a client up before authenticating it; every other test
     // authenticates through `verifySecret` alone, as the service itself does for a client
     // that registered no `mtlsAuth`.
@@ -301,7 +303,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val securityService = stub[SecurityService]
     val propertyGenerator = stub[AuthPropertyGenerator]
     val userRepo = stub[UserRepository]
-    def serviceWith(tiers: AuthAudit.Tiers) = OAuthTokenService.Impl(
+    val service = OAuthTokenService.Impl(
       authCodeRepo,
       clientService,
       clientAuthentication,
@@ -313,9 +315,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
       schemaValidator,
       TestEnvConfig.coreConfig,
       audit,
-      tiers,
     )
-    val service = serviceWith(CapturingAuditEvents.tiers)
 
   def spec = suite("OAuthTokenService")(
     suite("exchangeAuthorizationCode")(
@@ -2431,7 +2431,9 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           drafts <- env.audit.of(AuthAuditKinds.TokenIssued)
         yield assertTrue(drafts.map(_.details).collect { case d: AuthAuditDetails.TokenIssued => d.binding } == List("dpop"))
       },
-      test("a refresh records token.issued with the prefix of the token it consumed, and the prefix of the one it issued") {
+      test(
+        "a refresh records token.issued with the prefix of the token it consumed and of the one it issued, when the client's tenant asked for it",
+      ) {
         val env = new Env
         for
           now <- Clock.instant
@@ -2463,6 +2465,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(newRefreshToken)
           _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+          _ <- env.clientService.auditTokenRefresh.succeedsWith(true)
           _ <- env.service.refreshAccessToken(
             RefreshTokenRequest(refreshToken1, None, None, None),
             ClientIdWithSecret(clientId1, Some(clientSecret1)),
@@ -2479,9 +2482,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           issued.flatMap(_.refreshPrefix) == List(Base64.urlEncode(newRefreshToken).take(9)),
         )
       },
-      test("a refresh is not recorded when the deployment left audit.events.token-refresh off, and a code exchange still is") {
+      test("a refresh is not recorded when the client's tenant did not ask for it") {
         val env = new Env
-        val off = env.serviceWith(CapturingAuditEvents.tiers.copy(tokenRefresh = false))
         for
           now <- Clock.instant
           tokenRecord = RefreshTokenRecord(
@@ -2511,7 +2513,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(RefreshToken(Array.fill(32)(7.toByte)))
           _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
-          _ <- off.refreshAccessToken(
+          _ <- env.clientService.auditTokenRefresh.succeedsWith(false)
+          _ <- env.service.refreshAccessToken(
             RefreshTokenRequest(refreshToken1, None, None, None),
             ClientIdWithSecret(clientId1, Some(clientSecret1)),
             None,
@@ -2519,7 +2522,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             None,
           )
           drafts <- env.audit.recorded
-        yield assertTrue(drafts.isEmpty)
+        yield assertTrue(drafts.isEmpty, env.clientService.auditTokenRefresh.calls == List(testClient.tenantId))
       },
       test("a replayed authorization code records token.reuse_detected: denied, with the family the code committed to") {
         val env = new Env

@@ -2,6 +2,7 @@ package versola.central.configuration.roles
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.challenges.{
+  AuditSettings,
   ChallengeSettingsRecord,
   ChallengeSettingsService,
   EmailRegistration,
@@ -71,6 +72,7 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
     securityProfile = SecurityProfile.fapi2,
     logoLight = None,
     logoDark = None,
+    auditSettings = AuditSettings.default,
   )
 
   class Env(initial: Vector[RoleRecord] = Vector.empty):

@@ -8,7 +8,8 @@ import zio.config.magnolia.deriveConfig
 import zio.config.typesafe.FromConfigSourceTypesafe
 import zio.test.*
 
-/** The `audit` block of central's config (#469): every key has a default, so a deployment that sets none starts as it did. */
+/** The audit log has no key in central's config: its two switches are a tenant's Security settings, and the rest is fixed. A config
+  * written before that still has the `audit` block, which must not stop the start. */
 object PostgresCentralAuditConfigSpec extends ZIOSpecDefault:
 
   import PostgresCentralApp.given
@@ -22,52 +23,36 @@ object PostgresCentralAuditConfigSpec extends ZIOSpecDefault:
       |configuration-cache-refresh-interval = "5 minutes"
       |""".stripMargin
 
+  private val oldBlock =
+    """audit { retention = "14 days", overflow = "block", block-timeout = "500 millis", events { admin-user-viewed = false } }"""
+
   private def load(extra: String) =
     ConfigProvider.fromTypesafeConfigZIO(ConfigFactory.parseString(required + extra).resolve()).map(_.kebabCase)
       .flatMap(_.load(deriveConfig[CentralConfig]))
 
   def spec = suite("central audit config")(
-    test("without an audit block the log is kept 7 days, a full queue holds an event up to 2 seconds, and a look at a user is an event") {
+    test("a config that has no audit block loads") {
       for config <- load("")
-      yield assertTrue(
-        config.audit == CentralConfig.AuditConfig(),
-        config.audit.retention == 7.days,
-        config.audit.overflow == AuditEvents.Overflow.drop,
-        config.audit.blockTimeout == 2.seconds,
-        config.audit.events.adminUserViewed,
-      )
+      yield assertTrue(config.configurationCacheRefreshInterval == 5.minutes)
     },
-    test("the keys of the block are read, and become the writer's settings") {
-      for config <- load("""audit { retention = "14 days", overflow = "drop", block-timeout = "500 millis", events { admin-user-viewed = false } }""")
-      yield assertTrue(
-        config.audit.settings == AuditEvents.Settings(retention = 14.days, overflow = AuditEvents.Overflow.drop, blockTimeout = 500.millis),
-        !config.audit.events.adminUserViewed,
-      )
-    },
-    test("a block that sets one key leaves the others at their defaults") {
-      for config <- load("""audit { retention = "10 days" }""")
-      yield assertTrue(
-        config.audit.retention == 10.days,
-        config.audit.overflow == AuditEvents.Overflow.drop,
-        config.audit.events.adminUserViewed,
-      )
-    },
-    test("a retention the partitions cannot keep stops the start: under a day, or over the 14 days the table is kept ahead for") {
+    test("a config that still has the old audit block loads, and the block changes nothing") {
       for
-        zero <- load("""audit { retention = "0 days" }""").either
-        long <- load("""audit { retention = "15 days" }""").either
-        one <- load("""audit { retention = "1 day" }""")
-        max <- load("""audit { retention = "14 days" }""")
+        without <- load("")
+        old <- load(oldBlock)
+        invalid <- load("""audit { retention = "0 days", overflow = "wait" }""")
+      // the config holds secrets as arrays, which do not compare equal: the rest of it is what the block would have changed
       yield assertTrue(
-        zero.left.exists(_.toString.contains("audit.retention must be between 1 and 14 days")),
-        long.left.exists(_.toString.contains("audit.retention must be between 1 and 14 days")),
-        one.audit.retention == 1.day,
-        max.audit.retention == 14.days,
-        AuditEvents.Sizing().partitionsAhead >= CentralConfig.AuditConfig.MaxRetentionDays,
+        old.auth == without.auth,
+        old.userOutbox == without.userOutbox,
+        old.configurationCacheRefreshInterval == 5.minutes,
+        invalid.userOutbox == without.userOutbox,
       )
     },
-    test("an overflow that is neither block nor drop stops the start and names the key") {
-      for refused <- load("""audit { overflow = "wait" }""").either
-      yield assertTrue(refused.left.exists(_.toString.contains("audit.overflow is 'block' or 'drop', not 'wait'")))
+    test("the log is kept 7 days and a full queue drops the event, whatever the config says") {
+      assertTrue(
+        AuditEvents.Settings.standard == AuditEvents.Settings(retention = 7.days, overflow = AuditEvents.Overflow.drop, blockTimeout = 2.seconds),
+        // the table is partitioned far enough ahead to keep what the retention does
+        AuditEvents.Sizing.standard.partitionsAhead >= AuditEvents.Settings.standard.retention.toDays,
+      )
     },
   )

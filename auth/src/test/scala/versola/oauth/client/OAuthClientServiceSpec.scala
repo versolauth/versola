@@ -4,6 +4,7 @@ import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.EmailRegistration
 import versola.oauth.client.model.{
   Acr,
+  AuditSettings,
   AuthMethod,
   AuthorizationDetailType,
   AuthorizationDetailTypeRecord,
@@ -468,6 +469,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         securityProfile = SecurityProfile.fapi2,
         logoLight = None,
         logoDark = None,
+        auditSettings = Some(AuditSettings.default),
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -499,6 +501,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         securityProfile = SecurityProfile.fapi2,
         logoLight = None,
         logoDark = None,
+        auditSettings = Some(AuditSettings.default),
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -531,6 +534,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         securityProfile = SecurityProfile.fapi2,
         logoLight = None,
         logoDark = None,
+        auditSettings = Some(AuditSettings.default),
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -632,6 +636,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         securityProfile = SecurityProfile.fapi2,
         logoLight = None,
         logoDark = None,
+        auditSettings = Some(AuditSettings.default),
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))

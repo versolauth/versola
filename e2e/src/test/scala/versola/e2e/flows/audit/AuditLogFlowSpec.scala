@@ -110,7 +110,7 @@ object AuditLogFlowSpec extends E2ESpec:
         started = Instant.now
         userId = s.userId.toString
         session <- login(s, auth)
-        // RFC 6749 §6: the refresh grant (not an event by default, `audit.events.token-refresh = false`), then RFC 7009: the refresh token revoked, then OIDC RP-Initiated Logout
+        // RFC 6749 §6: the refresh grant (not an event unless the tenant turned on `auditSettings.tokenRefresh`, which it has not), then RFC 7009: the refresh token revoked, then OIDC RP-Initiated Logout
         refreshed <- auth.refresh(session.refreshToken, Some(s.clientId), Some(s.clientSecret)).success
         refreshedRefresh <- ZIO.fromOption(refreshed.refreshToken).orElseFail(RuntimeException("expected the rotated refresh token"))
         revoked <- auth.revoke(refreshedRefresh, s.clientId, s.clientSecret, tokenTypeHint = Some("refresh_token"))

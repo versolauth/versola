@@ -12,8 +12,8 @@ import zio.logging.logContext
 object AuditSupport:
 
   extension (events: AuditEvents)
-    /** Queues the event of what a request did, once it did it: it does not fail the request. Under `overflow = block` a full queue makes it
-      * wait up to `block-timeout` and then drop the event, counted; under `drop` it drops at once. */
+    /** Queues the event of what a request did, once it did it: it does not fail the request, and a tenant that switched its audit log off
+      * has none (see [[versola.util.audit.AuditTenants]]). */
     def log(draft: AuditDraft): UIO[Unit] =
       events.recordBestEffort(draft)
 

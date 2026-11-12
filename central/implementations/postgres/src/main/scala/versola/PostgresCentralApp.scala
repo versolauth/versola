@@ -13,7 +13,7 @@ import versola.central.antifraud.{
   AntifraudStatusController,
   AntifraudStatusService,
 }
-import versola.central.audit.{AuditHook, AuditReportService, CentralAudit, CentralAuditRepository}
+import versola.central.audit.{AuditHook, AuditReportService, CentralAudit, CentralAuditRepository, CentralAuditTenants}
 import versola.central.configuration.challenges.{
   ChallengeSettingsRepository,
   ChallengeSettingsService,
@@ -99,7 +99,7 @@ import versola.configuration.themes.PostgresThemeRepository
 import versola.users.PostgresUserRepository
 import versola.util.*
 import versola.util.SequentialLayers.*
-import versola.util.audit.{AuditEventRepository, AuditEvents}
+import versola.util.audit.{AuditEventRepository, AuditEvents, AuditTenants}
 import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp
 import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource, PostgresWalMetrics}
@@ -177,6 +177,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       AuditEventRepository &
       AuditEvents.Settings &
       AuditEvents &
+      AuditTenants &
       AuditReportService &
       UserOutboxProcessor &
       ClientCertificateIssuanceRepository &
@@ -309,12 +310,15 @@ object PostgresCentralApp extends VersolaApp("central"):
   private[versola] def auditWriter(
       sizing: AuditEvents.Sizing = AuditEvents.Sizing.standard,
   ): ZLayer[AuditEventRepository & AuditEvents.Settings & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
-    AuditEvents.liveWith(sizing)(CentralAudit.Source, nodeId, CentralAudit.catalog, CentralAudit.Table)
+    // The tenant's switch is checked by `AuditHook`, by the tenant a change is made to, so the writer itself keeps no tenant's log apart.
+    ZLayer.makeSome[AuditEventRepository & AuditEvents.Settings & Tracing & SecureRandom & Scope, AuditEvents](
+      ZLayer.succeed[AuditTenants](AuditTenants.none),
+      AuditEvents.liveWith(sizing)(CentralAudit.Source, nodeId, CentralAudit.catalog, CentralAudit.Table),
+    )
 
-  /** The audit log: its settings from the `audit` block of the config, and the writer. */
-  private val auditEvents
-      : ZLayer[CentralConfig & AuditEventRepository & Tracing & SecureRandom & Scope, Nothing, AuditEvents.Settings & AuditEvents] =
-    ZLayer.fromFunction((config: CentralConfig) => config.audit.settings) >++> auditWriter()
+  /** The audit log: its settings, which no key of the config changes, and the writer. */
+  private val auditEvents: ZLayer[AuditEventRepository & Tracing & SecureRandom & Scope, Nothing, AuditEvents.Settings & AuditEvents] =
+    ZLayer.succeed(AuditEvents.Settings.standard) >++> auditWriter()
 
   override val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     parseConfig[CentralConfig] >++>
@@ -325,6 +329,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       JsonSchemaValidator.live >++>
       ChallengeSettingsService.signingKeyReferences >++>
       ChallengeSettingsService.live >++>
+      CentralAuditTenants.live >++>
       // RFC 8705 §6.5: registering `mtlsAuth` is refused unless the client's tenant names a
       // certificate header, so client registration reads the challenge settings.
       ClientCertificateAuthority.live >++>
@@ -367,15 +372,6 @@ object PostgresCentralApp extends VersolaApp("central"):
 
   given DeriveConfig[Secret] = DeriveConfig[String]
     .mapOrFail(SecretConfig.secret)
-
-  given DeriveConfig[AuditEvents.Overflow] = DeriveConfig[String]
-    .mapOrFail(name =>
-      AuditEvents.Overflow.values.find(_.toString == name)
-        .toRight(zio.Config.Error.InvalidData(message = s"audit.overflow is 'block' or 'drop', not '$name'")),
-    )
-
-  given DeriveConfig[CentralConfig.AuditConfig] =
-    DeriveConfig.derived[CentralConfig.AuditConfig].mapOrFail(CentralConfig.AuditConfig.validated)
 
   given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
     .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))

@@ -112,9 +112,3 @@ object AuthAudit:
       AuthAuditKinds.AntifraudCountersReset,
     ),
   )
-
-  /** The high-volume successes a deployment may leave out (`audit.events` of the config): a failure is always recorded. */
-  case class Tiers(tokenRefresh: Boolean, authorizeSuccess: Boolean, parSuccess: Boolean)
-
-  object Tiers:
-    val all: Tiers = Tiers(tokenRefresh = true, authorizeSuccess = true, parSuccess = true)

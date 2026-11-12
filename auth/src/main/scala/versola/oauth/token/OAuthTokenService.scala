@@ -1,7 +1,7 @@
 package versola.oauth.token
 
 import versola.audit.AuditSupport.*
-import versola.audit.{AuditSupport, AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds}
+import versola.audit.{AuditSupport, AuthActors, AuthAuditDetails, AuthAuditKinds}
 import versola.oauth.client.model.{
   AuthorizationDetail,
   ClientCredentials,
@@ -90,7 +90,7 @@ object OAuthTokenService:
   /** Admin-console client; admin roles are only embedded in tokens issued for it. */
   val centralAdminClientId: ClientId = ClientId("central-admin")
 
-  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       authorizationCodeRepository: AuthorizationCodeRepository,
@@ -104,13 +104,15 @@ object OAuthTokenService:
       schemaValidator: JsonSchemaValidator,
       config: CoreConfig,
       audit: AuditEvents,
-      auditTiers: AuthAudit.Tiers,
   ) extends OAuthTokenService:
 
-    /** `token.issued`. The refresh grant is the one a deployment may leave out (`audit.events.token-refresh`): it is the most frequent
-      * event there is. The client is the actor, the user (when there is one) the subject. */
+    /** `token.issued`. The refresh grant is an event only where the client's tenant asked for it (`auditSettings.tokenRefresh` of its Security settings):
+      * it is the most frequent event there is. The client is the actor, the user (when there is one) the subject. */
+    private def refreshNotRecorded(grant: String, client: OAuthClientRecord): IO[Nothing, Boolean] =
+      if grant == "refresh_token" then oauthClientService.auditTokenRefresh(client.tenantId).map(!_) else ZIO.succeed(false)
+
     private def auditIssued(grant: String, client: OAuthClientRecord, tokens: IssuedTokens): IO[Throwable, Unit] =
-      ZIO.unless(grant == "refresh_token" && !auditTiers.tokenRefresh):
+      ZIO.unlessZIO(refreshNotRecorded(grant, client)):
         AuditSupport.currentAuth.flatMap: auth =>
           audit.log(
             AuditDraft(

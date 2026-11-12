@@ -812,7 +812,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 - **Central's audit log.** `central_audit_event` (V1034) holds what administrators did through central's API (`admin.<resource>.<operation>`,
   a look at a user, a query of the audit report, every response that hands a secret back) and what bootstrap created
   (`system.bootstrap`). It is partitioned by day like the antifraud event log, and the service keeps the partitions: it creates
-  14 days ahead and drops a day once the whole day is older than `audit.retention`. Dropping a partition is the retention; nothing is
+  14 days ahead and drops a day once the whole day is older than 7 days. Dropping a partition is the retention; nothing is
   vacuumed. A row whose day had no partition lands in `central_audit_event_default`; those rows are **never moved** into the day's partition
   (an insert-only logical replication of the table would see them twice), a day that has rows in the default is not attached and
   central reports it (`audit_events_in_default`), and the rows leave the default when they age out of the retention. A trigger
@@ -821,22 +821,12 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   table (or be a member of the owner); otherwise central logs that the partitions are not maintained and `audit_partition_owner_mismatch`
   is set. Long-term keeping is the operator's logical replication of `central_audit_event` (a publication with `publish_via_partition_root = true`
   and `publish = 'insert'`, an unpartitioned table on the subscriber; the publisher needs PostgreSQL 13 or later).
-  The `audit` block of central's `env.conf` is optional, every key has a default, and a deployment that sets none records admin actions
-  for 7 days:
+  The log is kept 7 days and no key of `env.conf` changes that. What is recorded is set per tenant, with the two switches on the Security
+  page of the console (below, "Audit log (`auth_audit_event`...)"). An `audit` block in an `env.conf` is ignored.
 
-  ```hocon
-  audit {
-    retention     = "7 days"      # 1 to 14 days, any other value stops the start; about 37 GB a day per 1 000 events a second (see below)
-    overflow      = "drop"        # drop | block: what a full writer queue does to an event (drop does not wait, block waits up to block-timeout for room)
-    block-timeout = "2 seconds"
-    events { admin-user-viewed = true }   # whether a look at a user (GET /users) is an event: the one read that is many
-  }
-  ```
-
-  **Disk.** `audit.retention` is from 1 to 14 days, and central refuses to start with another value. A row is about 430 bytes on disk,
-  indexes included, so at 1 000 events a second the log takes about 37 GB a day: about 260 GB for 7 days and about 520 GB for 14 days;
-  at 100 events a second a tenth of that. Events a second equal requests a second only if every request records an event, and
-  `audit.events.admin-user-viewed` changes that. The per-user report asks auth, which keeps its log as long, for the same window. This is a
+  **Disk.** A row is about 430 bytes on disk, indexes included, so at 1 000 events a second the log takes about 37 GB a day: about
+  260 GB for 7 days; at 100 events a second a tenth of that. Events a second equal requests a second only if every request records an
+  event, and a tenant's `auditSettings.log` switch changes that. The per-user report asks auth, which keeps its log as long, for the same window. This is a
   design estimate, to be replaced with the figure measured under load.
 
   A call that reaches central without the query parameters edge adds (`actorId`, `actorTenantId`, `actorClientId`, `actorSessionId`,
@@ -1129,22 +1119,18 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 - **Audit log (`auth_audit_event`, migration `V0031`; #469).** `auth` records every authentication, token, consent,
   account, antifraud administration and refused certificate enrolment event (the kinds are the closed vocabulary `AuthAuditKinds` of `auth`; the per-user report
   reads them through `central`) into `auth_audit_event`, partitioned by day like `af_event` and maintained by the service
-  the same way (today and 14 days ahead, at start-up and every hour; a day older than `audit.retention` is dropped,
-  which is the retention: nothing is deleted row by row except from the default partition). Its keys are the `audit`
-  block of `auth`'s `env.conf`, **every key required**, written by `scripts/gen-env.scala` (a config written before
-  the block existed makes `auth` refuse to start naming the missing key, as for `antifraud`):
+  the same way (today and 14 days ahead, at start-up and every hour; a day older than 7 days is dropped,
+  which is the retention: nothing is deleted row by row except from the default partition). No key of `env.conf` configures the log:
+  the 7 days are fixed, and an `audit` block left in the `env.conf` of `auth` or `central` is ignored.
 
-  ```hocon
-  audit {
-    retention     = "7 days"      # the hot window, 1 to 14 days, any other value stops the start; the long-term copy is the replication below
-    overflow      = "drop"        # drop: an event that finds no room in the writer's queue is counted in audit_events_dropped_total
-                                  #   and the request goes on;
-                                  # block: the event waits up to block-timeout for room first, then it is counted as dropped
-                                  #   (the request goes on in both cases)
-    block-timeout = "2 seconds"
-    events { token-refresh = false, authorize-success = true, par-success = true }   # the high-volume kinds; refusals, reuse detection and failures are always recorded
-  }
-  ```
+  **Switches.** Each tenant has two, on the Security page of the console (Audit log) and as `auditSettings` (`log` and `tokenRefresh`) of the
+  tenant's challenge settings (`PUT` and `PATCH /configuration/challenges/challenge-settings`, with the permission of the other
+  Security settings; one JSON column, `challenge_settings.audit_settings`, migration `V1035`, additive). **Audit log** (on by default): off, nothing is recorded for the tenant's events, in `auth` and in `central`.
+  **Record token refreshes** (off by default): whether a `refresh_token` grant is a `token.issued` event; a refused refresh and the
+  reuse of a refresh token are recorded either way. `auth` takes the tenant of an event from the client it names, so a row
+  carries `tenant_id`; central takes it from the tenant a change is made to, else from the administrator's token. An event that belongs
+  to no tenant (a client that is not registered, the first run of central) is always recorded, and so is that of a tenant with no
+  settings. A change reaches central at once and `auth` within `configuration-cache-refresh-interval`.
 
   **What the trigger covers.** `auth_audit_event_immutable` is a row trigger on the table and every partition, and a
   `BEFORE TRUNCATE` statement trigger on the parent table. It refuses an `UPDATE` or `DELETE` of a row of any partition and a
@@ -1159,12 +1145,12 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   the service's role, as for `af_event` (`audit_partition_owner_mismatch`).
 
   **Disk.** A row is about 430 bytes on disk, indexes included, so at 1 000 events a second `auth_audit_event` takes about 37 GB a day:
-  about 260 GB for the 7 days of the default and about 520 GB for the 14 days that are the most `audit.retention` takes; at 100 events a
-  second a tenth of that. Events a second equal requests a second only if every request writes an event: `audit.events.token-refresh`
-  (off by default), `authorize-success` and `par-success` are what changes it. This is a design estimate, to be replaced with the figure
+  about 260 GB for the 7 days; at 100 events a
+  second a tenth of that. Events a second equal requests a second only if every request writes an event: a tenant's `auditSettings.log` and
+  `auditSettings.tokenRefresh` (off by default) are what changes it. This is a design estimate, to be replaced with the figure
   measured under load.
 
-  **Facts to plan for.** The hot window is 7 days (`audit.retention`) unless you change it. A replication slot that is
+  **Facts to plan for.** The hot window is 7 days. A replication slot that is
   not read keeps the WAL it has not sent on the primary's disk until the slot is read or dropped; the alert
   `AuditReplicationSlotRetainsWal` watches the WAL each slot holds back (there is no metric of whether the subscription
   exists). `auth_audit_event.at` is the clock of the node that records the event, so the nodes need synchronised clocks (NTP
@@ -1175,7 +1161,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   **What is recorded, and how often.** Refusals reachable without signing in (`client.auth_failed`, `token.refused`, a
   failed `authorize.request`, a refused `par.request`) are counted in memory per (kind, client, address, reason) and written
   as one row a minute with `details.count`; the table of keys holds at most 10 000, past which new keys are counted
-  together in one more row. The `token.issued` of a refresh-token grant is off by default (`events.token-refresh = false`); `token.refused` and
+  together in one more row. The `token.issued` of a refresh-token grant is off by default (the tenant's `auditSettings.tokenRefresh`); `token.refused` and
   `token.reuse_detected` are always recorded. `PUT /users` records `account.updated` (actor `service`, `details.changed`
   names `email`, `phone` or `login` and never a value, only when one changed); `DELETE /users` ends the user's sessions with
   `session.ended` and the cause `user_deleted`.

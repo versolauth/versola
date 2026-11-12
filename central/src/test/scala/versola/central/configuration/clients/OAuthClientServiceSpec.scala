@@ -4,6 +4,7 @@ import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.{Curve, ECKey}
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.challenges.{
+  AuditSettings,
   ChallengeSettingsRecord,
   ChallengeSettingsService,
   EmailRegistration,
@@ -365,6 +366,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     securityProfile = SecurityProfile.fapi2,
     logoLight = None,
     logoDark = None,
+    auditSettings = AuditSettings.default,
   )
 
   /** #421: the registration an edge-fronted native app is held to -- `tls_client_auth` with a
