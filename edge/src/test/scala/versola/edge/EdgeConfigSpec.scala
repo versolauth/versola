@@ -650,6 +650,28 @@ object EdgeConfigSpec extends ZIOSpecDefault:
           none <- withEnrollment(None)
         yield assertTrue(file.mode == EdgeMode.Partner, environment.mode == EdgeMode.Partner, none.mode == EdgeMode.Partner)
       },
+      test("an edge in the first-party mode whose identity directory holds a partner edge's enrollment is refused, with the reason") {
+        def firstParty(directory: String) =
+          ZIO.service[EdgeConfig].provideLayer(
+            ZLayer.succeed(
+              partnerConfig.copy(
+                mode = EdgeMode.FirstParty,
+                central = partnerConfig.central.copy(identity = Some(EdgeConfig.CentralIdentity(directory = directory))),
+              ),
+            ) >>> EdgeConfig.validated,
+          )
+        for
+          partnerDirectory <- ZIO.attemptBlocking(Files.createTempDirectory("partner-identity"))
+          _ <- ZIO.attemptBlocking(Files.writeString(partnerDirectory.resolve("enrolled.json"), "{}"))
+          ownDirectory <- ZIO.attemptBlocking(Files.createTempDirectory("own-identity"))
+          refused <- firstParty(partnerDirectory.toString).flip
+          accepted <- firstParty(ownDirectory.toString)
+        yield assertTrue(
+          refused.getMessage.contains("enrolled.json"),
+          refused.getMessage.contains("mode = \"partner\""),
+          accepted.mode == EdgeMode.FirstParty,
+        )
+      },
       test("the sync of a partner edge is read from /edge/partner/sync, a first-party edge's from /edge/sync") {
         assertTrue(
           partnerConfig.syncUrl("clients").encode == "https://central:8093/edge/partner/sync/clients",

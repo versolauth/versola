@@ -234,7 +234,15 @@ object EdgeConfig:
       case EdgeMode.FirstParty =>
         invalid("partner.admins and partner.console-directory are for a partner edge: set mode = \"partner\" or remove them")
           .when(config.partner.admins.nonEmpty || config.partner.consoleDirectory.isDefined)
-          .unit
+          .unit *>
+          // a partner edge keeps what its enrollment answered here (`enrolled.json`); the same directory under mode = first-party would be a
+          // partner's identity presented as the operator's own, which central refuses on every sync and this refuses at the start, with the reason
+          ZIO.foreachDiscard(config.central.identity): identity =>
+            ZIO.attemptBlocking(Files.exists(Path.of(identity.directory, "enrolled.json"))).flatMap: enrolled =>
+              invalid(
+                s"central.identity.directory ${identity.directory} holds the enrollment of a partner edge (enrolled.json): " +
+                  "start it with mode = \"partner\"; an edge of the operator enrols with its own token in its own directory",
+              ).when(enrolled)
       case EdgeMode.Partner =>
         if config.central.identity.isEmpty then
           invalid(

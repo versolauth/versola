@@ -493,6 +493,100 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
           wrong = results.filter((have, _, _, needs, refused) => refused == have.atLeast(needs))
         yield assertTrue(wrong.isEmpty, results.size == 3 * routes.size)
       },
+      test(
+        "a partner cannot name its group, its kind or its party in any write: what central is sent never carries those fields, by a table over every write route",
+      ) {
+        // what only the operator decides, or what the edge's certificate decides: a request that names them gets nothing out of them
+        val attacker = "attacker-first-party"
+        val forbidden =
+          List("groupId", "groupKind", "partnerId", "edgeId", "party", "partyKind", "group", "tenantId", "mtlsAuth", "approval", "status")
+        val extra = forbidden.map(name => s""""$name":"$attacker"""").mkString(
+          ",",
+        ) + s""","mtlsAuth":{"subjectDn":"$attacker"},"approval":{"status":"approved"}"""
+        def withExtra(body: String): String = body.stripSuffix("}") + (if body == "{}" then "" else ",") + extra + "}"
+        val writes: List[(Method, String, String, Boolean)] = List(
+          (
+            Method.POST,
+            "/clients",
+            """{"id":"c","kind":"web","clientName":"C","redirectUris":["https://x.acme.example/cb"],"scope":["openid"],"accessTokenTtl":600}""",
+            true,
+          ),
+          (Method.PUT, "/clients/acme-shop", """{"id":"acme-shop","clientName":"Shop"}""", true),
+          (Method.DELETE, "/clients/acme-shop", "{}", true),
+          (Method.POST, "/clients/acme-shop/withdraw", "{}", true),
+          (Method.POST, "/clients/acme-shop/rotate-secret", "{}", false),
+          (Method.POST, "/resources", """{"resourceId":"r","resource":"https://api.acme.example","endpoints":[]}""", true),
+          (Method.PUT, "/resources/r", """{"resourceId":"r","resource":"https://api.acme.example","endpoints":[]}""", false),
+          (Method.DELETE, "/resources/r", "{}", true),
+          (Method.POST, "/resources/r/rotate-secret", "{}", true),
+          (Method.POST, "/edges", """{"id":"e","publicUrl":"https://x.example"}""", true),
+          (Method.DELETE, "/edges/e", "{}", true),
+          (Method.POST, "/edges/e/enrollment-tokens", "{}", true),
+          (Method.DELETE, "/edges/e/enrollment-tokens", "{}", true),
+          (Method.POST, "/revocations", """{"by":"user","value":"u-1"}""", false),
+          (Method.POST, "/staff", """{"identifier":"+77010000001","level":"viewer"}""", false),
+          (Method.PUT, "/staff/sub-1", """{"level":"admin"}""", false),
+          (Method.DELETE, "/staff/sub-2", "{}", false),
+          (Method.PUT, "/settings", """{"defaults":{}}""", true),
+          (Method.PUT, "/profile", """{"displayName":"Acme","logoUri":null}""", true),
+        )
+        def answer(method: Method, path: List[String]): IO[Failure, Answer] =
+          path match
+            case List("clients") if method == Method.GET => reply(Status.Ok, s"""{"clients":[$clientJson]}""")
+            case List("resources") if method == Method.GET =>
+              reply(
+                Status.Ok,
+                """{"resources":[{"resourceId":"r","resource":"https://api.acme.example","endpoints":[],"secret":null,"audienceRateLimits":[]}]}""",
+              )
+            case _ => reply(Status.Ok, s"""{"edge":{"id":"e","publicUrl":"https://x.example"},"token":"t","client":$clientJson}""")
+        for
+          results <- ZIO.foreach(writes): (method, path, body, reachesCentral) =>
+            for
+              h <- harness(Some(StaffLevel.admin), answer = answer)
+              _ <- h.edge.revokeSessions.succeedsWith(0)
+              response <- send(h, write(method, path, withExtra(body)))
+              calls <- h.central.calls.get
+              sent = calls.collect { case (_, _, query, Some(payload), _) => payload.toJson + query.toString }
+            yield (method, path, response.status, sent, calls.nonEmpty, reachesCentral)
+          leaked = results.filter((_, _, _, sent, _, _) => sent.exists(_.contains(attacker)))
+          fields = results.filter((_, _, _, sent, _, _) =>
+            sent.exists(payload => forbidden.exists(name => payload.contains(s""""$name":"""))),
+          )
+          // not served is a refusal, never a server fault
+          faults = results.filter((_, _, status, _, _, _) => status.code >= 500)
+          unreached = results.filter((_, _, _, _, reached, expected) => expected && !reached)
+        yield assert(
+          (
+            leaked.map(r => (r._1.toString, r._2)),
+            fields.map(r => (r._1.toString, r._2, r._4)),
+            faults.map(r => (r._1.toString, r._2, r._3.code)),
+            unreached.map(r => (r._1.toString, r._2, r._3.code)),
+            results.size,
+          ),
+        )(Assertion.equalTo((Nil, Nil, Nil, Nil, writes.size)))
+      },
+      test(
+        "what a partner edge serves has no first-party surface: no /service, /central or /configuration path in any route, and the first-party edge does have /service",
+      ) {
+        def paths(routes: Routes[?, ?]): List[String] = routes.routes.toList.map(_.routePattern.render.split(" ", 2).last)
+        val forbidden = List("/service", "/central", "/configuration")
+        for
+          h <- harness(Some(StaffLevel.admin))
+          partnerEdge = paths(
+            versola.edge.EdgeController.routes ++ versola.edge.EdgeController.resourceRoutes ++ versola.edge.nativeapp.NativeController.routes ++
+              versola.edge.InternalSurface.routes(versola.edge.EdgeMode.Partner) ++ h.api.routes ++
+              PartnerConsole(PartnerState.fixed(me, true), None).routes,
+          )
+          firstParty = paths(versola.edge.InternalSurface.routes(versola.edge.EdgeMode.FirstParty))
+        yield assert(
+          (
+            partnerEdge.exists(_.startsWith("/partner/api")),
+            partnerEdge.filter(path => forbidden.exists(prefix => path == prefix || path.startsWith(prefix + "/"))),
+            firstParty.exists(_.startsWith("/service")),
+            partnerEdge.take(80),
+          ),
+        )(Assertion.assertion("only its own surface")(summary => summary._1 && summary._2.isEmpty && summary._3))
+      },
       test("a state-changing request of any method from another origin is refused: PUT and DELETE too, before anything is read") {
         for
           h <- harness(Some(StaffLevel.admin))

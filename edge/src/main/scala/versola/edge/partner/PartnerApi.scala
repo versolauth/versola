@@ -556,7 +556,17 @@ final class PartnerApi(
   private def putSettings(session: Session, request: Request): IO[Fail | Throwable, Response] =
     for
       body <- jsonBody(request)
-      _ <- forward(session, Method.PUT, List("settings"), body = Some(body))
+      // only what the console edits is sent on, key by key: nothing else the request carries reaches central
+      only = (value: Option[Json], names: List[String]) =>
+        value.flatMap(_.asObject).map(obj => Json.Obj(obj.fields.filter((name, _) => names.contains(name)))).getOrElse(Json.Obj())
+      payload = Json.Obj(
+        List(
+          "contact" -> only(field(body, "contact"), List("email", "phone")),
+          "defaults" -> only(field(body, "defaults"), List("backChannelLogoutUri", "accessTokenTtl", "refreshTokenTtl")),
+        )
+          .filter((name, _) => field(body, name).isDefined)*,
+      )
+      _ <- forward(session, Method.PUT, List("settings"), body = Some(payload))
     yield Response.status(Status.NoContent)
 
   /** What waits for the operator is not kept by central's contract for the partner to read back (the answer of the change itself is
