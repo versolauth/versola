@@ -1747,11 +1747,12 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       return;
     }
 
-    const decision = pathname.match(/^\/configuration\/partners\/approvals\/([^/]+)\/(approve|reject)$/);
+    const decision = pathname.match(/^\/configuration\/partners\/approvals\/(approve|reject)$/);
     if (decision && method === 'POST') {
-      const approval = state.partnerApprovals.find(candidate => candidate.id === decodeURIComponent(decision[1]));
+      const decided = (body ?? {}) as { id?: string };
+      const approval = state.partnerApprovals.find(candidate => candidate.id === decided.id);
       if (!approval) {
-        await route.fulfill(json({ message: `Approval ${decision[1]} was not found` }, 404));
+        await route.fulfill(json({ message: `Approval ${decided.id ?? '(no id)'} was not found` }, 404));
         return;
       }
       if (approval.status !== 'waiting') {
@@ -1759,7 +1760,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         return;
       }
       const payload = (body ?? {}) as { note?: string; overrides?: Record<string, unknown> };
-      approval.status = decision[2] === 'approve' ? 'approved' : 'rejected';
+      approval.status = decision[1] === 'approve' ? 'approved' : 'rejected';
       approval.decidedBy = 'operator';
       approval.decidedAt = new Date().toISOString();
       approval.note = payload.note ?? '';

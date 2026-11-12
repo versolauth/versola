@@ -37,6 +37,7 @@ export function partnerSeed(now = Date.now()): MockPartnerState {
       },
       staff: { sub: 'u_7f3a9c2e', display: 'Dana Kim', level: 'admin' },
       edge: { id: 'edge-pilot-eu-1', publicUrl: 'https://login.pilotpay.example', central: 'ok' },
+      console: { clientId: 'pilot-pay-console', presetId: 'pilot-pay-console' },
     },
     clients: [
       {
@@ -46,14 +47,14 @@ export function partnerSeed(now = Date.now()): MockPartnerState {
         postLogoutRedirectUris: ['https://pay.pilotpay.example/'],
         scope: ['openid', 'profile', 'email'], accessTokenTtl: 300, refreshTokenTtl: 14 * 86_400,
         backChannelLogoutUri: 'https://login.pilotpay.example/logout/backchannel', createdAt: at(-60),
-        loginUrl: 'https://login.pilotpay.example/login/pilot-pay-web',
+        loginPath: '/login/pilot-pay-web',
         approval: { kind: 'create', status: 'approved', waitingFields: [], requestedAt: at(-61), note: 'Name matches the partner.' }, fixed,
       },
       {
         id: 'pilot-pay-ios', kind: 'native', clientName: 'Pilot Pay iOS', logoUri: 'https://pay.pilotpay.example/brand/pilot-pay.svg',
         redirectUris: ['https://app.pilotpay.example/callback'], scope: ['openid', 'profile', 'phone'], accessTokenTtl: 3600, refreshTokenTtl: 30 * 86_400,
         backChannelLogoutUri: 'https://login.pilotpay.example/logout/backchannel', createdAt: at(-33),
-        loginUrl: 'https://login.pilotpay.example/login/pilot-pay-ios',
+        loginPath: '/login/pilot-pay-ios',
         approval: { kind: 'create', status: 'approved', waitingFields: [], requestedAt: at(-34) }, fixed,
       },
       {
@@ -61,7 +62,7 @@ export function partnerSeed(now = Date.now()): MockPartnerState {
         redirectUris: ['https://checkout.pilotpay.example/complete', 'https://checkout.pilot-partner.net/complete'],
         scope: ['openid', 'profile', 'email'], accessTokenTtl: 300, refreshTokenTtl: 14 * 86_400,
         backChannelLogoutUri: 'https://login.pilotpay.example/logout/backchannel', createdAt: at(-2, 14),
-        loginUrl: 'https://login.pilotpay.example/login/pilot-pay-checkout',
+        loginPath: '/login/pilot-pay-checkout',
         approval: { kind: 'create', status: 'pending', waitingFields: ['clientName', 'logoUri', 'redirectUris'], requestedAt: at(-2, 14) }, fixed,
       },
     ],

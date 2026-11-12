@@ -1474,11 +1474,11 @@ export async function fetchPartnerApprovals(tenantId: string, status?: PartnerAp
 }
 
 export async function approvePartnerApproval(id: string, note: string, overrides?: Record<string, unknown>): Promise<void> {
-  await requestVoid(`/configuration/partners/approvals/${encodeURIComponent(id)}/approve`, { method: 'POST', body: { note, ...(overrides ? { overrides } : {}) } });
+  await requestVoid('/configuration/partners/approvals/approve', { method: 'POST', body: { id, note, ...(overrides ? { overrides } : {}) } });
 }
 
 export async function rejectPartnerApproval(id: string, note: string): Promise<void> {
-  await requestVoid(`/configuration/partners/approvals/${encodeURIComponent(id)}/reject`, { method: 'POST', body: { note } });
+  await requestVoid('/configuration/partners/approvals/reject', { method: 'POST', body: { id, note } });
 }
 
 export async function setEdgeDpopNonce(edgeId: string, requireDpopNonce: boolean): Promise<void> {

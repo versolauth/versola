@@ -19,6 +19,8 @@ export type PartnerMe = {
   };
   staff: { sub: string; display?: string; level: StaffLevel };
   edge: { id: string; publicUrl: string; central: 'ok' | 'unavailable' };
+  /** The partner's own console client and its auth-request preset. Sign-in does not need it (the edge serves `/partner/login`), so it is only for the record. */
+  console: { clientId: string; presetId: string };
 };
 
 export type PartnerClientKind = 'web' | 'native';
@@ -55,14 +57,14 @@ export type PartnerClient = {
   accessTokenTtl: number;
   refreshTokenTtl: number;
   backChannelLogoutUri?: string | null;
-  /** The edge's `/login/<presetId>` for this client: the edge keeps one auth-request preset per partner client. */
-  loginUrl: string;
+  /** `/login/<presetId>` on the partner's own edge: the edge keeps one auth-request preset per partner client; the console prefixes the edge's public URL. */
+  loginPath: string;
   createdAt: string;
   approval: PartnerClientApproval;
   fixed: PartnerClientFixed;
 };
 
-export type PartnerClientWrite = Omit<PartnerClient, 'createdAt' | 'approval' | 'fixed' | 'loginUrl'> & { authMethod?: PartnerClientAuthMethod };
+export type PartnerClientWrite = Omit<PartnerClient, 'createdAt' | 'approval' | 'fixed' | 'loginPath'> & { authMethod?: PartnerClientAuthMethod };
 
 /** `ResourceDto` without `internal`: a partner resource always carries a secret the edge authenticates to the upstream with. */
 export type PartnerResource = {
@@ -100,7 +102,10 @@ export type PartnerEdge = {
 export type EnrollmentToken = { token: string; bundle: string; expiresAt: string };
 
 /** `POST /partner/api/edges`: the edge and its first enrollment token in one write. */
-export type CreatedEdge = EnrollmentToken & { edge: PartnerEdge };
+export type CreatedEdge = EnrollmentToken & { edge: PartnerEdge; signingKey: SigningKey };
+
+/** The edge's signing key, created with it and shown once: the private half is never kept by the operator. */
+export type SigningKey = { keyId: string; privateKey: string };
 
 /** What a partner may end on its own edges: the sessions of a user, one session, every session of a client, or one refresh-token family (`fam_id`). The tokens live in the edge's sessions; auth is never contacted. */
 export type RevocationBy = 'user' | 'sid' | 'client' | 'fam';

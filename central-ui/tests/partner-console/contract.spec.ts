@@ -15,8 +15,8 @@ test.beforeEach(async ({ page }) => {
   await page.clock.install({ time: new Date(PARTNER_NOW) });
 });
 
-test('the integration snippet uses the client\'s loginUrl, not a path built from its id', async ({ page }) => {
-  const clients = partnerSeedState.clients.map(client => client.id === 'pilot-pay-web' ? { ...client, loginUrl: 'https://login.pilotpay.example/login/shop-preset' } : client);
+test('the integration snippet uses the client\'s loginPath on the edge, not a path built from its id', async ({ page }) => {
+  const clients = partnerSeedState.clients.map(client => client.id === 'pilot-pay-web' ? { ...client, loginPath: '/login/shop-preset' } : client);
   await loadPartnerApp(page, { path: '/partner.html?view=clients&id=pilot-pay-web', state: { clients } });
   const integrate = sidePanel(page, 'Pilot Pay Shop').getByRole('region', { name: 'Integrate' });
   await expect(integrate).toContainText('https://login.pilotpay.example/login/shop-preset');

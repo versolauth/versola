@@ -328,7 +328,7 @@ export class VersolaPartnerClients extends LitElement {
   }
 
   private snippet(client: PartnerClient): string {
-    return `<a href="${client.loginUrl}">Sign in with ${this.me.partner.operator.name}</a>`;
+    return `<a href="${this.me.edge.publicUrl}${client.loginPath}">Sign in with ${this.me.partner.operator.name}</a>`;
   }
 
   // ── list ──

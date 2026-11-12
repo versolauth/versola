@@ -113,8 +113,8 @@ test('approves as requested, and the client becomes approved on the partner reco
   const panel = sidePanel(page, 'New client “Pilot Pay Checkout”');
   await panel.getByLabel('Note to the partner').fill('Fine.');
   await panel.getByRole('button', { name: 'Approve as requested' }).click();
-  const request = await findRequest(api.requests, 'POST', '/configuration/partners/approvals/apr-1001/approve');
-  expect(request.body).toEqual({ note: 'Fine.' });
+  const request = await findRequest(api.requests, 'POST', '/configuration/partners/approvals/approve');
+  expect(request.body).toEqual({ id: 'apr-1001', note: 'Fine.' });
   await expect(panel.getByRole('region', { name: 'Decision' })).toContainText('Approved');
   await expect(panel.getByRole('button', { name: 'Approve as requested' })).toHaveCount(0);
   await page.getByRole('tab', { name: 'Partners' }).click();
@@ -134,8 +134,8 @@ test('approves with overrides: the rows that need the operator become fields, th
   await overrides.getByLabel('Redirect URIs').fill('https://checkout.pilotpay.example/complete');
   await panel.getByLabel('Note to the partner').fill('Dropped the URI outside your domains.');
   await panel.getByRole('button', { name: 'Approve with overrides', exact: true }).click();
-  const request = await findRequest(api.requests, 'POST', '/configuration/partners/approvals/apr-1001/approve');
-  expect(request.body).toEqual({ note: 'Dropped the URI outside your domains.', overrides: { redirectUris: ['https://checkout.pilotpay.example/complete'] } });
+  const request = await findRequest(api.requests, 'POST', '/configuration/partners/approvals/approve');
+  expect(request.body).toEqual({ id: 'apr-1001', note: 'Dropped the URI outside your domains.', overrides: { redirectUris: ['https://checkout.pilotpay.example/complete'] } });
   await expect(panel.getByRole('region', { name: 'Decision' })).toContainText('Approved');
 });
 
@@ -147,7 +147,7 @@ test('rejects only with a note', async ({ page }) => {
   expect(api.requests.some(request => request.pathname.endsWith('/reject'))).toBe(false);
   await panel.getByLabel('Note to the partner').fill('offline_access is not in your limits.');
   await panel.getByRole('button', { name: 'Reject' }).click();
-  expect((await findRequest(api.requests, 'POST', '/configuration/partners/approvals/apr-1002/reject')).body).toEqual({ note: 'offline_access is not in your limits.' });
+  expect((await findRequest(api.requests, 'POST', '/configuration/partners/approvals/reject')).body).toEqual({ id: 'apr-1002', note: 'offline_access is not in your limits.' });
   await expect(panel.getByRole('region', { name: 'Decision' })).toContainText('Rejected');
   await expect(panel.getByRole('region', { name: 'Decision' })).toContainText('offline_access is not in your limits.');
 });

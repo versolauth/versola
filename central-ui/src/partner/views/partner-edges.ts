@@ -11,7 +11,7 @@ import { relativeTime } from '../../utils/user-display';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../../utils/record-route';
 import { validateEdgeId } from '../../utils/validators';
 import { createEdge, deleteEdge, fetchEdges, issueEnrollmentToken, revokeEnrollmentToken, writeErrorMessage } from '../partner-api';
-import type { EnrollmentToken, PartnerEdge, PartnerMe } from '../partner-types';
+import type { EnrollmentToken, PartnerEdge, PartnerMe, SigningKey } from '../partner-types';
 import { partnerViewStyles } from '../partner-styles';
 import '../../components/content-header';
 import '../../components/danger-card';
@@ -23,7 +23,7 @@ import '../../components/record-card';
 import '../../components/record-header';
 import '../../components/side-panel';
 
-type Issued = EnrollmentToken & { edgeId: string };
+type Issued = EnrollmentToken & { edgeId: string; signingKey?: SigningKey };
 
 /**
  * Edges, the partner's own deployments in its group: the table (id, public URL, status,
@@ -281,9 +281,10 @@ export class VersolaPartnerEdges extends LitElement {
         <div class="banner ok key-banner" role="status">
           <div class="banner-text">
             <div class="banner-title">${statusIcon('check')}Bootstrap bundle created. It is shown once.</div>
-            <div>The token is good for one enrollment until ${formatDate(issued.expiresAt)} (${relativeTime(issued.expiresAt)}). Put the bundle next to the edge as <span class="mono">bootstrap.json</span> and start it with <span class="mono">mode = "partner"</span>; it generates its own key and asks the operator for a certificate that names <span class="mono">${edge.id}</span> and your group.</div>
+            <div>The token is good for one enrollment until ${formatDate(issued.expiresAt)} (${relativeTime(issued.expiresAt)}). Put the bundle next to the edge as <span class="mono">bootstrap.json</span> and start it with <span class="mono">mode = "partner"</span>; it asks the operator for a certificate that names <span class="mono">${edge.id}</span> and your group.${issued.signingKey ? html` The signing key is created with the edge and the operator does not keep its private half.` : ''}</div>
             <div class="secret-rows">
               <div><div class="secret-label">Enrollment token</div><pre class="secret-value">${issued.token}</pre></div>
+              ${issued.signingKey ? html`<div><div class="secret-label">Signing key ${issued.signingKey.keyId}</div><pre class="secret-value" tabindex="0" role="region" aria-label="Signing key">${issued.signingKey.privateKey}</pre></div>` : ''}
               <div><div class="secret-label">Bootstrap bundle</div><pre class="secret-value" tabindex="0" role="region" aria-label="Bootstrap bundle">${issued.bundle}</pre></div>
             </div>
             <div class="banner-actions">

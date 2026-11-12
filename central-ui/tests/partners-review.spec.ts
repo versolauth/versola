@@ -31,7 +31,7 @@ test('an override typed for the name is sent even though only the scope is outsi
   await expect(overrides.getByLabel('Display name')).toHaveValue('Pilot Pay Shop 2');
   await overrides.getByLabel('Display name').fill('Pilot Pay Store');
   await panel.getByRole('button', { name: 'Approve with overrides', exact: true }).click();
-  expect((await findRequest(api.requests, 'POST', '/configuration/partners/approvals/apr-2001/approve')).body).toMatchObject({ overrides: { clientName: 'Pilot Pay Store' } });
+  expect((await findRequest(api.requests, 'POST', '/configuration/partners/approvals/approve')).body).toMatchObject({ id: 'apr-2001', overrides: { clientName: 'Pilot Pay Store' } });
 });
 
 test('a decided request keeps what the partner asked for and shows what was registered instead', async ({ page }) => {

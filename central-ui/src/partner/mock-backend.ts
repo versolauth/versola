@@ -95,7 +95,8 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
   const issueToken = (edge: PartnerEdge): EnrollmentToken => {
     const me = state.me!;
     const token = `vtk_${me.partner.id}_${Math.random().toString(36).slice(2, 10)}${Math.random().toString(36).slice(2, 10)}`;
-    const expiresAt = new Date(nowMs() + 60 * 60_000).toISOString();
+    // An enrollment token lives 24 hours.
+    const expiresAt = new Date(nowMs() + 24 * 60 * 60_000).toISOString();
     const issued = { token, bundle: partnerBundle(edge.id, me, token), expiresAt };
     tokens.set(edge.id, issued);
     edge.pendingToken = { expiresAt };
@@ -173,7 +174,7 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
         const client: PartnerClient = {
           ...payload, logoUri: payload.logoUri ?? null, policyUri: payload.policyUri ?? null, tosUri: payload.tosUri ?? null,
           backChannelLogoutUri: payload.backChannelLogoutUri ?? null, createdAt: now,
-          loginUrl: `${me.edge.publicUrl}/login/${payload.id}`,
+          loginPath: `/login/${payload.id}`,
           approval: { kind: 'create', status: 'pending', waitingFields: waiting, requestedAt: now },
           fixed: { consent: true, flow: 'code+pkce+par', authMethod: payload.authMethod ?? 'tls_client_auth', group: me.partner.id },
         };
@@ -306,7 +307,8 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
         // One write: the edge and its first enrollment token, so a failure between the two cannot leave an edge without a token.
         const issued = issueToken(edge);
         state.edges = [...state.edges, edge];
-        const created: CreatedEdge = { edge, ...issued };
+        const keyId = nowIso().slice(0, 19).replace('T', '_').replace(/:/g, '-');
+        const created: CreatedEdge = { edge, signingKey: { keyId, privateKey: `-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC…${edge.id}\n-----END PRIVATE KEY-----` }, ...issued };
         await route.fulfill(json(created, 201));
         return;
       }

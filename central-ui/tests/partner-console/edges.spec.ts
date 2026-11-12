@@ -89,9 +89,11 @@ test('adds an edge: the token and the bootstrap bundle are shown once, and leavi
   await expect(panel.locator('.secret-value').first()).toHaveText(/^vtk_pilot-pay_/);
   const bundle = panel.getByRole('region', { name: 'Bootstrap bundle' });
   await expect(bundle).toContainText('"edgeId": "edge-pilot-us-1"');
+  // The signing key comes back with the edge, in the same write, and is shown once.
+  await expect(panel.getByRole('region', { name: 'Signing key' })).toContainText('BEGIN PRIVATE KEY');
   await expect(bundle).toContainText('"group": "pilot-pay"');
   await expect(bundle).toContainText('https://central-mtls.acme.example');
-  await expect(panel.getByRole('region', { name: 'Certificate' })).toContainText('Not enrolled · token expires in 1 hr');
+  await expect(panel.getByRole('region', { name: 'Certificate' })).toContainText('Not enrolled · token expires in 24 hr');
   expect(await scan(page)).toEqual([]);
 
   await panel.getByRole('button', { name: 'Copy token' }).click();
@@ -105,7 +107,7 @@ test('adds an edge: the token and the bootstrap bundle are shown once, and leavi
   await expect(panel.locator('.secret-value')).toHaveCount(0);
   await page.getByRole('button', { name: 'Close panel' }).click();
   await expect(panel).toHaveCount(0);
-  await expect(page.locator('versola-data-table').getByRole('row').filter({ hasText: 'edge-pilot-us-1' })).toContainText('token expires in 1 hr');
+  await expect(page.locator('versola-data-table').getByRole('row').filter({ hasText: 'edge-pilot-us-1' })).toContainText('token expires in 24 hr');
   await expect(page.getByRole('button', { name: '+ Add edge' })).toBeDisabled();
 });
 
@@ -124,7 +126,7 @@ test('a waiting edge: revoke the unused token, issue a new one', async ({ page }
   await certificate.getByRole('button', { name: 'Issue enrollment token' }).click();
   await findRequest(api.requests, 'POST', '/edges/edge-pilot-kz-1/enrollment-tokens');
   await expect(panel.getByRole('status').first()).toContainText('Bootstrap bundle created. It is shown once.');
-  await expect(certificate).toContainText('token expires in 1 hr');
+  await expect(certificate).toContainText('token expires in 24 hr');
   await expect(certificate.getByRole('button', { name: 'Issue a new token' })).toBeVisible();
 });
 
