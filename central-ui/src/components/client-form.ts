@@ -2976,8 +2976,6 @@ export class VersolaClientForm extends LitElement {
         'This decides what the client can safely be trusted to hold.',
       )}
 
-      ${this.renderOwnerSection()}
-
       <versola-client-kind-step
         .kind=${this.kind}
         .profile=${this.securityProfile}
@@ -2987,6 +2985,8 @@ export class VersolaClientForm extends LitElement {
         .planOwner=${this.partner?.displayName ?? ''}
         @kind-change=${(e: CustomEvent<{ kind: ClientKind }>) => this.selectKind(e.detail.kind)}
       ></versola-client-kind-step>
+
+      ${this.renderOwnerSection()}
 
       <div class="form-actions">
         <span class="wizard-actions-note">Step 1 of 4 · a lock marks a rule the type${this.owner === 'partner' ? ' or the owner' : ''} sets, not a choice</span>
@@ -3841,13 +3841,13 @@ export class VersolaClientForm extends LitElement {
 
       ${this.renderReviewConformance()}
 
+      ${this.renderReviewGroup('Type', 1, [['Kind', `${kindName} · cannot be changed once the client is created`, false]])}
+
       ${this.renderReviewGroup('Owner', 1, [[
         'Owner',
         this.partner ? `${this.partner.displayName} (${this.partner.id}) · served by the edges of group ${this.partner.groupId}; approved at once, since you register it` : 'First-party · your own application',
         false,
       ]])}
-
-      ${this.renderReviewGroup('Type', 1, [['Kind', `${kindName} · cannot be changed once the client is created`, false]])}
 
       ${this.renderReviewGroup('General', 2, service
         ? [

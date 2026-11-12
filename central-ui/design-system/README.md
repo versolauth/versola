@@ -381,8 +381,10 @@ reason), and a review step in the page's own groups with `Change` back to the st
 Reference: `client-form.ts`.
 
 **Owner step and fixed rows (client wizard).** A client is owned by the operator or by a partner. The first
-step of the wizard asks for the owner above the kind cards (`Operator` or `Partner` with a typeahead of
-partners; a suspended one is listed as "suspended"). Choosing a partner does not hide fields, it fixes them:
+step of the wizard asks the type first (the kind cards and the plan the type sets) and the owner below them,
+right above the action row (`First-party` or `Partner` with a typeahead of partners; a suspended one is
+listed as "suspended"); the plan under the cards follows the owner chosen below it ("Web app, owned by
+<partner>, sets:"). The review lists Owner after Type. Choosing a partner does not hide fields, it fixes them:
 the service kind is disabled with its reason, and the plan under the cards lists the rules as locked rows
 (lock icon, text, reason): the group certificate or private_key_jwt the partner uses, served by the edges of
 its group, PAR, certificate-bound tokens off, and for a device client DPoP on (the device holds its tokens, so
@@ -396,7 +398,7 @@ rows, `plan-line` in the editors). Reference: `client-form.ts` (`renderOwnerSect
 **Approval diff.** A partner's request (a new client, a change) is a record in the operator's Approvals tab:
 the requested values against the registered ones in a `role="group"` named "Requested against registered",
 one `.diff-row[data-field]` per field (`display: contents` rows so the grid stays one table: label, registered,
-requested), and a mark on each requested cell, `within limits` or `needs operator`. A field that appears on
+requested; the cells' padding and separators are set on `.diff-row > div`, since a rule on `.diff > div` reaches only the header), and a mark on each requested cell, `within limits` or `needs operator`. A field that appears on
 the consent screen (name, logo, scopes) is always `needs operator`, whatever the limits say. Under the diff:
 the consent preview (`client-consent-preview` when central has a consent form, a static sketch otherwise),
 a note field, and `Approve as requested`, `Approve with overrides…` (the rows that need the operator become

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { INVALID_FIELD_BORDER, clientWrites, findClientWrite, findRequest, loadAdminApp } from './fixtures';
 
 const clientsPath = '/?view=clients&tenant=tenant-alpha';
@@ -2425,8 +2425,9 @@ test('the Owner step fixes the rows a partner sets and recomputes the kind plan 
   await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
   // First-party by default; the continue button waits for a partner once Partner is chosen.
   await expect(page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'First-party' })).toHaveAttribute('aria-pressed', 'true');
-  await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'Partner' }).click();
+  // The type is picked first; the owner is asked below it.
   await page.getByRole('button', { name: /Web app/ }).click();
+  await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'Partner' }).click();
   await expect(page.getByRole('button', { name: 'Continue to basics', exact: true })).toBeDisabled();
   await page.getByRole('combobox', { name: 'Partner' }).click();
   await page.getByRole('option', { name: /Pilot Pay/ }).click();
@@ -2449,6 +2450,60 @@ test('the Owner step fixes the rows a partner sets and recomputes the kind plan 
   // A service app cannot be partner-owned.
   await expect(page.getByRole('button', { name: /Service app/ })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Continue to basics', exact: true })).toBeEnabled();
+});
+
+test('the Owner section sits below the type cards and their plan, above the actions, and the plan follows the owner chosen below it', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: ownerState });
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  const top = async (locator: Locator) => (await locator.boundingBox())!.y;
+  const bottom = async (locator: Locator) => { const box = (await locator.boundingBox())!; return box.y + box.height; };
+  const kindStep = page.locator('versola-client-kind-step');
+  const owner = page.getByRole('region', { name: 'Owner', exact: true });
+  const actions = page.locator('versola-client-form .form-actions');
+
+  await page.getByRole('button', { name: /Web app/ }).click();
+  const plan = kindStep.locator('.plan');
+  await expect(page.getByText('Web app sets:', { exact: true })).toBeVisible();
+  await expect(plan).toContainText('mTLS by edge');
+  // Layout: kind cards and their plan, then the owner, then the action row.
+  expect(await bottom(kindStep)).toBeLessThanOrEqual(await top(owner));
+  expect(await bottom(owner)).toBeLessThanOrEqual(await top(actions));
+  expect(await top(page.getByRole('button', { name: /Web app/ }))).toBeLessThan(await top(owner));
+
+  // Choosing Partner below the cards switches the plan above it, without picking the type again.
+  await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'Partner' }).click();
+  await expect(page.getByRole('button', { name: /Service app/ })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Continue to basics', exact: true })).toBeDisabled();
+  await page.getByRole('combobox', { name: 'Partner' }).click();
+  await page.getByRole('option', { name: /Pilot Pay/ }).click();
+  await expect(page.getByText('Web app, owned by Pilot Pay, sets:')).toBeVisible();
+  await expect(plan).toContainText('Group certificate: tls_client_auth, san_uri = urn:versola:edge-group:pilot-pay');
+  await expect(plan).not.toContainText('mTLS by edge');
+  await expect(page.getByRole('button', { name: 'Continue to basics', exact: true })).toBeEnabled();
+  // The owner section grew with the partner's rules and is still below the plan.
+  expect(await bottom(kindStep)).toBeLessThanOrEqual(await top(owner));
+
+  // And back: the plan returns to the first-party rules.
+  await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'First-party' }).click();
+  await expect(page.getByText('Web app sets:', { exact: true })).toBeVisible();
+  await expect(plan).toContainText('mTLS by edge');
+  await expect(page.getByRole('button', { name: /Service app/ })).toBeEnabled();
+});
+
+test('the review lists the Owner after the Type', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: ownerState });
+  await chooseOwnerPartner(page);
+  await page.getByRole('button', { name: /Web app/ }).click();
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+  await fillBasics(page, 'pilot-pay-shop', 'Pilot Pay Shop');
+  await addRedirectUri(page, 'https://shop.pilotpay.example/complete');
+  await continueToThirdStep(page);
+  await continueToReview(page);
+  const type = page.getByRole('region', { name: 'Type', exact: true });
+  const owner = page.getByRole('region', { name: 'Owner', exact: true });
+  await expect(type).toBeVisible();
+  expect((await type.boundingBox())!.y).toBeLessThan((await owner.boundingBox())!.y);
+  expect((await owner.boundingBox())!.y).toBeLessThan((await page.getByRole('region', { name: 'General', exact: true }).boundingBox())!.y);
 });
 
 test('a partner-owned client is held to the partner\'s domains, scopes and caps, and is registered with partnerId', async ({ page }) => {

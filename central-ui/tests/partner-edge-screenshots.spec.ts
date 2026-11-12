@@ -33,10 +33,10 @@ type Shot = {
 
 const walkClientWizardToOwner = async (page: Page) => {
   await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByRole('button', { name: /Web app/ }).click();
   await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'Partner' }).click();
   await page.getByRole('combobox', { name: 'Partner' }).click();
   await page.getByRole('option', { name: /Pilot Pay/ }).click();
-  await page.getByRole('button', { name: /Web app/ }).click();
   await expect(page.getByText('Consent required, names the partner')).toBeVisible();
 };
 
