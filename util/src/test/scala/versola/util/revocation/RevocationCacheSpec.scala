@@ -6,6 +6,7 @@ import zio.stream.ZStream
 import zio.test.*
 
 import java.time.Instant
+import java.time.temporal.ChronoUnit
 
 object RevocationCacheSpec extends ZIOSpecDefault, ZIOStubs:
 
@@ -40,6 +41,10 @@ object RevocationCacheSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def userRevocation(revokedAt: Instant): Revocation =
     Revocation(sub, revokedAt.plusSeconds(600), issuedBefore = Some(revokedAt))
+
+  /** The entry an administrator's change at `changedAt` writes, as the writer builds it. */
+  private def userChange(changedAt: Instant): Revocation =
+    Revocation(sub, changedAt.plusSeconds(600), issuedBefore = Some(Revocation.userBound(changedAt)))
 
   private def notificationsOf(revocations: Revocation*): RevocationNotifications =
     eventsOf(revocations.map(RevocationEvent.Revoked(_))*)
@@ -287,15 +292,15 @@ object RevocationCacheSpec extends ZIOSpecDefault, ZIOStubs:
         revoked <- cache.isRevoked(List(jti, sid, sub), issuedAt = revokedAt.minusSeconds(60))
       yield assertTrue(revoked)
     },
-    test("a user-wide revocation rejects a token issued in the very second it was written") {
+    test("a bound is itself revoked: a token issued in the second of an event time written as the bound is rejected") {
       val repository = stub[RevocationRepository]
       val revokedAt = Instant.EPOCH.plusSeconds(600)
       for
         cache <- RevocationCache.make(repository)
         _ <- repository.activeSince.succeedsWith(onePage(userRevocation(revokedAt)))
         _ <- cache.sync
-        // `iat` is whole seconds, so a token minted in the revocation's own second cannot be
-        // ordered against it, and a tie is read as one of the revoked ones.
+        // An event time in whole seconds (a back-channel logout's `toe`, which `edge` writes as it is) cannot
+        // be ordered against a token's `iat` from the same second, and a tie is read as one of the revoked ones.
         revoked <- cache.isRevoked(List(jti, sid, sub), issuedAt = revokedAt)
       yield assertTrue(revoked)
     },
@@ -310,6 +315,78 @@ object RevocationCacheSpec extends ZIOSpecDefault, ZIOStubs:
         // still live, and must not lock them out of the session they just started.
         revoked <- cache.isRevoked(List(jti, sid, sub), issuedAt = revokedAt.plusSeconds(1))
       yield assertTrue(!revoked)
+    },
+    // What an administrator's change writes (`Revocation.userBound`), read back by the cache: a token is refused when its `iat`
+    // is in an earlier second than the change, and accepted in the same second or later, wherever in the second the change fell.
+    suite("a user-wide revocation written for a change")(
+      test("refuses a token from the second before the change and accepts one from its own second and after, wherever in the second it fell") {
+        val second = Instant.EPOCH.plusSeconds(600)
+        for
+          answers <- ZIO.foreach(List(0.millis, 1.millis, 200.millis, 999.millis)): offset =>
+            val repository = stub[RevocationRepository]
+            for
+              cache <- RevocationCache.make(repository)
+              _ <- repository.activeSince.succeedsWith(onePage(userChange(second.plusMillis(offset.toMillis))))
+              _ <- cache.sync
+              before <- cache.isRevoked(List(sub), issuedAt = second.minusSeconds(1))
+              wayBefore <- cache.isRevoked(List(sub), issuedAt = second.minusSeconds(60))
+              sameSecond <- cache.isRevoked(List(sub), issuedAt = second)
+              after <- cache.isRevoked(List(sub), issuedAt = second.plusSeconds(1))
+            yield (before, wayBefore, sameSecond, after)
+        yield assertTrue(answers.forall(_ == (true, true, false, false)))
+      },
+      test("a later change widens the entry, as it arrives by notification or by a catch-up page") {
+        val repository = stub[RevocationRepository]
+        val first = Instant.EPOCH.plusSeconds(600).plusMillis(300)
+        val second = first.plusSeconds(60)
+        for
+          cache <- RevocationCache.make(repository)
+          _ <- repository.activeSince.succeedsWith(onePage(userChange(first)))
+          _ <- cache.sync
+          // Issued between the two changes: accepted after the first, refused after the second.
+          between = first.plusSeconds(30)
+          beforeSecond <- cache.isRevoked(List(sub), issuedAt = between)
+          _ <- cache.consume(notificationsOf(userChange(second)))
+          afterSecond <- cache.isRevoked(List(sub), issuedAt = between)
+        yield assertTrue(!beforeSecond, afterSecond)
+      },
+      test("an earlier change that arrives late does not narrow it") {
+        val repository = stub[RevocationRepository]
+        val first = Instant.EPOCH.plusSeconds(600).plusMillis(300)
+        val second = first.plusSeconds(60)
+        for
+          cache <- RevocationCache.make(repository)
+          _ <- repository.activeSince.succeedsWith(onePage(userChange(first)))
+          _ <- cache.consume(notificationsOf(userChange(second)))
+          _ <- cache.sync
+          between <- cache.isRevoked(List(sub), issuedAt = first.plusSeconds(30))
+        yield assertTrue(between)
+      },
+      test("two changes within one second leave the same bound, and a token of that second is accepted after both") {
+        val second = Instant.EPOCH.plusSeconds(600)
+        val repository = stub[RevocationRepository]
+        for
+          cache <- RevocationCache.make(repository)
+          _ <- repository.activeSince.succeedsWith(onePage())
+          _ <- cache.consume(notificationsOf(userChange(second.plusMillis(100)), userChange(second.plusMillis(900))))
+          sameSecond <- cache.isRevoked(List(sub), issuedAt = second)
+          earlier <- cache.isRevoked(List(sub), issuedAt = second.minusSeconds(1))
+        yield assertTrue(
+          Revocation.userBound(second.plusMillis(100)) == Revocation.userBound(second.plusMillis(900)),
+          !sameSecond,
+          earlier,
+        )
+      },
+    ),
+    test("userBound is the last second the change revokes: whole seconds, monotonic, one second below the change's own") {
+      val second = Instant.EPOCH.plusSeconds(600)
+      val instants = List(0, 1, 500, 999).map(offset => second.plusMillis(offset.toLong)) :+ second.plusNanos(999_999_999L)
+      assertTrue(
+        instants.forall(Revocation.userBound(_) == second.minusSeconds(1)),
+        Revocation.userBound(second.plusSeconds(1)) == second,
+        // whole seconds, so what a row stores, what its notification floors it to and what the feed's `before` says are one value
+        instants.forall(at => Revocation.userBound(at) == Revocation.userBound(at).truncatedTo(ChronoUnit.SECONDS)),
+      )
     },
     test("a family revocation rejects a token whatever its age, and another family's token passes") {
       val repository = stub[RevocationRepository]

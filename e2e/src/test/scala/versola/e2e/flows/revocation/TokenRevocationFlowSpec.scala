@@ -117,8 +117,10 @@ object TokenRevocationFlowSpec extends E2ESpec:
         (s, auth) <- setup(Flows.Id.BackChannelLogout)
         old <- login(s, auth)
         _ <- awaitRejected(auth.invalidateUserSessions(s.userId), auth, old.accessToken)
-        // Past the second the revocation was recorded in: `iat` is whole seconds, and a
-        // token minted in that same second is deliberately treated as one it covers.
+        // Past the second of the logout event: the edge bounds the user at the event's `toe`, whole
+        // seconds, and a token minted in that same second is deliberately treated as one it covers.
+        // That is the edge's rule for back-channel logout tokens; auth's own user-wide row, which the
+        // edge also learns of through the feed, accepts the second of the change.
         _ <- ZIO.sleep(1100.millis)
         // The revocation is still live at this point — it outlives the tokens it was aimed
         // at — so a token minted after it must be told apart from the ones it revoked.

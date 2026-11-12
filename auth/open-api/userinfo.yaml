@@ -22,8 +22,10 @@ info:
     ended (logout, or signing out of the other sessions when the user changed their password), and
     every token issued to a user before they were deleted, signed out everywhere, had their
     password set or reset by an administrator, or had a role removed; a token issued to the same
-    user afterwards is not affected. Adding a role revokes nothing, and a token minted in the same
-    second as a user-wide revocation counts as issued before it. The check is made against a list each `auth` replica keeps in memory, so it
+    user afterwards is not affected. Adding a role revokes nothing. A user-wide revocation refuses
+    only a token issued in an earlier second than the change (`iat` is whole seconds): one minted in the same second or after it is the
+    user's own, from signing in or refreshing right after the change, and is accepted; a token minted in that second just before the
+    change keeps working until it expires. The check is made against a list each `auth` replica keeps in memory, so it
     costs no database query. A revocation reaches a replica when its notification arrives,
     normally within a second, and at the latest at the replica's next reconciliation with the
     database (`revocation.reload-interval`, 600 seconds by default); until then that replica

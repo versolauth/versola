@@ -1146,11 +1146,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
 
   /** POST /users/password/set — sets a permanent password for a user (non-prod only).
     *
-    * An administrator's set refuses the access tokens the user holds from before it (`sub:` bounded at the
-    * change), and `iat` is whole seconds, so a token issued in the second of the change cannot be told
-    * from one issued before it and is refused too. A test that signs the user in right after would see its
-    * own token refused at `/userinfo` about half the time; the call therefore returns once that second is
-    * over. This is a clock boundary, not a propagation delay.
+    * An administrator's set refuses the access tokens the user holds from before it, and only those: a token issued
+    * in the second of the change or later is the user's own, so a test may sign the user in the moment this returns.
     */
   def setUserPassword(userId: java.util.UUID, password: String): Task[Unit] =
     val body = Body.fromString(
@@ -1160,14 +1157,13 @@ final class OAuthClient(client: Client, config: E2EConfig):
       .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
-      if resp.status.isSuccess then ZIO.sleep(1.second).withClock(Clock.ClockLive)
+      if resp.status.isSuccess then ZIO.unit
       else
         resp.body.asString.flatMap: bodyStr =>
           ZIO.fail(RuntimeException(s"setUserPassword failed: status=${resp.status} body=$bodyStr"))
 
   /** POST /users/password/reset on the `show` channel (non-prod only) — issues a temporary password and
-    * returns it. Refuses the user's earlier access tokens like [[setUserPassword]], and the caller waits
-    * out the second of the change for the same reason. */
+    * returns it. Refuses the user's earlier access tokens like [[setUserPassword]]. */
   def resetUserPassword(userId: java.util.UUID): Task[String] =
     val body =
       Body.fromString(Json.Obj("userId" -> Json.Str(userId.toString), "expiresInSeconds" -> Json.Num(3600), "channel" -> Json.Str("show")).toJson)
@@ -1182,7 +1178,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
             .flatMap(obj =>
               ZIO.fromOption(obj.fields.collectFirst { case ("password", Json.Str(value)) => value })
                 .orElseFail(RuntimeException(s"no password in the reset response: $bodyStr")),
-            ) <* ZIO.sleep(1.second).withClock(Clock.ClockLive)
+            )
 
   /** PATCH /users/roles — grants tenant roles to a user. The update travels through the
     * Central user outbox, so call [[flushUserOutbox]] before signing the user in.

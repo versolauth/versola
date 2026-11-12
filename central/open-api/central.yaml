@@ -1217,8 +1217,9 @@ paths:
         outlive the removal by up to a token's lifetime. Auth applies this when it applies the change,
         and refuses those tokens at `/userinfo` and `/introspect`. The user's refresh tokens and
         sessions are not touched: refreshing yields a token with the roles the user holds now. A token
-        minted in the same second as the removal counts as issued before it, so an app that refreshes
-        at once may have to refresh once more. A resource server that checks a token only by its
+        minted in the same second as the removal, or after it, is accepted, so an app that refreshes at
+        once gets a token that works; one minted in that second just before the removal keeps working
+        until it expires. A resource server that checks a token only by its
         signature accepts it until it expires.
       operationId: patchUserRoles
       requestBody:
@@ -1587,7 +1588,8 @@ paths:
         Refuses the access tokens the user holds that were issued before the change, at auth's
         `/userinfo` and `/introspect`. The user's refresh tokens and sessions are not touched, so the
         user refreshes or signs in again to get a token that works. A token minted in the same second
-        as the change counts as issued before it.
+        as the change, or after it, is accepted: the user may sign in the moment the change returns. One
+        minted in that second just before the change keeps working until it expires.
       operationId: setUserPassword
       requestBody:
         required: true

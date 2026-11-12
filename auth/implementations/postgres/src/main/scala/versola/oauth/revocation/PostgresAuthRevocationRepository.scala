@@ -76,13 +76,29 @@ object PostgresAuthRevocationRepository:
         val repository = PostgresAuthRevocationRepository(xa)
         ZEnvironment[AuthRevocationRepository, RevocationRepository](repository, repository)
 
-  /** `sub:<user>`, bounded at `now`: every token the user holds that was issued before this instant is refused,
-    * and one issued after it, which the user obtained by signing in or refreshing again, is not. Written by
-    * whatever changes the user in a way their old tokens no longer reflect, in the same transaction as the
-    * change. */
+  /** `sub:<user>`, for a change made at `now`: every token the user holds that was issued in an earlier second than
+    * `now` is refused, and one issued in the same second or later, which the user obtained by signing in or
+    * refreshing right after the change, is not. Written by whatever changes the user in a way their old tokens no
+    * longer reflect, in the same transaction as the change.
+    *
+    * `issued_before` is [[Revocation.userBound]] of `now`, the last second the change revokes, not `now`. Every
+    * reader (auth's and edge's cache, the pull feed's `before`, older edge versions) revokes a token whose `iat`
+    * is not after the stored value, and `iat` is whole seconds: storing `now` itself, with its microseconds,
+    * refused a token minted at 10:00:00.7 for a change at 10:00:00.2 (`iat` 10:00:00), so a user who signed in
+    * right after an administrator set their password got a 401 at `/userinfo`, and so did a refresh right after a
+    * role removal. The cost is the mirror image: a token minted in the same second but just before the change
+    * keeps working until it expires, because `iat` cannot tell it from one minted just after.
+    *
+    * Calling it again widens the entry (a later change gives a later bound, and [[upsert]] keeps the greater of
+    * the two) and an earlier `now` never narrows it.
+    */
   def upsertUser(userId: UserId, now: Instant, terms: RevocationTerms)(using DbCon): Int =
     upsert(
-      Revocation(key = RevocationKey.Sub(userId.toString), expiresAt = now.plus(terms.ttl), issuedBefore = Some(now)),
+      Revocation(
+        key = RevocationKey.Sub(userId.toString),
+        expiresAt = now.plus(terms.ttl),
+        issuedBefore = Some(Revocation.userBound(now)),
+      ),
       terms.cause,
       terms.tenantId,
     )

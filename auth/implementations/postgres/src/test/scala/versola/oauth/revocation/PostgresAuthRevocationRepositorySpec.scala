@@ -4,6 +4,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
 import org.postgresql.PGConnection
 import versola.oauth.client.model.TenantId
+import versola.user.model.UserId
 import versola.util.postgres.{PostgresConfig, PostgresSpec}
 import versola.util.revocation.{
   PostgresRevocationNotifications,
@@ -19,6 +20,8 @@ import zio.test.*
 import java.nio.charset.StandardCharsets
 import java.sql.DriverManager
 import java.time.Instant
+import java.time.temporal.ChronoUnit
+import java.util.UUID
 
 /** Binds [[RevocationRepositorySpec]] to auth's `auth_revocations` table. The cases below are what
   * only this table promises: the cause is stored, a write fires the notification the other replicas
@@ -100,6 +103,56 @@ object PostgresAuthRevocationRepositorySpec extends PostgresSpec, RevocationRepo
             )
         } @@ TestAspect.withLiveClock,
       ).provideSomeLayer[RevocationRepositorySpec.Env & TransactorZIO & Scope](PostgresSpec.config),
+      // The user-wide row as the three callers (password set or reset, role removal, signing out everywhere) write it, read back the
+      // way every reader does: `iat` is whole seconds and a reader refuses a token whose `iat` is not after the bound. A token issued
+      // in the second of the change is the user's own, minted by signing in again right after the change, and must be accepted.
+      suite("a user-wide revocation")(
+        test("refuses a token from the second before the change and accepts one from the second of the change and after it") {
+          val terms = RevocationTerms(cause = RevocationCause.PasswordChanged, ttl = 1.hour, tenantId = None, ttlByClient = Map.empty)
+          val userId = UserId(UUID.randomUUID())
+          val second = Instant.now().truncatedTo(ChronoUnit.SECONDS)
+          val changedAt = second.plusMillis(300)
+          for
+            xa <- ZIO.service[TransactorZIO]
+            repository = PostgresAuthRevocationRepository(xa)
+            _ <- xa.connect(PostgresAuthRevocationRepository.upsertUser(userId, changedAt, terms))
+            page <- repository.activeSince(RevocationCursor.Beginning, 10)
+            entry = page.revocations.find(_.key == RevocationKey.Sub(userId.toString))
+          yield assertTrue(
+            entry.exists(_.revokes(second.minusSeconds(1))),
+            entry.exists(!_.revokes(second)),
+            entry.exists(!_.revokes(second.plusSeconds(1))),
+            // Whatever the instant within the second, the stored bound is a whole second: the row, the notification (floored) and the
+            // feed's `before` then say the same thing.
+            entry.flatMap(_.issuedBefore).exists(bound => bound == bound.truncatedTo(ChronoUnit.SECONDS)),
+          )
+        } @@ TestAspect.withLiveClock,
+        test("a later change widens the bound and an earlier one does not narrow it") {
+          val terms = RevocationTerms(cause = RevocationCause.PasswordChanged, ttl = 1.hour, tenantId = None, ttlByClient = Map.empty)
+          val userId = UserId(UUID.randomUUID())
+          val second = Instant.now().truncatedTo(ChronoUnit.SECONDS)
+          def bound(repository: PostgresAuthRevocationRepository) =
+            repository.activeSince(RevocationCursor.Beginning, 10)
+              .map(_.revocations.find(_.key == RevocationKey.Sub(userId.toString)))
+          for
+            xa <- ZIO.service[TransactorZIO]
+            repository = PostgresAuthRevocationRepository(xa)
+            _ <- xa.connect(PostgresAuthRevocationRepository.upsertUser(userId, second.plusMillis(300), terms))
+            first <- bound(repository)
+            _ <- xa.connect(PostgresAuthRevocationRepository.upsertUser(userId, second.plusSeconds(5).plusMillis(300), terms))
+            widened <- bound(repository)
+            _ <- xa.connect(PostgresAuthRevocationRepository.upsertUser(userId, second.plusSeconds(2).plusMillis(300), terms))
+            notNarrowed <- bound(repository)
+          yield assertTrue(
+            first.exists(_.revokes(second.minusSeconds(1))),
+            // a token issued between the two changes: accepted after the first, refused after the second
+            first.exists(!_.revokes(second.plusSeconds(3))),
+            widened.exists(_.revokes(second.plusSeconds(3))),
+            widened.exists(!_.revokes(second.plusSeconds(5))),
+            notNarrowed == widened,
+          )
+        } @@ TestAspect.withLiveClock,
+      ),
       // The feed an edge pulls (GET /revocations): the tenant column exists only in this table, so these are
       // this storage's to promise rather than the trait's.
       test("the feed serves a tenant's rows and the rows of no tenant, and not another tenant's") {

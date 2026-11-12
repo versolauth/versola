@@ -8,6 +8,7 @@ import zio.json.ast.Json
 import zio.test.*
 
 import java.nio.charset.StandardCharsets
+import java.time.Instant
 import java.util.{Base64, UUID}
 
 /** What an administrator's change to a user does to the access tokens the user already holds: a password
@@ -18,9 +19,13 @@ import java.util.{Base64, UUID}
   *
   * Every test signs a user of its own in: these tests end that user's access.
   *
-  * `iat` is whole seconds and the boundary second belongs to the revocation, so a token minted in the
-  * second of the change is refused as well. Where a test needs a token that is accepted afterwards it
-  * refreshes until one is, within a bound, rather than guessing the second.
+  * `iat` is whole seconds, and a change to the user refuses only the tokens issued in an earlier second
+  * than the change's own: a token minted in the second of the change is the user's own, from signing in
+  * or refreshing right after it, and is accepted (the trade-off is a token minted in that second just
+  * before the change, which works until it expires). So a test that expects a token it held to be refused
+  * lets the clock pass into the next second before it makes the change ([[nextSecond]]), and a test that
+  * expects a token to work makes no wait at all: signing in or refreshing straight after the change is
+  * the case being tested.
   */
 object UserChangeRevocationFlowSpec extends E2ESpec:
 
@@ -78,23 +83,24 @@ object UserChangeRevocationFlowSpec extends E2ESpec:
       .map(_._2)
       .timeoutFail(RuntimeException(s"/userinfo still honoured the token after $Propagation"))(Propagation)
 
-  /** Refreshes, and refreshes again with the token that came back, until `/userinfo` accepts the access token
-    * it yielded: the first may have been minted in the second of the change, which counts as before it. Each
-    * round is a refresh the server accepted, which is the point; the bound keeps a broken refusal from looping.
-    * Returns the accepted tokens. */
-  private def refreshUntilAccepted(s: Flows.Setup, auth: OAuthClient, refreshToken: String): Task[TokenResult.Success] =
-    def attempt(token: String, left: Int): Task[TokenResult.Success] =
-      for
-        refreshed <- auth.refresh(token, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret)).success
-        status <- userinfoStatus(auth, refreshed.accessToken)
-        next <-
-          if status == Status.Ok then ZIO.succeed(refreshed)
-          else if left <= 0 then ZIO.fail(RuntimeException(s"/userinfo kept refusing refreshed tokens, last status $status"))
-          else
-            ZIO.fromOption(refreshed.refreshToken).orElseFail(RuntimeException("the refresh response carried no refresh token"))
-              .flatMap(rotated => attempt(rotated, left - 1).delay(300.millis))
-      yield next
-    attempt(refreshToken, left = 20)
+  /** Returns once the wall clock is in a later second than it was when called, which is when a token issued before
+    * the call has an `iat` strictly before the second of whatever is done next. Polled against the clock rather than
+    * slept: the auth process stamps the change from the same host's clock, and this takes as long as the second has
+    * left, never longer. */
+  private val nextSecond: Task[Unit] =
+    Clock.instant.flatMap: start =>
+      Clock.instant
+        .repeat(Schedule.spaced(20.millis) && Schedule.recurUntil[Instant](_.getEpochSecond > start.getEpochSecond))
+        .timeoutFail(RuntimeException("the clock did not reach the next second"))(5.seconds)
+        .unit
+
+  /** One refresh, and the check that `/userinfo` accepts the access token it yielded: made straight after the change,
+    * which is the case that used to be refused when the token was minted in the change's own second. */
+  private def refreshAccepted(s: Flows.Setup, auth: OAuthClient, refreshToken: String): Task[(TokenResult.Success, Status)] =
+    for
+      refreshed <- auth.refresh(refreshToken, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret)).success
+      status <- userinfoStatus(auth, refreshed.accessToken)
+    yield (refreshed, status)
 
   private def refresh(s: Flows.Setup, auth: OAuthClient, refreshToken: String): Task[TokenResult] =
     auth.refresh(refreshToken, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret))
@@ -130,6 +136,35 @@ object UserChangeRevocationFlowSpec extends E2ESpec:
         ZIO.foreachDiscard(ids)(id => auth.central.delete("/configuration/roles", "tenantId" -> Fixtures.suiteTenant, "roleId" -> id).ignore),
       )
 
+  /** How many times the change-then-straight-away cases are repeated. Each round lands in the change's own second
+    * with a probability of most of one (a sign-in or a refresh takes a few hundred milliseconds), so a refusal of
+    * that second shows within a round or two; this many makes the case fail reliably on the unfixed rule rather
+    * than about once in a few runs. */
+  private val Rounds = 8
+
+  /** A user with a login and no password yet, on the client that signs in with login and password. */
+  private def freshLoginUser(auth: OAuthClient): Task[(UUID, String)] =
+    for
+      login <- CentralApi.login("change-revocation")
+      userId <- auth.registerUser(login = Some(login))
+      _ <- auth.flushUserOutbox()
+    yield (userId, login)
+
+  private def loginWithPassword(s: Flows.Setup, auth: OAuthClient, login: String, password: String): Task[TokenResult.Success] =
+    for
+      authorize <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+      cookie = authorize.conversationCookie.get
+      challenge <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+      code <- auth.submitLoginPassword(cookie, login, password, challenge.csrf).assertRedirect(auth, cookie)
+      tokens <- auth.token(
+        code,
+        authorize.verifier,
+        clientId = Some(s.clientId),
+        clientSecret = Some(s.clientSecret),
+        redirectUri = Some(s.redirectUri),
+      ).success
+    yield tokens
+
   def spec = suite("Access tokens after an administrator changes the user")(
     suite("password set")(
       test("refuses the tokens issued before it, and lets the user refresh into one that works") {
@@ -141,15 +176,15 @@ object UserChangeRevocationFlowSpec extends E2ESpec:
           bystander <- login(s, auth, bystanderEmail)
           refreshToken <- refreshTokenOf(held)
           before <- userinfoStatus(auth, held.tokens.accessToken)
-          // Returns once the second of the change is over (see `setUserPassword`).
+          _ <- nextSecond
           _ <- auth.setUserPassword(userId, "Admin-Set-Pass-1!")
           after <- awaitRefused(auth, held.tokens.accessToken)
-          refreshed <- refreshUntilAccepted(s, auth, refreshToken)
+          (refreshed, refreshedStatus) <- refreshAccepted(s, auth, refreshToken)
           signedIn <- silentlyAuthorizes(s, auth, held.sessionCookie)
           bystanderAfter <- userinfoStatus(auth, bystander.tokens.accessToken)
         yield assertTrue(before == Status.Ok).label("the token works until the password is set") &&
           assertTrue(after == Status.Unauthorized).label("a token issued before an administrator set the password is refused") &&
-          assertTrue(refreshed.response.status == Status.Ok).label("the refresh token is not touched: it yields a token that works") &&
+          assertTrue(refreshedStatus == Status.Ok).label("the refresh token is not touched: it yields a token that works, straight away") &&
           assertTrue(signedIn).label("the session is not ended by a password set") &&
           assertTrue(bystanderAfter == Status.Ok).label("another user's token is not affected")
       },
@@ -164,6 +199,7 @@ object UserChangeRevocationFlowSpec extends E2ESpec:
           bystander <- login(s, auth, bystanderEmail)
           refreshToken <- refreshTokenOf(held)
           before <- userinfoStatus(auth, held.tokens.accessToken)
+          _ <- nextSecond
           _ <- auth.resetUserPassword(userId)
           after <- awaitRefused(auth, held.tokens.accessToken)
           // A reset is what an administrator does when the account may be in someone else's hands, so unlike a
@@ -176,6 +212,52 @@ object UserChangeRevocationFlowSpec extends E2ESpec:
           assertTrue(refreshError == "invalid_grant").label("the refresh token is ended by the reset") &&
           assertTrue(!signedIn).label("the session is ended by the reset") &&
           assertTrue(bystanderAfter == Status.Ok).label("another user's token is not affected")
+      },
+    ),
+    suite("straight after the change")(
+      test("a user who signs in right after an administrator sets the password is not refused, round after round") {
+        for
+          (s, auth) <- setup(Flows.Id.LoginPassword)
+          (userId, login) <- freshLoginUser(auth)
+          // Each round is a set and then a sign-in with no pause: the token's `iat` is in the second of the change.
+          statuses <- ZIO.foreach((1 to Rounds).toList): round =>
+            val password = s"Admin-Set-Pass-$round-Aa!"
+            for
+              _ <- auth.setUserPassword(userId, password)
+              tokens <- loginWithPassword(s, auth, login, password)
+              status <- userinfoStatus(auth, tokens.accessToken)
+            yield status
+        yield assertTrue(statuses == List.fill(Rounds)(Status.Ok))
+          .label(s"/userinfo refused a token issued after the password was set: $statuses")
+      },
+      test("a refresh right after a role is removed yields a token that works and carries the roles held now, round after round") {
+        for
+          (s, auth) <- setup(Flows.Id.EmailOtp)
+          kept <- CentralApi.id("rev-role-kept")
+          removable <- CentralApi.id("rev-role-removable")
+          result <- withRoles(auth, List(kept, removable)):
+            for
+              (userId, email) <- freshUser(auth)
+              _ <- auth.assignUserRoles(userId, Set(kept))
+              _ <- auth.flushUserOutbox()
+              held <- login(s, auth, email)
+              first <- refreshTokenOf(held)
+              // Each round grants the role and takes it away again, then refreshes at once: the removal revokes the
+              // tokens issued before it, and the refresh token is how the user gets one that is not among them.
+              rounds <- ZIO.foldLeft((1 to Rounds).toList)((first, List.empty[(Status, Set[String])])):
+                case ((refreshToken, seen), _) =>
+                  for
+                    _ <- auth.assignUserRoles(userId, Set(removable))
+                    _ <- auth.flushUserOutbox()
+                    _ <- auth.removeUserRoles(userId, Set(removable))
+                    _ <- auth.flushUserOutbox()
+                    (refreshed, status) <- refreshAccepted(s, auth, refreshToken)
+                    roles <- rolesOf(refreshed.accessToken)
+                    rotated <- refreshTokenOf(Login(refreshed, held.sessionCookie))
+                  yield (rotated, seen :+ (status -> roles))
+            yield assertTrue(rounds._2 == List.fill(Rounds)(Status.Ok -> Set(kept)))
+              .label(s"each refreshed token must pass /userinfo and carry only the role still held: ${rounds._2}")
+        yield result
       },
     ),
     suite("offline access")(
@@ -220,16 +302,17 @@ object UserChangeRevocationFlowSpec extends E2ESpec:
               _ <- auth.assignUserRoles(userId, Set(roleC))
               _ <- auth.flushUserOutbox()
               afterAdd <- userinfoStatus(auth, held.tokens.accessToken)
+              _ <- nextSecond
               _ <- auth.removeUserRoles(userId, Set(roleA))
               _ <- auth.flushUserOutbox()
               afterRemove <- awaitRefused(auth, held.tokens.accessToken)
               // `/token` does not ask the list: the refresh token is how the user gets a token without the role.
-              refreshed <- refreshUntilAccepted(s, auth, refreshToken)
+              (refreshed, refreshedStatus) <- refreshAccepted(s, auth, refreshToken)
               refreshedRoles <- rolesOf(refreshed.accessToken)
             yield assertTrue(heldRoles == Set(roleA, roleB)) &&
               assertTrue(afterAdd == Status.Ok).label("adding a role must not refuse the tokens issued before it") &&
               assertTrue(afterRemove == Status.Unauthorized).label("a token issued before a role was removed must be refused") &&
-              assertTrue(refreshed.response.status == Status.Ok).label("a refreshed token passes /userinfo") &&
+              assertTrue(refreshedStatus == Status.Ok).label("a refreshed token passes /userinfo") &&
               assertTrue(refreshedRoles == Set(roleB, roleC)).label(s"the refreshed token carries the roles held now, got $refreshedRoles")
         yield result
       },

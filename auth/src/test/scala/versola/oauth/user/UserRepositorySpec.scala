@@ -6,7 +6,7 @@ import versola.oauth.revocation.{RevocationCause, RevocationTerms}
 import versola.role.model.RoleId
 import versola.user.UserRepository
 import versola.user.model.*
-import versola.util.revocation.{RevocationCursor, RevocationKey, RevocationRepository}
+import versola.util.revocation.{Revocation, RevocationCursor, RevocationKey, RevocationRepository}
 import versola.util.{DatabaseSpecBase, Email, Phone}
 import zio.*
 import zio.json.ast.Json
@@ -241,8 +241,26 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
           afterAdd.isEmpty,
           // `sub`, bounded at the removal: a token the user gets by refreshing afterwards is issued after it and works.
           afterRemove.keySet == Set(RevocationKey.Sub(userId1.toString)),
-          entry.exists(_.issuedBefore.contains(now)),
+          entry.exists(_.issuedBefore.contains(Revocation.userBound(now))),
           entry.exists(_.expiresAt == now.plus(terms.ttl)),
+        )
+      },
+      test("a role removal does not refuse a token issued in its own second, nor one issued after it, but refuses one from the second before") {
+        for
+          _ <- seed(env, userId1)
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set(RoleId("role-a")), Set.empty, terms)
+          // Part-way through a second: the case where the instant of the change and the `iat` of a token minted
+          // right after it (whole seconds) fall on the same side of nothing.
+          _ <- TestClock.adjust(10.seconds + 300.millis)
+          now <- Clock.instant
+          _ <- env.userRepository.updateRoles(userId1, TenantId("tenant-1"), Set.empty, Set(RoleId("role-a")), terms)
+          entries <- recorded(env)
+          entry = entries.get(RevocationKey.Sub(userId1.toString))
+          second = now.truncatedTo(ChronoUnit.SECONDS)
+        yield assertTrue(
+          entry.exists(_.revokes(second.minusSeconds(1))),
+          entry.exists(!_.revokes(second)),
+          entry.exists(!_.revokes(second.plusSeconds(1))),
         )
       },
       test("removing a role the user does not hold, or one the same call adds back, records nothing") {

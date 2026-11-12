@@ -74,7 +74,8 @@ trait SessionRepository:
    *  expired above -- a token can be live long after its session expired (see
    *  [[findRefreshTokensByUserId]]), and force-logout has to revoke those too.
    *
-   *  Records `sub:<user>` bounded at this call's own `now` in the same transaction, whether or
+   *  Records `sub:<user>` for this call's own `now` (tokens of earlier seconds are refused, see
+   *  [[versola.util.revocation.Revocation.userBound]]) in the same transaction, whether or
    *  not a session was live: a user can hold access tokens whose session has already expired. */
   def invalidateByUserId(
       userId: UserId,

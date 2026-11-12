@@ -108,13 +108,20 @@ object RevocationCache:
     /** A token issued after `issuedBefore` postdates what the entry was aimed at (the user logged
       * in again after an administrator ended their sessions) and is left alone.
       *
-      * The boundary second belongs to the revocation. `iat` is whole seconds, so a token minted in
-      * the same second as the revocation cannot be ordered against it, and the only safe reading
-      * of a tie is that the token is one of the revoked ones.
+      * The bound itself counts as revoked: a tie is read as one of the revoked tokens. That is the
+      * right reading for a bound that is an instant the event happened at (a back-channel logout's
+      * `toe`, whole seconds), where a token of the same second cannot be ordered against it.
+      *
+      * It is deliberately not where a user-wide entry decides what happens in the second of an
+      * administrator's change. The writer stores such a bound as [[Revocation.userBound]], the last
+      * second it revokes, so that a token issued in the second of the change or later passes here and
+      * one issued in an earlier second does not. Do not "fix" a refused token in the second of a
+      * change by changing this comparison: the same rows are read by `edge`, by the pull feed and by
+      * older versions of both, and the writer is the one place that knows what the value means.
       */
     private def applies(revocation: Revocation, issuedAt: Instant, now: Instant): Boolean =
       revocation.expiresAt.isAfter(now) &&
-        revocation.issuedBefore.forall(!issuedAt.isAfter(_))
+        revocation.revokes(issuedAt)
 
     /** Merges rather than assigns, keeping whichever of the two revokes more.
       *

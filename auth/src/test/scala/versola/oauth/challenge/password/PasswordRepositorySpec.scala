@@ -15,12 +15,13 @@ import versola.oauth.session.model.{
   UserAgentId,
 }
 import versola.user.model.UserId
-import versola.util.revocation.{RevocationCursor, RevocationKey, RevocationRepository}
+import versola.util.revocation.{Revocation, RevocationCursor, RevocationKey, RevocationRepository}
 import versola.util.{DatabaseSpecBase, MAC, Salt, Secret}
 import zio.*
 import zio.test.*
 
 import java.time.Instant
+import java.time.temporal.ChronoUnit
 import java.util.UUID
 
 trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env]:
@@ -274,8 +275,44 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
           entry = entries.get(RevocationKey.Sub(userId1.toString))
         yield assertTrue(
           entries.keySet == Set(RevocationKey.Sub(userId1.toString)),
-          entry.exists(_.issuedBefore.contains(now)),
+          entry.exists(_.issuedBefore.contains(Revocation.userBound(now))),
           entry.exists(_.expiresAt == now.plus(terms.ttl)),
+        )
+      },
+      test("an administrator's change does not refuse a token issued in its own second, nor after it, but refuses one from the second before") {
+        for
+          // Part-way through a second, so the instant of the change and the whole-second `iat` of a token minted right after it differ.
+          _ <- TestClock.adjust(10.seconds + 300.millis)
+          now <- Clock.instant
+          _ <- env.repository.create(
+            userId1,
+            pass(1),
+            salt(1),
+            historySize = 5,
+            numDifferent = 1,
+            expectedHead = None,
+            change = PasswordChangeEffect.RefuseEarlierTokens(terms),
+          )
+          entries <- recorded(env)
+          entry = entries.get(RevocationKey.Sub(userId1.toString))
+          second = now.truncatedTo(ChronoUnit.SECONDS)
+        yield assertTrue(
+          entry.exists(_.revokes(second.minusSeconds(1))),
+          entry.exists(!_.revokes(second)),
+          entry.exists(!_.revokes(second.plusSeconds(1))),
+        )
+      },
+      test("an administrator's reset does not refuse a token issued in its own second, but refuses one from the second before") {
+        for
+          _ <- TestClock.adjust(10.seconds + 300.millis)
+          now <- Clock.instant
+          _ <- env.repository.createTemporary(userId1, pass(1), salt(1), now.plusSeconds(3600), PasswordChangeEffect.EndAllSessions(terms))
+          entries <- recorded(env)
+          entry = entries.get(RevocationKey.Sub(userId1.toString))
+          second = now.truncatedTo(ChronoUnit.SECONDS)
+        yield assertTrue(
+          entry.exists(_.revokes(second.minusSeconds(1))),
+          entry.exists(!_.revokes(second)),
         )
       },
       test("a change that asks for nothing more records nothing") {
@@ -310,7 +347,7 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
           tokens.map(_.isDefined) == List(false, false, true),
           // the user, bounded at the reset: a token issued before it is refused, one issued by the next sign-in is not
           entries.keySet == Set(RevocationKey.Sub(userId1.toString)),
-          mine.exists(_.issuedBefore.contains(now)),
+          mine.exists(_.issuedBefore.contains(Revocation.userBound(now))),
         )
       },
       test("the bootstrap's temporary password ends nothing and records nothing") {

@@ -20,6 +20,7 @@ import zio.*
 import zio.test.*
 
 import java.time.Instant
+import java.time.temporal.ChronoUnit
 import java.util.UUID
 
 trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
@@ -555,8 +556,24 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           // `sub`, bounded by issuance: a token the user obtains by logging in again afterwards is
           // issued after `issuedBefore` and must keep working.
           entries.keySet == Set(RevocationKey.Sub(userId1.toString)),
-          entry.exists(_.issuedBefore.contains(now)),
+          entry.exists(_.issuedBefore.contains(Revocation.userBound(now))),
           entry.exists(_.expiresAt == now.plus(terms.ttl)),
+        )
+      },
+      test("invalidateByUserId does not refuse a token issued in its own second, nor after it, but refuses one from the second before") {
+        for
+          _ <- env.repository.create(sessionId1, session1, ttl, None, None)
+          // Part-way through a second, so the instant of the change and the whole-second `iat` of a token minted right after it differ.
+          _ <- TestClock.adjust(10.seconds + 300.millis)
+          now <- Clock.instant
+          _ <- env.repository.invalidateByUserId(userId1, terms)
+          entries <- recorded(env)
+          entry = entries.get(RevocationKey.Sub(userId1.toString))
+          second = now.truncatedTo(ChronoUnit.SECONDS)
+        yield assertTrue(
+          entry.exists(_.revokes(second.minusSeconds(1))),
+          entry.exists(!_.revokes(second)),
+          entry.exists(!_.revokes(second.plusSeconds(1))),
         )
       },
       test("invalidateByUserId records the user even when no session of theirs is live") {
