@@ -16,23 +16,24 @@ class PostgresOtpChallengeRepository(xa: TransactorZIO) extends OtpChallengeRepo
 
   override def getAll: Task[Vector[OtpTemplateRecord]] =
     xa.connectMeasured("get-all-otp-templates"):
-      sql"""SELECT id, tenant_id, localizations, purpose, channel FROM otp_templates ORDER BY tenant_id, id"""
+      sql"""SELECT id, tenant_id, localizations, purpose, channel, subjects FROM otp_templates ORDER BY tenant_id, id"""
         .query[OtpTemplateRecord].run()
 
   override def find(id: String, tenantId: TenantId, purpose: OtpTemplatePurpose, channel: OtpTemplateChannel): Task[Option[OtpTemplateRecord]] =
     xa.connectMeasured("find-otp-template"):
-      sql"""SELECT id, tenant_id, localizations, purpose, channel FROM otp_templates WHERE id = $id AND tenant_id = $tenantId AND purpose = $purpose AND channel = $channel"""
+      sql"""SELECT id, tenant_id, localizations, purpose, channel, subjects FROM otp_templates WHERE id = $id AND tenant_id = $tenantId AND purpose = $purpose AND channel = $channel"""
         .query[OtpTemplateRecord].run().headOption
 
   override def upsertTemplate(record: OtpTemplateRecord): Task[Unit] =
     xa.connectMeasured("upsert-otp-template"):
       sql"""
-        INSERT INTO otp_templates (id, tenant_id, localizations, purpose, channel)
-        VALUES (${record.id}, ${record.tenantId}, ${record.localizations}, ${record.purpose}, ${record.channel})
+        INSERT INTO otp_templates (id, tenant_id, localizations, purpose, channel, subjects)
+        VALUES (${record.id}, ${record.tenantId}, ${record.localizations}, ${record.purpose}, ${record.channel}, ${record.subjects})
         ON CONFLICT (id, tenant_id, purpose, channel) DO UPDATE SET
           localizations = EXCLUDED.localizations,
           purpose = EXCLUDED.purpose,
-          channel = EXCLUDED.channel
+          channel = EXCLUDED.channel,
+          subjects = EXCLUDED.subjects
       """.update.run()
     .unit
 

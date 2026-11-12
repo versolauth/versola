@@ -22,8 +22,8 @@ class PostgresLocaleRepository(xa: TransactorZIO) extends LocaleRepository, Basi
               SET localizations = localizations - $delete
               WHERE jsonb_exists_any(localizations, $delete)""".update.run()
         sql"""UPDATE otp_templates
-              SET localizations = localizations - $delete
-              WHERE jsonb_exists_any(localizations, $delete)""".update.run()
+              SET localizations = localizations - $delete, subjects = subjects - $delete
+              WHERE jsonb_exists_any(localizations, $delete) OR jsonb_exists_any(subjects, $delete)""".update.run()
       if add.nonEmpty then
         batchUpdate(add): locale =>
           sql"""INSERT INTO locales (code, name, is_default, active) VALUES (${locale.code}, ${locale.name}, ${locale.isDefault}, ${locale.active})

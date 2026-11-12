@@ -11,9 +11,10 @@ trait EmailOtpProvider:
       email: Email,
       code: OtpCode,
       template: OtpTemplate,
+      subject: Option[String],
   ): Task[Unit]
 
-  def send(email: Email, message: String): Task[Unit]
+  def send(email: Email, subject: Option[String], message: String): Task[Unit]
 
 object EmailOtpProvider:
   val live: URLayer[DeliveryChannels, EmailOtpProvider] =
@@ -24,12 +25,12 @@ object EmailOtpProvider:
     * reason is logged, when neither exists or the saved one is switched off.
     */
   class Impl(channels: DeliveryChannels) extends EmailOtpProvider:
-    override def sendOtp(email: Email, code: OtpCode, template: OtpTemplate): Task[Unit] =
+    override def sendOtp(email: Email, code: OtpCode, template: OtpTemplate, subject: Option[String]): Task[Unit] =
       channels.email.flatMap:
-        case Some(sender) => sender.send(email, template.replace("{{code}}", code))
+        case Some(sender) => sender.send(email, subject.map(_.replace("{{code}}", code)), template.replace("{{code}}", code))
         case None => ZIO.logWarning("SMTP is not configured or is switched off; skipping email delivery")
 
-    override def send(email: Email, message: String): Task[Unit] =
+    override def send(email: Email, subject: Option[String], message: String): Task[Unit] =
       channels.email.flatMap:
-        case Some(sender) => sender.send(email, message)
+        case Some(sender) => sender.send(email, subject, message)
         case None => ZIO.logWarning("SMTP is not configured or is switched off; skipping email delivery")

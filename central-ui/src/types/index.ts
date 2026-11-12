@@ -188,6 +188,8 @@ export interface OtpTemplateRecord {
   localizations: Record<string, string>;
   purpose: string;
   channel: 'sms' | 'email';
+  /** Email only: the subject line by language. A language with none is sent with the SMTP settings' subject. */
+  subjects?: Record<string, string>;
 }
 
 export interface RateLimit {

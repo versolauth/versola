@@ -21,6 +21,9 @@ case class UpsertOtpTemplateRequest(
     localizations: Map[String, String],
     purpose: OtpTemplatePurpose,
     channel: OtpTemplateChannel,
+    /** Email only; absent is empty, which keeps the SMTP settings' subject. Optional by type, so a client that predates the
+      * field keeps working. */
+    subjects: Option[Map[String, String]],
 ) derives Schema, JsonCodec
 
 case class DeleteOtpTemplateRequest(

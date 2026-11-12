@@ -97,6 +97,15 @@ trait OAuthConfigurationService:
 
   def getPasswordTemplate(channel: OtpTemplateChannel, uiLocales: Option[List[String]]): Task[OtpTemplate]
 
+  /** The subject of the client's email template, in the language [[getClientTemplate]] picked for the body, with
+    * `{{appName}}` filled in. None when the template has no subject for that language (or there is no template): the
+    * sender then uses the subject of the SMTP settings, as it did before templates had one.
+    */
+  def getClientSubject(id: ClientId, uiLocales: Option[List[String]]): UIO[Option[String]]
+
+  /** The same for the global password email template. */
+  def getPasswordSubject(uiLocales: Option[List[String]]): UIO[Option[String]]
+
   def getLocales: UIO[Locales]
 
   def getPhoneRegions(id: ClientId): UIO[List[PhoneRegion]]
@@ -448,13 +457,41 @@ object OAuthConfigurationService:
         case None => IllegalStateTemplate
         case Some(t) =>
           val preferredLocales = uiLocales.getOrElse(Nil) :+ locales.default
-          def pick(values: Map[String, String]): Option[String] =
-            preferredLocales
-              .collectFirst { case loc if values.contains(loc) => values(loc) }
-              .orElse(values.values.headOption)
-          val body = pick(t.localizations).getOrElse(IllegalStateTemplate)
-          val appName = client.flatMap(c => pick(c.clientName)).getOrElse(id.toString)
+          val body = pickLocalized(t.localizations, preferredLocales).map(_._2).getOrElse(IllegalStateTemplate)
+          val appName = client.flatMap(c => pickLocalized(c.clientName, preferredLocales).map(_._2)).getOrElse(id.toString)
           OtpTemplate(body.replace("{{appName}}", appName))
+
+    override def getClientSubject(id: ClientId, uiLocales: Option[List[String]]): UIO[Option[String]] =
+      for
+        client <- find(id)
+        template <- client match
+          case None => ZIO.none
+          case Some(client) => getOtpTemplates(client.tenantId, client.otpTemplateId, OtpType.email)
+        locales <- getLocales
+      yield template.flatMap: t =>
+        val preferredLocales = uiLocales.getOrElse(Nil) :+ locales.default
+        val appName = client.flatMap(c => pickLocalized(c.clientName, preferredLocales).map(_._2)).getOrElse(id.toString)
+        subjectFor(t, preferredLocales).map(_.replace("{{appName}}", appName))
+
+    override def getPasswordSubject(uiLocales: Option[List[String]]): UIO[Option[String]] =
+      for
+        templates <- otpTemplateCache.get
+        locales <- getLocales
+      yield templates
+        .find(template => template.purpose == OtpTemplatePurpose.password && template.channel == OtpTemplateChannel.email)
+        .flatMap(subjectFor(_, uiLocales.getOrElse(Nil) :+ locales.default))
+
+    /** The first preferred language the values have, else any of them: how a body is chosen. */
+    private def pickLocalized(values: Map[String, String], preferredLocales: List[String]): Option[(String, String)] =
+      preferredLocales
+        .collectFirst { case loc if values.contains(loc) => loc -> values(loc) }
+        .orElse(values.headOption)
+
+    /** The subject in the language the body is shown in, so a message is never half in one language and half in another:
+      * a language with a body but no subject has none, and the sender's default applies.
+      */
+    private def subjectFor(template: OtpTemplateRecord, preferredLocales: List[String]): Option[String] =
+      pickLocalized(template.localizations, preferredLocales).flatMap((locale, _) => template.subjects.get(locale))
 
     override def getPasswordTemplate(channel: OtpTemplateChannel, uiLocales: Option[List[String]]): Task[OtpTemplate] =
       for

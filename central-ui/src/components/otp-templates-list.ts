@@ -7,7 +7,7 @@ import { deleteOtpTemplate, fetchLocales, fetchOtpTemplates, upsertOtpTemplate }
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { confirmDiscardDraft } from '../utils/draft-guard';
 import { copyToClipboard } from '../utils/helpers';
-import { localizationError, templatePlaceholders, type TemplateChannel, type TemplatePurpose } from '../utils/otp-template';
+import { localizationError, subjectError, subjectsToSave, templatePlaceholders, type TemplateChannel, type TemplatePurpose } from '../utils/otp-template';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
 import { languagesCell, languagesChip, missingLocales } from './localized-value';
 import { statusIcon } from './status-icon';
@@ -66,6 +66,7 @@ export class VersolaOtpTemplatesList extends LitElement {
   @state() private draftPurpose: TemplatePurpose = 'otp';
   @state() private draftChannel: TemplateChannel = 'sms';
   @state() private draftLocalizations: Record<string, string> = {};
+  @state() private draftSubjects: Record<string, string> = {};
   @state() private previewLocales = new Set<string>();
   @state() private formError = '';
   @state() private isSaving = false;
@@ -118,6 +119,21 @@ export class VersolaOtpTemplatesList extends LitElement {
       .message-text {
         white-space: pre-wrap;
         overflow-wrap: anywhere;
+      }
+
+      .message-subject {
+        margin-bottom: 0.5rem;
+        overflow-wrap: anywhere;
+      }
+
+      .subject-label {
+        display: block;
+        margin-bottom: 0.25rem;
+      }
+
+      .subject-input {
+        width: 100%;
+        margin-bottom: 0.25rem;
       }
 
       .email-preview {
@@ -235,7 +251,7 @@ export class VersolaOtpTemplatesList extends LitElement {
   // ── draft ──
 
   private get draftSnapshot(): string {
-    return JSON.stringify([this.draftId, this.draftPurpose, this.draftChannel, this.draftLocalizations]);
+    return JSON.stringify([this.draftId, this.draftPurpose, this.draftChannel, this.draftLocalizations, subjectsToSave(this.draftSubjects, this.draftChannel)]);
   }
 
   /** Every active locale gets a field; a stored localization of an inactive locale is kept. */
@@ -252,6 +268,7 @@ export class VersolaOtpTemplatesList extends LitElement {
     this.draftPurpose = template?.purpose === 'password' ? 'password' : 'otp';
     this.draftChannel = template?.channel ?? 'sms';
     this.draftLocalizations = this.localizationsFor(template?.localizations ?? {});
+    this.draftSubjects = { ...(template?.subjects ?? {}) };
     this.previewLocales = new Set();
     this.formError = '';
     this.submitted = false;
@@ -273,26 +290,31 @@ export class VersolaOtpTemplatesList extends LitElement {
     return this.submitted || (this.draftLocalizations[code] ?? '').trim() ? localizationError(this.draftLocalizations[code] ?? '', this.draftPurpose, this.draftChannel) : '';
   }
 
+  private subjectErrorFor(code: string): string {
+    return this.draftChannel === 'email' ? subjectError(this.draftSubjects[code] ?? '') : '';
+  }
+
   private async handleSubmit(event: Event) {
     event.preventDefault();
     if (!this.tenantId || this.isSaving) return;
     this.submitted = true;
     const mode = this.editorMode;
     const codes = Object.keys(this.draftLocalizations);
-    if ((mode === 'create' && this.draftIdError) || codes.some(code => localizationError(this.draftLocalizations[code] ?? '', this.draftPurpose, this.draftChannel))) return;
+    if ((mode === 'create' && this.draftIdError) || codes.some(code => localizationError(this.draftLocalizations[code] ?? '', this.draftPurpose, this.draftChannel) || this.subjectErrorFor(code))) return;
     if (codes.length === 0) {
       this.formError = 'At least one localization is required; activate a locale under System settings first.';
       return;
     }
     const existing = this.openTemplate;
     const localizations = Object.fromEntries(codes.map(code => [code, this.draftLocalizations[code].trim()]));
+    const subjects = subjectsToSave(this.draftSubjects, mode === 'create' ? this.draftChannel : existing!.channel);
     const next: OtpTemplateRecord = mode === 'create'
-      ? { id: this.draftId.trim(), tenantId: this.tenantId, purpose: this.draftPurpose, channel: this.draftChannel, localizations }
-      : { ...existing!, localizations };
+      ? { id: this.draftId.trim(), tenantId: this.tenantId, purpose: this.draftPurpose, channel: this.draftChannel, localizations, subjects }
+      : { ...existing!, localizations, subjects };
     this.isSaving = true;
     this.formError = '';
     try {
-      await upsertOtpTemplate(next.id, this.tenantId, next.localizations, next.purpose, next.channel);
+      await upsertOtpTemplate(next.id, this.tenantId, next.localizations, next.purpose, next.channel, subjects);
       const key = templateKey(next);
       this.templates = this.sorted([...this.templates.filter(template => templateKey(template) !== key), next]);
       dispatchRecordRoute(this, { id: key, edit: null, create: false });
@@ -403,8 +425,9 @@ export class VersolaOtpTemplatesList extends LitElement {
 
   private renderMessage(template: OtpTemplateRecord, code: string) {
     const text = template.localizations[code] ?? '';
+    const subject = template.subjects?.[code];
     return template.channel === 'email'
-      ? html`<div class="preview-caption">Preview as the recipient sees it</div><iframe class="email-preview" title=${`Preview for ${code}`} sandbox="" .srcdoc=${text}></iframe>`
+      ? html`<div class="message-subject">${subject ? html`<span class="muted">Subject:</span> ${subject}` : html`<span class="muted">Subject: from the SMTP settings</span>`}</div><div class="preview-caption">Preview as the recipient sees it</div><iframe class="email-preview" title=${`Preview for ${code}`} sandbox="" .srcdoc=${text}></iframe>`
       : html`<div class="message-text">${text}</div>`;
   }
 
@@ -472,6 +495,21 @@ export class VersolaOtpTemplatesList extends LitElement {
 
   // ── editor ──
 
+  private renderSubjectField(code: string) {
+    const subjectId = `subject-${code}`;
+    const error = this.draftSubjects[code] !== undefined ? this.subjectErrorFor(code) : '';
+    const hint = this.draftPurpose === 'otp' ? ' {{code}} and {{appName}} are replaced.' : '';
+    return html`
+      <label for=${subjectId} class="subject-label">Subject</label>
+      <input type="text" id=${subjectId} class="compact-input subject-input ${error ? 'input-error' : ''}" .value=${this.draftSubjects[code] ?? ''}
+        placeholder="Empty uses the subject of the SMTP settings (deprecated)"
+        aria-invalid=${error ? 'true' : nothing} aria-describedby=${`${subjectId}-hint`}
+        @input=${(e: Event) => this.draftSubjects = { ...this.draftSubjects, [code]: (e.target as HTMLInputElement).value }} />
+      ${error ? html`<div class="error-message" id=${`${subjectId}-hint`} role="alert">${error}</div>`
+        : html`<div class="hint" id=${`${subjectId}-hint`}>One line.${hint} Leave empty to send the subject of the SMTP settings.</div>`}
+    `;
+  }
+
   private renderLocalizationEditor() {
     const codes = Object.keys(this.draftLocalizations);
     const placeholders = templatePlaceholders(this.draftPurpose);
@@ -491,6 +529,7 @@ export class VersolaOtpTemplatesList extends LitElement {
                   <button type="button" class="btn btn-secondary btn-sm" aria-pressed=${preview ? 'true' : 'false'} ?disabled=${!preview && !!localizationError(this.draftLocalizations[code] ?? '', this.draftPurpose, 'email')}
                     @click=${() => { const next = new Set(this.previewLocales); if (preview) next.delete(code); else next.add(code); this.previewLocales = next; }}>${preview ? 'Edit HTML' : 'Preview'}</button>` : ''}
               </div>
+              ${this.draftChannel === 'email' ? this.renderSubjectField(code) : ''}
               ${this.draftChannel === 'email'
                 ? preview
                   ? html`<div class="preview-caption">Preview as the recipient sees it</div><iframe class="email-preview" title=${`Preview for ${code}`} sandbox="" .srcdoc=${this.draftLocalizations[code]}></iframe>`

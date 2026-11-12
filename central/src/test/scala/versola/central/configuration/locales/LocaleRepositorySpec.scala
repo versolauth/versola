@@ -55,6 +55,21 @@ trait LocaleRepositorySpec extends DatabaseSpecBase[LocaleRepositorySpec.Env]:
           locs.headOption.exists(l => l.contains(""""en"""") && !l.contains(""""ru"""")),
         )
       },
+      test("update delete removes locale key from otp_templates subjects") {
+        for
+          _ <- env.repository.update(add = Vector(en, ru), delete = Vector.empty)
+          _ <- env.xa.connect:
+            sql"""INSERT INTO tenants (id, description) VALUES ('t1', 'Test Tenant')""".update.run()
+          _ <- env.xa.connect:
+            sql"""INSERT INTO otp_templates (id, tenant_id, localizations, purpose, channel, subjects)
+                  VALUES ('email', 't1', '{"en":"<p>{{code}}</p>"}', 'otp', 'email', '{"en":"Code","ru":"Код"}')""".update.run()
+          _ <- env.repository.update(add = Vector.empty, delete = Vector("ru"))
+          subjects <- env.xa.connect:
+            sql"""SELECT subjects::text FROM otp_templates WHERE id = 'email' AND tenant_id = 't1'""".query[String].run()
+        yield assertTrue(
+          subjects.headOption.exists(s => s.contains(""""en"""") && !s.contains(""""ru"""")),
+        )
+      },
       test("update batch-deletes multiple locale keys from forms localizations") {
         for
           _ <- env.repository.update(add = Vector(en, ru, fr), delete = Vector.empty)

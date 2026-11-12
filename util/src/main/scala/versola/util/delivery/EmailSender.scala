@@ -7,9 +7,11 @@ import zio.{Task, ZIO}
 
 import java.util.Properties
 
-/** Sends one HTML message to one address through a mail server. */
+/** Sends one HTML message to one address through a mail server. `subject` is the message's own; without one the server
+  * settings' subject is used, which is what every message had before a template could carry a subject.
+  */
 trait EmailSender:
-  def send(to: Email, message: String): Task[Unit]
+  def send(to: Email, subject: Option[String], message: String): Task[Unit]
 
 object EmailSender:
   def smtp(settings: SmtpSettings): EmailSender = SmtpEmailSender(settings)
@@ -42,14 +44,21 @@ final class SmtpEmailSender(settings: SmtpSettings) extends EmailSender:
           PasswordAuthentication(settings.username, settings.password.getOrElse("")),
     )
 
-  override def send(to: Email, message: String): Task[Unit] =
+  override def send(to: Email, subject: Option[String], message: String): Task[Unit] =
     ZIO.attemptBlocking:
       val mail = MimeMessage(session)
       mail.setFrom(InternetAddress(settings.from))
       mail.setRecipient(Message.RecipientType.TO, InternetAddress(to))
-      mail.setSubject(settings.subject)
+      // Named, not left to the platform default: a subject in the user's language is not ASCII.
+      mail.setSubject(SmtpEmailSender.oneLine(subject.getOrElse(settings.subject)), "UTF-8")
       mail.setContent(message, "text/html; charset=utf-8")
       Transport.send(mail)
 
 object SmtpEmailSender:
+  /** A subject is a header: a line break in it would end the header and start another. Central refuses one, but a subject
+    * is also filled with a client's name, so the sender does not rely on that.
+    */
+  private[delivery] def oneLine(subject: String): String =
+    subject.map(c => if c.isControl then ' ' else c)
+
   private val TimeoutMillis = "10000"

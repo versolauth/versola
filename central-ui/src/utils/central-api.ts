@@ -1614,10 +1614,12 @@ export async function upsertOtpTemplate(
   localizations: Record<string, string>,
   purpose: string,
   channel: 'sms' | 'email',
+  subjects: Record<string, string> = {},
 ): Promise<void> {
   await requestVoid('/configuration/challenges/otp-templates', {
     method: 'PUT',
-    body: { id, tenantId, localizations, purpose, channel },
+    // Absent keeps the stored subjects, so an email template always sends them (an empty map clears); an SMS has none.
+    body: { id, tenantId, localizations, purpose, channel, ...(channel === 'email' ? { subjects } : {}) },
   });
 }
 

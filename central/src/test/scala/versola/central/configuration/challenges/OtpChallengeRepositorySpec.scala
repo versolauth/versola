@@ -39,6 +39,31 @@ trait OtpChallengeRepositorySpec extends DatabaseSpecBase[OtpChallengeRepository
           found <- env.repository.find(rec1.id, rec1.tenantId, rec1.purpose, rec1.channel)
         yield assertTrue(found == Some(updated))
       },
+      test("subjects are stored with the template, replaced on update, and empty for a template stored without them") {
+        val email = OtpTemplateRecord(
+          "email-subject",
+          tenantA,
+          Map("en" -> "<p>{{code}}</p>", "ru" -> "<p>{{code}}</p>"),
+          purpose = OtpTemplatePurpose.otp,
+          channel = OtpTemplateChannel.email,
+          subjects = Map("en" -> "Your code", "ru" -> "Ваш код"),
+        )
+        for
+          _ <- env.repository.upsertTemplate(email)
+          stored <- env.repository.find(email.id, email.tenantId, email.purpose, email.channel)
+          _ <- env.repository.upsertTemplate(email.copy(subjects = Map("en" -> "Code")))
+          replaced <- env.repository.find(email.id, email.tenantId, email.purpose, email.channel)
+          _ <- env.repository.upsertTemplate(email.copy(subjects = Map.empty))
+          cleared <- env.repository.find(email.id, email.tenantId, email.purpose, email.channel)
+          _ <- env.repository.upsertTemplate(rec1)
+          plain <- env.repository.find(rec1.id, rec1.tenantId, rec1.purpose, rec1.channel)
+        yield assertTrue(
+          stored == Some(email),
+          replaced.map(_.subjects) == Some(Map("en" -> "Code")),
+          cleared.map(_.subjects) == Some(Map.empty[String, String]),
+          plain.map(_.subjects) == Some(Map.empty[String, String]),
+        )
+      },
       test("same id can be used for different template purposes") {
         val otpEmail = rec1.copy(channel = OtpTemplateChannel.email)
         val passwordEmail = OtpTemplateRecord(

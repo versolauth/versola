@@ -287,7 +287,7 @@ type SubmissionLimitsDto = {
   banDurationSeconds: number;
 };
 type PasskeySettingsDto = { rpId: string; rpName: string; origins: string[]; userVerification: string };
-type OtpTemplateDto = { id: string; tenantId: string; localizations: Record<string, string>; purpose: string; channel: 'sms' | 'email' };
+type OtpTemplateDto = { id: string; tenantId: string; localizations: Record<string, string>; purpose: string; channel: 'sms' | 'email'; subjects?: Record<string, string> };
 type ChallengeSettingsDto = {
   tenantId: string;
   securityProfile?: SecurityProfileDto;
@@ -1761,6 +1761,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         const existing = templates.find(template => template.id === payload.id && template.purpose === payload.purpose && template.channel === payload.channel);
         if (existing) {
           existing.localizations = { ...payload.localizations };
+          existing.subjects = { ...(payload.subjects ?? {}) };
           existing.purpose = payload.purpose;
           existing.channel = payload.channel;
         } else {
@@ -1770,6 +1771,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
             localizations: { ...payload.localizations },
             purpose: payload.purpose,
             channel: payload.channel,
+            subjects: { ...(payload.subjects ?? {}) },
           });
         }
         state.otpTemplates[payload.tenantId] = templates;

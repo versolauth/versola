@@ -351,6 +351,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.configuration.getPasswordTemplate.succeedsWith(OtpTemplate("Pass: {{password}}, hours: {{expiresHours}}"))
+          _ <- env.configuration.getPasswordSubject.succeedsWith(None)
           _ <- env.userRepo.find.succeedsWith(Some(userRecord))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
@@ -360,9 +361,27 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
         yield assertTrue(
           sendCalls.length == 1,
           sendCalls.head._1 == email,
-          sendCalls.head._2.contains("hours: 1"),
+          sendCalls.head._3.contains("hours: 1"),
           env.configuration.getPasswordTemplate.calls == List((OtpTemplateChannel.email, None)),
           env.smsProvider.send.calls.isEmpty,
+        )
+      },
+      test("sends a password email with the subject of the password template, when it has one") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom, EnvName.Prod)
+          _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
+          _ <- env.configuration.getPasswordTemplate.succeedsWith(OtpTemplate("Pass: {{password}}, hours: {{expiresHours}}"))
+          _ <- env.configuration.getPasswordSubject.succeedsWith(Some("Your temporary password"))
+          _ <- env.userRepo.find.succeedsWith(Some(userRecord))
+          _ <- env.securityService.hashPassword.succeedsWith(testHash)
+          _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
+          _ <- env.emailProvider.send.succeedsWith(())
+          _ <- env.service.resetPassword(userId, Some(3600L), Some(DeliveryChannel.email))
+        yield assertTrue(
+          env.emailProvider.send.calls.map(_._2) == List(Some("Your temporary password")),
+          env.configuration.getPasswordSubject.calls == List(None),
         )
       },
       test("delivers via SMS in prod when the channel is sms") {
@@ -372,6 +391,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.configuration.getPasswordTemplate.succeedsWith(OtpTemplate("Pass: {{password}}"))
+          _ <- env.configuration.getPasswordSubject.succeedsWith(None)
           _ <- env.userRepo.find.succeedsWith(Some(userRecord))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
@@ -459,12 +479,13 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordRegex.succeedsWith(regex)
           _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.configuration.getPasswordTemplate.succeedsWith(OtpTemplate("{{password}}"))
+          _ <- env.configuration.getPasswordSubject.succeedsWith(None)
           _ <- env.userRepo.find.succeedsWith(Some(userRecord))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)
           _ <- env.emailProvider.send.succeedsWith(())
           _ <- env.service.resetPassword(userId, None, Some(DeliveryChannel.email))
-          delivered = env.emailProvider.send.calls.head._2
+          delivered = env.emailProvider.send.calls.head._3
         yield assertTrue(delivered.matches(regex))
       },
       test("fails without storing a credential when no password can satisfy the regex") {
@@ -528,6 +549,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.accessTokenTtls.succeedsWith(ttls)
           _ <- env.configuration.getPasswordTemplate.succeedsWith(OtpTemplate("Pass: {{password}}"))
+          _ <- env.configuration.getPasswordSubject.succeedsWith(None)
           _ <- env.userRepo.find.succeedsWith(Some(userRecord))
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.createTemporary.succeedsWith(Nil)

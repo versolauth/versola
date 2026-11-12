@@ -68,6 +68,10 @@ object CoreConfig:
       username: String,
       password: String,
       from: Email,
+      /** Deprecated: the subject belongs to the email template (`subjects` of an OTP template, set in the console). Sent
+        * only with a message whose template has no subject for the language shown; still required until a later
+        * version drops it.
+        */
       subject: String,
       startTls: Boolean,
   )

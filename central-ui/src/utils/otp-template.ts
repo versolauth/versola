@@ -104,6 +104,24 @@ function htmlAttributeError(token: string, tagName: string): string {
   return '';
 }
 
+export const MAX_SUBJECT_LENGTH = 200;
+
+/** The error shown under one subject of an email template, or empty. A blank subject is not an error: it means "none",
+ *  and the message goes out with the subject of the SMTP settings. */
+export function subjectError(subject: string): string {
+  const text = subject.trim();
+  if (!text) return '';
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(text)) return 'The subject must be one line.';
+  if (text.length > MAX_SUBJECT_LENGTH) return `The subject must be at most ${MAX_SUBJECT_LENGTH} characters.`;
+  return '';
+}
+
+/** The subjects to send: only what is filled in, and none for a channel that has no subject. */
+export function subjectsToSave(subjects: Record<string, string>, channel: TemplateChannel): Record<string, string> {
+  if (channel !== 'email') return {};
+  return Object.fromEntries(Object.entries(subjects).map(([code, text]) => [code, text.trim()]).filter(([, text]) => text));
+}
+
 /** The error shown under one localization of a template, or empty. */
 export function localizationError(template: string, purpose: TemplatePurpose, channel: TemplateChannel): string {
   const text = template.trim();

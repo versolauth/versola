@@ -103,11 +103,25 @@ object OtpServiceSpec extends UnitSpecBase:
         val template = OtpTemplate("Your code: {{code}}")
         for
           _ <- env.configService.getClientTemplate.succeedsWith(template)
+          _ <- env.configService.getClientSubject.succeedsWith(None)
           _ <- env.emailOtpProvider.sendOtp.succeedsWith(())
           _ <- env.service.sendOtp(realOtp, Left(email), authId, clientId, None)
         yield assertTrue(
-          env.emailOtpProvider.sendOtp.calls == List((email, otpCode, template)),
+          env.emailOtpProvider.sendOtp.calls == List((email, otpCode, template, None)),
           env.configService.getClientTemplate.calls == List((clientId, OtpType.email, None)),
+        )
+      },
+      test("passes the subject of the client's email template on, for the locales the user asked for") {
+        val env = Env()
+        val template = OtpTemplate("Your code: {{code}}")
+        for
+          _ <- env.configService.getClientTemplate.succeedsWith(template)
+          _ <- env.configService.getClientSubject.succeedsWith(Some("{{code}} is your code"))
+          _ <- env.emailOtpProvider.sendOtp.succeedsWith(())
+          _ <- env.service.sendOtp(realOtp, Left(email), authId, clientId, Some(List("ru")))
+        yield assertTrue(
+          env.emailOtpProvider.sendOtp.calls == List((email, otpCode, template, Some("{{code}} is your code"))),
+          env.configService.getClientSubject.calls == List((clientId, Some(List("ru")))),
         )
       },
       test("calls smsOtpProvider when credential is a phone") {
@@ -120,6 +134,7 @@ object OtpServiceSpec extends UnitSpecBase:
         yield assertTrue(
           env.otpClient.sendOtp.calls == List((phone, otpCode, template)),
           env.configService.getClientTemplate.calls == List((clientId, OtpType.sms, None)),
+          env.configService.getClientSubject.calls.isEmpty,
         )
       },
     ),

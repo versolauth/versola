@@ -239,7 +239,8 @@ object PasswordService:
             )
             message = renderPasswordTemplate(template, password, ttlSeconds)
             _ <- contact match
-              case Left(email) => emailOtpProvider.send(email, message)
+              case Left(email) =>
+                configuration.getPasswordSubject(None).flatMap(subject => emailOtpProvider.send(email, subject, message))
               case Right(phone) => smsOtpProvider.send(phone, message)
           yield ()
 

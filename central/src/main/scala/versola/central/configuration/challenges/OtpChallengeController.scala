@@ -55,7 +55,17 @@ object OtpChallengeController extends AuditedController:
           _ <- Audit.targetByText(body.id)
           _ <- Audit.tenant(body.tenantId)
           _ <- Audit.changed(body, "id", "tenantId")
-          _ <- service.upsertTemplate(OtpTemplateRecord(body.id, body.tenantId, body.localizations, body.purpose, body.channel))
+          _ <- service.upsertTemplate(
+            record = OtpTemplateRecord(
+              id = body.id,
+              tenantId = body.tenantId,
+              localizations = body.localizations,
+              purpose = body.purpose,
+              channel = body.channel,
+              subjects = body.subjects.getOrElse(Map.empty),
+            ),
+            keepStoredSubjects = body.subjects.isEmpty,
+          )
         yield Response.status(Status.NoContent)
     }
 

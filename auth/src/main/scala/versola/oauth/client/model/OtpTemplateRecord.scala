@@ -14,4 +14,6 @@ case class OtpTemplateRecord(
     localizations: Map[String, String],
     purpose: OtpTemplatePurpose,
     channel: OtpTemplateChannel,
+    /** The subject of an email, by locale; absent from an older central, which then leaves the SMTP settings' subject. */
+    subjects: Map[String, String] = Map.empty,
 ) derives JsonCodec

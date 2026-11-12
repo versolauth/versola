@@ -79,8 +79,11 @@ object OtpService:
     ): Task[Unit] =
       (otp.real, credential) match
         case (Some(otp), Left(email)) if envName.isProd =>
-          configService.getClientTemplate(clientId, OtpType.email, uiLocales).flatMap: template =>
-            emailOtpProvider.sendOtp(email, otp.code, template)
+          for
+            template <- configService.getClientTemplate(clientId, OtpType.email, uiLocales)
+            subject <- configService.getClientSubject(clientId, uiLocales)
+            _ <- emailOtpProvider.sendOtp(email, otp.code, template, subject)
+          yield ()
 
         case (Some(otp), Right(phone)) if envName.isProd =>
           configService.getClientTemplate(clientId, OtpType.sms, uiLocales).flatMap: template =>

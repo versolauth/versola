@@ -5,6 +5,7 @@ import versola.central.configuration.locales.LocaleService
 import versola.central.configuration.sync.SyncEvent
 import versola.central.configuration.tenants.TenantId
 import versola.util.ReloadingCache
+import versola.util.http.BadRequest
 import zio.*
 import zio.test.*
 
@@ -44,7 +45,7 @@ object OtpChallengeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = Env(Vector(rec1))
       for
         _ <- env.repository.upsertTemplate.succeedsWith(())
-        _ <- env.service.upsertTemplate(rec2)
+        _ <- env.service.upsertTemplate(rec2, keepStoredSubjects = false)
         cached <- env.cache.get
       yield assertTrue(
         env.repository.upsertTemplate.calls == List(rec2),
@@ -63,8 +64,8 @@ object OtpChallengeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val invalid = valid.copy(localizations = Map("en" -> "Code: {{code}}"))
       for
         _ <- env.repository.upsertTemplate.succeedsWith(())
-        validResult <- env.service.upsertTemplate(valid).either
-        invalidResult <- env.service.upsertTemplate(invalid).either
+        validResult <- env.service.upsertTemplate(valid, keepStoredSubjects = false).either
+        invalidResult <- env.service.upsertTemplate(invalid, keepStoredSubjects = false).either
       yield assertTrue(validResult == Right(()), invalidResult.isLeft)
     },
     test("allows plain-text password SMS and requires HTML for password email") {
@@ -84,9 +85,9 @@ object OtpChallengeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         env <- ZIO.succeed(Env())
         _ <- env.repository.upsertTemplate.succeedsWith(())
-        smsResult <- env.service.upsertTemplate(passwordSms).either
-        emailResult <- env.service.upsertTemplate(passwordEmail).either
-        invalidResult <- env.service.upsertTemplate(invalidPasswordEmail).either
+        smsResult <- env.service.upsertTemplate(passwordSms, keepStoredSubjects = false).either
+        emailResult <- env.service.upsertTemplate(passwordEmail, keepStoredSubjects = false).either
+        invalidResult <- env.service.upsertTemplate(invalidPasswordEmail, keepStoredSubjects = false).either
       yield assertTrue(smsResult == Right(()), emailResult == Right(()), invalidResult.isLeft)
     },
     test("deleteTemplate delegates to repository without touching cache") {
@@ -137,6 +138,104 @@ object OtpChallengeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.service.sync(event)
         cached <- env.cache.get
       yield assertTrue(!cached.contains(rec1), cached.contains(rec2))
+    },
+    test("accepts a subject for an email template and refuses a blank, multi-line or overlong one, or one for an SMS template") {
+      val env = Env()
+      val email = OtpTemplateRecord(
+        "email-template",
+        tenantA,
+        Map("en" -> "<html><body>Code: {{code}}</body></html>"),
+        purpose = OtpTemplatePurpose.otp,
+        channel = OtpTemplateChannel.email,
+        subjects = Map("en" -> "{{code}} for {{appName}}"),
+      )
+      def check(record: OtpTemplateRecord) = env.service.upsertTemplate(record, keepStoredSubjects = false).either.map(_.left.map(_.getMessage))
+      for
+        _ <- env.repository.upsertTemplate.succeedsWith(())
+        valid <- check(email)
+        blank <- check(email.copy(subjects = Map("en" -> "  ")))
+        multiline <- check(email.copy(subjects = Map("en" -> "Code\r\nBcc: evil@example.com")))
+        overlong <- check(email.copy(subjects = Map("en" -> "x" * (OtpChallengeService.MaxSubjectLength + 1))))
+        longest <- check(email.copy(subjects = Map("en" -> "x" * OtpChallengeService.MaxSubjectLength)))
+        sms <- check(email.copy(channel = OtpTemplateChannel.sms, localizations = Map("en" -> "Code {{code}}")))
+        smsWithout <- check(email.copy(channel = OtpTemplateChannel.sms, localizations = Map("en" -> "Code {{code}}"), subjects = Map.empty))
+      yield assertTrue(
+        valid == Right(()),
+        blank == Left("Subject en must not be empty"),
+        multiline == Left("Subject en must be one line"),
+        overlong.isLeft,
+        longest == Right(()),
+        sms == Left("Only email templates have a subject"),
+        smsWithout == Right(()),
+        env.repository.upsertTemplate.calls.length == 3,
+      )
+    },
+    test("a save that names no subjects keeps the stored ones, and one that names an empty map clears them") {
+      val env = Env()
+      val stored = OtpTemplateRecord(
+        "email-template",
+        tenantA,
+        Map("en" -> "<html><body>Code: {{code}}</body></html>"),
+        purpose = OtpTemplatePurpose.otp,
+        channel = OtpTemplateChannel.email,
+        subjects = Map("en" -> "Your code"),
+      )
+      val edited = stored.copy(localizations = Map("en" -> "<html><body>New {{code}}</body></html>"), subjects = Map.empty)
+      for
+        _ <- env.repository.find.succeedsWith(Some(stored))
+        _ <- env.repository.upsertTemplate.succeedsWith(())
+        _ <- env.service.upsertTemplate(edited, keepStoredSubjects = true)
+        _ <- env.service.upsertTemplate(edited, keepStoredSubjects = false)
+        saved = env.repository.upsertTemplate.calls
+      yield assertTrue(
+        saved.map(_.subjects) == List(Map("en" -> "Your code"), Map.empty[String, String]),
+        saved.forall(_.localizations == edited.localizations),
+        env.repository.find.calls.length == 1,
+      )
+    },
+    test("a save that names no subjects for a template that is not stored yet stores none") {
+      val env = Env()
+      for
+        _ <- env.repository.find.succeedsWith(None)
+        _ <- env.repository.upsertTemplate.succeedsWith(())
+        _ <- env.service.upsertTemplate(rec1, keepStoredSubjects = true)
+      yield assertTrue(env.repository.upsertTemplate.calls == List(rec1))
+    },
+    test("a refused template fails with BadRequest, which the server answers as a 400, not with an exception that becomes a 500") {
+      val env = Env()
+      val sms = OtpTemplateRecord(
+        "sms-template",
+        tenantA,
+        Map("en" -> "Code {{code}}"),
+        purpose = OtpTemplatePurpose.otp,
+        channel = OtpTemplateChannel.sms,
+        subjects = Map("en" -> "Your code"),
+      )
+      for
+        subject <- env.service.upsertTemplate(sms, keepStoredSubjects = false).either
+        body <-
+          env.service.upsertTemplate(sms.copy(subjects = Map.empty, localizations = Map("en" -> "no placeholder")), keepStoredSubjects = false).either
+      yield assertTrue(
+        subject == Left(BadRequest("Only email templates have a subject")),
+        body.left.exists(_.isInstanceOf[BadRequest]),
+        env.repository.upsertTemplate.calls.isEmpty,
+      )
+    },
+    test("getSyncTemplates strips the subjects of inactive locales along with their localizations") {
+      import versola.central.configuration.locales.LocaleRecord
+      val template = OtpTemplateRecord(
+        "tmpl-1",
+        tenantA,
+        Map("en" -> "<p>{{code}}</p>", "fr" -> "<p>{{code}}</p>"),
+        purpose = OtpTemplatePurpose.otp,
+        channel = OtpTemplateChannel.email,
+        subjects = Map("en" -> "Your code", "fr" -> "Votre code"),
+      )
+      val env = Env(Vector(template))
+      for
+        _ <- env.localeService.getActive.succeedsWith(Vector(LocaleRecord("en", "English", isDefault = true, active = true)))
+        result <- env.service.getSyncTemplates
+      yield assertTrue(result.head.subjects == Map("en" -> "Your code"))
     },
     test("getSyncTemplates strips localizations of inactive locales") {
       import versola.central.configuration.locales.LocaleRecord

@@ -14,6 +14,7 @@ case class SmtpSettings(
     username: String,
     password: Option[String],
     from: Email,
+    /** Deprecated: used only for a message that arrives with no subject of its own (the template has none). */
     subject: String,
     startTls: Boolean,
 ):
