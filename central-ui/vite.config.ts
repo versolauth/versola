@@ -13,6 +13,27 @@ const BASE_PATH = './';
 // Where a partner edge serves the partner console from (`GET /partner`, `/partner/`, `/partner/<file>`).
 const PARTNER_BASE_PATH = '/partner/';
 
+/**
+ * The partner edge serves the console under `Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:`
+ * and serves only `partner.html` and `versola-partner*.js|css`. So in the partner page the pre-paint theme script is a file of its own
+ * (an inline script is blocked), the icon is a data URI (the edge serves no other file), and the font stylesheet of a third party is gone
+ * (blocked, and a visit to a partner's console is not for Google to see): the mono font falls back to the system's.
+ */
+async function forPartnerEdge(html: string, outputDir: string, projectRoot: string): Promise<string> {
+  const inline = html.match(/<script>([\s\S]*?)<\/script>/);
+  if (!inline) throw new Error('dist-index-html: partner.html has no inline pre-paint script to move into a file.');
+  // The dark icon is a file the edge does not serve; the pre-paint script only swaps to it.
+  const script = inline[1].split('\n').filter(line => !/favicon/.test(line)).join('\n');
+  await writeFile(path.join(outputDir, 'versola-partner-theme.js'), `${script.trim()}\n`, 'utf8');
+  const icon = await readFile(path.join(projectRoot, 'public', 'favicon-light.svg'), 'utf8');
+  return html
+    .replace(inline[0], `<script src="${PARTNER_BASE_PATH}versola-partner-theme.js"></script>`)
+    .replace(/href="[^"]*favicon-light\.svg"/, `href="data:image/svg+xml,${encodeURIComponent(icon.trim())}"`)
+    .replace(/\s*<link rel="preconnect" href="https:\/\/fonts\.googleapis\.com">/, '')
+    .replace(/\s*<link rel="preconnect" href="https:\/\/fonts\.gstatic\.com" crossorigin>/, '')
+    .replace(/\s*<link href="https:\/\/fonts\.googleapis\.com[^>]*>/, '');
+}
+
 function distIndexHtmlPlugin(partner: boolean): Plugin {
   return {
     name: 'dist-index-html',
@@ -44,7 +65,7 @@ function distIndexHtmlPlugin(partner: boolean): Plugin {
         .replace(faviconMarker, `href="${base}favicon-light.svg"`);
 
       await mkdir(outputDir, { recursive: true });
-      await writeFile(path.join(outputDir, page.output), html, 'utf8');
+      await writeFile(path.join(outputDir, page.output), partner ? await forPartnerEdge(html, outputDir, projectRoot) : html, 'utf8');
     },
   };
 }

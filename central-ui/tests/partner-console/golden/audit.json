@@ -1,29 +1,118 @@
 {
   "events": [
     {
-      "id": "ev-1",
-      "kind": "clients.create",
-      "at": "2026-11-10T09:00:00Z",
+      "id": "01a1d05a-9589-7648-933f-6615b3593eea",
+      "at": "2026-11-12T15:22:39.881778Z",
+      "kind": "admin.partner-edge.action:enrollment-tokens",
       "actor": {
-        "sub": "7a1c2f0e-5c5b-4f10-9e3f-2d6c1c8d0b11",
-        "display": "Aigul S."
+        "sub": "01a1d028-3d7b-7a44-ba23-5cddafec3ac5",
+        "display": "s•••@partner.example"
       },
-      "action": "submitted a client for approval",
-      "target": "acme-web",
+      "action": "Changed the enrollment token of edge",
+      "target": "partner-edge:e2e-partner-faf53869a4-edge",
       "outcome": "ok",
-      "from": "acme-edge-1"
+      "from": "e2e-partner-faf53869a4-edge"
     },
     {
-      "id": "ev-2",
-      "kind": "clients.approve",
-      "at": "2026-11-09T09:00:00Z",
+      "id": "7ee0ce1f-d1b2-4b95-8168-e244787656f0",
+      "at": "2026-11-12T15:22:38.438629Z",
+      "kind": "team.invite",
       "actor": {
-        "sub": "operator",
-        "display": "the operator",
+        "sub": "01a1d028-3d7b-7a44-ba23-5cddafec3ac5",
+        "display": "s•••@partner.example"
+      },
+      "action": "Invited w•••@partner.example as viewer",
+      "target": "w•••@partner.example",
+      "outcome": "ok"
+    },
+    {
+      "id": "01a1d05a-8c2e-7f36-bfac-1bd020e30ca9",
+      "at": "2026-11-12T15:22:37.486745Z",
+      "kind": "admin.partner-client.create",
+      "actor": {
+        "sub": "01a1d028-3d7b-7a44-ba23-5cddafec3ac5",
+        "display": "s•••@partner.example"
+      },
+      "action": "Created client",
+      "target": "partner-client:walk-mwdp5lwc",
+      "outcome": "failed",
+      "from": "e2e-partner-faf53869a4-edge"
+    },
+    {
+      "id": "01a1d056-c2e6-7a40-8a96-52132f79c386",
+      "at": "2026-11-12T15:18:29.350843Z",
+      "kind": "admin.partner-edge.create",
+      "actor": {
+        "sub": "01a1d028-3d7b-7a44-ba23-5cddafec3ac5",
+        "display": "s•••@partner.example"
+      },
+      "action": "Created edge",
+      "target": "partner-edge:edge-walk-edge-mwdoyyuq",
+      "outcome": "ok",
+      "from": "e2e-partner-faf53869a4-edge"
+    },
+    {
+      "id": "01a1d028-b653-7ffd-9e61-1d498adfbb46",
+      "at": "2026-11-12T14:28:11.475546Z",
+      "kind": "admin.partner.action:resume",
+      "actor": {
+        "sub": "e2e",
+        "display": "Operator",
         "byOperator": true
       },
-      "action": "approved a client",
-      "target": "acme-web",
+      "action": "Resumed organisation",
+      "target": "partner:e2e-partner-faf53869a4",
+      "outcome": "ok"
+    },
+    {
+      "id": "01a1d028-b250-7c99-9e39-4546a5382d3b",
+      "at": "2026-11-12T14:28:10.448766Z",
+      "kind": "admin.partner-revocation.create",
+      "actor": {
+        "sub": "01a1d028-3d7b-7a44-ba23-5cddafec3ac5",
+        "display": "s•••@partner.example"
+      },
+      "action": "Ended grants of clients",
+      "target": "partner-revocation:e2e-partner-faf53869a4-shop",
+      "outcome": "ok",
+      "from": "e2e-partner-faf53869a4-edge"
+    },
+    {
+      "id": "01a1d028-afa8-72e5-bd8f-963d4c7865fd",
+      "at": "2026-11-12T14:28:09.768548Z",
+      "kind": "admin.partner-approval.action:approve",
+      "actor": {
+        "sub": "e2e",
+        "display": "Operator",
+        "byOperator": true
+      },
+      "action": "Approved approval",
+      "target": "partner-approval:fe9b0573-b7d0-4ce7-bb16-f228e27ae3d2",
+      "outcome": "ok"
+    },
+    {
+      "id": "ce60087c-aa4f-4979-9b6a-42a61bd87579",
+      "at": "2026-11-12T14:28:09.516844Z",
+      "kind": "team.admit",
+      "actor": {
+        "sub": "01a1d028-ae2b-7389-94b5-7fc78fd7005b",
+        "display": "s•••@partner.example"
+      },
+      "action": "s•••@partner.example joined the team as viewer",
+      "target": "s•••@partner.example",
+      "outcome": "ok"
+    },
+    {
+      "id": "01a1d028-3a2e-789a-9860-4184210f9878",
+      "at": "2026-11-12T14:27:39.694434Z",
+      "kind": "admin.secret.revealed",
+      "actor": {
+        "sub": "e2e",
+        "display": "Operator",
+        "byOperator": true
+      },
+      "action": "Revealed a secret",
+      "target": "partner:e2e-partner-faf53869a4",
       "outcome": "ok"
     }
   ],

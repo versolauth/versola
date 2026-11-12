@@ -283,3 +283,17 @@ test('below 720px the record is a sheet and the wizard stacks', async ({ page })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   expect(await scan(page)).toEqual([]);
 });
+
+test('the wizard opens inside a tight cap and with no defaults set, as for a fresh partner on the real edge', async ({ page }) => {
+  const me = partnerSeedState.me!;
+  await loadPartnerApp(page, {
+    path: `${clientsPath}&new=1`,
+    state: { me: { ...me, partner: { ...me.partner, limits: { ...me.partner.limits, accessTokenTtlMax: 600, refreshTokenTtlMax: 86_400 } } }, settings: { ...partnerSeedState.settings, defaults: {} } },
+  });
+  await page.getByRole('button', { name: /^Web app/ }).click();
+  await page.getByRole('button', { name: 'Continue to basics' }).click();
+  await expect(page.getByLabel('Access token, minutes *')).toHaveValue('5');
+  await expect(page.getByLabel('Refresh token, days *')).toHaveValue('1');
+  await expect(page.getByLabel('Back-channel logout URI')).toHaveValue('');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});

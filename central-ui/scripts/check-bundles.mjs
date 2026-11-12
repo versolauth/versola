@@ -7,7 +7,8 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const dist = path.resolve(process.argv[2] ?? 'dist');
-const EXPECTED = ['versola-admin.js', 'versola-partner.js'];
+// The partner page's pre-paint theme script is a file of its own: the edge's CSP blocks an inline script.
+const EXPECTED = ['versola-admin.js', 'versola-partner-theme.js', 'versola-partner.js'];
 
 // What a partner's browser must never be able to reach: the operator's API, its user lookups and its permission catalog.
 const FORBIDDEN = ['/configuration/', '/users/', 'permissions/me', '/central/', 'versola-admin'];
@@ -41,6 +42,11 @@ while (queue.length > 0) {
   }
   for (const match of code.matchAll(/(?:from\s*|import\s*\(\s*)["']\.\/([^"']+\.js)["']/g)) queue.push(match[1]);
 }
+
+// The partner page must run under the edge's CSP: no inline script, no third-party resource.
+const page = await readFile(path.join(dist, 'partner.html'), 'utf8');
+if (/<script(?![^>]*\bsrc=)[^>]*>/.test(page)) problems.push('partner.html has an inline <script>: the edge\'s Content-Security-Policy blocks it');
+for (const external of page.match(/(?:href|src)="https?:\/\/[^"]+"/g) ?? []) problems.push(`partner.html loads ${external}: the edge's Content-Security-Policy allows its own origin only`);
 
 if (problems.length > 0) {
   console.error(`Bundle check failed:\n- ${problems.join('\n- ')}`);

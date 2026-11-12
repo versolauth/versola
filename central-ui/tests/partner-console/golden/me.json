@@ -1,48 +1,47 @@
 {
   "partner": {
-    "id": "acme",
-    "displayName": "Acme Corp",
-    "logoUri": "https://acme.example.com/logo.png",
+    "id": "e2e-partner-faf53869a4",
+    "displayName": "Partner e2e-partner-faf53869a4",
+    "logoUri": null,
     "status": "active",
     "limits": {
       "scopes": [
         "openid",
-        "profile",
-        "orders.read"
+        "email",
+        "phone"
       ],
       "redirectDomains": [
-        "acme.example.com"
+        "e2e-partner-faf53869a4.example"
       ],
       "maxClients": 5,
       "maxEdges": 2,
-      "accessTokenTtlMax": 3600,
-      "refreshTokenTtlMax": 2592000,
+      "accessTokenTtlMax": 600,
+      "refreshTokenTtlMax": 86400,
       "clientAuthMethods": [
-        "tls_client_auth",
-        "private_key_jwt"
+        "tls_client_auth"
       ],
-      "rateLimitPolicy": "standard"
+      "rateLimitPolicy": "partner-default"
     },
     "reviewAt": null,
     "operator": {
-      "name": "Versola",
-      "issuer": "https://auth.example.com",
-      "mtlsUrl": "https://mtls.auth.example.com",
-      "centralMtlsUrl": "https://mtls.central.example.com"
+      "name": "e2e suite tenant",
+      "issuer": "http://localhost:9003",
+      "mtlsUrl": "",
+      "centralMtlsUrl": ""
     }
   },
   "staff": {
-    "sub": "7a1c2f0e-5c5b-4f10-9e3f-2d6c1c8d0b11",
-    "display": "Aigul S.",
+    "sub": "01a1d028-3d7b-7a44-ba23-5cddafec3ac5",
+    "display": "s•••@partner.example",
     "level": "admin"
   },
   "edge": {
-    "id": "acme-edge-1",
-    "publicUrl": "https://edge.partner.example.com",
+    "id": "e2e-partner-faf53869a4-edge",
+    "publicUrl": "https://login.e2e-partner-faf53869a4.example",
     "central": "ok"
   },
   "console": {
-    "clientId": "acme-console",
-    "presetId": "acme-console"
+    "clientId": "e2e-partner-faf53869a4-console",
+    "presetId": "e2e-partner-faf53869a4-console"
   }
 }

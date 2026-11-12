@@ -121,17 +121,33 @@ export class VersolaPartnerClientWizard extends LitElement {
   ];
 
   private defaultsApplied = false;
+  private capsApplied = false;
+
+  private withinCaps(draft: Draft): Draft {
+    const { accessTokenTtlMax, refreshTokenTtlMax } = this.limits;
+    return {
+      ...draft,
+      accessTokenTtlMinutes: String(Math.min(Number(draft.accessTokenTtlMinutes), Math.max(1, Math.floor(accessTokenTtlMax / 60)))),
+      refreshTokenTtlDays: String(Math.min(Number(draft.refreshTokenTtlDays), Math.max(1, Math.floor(refreshTokenTtlMax / 86_400)))),
+    };
+  }
 
   /** The defaults from Settings arrive after the first render when the wizard is the entry URL; they apply once, before anything was typed. */
   willUpdate(changed: Map<string, unknown>) {
+    if (changed.has('me') && !this.capsApplied) {
+      // The lifetimes start inside the operator's caps, so a partner with a tighter cap than the usual 5 min / 14 days does not open on an error.
+      this.capsApplied = true;
+      this.draft = this.withinCaps(this.draft);
+    }
     if (changed.has('defaults') && this.defaults && !this.defaultsApplied) {
       this.defaultsApplied = true;
       this.draft = {
         ...this.draft,
-        accessTokenTtlMinutes: String(Math.max(1, Math.round(this.defaults.accessTokenTtl / 60))),
-        refreshTokenTtlDays: String(Math.max(1, Math.round(this.defaults.refreshTokenTtl / 86_400))),
-        backChannelLogoutUri: this.defaults.backChannelLogoutUri,
+        accessTokenTtlMinutes: this.defaults.accessTokenTtl ? String(Math.max(1, Math.round(this.defaults.accessTokenTtl / 60))) : this.draft.accessTokenTtlMinutes,
+        refreshTokenTtlDays: this.defaults.refreshTokenTtl ? String(Math.max(1, Math.round(this.defaults.refreshTokenTtl / 86_400))) : this.draft.refreshTokenTtlDays,
+        backChannelLogoutUri: this.defaults.backChannelLogoutUri ?? '',
       };
+      this.draft = this.withinCaps(this.draft);
     }
   }
 

@@ -1,6 +1,6 @@
 {
-  "token": "vtk_acme_y",
-  "bundle": "{}",
-  "bundleComplete": false,
-  "expiresAt": "2026-11-13T09:00:00Z"
+  "token": "REDACTED-ENROLLMENT-TOKEN",
+  "bundle": "{\"edgeId\":\"e2e-partner-faf53869a4-edge\",\"group\":\"e2e-partner-faf53869a4\",\"central\":{\"mtlsUrl\":null},\"auth\":{\"issuer\":\"http://localhost:9003\",\"mtlsUrl\":null},\"token\":\"REDACTED-ENROLLMENT-TOKEN\"}",
+  "expiresAt": "2026-11-13T15:24:23.535783Z",
+  "bundleComplete": false
 }

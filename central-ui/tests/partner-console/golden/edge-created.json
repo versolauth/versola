@@ -1,10 +1,10 @@
 {
   "edge": {
-    "id": "acme-edge-1",
-    "publicUrl": "https://edge.partner.example.com",
+    "id": "edge-walk-edge-mwdoyyuq",
+    "publicUrl": "https://login-mwdoyyuq.e2e-partner-faf53869a4.example",
     "status": "waiting",
-    "certificateNotAfter": "2026-11-24T08:00:00Z",
-    "lastRenewedAt": "2026-11-10T08:00:00Z",
+    "certificateNotAfter": null,
+    "lastRenewedAt": null,
     "replicas": 0,
     "policies": {
       "overload": {},
@@ -13,11 +13,11 @@
     }
   },
   "signingKey": {
-    "keyId": "2026-11-12_09-00-00",
-    "privateKey": "-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----"
+    "keyId": "2026-11-12_15-18-29",
+    "privateKey": "REDACTED-PRIVATE-KEY"
   },
-  "token": "vtk_acme_x",
-  "bundle": "{}",
-  "expiresAt": "2026-11-13T09:00:00Z",
+  "token": "REDACTED-ENROLLMENT-TOKEN",
+  "bundle": "{\"edgeId\":\"edge-walk-edge-mwdoyyuq\",\"group\":\"e2e-partner-faf53869a4\",\"central\":{},\"auth\":{\"issuer\":\"http://localhost:9003\"},\"signingKey\":{\"keyId\":\"2026-11-12_15-18-29\",\"privateKey\":\"REDACTED-PRIVATE-KEY\"},\"token\":\"REDACTED-ENROLLMENT-TOKEN\"}",
+  "expiresAt": "2026-11-13T15:18:29.344551Z",
   "bundleComplete": true
 }

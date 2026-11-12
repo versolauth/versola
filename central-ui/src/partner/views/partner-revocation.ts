@@ -195,9 +195,9 @@ export class VersolaPartnerRevocation extends LitElement {
     const columns: DataTableColumn<Revocation>[] = [
       { id: 'when', label: 'When', class: 'muted', cell: item => formatDate(item.at) },
       { id: 'who', label: 'By', cell: item => this.team.find(member => member.subject === item.by_staff)?.display ?? item.by_staff },
-      { id: 'what', label: 'What', cell: item => html`<span class="cell-line">${BY_LABELS[item.by].label.toLowerCase()} · ${item.value}</span>` },
-      { id: 'clients', label: 'Clients', cell: item => html`<div class="tag-list">${item.clients.map(id => html`<span class="tag">${id}</span>`)}</div>` },
-      { id: 'edges', label: 'Edges', cell: item => html`<div class="tag-list">${item.edges.map(id => html`<span class="tag">${id}</span>`)}</div>` },
+      { id: 'what', label: 'What', cell: item => html`<span class="cell-line">${[BY_LABELS[item.by]?.label.toLowerCase(), item.value].filter(Boolean).join(' · ')}</span>` },
+      { id: 'clients', label: 'Clients', cell: item => html`<div class="tag-list">${(item.clients ?? []).map(id => html`<span class="tag">${id}</span>`)}</div>` },
+      { id: 'edges', label: 'Edges', cell: item => html`<div class="tag-list">${(item.edges ?? []).map(id => html`<span class="tag">${id}</span>`)}</div>` },
       { id: 'ended', label: 'Ended', class: 'muted', cell: item => `${item.ended} ${item.ended === 1 ? 'session' : 'sessions'}` },
     ];
     return html`

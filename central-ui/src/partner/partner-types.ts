@@ -143,7 +143,8 @@ export type StaffInvite = { identifier: string; level: StaffLevel; expiresInDays
 
 export type PartnerSettings = {
   contact: { email: string; phone?: string | null };
-  defaults: { backChannelLogoutUri: string; accessTokenTtl: number; refreshTokenTtl: number };
+  /** What the console offers for a new client; every part may be absent (a fresh partner has none). Seconds for the lifetimes. */
+  defaults: { backChannelLogoutUri?: string | null; accessTokenTtl?: number | null; refreshTokenTtl?: number | null };
 };
 
 export type ProfileChange = { displayName: string; logoUri: string | null };

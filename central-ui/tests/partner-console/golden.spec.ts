@@ -71,7 +71,8 @@ function conformsObject(at: string, actual: Json, golden: Record<string, Json>, 
     return;
   }
   const object = actual as { [key: string]: Json };
-  for (const key of Object.keys(object)) if (!(key in golden)) problems.push(`${at}.${key}: the mock invents a field the edge does not send`);
+  // The edge leaves out what it has no value for (`logoUri`, a note), where the contract allows null: a null the mock sends is that.
+  for (const key of Object.keys(object)) if (!(key in golden) && object[key] !== null) problems.push(`${at}.${key}: the mock invents a field the edge does not send`);
   for (const key of always) if (!(key in object) && !optional.includes(`${at}.${key}`)) problems.push(`${at}.${key}: the edge always sends it and the mock does not`);
   for (const [key, value] of Object.entries(object)) if (key in golden) conforms(`${at}.${key}`, value, golden[key], optional, problems);
 }
@@ -119,7 +120,7 @@ test('a created client and a created edge have the edge\'s shape', async ({ page
   expect(created.edge.status).toBe(201);
   expect(created.token.status).toBe(201);
   conforms('POST /clients', created.client.body, clientCreated as Json, ['POST /clients.consentFlow', 'POST /clients.policyUri', 'POST /clients.tosUri', 'POST /clients.logoUri'], problems);
-  conforms('POST /edges', created.edge.body, edgeCreated as Json, ['POST /edges.edge.certificateNotAfter', 'POST /edges.edge.lastRenewedAt'], problems);
+  conforms('POST /edges', created.edge.body, edgeCreated as Json, ['POST /edges.edge.certificateNotAfter', 'POST /edges.edge.lastRenewedAt', 'POST /edges.bundleComplete'], problems);
   conforms('POST /edges/{id}/enrollment-tokens', created.token.body, enrollmentToken as Json, [], problems);
   expect(problems).toEqual([]);
 });

@@ -114,3 +114,11 @@ test('with no enrolled edge there is nothing to end sessions on; with none ended
   await expect(page.getByRole('alert')).toHaveText('No enrolled edge to end sessions on.');
   expect(await scan(page)).toEqual([]);
 });
+
+test('a recent row the edge sent without a kind or clients still lists, as the real edge sends them', async ({ page }) => {
+  const [first] = partnerSeedState.revocations;
+  await loadPartnerApp(page, { path: revocationPath, state: { revocations: [{ ...first, by: '' as never, clients: undefined as never, edges: undefined as never }] } });
+  const recent = page.getByRole('region', { name: 'Recently ended' });
+  await expect(recent.getByRole('row')).toHaveCount(2);
+  await expect(recent).toContainText(first.value);
+});

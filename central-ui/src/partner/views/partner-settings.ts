@@ -103,8 +103,8 @@ export class VersolaPartnerSettings extends LitElement {
       displayName: me.partner.displayName, logoUri: me.partner.logoUri ?? '',
       email: settings?.contact.email ?? '', phone: settings?.contact.phone ?? '',
       backChannelLogoutUri: settings?.defaults.backChannelLogoutUri ?? '',
-      accessTokenTtlMinutes: String(Math.max(1, Math.round((settings?.defaults.accessTokenTtl ?? 300) / 60))),
-      refreshTokenTtlDays: String(Math.max(1, Math.round((settings?.defaults.refreshTokenTtl ?? 14 * 86_400) / 86_400))),
+      accessTokenTtlMinutes: String(Math.max(1, Math.round((settings?.defaults.accessTokenTtl || 300) / 60))),
+      refreshTokenTtlDays: String(Math.max(1, Math.round((settings?.defaults.refreshTokenTtl || 14 * 86_400) / 86_400))),
     };
     this.formError = '';
     this.submitted = false;
@@ -248,7 +248,7 @@ export class VersolaPartnerSettings extends LitElement {
                 `} @edit=${() => dispatchRecordRoute(this, { edit: 'contacts', create: false })}></versola-record-card>
                 <versola-record-card heading="Defaults for new clients" ?editable=${edit} .body=${html`
                   ${this.row('Back-channel logout URI', settings?.defaults.backChannelLogoutUri ? html`<span class="mono">${settings.defaults.backChannelLogoutUri}</span>` : html`<span class="muted">None</span>`)}
-                  ${this.row('Token lifetimes', settings ? `access ${ttlLabel(settings.defaults.accessTokenTtl)} · refresh ${ttlLabel(settings.defaults.refreshTokenTtl)}` : '—')}
+                  ${this.row('Token lifetimes', settings ? `access ${settings.defaults.accessTokenTtl ? ttlLabel(settings.defaults.accessTokenTtl) : 'not set'} · refresh ${settings.defaults.refreshTokenTtl ? ttlLabel(settings.defaults.refreshTokenTtl) : 'not set'}` : '—')}
                 `} @edit=${() => dispatchRecordRoute(this, { edit: 'defaults', create: false })}></versola-record-card>
               </div>
               <div>

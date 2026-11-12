@@ -169,7 +169,7 @@ export class VersolaPartnerEdges extends LitElement {
     try {
       const { edge, ...token } = await createEdge({ id: this.edgeId, publicUrl: this.draftUrl.trim().replace(/\/$/, '') });
       this.edges = [...this.edges, edge];
-      this.issued = { ...token, edgeId: edge.id };
+      this.issued = { ...token, bundleComplete: token.bundleComplete ?? true, edgeId: edge.id };
       this.copyFeedback = '';
       dispatchRecordRoute(this, { id: edge.id, edit: null, create: false });
     } catch (error) {
@@ -183,7 +183,7 @@ export class VersolaPartnerEdges extends LitElement {
     this.errorMessage = '';
     try {
       const token = await issueEnrollmentToken(edge.id);
-      this.issued = { ...token, edgeId: edge.id };
+      this.issued = { ...token, bundleComplete: token.bundleComplete ?? false, edgeId: edge.id };
       this.copyFeedback = '';
     } catch (error) {
       this.errorMessage = writeErrorMessage(error);
@@ -273,7 +273,7 @@ export class VersolaPartnerEdges extends LitElement {
 
   /** What is shown once after a token is issued: a complete bootstrap bundle (a new edge) or just the token (an edge that already has its identity). */
   private renderIssued(edge: PartnerEdge, issued: Issued) {
-    const complete = issued.bundleComplete !== false;
+    const complete = issued.bundleComplete === true;
     const until = issued.expiresAt ? html` until ${formatDate(issued.expiresAt)} (${relativeTime(issued.expiresAt)})` : '';
     return html`
       <div class="banner ok key-banner" role="status">
@@ -323,8 +323,8 @@ export class VersolaPartnerEdges extends LitElement {
     const central = me.edge.central === 'ok';
     return html`
       <versola-record-card heading="Link to the operator" .body=${html`
-        ${this.row('central-mtls', html`<span class="mono">${me.partner.operator.centralMtlsUrl}</span> · ${edge.status === 'enrolled' ? (central ? html`<span class="chip ok">${statusIcon('check', 'icon', 14)}connected</span>` : html`<span class="chip danger">unavailable</span>`) : html`<span class="muted">not enrolled</span>`}`)}
-        ${this.row('id-mtls (auth)', html`<span class="mono">${me.partner.operator.mtlsUrl}</span> · as your clients`)}
+        ${this.row('central-mtls', html`${me.partner.operator.centralMtlsUrl ? html`<span class="mono">${me.partner.operator.centralMtlsUrl}</span> · ` : ''}${edge.status === 'enrolled' ? (central ? html`<span class="chip ok">${statusIcon('check', 'icon', 14)}connected</span>` : html`<span class="chip danger">unavailable</span>`) : html`<span class="muted">not enrolled</span>`}`)}
+        ${this.row('id-mtls (auth)', html`${me.partner.operator.mtlsUrl ? html`<span class="mono">${me.partner.operator.mtlsUrl}</span> · ` : ''}as your clients`)}
         ${this.row('If central is unreachable', 'this page cannot be read or changed: its calls answer 503 until central is back')}
       `}></versola-record-card>
 
