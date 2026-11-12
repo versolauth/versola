@@ -46,6 +46,7 @@ paths:
         - $ref: '#/components/parameters/UiLocales'
         - $ref: '#/components/parameters/Claims'
         - $ref: '#/components/parameters/LoginHint'
+        - $ref: '#/components/parameters/OneTimeLink'
         - $ref: '#/components/parameters/IdTokenHint'
         - $ref: '#/components/parameters/Resource'
         - $ref: '#/components/parameters/AuthorizationDetails'
@@ -301,6 +302,27 @@ components:
       schema:
         type: string
       example: user@example.com
+
+    OneTimeLink:
+      name: link_token
+      in: query
+      required: false
+      description: |
+        The token of a one-time link (a Versola extension, not an OIDC parameter). The token is 256
+        random bits, stored only as a hash, and spent by the first request that presents it; the
+        purpose stored with it decides what happens. The only purpose today is `first_login`, the
+        bootstrap admin's link: auth prints it once, when it creates the admin's temporary password,
+        and it is valid for the same 24 hours. With a valid `first_login` token, and only when the
+        request carries no session and no `id_token_hint`, the login starts for that user with the
+        password step already passed and goes on to the remaining factors and the "set a permanent
+        password" step.
+        A token that is unknown, expired, already spent or repeated is ignored: the request is an
+        ordinary login and nothing in the response says that a token was presented. The token is
+        never stored on the conversation (a client that pushes the request through PAR or signs it
+        as a request object carries it inside that request, which is stored until consumed or
+        expired). Edge passes it on from its `/login/{presetId}`.
+      schema:
+        type: string
 
     IdTokenHint:
       name: id_token_hint

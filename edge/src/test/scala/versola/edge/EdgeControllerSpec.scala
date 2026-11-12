@@ -405,6 +405,18 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.authorize.calls == List((PresetId("preset-1"), Map("acr_values" -> "mfa", "prompt" -> "login"), None)),
       )
     },
+    test("passes the first-login token of the bootstrap admin on to authorize, where it is spent") {
+      val authorizeUrl = URL.decode("https://idp.example/authorize?client_id=web-app").toOption.get
+      for
+        (response, service, _) <- run(
+          Request.get(URL.decode("/login/central-admin?link_token=tok123").toOption.get),
+          (s, _) => s.authorize.succeedsWith(loginStart(authorizeUrl)),
+        )
+      yield assertTrue(
+        response.status == Status.SeeOther,
+        service.authorize.calls == List((PresetId("central-admin"), Map("link_token" -> "tok123"), None)),
+      )
+    },
     test("passes the page the login should return to on to authorize") {
       val authorizeUrl = URL.decode("https://idp.example/authorize?client_id=web-app").toOption.get
       for

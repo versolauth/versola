@@ -42,6 +42,11 @@ private[authorize] case class AuthorizeRequest(
       * any key (or none). */
     dpopJkt: Option[String],
     ip: Option[String],
+    /** The token of a one-time link (issue #824), as it came on the query string. A secret: it is spent in
+      * [[versola.oauth.authorize.AuthorizeEndpointService]] and kept nowhere else, not on the conversation.
+      * Absent, malformed or repeated, it is simply `None`: an unknown token must look like no token at all.
+      */
+    linkToken: Option[String] = None,
 ):
   def promptNone: Boolean = prompt.contains(Prompt.none)
   def promptLogin: Boolean = prompt.contains(Prompt.login)

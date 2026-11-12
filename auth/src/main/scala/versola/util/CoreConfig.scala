@@ -60,6 +60,10 @@ object CoreConfig:
       login: String,
       password: String,
       adminUserId: java.util.UUID,
+      /** Where the first-login link starts: the edge's `/login/{presetId}` of the admin console, without a
+        * query. Absent, no first-login token is issued and the temporary password is the only way in.
+        */
+      firstLoginUrl: Option[String] = None,
   )
 
   case class SmtpConfig(

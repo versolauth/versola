@@ -3,8 +3,10 @@ package versola.oauth.authorize
 import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
+import versola.audit.{AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseMode, ResponseTypeEntry}
+import versola.oauth.challenge.password.{ConsumedLink, OneTimeLink, OneTimeLinkPurpose, PasswordRepository}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ApplicationType
 import versola.oauth.client.model.{
@@ -35,6 +37,7 @@ import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
 import versola.user.model.UserRecord
+import versola.util.audit.AuditOutcome
 import versola.util.{AuthPropertyGenerator, Email, JWT, MAC, Phone, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.http.URL
@@ -43,7 +46,7 @@ import zio.test.*
 import zio.{Exit, ZIO}
 
 import java.time.Instant
-import java.util.UUID
+import java.util.{Arrays, UUID}
 
 object AuthorizeEndpointServiceSpec extends UnitSpecBase:
 
@@ -152,6 +155,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     val conversationRouter = stub[ConversationRouter]
     val acrResolver = stub[AcrResolutionService]
     val consentService = stub[ConsentService]
+    val passwordRepository = stub[PasswordRepository]
+    val audit = CapturingAuditEvents.shared()
     // Registration is a tenant decision; a test that is about it says so.
     configurationService.registrationAvailable.returnsWith(ZIO.succeed(false))
     val service = AuthorizeEndpointService.Impl(
@@ -169,6 +174,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       conversationRouter,
       acrResolver,
       consentService,
+      passwordRepository,
+      audit,
     )
 
   val phoneHint = Phone("+12025551234")
@@ -268,6 +275,112 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
   )
 
   val spec = suite("AuthorizeEndpointService")(
+    suite("first-login token (issue #824)")(
+      test("a valid token starts a conversation for its user with the password passed and a permanent password owed") {
+        val env = Env()
+        val uuid = UUID.randomUUID()
+        val adminId = versola.user.model.UserId(UUID.randomUUID())
+        for
+          _ <- env.configurationService.find.succeedsWith(Some(clientWithPasswordFlow))
+          _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+          _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+          _ <- env.passwordRepository.consumeLink.succeedsWith(Some(ConsumedLink(adminId, OneTimeLinkPurpose.FirstLogin)))
+          _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(adminId)))
+          _ <- env.conversationRepository.create.succeedsWith(())
+          _ <- env.conversationRouter.advance.succeedsWith(())
+          result <- env.service.authorize(baseRequest.copy(linkToken = Some("the-token")))
+          conversation = env.conversationRepository.create.calls.head._2
+          spent = env.passwordRepository.consumeLink.calls.head
+          advanceTimes = env.conversationRouter.advance.times
+          rows <- env.audit.of(AuthAuditKinds.LoginStep)
+        yield assertTrue(
+          result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+          conversation.userId == Some(adminId),
+          conversation.amr.keySet == Set(PassedAuthFactor.password),
+          conversation.needsPasswordChange,
+          // only the hash is looked up, never the token itself
+          Arrays.equals(spent._1, OneTimeLink.hash("the-token")),
+          spent._2 == Set(OneTimeLinkPurpose.FirstLogin),
+          advanceTimes == 1,
+          // the spent link is on the audit trail as the step that stood in for the password, with no token in it
+          rows.size == 1,
+          rows.head.userId == Some(adminId),
+          rows.head.outcome == AuditOutcome.success,
+          rows.head.details.toJson.toString.contains("link_first_login"),
+          !rows.head.details.toJson.toString.contains("the-token"),
+        )
+      },
+      test("a token whose user no longer exists is refused, not turned into a login with the password already passed") {
+        val env = Env()
+        val adminId = versola.user.model.UserId(UUID.randomUUID())
+        for
+          _ <- env.configurationService.find.succeedsWith(Some(clientWithPasswordFlow))
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+          _ <- env.passwordRepository.consumeLink.succeedsWith(Some(ConsumedLink(adminId, OneTimeLinkPurpose.FirstLogin)))
+          _ <- env.userRepository.find.succeedsWith(None)
+          _ <- env.conversationRepository.create.succeedsWith(())
+          result <- env.service.authorize(baseRequest.copy(linkToken = Some("the-token"))).flip
+          created = env.conversationRepository.create.times
+        yield assertTrue(
+          result == Error.AccessDenied(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query),
+          created == 0,
+        )
+      },
+      test("an unknown, expired or spent token is an ordinary login, not an error") {
+        val env = Env()
+        val uuid = UUID.randomUUID()
+        for
+          _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+          _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+          _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+          _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+          _ <- env.passwordRepository.consumeLink.succeedsWith(None)
+          _ <- env.conversationRepository.create.succeedsWith(())
+          result <- env.service.authorize(baseRequest.copy(linkToken = Some("unknown")))
+          conversation = env.conversationRepository.create.calls.head._2
+          advanceTimes = env.conversationRouter.advance.times
+          rows <- env.audit.of(AuthAuditKinds.LoginStep)
+        yield assertTrue(
+          result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+          conversation.userId.isEmpty,
+          conversation.amr.isEmpty,
+          !conversation.needsPasswordChange,
+          advanceTimes == 0,
+          // a token that was only presented, never spent, writes nothing: unknown tokens can be sprayed for free
+          rows.isEmpty,
+        )
+      },
+      test("a browser that already has a session is not turned into the admin: the token is neither read nor spent") {
+        val env = Env()
+        val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+        for
+          _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+          _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+          _ <- silentAuthorizeStubs(env)
+          _ <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), linkToken = Some("t")))
+          spentTimes = env.passwordRepository.consumeLink.times
+        yield assertTrue(spentTimes == 0)
+      },
+      test("an id_token_hint that does not verify fails the request before any token is read") {
+        val env = Env()
+        // Only the unverifiable-hint case: a hint that verifies takes the (None, Some(userId)) branch, which never
+        // reads the token; that ordering is not pinned by a test here.
+        for
+          _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+          result <- env.service.authorize(baseRequest.copy(idTokenHint = Some("not-a-jwt"), linkToken = Some("t"))).exit
+          spentTimes = env.passwordRepository.consumeLink.times
+        yield assertTrue(result.isFailure, spentTimes == 0)
+      },
+      test("prompt=none never spends the token") {
+        val env = Env()
+        for
+          _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+          result <- env.service.authorize(baseRequest.copy(prompt = Set(Prompt.none), linkToken = Some("t"))).exit
+          spentTimes = env.passwordRepository.consumeLink.times
+        yield assertTrue(result.isFailure, spentTimes == 0)
+      },
+    ),
     test("create new conversation when no session") {
       val env = Env()
       val uuid = UUID.randomUUID()

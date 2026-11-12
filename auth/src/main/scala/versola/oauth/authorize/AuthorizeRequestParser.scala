@@ -1,6 +1,7 @@
 package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseMode, ResponseTypeEntry}
+import versola.oauth.challenge.password.OneTimeLink
 import versola.oauth.client.model.{
   Acr,
   AuthorizationDetail,
@@ -368,6 +369,10 @@ object AuthorizeRequestParser:
                 .orElseFail(Error.DpopJktInvalid(clientId, redirectUri, state, responseMode = responseMode))
                 .asSome
 
+        // Not an error when malformed or repeated: a first-login token that does not parse must be
+        // indistinguishable from one that is unknown, so the request just goes on as an ordinary login.
+        linkToken <- getParam(params, OneTimeLink.ParamName).orElseSucceed(None)
+
         authorizeRequest = AuthorizeRequest(
           clientId = clientId,
           redirectUri = redirectUri,
@@ -392,6 +397,7 @@ object AuthorizeRequestParser:
           authorizationDetails = authorizationDetails,
           dpopJkt = dpopJkt,
           ip = ip,
+          linkToken = linkToken,
         )
       yield authorizeRequest
 
