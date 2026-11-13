@@ -2,7 +2,7 @@ package versola.edge.attestation
 
 import zio.Task
 
-import java.time.Instant
+import java.time.{Duration, Instant}
 
 /** An App Attest key that has been attested to this edge: its public key, to check its assertions with, the Apple environment it
   * was attested in (a policy that later accepts only production does not go on accepting a development key), and the counter of
@@ -19,6 +19,13 @@ trait AttestedKeyRepository:
 
   def find(clientId: String, keyId: String): Task[Option[AttestedKey]]
 
+
   /** Moves the counter forward to `counter`, if it is greater than the one stored. False when it is not: the assertion has been
     * used, or one after it has. Atomic, so that two replicas given the same assertion cannot both succeed. */
   def advance(clientId: String, keyId: String, counter: Long, at: Instant): Task[Boolean]
+
+object AttestedKeyRepository:
+
+  /** How long a key is remembered without being used. Every assertion moves it forward, so only an install that has not made a
+    * request for this long is forgotten, and it attests a new key when it comes back. */
+  val Retention: Duration = Duration.ofDays(365)

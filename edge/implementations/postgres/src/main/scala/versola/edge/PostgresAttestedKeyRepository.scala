@@ -15,9 +15,10 @@ class PostgresAttestedKeyRepository(xa: TransactorZIO) extends AttestedKeyReposi
   override def register(clientId: String, keyId: String, publicKey: Array[Byte], environment: IosEnvironment, at: Instant): Task[Unit] =
     xa.connectMeasured("register-attested-key"):
       // A key already recorded keeps its counter: a second attestation of it is not a way to wind it back.
+      val expiresAt = at.plus(AttestedKeyRepository.Retention)
       sql"""
-        INSERT INTO attested_keys (client_id, key_id, public_key, environment, counter, created_at, last_used_at)
-        VALUES ($clientId, $keyId, $publicKey, $environment, 0, $at, $at)
+        INSERT INTO attested_keys (client_id, key_id, public_key, environment, counter, created_at, expires_at)
+        VALUES ($clientId, $keyId, $publicKey, $environment, 0, $at, $expiresAt)
         ON CONFLICT (client_id, key_id) DO NOTHING
       """.update.run()
     .unit
@@ -29,8 +30,9 @@ class PostgresAttestedKeyRepository(xa: TransactorZIO) extends AttestedKeyReposi
 
   override def advance(clientId: String, keyId: String, counter: Long, at: Instant): Task[Boolean] =
     xa.connectMeasured("advance-attested-key-counter"):
+      val expiresAt = at.plus(AttestedKeyRepository.Retention)
       sql"""
-        UPDATE attested_keys SET counter = $counter, last_used_at = $at
+        UPDATE attested_keys SET counter = $counter, expires_at = $expiresAt
         WHERE client_id = $clientId AND key_id = $keyId AND counter < $counter
         RETURNING 1
       """.query[Int].run().nonEmpty

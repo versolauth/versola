@@ -487,7 +487,11 @@ satisfy one once it carries a version of the SDK that sends attestation.
 - **Migrations.** `V1035__client_attestation_policies.sql` (central) holds the policy per client; `V2010__attested_keys.sql` (edge) holds
   the App Attest keys that have been attested and the counter of their last assertion, which is what makes an assertion single use.
   Both are new tables, additive: the previous release runs on them and a rollback works; neither can be undone except by the
-  pre-migration dump. `attested_keys` has a row per iOS install and client and is not cleaned up yet.
+  pre-migration dump. `attested_keys` has a row per iOS install and client. A row is forgotten 365 days after the key was last used
+  (`expires_at`, moved forward by every assertion), by the `attested_keys` entry of the `cleanup` block that `versola configure` generates.
+  **A deployment configured before this release has a `cleanup` block without that entry**: add it (`table-name = "attested_keys"`,
+  `batch-size = 1000`, `interval = "1 hour"`, `key-column = "ctid"`) or run `versola configure` again, or the table grows. An app whose
+  key was forgotten attests a new one on its next request.
 - **API.** `GET`, `PUT` and `DELETE /configuration/clients/attestation?clientId=...` (`central/open-api/central.yaml`), for a native client
   that authenticates with `tls_client_auth` only; recorded in the audit log as `admin.client-attestation.update` / `.delete`. The app
   sends `attestation_*` fields on `/native/start` (`edge/open-api/edge.yaml`).

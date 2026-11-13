@@ -1,7 +1,7 @@
 package versola.edge
 
+import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import com.augustnagro.magnum.sql
 import versola.edge.attestation.IosEnvironment
 import versola.util.postgres.PostgresSpec
 import zio.*
@@ -12,6 +12,8 @@ import java.time.Instant
 /** The table behind App Attest: that a key is found as it was recorded, and that its counter only ever moves forward -- also when
   * two replicas are handed the same assertion at once, which is the whole point of keeping it in the database. */
 object PostgresAttestedKeyRepositorySpec extends PostgresSpec:
+
+  given DbCodec[Instant] = DbCodec.InstantCodec
 
   private val t0 = Instant.parse("2026-03-01T00:00:00Z")
   private val key = Array.fill[Byte](91)(5)
@@ -83,6 +85,33 @@ object PostgresAttestedKeyRepositorySpec extends PostgresSpec:
         _ <- repository.register("mobile", "key-1", key, IosEnvironment.production, t0)
         results <- ZIO.foreachPar(1 to 8)(_ => repository.advance("mobile", "key-1", 7, t0))
       yield assertTrue(results.count(identity) == 1)
+    },
+    test("a key is remembered for a year from when it was recorded, and every assertion moves that forward") {
+      def expiry(xa: TransactorZIO) =
+        xa.connect(sql"SELECT expires_at FROM attested_keys WHERE client_id = 'mobile' AND key_id = 'key-1'".query[Instant].run().head)
+      for
+        xa <- ZIO.service[TransactorZIO]
+        repository <- setup
+        _ <- repository.register("mobile", "key-1", key, IosEnvironment.production, t0)
+        recorded <- expiry(xa)
+        _ <- repository.advance("mobile", "key-1", 1, t0.plusSeconds(100 * 86400))
+        used <- expiry(xa)
+      yield assertTrue(
+        recorded == t0.plusSeconds(365 * 86400),
+        used == t0.plusSeconds(465 * 86400),
+      )
+    },
+    test("the table has what the cleanup of expired rows needs: an expires_at column and an index that leads with it") {
+      for
+        xa <- ZIO.service[TransactorZIO]
+        _ <- setup
+        indexed <- xa.connect:
+          sql"""
+            SELECT COUNT(*) FROM pg_index i
+            JOIN pg_attribute ia ON ia.attrelid = i.indrelid AND ia.attnum = i.indkey[0]
+            WHERE i.indrelid = 'attested_keys'::regclass AND ia.attname = 'expires_at'
+          """.query[Long].run().head
+      yield assertTrue(indexed >= 1L)
     },
     test("a counter above what an int holds is kept as it is") {
       for
