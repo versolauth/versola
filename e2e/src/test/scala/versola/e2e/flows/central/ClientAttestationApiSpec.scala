@@ -20,7 +20,7 @@ object ClientAttestationApiSpec extends CentralApiSpec:
   private val digest = "ab" * 32
 
   /** A native client fronted by edge: `native` with `tls_client_auth`, the only kind that has a policy. */
-  private def mutualTlsNative(id: String): Json.Obj =
+  private def mutualTlsNative(id: String, certificate: EdgeCertificate): Json.Obj =
     Json.Obj(
       "tenantId" -> Json.Str(Fixtures.suiteTenant),
       "id" -> Json.Str(id),
@@ -29,7 +29,9 @@ object ClientAttestationApiSpec extends CentralApiSpec:
       "allowedScopes" -> Json.Arr(Json.Str("openid")),
       "accessTokenTtl" -> Json.Num(3600),
       "authMethod" -> Json.Str("tls_client_auth"),
-      "mtlsAuth" -> Fixtures.mutualTlsAuth("subject_dn", s"CN=$id,O=Example"),
+      "mtlsAuth" -> Fixtures.mutualTlsAuth("subject_dn", s"CN=$id"),
+      // What edge presents as this client: a native client fronted by edge is registered with it (the app keeps no credential).
+      "edgeClientCertificate" -> Json.Str(certificate.edgeClientCertificate),
       "issueEdgeClientCertificate" -> Json.Bool(false),
       "enrollEdgeClientCertificate" -> Json.Bool(false),
       "theme" -> Json.Str("default"),
@@ -38,10 +40,14 @@ object ClientAttestationApiSpec extends CentralApiSpec:
       "dpopSigningAlgs" -> Json.Arr(),
     )
 
-  private def publicNative(id: String): Json.Obj =
-    Json.Obj(mutualTlsNative(id).fields.filterNot((name, _) => name == "mtlsAuth").map:
-      case ("authMethod", _) => "authMethod" -> Json.Str("none")
-      case other => other)
+  private def publicNative(id: String, certificate: EdgeCertificate): Json.Obj =
+    Json.Obj(
+      mutualTlsNative(id, certificate).fields
+        .filterNot((name, _) => name == "mtlsAuth" || name == "edgeClientCertificate")
+        .map:
+          case ("authMethod", _) => "authMethod" -> Json.Str("none")
+          case other => other,
+    )
 
   private def policy(mode: String, appIds: Seq[String] = Seq("ABCDE12345.com.example.app"), digests: Seq[String] = Seq(digest)): Json.Obj =
     Json.Obj(
@@ -61,12 +67,15 @@ object ClientAttestationApiSpec extends CentralApiSpec:
           .unless(created.status == Status.Created),
     )(_ => central.delete(clientsPath, "clientId" -> id).ignore)(_ => use(id))
 
+  private def withMtlsNative[A](central: CentralApi, id: String)(use: String => Task[A]): Task[A] =
+    EdgeCertificate.make(commonName = id).flatMap(certificate => withClient(central, mutualTlsNative(id, certificate))(use))
+
   def spec = suite("Central API: app attestation policy")(
     test("a client with no policy reads as off over no builds") {
       for
         central <- api
         id <- CentralApi.id("attested")
-        read <- withClient(central, mutualTlsNative(id))(id => central.get(path, "clientId" -> id).flatMap(r => r.obj.map(r.status -> _)))
+        read <- withMtlsNative(central, id)(id => central.get(path, "clientId" -> id).flatMap(r => r.obj.map(r.status -> _)))
       yield assertTrue(read._1 == Status.Ok, read._2.str("mode").contains("off"), read._2.arr("android").isEmpty)
     },
     test("a policy is stored with its builds, the digest in one form, and read back") {
@@ -74,7 +83,7 @@ object ClientAttestationApiSpec extends CentralApiSpec:
         central <- api
         id <- CentralApi.id("attested")
         pasted = digest.toUpperCase.grouped(2).mkString(":")
-        outcome <- withClient(central, mutualTlsNative(id)) { id =>
+        outcome <- withMtlsNative(central, id) { id =>
           for
             put <- central.put(path, policy("enforce", digests = Seq(pasted)), "clientId" -> id)
             read <- central.get(path, "clientId" -> id).flatMap(_.obj)
@@ -92,7 +101,7 @@ object ClientAttestationApiSpec extends CentralApiSpec:
       for
         central <- api
         id <- CentralApi.id("attested")
-        outcome <- withClient(central, mutualTlsNative(id)) { id =>
+        outcome <- withMtlsNative(central, id) { id =>
           for
             _ <- central.put(path, policy("enforce"), "clientId" -> id)
             _ <- central.put(path, policy("report"), "clientId" -> id)
@@ -107,7 +116,7 @@ object ClientAttestationApiSpec extends CentralApiSpec:
       for
         central <- api
         id <- CentralApi.id("attested")
-        outcome <- withClient(central, mutualTlsNative(id)) { id =>
+        outcome <- withMtlsNative(central, id) { id =>
           for
             refused <- central.put(path, Json.Obj("mode" -> Json.Str("enforce"), "android" -> Json.Arr()), "clientId" -> id)
             after <- central.get(path, "clientId" -> id).flatMap(_.obj)
@@ -119,7 +128,7 @@ object ClientAttestationApiSpec extends CentralApiSpec:
       for
         central <- api
         id <- CentralApi.id("attested")
-        refused <- withClient(central, mutualTlsNative(id)): id =>
+        refused <- withMtlsNative(central, id): id =>
           central.put(path, policy("report", appIds = Seq("com.example.app")), "clientId" -> id)
       yield assertTrue(refused.status == Status.BadRequest, refused.body.contains("ios.appIds"))
     },
@@ -127,7 +136,8 @@ object ClientAttestationApiSpec extends CentralApiSpec:
       for
         central <- api
         id <- CentralApi.id("attested")
-        outcome <- withClient(central, publicNative(id)) { id =>
+        certificate <- EdgeCertificate.make()
+        outcome <- withClient(central, publicNative(id, certificate)) { id =>
           for
             put <- central.put(path, policy("enforce"), "clientId" -> id)
             get <- central.get(path, "clientId" -> id)
