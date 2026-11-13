@@ -457,7 +457,8 @@ object EdgeConfig:
     *   in place of a stored login record. Its own key, not `tokenEncryption`'s.
     * @param blobTtl how long a blob can be redeemed after `/native/start`. Bounded above by the
     *   single-use `request_uri` and code in any case.
-    * @param attestation what app attestation (#423) is trusted against; only read for a client whose policy is not `off`.
+    * @param attestation what app attestation (#423) is trusted against. Verification is for a client whose policy is not `off`, but the
+    *   roots it names are read, and must parse, when edge starts.
     * @param authIssuer the `iss` auth's authorization responses carry -- its `jwt.issuer`
     *   (`CoreConfig.JwtConfig.issuer`), a setting of auth's own and not derived from
     *   [[versolaUrl]]. Absent defaults to `versolaUrl` via [[issuer]] below, which is right
