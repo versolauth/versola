@@ -196,6 +196,27 @@ the `Theme` row with the switcher, `My Security`, `Log out`. The brand, tenant a
 one block with a thin, always-reserved scrollbar when they are taller than the viewport; with
 every permission the whole list fits at 1440×900.
 
+**Partner shell.** The partner console is a second entry (`partner.html` → `src/partner/`, bundle
+`versola-partner.js`) on the same tokens and components; `partner.html` carries an identical copy of the
+theme tokens, which a unit test compares with `index.html`. It is `versola-partner-console` with
+`versola-partner-navigation`: the operator's sidebar with the logo and wordmark alone in the brand row (the shared `versola-wordmark` next to `versola-logo`) and,
+in the slot where the operator's shell has its tenant selector, a read-only card of the same weight (`--field`
+fill, 1.5px line, no chevron) with the partner's initial, its name in `--text-primary` and `Partner console` in
+`--text-secondary` under it; then the signed-in member and their level,
+a `Partner` section (Overview, Clients, Resources, Edges, Sessions & revocation, Audit), an `Organisation`
+section (Team, Settings) that only an admin sees, and a footer with the theme switcher and `Log out`
+(the edge's fixed `/partner/logout`; sign-in is `/partner/login`, which the console's 401 handling and the No access page's Try again use: the edge has no `/login` or `/logout` of its own). Every URL is `?view=<item>` plus the same record route (`id`, `edit`, `new`, `layout`).
+Full-page states replace the shell: `versola-partner-no-access` (signed in, not on the team: the masked
+identifier, "nothing was sent anywhere", Log out / Try again) and the load error with Retry. A suspended
+partner gets a `warn` banner on top of every screen and no write controls; a write that central cannot take
+answers inline ("Central is unavailable right now, so nothing was saved"). `src/partner/**` never imports
+`central-api.ts`, `admin-app.ts` or an operator view (a unit test greps the sources), and the two consoles are two
+builds (`npm run build` runs `vite build` and `vite build --mode partner`), each one self-contained file, so the
+partner's `versola-partner.js` shares no chunk with `versola-admin.js`. The guarantee is on the output:
+`npm run check:bundles` (a CI step after the build) fails if `dist` holds anything but those two files or the
+partner file mentions `/configuration/`, `/users/`, `permissions/me` or `/central/`, so a shared util cannot
+carry an operator path into a partner's browser. Reference: `partner-app.ts`, `partner-navigation.ts`, `views/partner-no-access.ts`.
+
 Page header: `content-header` with `title`, an optional `description` (one line under the title)
 and the single primary action in its `actions` slot. A record page uses `versola-record-header`
 instead (see below). Breadcrumbs exist only on record pages: `List › Record`, the list a link.
@@ -354,10 +375,41 @@ the console from the tenant's clients (central has no usage endpoint). Lists are
 no counters: forms say `en ru +1` or `Missing: ru, kk`, themes say `Overrides: brand, shape +1`. Reference:
 `forms-list.ts`, `form-record.ts`, `themes-list.ts`, `theme-record.ts`.
 
-**Wizard (create).** Stepped, with a step list on top, each step a stack of bordered panels
+**Wizard (create).** The step list, step heading, form-with-aside layout, plan of fixed rules, review groups and segmented choice of the two partner wizards come from `wizardStyles` in `styles/components.ts` (the aside's width is `--wizard-aside-width`); `client-form.ts` keeps its own, which has diverged. Stepped, with a step list on top, each step a stack of bordered panels
 (title, one-line subtitle, body), a rule the type sets shown as a locked row (lock icon, text,
 reason), and a review step in the page's own groups with `Change` back to the step that sets it.
 Reference: `client-form.ts`.
+
+**Owner step and fixed rows (client wizard).** A client is owned by the operator or by a partner. The first
+step of the wizard asks for the owner above the kind cards (`Operator` or `Partner` with a typeahead of
+partners; a suspended one is listed as "suspended"). Choosing a partner does not hide fields, it fixes them:
+the service kind is disabled with its reason, and the plan under the cards lists the rules as locked rows
+(lock icon, text, reason): the group certificate or private_key_jwt the partner uses, served by the edges of
+its group, PAR, certificate-bound tokens off, and for a device client DPoP on (the device holds its tokens, so
+DPoP is their only sender-constraint; DPoP-bound tokens live at least an hour, so a partner whose access token
+cap is lower is told to raise it first) and App Link redirects, and the token lifetime cap. A partner is held to the same limits as the operator's own clients: central's rule (an access token lives at most 24 hours, at least 1 hour when DPoP-bound) applies in the wizard, the record's editor, the defaults in Settings and the partner API, and the operator's cap can only narrow it (`partnerAccessTtlError`). Scopes and redirect URIs are filtered to the partner's limits; a URI outside its
+domains and a refresh lifetime above its cap are refused inline (the typed value stays as typed), not clamped and not found out after submit. The same locked-row
+treatment is how the partner console shows what the operator set (`Operator` / `Your group` marks on record
+rows, `plan-line` in the editors). Reference: `client-form.ts` (`renderOwnerSection`, `applyPartnerRules`),
+`client-kind-step.ts`, `utils/partners.ts` (`partnerKindPlan`).
+
+**Approval diff.** A partner's request (a new client, a change) is a record in the operator's Approvals tab:
+the requested values against the registered ones in a `role="group"` named "Requested against registered",
+one `.diff-row[data-field]` per field (`display: contents` rows so the grid stays one table: label, registered,
+requested), and a mark on each requested cell, `within limits` or `needs operator`. A field that appears on
+the consent screen (name, logo, scopes) is always `needs operator`, whatever the limits say. Under the diff:
+the consent preview (`client-consent-preview` when central has a consent form, a static sketch otherwise),
+a note field, and `Approve as requested`, `Approve with overrides…` (the rows that need the operator become
+inputs) and `Reject` (a note is required: the partner reads it). A decided request drops the buttons and shows
+who decided, when, and the note. Reference: `partner-approvals.ts`, `approvalDiff` in `utils/partners.ts`.
+
+**One-time token page.** Anything shown once (an edge enrollment token, a
+resource secret) is a `banner ok key-banner` on the record the action ended on: a title that says it is shown
+once, one `pre.secret-value` per secret (`tabindex="0"` and `role="region"` with a label when it can scroll, so
+a keyboard user can reach it), Copy buttons with a `role="status"` feedback line, and a `Done` / `I've saved it`
+button. While it is showing, leaving the record asks first ("Leave without saving the token?"), and a reload
+loses it, which is the point. An unused token is revoked from the record, never re-shown. Reference:
+`partner-edges.ts` (`renderBanners`), `partners-list.ts`.
 
 **Group editor and simple forms.** A page state, not a modal: a title-only header, one card with
 the fields (`formStyles`: uppercase labels, compact fields at 22.8rem, inline errors under the
@@ -513,3 +565,25 @@ taken by hand, so a changed screen cannot leave a stale picture behind.
 - A new or renamed screen: add or rename the manifest entry and the `Screenshot` in the EN page
   and its RU twin in the same docs PR; the sync check turns red until both agree. A card that is
   documented on its own gets a `crop` entry named `<screen>-<card>`.
+
+## Partner-edge screenshots
+
+The review screens of the partner work (#963) have their own Playwright project, `partner-edge`
+(`tests/partner-edge-screenshots.spec.ts`, artifacts in `test-results/partner-edge-artifacts`), kept apart from
+`console` so a normal run never rewrites them. It runs both consoles on fixed data and a fixed clock
+(`PARTNER_NOW` in `tests/partners-fixtures.ts`, installed with `page.clock.install`), so the dates in the
+pictures never move. `PARTNER_EDGE_SHOTS=operator|partner` shoots one half. Run it with
+`npx playwright test --project partner-edge` and read the PNGs; it asserts nothing, a failing shot means
+the recipe no longer matches the screen. The partner console's own mock backend
+(`src/partner/mock-backend.ts`, answering `/partner/api/*`) and seed (`src/partner/seed.ts`, Pilot Pay) are
+shared by the specs and by `partner.html` in `npm run dev`; the operator demo seed (`src/demo/seed.ts`) has
+the same partner as `pilot-pay`.
+
+**Consent preview: why it is not shared yet.** The partner console draws its consent preview as a static sketch.
+`client-consent-preview` needs four things the partner API does not serve (`edge/open-api/partner-api.yaml` has no
+route for any of them): the active consent form's compiled bundle, the consent scenario of the preview catalogue, the
+client's theme tokens and CSS, and central's composition of that CSS (`POST /configuration/themes/css`, an admin API
+call). Extracting the pure rendering into a shared component would give the partner console nothing to feed it. It
+becomes possible when the edge serves one read-only route for it (for example the rendered `srcdoc` of a client's
+consent screen, composed by central from the client's own theme), which is a decision for the owner and for #564.
+Until then the sketch stays, and the operator's approvals queue shows the real form.

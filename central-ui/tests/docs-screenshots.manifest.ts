@@ -858,7 +858,7 @@ const consoleShots: DocsShot[] = [
     name: 'console/edges-list', kind: 'frame', path: '/?view=edges&tenant=default', state: edgesState,
     before: async page => {
       await expect(page.getByRole('button', { name: 'Open edge edge-default' })).toBeVisible();
-      await expect(page.getByRole('columnheader')).toHaveText(['Edge', 'Tenants', 'Key', 'DPoP nonce', 'Actions']);
+      await expect(page.getByRole('columnheader')).toHaveText(['Edge', 'Group', 'Serves', 'Key', 'Certificate', 'DPoP nonce', 'Actions']);
     },
   },
   {

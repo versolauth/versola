@@ -3,12 +3,13 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { badgeStyles, buttonStyles, cardStyles, formStyles, recordStyles } from '../styles/components';
 import {accessSectionTitle} from '../utils/client-presets';
-import {AuthFlow, AuthorizationPreset, FormPreview, FormPreviewScenario, FormRecord, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeOverrides, ThemePreset, ThemeRecord} from '../types';
+import {AuthFlow, AuthorizationPreset, FormPreview, FormPreviewScenario, FormRecord, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Partner, Permission, Resource, Role, SecurityProfile, ThemeOverrides, ThemePreset, ThemeRecord} from '../types';
 import {
   createClient,
   deleteClient,
   deletePreviousClientSecret,
   fetchAllClients,
+  fetchPartners,
   fetchClientPresets,
   fetchChallengeSettings,
   fetchFormPreviews,
@@ -108,6 +109,8 @@ export class VersolaClientsList extends LitElement {
   @state() private availableOtpTemplates: OtpTemplateRecord[] = [];
   @state() private availableRoles: Role[] = [];
   @state() private availableLocales: Locale[] = [];
+  /** The tenant's partners (#549), for the owner chip and the wizard's Owner step. */
+  @state() private availablePartners: Partner[] = [];
   @state() private availablePostLogoutRedirectUris: string[] = [];
   @state() private mtlsCertificateHeader: string | null = null;
   @state() private securityProfile: SecurityProfile = 'fapi2';
@@ -171,14 +174,17 @@ export class VersolaClientsList extends LitElement {
     this.errorMessage = '';
 
     try {
-      const [result, settings] = await Promise.all([
+      const [result, settings, partners] = await Promise.all([
         fetchAllClients(this.tenantId),
         // The tenant's profile decides what a row says about security; a tenant whose
         // settings cannot be read is shown as the default one.
         fetchChallengeSettings(this.tenantId).catch(() => null),
+        // Partners name the owner of a client; an admin without partners:read sees the id alone.
+        fetchPartners(this.tenantId).catch(() => [] as Partner[]),
       ]);
       if (requestId !== this.loadRequestId) return;
       this.clients = result;
+      this.availablePartners = partners;
       this.securityProfile = settings?.securityProfile ?? 'fapi2';
     } catch (error) {
       if (requestId !== this.loadRequestId) return;
@@ -1125,6 +1131,7 @@ export class VersolaClientsList extends LitElement {
           .consentPreviewScenario=${this.consentPreviewScenario}
           .availableOtpTemplates=${this.availableOtpTemplates}
           .availableRoles=${this.availableRoles}
+          .availablePartners=${this.availablePartners}
           .locales=${this.availableLocales}
           .canManageSecrets=${this.canManageSecrets}
           .mtlsCertificateHeader=${this.mtlsCertificateHeader}
@@ -1214,9 +1221,19 @@ export class VersolaClientsList extends LitElement {
   }
 
   private partnerChip(client: OAuthClient) {
-    return isPartnerClient(client)
+    return isPartnerClient(client) && !client.partnerId
       ? html`<span class="chip" title="Asks users for consent: a partner's app signing in your users">Partner</span>`
       : '';
+  }
+
+  /** Who owns the client (#549): the partner's name, and where a partner-owned client stands with the operator. */
+  private ownerChip(client: OAuthClient) {
+    if (!client.partnerId) return '';
+    const partner = this.availablePartners.find(candidate => candidate.id === client.partnerId);
+    return html`
+      <span class="chip" title=${`Owned by partner ${client.partnerId}`}>Owned by ${partner?.displayName ?? client.partnerId}</span>
+      ${client.approval === 'pending' ? html`<span class="chip warn">Awaiting approval</span>`
+        : client.approval === 'rejected' ? html`<span class="chip danger">Rejected</span>` : ''}`;
   }
 
   private securityChip(client: OAuthClient) {
@@ -1268,7 +1285,7 @@ export class VersolaClientsList extends LitElement {
       { id: 'type', label: 'Type', cell: client => html`<span class="type-label">${this.kindIcon(clientKindOf(client))}${this.kindName(client)}</span>` },
       { id: 'credential', label: 'Authenticates with', class: 'muted', cell: client => credentialLabel(client) },
       { id: 'security', label: 'Security', cell: client => html`
-        <div class="chips">${this.partnerChip(client)}${this.securityChip(client)}${client.hasPreviousSecret ? html`<span class="chip warn">Secret rotation</span>` : ''}</div>` },
+        <div class="chips">${this.ownerChip(client)}${this.partnerChip(client)}${this.securityChip(client)}${client.hasPreviousSecret ? html`<span class="chip warn">Secret rotation</span>` : ''}</div>` },
     ];
     const menuItems = (client: OAuthClient): RowMenuItem[] => [
       { label: 'Open', onSelect: () => void this.openView(client) },
@@ -1362,6 +1379,7 @@ export class VersolaClientsList extends LitElement {
         idLabel="client ID"
         .meta=${html`
           <span class="chip">${descriptor ? this.kindIcon(kind) : ''}${descriptor?.name ?? 'Client'}</span>
+          ${this.ownerChip(client)}
           ${this.partnerChip(client)}
           ${this.securityChip(client)}
           ${client.hasPreviousSecret ? html`<span class="chip warn">Secret rotation</span>` : ''}

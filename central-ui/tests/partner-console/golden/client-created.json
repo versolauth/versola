@@ -1,0 +1,59 @@
+{
+  "id": "walk-mwdp7tom",
+  "kind": "web",
+  "redirectUris": [
+    "https://walk.e2e-partner-faf53869a4.example/callback"
+  ],
+  "scope": [
+    "openid"
+  ],
+  "authMethod": "tls_client_auth",
+  "accessTokenTtl": 300,
+  "refreshTokenTtl": 86400,
+  "consentFlow": {
+    "allowPartial": false,
+    "requiredScopes": [],
+    "offlineAccessOptional": false
+  },
+  "createdAt": "2026-11-12T15:24:20.896683Z",
+  "loginPath": "/login/walk-mwdp7tom",
+  "approval": {
+    "kind": "create",
+    "status": "pending",
+    "waitingFields": [
+      "clientName",
+      "logoUri"
+    ],
+    "requestedAt": "2026-11-12T15:24:20.973874Z",
+    "note": "Looks fine"
+  },
+  "clientName": "Walk mwdp7tom",
+  "fixed": {
+    "consent": true,
+    "flow": "code+pkce+par",
+    "authMethod": "tls_client_auth",
+    "group": "e2e-partner-faf53869a4"
+  },
+  "limits": {
+    "scopes": [
+      "openid",
+      "email",
+      "phone"
+    ],
+    "redirectDomains": [
+      "e2e-partner-faf53869a4.example"
+    ],
+    "maxClients": 5,
+    "maxEdges": 2,
+    "accessTokenTtlMax": 600,
+    "refreshTokenTtlMax": 86400,
+    "clientAuthMethods": [
+      "tls_client_auth"
+    ],
+    "rateLimitPolicy": "partner-default"
+  },
+  "logoUri": "https://shop.example/logo.svg",
+  "policyUri": "https://shop.example/privacy",
+  "tosUri": "https://shop.example/terms",
+  "backChannelLogoutUri": "https://login.shop.example/logout/backchannel"
+}

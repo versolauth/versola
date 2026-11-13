@@ -1,6 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
 const docsSpec = /docs-screenshots\.spec\.ts/;
+const partnerEdgeSpec = /partner-edge-screenshots\.spec\.ts/;
 
 export default defineConfig({
   testDir: './tests',
@@ -19,8 +20,10 @@ export default defineConfig({
   // test-results/docs-screenshots/, so it gets its own project with its own artifact folder: a
   // partial re-run (`-g`, `--last-failed`) of the generator keeps the pairs it does not retake.
   projects: [
-    { name: 'console', testIgnore: docsSpec },
+    { name: 'console', testIgnore: [docsSpec, partnerEdgeSpec] },
     { name: 'docs', testMatch: docsSpec, outputDir: 'test-results/docs-artifacts' },
+    // The review screenshots of the partner-edge screens (#963), kept apart for the same reason.
+    { name: 'partner-edge', testMatch: partnerEdgeSpec, outputDir: 'test-results/partner-edge-artifacts' },
   ],
   webServer: {
     command: 'npm run dev -- --host 127.0.0.1 --port 4173 --strictPort',
