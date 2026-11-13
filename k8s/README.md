@@ -84,6 +84,7 @@ matter most:
 | Auth internal URL | defaults to the public URL you just typed | central's cluster-DNS address, e.g. `http://versola-auth:8080` |
 | Postgres URL (×3, one per service) | defaults to `localhost` | each service's real JDBC URL. Verified TLS (`sslmode=verify-full`) is the default and prod refuses to start without it; mount the database's CA bundle with the service's `extraVolumes`/`extraVolumeMounts` and set `postgres.ssl-root-cert` to its path (see [deploy.md](../deploy.md#postgres-tls)) |
 | Postgres password (×3) | a placeholder default (`1234`) | the password that database actually has — this tool never talks to a database, so a made-up value here just disagrees with it silently later |
+| Admin bootstrap password | the fixed development password `Admin1234!` (the `--admin-password` flag takes the same default when you leave it out) | a password only you know. It is the first admin login on a cluster that serves users, and the default is public in this repository |
 | Environment name | defaults to `prod`, right for a deployment that serves users | `prod`, or any name ending in it, keeps production behaviour. Any other name (a campaign stand, `qa`) is a **test environment**: one-time codes are fixed and nothing is delivered, `/service/` is served. Never that for real users |
 
 Every prompt above also accepts a `--flag=value` on the command line instead — give it and the

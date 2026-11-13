@@ -1,0 +1,50 @@
+name: Migrations guard
+
+# Fails a pull request that edits, removes or renames a migration shipped in a release, or adds one whose
+# version is not above the base branch's (.github/scripts/check-migrations-immutable.sh says why, and
+# deploy.md section 3 step 3 is the manual check it replaces). Its own workflow rather than a job of
+# ci-cd.yml because the escape hatch is a label: `labeled`/`unlabeled` must re-run this check, and not the
+# whole build and e2e with it.
+#
+# Gating: yes. A maintainer adds the `allow-migration-edit` label to a PR to let a released-migration edit
+# through (the case is rare: see the script header). The version-order rule has no label.
+#
+# The PR head is checked out and the script is read from it: a PR that edits the script is reviewed like
+# any other change (it relies on CODEOWNERS review of .github/ and on this check being a required status check:
+# both are branch-protection settings, not visible here), and nothing here has a secret or a write token.
+# Two PRs that add the same next version each pass alone: "require branches to be up to date" in branch
+# protection is what closes that race.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+# A `labeled` run and a quick `unlabeled` one must not finish out of order and leave a stale status.
+concurrency:
+  group: migrations-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  migrations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The PR's own head, not the merge commit: the merge commit already contains the base branch's
+          # newer migrations, which would hide a colliding version number behind a clean merge.
+          ref: ${{ github.event.pull_request.head.sha }}
+          # Release tags and the base branch's history are what the script compares against.
+          fetch-depth: 0
+          # The script is the PR's own code: it gets no token to read back from .git/config.
+          persist-credentials: false
+
+      - name: Check migrations
+        env:
+          BASE_REF: origin/${{ github.base_ref }}
+          # Passed through env, not interpolated into the script body.
+          ALLOW_MIGRATION_EDIT: ${{ contains(github.event.pull_request.labels.*.name, 'allow-migration-edit') }}
+        run: bash .github/scripts/check-migrations-immutable.sh

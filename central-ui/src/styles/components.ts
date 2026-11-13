@@ -1033,7 +1033,7 @@ export const methodBadgeStyles = css`
   /* Previously declared inline in permissions-list, permission-form and
      resources-list, none of which set a size — so paths rendered at the
      browser's default 16px while the rest of the UI sits at 0.875rem. The
-     oversized text pushed long paths (/configuration/edges/rotate-key) onto a
+     oversized text pushed long request paths onto a
      second line and shoved the row's remove button down with it. */
   .endpoint-path {
     font-family: var(--font-mono, monospace);
@@ -1160,4 +1160,49 @@ export const segmentedStyles = css`
     border-color: var(--border-default);
     cursor: default;
   }
+`;
+
+/** The shell of a stepped create flow in a console that is not the operator's client form: the step list, the step heading, the
+ *  form with an optional aside, the plan of fixed rules, the review groups and the segmented choice. `partner-wizard.ts` (operator)
+ *  and `partner-client-wizard.ts` (partner console) share it; `client-form.ts` keeps its own, which has diverged. The aside's width
+ *  is `--wizard-aside-width` (24rem). */
+export const wizardStyles = css`
+  .wizard-steps { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; padding-bottom: var(--spacing-lg); margin-bottom: var(--spacing-lg); border-bottom: 1px solid var(--border-default); }
+  .wizard-step { display: inline-flex; align-items: center; gap: 0.4rem; font-size: var(--text-sm); color: var(--text-secondary); }
+  .wizard-step.active { color: var(--text-primary); font-weight: 600; }
+  .wizard-step-dot { display: inline-flex; align-items: center; justify-content: center; width: 1.35rem; height: 1.35rem; border-radius: 50%; border: 1px solid var(--border-default); font-size: var(--text-xs); }
+  .wizard-step.active .wizard-step-dot { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+  .wizard-step.done .wizard-step-dot { border-color: var(--success); color: var(--success); }
+  .wizard-step-sep { flex: 1 1 1rem; min-width: 1rem; height: 1px; background: var(--border-default); }
+  
+  .wizard-head { margin-bottom: var(--spacing-lg); }
+  .wizard-panel-title { font-size: 1.0625rem; font-weight: 600; color: var(--text-primary); }
+  .wizard-panel-sub { font-size: var(--text-sm); color: var(--text-secondary); margin-top: 0.2rem; }
+  
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--spacing-lg); align-items: start; }
+  @media (min-width: 1100px) { .layout.with-aside { grid-template-columns: minmax(0, 1fr) var(--wizard-aside-width, 24rem); } }
+  
+  .plan { display: grid; gap: 0.5rem; }
+  .plan-line { display: grid; grid-template-columns: 1.3rem 1fr; gap: 0.5rem; font-size: var(--text-base); }
+  .plan-mark { color: var(--text-secondary); padding-top: 0.15rem; }
+  .plan-mark svg { display: block; }
+  .plan-why { font-size: var(--text-sm); color: var(--text-secondary); margin-top: 0.1rem; }
+  
+  .seg { display: inline-flex; border: 1.5px solid var(--border-input); border-radius: var(--radius-md); overflow: hidden; }
+  .seg button { border: 0; background: transparent; padding: 0.5rem 0.9rem; font: inherit; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-secondary); cursor: pointer; }
+  .seg button[aria-pressed='true'] { background: var(--accent-subtle); color: var(--accent-text); font-weight: 600; }
+  .seg button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+  
+  .review-group { border: 1px solid var(--border-default); border-radius: var(--radius-inner); padding: var(--spacing-md) var(--spacing-lg); margin-bottom: var(--spacing-md); background: var(--surface); }
+  .review-head { display: flex; justify-content: space-between; align-items: center; gap: var(--spacing-md); margin-bottom: 0.5rem; }
+  .review-head h2 { margin: 0; font-size: var(--text-base); font-weight: 600; }
+  .review-change { background: none; border: 0; padding: 0; font: inherit; font-size: var(--text-sm); color: var(--accent); cursor: pointer; text-decoration: underline; }
+  .review-change:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--radius-sm); }
+  .review-row { display: grid; grid-template-columns: 9rem 1fr; gap: 0.75rem; padding: 0.375rem 0; font-size: var(--text-base); border-top: 1px solid var(--border-subtle); }
+  .review-row:first-of-type { border-top: 0; }
+  .review-label { color: var(--text-secondary); }
+  .review-value { min-width: 0; overflow-wrap: anywhere; }
+  
+  .aside .review-row { grid-template-columns: 1fr auto; }
+  .aside .chip { white-space: nowrap; }
 `;
