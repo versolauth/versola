@@ -8,6 +8,7 @@ import versola.edge.model.{
   AccessTokenId,
   AuthConversationNotFound,
   AuthorizationPreset,
+  ClientCredential,
   ClientId,
   Code,
   CodeVerifier,
@@ -655,33 +656,28 @@ object EdgeService:
         _ <- checkAudience(resource, typedClaims)
         // R3: the route is known and the caller may use it; nothing has been asked of auth or the resource yet
         _ <- observeRoute(typedClaims, resourceId, endpoint)
-        userInfo <- fetchUserInfo(session.accessToken, typedClaims, binding)
-          .when(endpoint.fetchUserInfo)
-          .someOrElse(Json.Obj())
-          .mapError {
-            case SSOClient.UserInfoUnauthorized => Outcome.Unauthorized
-            case _: Throwable => Outcome.InternalServerError
-          }
-          .tapError {
-            case Outcome.Unauthorized => Observability.setError("user_info_unauthorized")
-            case _ => ZIO.unit
-          }
-        celContext <- checkRules(session.claims, userInfo, request, endpoint, restPath, parsedBody)
-        _ <- checkStepUp(endpoint, typedClaims, now, celContext, authSource)
-        upstream <- buildUpstreamRequest(resource, endpoint, restPath, request, parsedBody, session.accessToken, celContext)
+        // Asking auth may replace the session's token (see `userInfoFor`): everything below reads what it hands back.
+        admitted = Admitted(session = session, claims = typedClaims, binding = binding)
+        (served, userInfo) <-
+          if endpoint.fetchUserInfo then
+            userInfoFor(admitted = admitted, authSource = authSource, request = request, resource = resource, endpoint = endpoint)
+          else ZIO.succeed((admitted, Json.Obj()))
+        celContext <- checkRules(served.session.claims, userInfo, request, endpoint, restPath, parsedBody)
+        _ <- checkStepUp(endpoint, served.claims, now, celContext, authSource)
+        upstream <- buildUpstreamRequest(resource, endpoint, restPath, request, parsedBody, served.session.accessToken, celContext)
         // `collect` inside the scope: the response this returns is handed straight back to
         // edge's own server, which streams it to the caller long after the upstream scope has
         // closed. Left streaming, whatever the body had not yet delivered by then dies with the
         // upstream connection, and the caller sees its own connection close mid-body.
         dispatched <- Clock.nanoTime
         authCall =
-          if session.rotatedCookie.isDefined then ProxyMetrics.AuthCall.Refresh
+          if served.session.rotatedCookie.isDefined then ProxyMetrics.AuthCall.Refresh
           else if endpoint.fetchUserInfo then ProxyMetrics.AuthCall.UserInfo
           else ProxyMetrics.AuthCall.None
         _ <- ProxyMetrics.beforeUpstream(resourceId, authCall, dispatched - started)
         response <- versola.util.http.Observability.asInternalCall(ZIO.scoped(httpClient.request(upstream).flatMap(_.collect)))
         stripped = response.removeHeader(Header.SetCookie)
-      yield session.rotatedCookie.fold(stripped)(stripped.addCookie)
+      yield served.session.rotatedCookie.fold(stripped)(stripped.addCookie)
 
     /** Rate limit checkpoints R2 and R3. A policy in `enforce` refuses the call here with `429` and `Retry-After`; one in
       * `shadow` only counts `would_limit` and the request goes on unchanged. With no policy at the checkpoint this is one
@@ -877,6 +873,100 @@ object EdgeService:
             case (None, None) => ZIO.succeed(SSOClient.TokenBinding.Unbound)
         info <- ssoClient.userInfo(accessToken, binding)
       yield info
+
+    /** `/userinfo` for the session a request was admitted with, and the session to go on with: the same one, or the
+      * one a refresh on the way produced, whose token and rotated cookie the rest of the request then uses.
+      *
+      * A token out of the `EDGE_SESSION` cookie is this edge's own, with the session's refresh token behind it, so
+      * two things that would otherwise end in a bare 401 are answered by refreshing instead:
+      *
+      *  - the token is bound to a certificate other than the one this edge would present for it (RFC 8705 §3.1).
+      *    Auth checks the thumbprint exactly, so the call cannot pass. It happens as a matter of course where the
+      *    client is served by a group of edges, each with its own certificate, and after any renewal: §6.3 has the
+      *    client get a new access token with its refresh token, which is what this does, before the call;
+      *  - auth answers 401 all the same (a renewal between the comparison and the call, a token auth no longer
+      *    honours): one refresh and one more call, and a second 401 stands.
+      *
+      * One refresh a request at most: a token that was refreshed for its binding and is refused all the same is not
+      * refreshed again. A refresh that fails ends the session as it always did (`rotate`). A token from an
+      * `Authorization` header is the caller's own: edge holds no refresh token for it and never refreshes it.
+      */
+    private def userInfoFor(
+        admitted: Admitted,
+        authSource: AuthSource,
+        request: Request,
+        resource: Resource,
+        endpoint: ResourceEndpoint,
+    ): IO[Throwable | Outcome, (Admitted, Json.Obj)] =
+      def ask(current: Admitted): IO[Outcome, (Admitted, Json.Obj)] =
+        fetchUserInfo(accessToken = current.session.accessToken, claims = current.claims, check = current.binding)
+          .mapBoth(
+            {
+              case SSOClient.UserInfoUnauthorized => Outcome.Unauthorized
+              case _: Throwable => Outcome.InternalServerError
+            },
+            current -> _,
+          )
+
+      // The answer that stands: only then is the refusal the request's outcome.
+      def askLast(current: Admitted): IO[Outcome, (Admitted, Json.Obj)] =
+        ask(current).tapError:
+          case Outcome.Unauthorized => Observability.setError("user_info_unauthorized")
+          case _ => ZIO.unit
+
+      authSource match
+        case AuthSource.Header(_) => askLast(admitted)
+        case AuthSource.Cookie(presetId) =>
+          def renewed =
+            renewForUserInfo(current = admitted, presetId = presetId, request = request, resource = resource, endpoint = endpoint)
+          boundToAnotherCertificate(admitted.claims).flatMap:
+            case true => renewed.flatMap(askLast)
+            case false =>
+              ask(admitted).catchSome:
+                case Outcome.Unauthorized => renewed.flatMap(askLast)
+
+    /** Whether a token of one of this edge's own sessions names a certificate other than the one this edge presents
+      * for the token's client now. Only a client this edge authenticates by certificate is compared: for any other
+      * credential the call is left to fail as it did (`TokenBoundToAbsentCertificate`), a refresh having nothing to
+      * present either. Compared in constant time, like every comparison of a credential-derived value. */
+    private def boundToAnotherCertificate(claims: AccessTokenClaims): UIO[Boolean] =
+      claims.confirmation.flatMap(_.certificateThumbprint) match
+        case None => ZIO.succeed(false)
+        case Some(bound) =>
+          clientService.findClient(claims.clientId).map:
+            _.map(_.credential).exists:
+              case ClientCredential.MutualTls(certificate) =>
+                !MessageDigest.isEqual(
+                  bound.getBytes(StandardCharsets.UTF_8),
+                  TokenBinding.thumbprint(certificate.leaf).getBytes(StandardCharsets.UTF_8),
+                )
+              case _ => false
+
+    /** Refreshes the session through the lease every refresh takes (`refreshSession`), and holds the token it
+      * produced to what the one it replaces was held to: it is a new token of the same grant, but nothing says its
+      * claims are the same. The rate limits are not counted again: the proxied call is what they count. */
+    private def renewForUserInfo(
+        current: Admitted,
+        presetId: PresetId,
+        request: Request,
+        resource: Resource,
+        endpoint: ResourceEndpoint,
+    ): IO[Throwable | Outcome, Admitted] =
+      for
+        now <- Clock.instant
+        session <- refreshSession(accessTokenId = current.claims.jti, cookiePresetId = presetId, now = now)
+        claims <- ZIO.fromEither(session.claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
+        _ <- logAccessTokenClaims(claims)
+        _ <- checkRevoked(claims)
+        binding <- checkTokenBinding(
+          request = request,
+          accessToken = session.accessToken,
+          claims = claims,
+          authSource = AuthSource.Cookie(presetId),
+        )
+        _ <- checkPermissions(claims, endpoint)
+        _ <- checkAudience(resource, claims)
+      yield Admitted(session = session, claims = claims, binding = binding)
 
     /** An expired cookie token is refreshed with the session's refresh token, and the new token's claims are checked
       * for revocation only afterwards -- which would let a token revoked on its own (its `jti`, or its refresh family
@@ -1481,6 +1571,13 @@ object EdgeService:
       accessToken: AccessToken,
       claims: Json.Obj,
       rotatedCookie: Option[Cookie.Response],
+  )
+
+  /** A session whose token passed the checks of a proxied call: its typed claims and what its binding obliged. */
+  private case class Admitted(
+      session: ActiveSession,
+      claims: AccessTokenClaims,
+      binding: BindingCheck,
   )
 
   private enum Outcome:

@@ -49,6 +49,7 @@ object EdgeRateLimitSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
     nativeApp = false,
     issuedCertificate = false,
     enrolledCertificate = false,
+    groupCertificate = None,
   )
 
   /** The edge `gen-env.scala` stages (`edge-default`): its policies are the ones the running edge applies. */
