@@ -1,5 +1,6 @@
 package versola.central.configuration.edges
 
+import versola.central.configuration.clients.attestation.ClientAttestationService
 import versola.central.configuration.clients.certificates.ClientCertificateService
 import versola.central.configuration.clients.{AuthorizationPresetService, ClientController, OAuthClientService}
 import versola.central.configuration.jwks.JwksService
@@ -40,7 +41,7 @@ import java.security.cert.X509Certificate
   */
 object EdgeSyncController extends Controller:
   type Env = Tracing & CentralConfig & EdgeService & EdgeIdentityService & SecurityService & OAuthClientService & ClientCertificateService &
-    AuthorizationPresetService & ResourceService & RoleService & PermissionService & JwksService & ServerMetadataService
+    ClientAttestationService & AuthorizationPresetService & ResourceService & RoleService & PermissionService & JwksService & ServerMetadataService
 
   def routes: Routes[Env, Throwable] = Routes(
     clientsEndpoint,

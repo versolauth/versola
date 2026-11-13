@@ -386,6 +386,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         resourceService = stub[versola.central.configuration.resources.ResourceService]
         edgeService = stub[versola.central.configuration.edges.EdgeService]
         estService = stub[versola.central.configuration.clients.est.ClientEstService]
+        // Never configured: auth's sync must not ask for attestation policies (#423), and a call would fail the request.
+        attestationService = stub[versola.central.configuration.clients.attestation.ClientAttestationService]
         _ <- estService.states.succeedsWith(Map.empty)
         tracing <- tracingLayer.build
         security <- securityLayer.build
@@ -397,7 +399,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 versola.central.configuration.resources.ResourceService,
               ](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
                 ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService) ++
-                ZEnvironment[versola.central.configuration.clients.est.ClientEstService](estService),
+                ZEnvironment[versola.central.configuration.clients.est.ClientEstService](estService) ++
+                ZEnvironment[versola.central.configuration.clients.attestation.ClientAttestationService](attestationService),
             ),
           ),
         )

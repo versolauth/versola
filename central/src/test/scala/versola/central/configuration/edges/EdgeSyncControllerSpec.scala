@@ -3,6 +3,13 @@ package versola.central.configuration.edges
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.clients.ApplicationType
+import versola.central.configuration.clients.attestation.{
+  AttestationMode,
+  ClientAttestation,
+  ClientAttestationService,
+  IosAttestation,
+  IosEnvironment,
+}
 import versola.central.configuration.clients.certificates.{
   ClientCertificateIssuance,
   ClientCertificateIssuanceRepository,
@@ -189,6 +196,22 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
   )
 
   private val clientA = client("web-a", tenantA)
+
+  private def nativeClient(id: String) = client(id, tenantA).copy(
+    secret = None,
+    authMethod = AuthMethod.tls_client_auth,
+    template = Some(ClientTemplate(ClientKind.device)),
+    applicationType = ApplicationType.native,
+  )
+
+  private val mobileA = nativeClient("mobile-a")
+  private val mobileUnpoliced = nativeClient("mobile-b")
+
+  private val policy = ClientAttestation(
+    mode = AttestationMode.report,
+    ios = Some(IosAttestation(appIds = Set("ABCDE12345.com.example.app"), environment = IosEnvironment.production)),
+    android = Nil,
+  )
   private val clientB = client("web-b", tenantB)
 
   private def preset(id: String, clientId: ClientId) = AuthorizationPreset(
@@ -267,6 +290,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private case class Services(
       clients: Stub[OAuthClientService],
+      attestations: Stub[ClientAttestationService],
       presets: Stub[AuthorizationPresetService],
       resources: Stub[ResourceService],
       roles: Stub[RoleService],
@@ -287,6 +311,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
       case Some(`edgeId`) => ZIO.succeed(Vector(clientA))
       case _ => ZIO.succeed(Vector(clientA, clientB))
     } *>
+      services.attestations.active.succeedsWith(Map.empty) *>
       services.presets.getPresetsForSync.returnsZIO {
         case Some(`edgeId`) => ZIO.succeed(Vector(presetA))
         case _ => ZIO.succeed(Vector(presetA, presetB))
@@ -324,6 +349,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         security <- (SecureRandom.live >>> SecurityService.live).build.map(_.get[SecurityService])
         services = Services(
           clients = stub[OAuthClientService],
+          attestations = stub[ClientAttestationService],
           presets = stub[AuthorizationPresetService],
           resources = stub[ResourceService],
           roles = stub[RoleService],
@@ -342,6 +368,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
             EdgeSyncController.routes.provideEnvironment(
               ZEnvironment[OAuthClientService](services.clients) ++
                 ZEnvironment[ClientCertificateService](certificates) ++
+                ZEnvironment[ClientAttestationService](services.attestations) ++
                 ZEnvironment[AuthorizationPresetService](services.presets) ++
                 ZEnvironment[ResourceService](services.resources) ++
                 ZEnvironment[RoleService](services.roles) ++
@@ -446,6 +473,25 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
             services.clients.getClientsForSync.calls == List(Some(edgeId)),
             payload.clients.map(_.id) == Vector(clientA.id.toString),
             recovered.toVector == clientSecret.toVector,
+          ),
+      ),
+      testCase(
+        description = "clients: an edge-fronted native client carries its attestation policy, and no other client does (#423)",
+        request = Request.get(sync("clients")),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.clients.getClientsForSync.succeedsWith(Vector(clientA, mobileA, mobileUnpoliced)) *>
+            // `web-a` has a row of its own too, as it would after being edited from a native client to a web one.
+            services.attestations.active.succeedsWith(Map(clientA.id -> policy, mobileA.id -> policy)),
+        verify = (response, services) =>
+          for payload <- decodeBody[GetOAuthClientsSyncResponse](response)
+          yield assertTrue(
+            payload.clients.map(c => c.id -> c.attestation) == Vector(
+              clientA.id.toString -> None,
+              mobileA.id.toString -> Some(policy),
+              mobileUnpoliced.id.toString -> None,
+            ),
+            services.attestations.active.calls.size == 1,
           ),
       ),
       testCase(

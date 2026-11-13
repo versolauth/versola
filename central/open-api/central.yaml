@@ -586,6 +586,86 @@ paths:
         '404':
           description: The client is not registered with `estEnrollment`, or does not exist.
 
+  /configuration/clients/attestation:
+    get:
+      tags: [Clients]
+      summary: Read a native client's app attestation policy
+      description: |
+        Whether edge asks the app to prove it is the genuine build on a genuine device when it calls
+        `POST /native/start/{clientId}`, and which builds that is. A client that has never been given a policy
+        reads as `mode: off` over no builds, which is what every client was before attestation existed.
+
+        Only a native client that authenticates with `tls_client_auth` (the kind edge fronts) has a policy.
+      operationId: getClientAttestation
+      parameters:
+        - $ref: '#/components/parameters/ClientIdQuery'
+      responses:
+        '200':
+          description: The policy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientAttestation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The client does not exist.
+        '422':
+          description: The client is not a native client that authenticates with `tls_client_auth`.
+    put:
+      tags: [Clients]
+      summary: Set a native client's app attestation policy
+      description: |
+        Replaces the client's policy. Roll it out in two steps: `report` first, which makes edge verify what the
+        app sends and count the outcome without refusing anything, then `enforce` once the count shows the installs
+        in use pass. `enforce` before the apps carry an SDK that sends attestation turns those apps away.
+
+        `report` and `enforce` need at least one build to accept (`ios` or `android`); `off` may name builds, so they
+        can be prepared first. SHA-256 digests are accepted with or without colons, in any case, and stored as lower-case
+        hex. A field the policy does not define is refused (`400`), not ignored.
+
+        Edge picks the change up with its next client sync.
+      operationId: putClientAttestation
+      parameters:
+        - $ref: '#/components/parameters/ClientIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientAttestation'
+      responses:
+        '200':
+          description: The policy as stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientAttestation'
+        '400':
+          description: The policy is not well formed; the body says which field and why.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The client does not exist.
+        '422':
+          description: The client is not a native client that authenticates with `tls_client_auth`.
+    delete:
+      tags: [Clients]
+      summary: Remove a client's app attestation policy
+      description: |
+        Back to no policy, which is `off`. Works for a client that has since stopped being a native one, so a policy
+        is never left behind.
+      operationId: deleteClientAttestation
+      parameters:
+        - $ref: '#/components/parameters/ClientIdQuery'
+      responses:
+        '204':
+          description: The client has no policy.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The client does not exist.
+
   /configuration/clients/edge-certificate/renew:
     post:
       tags: [Clients]
@@ -6824,6 +6904,60 @@ components:
           items:
             $ref: '#/components/schemas/EdgeGroup'
       required: [groups]
+    ClientAttestation:
+      type: object
+      additionalProperties: false
+      properties:
+        mode:
+          type: string
+          enum: [off, report, enforce]
+          description: |
+            `off`: nothing is asked or checked. `report`: edge verifies what the app sends and counts the outcome, but
+            answers as if it had not. `enforce`: `/native/start` without a verifiable attestation of one of the builds
+            below is refused.
+        ios:
+          $ref: '#/components/schemas/IosAttestation'
+        android:
+          type: array
+          description: The Android builds accepted. A package may be listed once.
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/AndroidApp'
+      required: [mode, android]
+    IosAttestation:
+      type: object
+      additionalProperties: false
+      properties:
+        appIds:
+          type: array
+          description: App IDs, `<Team ID>.<bundle id>`, e.g. `ABCDE12345.com.example.app`.
+          maxItems: 20
+          items:
+            type: string
+        environment:
+          type: string
+          enum: [production, development]
+          description: |
+            Which App Attest environment the keys come from. A key from `development` proves nothing about an App Store
+            build.
+      required: [appIds, environment]
+    AndroidApp:
+      type: object
+      additionalProperties: false
+      properties:
+        packageName:
+          type: string
+          example: com.example.app
+        certificateDigests:
+          type: array
+          description: |
+            SHA-256 of the certificate the build is signed with, 64 hex digits (colons allowed). Several, so a rotation or
+            a Play-managed signing key beside the upload key can overlap. At least one, at most 10.
+          minItems: 1
+          maxItems: 10
+          items:
+            type: string
+      required: [packageName, certificateDigests]
     EstEnrollmentTokenResponse:
       type: object
       properties:

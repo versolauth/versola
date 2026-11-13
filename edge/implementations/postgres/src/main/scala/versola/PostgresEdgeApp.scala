@@ -3,6 +3,7 @@ package versola
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.typesafe.config.ConfigFactory
 import versola.cleanup.PostgresCleanupManager
+import versola.edge.attestation.{AttestationService, AttestationTrust}
 import versola.edge.dpop.{DpopPolicyService, DpopProofRepository, DpopReplayGuard, DpopVerifier}
 import versola.edge.login.LoginRepository
 import versola.edge.nativeapp.{NativeAuthClient, NativeController, NativeService}
@@ -25,6 +26,7 @@ import versola.edge.{
   OAuthClientService,
   OverloadPolicyService,
   PermissionService,
+  PostgresAttestedKeyRepository,
   PostgresDpopProofRepository,
   PostgresEdgeRevocationRepository,
   PostgresEdgeSessionRepository,
@@ -162,6 +164,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
           PostgresEdgeRevocationRepository.live ++
           PostgresRevocationCursorRepository.live ++
           PostgresDpopProofRepository.live ++
+          PostgresAttestedKeyRepository.live ++
           PostgresCleanupManager.live ++
           PostgresWalMetrics.live())) >++>
       PostgresRevocationNotifications.live(PostgresEdgeRevocationRepository.Table) >++>
@@ -196,6 +199,8 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       DpopVerifier.live >++>
       EdgeService.live >++>
       NativeAuthClient.live >++>
+      AttestationTrust.live >++>
+      AttestationService.live >++>
       NativeService.live >++>
       SSOClientWarmUp.live
 

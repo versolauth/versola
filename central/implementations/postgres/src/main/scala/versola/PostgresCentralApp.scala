@@ -27,6 +27,11 @@ import versola.central.configuration.clients.certificates.{
   ClientCertificateService,
   EdgeCertificateEnrollmentRepository,
 }
+import versola.central.configuration.clients.attestation.{
+  ClientAttestationController,
+  ClientAttestationRepository,
+  ClientAttestationService,
+}
 import versola.central.configuration.clients.est.{ClientEstController, ClientEstRepository, ClientEstService}
 import versola.central.configuration.clients.{
   AuthorizationPresetController,
@@ -70,6 +75,7 @@ import versola.central.{CentralConfig, refuseEdgeCallers}
 import versola.configuration.challenges.{PostgresChallengeSettingsRepository, PostgresOtpChallengeRepository}
 import versola.configuration.clients.{
   PostgresAuthorizationPresetRepository,
+  PostgresClientAttestationRepository,
   PostgresClientCertificateIssuanceRepository,
   PostgresClientEstRepository,
   PostgresEdgeCertificateEnrollmentRepository,
@@ -182,9 +188,11 @@ object PostgresCentralApp extends VersolaApp("central"):
       ClientCertificateIssuanceRepository &
       EdgeCertificateEnrollmentRepository &
       ClientEstRepository &
+      ClientAttestationRepository &
       ClientCertificateIssuer &
       ClientCertificateService &
       ClientEstService &
+      ClientAttestationService &
       ServerMetadataRepository &
       ServerMetadataService &
       JwksService
@@ -207,6 +215,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       ResourceController.endpoints,
       ClientController.endpoints,
       ClientEstController.endpoints,
+      ClientAttestationController.endpoints,
       AuthorizationPresetController.endpoints,
       ScopeController.endpoints,
       AuthorizationDetailTypeController.endpoints,
@@ -274,6 +283,7 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresClientCertificateIssuanceRepository.live >++>
           PostgresEdgeCertificateEnrollmentRepository.live >++>
           PostgresClientEstRepository.live >++>
+          PostgresClientAttestationRepository.live >++>
           PostgresAuthorizationPresetRepository.live >++>
           PostgresOAuthScopeRepository.live >++>
           PostgresAuthorizationDetailTypeRepository.live >++>
@@ -333,6 +343,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       EdgeCertificateIssuer.live >++>
       ClientCertificateService.live >++>
       ClientEstService.live >++>
+      ClientAttestationService.live >++>
       BootstrapService.live >++>
       TenantService.live >++>
       PermissionService.live >++>

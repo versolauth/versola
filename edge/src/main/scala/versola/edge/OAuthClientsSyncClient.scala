@@ -1,5 +1,6 @@
 package versola.edge
 
+import versola.edge.attestation.{AttestationMode, AttestationPolicy}
 import versola.edge.model.{ApplicationType, ClientCredential, ClientId, OAuthClient, PermissionId}
 import versola.util.http.Observability
 import versola.util.{Base64, CacheSource, CertificateSubject, PrivateClientCertificate, PrivateJsonWebKey, Secret, SecurityService}
@@ -7,7 +8,7 @@ import zio.http.{Client, Header, Request}
 import zio.json.ast.Json
 import zio.json.{DecoderOps, JsonCodec}
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
-import zio.{Duration, Task, URLayer, ZIO, ZLayer}
+import zio.{Duration, Task, UIO, URLayer, ZIO, ZLayer}
 
 import java.nio.charset.StandardCharsets
 
@@ -79,6 +80,7 @@ object OAuthClientsSyncClient:
         certificate = supplied.orElse(enrolled)
         signing <- ZIO.foreach(client.edgeSigningKey)(decryptSigningKey)
         secret <- ZIO.foreach(client.secret)(decryptSecret)
+        attestation <- attestationOf(client)
         // The strongest credential central sent wins, and for an mTLS client that is the only
         // one auth accepts at all: a certificate registration makes `mtlsAuth` the method, and
         // an assertion or a secret from such a client is refused. Between the other two the key
@@ -98,8 +100,23 @@ object OAuthClientsSyncClient:
           client.requirePushedAuthorizationRequests,
           client.applicationType,
           client.redirectUris,
+          attestation,
         ),
       )
+
+    /** The client's attestation policy, as central sent it. A policy this edge cannot read (a mode or a field a newer central has
+      * and this edge does not know) must not fail the whole sync, which would stop every other client's change from arriving; it
+      * is read as the strictest one -- `enforce`, accepting no build -- so that no app is let through on a policy nobody could
+      * read, and the logs say which client it is. */
+    private def attestationOf(client: SyncOAuthClientRecord): UIO[AttestationPolicy] =
+      client.attestation match
+        case None => ZIO.succeed(AttestationPolicy.off)
+        case Some(json) =>
+          json.as[AttestationPolicy] match
+            case Right(policy) => ZIO.succeed(policy)
+            case Left(_) =>
+              ZIO.logWarning(s"client '${client.id}' has an attestation policy this edge cannot read: refusing its apps")
+                .as(AttestationPolicy(mode = AttestationMode.enforce, ios = None, android = Nil))
 
     /** The signing key central encrypted to this edge, parsed into what a signer needs.
       *
@@ -152,6 +169,7 @@ object OAuthClientsSyncClient:
         applicationType: ApplicationType,
         redirectUris: Set[String],
         edgeCertificateSubject: Option[CertificateSubject],
+        attestation: Option[Json],
     ) derives JsonCodec
 
     private case class GetOAuthClientsSyncResponse(

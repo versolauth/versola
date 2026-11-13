@@ -2,6 +2,7 @@ package versola.central.configuration.clients
 
 import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.*
+import versola.central.configuration.clients.attestation.ClientAttestationService
 import versola.central.configuration.clients.certificates.ClientCertificateService
 import versola.central.configuration.clients.est.ClientEstService
 import versola.central.configuration.edges.{EdgeId, EdgeService}
@@ -18,7 +19,8 @@ import zio.schema.*
 
 object ClientController extends AuditedController:
   type Env =
-    Tracing & OAuthClientService & ClientCertificateService & ClientEstService & ResourceService & CentralConfig & SecurityService & EdgeService
+    Tracing & OAuthClientService & ClientCertificateService & ClientEstService & ClientAttestationService & ResourceService & CentralConfig &
+      SecurityService & EdgeService
 
   def endpoints = List(
     getAllClientsEndpoint,
@@ -102,7 +104,10 @@ object ClientController extends AuditedController:
     */
   def clientsSyncResponse(
       edgeId: Option[EdgeId],
-  ): RIO[OAuthClientService & CentralConfig & SecurityService & EdgeService & ClientCertificateService, GetOAuthClientsSyncResponse] =
+  ): RIO[
+    OAuthClientService & CentralConfig & SecurityService & EdgeService & ClientCertificateService & ClientAttestationService,
+    GetOAuthClientsSyncResponse,
+  ] =
     for
       clientService <- ZIO.service[OAuthClientService]
       centralConfig <- ZIO.service[CentralConfig]
@@ -125,6 +130,8 @@ object ClientController extends AuditedController:
       clients <- clientService.getClientsForSync(edgeId)
       // Only an edge enrols (#463), so only an edge is told what its certificates must say.
       enrollmentSubjects <- certificateService.enrollmentSubjects(clients).when(edgeId.isDefined).map(_.getOrElse(Map.empty))
+      // #423: only an edge asks the app for attestation, so only an edge is told the policies.
+      attestations <- ZIO.serviceWithZIO[ClientAttestationService](_.active).when(edgeId.isDefined).map(_.getOrElse(Map.empty))
       encryptedClients <- ZIO.foreach(clients) { client =>
         for
           secret <- ZIO.foreach(client.secret)(transportEncrypt)
@@ -171,6 +178,9 @@ object ClientController extends AuditedController:
           applicationType = client.applicationType,
           edgeCertificateSubject = enrollmentSubjects.get(client.id),
           themeOverrides = client.themeOverrides,
+          // A policy outlives the client being a native one (it is not removed when the client is edited); it is acted on only
+          // while the client is, which is what `/native/start` serves.
+          attestation = attestations.get(client.id).filter(_ => client.isEdgeFrontedNative),
         )
       }
     yield GetOAuthClientsSyncResponse(clients = encryptedClients)

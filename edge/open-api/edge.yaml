@@ -590,6 +590,34 @@ paths:
         Only the parameters listed in the request body may be supplied; everything that decides
         the security of the flow is edge's. Auth's refusals of the pushed request are relayed
         unchanged.
+
+        **App attestation.** A client can be set (in Central, `/configuration/clients/attestation`)
+        to `report` or `enforce` that the app proves it is the genuine build on a genuine device,
+        with Apple App Attest or Android Key Attestation. Under `enforce`, a request without a
+        verifiable attestation of one of the client's accepted builds is refused with
+        `invalid_client_attestation` before anything is pushed to Auth. Under `report` edge
+        verifies and counts the outcome and answers as if it had not. A client with no policy
+        is not asked: the `attestation_*` fields are ignored for it.
+
+        The attestation is tied to the DPoP key the request is signed with:
+
+        - **Android.** The key that signs the proof is the key the Keystore attested, so the
+          certificate chain's leaf has the proof's key. The attestation challenge is
+          `SHA-256("versola-attest-v1\n" + clientId)`.
+        - **iOS.** App Attest signs only what it is handed, so the app hands it
+          `clientDataHash = SHA-256("versola-attest-v1\n" + clientId + "\n" + jkt + "\n" + jti)`,
+          where `jkt` and `jti` are the RFC 7638 thumbprint of the proof's key and the proof's
+          `jti`. The first request of a key carries its attestation object (`attestKey` over that
+          hash); every later one carries an assertion (`generateAssertion` over that hash). An
+          assertion is good for exactly one proof, and its counter must move forward. A key edge
+          has not been shown is refused as `invalid_client_attestation` with the description
+          `this key has not been attested: send the attestation object`; the app then attests a
+          new key and tries again. An attestation object is made for one request's proof and App
+          Attest attests a key once, so it is never resent: if the request failed after edge
+          accepted it, the key is known and the app asserts with it next; if edge refused it, the
+          app attests a new key.
+
+        Binary values are base64 (standard or URL-safe, padded or not).
       tags: [Native]
       security: []
       parameters:
@@ -864,8 +892,9 @@ components:
     NativeError:
       description: |
         A refusal in the RFC 6749 §5.2 shape, from edge or relayed from Auth. Edge's own
-        codes are `invalid_request`, `unsupported_grant_type`, `invalid_dpop_proof` and
-        `invalid_grant`.
+        codes are `invalid_request`, `unsupported_grant_type`, `invalid_dpop_proof`,
+        `invalid_grant` and, on `/native/start` under an attestation policy,
+        `invalid_client_attestation`.
       headers:
         Cache-Control:
           schema:
@@ -982,9 +1011,34 @@ components:
     NativeStartRequest:
       type: object
       description: |
-        Authorization request parameters the app may set, passed to Auth's `/par` as given.
-        Anything else is ignored.
+        Authorization request parameters the app may set, passed to Auth's `/par` as given, and
+        the app attestation fields, which edge reads and never passes on. Anything else is
+        ignored.
       properties:
+        attestation_platform:
+          type: string
+          enum: [ios, android]
+          description: |
+            Which platform's attestation follows. Read only for a client whose attestation policy
+            is `report` or `enforce`, as are the other `attestation_*` fields.
+        attestation_key_id:
+          type: string
+          description: iOS. The App Attest key id, base64.
+        attestation_object:
+          type: string
+          description: |
+            iOS, once per key. The attestation object `attestKey` returned, base64. Send this or
+            `attestation_assertion`, not both.
+        attestation_assertion:
+          type: string
+          description: iOS, on every later request of an attested key. The assertion, base64.
+        attestation_chain:
+          type: array
+          items:
+            type: string
+          description: |
+            Android. The certificates of the Key Attestation chain, leaf first, each base64 DER.
+            Repeat the field, or separate the certificates with commas.
         redirect_uri:
           type: string
           description: |

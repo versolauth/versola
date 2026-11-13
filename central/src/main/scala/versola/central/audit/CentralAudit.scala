@@ -82,6 +82,7 @@ object CentralAudit:
     "client",
     "client-secret",
     "client-est",
+    "client-attestation",
     "edge",
     "edge-group",
     "edge-policy",
