@@ -6,6 +6,7 @@
  */
 import themeVariableCatalog from '../utils/theme-variables.json' with { type: 'json' };
 import type { ThemeVariableCatalog } from '../utils/theme-variables';
+import type { ClientAttestationPolicy } from '../utils/client-attestation';
 
 export interface MockRequest {
   url(): string;
@@ -393,6 +394,8 @@ export const baseStylesheetMock = 'BASE-STYLESHEET';
 export type MockConfigState = {
   tenants: TenantDto[];
   clients: Record<string, ClientDto[]>;
+  /** App attestation policy by client id (#423); a client with none reads as off. */
+  attestation?: Record<string, ClientAttestationPolicy>;
   scopes: Record<string, ScopeDto[]>;
   permissions: Record<string, PermissionDto[]>;
   resources: Record<string, ResourceDto[]>;
@@ -558,6 +561,7 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
   return {
     tenants: clone(overrides.tenants ?? defaultState.tenants),
     clients: clone({ ...defaultState.clients, ...overrides.clients }),
+    attestation: clone(overrides.attestation ?? {}),
     authorizationPresets: clone({ ...defaultState.authorizationPresets, ...overrides.authorizationPresets }),
     scopes: clone({ ...defaultState.scopes, ...overrides.scopes }),
     permissions: clone({ ...defaultState.permissions, ...overrides.permissions }),
@@ -995,6 +999,46 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         const clientId = url.searchParams.get('clientId');
         state.clients[tenantId] = (state.clients[tenantId] ?? []).filter(client => client.id !== clientId);
         await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/clients/attestation') {
+      const clientId = url.searchParams.get('clientId') ?? '';
+      const known = Object.values(state.clients).flat().find(candidate => candidate.id === clientId);
+      const text = (status: number, body: string) => route.fulfill({ status, contentType: 'text/plain', body });
+      if (!known) {
+        await text(404, `client '${clientId}' does not exist`);
+        return;
+      }
+      if (!(known.kind === 'device' && known.authMethod === 'tls_client_auth')) {
+        await text(422, `client '${clientId}' is not a native client that authenticates with tls_client_auth`);
+        return;
+      }
+      state.attestation ??= {};
+      if (method === 'GET') {
+        await route.fulfill(json(state.attestation[clientId] ?? { mode: 'off', android: [] }));
+        return;
+      }
+      if (method === 'DELETE') {
+        delete state.attestation[clientId];
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+      if (method === 'PUT') {
+        const policy = JSON.parse(request.postData() ?? '{}') as ClientAttestationPolicy;
+        const named = (policy.ios?.appIds.length ?? 0) + policy.android.length;
+        if (policy.mode !== 'off' && named === 0) {
+          await text(400, `mode '${policy.mode}' needs at least one iOS app id or Android app to accept`);
+          return;
+        }
+        // As central stores it: the digests in one form.
+        const stored: ClientAttestationPolicy = {
+          ...policy,
+          android: policy.android.map(app => ({ ...app, certificateDigests: app.certificateDigests.map(digest => digest.replace(/[:\s]/g, '').toLowerCase()) })),
+        };
+        state.attestation[clientId] = stored;
+        await route.fulfill(json(stored));
         return;
       }
     }

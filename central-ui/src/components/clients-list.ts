@@ -37,6 +37,7 @@ import {
   profilePosture,
 } from '../utils/client-presets';
 import type { ClientEditSection } from './client-form';
+import './client-attestation';
 import { pickConsentScenario } from '../utils/consent-preview';
 import { copyToClipboard, formatDuration, getLocalizedDescription, isPartnerClient } from '../utils/helpers';
 import './client-form';
@@ -1426,6 +1427,9 @@ export class VersolaClientsList extends LitElement {
         ${keys.length === 0 ? this.viewRow('Key set', '—') : keys.map(key => this.viewRow(
           key.kind, html`<span class="mono">${key.kid ? `kid ${key.kid}` : 'no kid'}${key.alg ? ` · ${key.alg}` : ''}</span>`))}
       `) : ''}
+
+      ${client.clientType === 'native' && client.authMethod === 'tls_client_auth'
+        ? html`<versola-client-attestation .clientId=${client.id} ?canManage=${this.canManage}></versola-client-attestation>` : ''}
 
       ${client.authMethod === 'client_secret' && this.canManageSecrets ? this.viewSection('Client secret', '', null, client, html`
         ${this.viewRow('Secret', 'Set. It is shown once, when it is created or rotated.')}

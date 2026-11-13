@@ -776,6 +776,26 @@ const consoleShots: DocsShot[] = [
     },
   },
   {
+    name: 'console/client-attestation', kind: 'crop', path: clientsPath,
+    state: {
+      ...withClients({ ...mobileClient, authMethod: 'tls_client_auth' }),
+      attestation: {
+        'storefront-mobile': {
+          mode: 'report',
+          ios: { appIds: ['ABCDE12345.com.example.storefront'], environment: 'production' },
+          android: [{ packageName: 'com.example.storefront', certificateDigests: ['ab'.repeat(32), 'cd'.repeat(32)] }],
+        },
+      },
+    },
+    section: page => page.getByRole('region', { name: 'App attestation' }),
+    before: async page => {
+      await openClient('storefront-mobile')(page);
+      const card = page.getByRole('region', { name: 'App attestation' });
+      await expect(card).toContainText('com.example.storefront · 2 certificates');
+      await card.scrollIntoViewIfNeeded();
+    },
+  },
+  {
     name: 'console/client-authorization-presets', kind: 'crop', path: clientsPath, state: withClients(webClient),
     section: page => page.getByRole('region', { name: 'Authorization presets' }),
     before: async page => {
