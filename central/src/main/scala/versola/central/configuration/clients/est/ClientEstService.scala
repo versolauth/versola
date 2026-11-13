@@ -16,7 +16,7 @@ import versola.central.configuration.clients.{
   RegisteredClient,
 }
 import versola.central.configuration.edges.EdgeCertificate
-import versola.util.audit.{ActorType, AuditEvents, AuditKind, AuditOutcome, CertAuditDetails}
+import versola.util.audit.{ActorType, AuditEvents, AuditKind, AuditOutcome, CertAuditDetails, CertOperation}
 import versola.util.http.Observability
 import versola.util.{Base64Url, CertificateSubject, SecureRandom}
 import zio.*
@@ -194,12 +194,12 @@ object ClientEstService:
     private case class Attempt(clientId: Option[ClientId], subject: Option[X500Principal], verdict: Option[(AuditOutcome, String)])
 
     /** Runs one EST request for the audit log's sake: when it fails, an event says how, if it is known whose attempt it was. */
-    private def audited[A](operation: String, kind: AuditKind, claimed: Option[ClientId])(
+    private def audited[A](operation: CertOperation, kind: AuditKind, claimed: Option[ClientId])(
         effect: Ref[Attempt] => IO[Refused | InvalidCredentials.type | Throwable, A],
     ): IO[Refused | InvalidCredentials.type | Throwable, A] =
       for
         attempt <- Ref.make(Attempt(claimed, None, None))
-        result <- counted(operation)(effect(attempt)).tapError(error => attempt.get.flatMap(failed(operation, kind, _, error)))
+        result <- counted(operation.name)(effect(attempt)).tapError(error => attempt.get.flatMap(failed(operation, kind, _, error)))
       yield result
 
     /** A refusal is `denied`, whatever its kind; anything else is a `failure`, called what the attempt says it was (the CA's) or
@@ -207,7 +207,7 @@ object ClientEstService:
       *
       * The credentials that are not good are the refusal anybody can cause (a token that is unknown, spent or another's): recorded only
       * for a client registered with EST, and once a minute for each. */
-    private def failed(operation: String, kind: AuditKind, attempt: Attempt, error: Refused | InvalidCredentials.type | Throwable): UIO[Unit] =
+    private def failed(operation: CertOperation, kind: AuditKind, attempt: Attempt, error: Refused | InvalidCredentials.type | Throwable): UIO[Unit] =
       ZIO.foreachDiscard(attempt.clientId): clientId =>
         val (outcome, reason) = attempt.verdict.getOrElse:
           error match
@@ -291,7 +291,7 @@ object ClientEstService:
         claimedClientId: Option[ClientId],
         csrPem: String,
     ): IO[Refused | InvalidCredentials.type | Throwable, Issued] =
-      audited("enroll", CentralAudit.CertEnrolled, claimedClientId): attempt =>
+      audited(CertOperation.Enroll, CentralAudit.CertEnrolled, claimedClientId): attempt =>
         for
           now <- Clock.instant
           // Nothing is parsed on the strength of a token before the token is known good: the caller is not yet authenticated,
@@ -321,13 +321,13 @@ object ClientEstService:
             clientId,
             AuditOutcome.success,
             None,
-            CertAuditDetails.of("enroll", Some(clientId.toString), leaf),
+            CertAuditDetails.of(CertOperation.Enroll, Some(clientId.toString), leaf),
           )
           _ <- ZIO.logInfo(issuedMessage(clientId, leaf))
         yield Issued(chain, endOf(now))
 
     override def renew(presentedCertificatePem: String, csrPem: String): IO[Refused | InvalidCredentials.type | Throwable, Issued] =
-      audited("renew", CentralAudit.CertRenewed, None): attempt =>
+      audited(CertOperation.Renew, CentralAudit.CertRenewed, None): attempt =>
         for
           now <- Clock.instant
           presented <- ZIO.attempt(parse(presentedCertificatePem).head).orElseFail(InvalidCredentials)
@@ -344,6 +344,8 @@ object ClientEstService:
           client <- estClient(known.clientId).orElseFail(Refused(Refusal.Forbidden, "EST enrolment is not enabled for this client"))
           // A certificate a renewal replaced, used again after the grace: the key is in two hands. Close the chain, for the
           // client and for whoever has the copy: the operator enrols the client again.
+          // What the event records is the end of the right to renew (`revoke_renewal`), with the serial of the certificate that was
+          // presented: that certificate keeps authenticating until it expires.
           _ <- known.supersededAt match
             case Some(at) if now.isAfter(at.plus(ForkGrace)) =>
               est.revoke(client.id) *>
@@ -353,7 +355,7 @@ object ClientEstService:
                   client.id,
                   AuditOutcome.success,
                   None,
-                  CertAuditDetails.of("revoke", Some(client.id.toString), presented),
+                  CertAuditDetails.of(CertOperation.RevokeRenewal, Some(client.id.toString), presented),
                 ) *>
                 Observability.setError("est_chain_fork_detected") *>
                 ZIO.logWarning(s"the certificate chain of client '${client.id}' was closed: a certificate that had been replaced renewed again") *>
@@ -391,7 +393,7 @@ object ClientEstService:
                 client.id,
                 AuditOutcome.success,
                 None,
-                CertAuditDetails.of("renew", Some(client.id.toString), leaf),
+                CertAuditDetails.of(CertOperation.Renew, Some(client.id.toString), leaf),
               ).as(start)
             // Revoked, or enrolled again, while the CA was answering: the certificate it signed is not recorded and cannot renew.
             case RenewalRecorded.GenerationChanged => ZIO.fail(InvalidCredentials)

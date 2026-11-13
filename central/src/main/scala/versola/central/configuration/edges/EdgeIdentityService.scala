@@ -4,7 +4,7 @@ import versola.central.CentralConfig
 import versola.central.audit.CentralAudit.{CertFailure, CertReasons}
 import versola.central.audit.{CentralAudit, DenialThrottle}
 import versola.central.configuration.clients.certificates.{ClientCertificateIssuer, ClientCertificateRequests}
-import versola.util.audit.{AuditEvents, AuditKind, AuditOutcome, CertAuditDetails}
+import versola.util.audit.{AuditEvents, AuditKind, AuditOutcome, CertAuditDetails, CertOperation}
 import versola.util.http.Observability
 import versola.util.{Base64Url, CertificateSubject, EdgeIdentityNames, SecureRandom}
 import zio.*
@@ -135,7 +135,7 @@ object EdgeIdentityService:
       *
       * A token that is not good is the one refusal anybody can cause, as the route has no credential before it: it is recorded only for
       * an edge that is registered, and once a minute for each, so that a flood of guesses is one row and not a row each. */
-    private def failed(kind: AuditKind, operation: String, edgeId: EdgeId, failure: CertFailure[Any]): UIO[Unit] =
+    private def failed(kind: AuditKind, operation: CertOperation, edgeId: EdgeId, failure: CertFailure[Any]): UIO[Unit] =
       val record = certificateEvent(
         kind,
         edgeId,
@@ -177,7 +177,7 @@ object EdgeIdentityService:
 
     override def enroll(edgeId: EdgeId, token: String, csrPem: String): IO[Refused | InvalidToken.type | Throwable, Identity] =
       enrolling(edgeId, token, csrPem)
-        .tapError(failure => failed(CentralAudit.CertEnrolled, "enroll", edgeId, failure))
+        .tapError(failure => failed(CentralAudit.CertEnrolled, CertOperation.Enroll, edgeId, failure))
         .mapError(_.error)
 
     private def enrolling(
@@ -209,13 +209,13 @@ object EdgeIdentityService:
           edgeId,
           AuditOutcome.success,
           None,
-          CertAuditDetails.of("enroll", None, signed.leaf),
+          CertAuditDetails.of(CertOperation.Enroll, None, signed.leaf),
         )
       yield Identity(signed.chain, endOf(edge, now))
 
     override def renew(edgeId: EdgeId, csrPem: String, presentedSerial: Option[String]): IO[Refused | Throwable, Identity] =
       renewing(edgeId, csrPem, presentedSerial)
-        .tapError(failure => failed(CentralAudit.CertRenewed, "renew", edgeId, failure))
+        .tapError(failure => failed(CentralAudit.CertRenewed, CertOperation.Renew, edgeId, failure))
         .mapError(_.error)
 
     private def renewing(
@@ -258,7 +258,7 @@ object EdgeIdentityService:
           edgeId,
           AuditOutcome.success,
           None,
-          CertAuditDetails.of("renew", None, signed.leaf),
+          CertAuditDetails.of(CertOperation.Renew, None, signed.leaf),
         )
       yield Identity(signed.chain, endOf(edge, begun))
 

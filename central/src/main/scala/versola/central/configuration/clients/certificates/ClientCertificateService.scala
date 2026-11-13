@@ -7,7 +7,7 @@ import versola.central.configuration.clients.*
 import versola.central.configuration.edges.{EdgeCertificate, EdgeId}
 import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
 import versola.util.CertificateSubject
-import versola.util.audit.{ActorType, AuditContext, AuditEvents, AuditKind, AuditOutcome, CertAuditDetails}
+import versola.util.audit.{ActorType, AuditContext, AuditEvents, AuditKind, AuditOutcome, CertAuditDetails, CertOperation}
 import versola.util.http.Observability
 import versola.util.{Patch, PrivateClientCertificate}
 import zio.*
@@ -125,7 +125,7 @@ object ClientCertificateService:
           ))(ZIO.fail(_))
           auth = request.mtlsAuth.getOrElse(ClientCertificateRequests.defaultAuth(request.tenantId, request.id))
           issued <- issue(request.id, auth)
-            .tapError(failure => failed(CentralAudit.CertEnrolled, "issue", request.id, failure))
+            .tapError(failure => failed(CentralAudit.CertEnrolled, CertOperation.Issue, request.id, failure))
             .mapError(_.error)
           registered <- clients.registerClient(request.copy(
             issueEdgeClientCertificate = false,
@@ -148,7 +148,7 @@ object ClientCertificateService:
             request.id,
             AuditOutcome.success,
             None,
-            CertAuditDetails.of("issue", Some(request.id.toString), issued.leaf),
+            CertAuditDetails.of(CertOperation.Issue, Some(request.id.toString), issued.leaf),
           )
         yield registered
 
@@ -168,7 +168,7 @@ object ClientCertificateService:
 
     /** The event of an attempt to issue a certificate for a client that did not give one: no serial and no validity, for there is
       * none, and the subject the attempt was for. */
-    private def failed(kind: AuditKind, operation: String, clientId: ClientId, failure: CertFailure[Any]): UIO[Unit] =
+    private def failed(kind: AuditKind, operation: CertOperation, clientId: ClientId, failure: CertFailure[Any]): UIO[Unit] =
       certificateEvent(
         kind,
         clientId,
@@ -243,7 +243,7 @@ object ClientCertificateService:
             failure.outcome,
             Some(failure.reason),
             CertAuditDetails.refused(
-              operation = "sign",
+              operation = CertOperation.Sign,
               clientId = Some(clientId.toString),
               // what the edge asked for, read only to be named: it is checked above, where it is acted on
               subject = failure.subject.orElse(CertificateSubject.requestSubject(csrPem)),
@@ -304,7 +304,7 @@ object ClientCertificateService:
             ("client", clientId.toString),
             AuditOutcome.success,
             None,
-            CertAuditDetails.of("sign", Some(clientId.toString), leaf),
+            CertAuditDetails.of(CertOperation.Sign, Some(clientId.toString), leaf),
           ))
           .catchAll(error => Observability.setError("edge_certificate_not_recorded", Some(s"client '$clientId': $error")))
         _ <- ZIO.logInfo(
@@ -339,7 +339,7 @@ object ClientCertificateService:
         // One request, one event: an administrator's renewal that fails is always recorded.
         case Some(_) =>
           renewIssued(clientId)
-            .tapError(failure => failed(CentralAudit.CertRenewed, "renew", clientId, failure))
+            .tapError(failure => failed(CentralAudit.CertRenewed, CertOperation.Renew, clientId, failure))
             .mapError(_.error)
             .as(true)
 
@@ -355,7 +355,7 @@ object ClientCertificateService:
               // A renewal that keeps failing is one event when it starts to fail (or fails for another reason), not one per
               // pass; the renewal that succeeds is the `cert.renewed` that ends it.
               news <- failures.isNew(issuance.clientId, failure.reason)
-              _ <- failed(CentralAudit.CertRenewed, "renew", issuance.clientId, failure).when(news)
+              _ <- failed(CentralAudit.CertRenewed, CertOperation.Renew, issuance.clientId, failure).when(news)
               _ <- ZIO.logError(s"renewing the certificate of client '${issuance.clientId}' failed: ${failure.error}")
             yield 0
         _ <- ZIO.logInfo(s"renewed ${renewed.sum} client certificate(s)").when(renewed.sum > 0)
@@ -400,7 +400,7 @@ object ClientCertificateService:
               clientId,
               AuditOutcome.success,
               None,
-              CertAuditDetails.of("renew", Some(clientId.toString), issued.leaf),
+              CertAuditDetails.of(CertOperation.Renew, Some(clientId.toString), issued.leaf),
             ) *>
             ZIO.logInfo(s"issued certificate ${issued.serial} to client '$clientId', valid until ${issued.notAfter}")
       yield ()
