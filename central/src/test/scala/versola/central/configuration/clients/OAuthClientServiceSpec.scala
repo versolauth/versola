@@ -15,6 +15,8 @@ import versola.central.configuration.challenges.{
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.edges.{EdgeCertificate, EdgeGroupId}
 import versola.central.configuration.partners.{
+  PartnerClientKind,
+  PartnerClientRequest,
   PartnerContact,
   PartnerId,
   PartnerLimits,
@@ -396,6 +398,27 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     template = Some(ClientTemplate(ClientKind.web)),
     refreshTokenTtl = Some(3600),
     partnerId = Some(acme.id),
+  )
+
+  private val fapi2SenderConstraintMessage =
+    "FAPI 2.0 requires sender-constrained access tokens: set dpopBoundAccessTokens, or authenticate with or bind tokens to a certificate"
+
+  /** What a partner's console sends to `POST /edge/partner/clients`. */
+  private def partnerEdgeRequest(kind: PartnerClientKind, accessTokenTtl: Int = 300) = PartnerClientRequest(
+    id = ClientId("acme-shop"),
+    kind = kind,
+    clientName = Map("en" -> "ACME Shop"),
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    redirectUris = Set(RedirectUri("https://www.acme.example/cb")),
+    scope = Set(ScopeToken("openid")),
+    authMethod = AuthMethod.tls_client_auth,
+    jwks = None,
+    accessTokenTtl = accessTokenTtl,
+    refreshTokenTtl = Some(3600),
+    backChannelLogoutUri = None,
+    consentFlow = None,
   )
 
   private def partnerClient(id: String, approval: ClientApproval): OAuthClientRecord =
@@ -2297,6 +2320,102 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     suite("a partner's client (#549, #962)")(
+      // Recorded for the owner's decision (#962): what a `fapi2` tenant does with a partner's client. `PartnerClientRequest` is what a
+      // partner's console sends through `/edge/partner/clients`; `toCreateClientRequest` is exactly what central registers for it
+      // (PartnerClientService.create calls registerClient with it, `Pending`, `allowOutsideLimits`), and the operator's
+      // `POST /configuration/clients/web` with `partnerId` reaches the same registerClient.
+      suite("under a fapi2 tenant")(
+        test("a partner's web client (tls_client_auth, the group's certificate) is refused: tokens are bound to nothing") {
+          val env = new Env()
+          val registration = partnerEdgeRequest(PartnerClientKind.web).toCreateClientRequest(acme)
+          for
+            _ <- env.partners.findFresh.succeedsWith(Some(acme))
+            _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
+            result <- env.service.registerClient(registration, approval = ClientApproval.Pending, allowOutsideLimits = true).either
+          yield assertTrue(
+            !registration.dpopBoundAccessTokens,
+            !registration.certificateBoundAccessTokens,
+            result.left.toOption.exists:
+              case error: InvalidRegistrationConfiguration => error.reason == fapi2SenderConstraintMessage
+              case _ => false,
+            env.repository.createClient.calls.isEmpty,
+          )
+        },
+        // Not the profile's doing: the rule for a native client in any tenant (#421) wants it public or edge-fronted with an
+        // `edgeClientCertificate`, which a partner's client does not have (its credential is the group's certificate, which central does
+        // not hold). So a partner's native client cannot be registered at all, `standard` tenant included, and the profile is never reached.
+        test("a partner's native (device) client is refused in a fapi2 tenant, and in a standard one, by the native rule and not by the profile") {
+          val registration = partnerEdgeRequest(PartnerClientKind.native, accessTokenTtl = 3600).toCreateClientRequest(acme)
+          def refusal(profile: SecurityProfile) =
+            val env = new Env()
+            for
+              _ <- env.partners.findFresh.succeedsWith(Some(acme))
+              _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(profile)
+              result <- env.service.registerClient(registration, approval = ClientApproval.Pending, allowOutsideLimits = true).either
+            yield (result.left.toOption.collect { case error: InvalidRegistrationConfiguration => error.reason }, env.repository.createClient.calls)
+          for
+            fapi2 <- refusal(SecurityProfile.fapi2)
+            standard <- refusal(SecurityProfile.standard)
+          yield assertTrue(
+            registration.dpopBoundAccessTokens,
+            fapi2._1.exists(_.contains("needs edgeClientCertificate")),
+            standard._1.exists(_.contains("needs edgeClientCertificate")),
+            fapi2._2.isEmpty,
+            standard._2.isEmpty,
+          )
+        },
+        test("the console client of a partner (a web client, as the partner service registers it) is refused the same way") {
+          val env = new Env()
+          // what PartnerService.consoleClient registers: web, tls_client_auth by the group, no DPoP, no certificate-bound tokens
+          val console = partnerEdgeRequest(PartnerClientKind.web).toCreateClientRequest(acme).copy(id = ClientId("acme-console"))
+          for
+            _ <- env.partners.findFresh.succeedsWith(Some(acme))
+            _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
+            result <- env.service.registerClient(console, allowOutsideLimits = true).either
+          yield assertTrue(
+            result.left.toOption.exists:
+              case error: InvalidRegistrationConfiguration => error.reason == fapi2SenderConstraintMessage
+              case _ => false,
+          )
+        },
+        test("the operator's POST /configuration/clients/web with partnerId is refused the same way (the same registerClient, profile enforced)") {
+          val env = new Env()
+          for
+            _ <- env.partners.findFresh.succeedsWith(Some(acme))
+            _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
+            result <- env.service.registerClient(partnerRequest.copy(requirePushedAuthorizationRequests = true)).either
+          yield assertTrue(
+            result.left.toOption.exists:
+              case error: InvalidRegistrationConfiguration => error.reason == fapi2SenderConstraintMessage
+              case _ => false,
+          )
+        },
+        // not about the profile: the rule that a DPoP-bound access token lives at least an hour holds in every tenant, and a partner's
+        // native client is DPoP-bound, so a native client that asks for fewer seconds is refused in a standard tenant as well
+        test("a partner's native client whose access token lives under an hour is refused, whatever the tenant's profile") {
+          val env = new Env()
+          val registration = partnerEdgeRequest(PartnerClientKind.native).toCreateClientRequest(acme)
+          for
+            _ <- env.partners.findFresh.succeedsWith(Some(acme))
+            result <- env.service.registerClient(registration, approval = ClientApproval.Pending, allowOutsideLimits = true).either
+          yield assertTrue(
+            result.left.toOption.exists:
+              case error: InvalidRegistrationConfiguration => error.reason.contains("at least 3600s")
+              case _ => false,
+          )
+        },
+        test("the same web client with DPoP on (and an access token of an hour) is accepted, which is the shape the options below would give it") {
+          val env = new Env()
+          val registration =
+            partnerEdgeRequest(PartnerClientKind.web, accessTokenTtl = 3600).toCreateClientRequest(acme).copy(dpopBoundAccessTokens = true)
+          for
+            _ <- env.partners.findFresh.succeedsWith(Some(acme))
+            _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
+            _ <- env.repository.createClient.succeedsWith(())
+            result <- env.service.registerClient(registration, approval = ClientApproval.Pending, allowOutsideLimits = true).either
+          yield assertTrue(result.isRight)
+        },
+      ),
       test("registerClient holds it to the invariant: a client without consent is refused, and nothing is stored") {
         val env = new Env()
         for
