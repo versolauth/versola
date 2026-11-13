@@ -9,7 +9,7 @@ import versola.oauth.challenge.password.model.PasswordChangeEffect
 import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ClientId
-import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
+import versola.oauth.conversation.limit.{Acquisition, ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.logout.LogoutService
 import versola.oauth.revocation.{RevocationCause, RevocationTerms}
 import versola.oauth.session.model.PublicSessionId
@@ -103,18 +103,19 @@ object AccountSettingsService:
         otherSessions: OtherSessions,
     ): IO[Throwable | ChangePasswordError, Unit] =
       for
-        status <- submissionLimiter.isBanned(clientId, userId.toString, ChallengeType.PasswordSubmit)
-        _ <- status match
-          case LimitStatus.Banned => ZIO.fail(ChangePasswordError.TooManyAttempts(None))
-          case LimitStatus.RateLimited(after) => ZIO.fail(ChangePasswordError.TooManyAttempts(Some(after)))
-          case LimitStatus.Allowed => ZIO.unit
+        // Same budget as the login form's password step (this endpoint is otherwise an oracle for the current password), charged the same
+        // way: the attempt is claimed before the password is looked at (see [[SubmissionLimiter.acquireAll]]), so parallel guesses are cut
+        // off after the configured number instead of every one of them passing a read of the status.
+        acquired <- submissionLimiter.acquireAll(clientId, List(userId.toString), ChallengeType.PasswordSubmit)
+        charges <- acquired match
+          case Acquisition.Denied(LimitStatus.RateLimited(after)) => ZIO.fail(ChangePasswordError.TooManyAttempts(Some(after)))
+          case Acquisition.Denied(_) => ZIO.fail(ChangePasswordError.TooManyAttempts(None))
+          case Acquisition.Granted(_, charges) => ZIO.succeed(charges)
         check <- passwordService.verifyPassword(userId, Password(currentPassword))
         _ <- check match
-          case CheckPassword.Success | CheckPassword.Temporary => ZIO.unit
-          case _ =>
-            // Same budget as the login form's password step: this endpoint is otherwise an oracle for the current password.
-            submissionLimiter.recordLimit(clientId, userId.toString, ChallengeType.PasswordSubmit) *>
-              ZIO.fail(ChangePasswordError.IncorrectCurrentPassword)
+          // A right password spends none of the budget.
+          case CheckPassword.Success | CheckPassword.Temporary => submissionLimiter.refund(charges)
+          case _ => ZIO.fail(ChangePasswordError.IncorrectCurrentPassword)
         regex <- configuration.getPasswordRegex
         // An unparseable regex lets the password through, as in the login flow's own validation.
         _ <- ZIO.fail(ChangePasswordError.NewPasswordNotAllowed)

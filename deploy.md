@@ -305,6 +305,13 @@ versola migrate    # applies central's, auth's and edge's migrations from one th
 versola up         # central → auth, edge → versola-proxy, then checks a request reaches auth
 ```
 
+`versola migrate` runs Flyway in version order, without `outOfOrder`: a migration that was never applied and whose version is below
+one already applied is refused, not applied silently. Releases only add higher versions (CI refuses a pull request that does otherwise),
+so this does not trigger on an upgrade; if it does, a database ran an unreleased build or its schema
+history was changed by hand.
+Flyway used to warn `outOfOrder mode is active` on every `versola migrate`; that warning is gone. (The services' own startup
+Flyway, used by `RUN_MIGRATIONS=true` in development, is unchanged.)
+
 Services never migrate on their own startup ([`RUN_MIGRATIONS`](#run_migrations)). `versola up` ends
 by printing where the admin's bootstrap password is ([First admin login](#first-admin-login)).
 `versola bootstrap vps <version> --auth-url … --postgres-host …` runs configure, migrate and up in
@@ -366,7 +373,10 @@ nothing.
 1. **Cut a release.** GitHub → Releases → new tag (no `v`), target `main` → *Generate release notes*
    → *Publish*.
 2. **Wait for the images:** `docker-tools`, `docker-auth`, `docker-central`, `docker-edge` green.
-3. **Check the release does not *edit* an applied migration** — only adding is safe. On a clone with
+3. **Check the release does not *edit* an applied migration** — only adding is safe. CI already enforces this on
+   every pull request (`.github/scripts/check-migrations-immutable.sh`: a migration of the latest release must stay
+   byte for byte, and a new one must have a version above `main`'s), so this is the check of what is about to be
+   published, for a release cut from something other than a green `main`. On a clone with
    both tags: `git diff --name-status <old>..<new> -- '*/postgres/migrations/*'` must show only `A`
    lines (or check *Files changed* at `…/versola/compare/<old>...<new>`). Keep the trailing `/*`:
    migrations live deeper (for example `auth/implementations/postgres/migrations/V0015__….sql`), and
@@ -513,6 +523,22 @@ no longer stops at the first digit that differs. The 10 minutes is fixed, not a 
 - **Migration.** None: no schema or setting; the code is still kept in the sign-in as before. A sign-in in progress at the upgrade whose code
   was sent more than 10 minutes ago needs a new code.
 - **What to check.** A tenant whose conversation TTL is below 10 minutes is unaffected; one above it now has the shorter limit for codes.
+
+#### Behaviour change: what `request.query`, `request.headers` and a JSON body mean to a rule when a name occurs more than once
+
+A rule reads one value and the resource may read another, so where a name occurs more than once the rule no longer guesses:
+
+- **`request.query['x']`** is the value only when the parameter occurs exactly once. A parameter that occurs twice is absent there, and a
+  rule that reads it is unsatisfied (`403`, like any rule that reads missing data). Before, it was the first value, while some resources read
+  the last. `request.queryAll['x']` is unchanged and has every value; a rule that needs repeated parameters reads that.
+- **`request.headers['x']`** joins the lines of a field that was sent more than once with `, ` in the order they came (RFC 9110 §5.3), which is
+  how a resource reads them. Before, a repeated field showed one of its lines. Names are lower case, as before. `request.headersAll` is unchanged.
+- **A JSON body** in which a name occurs twice in one object (at any depth), or that claims `application/json` and is not JSON, is answered
+  `400` with no body and is not sent on. Before, the rules read the last of the two values and the body was forwarded with both; an unreadable
+  body was a `500`.
+
+- **Who can notice.** A rule that reads `request.query` of a parameter clients repeat, and a client that sends duplicate names in a JSON body.
+- **No setting, no migration.**
 
 #### Breaking change (2026-10-25): the access log is set per edge in central, not by environment
 
@@ -823,17 +849,28 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `audit.events.admin-user-viewed` changes that. The per-user report asks auth, which keeps its log as long, for the same window. This is a
   design estimate, to be replaced with the figure measured under load.
 
-  A call that reaches central without the query parameters edge adds (`actorId`, `actorTenantId`, `actorClientId`, `actorSessionId`) is
-  not refused: it is recorded as made by a `service` with no id, and counted in `audit_actor_missing_total{reason}` (an alert is in
-  `dashboards/alerts/versola-audit-central.rules.yaml`). Edge adds them to every admin route since this release, and central's
-  bootstrap brings the registrations of the existing `central` resource up to date at start (it adds those inject rules to endpoints
-  an earlier release registered, removes the header rules an earlier form of this feature registered, and leaves what an operator added
-  alone); until edge has synced them, admin actions are recorded without an actor. Edge's sync is the refresh interval (5 minutes by
-  default).
+  A call that reaches central without the query parameters edge adds (`actorId`, `actorTenantId`, `actorClientId`, `actorSessionId`,
+  and `actorIp`, the address of the caller) names no actor and is refused (below); it is counted in `audit_actor_missing_total{reason}`
+  (an alert is in `dashboards/alerts/versola-audit-central.rules.yaml`). Edge adds them to every admin route since this release, and
+  central's bootstrap brings the registrations of the existing `central` resource up to date at start (it adds those inject rules to
+  endpoints an earlier release registered, removes the header rules an earlier form of this feature registered, and leaves what an
+  operator added alone); until edge has synced them (its sync is the refresh interval, 5 minutes by default), admin calls through it are
+  refused for want of an actor.
 
-  The `ip` of an `admin.*` row is empty: the address of the administrator's browser is not passed on to central yet, so an empty `ip`
-  there means "not recorded", not an unknown source. The log is the hot window of 7 days; keeping it as the record of what was done
-  needs the replication described above.
+  A call of an administrator's route that names no valid actor is refused with `401` and the handler does not run: every route of the
+  admin API except the ones that are not an administrator's call (auth's syncs, the certificate flows `/est/*` and
+  `/users/registrations`, the `/service/*` tooling) needs a valid `actorId` (a user, or the client a client-credentials token was
+  issued to). The refusal is counted in `audit_actor_missing_total{reason}` (`absent`, `invalid`) and in `audit_actor_refused_total{reason}`
+  and, for a change, recorded as a denial with the reason `actor_required`. So a script that holds the central resource secret and calls
+  central directly is refused; it goes through edge, which states who it is.
+
+  The `ip` of an `admin.*` row is the address edge found for the caller by its own `client-ip` setting (`socket`, the peer of the
+  connection, or `forwarded`, the header named by `client-ip-header`), so it is only as right as that setting: with `socket` behind a
+  proxy or load balancer it is the proxy's address. Edge sends none on its mutual-TLS listener, and none under `forwarded` when the
+  header is missing or not an address; an empty `ip` there means "not recorded". An `actorIp` that is not an address is not recorded and
+  is counted in `audit_actor_missing_total{reason="invalid_ip"}`. Central passes the address on to auth, which records it in the rows of
+  the changes it makes for the call. The log is the hot window of 7 days; keeping it as the record of what was done needs the
+  replication described above.
 
   `audit:read` is not tenant-scoped, like `users:read`: a holder reads the report of any user.
 
@@ -1989,8 +2026,10 @@ notification and refuses to start, naming this setting, if it cannot.
     that and worked will now fail.
   - A `PUT /configuration/delivery-settings` with an `otpProvider.url` that the HTTP client cannot parse is refused with `400`.
   - A block saved in central that `auth` cannot read (a password that does not decrypt under the shared secret, a sender
-    or an address that is not valid) fails the sync. A running `auth` keeps what it has and logs a warning; an `auth` that
-    starts while such a block is saved fails to start, also on a deployment that sends through `auth.conf` only. Correct or
+    or an address that is not valid) fails the refresh. A running `auth` keeps the senders it has and logs the failure at
+    `ERROR` level on every periodic refresh (every `configuration-cache-refresh-interval`), so an alert on `ERROR` catches it.
+    Only the non-prod `POST /service/configuration/sync` logs it as a `WARN` instead, and it still answers `200`; in prod
+    that endpoint is not served. An `auth` that starts while such a block is saved fails to start, also on a deployment that sends through `auth.conf` only. Correct or
     remove the record in the console (or `DELETE /configuration/delivery-settings`) and start it again.
   - An SMTP block with `startTls` on now **requires** the upgrade and verifies the server's certificate against
     `host`: a server that does not offer STARTTLS, or whose certificate is not for its name or not signed by a CA

@@ -96,6 +96,10 @@ for (const theme of themes) {
     await page.getByRole('button', { name: 'Reset password…' }).click();
     await expect(page.getByRole('dialog', { name: 'Reset password' })).toBeVisible();
     expect(await scan()).toEqual([]);
+    // The lifetime field with a value outside the range: the red border, the hint and the reason.
+    await page.getByLabel('Temporary password lifetime (hours)').fill('200');
+    await expect(page.getByRole('alert')).toBeVisible();
+    expect(await scan()).toEqual([]);
     await page.keyboard.press('Escape');
 
     await page.getByRole('button', { name: 'Delete user Dana Reyes' }).click();

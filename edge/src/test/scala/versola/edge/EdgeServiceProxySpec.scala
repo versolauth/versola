@@ -12,6 +12,7 @@ import versola.edge.revocation.TokenRevocationService
 import versola.util.cel.CelEvaluator
 import versola.util.http.{
   Checkpoint,
+  ClientIpSource,
   DeclaredLimit,
   DeclaredOwner,
   DeclaredRateLimit,
@@ -47,6 +48,7 @@ import zio.json.{DecoderOps, EncoderOps}
 import zio.metrics.{Metric, MetricLabel}
 import zio.test.*
 
+import java.net.InetAddress
 import java.security.cert.X509Certificate
 import java.security.interfaces.{ECPrivateKey, ECPublicKey, RSAPublicKey}
 import java.security.{InvalidKeyException, KeyPairGenerator, PrivateKey, PublicKey}
@@ -247,6 +249,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         security: SecurityService,
         verifier: DpopVerifier = dpopVerifier,
         sessions: session.EdgeSessionRepository = sessionRepository,
+        config: EdgeConfig = edgeConfig,
     ): EdgeService =
       EdgeService.Impl(
         clientService,
@@ -257,7 +260,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         ssoClient,
         security,
         httpClient,
-        edgeConfig,
+        config,
         sessions,
         revocationService,
         jwksService,
@@ -392,6 +395,76 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
 
   private val securityServiceLayer: ULayer[SecurityService] =
     SecureRandom.live >>> SecurityService.live
+
+  /** What central's registration injects to say where an administrator's call came from (`BootstrapService.actorInjects`) reads the
+    * address edge finds for the caller. */
+  private val actorIpRule = InjectRule(InjectTarget.query, "actorIp", "has(request.clientIp) ? request.clientIp : ''")
+
+  /** What reaches upstream as `actorIp` for a call shaped by `request`, on an edge configured by `configure`. */
+  private def upstreamActorIp(request: Request => Request, configure: EdgeConfig => EdgeConfig) =
+    val env = new Env
+    for
+      _ <- env.setupDefaults()
+      capture <- captureUpstream()
+      client <- ZIO.service[Client]
+      security <- ZIO.service[SecurityService]
+      _ <- env.withResources(usersResource(usersEndpoint(inject = Vector(actorIpRule))))
+      token <- env.signToken()
+      service = env.buildService(client, security, config = configure(env.edgeConfig))
+      response <- service.proxy(
+        ResourceId("users-api"),
+        Path.decode("/users"),
+        request(Request.get(URL.empty / "users").addCookie(sessionCookie(token))),
+      )
+      upstream <- capture.get
+    yield (response.status, upstream.map(_.url.queryParams.getAll("actorIp")))
+
+  private def peer(address: String)(request: Request) = request.copy(remoteAddress = Some(InetAddress.getByName(address)))
+
+  private def clientAddressSuite =
+    suite("the caller's address as a rule reads it (request.clientIp)")(
+      test("under client-ip = socket it is the peer of the connection, and an actorIp the caller sent is replaced") {
+        for
+          (status, ips) <- upstreamActorIp(
+            request => peer("203.0.113.7")(request.updateURL(_.addQueryParam("actorIp", "198.51.100.66"))),
+            identity,
+          )
+        yield assertTrue(status == Status.Ok, ips.contains(Chunk("203.0.113.7")))
+      },
+      test("under client-ip = socket the forwarding header is not read, whatever a caller writes in it") {
+        for
+          (_, ips) <- upstreamActorIp(request => peer("203.0.113.7")(request.addHeader("X-Real-IP", "198.51.100.66")), identity)
+        yield assertTrue(ips.contains(Chunk("203.0.113.7")))
+      },
+      test("under client-ip = forwarded it is the configured header, as the address it is, and not the peer") {
+        for
+          (_, ips) <- upstreamActorIp(
+            request => peer("10.0.0.1")(request.addHeader("X-Forwarded-For-Edge", "2001:db8:1:2::1")),
+            _.copy(clientIp = ClientIpSource.Forwarded, clientIpHeader = "X-Forwarded-For-Edge"),
+          )
+        yield assertTrue(ips.contains(Chunk("2001:db8:1:2::1")))
+      },
+      test("under client-ip = forwarded a missing or malformed header sends nothing: the peer is the proxy's, not the caller's") {
+        val forwarded = (config: EdgeConfig) => config.copy(clientIp = ClientIpSource.Forwarded)
+        for
+          (_, missing) <- upstreamActorIp(request => peer("10.0.0.1")(request.updateURL(_.addQueryParam("actorIp", "198.51.100.66"))), forwarded)
+          (_, malformed) <- upstreamActorIp(request => peer("10.0.0.1")(request.addHeader("X-Real-IP", "unknown")), forwarded)
+        yield assertTrue(missing.contains(Chunk.empty), malformed.contains(Chunk.empty))
+      },
+      test("on the mutual-TLS listener, where the caller is a certificate, nothing is sent, and what the caller wrote is removed") {
+        val certificate = TestCertificates.generate(subject = "CN=bank-a,O=Bank,C=KZ").certificate
+        for
+          (_, ips) <- upstreamActorIp(
+            request => peer("10.0.0.1")(request.updateURL(_.addQueryParam("actorIp", "198.51.100.66")).copy(remoteCertificate = Some(certificate))),
+            identity,
+          )
+        yield assertTrue(ips.contains(Chunk.empty))
+      },
+      test("a connection with no address sends nothing") {
+        for (_, ips) <- upstreamActorIp(identity, identity)
+        yield assertTrue(ips.contains(Chunk.empty))
+      },
+    )
 
   def spec = suite("EdgeService.proxy")(
     proxySuite,
@@ -1708,6 +1781,154 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
       yield assertTrue(response.status == Status.Forbidden)
     },
+    // A rule reads one value, the resource may read another: where a name occurs more than once, the rule's view is not a guess.
+    test("request.query is absent for a parameter that occurs twice, so a rule that reads it is unsatisfied") {
+      val env = new Env
+      val endpoint = usersEndpoint(allow = Some("request.query['tenant'] == 'acme'"))
+      def call(url: URL) =
+        for
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          token <- env.signToken()
+          request = Request.get(url).addCookie(sessionCookie(token))
+          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        yield response
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        _ <- env.withResources(usersResource(endpoint))
+        once <- call((URL.empty / "users").addQueryParam("tenant", "acme"))
+        twiceFirstAllowed <- call((URL.empty / "users").addQueryParam("tenant", "acme").addQueryParam("tenant", "other"))
+        twiceLastAllowed <- call((URL.empty / "users").addQueryParam("tenant", "other").addQueryParam("tenant", "acme"))
+        upstream <- capture.get
+      yield assertTrue(
+        once.status == Status.Ok,
+        twiceFirstAllowed.status == Status.Forbidden,
+        twiceLastAllowed.status == Status.Forbidden,
+        upstream.exists(_.url.queryParams.map.get("tenant").exists(_.toList == List("acme"))),
+      )
+    },
+    test("request.queryAll keeps every value of a parameter that occurs twice") {
+      val env = new Env
+      val endpoint = usersEndpoint(allow = Some("request.queryAll['tenant'].all(t, t == 'acme')"))
+      def call(url: URL) =
+        for
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          token <- env.signToken()
+          request = Request.get(url).addCookie(sessionCookie(token))
+          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        yield response
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        _ <- env.withResources(usersResource(endpoint))
+        same <- call((URL.empty / "users").addQueryParam("tenant", "acme").addQueryParam("tenant", "acme"))
+        mixed <- call((URL.empty / "users").addQueryParam("tenant", "acme").addQueryParam("tenant", "other"))
+      yield assertTrue(same.status == Status.Ok, mixed.status == Status.Forbidden)
+    },
+    test("request.headers is keyed by lower-case name, whatever case the caller wrote") {
+      val env = new Env
+      val endpoint = usersEndpoint(allow = Some("request.headers['x-tenant'] == 'acme' && !('X-Tenant' in request.headers)"))
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token)).addHeader("X-TENANT", "acme")
+        response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(response.status == Status.Ok)
+    },
+    test("request.headers joins the lines of a field that is sent twice, in order, as the resource reads them") {
+      val env = new Env
+      val endpoint = usersEndpoint(allow = Some("request.headers['x-scope'] == 'read, admin'"))
+      def call(lines: String*) =
+        for
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          token <- env.signToken()
+          request = lines.foldLeft(Request.get(URL.empty / "users").addCookie(sessionCookie(token)))((r, line) => r.addHeader("X-Scope", line))
+          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        yield response
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        _ <- env.withResources(usersResource(endpoint))
+        joined <- call("read", "admin")
+        reversed <- call("admin", "read")
+        first <- call("read")
+        last <- call("admin")
+      yield assertTrue(
+        joined.status == Status.Ok,
+        reversed.status == Status.Forbidden,
+        first.status == Status.Forbidden,
+        last.status == Status.Forbidden,
+      )
+    },
+    test("refuses a JSON body in which a name occurs twice in one object, at any depth, and sends nothing") {
+      val env = new Env
+      val endpoint = createUserEndpoint(allow = Some("request.body.role == 'user'"))
+      def call(body: String) =
+        for
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          token <- env.signToken()
+          request = Request.post(URL.empty / "users", Body.fromString(body))
+            .addHeader(Header.ContentType(MediaType.application.json))
+            .addCookie(sessionCookie(token))
+          response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        yield response
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        _ <- env.withResources(usersResource(endpoint))
+        responses <- ZIO.foreach(
+          List(
+            """{"role":"user","role":"admin"}""",
+            """{"role":"admin","role":"user"}""",
+            """{"role":"user","\u0072ole":"admin"}""",
+            """{"role":"user","profile":{"id":1,"id":2}}""",
+            """{"role":"user","items":[{"a":1},{"b":1,"b":2}]}""",
+          ),
+        )(call)
+        upstream <- capture.get
+      yield assertTrue(responses.forall(_.status == Status.BadRequest), upstream.isEmpty)
+    },
+    test("refuses a body that claims to be JSON and is not, with 400") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(createUserEndpoint()))
+        token <- env.signToken()
+        request = Request.post(URL.empty / "users", Body.fromString("""{"role":"""))
+          .addHeader(Header.ContentType(MediaType.application.json))
+          .addCookie(sessionCookie(token))
+        response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.BadRequest, upstream.isEmpty)
+    },
+    test("forwards a JSON body whose names are all distinct, and the same name in two different objects") {
+      val env = new Env
+      val endpoint = createUserEndpoint(allow = Some("request.body.role == 'user'"))
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken()
+        request = Request.post(URL.empty / "users", Body.fromString("""{"role":"user","a":{"id":1},"b":{"id":2},"c":[{"id":3},{"id":4}]}"""))
+          .addHeader(Header.ContentType(MediaType.application.json))
+          .addCookie(sessionCookie(token))
+        response <- env.buildService(client, security).proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.Ok, upstream.isDefined)
+    },
     test("accepts Authorization: Bearer header when EDGE_SESSION cookie is absent") {
       val env = new Env
       for
@@ -1945,6 +2166,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         upstream.exists(_.url.queryParams.getAll("actor") == Chunk("user-1")),
       )
     },
+    clientAddressSuite,
     // Mirrors "returns 500 when an allow expression cannot be evaluated at all", but for the
     // inject-rule evaluator: a rule that cannot be evaluated is a configuration error, so
     // it fails the whole request with 500 rather than silently omitting the header.

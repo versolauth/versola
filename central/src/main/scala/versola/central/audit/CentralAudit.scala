@@ -59,9 +59,16 @@ object CentralAudit:
   private val actorMissing = Metric.counter("audit_actor_missing_total")
 
   /** A call of an administrator's API that edge did not say the caller of (`absent`), or whose caller it named is no user or client
-    * (`invalid`): recorded as a service's. Nothing is counted for a call that has an actor. */
+    * (`invalid`): recorded as a service's. Nothing is counted for a call that has an actor. A call whose address is none is counted
+    * (`invalid_ip`) and recorded without one. */
   def actorMissing(reason: Option[String]): UIO[Unit] =
     ZIO.foreachDiscard(reason)(reason => actorMissing.tagged(Set(MetricLabel("reason", reason))).increment)
+
+  private val actorRefused = Metric.counter("audit_actor_refused_total")
+
+  /** A call of an administrator's route refused because it named no valid actor: `absent` (edge added
+    * none) or `invalid` (what it named is no user and no client). */
+  def actorRefused(reason: String): UIO[Unit] = actorRefused.tagged(Set(MetricLabel("reason", reason))).increment
 
   private val targetMissingCounter = Metric.counter("audit_event_without_target_total")
 

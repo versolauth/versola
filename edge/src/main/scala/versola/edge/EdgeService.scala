@@ -442,6 +442,7 @@ object EdgeService:
         case Outcome.Forbidden => ZIO.succeed(Response.forbidden)
         case Outcome.NotFound => ZIO.succeed(Response.notFound)
         case Outcome.InternalServerError => ZIO.succeed(Response.internalServerError)
+        case Outcome.BadRequest => ZIO.succeed(Response.badRequest)
         case Outcome.UnsupportedMediaType => ZIO.succeed(Response.status(Status.UnsupportedMediaType))
         // No body: a body is a contract callers would parse, and everything a caller can act on is in the headers. `Retry-After` is whole
         // seconds, rounded up; the policy is named by `RateLimit-Policy`, never the key or what else is being counted.
@@ -1246,13 +1247,16 @@ object EdgeService:
         restPath: Path,
         parsedBody: Option[Json],
     ): Map[String, AnyRef] =
+      // `query` and `headers` answer with what the resource reads, and where it could read more than one thing they answer with nothing
+      // or with all of it: a parameter that occurs twice is absent (a rule that reads it is unsatisfied), `queryAll` has every value.
       val queryMap = request.url.queryParams.map.collect:
-        case (k, values) if values.nonEmpty => k -> values.head
+        case (k, values) if values.size == 1 => k -> values.head
       val queriesMap = request.url.queryParams.map.collect:
         case (k, values) if values.nonEmpty => k -> values.toVector.asJava
-      val headerMap = request.headers.iterator.map(h => h.headerName -> h.renderedValue).toMap
-      val headersMap = request.headers.iterator.toVector.groupBy(_.headerName).map:
-        case (k, values) => k -> values.map(_.renderedValue).asJava
+      // names in lower case (RFC 9110 §5.1: case-insensitive), several lines of one field as one value, in order (§5.3)
+      val headerLines = request.headers.iterator.toVector.groupBy(_.headerName.toLowerCase).view.mapValues(_.map(_.renderedValue)).toMap
+      val headerMap = headerLines.map((name, values) => name -> values.mkString(", "))
+      val headersMap = headerLines.map((name, values) => name -> values.asJava)
 
       val pathParams = extractPathParams(endpoint.path, restPath)
       val pathData = Map[String, AnyRef]("params" -> pathParams.asJava)
@@ -1264,6 +1268,11 @@ object EdgeService:
         "headersAll" -> headersMap.asJava,
       )
       parsedBody.foreach(body => requestData("body") = JsonJava.toJava(body))
+      // The caller's address, where this edge's own configuration says what it is (`client-ip`): for a rule that tells an upstream
+      // where the call came from (central's audit log). Absent on the mutual-TLS listener, where the caller is a certificate and
+      // the address behind an L4 proxy is not known, and where the setting does not find one; a rule reads it with `has`.
+      Option.when(request.remoteCertificate.isEmpty)(ClientAddress.trustedLiteral(request, config.clientIp, config.clientIpHeader)).flatten
+        .foreach(address => requestData("clientIp") = address)
       Map(
         "token" -> JsonJava.toJava(claims),
         "user" -> JsonJava.toJava(userInfo),
@@ -1392,12 +1401,29 @@ object EdgeService:
         case None =>
           ZIO.succeed(request.body)
 
-    private def readJsonBody(request: Request): zio.Task[Option[Json]] =
+    /** The JSON body, when there is one. A body that is not JSON, or in which a name occurs twice in one object, is refused: the rules
+      * read one of the two values and the resource may read the other, and which one is up to each parser (RFC 8259 §4: the names
+      * "SHOULD be unique", and parsers that accept duplicates differ).
+      */
+    private def readJsonBody(request: Request): IO[Throwable | Outcome, Option[Json]] =
       if !isJsonRequest(request) || request.body.isEmpty then ZIO.none
       else
         request.body.asString.flatMap: raw =>
           if raw.isEmpty then ZIO.none
-          else ZIO.fromEither(raw.fromJson[Json]).mapError(new RuntimeException(_)).asSome
+          else
+            ZIO.fromEither(raw.fromJson[Json])
+              .tapError(_ => Observability.setError("body_invalid"))
+              .orElseFail(Outcome.BadRequest)
+              .filterOrElse(!hasDuplicateName(_))(
+                Observability.setError("body_duplicate_name") *> ZIO.fail(Outcome.BadRequest),
+              )
+              .asSome
+
+    private def hasDuplicateName(json: Json): Boolean = json match
+      case Json.Obj(fields) =>
+        fields.map(_._1).distinct.size != fields.size || fields.exists((_, value) => hasDuplicateName(value))
+      case Json.Arr(elements) => elements.exists(hasDuplicateName)
+      case _ => false
 
     /** `application/json`, and the JSON merge patch type (RFC 7396 §3, `application/merge-patch+json`), which is a JSON document too. */
     private def isJsonRequest(request: Request): Boolean =
@@ -1462,6 +1488,9 @@ object EdgeService:
     case Forbidden
     case NotFound
     case InternalServerError
+
+    /** The body is JSON that two readers could read two ways (a name that occurs twice) or not JSON at all. */
+    case BadRequest
 
     /** The endpoint has body inject rules and the body is not JSON that edge could rewrite. */
     case UnsupportedMediaType

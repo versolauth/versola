@@ -1489,6 +1489,8 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
           assertTrue(response.header(Header.ContentType).exists(_.mediaType == MediaType.text.html)) &&
+          // it holds the token that authorizes the logout
+          assertTrue(response.headers.get("Cache-Control").contains("no-cache, no-store")) &&
           assertTrue(body.contains("Sign out?")) &&
           assertTrue(body.contains("csrf-token-1")) &&
           assertTrue(body.contains("https://example.com/post-logout")) &&

@@ -995,6 +995,43 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         calls.head._3 == None,
       )
     },
+    test("POST /users/password/reset refuses a lifetime outside one hour to seven days and does not reset") {
+      val passwordSvc = stub[PasswordService]
+      val targetUserId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000005"))
+      val outOfRange = List("0", "-43200", "3599", "604801", "9223372036854775807")
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- passwordSvc.resetPassword.succeedsWith(PasswordReset(password = None, endedSessions = Nil))
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            UserController.routes
+              .provideEnvironment(
+                ZEnvironment(userRepo) ++ ZEnvironment(config) ++
+                  ZEnvironment(logoutService) ++
+                  ZEnvironment(noopThrottle) ++ ZEnvironment(noopPasskeyRepo) ++
+                  ZEnvironment(sessionService) ++
+                  ZEnvironment(passwordSvc) ++ ZEnvironment[AuditEvents](audit) ++ ZEnvironment[AuditReportService](
+                    stub[AuditReportService],
+                  ) ++ ZEnvironment(noopConfiguration) ++ ZEnvironment(noopRevocation) ++ tracing,
+              ),
+          ),
+        )
+        statuses <- ZIO.foreach(outOfRange): ttl =>
+          val body = s"""{"userId":"${targetUserId}","expiresInSeconds":$ttl,"channel":"email"}"""
+          client
+            .batched(
+              Request(method = Method.POST, url = URL.empty / "users" / "password" / "reset", body = Body.fromString(body))
+                .addHeader(Header.Authorization.Bearer(token))
+                .addHeader(Header.ContentType(MediaType.application.json)),
+            )
+            .map(_.status)
+      yield assertTrue(
+        statuses.forall(_ == Status.BadRequest),
+        passwordSvc.resetPassword.calls.isEmpty,
+      )
+    },
     test("POST /users/password/reset returns 200 with the plaintext when the service reveals it") {
       val passwordSvc = stub[PasswordService]
       val targetUserId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000004"))

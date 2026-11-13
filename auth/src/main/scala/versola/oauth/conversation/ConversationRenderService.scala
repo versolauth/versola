@@ -569,7 +569,9 @@ object ConversationRenderService:
             ),
             value.version,
           )
+          // The page carries the token that authorizes the logout; it is not kept by the browser or a shared cache.
           htmlResponse(logoutConfirmPage(info, css, logo))
+            .addHeader(Header.Custom("Cache-Control", "no-cache, no-store"))
 
     private def serializeIdToken(data: ConversationResult.IdTokenData, signingKey: JWT.Signature.Asymmetric): Task[String] =
       val claims = data.claims + ("sid" -> Json.Str(data.sessionId))

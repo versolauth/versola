@@ -82,13 +82,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up JDK 25
-        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           java-version: '25.0.5+8'
           force-download: true
           distribution: 'temurin'
           cache: 'sbt'
-      - uses: sbt/setup-sbt@b113b960ba361e87e08ce02a390d51871b7ee459 # v1
+      - uses: sbt/setup-sbt@67d461eba2c4753196c230e02da850757ba4775e # v1
       - name: Set up Scala CLI
         if: github.event_name != 'release'
         uses: VirtusLab/scala-cli-setup@3f5bf11a33bb88343238780c18257c8fa43789e1 # v1
@@ -362,13 +362,13 @@ jobs:
           fi
 
       - name: Set up JDK 25
-        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           java-version: '25.0.5+8'
           force-download: true
           distribution: 'temurin'
           cache: 'sbt'
-      - uses: sbt/setup-sbt@b113b960ba361e87e08ce02a390d51871b7ee459 # v1
+      - uses: sbt/setup-sbt@67d461eba2c4753196c230e02da850757ba4775e # v1
       - name: Set up Scala CLI
         if: github.event_name != 'release'
         uses: VirtusLab/scala-cli-setup@3f5bf11a33bb88343238780c18257c8fa43789e1 # v1
@@ -762,7 +762,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Container Registry
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -817,6 +817,26 @@ jobs:
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+
+      # Built once more, for one platform and into the runner's own Docker, only to be run: the push step below builds the
+      # manifest list and pushes it in one go, so there is nothing to run before the tag is published, and a published tag
+      # cannot be recalled. The layers come from the same cache, so this costs the image's own RUN steps, not a rebuild.
+      - name: Build auth image for the smoke test
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile.auth
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: versola-auth:smoke
+          cache-from: type=gha
+
+      # What the image promises about its user, filesystem and JVM flags, checked before it is pushed: an image that runs as
+      # root again, or whose JVM cannot start as uid 10001 on a read-only root, is not published. See the script for what it
+      # does not prove (it does not start the service).
+      - name: Smoke test the auth image
+        run: .github/scripts/smoke-service-image.sh versola-auth:smoke
 
       - name: Build and push auth image
         id: build
@@ -895,7 +915,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Container Registry
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -933,6 +953,26 @@ jobs:
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+
+      # Built once more, for one platform and into the runner's own Docker, only to be run: the push step below builds the
+      # manifest list and pushes it in one go, so there is nothing to run before the tag is published, and a published tag
+      # cannot be recalled. The layers come from the same cache, so this costs the image's own RUN steps, not a rebuild.
+      - name: Build central image for the smoke test
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile.central
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: versola-central:smoke
+          cache-from: type=gha
+
+      # What the image promises about its user, filesystem and JVM flags, checked before it is pushed: an image that runs as
+      # root again, or whose JVM cannot start as uid 10001 on a read-only root, is not published. See the script for what it
+      # does not prove (it does not start the service).
+      - name: Smoke test the central image
+        run: .github/scripts/smoke-service-image.sh versola-central:smoke
 
       - name: Build and push central image
         id: build
@@ -991,7 +1031,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Container Registry
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -1029,6 +1069,26 @@ jobs:
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+
+      # Built once more, for one platform and into the runner's own Docker, only to be run: the push step below builds the
+      # manifest list and pushes it in one go, so there is nothing to run before the tag is published, and a published tag
+      # cannot be recalled. The layers come from the same cache, so this costs the image's own RUN steps, not a rebuild.
+      - name: Build edge image for the smoke test
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile.edge
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: versola-edge:smoke
+          cache-from: type=gha
+
+      # What the image promises about its user, filesystem and JVM flags, checked before it is pushed: an image that runs as
+      # root again, or whose JVM cannot start as uid 10001 on a read-only root, is not published. See the script for what it
+      # does not prove (it does not start the service).
+      - name: Smoke test the edge image
+        run: .github/scripts/smoke-service-image.sh versola-edge:smoke /var/lib/versola-edge
 
       - name: Build and push edge image
         id: build
@@ -1133,7 +1193,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Container Registry
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -1251,7 +1311,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Container Registry
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -1345,7 +1405,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Container Registry
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -1467,6 +1527,16 @@ jobs:
         if: ${{ !cancelled() }}
         run: .github/scripts/check-chart-security-context.sh
 
+      # The admin console's security headers are written out in three places: docker-local's nginx.conf.template,
+      # this chart's console config, and the routes.conf that versola-cli (versolauth/versola-cli) renders for a
+      # VPS. The last lost every header once without anything failing, because nginx replaces a server-level
+      # add_header in a location that sets its own. --fetch-cli reads that file from versola-cli's main, so this
+      # step fails when either side changes the set without the other (the fix for that is a pull request there,
+      # or here); it needs only python3 and curl, and the network. Nothing in it is a secret or a write.
+      - name: Check the console's security headers match versola-cli's
+        if: ${{ !cancelled() }}
+        run: .github/scripts/check-console-headers.sh --fetch-cli
+
   # Separate from helm-checks on purpose. That job installs only Helm and
   # reports in seconds; this one runs gen-env.scala through scala-cli, which
   # has to compile it first, so folding the two together would slow the fast
@@ -1542,7 +1612,7 @@ jobs:
           version: v3.16.3
 
       - name: Create kind cluster
-        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
         with:
           node_image: kindest/node:v1.31.2
           cluster_name: chart-install
