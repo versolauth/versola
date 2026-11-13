@@ -118,7 +118,10 @@ object RevocationFeedClientHandshakeSpec extends ZIOSpecDefault:
       versolaUrl = URL.decode("https://idp.example").toOption.get,
       edgeUrl = URL.decode("https://edge.example").toOption.get,
       configurationCacheRefreshInterval = 5.minutes,
-      revocation = EdgeConfig.Revocation(feed = EdgeConfig.RevocationFeed(enabled = true, timeout = 2.seconds, lease = 5.seconds)),
+      // The first mutual-TLS handshake of a JVM loads the provider chain and compiles the TLS code, and the suites of a CI run share
+      // the runner: 2 s (the production default) was not enough there once. This spec is about who is let through the handshake, not
+      // about how fast it is, so the bound only has to be longer than a slow handshake, not shorter than a hung one.
+      revocation = EdgeConfig.Revocation(feed = EdgeConfig.RevocationFeed(enabled = true, timeout = 20.seconds, lease = 5.seconds)),
       native = Some(
         EdgeConfig.Native(
           authMutualTlsUrl = URL.decode(s"https://localhost:$port").toOption.get,
