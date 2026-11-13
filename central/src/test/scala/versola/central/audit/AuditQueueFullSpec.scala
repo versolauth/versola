@@ -103,7 +103,7 @@ object AuditQueueFullSpec extends ZIOSpecDefault:
               CentralAudit.Actors.Edge,
               Some("edge-1"),
               ("edge", "edge-1"),
-              CertAuditDetails(operation = "renew", clientId = None, serial = None, notAfter = None, subject = None),
+              CertAuditDetails(operation = CertOperation.Renew, clientId = None, serial = None, notAfter = None, subject = None),
             ),
           )
           blocking <- fullQueue(AuditEvents.Overflow.block)

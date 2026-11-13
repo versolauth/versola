@@ -6,7 +6,7 @@ import versola.central.configuration.clients.*
 import versola.central.configuration.edges.{EdgeCertificate, EdgeId}
 import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
 import versola.util.CertificateSubject
-import versola.util.audit.{ActorType, AuditContext, AuditEvents, AuditKind, CertAuditDetails}
+import versola.util.audit.{ActorType, AuditContext, AuditEvents, AuditKind, CertAuditDetails, CertOperation}
 import versola.util.http.Observability
 import versola.util.{Patch, PrivateClientCertificate}
 import zio.*
@@ -129,7 +129,8 @@ object ClientCertificateService:
                 clients.deleteClient(request.id).ignore,
             )
           // The registration stands only now. By the administrator whose request registered the client, as `renewIssued` does.
-          _ <- certificateEvent(CentralAudit.CertEnrolled, request.id, CertAuditDetails.of("issue", Some(request.id.toString), issued.leaf))
+          _ <-
+            certificateEvent(CentralAudit.CertEnrolled, request.id, CertAuditDetails.of(CertOperation.Issue, Some(request.id.toString), issued.leaf))
         yield registered
 
     /** A certificate event of a client that central itself issued: by the administrator whose request started it, or by the system
@@ -232,7 +233,7 @@ object ClientCertificateService:
             CentralAudit.Actors.Edge,
             Some(edgeId.toString),
             ("client", clientId.toString),
-            CertAuditDetails.of("sign", Some(clientId.toString), leaf),
+            CertAuditDetails.of(CertOperation.Sign, Some(clientId.toString), leaf),
           ))
           .catchAll(error => Observability.setError("edge_certificate_not_recorded", Some(s"client '$clientId': $error")))
         _ <- ZIO.logInfo(
@@ -291,7 +292,7 @@ object ClientCertificateService:
             _ <- clients.updateClient(update(clientId, issued.certificate))
             now <- Clock.instant
             _ <- issuances.replace(ClientCertificateIssuance(clientId, issued.serial, issued.notAfter, now))
-            _ <- certificateEvent(CentralAudit.CertRenewed, clientId, CertAuditDetails.of("renew", Some(clientId.toString), issued.leaf))
+            _ <- certificateEvent(CentralAudit.CertRenewed, clientId, CertAuditDetails.of(CertOperation.Renew, Some(clientId.toString), issued.leaf))
             _ <- ZIO.logInfo(s"issued certificate ${issued.serial} to client '$clientId', valid until ${issued.notAfter}")
           yield ()
       yield ()

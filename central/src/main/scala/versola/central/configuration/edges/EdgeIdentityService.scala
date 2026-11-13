@@ -3,7 +3,7 @@ package versola.central.configuration.edges
 import versola.central.CentralConfig
 import versola.central.audit.CentralAudit
 import versola.central.configuration.clients.certificates.ClientCertificateRequests
-import versola.util.audit.{AuditEvents, AuditKind, CertAuditDetails}
+import versola.util.audit.{AuditEvents, AuditKind, CertAuditDetails, CertOperation}
 import versola.util.http.Observability
 import versola.util.{Base64Url, CertificateSubject, EdgeIdentityNames, SecureRandom}
 import zio.*
@@ -146,7 +146,7 @@ object EdgeIdentityService:
         _ <- ZIO.fail(InvalidToken).unless(spent.contains(edgeId))
         signed <- sign(edge, csrPem)
         _ <- chains.start(edgeId, now)
-        _ <- certificateEvent(CentralAudit.CertEnrolled, edgeId, CertAuditDetails.of("enroll", None, signed.leaf))
+        _ <- certificateEvent(CentralAudit.CertEnrolled, edgeId, CertAuditDetails.of(CertOperation.Enroll, None, signed.leaf))
       yield Identity(signed.chain, endOf(edge, now))
 
     override def renew(edgeId: EdgeId, csrPem: String, presentedSerial: Option[String]): IO[Refused | Throwable, Identity] =
@@ -172,7 +172,7 @@ object EdgeIdentityService:
             ))
         _ <- ZIO.logInfo(s"renewing the certificate of edge '$edgeId' presented as serial ${presentedSerial.getOrElse("unknown")}")
         signed <- sign(edge, csrPem)
-        _ <- certificateEvent(CentralAudit.CertRenewed, edgeId, CertAuditDetails.of("renew", None, signed.leaf))
+        _ <- certificateEvent(CentralAudit.CertRenewed, edgeId, CertAuditDetails.of(CertOperation.Renew, None, signed.leaf))
       yield Identity(signed.chain, endOf(edge, begun))
 
     override def extend(edgeId: EdgeId): IO[Refused | Throwable, Unit] =

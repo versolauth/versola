@@ -14,7 +14,7 @@ import versola.central.configuration.clients.*
 import versola.central.configuration.clients.certificates.{CertificateSigningRequest, ClientCertificateIssuer, ClientCertificateRequests}
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestCentralConfig}
-import versola.util.audit.ActorType
+import versola.util.audit.{ActorType, CertOperation}
 import versola.util.{CertificateSubject, SecureRandom, TestCertificates}
 import zio.*
 import zio.test.*
@@ -298,7 +298,7 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           recorded.map(_.kind) == Vector(CentralAudit.CertEnrolled),
           recorded.head.actor == Some((CentralAudit.Actors.Client, Some(clientId.toString))),
           recorded.head.target == Some(("client", clientId.toString)),
-          describe(recorded.head, "enroll", Some(clientId.toString), leafOf(identity.chain)),
+          describe(recorded.head, CertOperation.Enroll, Some(clientId.toString), leafOf(identity.chain)),
           withoutPemMaterial(recorded.head, request, identity.chain),
           onlyKnownMembers(recorded.head),
         )
@@ -465,10 +465,10 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // the refused renewals add the revocation and nothing else
           all.map(_.kind) == Vector(CentralAudit.CertEnrolled, CentralAudit.CertRenewed, CentralAudit.CertRevoked),
           all.last.actor == Some((ActorType.system, None)),
-          describe(afterRenewal.last, "renew", Some(clientId.toString), leafOf(second.chain)),
+          describe(afterRenewal.last, CertOperation.Renew, Some(clientId.toString), leafOf(second.chain)),
           withoutPemMaterial(afterRenewal.last, renewalRequest, second.chain),
           // the revocation describes the certificate that was presented again: the one the renewal replaced
-          describe(all.last, "revoke", Some(clientId.toString), leafOf(first.chain)),
+          describe(all.last, CertOperation.RevokeRenewal, Some(clientId.toString), leafOf(first.chain)),
           withoutPemMaterial(all.last, first.chain),
           all.forall(onlyKnownMembers),
         )

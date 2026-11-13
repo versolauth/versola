@@ -5,6 +5,7 @@ import versola.central.audit.CertAuditChecks.{describe, leafOf, onlyKnownMembers
 import versola.central.audit.{CentralAudit, RecordedAudit}
 import versola.central.configuration.clients.certificates.{CertificateSigningRequest, ClientCertificateIssuer}
 import versola.central.{CentralConfig, TestCentralConfig}
+import versola.util.audit.CertOperation
 import versola.util.{CertificateSubject, SecureRandom, TestCertificates}
 import zio.*
 import zio.json.ast.Json
@@ -121,7 +122,7 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         recorded.head.actor == Some((CentralAudit.Actors.Edge, Some(edgeId.toString))),
         recorded.head.target == Some(("edge", edgeId.toString)),
         // which certificate: its serial, end of validity and subject, and nothing of the request or the chain
-        describe(recorded.head, "enroll", None, leafOf(identity.chain)),
+        describe(recorded.head, CertOperation.Enroll, None, leafOf(identity.chain)),
         withoutPemMaterial(recorded.head, csr, identity.chain),
         onlyKnownMembers(recorded.head),
       )
@@ -142,7 +143,7 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         refused.isInstanceOf[EdgeIdentityService.Refused],
         recorded.map(_.kind) == Vector(CentralAudit.CertEnrolled, CentralAudit.CertRenewed),
         recorded.last.actor == Some((CentralAudit.Actors.Edge, Some(edgeId.toString))),
-        describe(recorded.last, "renew", None, leafOf(renewed.chain)),
+        describe(recorded.last, CertOperation.Renew, None, leafOf(renewed.chain)),
         withoutPemMaterial(recorded.last, renewalCsr, renewed.chain),
         onlyKnownMembers(recorded.last),
       )
