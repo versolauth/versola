@@ -1,5 +1,6 @@
 package versola
 
+import com.nimbusds.jose.jwk.RSAKey
 import versola.central.CentralConfig
 import versola.central.audit.{AuditHook, CentralAudit}
 import versola.central.configuration.challenges.{
@@ -40,7 +41,7 @@ import versola.central.configuration.clients.{
 }
 import versola.central.configuration.edges.{EdgeGroup, EdgeId, EdgeRecord, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
-import versola.central.configuration.jwks.{JwksKeyGeneration, JwksRecord, JwksRepository}
+import versola.central.configuration.jwks.{JwkValidation, JwksKeyGeneration, JwksRecord, JwksRepository}
 import versola.central.configuration.locales.{LocaleRecord, LocaleRepository}
 import versola.central.configuration.metadata.ServerMetadataRepository
 import versola.central.configuration.permissions.{Permission, PermissionRepository}
@@ -67,14 +68,15 @@ import versola.util.SequentialLayers.*
 import versola.util.audit.{ActorType, AuditDetails, AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.theme.{ThemePresets, ThemeTokens}
 import versola.util.{EnvName, JsonWebKeySet, Patch, Phone, PrivateClientCertificate, RedirectUri, Secret, SecureRandom, SecurityService}
-import zio.json.DecoderOps
 import zio.json.ast.Json
+import zio.json.{DecoderOps, EncoderOps}
 import zio.{Task, UIO, ZIO, ZLayer}
 
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 import javax.crypto.spec.SecretKeySpec
 import scala.io.Source
+import scala.util.Try
 
 trait BootstrapService:
   def bootstrap: Task[Unit]
@@ -197,6 +199,29 @@ object BootstrapService:
         Right(UtilityClientCredential(AuthMethod.client_secret, Some(secret), None))
       case (None, None) =>
         Left("bootstrap.utility-client needs a public-key-jwk or a secret")
+
+  /** The key an edge is seeded with must be a public RSA key: central encrypts what it syncs to the edge
+    * (client secrets, the resource secret) with RSA-OAEP, so an EC or private key would otherwise be
+    * stored and fail only at the edge's first sync. `Left` names the setting and the rule, never a value.
+    */
+  private[versola] def validateEdgeSeedKey(seed: CentralConfig.BootstrapConfig.EdgeSeed): Either[String, Unit] =
+    val setting = s"bootstrap.edges[${seed.id}].public-key-jwk"
+    val jwk = seed.publicKeyJwk
+    def present(name: String): Boolean = jwk.get(name).exists { case Json.Str(value) => value.nonEmpty; case _ => false }
+    for
+      // No `alg`/`use` check: this key encrypts, so `RSA-OAEP-256` and `use: enc` are as valid as the `RS256` gen-env writes.
+      _ <- Either.cond(
+        jwk.get("kty").contains(Json.Str("RSA")),
+        (),
+        s"$setting must be an RSA key: central encrypts what it syncs to an edge with RSA-OAEP",
+      )
+      _ <- Either.cond(present("n") && present("e"), (), s"$setting must contain n and e")
+      _ <- Try(RSAKey.parse(jwk.toJson)).toEither.left.map(_ => s"$setting is not a valid RSA public key")
+    yield ()
+
+  /** Private members in the seeded edge key: it boots today (only the public half is used), so this is a warning. */
+  private[versola] def edgeSeedPrivateMembers(seed: CentralConfig.BootstrapConfig.EdgeSeed): List[String] =
+    seed.publicKeyJwk.fields.map(_._1).toSet.intersect(JwkValidation.PrivateMembers).toList.sorted
 
   private[versola] def adminAuthFlow(envName: EnvName): AuthFlow =
     AuthFlow(
@@ -1720,7 +1745,14 @@ object BootstrapService:
       ZIO.foreachDiscard(config.edges.getOrElse(Nil)): seed =>
         edgeRepo.find(seed.id).flatMap:
           case Some(_) => ZIO.unit
-          case None => edgeRepo.createEdge(seed.id, seed.publicKeyJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
+          case None =>
+            ZIO.fromEither(BootstrapService.validateEdgeSeedKey(seed)).mapError(RuntimeException(_)) *>
+              ZIO.foreachDiscard(Option(BootstrapService.edgeSeedPrivateMembers(seed)).filter(_.nonEmpty))(members =>
+                ZIO.logWarning(
+                  s"bootstrap.edges[${seed.id}].public-key-jwk carries private members (${members.mkString(", ")}): supply the public half only",
+                ),
+              ) *>
+              edgeRepo.createEdge(seed.id, seed.publicKeyJwk, EdgeRecord.DefaultRequireDpopNonce, EdgeGroup.DefaultId)
 
     /** Links the default tenant to the first seeded edge so the central-admin
       * client (and its presets) are synced to that edge. Only applied when the
@@ -1856,7 +1888,12 @@ object BootstrapService:
             case Some(kid) =>
               jwksRepo.find(kid).flatMap:
                 case Some(_) => ZIO.unit
-                case None => jwksRepo.create(kid, jwk, privateKey = None)
+                case None =>
+                  // A warning, not a refusal: refusing would stop a boot that works today. Auth ignores
+                  // a key it cannot verify with, so the key is dead weight, not a failure at sync.
+                  ZIO.foreachDiscard(JwkValidation.validate(jwk).left.toOption)(reason =>
+                    ZIO.logWarning(s"bootstrap.jwks key '$kid' will not be usable: $reason"),
+                  ) *> jwksRepo.create(kid, jwk, privateKey = None)
             case None =>
               ZIO.logWarning("Skipping bootstrap JWK without a 'kid' field")
 

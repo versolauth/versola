@@ -1,8 +1,8 @@
 package versola
 
-import com.nimbusds.jose.JWSAlgorithm
-import com.nimbusds.jose.jwk.gen.ECKeyGenerator
-import com.nimbusds.jose.jwk.{Curve, JWK}
+import com.nimbusds.jose.jwk.gen.{ECKeyGenerator, RSAKeyGenerator}
+import com.nimbusds.jose.jwk.{Curve, JWK, KeyUse}
+import com.nimbusds.jose.{JWEAlgorithm, JWSAlgorithm}
 import org.scalamock.stubs.ZIOStubs
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.ChallengeSettingsService
@@ -17,6 +17,7 @@ import versola.central.configuration.clients.{
   OAuthClientRecord,
   OAuthClientService,
 }
+import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.forms.FormPreviews
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
@@ -737,6 +738,30 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         credential.exists(_.secret.nonEmpty),
         credential.exists(!_.conformant),
       )
+    },
+    test("accepts an RSA public key for a seeded edge") {
+      val key = RSAKeyGenerator(2048).keyID("edge-1").generate()
+      assertTrue(BootstrapService.validateEdgeSeedKey(CentralConfig.BootstrapConfig.EdgeSeed(EdgeId("edge-1"), jwkOf(key.toPublicJWK))).isRight)
+    },
+    test("accepts an RSA edge key meant for encryption (use enc, alg RSA-OAEP-256)") {
+      val key = RSAKeyGenerator(2048).keyID("edge-1").keyUse(KeyUse.ENCRYPTION).algorithm(JWEAlgorithm.RSA_OAEP_256).generate()
+      assertTrue(BootstrapService.validateEdgeSeedKey(CentralConfig.BootstrapConfig.EdgeSeed(EdgeId("edge-1"), jwkOf(key.toPublicJWK))).isRight)
+    },
+    test("refuses a seeded edge key without kty or modulus") {
+      val seed = (j: Json.Obj) => CentralConfig.BootstrapConfig.EdgeSeed(EdgeId("edge-1"), j)
+      assertTrue(
+        BootstrapService.validateEdgeSeedKey(seed(Json.Obj("kid" -> Json.Str("x")))).isLeft,
+        BootstrapService.validateEdgeSeedKey(seed(Json.Obj("kty" -> Json.Str("RSA"), "e" -> Json.Str("AQAB")))).isLeft,
+      )
+    },
+    test("refuses an EC public key for a seeded edge: the sync is RSA-encrypted") {
+      val result = BootstrapService.validateEdgeSeedKey(CentralConfig.BootstrapConfig.EdgeSeed(EdgeId("edge-1"), jwkOf(utilityKey.toPublicJWK)))
+      assertTrue(result.left.exists(_.contains("must be an RSA key")))
+    },
+    test("still boots a seeded edge key that carries its private half, and reports the members") {
+      val key = RSAKeyGenerator(2048).keyID("edge-1").generate()
+      val seed = CentralConfig.BootstrapConfig.EdgeSeed(EdgeId("edge-1"), jwkOf(key))
+      assertTrue(BootstrapService.validateEdgeSeedKey(seed).isRight, BootstrapService.edgeSeedPrivateMembers(seed).contains("d"))
     },
     test("refuses to boot with neither a public key nor a secret for utils") {
       assertTrue(BootstrapService.utilityClientCredential(utilitySeed()).isLeft)
