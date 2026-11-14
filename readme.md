@@ -58,6 +58,8 @@ versola down                        # stop; `versola uninstall` removes everythi
 
 The console opens at `http://localhost:2821/central/admin/` and the admin login is printed when `bootstrap` finishes. The same CLI deploys to a server: see [`deploy.md`](deploy.md).
 
+The local proxy and the services' published diagnostic ports listen on `127.0.0.1` only. The local stack is a demo for this machine, not a server for other machines on the network.
+
 ### Run from source
 
 To work on Versola itself you run the services from sbt. You need a JDK, [sbt](https://www.scala-sbt.org/), Docker, [scala-cli](https://scala-cli.virtuslab.org/install), an OpenSSL 3 `openssl` on `PATH` (macOS's LibreSSL is too old), nginx, and Node.js/npm. In short:
