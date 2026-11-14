@@ -126,3 +126,12 @@ object PartnerRecord:
 
 /** A partner with this id exists. */
 case class PartnerAlreadyExists(id: PartnerId) extends RuntimeException(s"partner '$id' already exists")
+
+/** The partner has as many clients as its limits allow (the console client is not counted). Answered by the repository that inserts the
+  * client, which counts under the partner's row lock, so two creations at `max - 1` cannot both pass. */
+case class PartnerClientLimitReached(partnerId: PartnerId, max: Int)
+  extends RuntimeException(s"partner '$partnerId' may register at most $max clients")
+
+/** The partner's group has as many edges as the partner's limits allow. Answered the same way by the repository that inserts the edge. */
+case class PartnerEdgeLimitReached(partnerId: PartnerId, max: Int)
+  extends RuntimeException(s"partner '$partnerId' may run at most $max edges")

@@ -31,7 +31,7 @@ import versola.central.configuration.edges.{
 }
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
-import versola.central.configuration.{AuthorizationPresetInput, ConsentFlowDto, CreateClientRequest, SaveAuthorizationPresetsRequest}
+import versola.central.configuration.{AuthorizationPresetInput, CreateClientRequest, SaveAuthorizationPresetsRequest}
 import versola.central.users.AuthClient
 import versola.util.{Base64Url, RedirectUri, RsaKeyPair}
 import zio.json.ast.Json
@@ -271,8 +271,8 @@ object PartnerService:
         logoUri = partner.logoUri,
         policyUri = None,
         tosUri = None,
-        // a partner client has one, the console included: the staff are told which partner they sign in to
-        consentFlow = Some(ConsentFlowDto(allowPartial = false, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
+        // none: the console signs in the partner's own staff, not the operator's users; it is the one client of a partner without consent
+        consentFlow = None,
         dpopBoundAccessTokens = false,
         dpopSigningAlgs = Set.empty,
         dpopMinRsaKeySize = None,
@@ -319,10 +319,11 @@ object PartnerService:
     private def enrol(partner: PartnerRecord, id: EdgeId, publicUrl: String): IO[PartnerError | Throwable, EnrolledEdge] =
       for
         _ <- requireEnrollmentAddress
-        // the count of edges is enforced by the table (a trigger that locks the partner), where two enrolments cannot both pass
+        // the count of edges is made by the repository that inserts the edge, under the partner's row lock, where two enrolments cannot
+        // both pass
         _ <- edgeService.registerEdgeWithoutKey(id, partner.groupId, Some(publicUrl)).catchAll:
-          case error if PartnerClientService.isLimitViolation(error, "partner_edge_limit") =>
-            ZIO.fail(PartnerError.Invalid(s"partner '${partner.id}' may run at most ${partner.limits.maxEdges} edges"))
+          case error: PartnerEdgeLimitReached =>
+            ZIO.fail(PartnerError.Invalid(s"partner '${partner.id}' may run at most ${error.max} edges"))
           case error => ZIO.fail(error)
         // the token is issued for an edge the cache knows, which it learns through a notification after the commit: reloaded now
         _ <- edgeService.sync()

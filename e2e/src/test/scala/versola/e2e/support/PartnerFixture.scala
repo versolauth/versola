@@ -237,15 +237,22 @@ object PartnerFixture:
       scope: Set[String],
       certificate: String,
       user: User,
+      /** A partner's client asks for consent; the partner's console, which signs in the partner's own staff, does not. */
+      consent: Boolean = true,
   ): Task[TokenResult.Success] =
     for
       pushed <- auth.pushAuthorizationRequest(clientId, "", redirectUri, scope = scope.mkString(" "), certificate = Some(certificate)).success
       authorize <- auth.authorizePushed(clientId, pushed).assertChallengeRedirect
       cookie <- ZIO.fromOption(authorize.conversationCookie).orElseFail(RuntimeException("no conversation cookie"))
       credential <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
-      _ <- auth.submitLoginPassword(cookie, user.login, user.password, credential.csrf)
-      consent <- auth.getChallenge(cookie).assertStep(ConversationStep.Consent)
-      code <- auth.submitConsent(cookie, scope, consent.csrf).assertRedirect(auth, cookie)
+      submitted <- auth.submitLoginPassword(cookie, user.login, user.password, credential.csrf)
+      code <-
+        if consent then
+          for
+            screen <- auth.getChallenge(cookie).assertStep(ConversationStep.Consent)
+            code <- auth.submitConsent(cookie, scope, screen.csrf).assertRedirect(auth, cookie)
+          yield code
+        else ZIO.succeed(submitted).assertRedirect(auth, cookie)
       token <- auth.token(code, authorize.verifier, Some(clientId), Some(""), Some(redirectUri), certificate = Some(certificate)).success
     yield token
 
@@ -258,7 +265,7 @@ object PartnerFixture:
         certificate <- groupCertificate(partner, "console")
         _ <- auth.updateClient(Fixtures.clientUpdate(partner.consoleClientId, "authFlow" -> Flows.loginPasswordAuthFlow))
         _ <- auth.syncConfiguration()
-        token <- signIn(auth, partner.consoleClientId, partner.consoleRedirectUri, Set("openid"), certificate.urlEncodedPem, user)
+        token <- signIn(auth, partner.consoleClientId, partner.consoleRedirectUri, Set("openid"), certificate.urlEncodedPem, user, consent = false)
       yield (token.accessToken, user)
 
   // ── a partner's client, from the partner's request to the operator's approval ────────────────

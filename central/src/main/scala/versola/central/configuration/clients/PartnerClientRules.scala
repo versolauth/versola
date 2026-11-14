@@ -62,7 +62,11 @@ object PartnerClientRules:
     def invalid(reason: String) = Some(InvalidRegistrationConfiguration(clientId, s"partner client $reason"))
     if subject.kind.contains(ClientKind.service) then
       invalid("is never a service client - a partner owns applications that sign the operator's users in")
-    else if !subject.consentFlow then
+    // the partner's console signs in the partner's own staff, not the operator's users: it asks for no consent, and no other client of
+    // the partner may go without
+    else if clientId == partner.consoleClientId && subject.consentFlow then
+      invalid("is the partner's console, which signs in the partner's own staff and asks for no consent")
+    else if clientId != partner.consoleClientId && !subject.consentFlow then
       invalid("needs a consentFlow - the operator's users are told which partner they sign in to")
     else if !PartnerLimits.AllowedAuthMethods.contains(subject.authMethod) then
       invalid(s"authenticates with tls_client_auth (the group's certificate) or private_key_jwt, not ${subject.authMethod}")

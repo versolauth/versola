@@ -11,6 +11,7 @@ import versola.central.configuration.clients.{
   ClientKind,
   ClientTemplate,
   ConsentFlow,
+  InvalidRegistrationConfiguration,
   MutualTlsAuth,
   MutualTlsSubjectType,
   OAuthClientRecord,
@@ -322,12 +323,13 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         inside == Right(()),
       )
     },
-    test("a client id that ends in -console is no partner's to register, and a database that is full is the partner's 400") {
+    test("a client id that ends in -console is no partner's to register, and a partner that is full is the partner's 400") {
       val env = Env()
       for
         console <- env.service.create(acme, request.copy(id = ClientId("globex-console")), "staff-1").flip
+        // what the client service answers when the repository, under the partner's lock, finds the partner full
         _ <- env.clients.registerClient.returnsZIO((_, _, _, _, _) =>
-          ZIO.fail(java.sql.SQLException("ERROR: partner_client_limit: partner acme may register at most 5 clients", "23514")),
+          ZIO.fail(InvalidRegistrationConfiguration(request.id, "partner 'acme' may register at most 5 clients")),
         )
         full <- env.service.create(acme, request, "staff-1").flip
       yield assertTrue(console.isInstanceOf[PartnerError.Invalid], full.isInstanceOf[PartnerError.Invalid], env.approvals.create.calls.isEmpty)

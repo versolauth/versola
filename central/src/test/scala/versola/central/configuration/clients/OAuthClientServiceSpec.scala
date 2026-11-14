@@ -16,6 +16,7 @@ import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.edges.{EdgeCertificate, EdgeGroupId}
 import versola.central.configuration.partners.{
   PartnerClientKind,
+  PartnerClientLimitReached,
   PartnerClientRequest,
   PartnerContact,
   PartnerId,
@@ -2366,8 +2367,9 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         },
         test("the console client of a partner (a web client, as the partner service registers it) is refused the same way") {
           val env = new Env()
-          // what PartnerService.consoleClient registers: web, tls_client_auth by the group, no DPoP, no certificate-bound tokens
-          val console = partnerEdgeRequest(PartnerClientKind.web).toCreateClientRequest(acme).copy(id = ClientId("acme-console"))
+          // what PartnerService.consoleClient registers: web, tls_client_auth by the group, no DPoP, no certificate-bound tokens, no consent
+          val console =
+            partnerEdgeRequest(PartnerClientKind.web).toCreateClientRequest(acme).copy(id = ClientId("acme-console"), consentFlow = None)
           for
             _ <- env.partners.findFresh.succeedsWith(Some(acme))
             _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
@@ -2442,6 +2444,46 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
               case _ => false,
           ),
           env.repository.createClient.calls.isEmpty,
+        )
+      },
+      test("the partner's console is the one client of a partner without consent: registered with none, and consent cannot be given to it") {
+        val acmeConsole = partnerRequest.copy(id = ClientId("acme-console"), consentFlow = None)
+        val env = new Env(Vector(partnerClient("acme-console", ClientApproval.Approved).copy(consentFlow = None)))
+        val own = ConsentFlowDto(allowPartial = false, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)
+        for
+          _ <- env.partners.findFresh.succeedsWith(Some(acme))
+          _ <- env.repository.createClient.succeedsWith(())
+          _ <- env.repository.updateClient.succeedsWith(())
+          registered <- env.service.registerClient(acmeConsole, allowOutsideLimits = true).either
+          storedConsole = env.repository.createClient.calls.head
+          withConsent <- env.service.registerClient(acmeConsole.copy(consentFlow = Some(own)), allowOutsideLimits = true).either
+          adding <- env.service.updateClient(noopUpdate.copy(clientId = ClientId("acme-console"), consentFlow = Some(Patch.Modified(own)))).either
+          // every other client of the partner still gets one
+          _ <- env.service.registerClient(partnerRequest.copy(consentFlow = None))
+          other = env.repository.createClient.calls.last
+          refused = (result: Either[Any, Any]) =>
+            result.left.toOption.exists:
+              case error: InvalidRegistrationConfiguration => error.reason.contains("console")
+              case _ => false
+        yield assertTrue(
+          registered.isRight,
+          storedConsole.consentFlow.isEmpty,
+          refused(withConsent),
+          refused(adding),
+          env.repository.createClient.calls.size == 2,
+          other.consentFlow.contains(PartnerClientRequest.DefaultConsent.toDomain),
+        )
+      },
+      test("a partner that is full is the registration's refusal: what the repository answers under the lock is the client's 400") {
+        val env = new Env()
+        for
+          _ <- env.partners.findFresh.succeedsWith(Some(acme))
+          _ <- env.repository.createClient.failsWith(PartnerClientLimitReached(acme.id, 5))
+          result <- env.service.registerClient(partnerRequest).either
+        yield assertTrue(
+          result.left.toOption.exists:
+            case error: InvalidRegistrationConfiguration => error.reason.contains("at most 5 clients")
+            case _ => false,
         )
       },
       test("registerClient keeps the consent a partner's client was sent, as sent") {
@@ -2580,7 +2622,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         )
       },
       test("the partner's console is not held to its limits when the operator changes it, nor counted among its clients") {
-        val console = partnerClient("acme-console", ClientApproval.Approved)
+        val console = partnerClient("acme-console", ClientApproval.Approved).copy(consentFlow = None)
         val own = Vector(partnerClient("acme-one", ClientApproval.Approved), partnerClient("acme-two", ClientApproval.Pending))
         val env = new Env(console +: own)
         def patch(clientId: ClientId) = UpdateClientRequest(

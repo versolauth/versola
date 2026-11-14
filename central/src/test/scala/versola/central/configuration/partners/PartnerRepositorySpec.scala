@@ -73,13 +73,19 @@ trait PartnerRepositorySpec extends DatabaseSpecBase[PartnerRepositorySpec.Env]:
           all.map(_.id) == Vector(PartnerId("acme"), PartnerId("globex")),
         )
       },
-      test("a partner cannot point at a first-party group, or at a group that does not exist") {
+      // the group's kind is not the store's to check: PartnerService creates the group of a partner itself, of kind `partner`
+      test("a partner cannot point at a group that does not exist, and two partners cannot share one group") {
         for
-          _ <- env.fixtures.group(firstPartyGroup, EdgeGroupKind.FirstParty)
-          firstParty <- env.repository.create(partner("acme", firstPartyGroup)).flip
+          _ <- env.fixtures.group(groupA, EdgeGroupKind.Partner)
           missing <- env.repository.create(partner("acme", EdgeGroupId("nobody"))).flip
+          _ <- env.repository.create(partner("acme", groupA))
+          shared <- env.repository.create(partner("globex", groupA)).flip
           all <- env.repository.getAll
-        yield assertTrue(firstParty.getMessage.contains("partner"), missing.getMessage.nonEmpty, all.isEmpty)
+        yield assertTrue(
+          missing.getMessage.nonEmpty,
+          shared == PartnerAlreadyExists(PartnerId("globex")),
+          all.map(_.id) == Vector(PartnerId("acme")),
+        )
       },
       test("the operator's changes and the partner's own are written apart, and each answers whether the partner exists") {
         val acme = partner("acme", groupA)

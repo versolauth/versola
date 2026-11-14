@@ -4418,7 +4418,9 @@ components:
           description: |
             Consent exists only on a client owned by a partner (`partnerId`): a first-party client asks its users for none, and it
             is not an option. A `consentFlow` without a `partnerId` is refused (400); a partner-owned client always has one, and
-            central applies the default screen (every requested scope shown, none deselectable) when none is sent.
+            central applies the default screen (every requested scope shown, none deselectable) when none is sent. The one
+            exception is the partner's console client (`<partner id>-console`, registered with the partner): it signs in the
+            partner's own staff, not the operator's users, so it has no consent flow and one cannot be given to it (400).
           oneOf:
             - $ref: '#/components/schemas/ConsentFlowDto'
             - type: 'null'
@@ -4617,7 +4619,9 @@ components:
           description: |
             Consent exists only on a client owned by a partner (`partnerId`): a first-party client asks its users for none, and it
             is not an option. A `consentFlow` without a `partnerId` is refused (400); a partner-owned client always has one, and
-            central applies the default screen (every requested scope shown, none deselectable) when none is sent.
+            central applies the default screen (every requested scope shown, none deselectable) when none is sent. The one
+            exception is the partner's console client (`<partner id>-console`, registered with the partner): it signs in the
+            partner's own staff, not the operator's users, so it has no consent flow and one cannot be given to it (400).
           oneOf:
             - $ref: '#/components/schemas/ConsentFlowDto'
             - type: 'null'

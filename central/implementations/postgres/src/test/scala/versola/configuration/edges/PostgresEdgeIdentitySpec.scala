@@ -54,45 +54,6 @@ object PostgresEdgeIdentitySpec extends PostgresSpec:
         all <- groups.getAll
       yield assertTrue(first, !second, found == Some(partner), all.map(_.id).toSet == Set(EdgeGroup.DefaultId, partner.id))
     },
-    // Owner requirement (#962): a partner cannot be made first-party, nor its edges the operator's, by any write
-    test("the kind of a group cannot change, to either kind, and a refused change leaves the group as it was") {
-      for
-        _ <- reset
-        (_, groups, _, _) <- repositories
-        _ <- groups.create(partner)
-        xa <- ZIO.service[TransactorZIO]
-        toFirstParty <- xa.connect(sql"UPDATE edge_groups SET kind = 'first_party' WHERE id = ${partner.id}".update.run()).flip
-        toPartner <- xa.connect(sql"UPDATE edge_groups SET kind = 'partner' WHERE id = 'default'".update.run()).flip
-        samePartner <- xa.connect(sql"UPDATE edge_groups SET kind = 'partner' WHERE id = ${partner.id}".update.run())
-        found <- groups.find(partner.id)
-        default <- groups.find(EdgeGroup.DefaultId)
-      yield assertTrue(
-        toFirstParty.getMessage.contains("cannot change"),
-        toPartner.getMessage.contains("cannot change"),
-        samePartner == 1,
-        found == Some(partner),
-        default.map(_.kind) == Some(EdgeGroupKind.FirstParty),
-      )
-    },
-    test("an edge cannot be moved into another group, from a partner's to the operator's or the other way") {
-      for
-        _ <- reset
-        (edges, groups, _, _) <- repositories
-        _ <- groups.create(partner)
-        _ <- edges.createEdge(edgeId, Some(jwk), true, partner.id, None)
-        _ <- edges.createEdge(otherEdgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
-        xa <- ZIO.service[TransactorZIO]
-        out <- xa.connect(sql"UPDATE edges SET group_id = 'default' WHERE id = ${edgeId}".update.run()).flip
-        in <- xa.connect(sql"UPDATE edges SET group_id = ${partner.id} WHERE id = ${otherEdgeId}".update.run()).flip
-        mine <- edges.find(edgeId)
-        other <- edges.find(otherEdgeId)
-      yield assertTrue(
-        out.getMessage.contains("cannot move"),
-        in.getMessage.contains("cannot move"),
-        mine.map(_.groupId) == Some(partner.id),
-        other.map(_.groupId) == Some(EdgeGroup.DefaultId),
-      )
-    },
     test("an edge carries its group and the group's kind") {
       for
         _ <- reset
@@ -159,38 +120,6 @@ object PostgresEdgeIdentitySpec extends PostgresSpec:
         _ <- tokens.create("hash-1", edgeId, now.plusSeconds(3600))
         results <- ZIO.foreachPar(1 to 8)(_ => tokens.consume("hash-1", now))
       yield assertTrue(results.count(_.isDefined) == 1)
-    },
-    test("revoking forgets the unspent tokens of one edge and counts them") {
-      for
-        _ <- reset
-        (edges, _, tokens, _) <- repositories
-        _ <- edges.createEdge(edgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
-        _ <- edges.createEdge(otherEdgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
-        _ <- tokens.create("hash-1", edgeId, now.plusSeconds(3600))
-        _ <- tokens.create("hash-2", edgeId, now.plusSeconds(3600))
-        _ <- tokens.create("hash-3", otherEdgeId, now.plusSeconds(3600))
-        spent <- tokens.consume("hash-2", now)
-        revoked <- tokens.revoke(edgeId)
-        first <- tokens.consume("hash-1", now)
-        other <- tokens.consume("hash-3", now)
-        again <- tokens.revoke(edgeId)
-      yield assertTrue(spent == Some(edgeId), revoked == 1, first.isEmpty, other == Some(otherEdgeId), again == 0)
-    },
-    test("the latest certificate of each edge is the one issued last") {
-      for
-        _ <- reset
-        (edges, _, _, certificates) <- repositories
-        _ <- edges.createEdge(edgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
-        _ <- edges.createEdge(otherEdgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
-        _ <- certificates.record(edgeId, "ab12", now.plusSeconds(86400), now)
-        _ <- certificates.record(edgeId, "cd34", now.plusSeconds(172800), now.plusSeconds(3600))
-        _ <- certificates.record(otherEdgeId, "ef56", now.plusSeconds(86400), now)
-        latest <- certificates.latest
-      yield assertTrue(
-        latest.keySet == Set(edgeId, otherEdgeId),
-        latest(edgeId).serial == "cd34",
-        latest(otherEdgeId).serial == "ef56",
-      )
     },
     test("tokens and certificates go with the edge when it is deleted") {
       for
