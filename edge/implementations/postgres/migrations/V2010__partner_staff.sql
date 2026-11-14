@@ -29,9 +29,9 @@ CREATE TABLE partner_staff_invites (
     level             TEXT NOT NULL,
     invited_by        TEXT NOT NULL,
     created_at        TIMESTAMP WITH TIME ZONE NOT NULL,
-    expires_at        TIMESTAMP WITH TIME ZONE NOT NULL,
-    UNIQUE (identifier_kind, identifier_hash)
+    expires_at        TIMESTAMP WITH TIME ZONE NOT NULL
 );
+CREATE UNIQUE INDEX partner_staff_invites_identifier ON partner_staff_invites (identifier_kind, identifier_hash);
 
 -- The first administrators named in the configuration (`partner.admins`), by the same keyed hash as an invite. A configured identifier is
 -- made an invite at every start until the person has signed in once (`admitted_at`); after that it is not made again, so removing such a
