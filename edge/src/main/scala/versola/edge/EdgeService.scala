@@ -8,6 +8,7 @@ import versola.edge.model.{
   AccessTokenId,
   AuthConversationNotFound,
   AuthorizationPreset,
+  ClientCredential,
   ClientId,
   Code,
   CodeVerifier,
@@ -38,7 +39,7 @@ import versola.util.{Base64, Base64Url, EnvName, JWT, JsonJava, RedirectUri, Sec
 import zio.http.{Body, Client, Cookie, Header, Headers, MediaType, Path, Request, Response, Status, URL}
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder, jsonField}
-import zio.{Chunk, Clock, Duration, IO, NonEmptyChunk, Task, UIO, ZIO, ZLayer, durationInt}
+import zio.{Chunk, Clock, Duration, IO, NonEmptyChunk, Ref, Task, UIO, ZIO, ZLayer, durationInt}
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -82,6 +83,30 @@ trait EdgeService:
       claims: PermissionsClaims,
       resourceIds: List[ResourceId],
   ): UIO[EdgeService.PermissionsResponse]
+
+  /** The signed-in person behind the `EDGE_SESSION` cookie of `request`, for the partner console (`/partner/api`): the same checks
+    * a proxied call makes of a cookie's token (signature, expiry with the refresh of an expired one, revocation, binding), and
+    * nothing of what a resource adds. Only the cookie is read: a bearer token in `Authorization` is not a console session. Fails
+    * with [[EdgeService.NoSession]] when there is none that can be used, which the console answers by sending the person to
+    * `/partner/login`. */
+  def consoleSession(request: Request): IO[Throwable | EdgeService.NoSession, EdgeService.ConsoleSession]
+
+  /** Ends sessions this edge holds, by the user's `sub`, the SSO session's `sid` or a refresh-token family (`fam`): the tokens are put on the
+    * edge's own revocation list, so the next request with any of them is refused, and the session rows (which hold the refresh tokens) are
+    * deleted. Edge-local: auth is not asked and nothing is sent anywhere, so it works while central is down. Answers how many live sessions
+    * of this edge it ended; a session that left no readable token (stored before the token was kept) is revoked but not counted. */
+  def revokeSessions(by: EdgeService.SessionRevocation): Task[Int]
+
+  /** The `/userinfo` of the operator for the person of `session`, asked as a proxied call asks it for a cookie's token: a token bound
+    * to the certificate of the client (a partner's client authenticates with the group's, so its tokens are) is presented over that
+    * certificate. The console reads the phone number or email from it to match an invite.
+    *
+    * When auth refuses the token (a renewal between the comparison of `consoleSession` and the call, a token it no longer honours) the
+    * session is refreshed once and the call made again, as `userInfoFor` does for a proxied call; the session that answers is returned,
+    * with the cookie of that refresh, and a second refusal stands. */
+  def consoleUserInfo(
+      session: EdgeService.ConsoleSession,
+  ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, (EdgeService.ConsoleSession, Json.Obj)]
 
   /** Front-channel logout, either OP-initiated (`iss`/`sid` query params, rendered in an
     * iframe) or first-party (the browser navigating to the endpoint itself). The presented
@@ -136,6 +161,26 @@ object EdgeService:
 
   case class ClientNotFound(clientId: ClientId)
     extends RuntimeException(s"OAuth client not found in cache: $clientId")
+
+  /** What an administrator ends: every session of a user, one SSO session, or the sessions of one refresh-token family. */
+  enum SessionRevocation:
+    case User(subject: String)
+    case Session(sid: SessionId)
+    case Family(family: RefreshTokenFamilyId)
+
+  /** What the cookie of a console request stands for: the token (which is what the person's session at the operator is, and what
+    * the partner's management calls forward as the principal), its verified claims, the preset it was issued for, and the cookie
+    * to set when the request refreshed it. */
+  case class ConsoleSession(
+      accessToken: AccessToken,
+      claims: AccessTokenClaims,
+      presetId: PresetId,
+      rotatedCookie: Option[Cookie.Response],
+  )
+
+  /** No usable session: no cookie, a token that does not verify, revoked or whose refresh failed. `clear` is the cookie to drop
+    * when the edge knows the session is over. */
+  case class NoSession(clear: Option[Cookie.Response]) extends RuntimeException("no usable console session")
 
   /** The `jti` and `sid` claims of the access token. Both are minted by auth
     * for every token issued to an authenticated session, so neither is optional.
@@ -437,7 +482,15 @@ object EdgeService:
         restPath: Path,
         request: Request,
     ): Task[Response] =
-      proxyInternal(resourceId, restPath, request).catchAll:
+      // A request that refreshed the session has moved the session's row to a new token, so the browser has to get the
+      // cookie of that token whatever the request ends in: left with the old one, its next refresh finds no row and,
+      // once `rotationGracePeriod` has passed, is sent to sign in. `Reauthenticate` clears the cookie on purpose.
+      Ref.make(Option.empty[Cookie.Response]).flatMap: rotation =>
+        answered(proxyInternal(resourceId = resourceId, restPath = restPath, request = request, rotation = rotation), rotation)
+          .flatMap(response => rotation.get.map(_.fold(response)(response.addCookie)))
+
+    private def answered(result: IO[Throwable | Outcome, Response], rotation: Ref[Option[Cookie.Response]]): Task[Response] =
+      result.catchAll:
         case Outcome.Unauthorized => ZIO.succeed(Response.unauthorized)
         case Outcome.Forbidden => ZIO.succeed(Response.forbidden)
         case Outcome.NotFound => ZIO.succeed(Response.notFound)
@@ -453,7 +506,7 @@ object EdgeService:
               .addHeaders(Headers(headers.map((name, value) => Header.Custom(name, value)))),
           )
         case Outcome.Reauthenticate(uri, clear) =>
-          ZIO.succeed(
+          rotation.set(None).as(
             Response.status(Status.Unauthorized)
               .addHeader(Header.Location(uri))
               .addCookie(clear),
@@ -483,7 +536,12 @@ object EdgeService:
               .addHeader(Header.Custom("WWW-Authenticate", """DPoP error="use_dpop_nonce""""))
               .addHeader(Header.Custom("DPoP-Nonce", nonce)),
           )
-        case ex: Throwable => ZIO.fail(ex)
+        // A failure is the server's to answer (`Observability.handleErrors`), unless the request rotated the session:
+        // then it is answered here, as the server would, so that the response can carry the cookie.
+        case ex: Throwable =>
+          rotation.get.flatMap:
+            case Some(_) => Observability.errorResponse(ex)
+            case None => ZIO.fail(ex)
 
     override def getMyPermissions(
         claims: PermissionsClaims,
@@ -499,6 +557,102 @@ object EdgeService:
           perms <- ZIO.foreach(claims.tenantId)(permissionService.getPermissionsForRoles(_, roles, endpointIds))
         yield Some(resourceId -> ResourcePermissions(perms.getOrElse(Set.empty)))
       .map(entries => PermissionsResponse(entries.flatten.toMap, env.isProd))
+
+    override def consoleSession(request: Request): IO[Throwable | NoSession, ConsoleSession] =
+      (for
+        cookie <- ZIO.fromOption(request.cookie(EdgeSessionCookie.name)).orElseFail(Outcome.Unauthorized)
+          .tapError(_ => Observability.setError("token_missing"))
+        (presetId, accessToken) = EdgeSessionCookie.parse(cookie.content)
+        authSource = AuthSource.Cookie(presetId)
+        publicKeys <- jwksService.getPublicKeys
+        now <- Clock.instant
+        session <- JWT.deserialize[Json.Obj](accessToken, publicKeys, JWT.Type.AccessToken)
+          .foldZIO(
+            {
+              case JWT.Error.Expired(jti) =>
+                refuseIfRevoked(accessToken, publicKeys, presetId) *> refreshSession(AccessTokenId(jti), presetId, now)
+              case _ =>
+                Observability.setError("token_invalid") *> ZIO.fail(Outcome.Unauthorized)
+            },
+            claims => ZIO.succeed(ActiveSession(accessToken, claims, None)),
+          )
+        typedClaims <- ZIO.fromEither(session.claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
+        _ <- logAccessTokenClaims(typedClaims)
+        _ <- checkRevoked(typedClaims)
+        // A token bound to another certificate than the one this edge presents is another edge's of the group (or this edge's before a
+        // renewal): auth would refuse it on /userinfo, so the session is re-bound with its refresh token first, as a proxied call does
+        // (`userInfoFor`). One refresh a request: a token that is still bound elsewhere afterwards (another edge's rotation, adopted) is
+        // answered 401 with the cookie of that rotation, and the next request re-binds it here.
+        bound <- boundToAnotherCertificate(typedClaims)
+        (current, currentClaims) <-
+          if !bound || session.rotatedCookie.isDefined then
+            ZIO.when(bound)(ZIO.fail(NoSession(session.rotatedCookie))).as((session, typedClaims))
+          else
+            for
+              refreshed <- refreshSession(typedClaims.jti, presetId, now)
+              refreshedClaims <- ZIO.fromEither(refreshed.claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
+              _ <- checkRevoked(refreshedClaims)
+              _ <- ZIO.fail(NoSession(refreshed.rotatedCookie)).whenZIO(boundToAnotherCertificate(refreshedClaims))
+            yield (refreshed, refreshedClaims)
+        _ <- checkTokenBinding(request, current.accessToken, currentClaims, authSource)
+      yield ConsoleSession(current.accessToken, currentClaims, presetId, current.rotatedCookie))
+        .catchAll:
+          case Outcome.Reauthenticate(_, clear) => ZIO.fail(NoSession(Some(clear)))
+          case _: Outcome => ZIO.fail(NoSession(None))
+          case error: Throwable => ZIO.fail(error)
+
+    override def revokeSessions(by: SessionRevocation): Task[Int] =
+      for
+        now <- Clock.instant
+        keys <- jwksService.getPublicKeys
+        rows <- by match
+          case SessionRevocation.Session(sid) => sessionRepository.findBySessionId(sid).map(_.filter(_.expiresAt.isAfter(now)))
+          case _ => sessionRepository.findLive(now)
+        ended <- ZIO.filter(rows)(row => revocationMatches(row, by, keys))
+        _ <- by match
+          case SessionRevocation.User(subject) => revocationService.revokeUser(subject, now)
+          case SessionRevocation.Session(sid) => revocationService.revokeSession(sid)
+          // a family's tokens are not enumerated, so the entry outlives any of them: a session's whole lifetime
+          case SessionRevocation.Family(family) =>
+            revocationService.revokeTokens(NonEmptyChunk(RevocationKey.Fam(family)), now.plus(config.security.edgeSessions.ttl))
+        // the refresh tokens the rows hold go with them
+        _ <- ZIO.foreachDiscard(ended)(row => sessionRepository.delete(row.accessTokenId))
+      yield ended.size
+
+    /** Whether the live row is of what is being ended: a session by its `sid`, a user or family by the claims of the access token the row
+      * holds (this edge's own, read without the expiry). */
+    private def revocationMatches(row: EdgeSessionRecord, by: SessionRevocation, keys: JWT.PublicKeys): Task[Boolean] =
+      by match
+        case SessionRevocation.Session(_) => ZIO.succeed(true)
+        case _ =>
+          ZIO.foreach(row.encryptedAccessToken)(decryptAccessToken).flatMap: token =>
+            ZIO.foreach(token)(token => JWT.deserialize[AccessTokenClaims](token, keys, JWT.Type.AccessToken, validateExpiry = false).option).map:
+              claims =>
+                claims.flatten.exists(claims =>
+                  by match
+                    case SessionRevocation.User(subject) => claims.subject == subject
+                    case SessionRevocation.Family(family) => claims.family.contains(family)
+                    case SessionRevocation.Session(_) => true,
+                )
+
+    override def consoleUserInfo(
+        session: ConsoleSession,
+    ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, (ConsoleSession, Json.Obj)] =
+      def ask(current: ConsoleSession) = fetchUserInfo(current.accessToken, current.claims, BindingCheck.Accept).map(current -> _)
+      ask(session).catchSome:
+        case SSOClient.UserInfoUnauthorized if session.rotatedCookie.isEmpty =>
+          (for
+            now <- Clock.instant
+            refreshed <- refreshSession(session.claims.jti, session.presetId, now)
+            claims <- ZIO.fromEither(refreshed.claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
+            _ <- checkRevoked(claims)
+          yield ConsoleSession(refreshed.accessToken, claims, session.presetId, refreshed.rotatedCookie))
+            .mapError {
+              // a refresh that cannot be had ends the session, as everywhere else
+              case _: Outcome => SSOClient.UserInfoUnauthorized
+              case error: Throwable => error
+            }
+            .flatMap(ask)
 
     override def frontChannelLogout(
         iss: Option[String],
@@ -618,6 +772,7 @@ object EdgeService:
         resourceId: ResourceId,
         restPath: Path,
         request: Request,
+        rotation: Ref[Option[Cookie.Response]],
     ): IO[Throwable | Outcome, Response] =
       for
         started <- Clock.nanoTime
@@ -630,7 +785,8 @@ object EdgeService:
               case JWT.Error.Expired(jti) =>
                 authSource match
                   case AuthSource.Cookie(presetId) =>
-                    refuseIfRevoked(accessToken, publicKeys, presetId) *> refreshSession(AccessTokenId(jti), presetId, now)
+                    refuseIfRevoked(accessToken, publicKeys, presetId) *>
+                      refreshSession(AccessTokenId(jti), presetId, now).tap(refreshed => rotation.set(refreshed.rotatedCookie))
                   case AuthSource.Header(_) =>
                     Observability.setError("token_expired") *> ZIO.fail(Outcome.Unauthorized)
               case _ =>
@@ -642,7 +798,8 @@ object EdgeService:
         _ <- logAccessTokenClaims(typedClaims)
         // R2: from the verified token, before the revocation check and before the DPoP proof records its state
         _ <- observeIdentity(typedClaims)
-        _ <- checkRevoked(typedClaims)
+        // A revoked token is not handed to the browser: the cookie it holds leads to the login, this one would only be refused.
+        _ <- checkRevoked(typedClaims).tapError(_ => rotation.set(None))
         binding <- checkTokenBinding(request, session.accessToken, typedClaims, authSource)
 
         resource <- resourceService.findByResourceId(resourceId).someOrFail(Outcome.NotFound)
@@ -655,33 +812,35 @@ object EdgeService:
         _ <- checkAudience(resource, typedClaims)
         // R3: the route is known and the caller may use it; nothing has been asked of auth or the resource yet
         _ <- observeRoute(typedClaims, resourceId, endpoint)
-        userInfo <- fetchUserInfo(session.accessToken, typedClaims, binding)
-          .when(endpoint.fetchUserInfo)
-          .someOrElse(Json.Obj())
-          .mapError {
-            case SSOClient.UserInfoUnauthorized => Outcome.Unauthorized
-            case _: Throwable => Outcome.InternalServerError
-          }
-          .tapError {
-            case Outcome.Unauthorized => Observability.setError("user_info_unauthorized")
-            case _ => ZIO.unit
-          }
-        celContext <- checkRules(session.claims, userInfo, request, endpoint, restPath, parsedBody)
-        _ <- checkStepUp(endpoint, typedClaims, now, celContext, authSource)
-        upstream <- buildUpstreamRequest(resource, endpoint, restPath, request, parsedBody, session.accessToken, celContext)
+        // Asking auth may replace the session's token (see `userInfoFor`): everything below reads what it hands back.
+        admitted = Admitted(session = session, claims = typedClaims, binding = binding)
+        (served, userInfo) <-
+          if endpoint.fetchUserInfo then
+            userInfoFor(
+              admitted = admitted,
+              authSource = authSource,
+              request = request,
+              resource = resource,
+              endpoint = endpoint,
+              rotation = rotation,
+            )
+          else ZIO.succeed((admitted, Json.Obj()))
+        celContext <- checkRules(served.session.claims, userInfo, request, endpoint, restPath, parsedBody)
+        _ <- checkStepUp(endpoint, served.claims, now, celContext, authSource)
+        upstream <- buildUpstreamRequest(resource, endpoint, restPath, request, parsedBody, served.session.accessToken, celContext)
         // `collect` inside the scope: the response this returns is handed straight back to
         // edge's own server, which streams it to the caller long after the upstream scope has
         // closed. Left streaming, whatever the body had not yet delivered by then dies with the
         // upstream connection, and the caller sees its own connection close mid-body.
         dispatched <- Clock.nanoTime
         authCall =
-          if session.rotatedCookie.isDefined then ProxyMetrics.AuthCall.Refresh
+          if served.session.rotatedCookie.isDefined then ProxyMetrics.AuthCall.Refresh
           else if endpoint.fetchUserInfo then ProxyMetrics.AuthCall.UserInfo
           else ProxyMetrics.AuthCall.None
         _ <- ProxyMetrics.beforeUpstream(resourceId, authCall, dispatched - started)
         response <- versola.util.http.Observability.asInternalCall(ZIO.scoped(httpClient.request(upstream).flatMap(_.collect)))
-        stripped = response.removeHeader(Header.SetCookie)
-      yield session.rotatedCookie.fold(stripped)(stripped.addCookie)
+      // The session's own cookie, when this request rotated it, is added to whatever `proxy` answers with.
+      yield response.removeHeader(Header.SetCookie)
 
     /** Rate limit checkpoints R2 and R3. A policy in `enforce` refuses the call here with `429` and `Retry-After`; one in
       * `shadow` only counts `would_limit` and the request goes on unchanged. With no policy at the checkpoint this is one
@@ -878,6 +1037,130 @@ object EdgeService:
         info <- ssoClient.userInfo(accessToken, binding)
       yield info
 
+    /** `/userinfo` for the session a request was admitted with, and the session to go on with: the same one, or the
+      * one a refresh on the way produced, whose token and rotated cookie the rest of the request then uses.
+      *
+      * A token out of the `EDGE_SESSION` cookie is this edge's own, with the session's refresh token behind it, so
+      * two things that would otherwise end in a bare 401 are answered by refreshing instead:
+      *
+      *  - the token is bound to a certificate other than the one this edge would present for it (RFC 8705 §3.1).
+      *    Auth checks the thumbprint exactly, so the call cannot pass. It happens as a matter of course where the
+      *    client is served by a group of edges, each with its own certificate, and after any renewal: §6.3 has the
+      *    client get a new access token with its refresh token, which is what this does, before the call;
+      *  - auth answers 401 all the same (a renewal between the comparison and the call, a token auth no longer
+      *    honours): one refresh and one more call, and a second 401 stands.
+      *
+      * One refresh a request at most: a token that was refreshed for its binding or because it had expired, and is
+      * refused all the same, is not refreshed again. A refresh that fails ends the session as it always did (`rotate`). A token from an
+      * `Authorization` header is the caller's own: edge holds no refresh token for it and never refreshes it.
+      *
+      * One case is left a 401, on purpose. Two requests of one session reach two edges of a group at once with a token
+      * bound to neither's certificate (the edge that issued it has renewed, or the session came from a third edge). One
+      * edge takes the lease and refreshes; the other is handed that rotation (`adoptRotation`), whose token is bound to
+      * the first edge's certificate. This edge cannot present it, so auth is not asked and the request is answered 401
+      * (`session_bound_to_other_edge`) with the rotated cookie; the session is intact and the caller's next request
+      * re-binds it here. Refreshing a second time instead would rotate the row twice within one burst and send the
+      * browser two different cookies in two responses: when the earlier rotation's arrives last, the browser keeps a
+      * cookie whose row has moved on, and that session ends at its next refresh. One refused request is the lesser harm.
+      */
+    private def userInfoFor(
+        admitted: Admitted,
+        authSource: AuthSource,
+        request: Request,
+        resource: Resource,
+        endpoint: ResourceEndpoint,
+        rotation: Ref[Option[Cookie.Response]],
+    ): IO[Throwable | Outcome, (Admitted, Json.Obj)] =
+      def ask(current: Admitted): IO[Outcome, (Admitted, Json.Obj)] =
+        fetchUserInfo(accessToken = current.session.accessToken, claims = current.claims, check = current.binding)
+          .mapBoth(
+            {
+              case SSOClient.UserInfoUnauthorized => Outcome.Unauthorized
+              case _: Throwable => Outcome.InternalServerError
+            },
+            current -> _,
+          )
+
+      // The answer that stands: only then is the refusal the request's outcome.
+      def askLast(current: Admitted): IO[Outcome, (Admitted, Json.Obj)] =
+        ask(current).tapError:
+          case Outcome.Unauthorized => Observability.setError("user_info_unauthorized")
+          case _ => ZIO.unit
+
+      authSource match
+        case AuthSource.Header(_) => askLast(admitted)
+        case AuthSource.Cookie(presetId) =>
+          def renewed =
+            renewForUserInfo(
+              current = admitted,
+              presetId = presetId,
+              request = request,
+              resource = resource,
+              endpoint = endpoint,
+              rotation = rotation,
+            )
+          // The token of a session this request has already refreshed (it came with an expired one) is not refreshed again.
+          val refreshed = admitted.session.rotatedCookie.isDefined
+          boundToAnotherCertificate(admitted.claims).flatMap:
+            case true if refreshed => boundToOtherEdge
+            case true => renewed.flatMap(askLast)
+            case false if refreshed => askLast(admitted)
+            case false =>
+              ask(admitted).catchSome:
+                case Outcome.Unauthorized => renewed.flatMap(askLast)
+
+    /** The session's token is another edge's rotation, which this request adopted: see `userInfoFor`. */
+    private val boundToOtherEdge: IO[Outcome, Nothing] =
+      Observability.setError("session_bound_to_other_edge") *> ZIO.fail(Outcome.Unauthorized)
+
+    /** Whether a token of one of this edge's own sessions names a certificate other than the one this edge presents
+      * for the token's client now. Only a client this edge authenticates by certificate is compared: for any other
+      * credential the call is left to fail as it did (`TokenBoundToAbsentCertificate`), a refresh having nothing to
+      * present either. Compared in constant time, like every comparison of a credential-derived value. */
+    private def boundToAnotherCertificate(claims: AccessTokenClaims): UIO[Boolean] =
+      claims.confirmation.flatMap(_.certificateThumbprint) match
+        case None => ZIO.succeed(false)
+        case Some(bound) =>
+          clientService.findClient(claims.clientId).map:
+            _.map(_.credential).exists:
+              case ClientCredential.MutualTls(certificate) =>
+                !MessageDigest.isEqual(
+                  bound.getBytes(StandardCharsets.UTF_8),
+                  TokenBinding.thumbprint(certificate.leaf).getBytes(StandardCharsets.UTF_8),
+                )
+              case _ => false
+
+    /** Refreshes the session through the lease every refresh takes (`refreshSession`), and holds the token it
+      * produced to what the one it replaces was held to: it is a new token of the same grant, but nothing says its
+      * claims are the same. The rate limits are not counted again: the proxied call is what they count. The rotated
+      * cookie is noted for the response as soon as there is one, and dropped again for a token that is revoked. */
+    private def renewForUserInfo(
+        current: Admitted,
+        presetId: PresetId,
+        request: Request,
+        resource: Resource,
+        endpoint: ResourceEndpoint,
+        rotation: Ref[Option[Cookie.Response]],
+    ): IO[Throwable | Outcome, Admitted] =
+      for
+        now <- Clock.instant
+        session <- refreshSession(accessTokenId = current.claims.jti, cookiePresetId = presetId, now = now)
+        _ <- rotation.set(session.rotatedCookie)
+        claims <- ZIO.fromEither(session.claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
+        _ <- logAccessTokenClaims(claims)
+        _ <- checkRevoked(claims).tapError(_ => rotation.set(None))
+        // Another edge's rotation, adopted: see `userInfoFor` for why it is answered and not refreshed again.
+        _ <- boundToOtherEdge.whenZIO(boundToAnotherCertificate(claims))
+        binding <- checkTokenBinding(
+          request = request,
+          accessToken = session.accessToken,
+          claims = claims,
+          authSource = AuthSource.Cookie(presetId),
+        )
+        _ <- checkPermissions(claims, endpoint)
+        _ <- checkAudience(resource, claims)
+      yield Admitted(session = session, claims = claims, binding = binding)
+
     /** An expired cookie token is refreshed with the session's refresh token, and the new token's claims are checked
       * for revocation only afterwards -- which would let a token revoked on its own (its `jti`, or its refresh family
       * or session gone from the deny list) come back to life through a refresh that auth, whose family and session
@@ -925,16 +1208,24 @@ object EdgeService:
         endpoint: ResourceEndpoint,
     ): IO[Outcome, Unit] =
       val isServiceToken = claims.subject == claims.clientId
-      for
-        allowed <-
-          if isServiceToken then
-            permissionService.getAllowedEndpointsForClient(claims.clientId)
-          else
-            permissionService.getAllowedEndpointsForRoles(claims.tenantId, claims.roles)
+      config.mode match
+        // A partner has no roles and no permissions (#962 §4): what its endpoint lets through is the `allow` rule written on the
+        // token's scopes and claims. An endpoint without one lets nobody through, the deny-by-default of the permission check
+        // it stands in for.
+        case EdgeMode.Partner =>
+          (Observability.setError("permission_denied", Some("the endpoint of a partner's resource has no allow rule")) *>
+            ZIO.fail(Outcome.Forbidden)).unless(endpoint.allow.exists(_.trim.nonEmpty)).unit
+        case EdgeMode.FirstParty =>
+          for
+            allowed <-
+              if isServiceToken then
+                permissionService.getAllowedEndpointsForClient(claims.clientId)
+              else
+                permissionService.getAllowedEndpointsForRoles(claims.tenantId, claims.roles)
 
-        _ <- (Observability.setError("permission_denied") *> ZIO.fail(Outcome.Forbidden))
-          .unless(allowed.contains(endpoint.id))
-      yield ()
+            _ <- (Observability.setError("permission_denied") *> ZIO.fail(Outcome.Forbidden))
+              .unless(allowed.contains(endpoint.id))
+          yield ()
 
     private def checkAudience(
         resource: Resource,
@@ -1481,6 +1772,13 @@ object EdgeService:
       accessToken: AccessToken,
       claims: Json.Obj,
       rotatedCookie: Option[Cookie.Response],
+  )
+
+  /** A session whose token passed the checks of a proxied call: its typed claims and what its binding obliged. */
+  private case class Admitted(
+      session: ActiveSession,
+      claims: AccessTokenClaims,
+      binding: BindingCheck,
   )
 
   private enum Outcome:

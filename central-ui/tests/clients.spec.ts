@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { INVALID_FIELD_BORDER, clientWrites, findClientWrite, findRequest, loadAdminApp } from './fixtures';
 
 const clientsPath = '/?view=clients&tenant=tenant-alpha';
@@ -129,6 +129,28 @@ async function startCreate(page: Page, kind = 'Web app') {
   await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
   await page.getByRole('button', { name: new RegExp(kind) }).click();
   await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+}
+
+/**
+ * Consent exists only for a partner's client, so a wizard test that reaches the consent settings starts by choosing the owner: the
+ * type first, then Partner and Pilot Pay under it. Its cap is a day so that a device client's DPoP-bound tokens (an hour at least) fit.
+ */
+const consentState = (extra: Record<string, unknown> = {}) => ({
+  ...ownerState,
+  partners: [{ ...ownerState.partners[0], limits: { ...ownerState.partners[0].limits, accessTokenTtlMax: 86_400 } }],
+  ...extra,
+});
+
+async function startPartnerWizardAtStep3(page: Page, kind: string, id: string) {
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByRole('button', { name: new RegExp(kind) }).click();
+  await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'Partner' }).click();
+  await page.getByRole('combobox', { name: 'Partner' }).click();
+  await page.getByRole('option', { name: /Pilot Pay/ }).click();
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+  await fillBasics(page, id, 'Wizard App');
+  await addRedirectUri(page, 'https://wizard.pilotpay.example/callback');
+  await continueToThirdStep(page);
 }
 
 /** Step 2 gates on these two, so every creation has to fill them before it can go on. */
@@ -1044,7 +1066,7 @@ test('sends no registration flow: self-registration is a tenant setting, not a c
 
   expect((await findClientWrite(api.requests, 'POST')).body).not.toHaveProperty('registrationFlow');
 
-  await openEditSection(page, 'Ownership');
+  await openEditSection(page, 'Sign-in');
   await expect(page.getByText('Assigned roles', { exact: false })).toHaveCount(0);
   await expect(page.getByLabel('Challenge', { exact: true })).toHaveCount(0);
   await saveEdit(page);
@@ -1052,24 +1074,34 @@ test('sends no registration flow: self-registration is a tenant setting, not a c
   expect((await findClientWrite(api.requests, 'PUT')).body).not.toHaveProperty('registrationFlow');
 });
 
-test('configures a consent flow and sends it when creating a client', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: clientsPath,
-    state: { clients: { 'tenant-alpha': [alphaClient] } },
-  });
+test('a first-party client is created with no consent: the wizard has no consent section and no switch for one', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: consentState() });
 
   await startCreate(page);
-  await fillBasics(page, 'consenting-client', 'Consenting Client');
-  await page.getByPlaceholder('https://app.example.com/callback').fill('https://consenting.example/callback');
-  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+  await fillBasics(page, 'own-client', 'Own Client');
+  await addRedirectUri(page, 'https://own.example/callback');
   await continueToThirdStep(page);
 
-  // Off by default: a client without a consent flow never prompts, so nothing the screen would
-  // render is asked for either.
+  await expect(page.getByRole('region', { name: 'Consent' })).toHaveCount(0);
   await expect(page.getByLabel('Reuse the grant for')).toHaveCount(0);
   await expect(page.getByLabel('Logo URI')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /First party app|Partner app/ })).toHaveCount(0);
+  await expect(page.getByRole('group', { name: 'Who the app belongs to' })).toHaveCount(0);
+  await continueToReview(page);
+  await expect(page.getByRole('region', { name: 'Owner', exact: true })).toContainText('First-party · your own application; users are not asked for consent');
+  await expect(page.getByRole('region', { name: 'Ownership' })).toHaveCount(0);
+  await submitCreate(page);
 
-  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+  expect((await findClientWrite(api.requests, 'POST')).body.consentFlow).toBeNull();
+});
+
+test('configures a consent flow and sends it when creating a client', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: consentState() });
+
+  await startPartnerWizardAtStep3(page, 'Web app', 'consenting-client');
+
+  // A partner's client always has the consent settings; the owner chosen on step 1 is what decides it.
+  await expect(page.getByRole('region', { name: 'Consent' })).toContainText('Owned by Pilot Pay: users are always asked for consent');
   await checkRow(page, 'Let the user grant part of it').click();
   await page.getByLabel('Reuse the grant for').selectOption('30');
 
@@ -1082,6 +1114,7 @@ test('configures a consent flow and sends it when creating a client', async ({ p
 
   const body = (await findClientWrite(api.requests, 'POST')).body;
   expect(body).toMatchObject({
+    partnerId: 'pilot-pay',
     logoUri: 'https://consenting.example/logo.png',
     policyUri: 'https://consenting.example/privacy',
     tosUri: 'https://consenting.example/terms',
@@ -1193,16 +1226,14 @@ test('offers required scopes only while partial grants are allowed', async ({ pa
 test('explains consent settings with info buttons', async ({ page }) => {
   await loadAdminApp(page, {
     path: clientsPath,
-    state: { clients: { 'tenant-alpha': [alphaClient] } },
+    state: { clients: { 'tenant-alpha': [partnerClient] } },
   });
 
-  await openClientPage(page, 'alpha-web');
+  await openClientPage(page, 'acme-app');
   await openEditSection(page, 'Ownership');
 
-  await page.getByRole('button', { name: 'Ownership info' }).click();
-  await expect(page.getByText('A first party app is yours: users are not asked for consent. A partner app belongs to someone else: users see which scopes it requests before an authorization code is issued.', { exact: true })).toBeVisible();
-
-  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+  await page.getByRole('button', { name: 'Owner info' }).click();
+  await expect(page.getByText('The owner is chosen when the client is created and cannot be changed. A first-party client is yours: users are not asked for consent. A partner\'s client belongs to someone else: users see which scopes it requests before an authorization code is issued.', { exact: true })).toBeVisible();
 
   const explanations = [
     ['Partial grants consent info', 'Allows the user to deselect optional scopes and approve only a subset of the requested access.'],
@@ -1239,12 +1270,11 @@ test('explains which client fields are shown on the consent screen', async ({ pa
 test('uses sentence case for consent property labels', async ({ page }) => {
   await loadAdminApp(page, {
     path: clientsPath,
-    state: { clients: { 'tenant-alpha': [alphaClient] } },
+    state: { clients: { 'tenant-alpha': [partnerClient] } },
   });
 
-  await openClientPage(page, 'alpha-web');
+  await openClientPage(page, 'acme-app');
   await openEditSection(page, 'Ownership');
-  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
 
   for (const id of ['consent-remember', 'consent-logo-uri', 'consent-policy-uri', 'consent-tos-uri']) {
     const label = page.locator(`label[for="${id}"]`);
@@ -1253,25 +1283,21 @@ test('uses sentence case for consent property labels', async ({ page }) => {
   }
 });
 
-test('hides consent settings when the auth flow is disabled', async ({ page }) => {
-  await loadAdminApp(page, {
-    path: clientsPath,
-    state: { tenants: standardTenants, clients: { 'tenant-alpha': [alphaClient] } },
-  });
+test('shows consent settings only for a partner owner, and never for the kind with no user', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: consentState({ tenants: standardTenants }) });
 
-  await startCreate(page);
-  await fillBasics(page, 'consenting-web', 'Consenting Web');
-  await continueToThirdStep(page);
-  await expect(page.getByText('Ownership', { exact: true })).toBeVisible();
+  await startPartnerWizardAtStep3(page, 'Web app', 'consenting-web');
+  await expect(page.getByRole('region', { name: 'Consent' })).toBeVisible();
 
-  // Consent is an act by a user, so the kind with none never offers it.
+  // Consent is an act by a user, so the kind with none never offers it; and a first-party owner has none either.
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'First-party' }).click();
   await page.getByRole('button', { name: /Service app/ }).click();
   await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
   await continueToThirdStep(page);
 
-  await expect(page.getByText('Ownership', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Consent' })).toHaveCount(0);
 });
 
 test('sends no registration flow for a login+password client', async ({ page }) => {
@@ -1562,18 +1588,9 @@ test('shows a public native client as having no credential, with nothing to regi
 });
 
 test('gates the sign-in step on the consent URIs it edits', async ({ page }) => {
-  await loadAdminApp(page, {
-    path: clientsPath,
-    state: { clients: { 'tenant-alpha': [alphaClient] } },
-  });
+  await loadAdminApp(page, { path: clientsPath, state: consentState() });
 
-  await startCreate(page);
-  await fillBasics(page, 'consent-uri-client', 'Consent URI Client');
-  await page.getByPlaceholder('https://app.example.com/callback').fill('https://consenting.example/callback');
-  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
-  await continueToThirdStep(page);
-
-  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+  await startPartnerWizardAtStep3(page, 'Web app', 'consent-uri-client');
   await page.getByLabel('Logo URI').fill('http://logo.example/logo.png');
 
   // The field lives on this step, so this step is where it has to be answered: submitting
@@ -2059,23 +2076,38 @@ test('marks a client that asks for consent as a partner and keeps its consent sw
   await expect(page.locator('versola-clients-list .view-meta .chip', { hasText: 'Partner' })).toBeVisible();
 
   await openEditSection(page, 'Ownership');
-  // Partner is the choice made for good: the other one is there, and cannot be picked.
-  await expect(page.getByRole('button', { name: 'Partner app', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByRole('button', { name: 'First party app', exact: true })).toBeDisabled();
-  await expect(page.getByText('it cannot be made a first party app')).toBeVisible();
+  // The owner is read-only text: there is no switch to make it a first-party client, and its consent settings stay editable.
+  await expect(page.getByText('A partner app, with no partner recorded')).toBeVisible();
+  await expect(page.getByText('Users are always asked for consent.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /First party app|Partner app/ })).toHaveCount(0);
+  await expect(page.getByLabel('Remember', { exact: true })).toBeVisible();
+});
+
+test('a first-party client has no way to get a consent flow: its Ownership card is fixed and has no Edit', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [alphaClient] } } });
+  await openClientPage(page, 'alpha-web');
+  const card = page.getByRole('region', { name: 'Ownership' });
+  await expect(card).toContainText('First-party (users are not asked for consent)');
+  await expect(card.getByRole('button', { name: 'Edit' })).toHaveCount(0);
+  await expect(card).toContainText('Fixed');
+});
+
+test('a partner-owned client names its partner as the owner, in the card and in the editor', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { ...ownerState, clients: { 'tenant-alpha': [{ ...partnerClient, partnerId: 'pilot-pay' }] } } });
+  await openClientPage(page, 'acme-app');
+  await expect(page.getByRole('region', { name: 'Ownership' })).toContainText('Pilot Pay (users are asked for consent, cannot be turned off)');
+  await openEditSection(page, 'Ownership');
+  await expect(page.getByText('Pilot Pay (pilot-pay)', { exact: true })).toBeVisible();
+  await expect(page.getByText('Users are always asked for consent, and the screen names the partner.')).toBeVisible();
 });
 
 test('registering a client that asks for consent picks the partner OTP template', async ({ page }) => {
   const { requests } = await loadAdminApp(page, {
     path: clientsPath,
-    state: { otpTemplates: { 'tenant-alpha': [smsTemplate('default'), smsTemplate('partner')] } },
+    state: consentState({ otpTemplates: { 'tenant-alpha': [smsTemplate('default'), smsTemplate('partner')] } }),
   });
 
-  await startCreate(page);
-  await fillBasics(page, 'new-partner', 'New Partner');
-  await addRedirectUri(page, 'https://partner.example/callback');
-  await continueToThirdStep(page);
-  await page.getByRole('button', { name: 'Partner app' }).click();
+  await startPartnerWizardAtStep3(page, 'Web app', 'new-partner');
   await continueToReview(page);
   await submitCreate(page);
 
@@ -2284,14 +2316,9 @@ for (const kind of ['Web app', 'Mobile or desktop app']) {
   test(`${kind}: a partner is offered branding in the wizard and sends it`, async ({ page }) => {
     const api = await loadAdminApp(page, {
       path: clientsPath,
-      state: appearanceState(alphaClient),
+      state: consentState(appearanceState(alphaClient)),
     });
-    await startWizardAtStep3(page, kind, 'branded-partner');
-    await expect(page.getByRole('button', { name: 'First party app', exact: true })).toHaveAttribute('aria-pressed', 'true');
-    await expect(page.getByLabel('Forms Theme')).toHaveCount(0);
-    await expect(page.getByRole('region', { name: 'Appearance for this app' })).toHaveCount(0);
-
-    await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+    await startPartnerWizardAtStep3(page, kind, 'branded-partner');
     await page.getByLabel('Forms Theme').selectOption('money');
     const appearance = page.getByRole('region', { name: 'Appearance for this app' });
     await expect(appearance).toBeVisible();
@@ -2306,35 +2333,36 @@ for (const kind of ['Web app', 'Mobile or desktop app']) {
   });
 }
 
-test('a first-party app in the wizard has no branding, and going back to it drops the partner theme', async ({ page }) => {
+test('a first-party app in the wizard has no branding, and going back to the owner step to switch to it drops the partner theme and consent', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,
-    state: appearanceState(alphaClient),
+    state: consentState(appearanceState(alphaClient)),
   });
-  await startWizardAtStep3(page, 'Web app', 'own-app');
-  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+  await startPartnerWizardAtStep3(page, 'Web app', 'own-app');
   await page.getByLabel('Forms Theme').selectOption('money');
-  await page.getByRole('button', { name: 'First party app', exact: true }).click();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'First-party' }).click();
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+  await continueToThirdStep(page);
   await expect(page.getByLabel('Forms Theme')).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Consent' })).toHaveCount(0);
   await expect(page.getByRole('region', { name: 'Appearance for this app' })).toHaveCount(0);
   await expect(page.getByLabel('Logo URI')).toHaveCount(0);
   await continueToReview(page);
-  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'first party' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Owner', exact: true })).toContainText('First-party');
   await submitCreate(page);
 
   const body = (await findClientWrite(api.requests, 'POST')).body;
   expect(body.theme).toBe('default');
   expect(body).not.toHaveProperty('themeOverrides');
   expect(body.consentFlow).toBeNull();
+  expect(body.partnerId ?? null).toBeNull();
 });
 
 test('a new partner has 90 days preselected, sends it, and the grant-part checkbox follows the duration', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: clientsPath,
-    state: { clients: { 'tenant-alpha': [alphaClient] } },
-  });
-  await startWizardAtStep3(page, 'Web app', 'ninety-partner');
-  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+  const api = await loadAdminApp(page, { path: clientsPath, state: consentState() });
+  await startPartnerWizardAtStep3(page, 'Web app', 'ninety-partner');
 
   const select = page.getByLabel('Reuse the grant for');
   await expect(select).toHaveValue('90');
@@ -2372,23 +2400,9 @@ test('the edit page puts the partial-grants row after the remember row', async (
   expect(partial!.y).toBeGreaterThan(remember!.y);
 });
 
-test('an unlocked first-party client can be made a partner from the edit page', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: clientsPath,
-    state: { clients: { 'tenant-alpha': [alphaClient] } },
-  });
-  await openClientPage(page, 'alpha-web');
-  await openEditSection(page, 'Ownership');
-  await expect(page.getByRole('button', { name: 'First party app', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
-  await saveEdit(page);
-  expect((await findClientWrite(api.requests, 'PUT')).body.consentFlow.rememberDuration).toBe(90 * 86400);
-});
-
 test('the wizard select shows a grant duration outside its presets as its own option', async ({ page }) => {
-  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [alphaClient] } } });
-  await startWizardAtStep3(page, 'Web app', 'legacy-days');
-  await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+  await loadAdminApp(page, { path: clientsPath, state: consentState() });
+  await startPartnerWizardAtStep3(page, 'Web app', 'legacy-days');
   // The wizard cannot produce one itself; a value restored from elsewhere (an old client's 180) must not blank the select.
   await page.locator('versola-client-form').evaluate((el: any) => {
     el.formData = { ...el.formData, consentFlow: { ...el.formData.consentFlow, rememberDurationDays: 180 } };
@@ -2396,4 +2410,215 @@ test('the wizard select shows a grant duration outside its presets as its own op
   const select = page.getByLabel('Reuse the grant for');
   await expect(select).toHaveValue('180');
   await expect(select.locator('option:checked')).toHaveText('180 days');
+});
+
+// ── Owner (#549): a partner-owned client ──────────────────────────────────────────────────────
+
+const ownerState = {
+  clients: { 'tenant-alpha': [alphaClient] },
+  partners: [{
+    id: 'pilot-pay', tenantId: 'tenant-alpha', displayName: 'Pilot Pay', logoUri: null, contact: { email: 'security@pilotpay.example' },
+    status: 'active' as const, groupId: 'pilot-pay', consoleClientId: 'pilot-pay-console', reviewAt: null, createdAt: '2026-09-02T10:00:00Z',
+    limits: { scopes: ['openid', 'profile', 'email'], redirectDomains: ['pilotpay.example'], maxClients: 10, maxEdges: 3, accessTokenTtlMax: 600, refreshTokenTtlMax: 30 * 86_400, clientAuthMethods: ['tls_client_auth' as const, 'private_key_jwt' as const], rateLimitPolicy: 'partner-default' },
+  }],
+  scopes: { 'tenant-alpha': [
+    { scope: 'openid', description: { en: 'OpenID' }, claims: [] }, { scope: 'profile', description: { en: 'Profile' }, claims: [] },
+    { scope: 'email', description: { en: 'Email' }, claims: [] }, { scope: 'orders', description: { en: 'Orders' }, claims: [] },
+  ] },
+};
+
+async function chooseOwnerPartner(page: Page) {
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'Partner' }).click();
+  await page.getByRole('combobox', { name: 'Partner' }).click();
+  await page.getByRole('option', { name: /Pilot Pay/ }).click();
+}
+
+test('the Owner step fixes the rows a partner sets and recomputes the kind plan from the owner', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: ownerState });
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  // First-party by default; the continue button waits for a partner once Partner is chosen.
+  await expect(page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'First-party' })).toHaveAttribute('aria-pressed', 'true');
+  // The type is picked first; the owner is asked below it.
+  await page.getByRole('button', { name: /Web app/ }).click();
+  await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'Partner' }).click();
+  await expect(page.getByRole('button', { name: 'Continue to basics', exact: true })).toBeDisabled();
+  await page.getByRole('combobox', { name: 'Partner' }).click();
+  await page.getByRole('option', { name: /Pilot Pay/ }).click();
+
+  const owner = page.getByRole('region', { name: 'Owner' });
+  // The owner section keeps what the type panel does not say; the protocol facts are in the type panel only.
+  await expect(owner).toContainText('Consent required, names the partner');
+  await expect(owner).toContainText('Scopes within openid, profile, email');
+  await expect(owner).toContainText('Redirect URIs under pilotpay.example');
+  for (const said of ['PKCE', 'Pushed authorization', 'pushed authorization', 'tls_client_auth', 'private_key_jwt', 'Served by the edges', 'Lifetimes', 'Certificate-bound']) {
+    await expect(owner, said).not.toContainText(said);
+  }
+  // The kind plan follows the owner: group certificate, certificate-bound tokens, the partner's cap.
+  await expect(page.getByText('Web app, owned by Pilot Pay, sets:')).toBeVisible();
+  const plan = page.locator('versola-client-kind-step .plan');
+  await expect(plan).toContainText('Group certificate: tls_client_auth, san_uri = urn:versola:edge-group:pilot-pay');
+  await expect(plan).toContainText('10 min access token at most');
+  await expect(plan.locator('.plan-line.on').filter({ hasText: 'Certificate-bound access tokens' })).toHaveCount(1);
+  await expect(plan.locator('.plan-line.off')).toHaveCount(0);
+  await expect(plan).not.toContainText('mTLS by edge');
+  // The partner may also use a key: said once, on the credential line.
+  await expect(plan).toContainText('The partner may also use private_key_jwt; choose on the next step.');
+  // One fact appears once on the step.
+  const step = page.locator('versola-client-form');
+  for (const fact of ['Served by the edges of group pilot-pay', 'Consent required', 'access token at most', 'Group certificate: tls_client_auth']) {
+    await expect(step.getByText(fact), fact).toHaveCount(1);
+  }
+  // A service app cannot be partner-owned.
+  await expect(page.getByRole('button', { name: /Service app/ })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Continue to basics', exact: true })).toBeEnabled();
+});
+
+test('the Owner section sits below the type cards and their plan, above the actions, and the plan follows the owner chosen below it', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: ownerState });
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  const top = async (locator: Locator) => (await locator.boundingBox())!.y;
+  const bottom = async (locator: Locator) => { const box = (await locator.boundingBox())!; return box.y + box.height; };
+  const kindStep = page.locator('versola-client-kind-step');
+  const owner = page.getByRole('region', { name: 'Owner', exact: true });
+  const actions = page.locator('versola-client-form .form-actions');
+
+  await page.getByRole('button', { name: /Web app/ }).click();
+  const plan = kindStep.locator('.plan');
+  await expect(page.getByText('Web app sets:', { exact: true })).toBeVisible();
+  await expect(plan).toContainText('mTLS by edge');
+  // Layout: kind cards and their plan, then the owner, then the action row.
+  expect(await bottom(kindStep)).toBeLessThanOrEqual(await top(owner));
+  expect(await bottom(owner)).toBeLessThanOrEqual(await top(actions));
+  expect(await top(page.getByRole('button', { name: /Web app/ }))).toBeLessThan(await top(owner));
+
+  // Choosing Partner below the cards switches the plan above it, without picking the type again.
+  await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'Partner' }).click();
+  await expect(page.getByRole('button', { name: /Service app/ })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Continue to basics', exact: true })).toBeDisabled();
+  await page.getByRole('combobox', { name: 'Partner' }).click();
+  await page.getByRole('option', { name: /Pilot Pay/ }).click();
+  await expect(page.getByText('Web app, owned by Pilot Pay, sets:')).toBeVisible();
+  await expect(plan).toContainText('Group certificate: tls_client_auth, san_uri = urn:versola:edge-group:pilot-pay');
+  await expect(plan).not.toContainText('mTLS by edge');
+  await expect(page.getByRole('button', { name: 'Continue to basics', exact: true })).toBeEnabled();
+  // The owner section grew with the partner's rules and is still below the plan.
+  expect(await bottom(kindStep)).toBeLessThanOrEqual(await top(owner));
+
+  // And back: the plan returns to the first-party rules.
+  await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'First-party' }).click();
+  await expect(page.getByText('Web app sets:', { exact: true })).toBeVisible();
+  await expect(plan).toContainText('mTLS by edge');
+  await expect(page.getByRole('button', { name: /Service app/ })).toBeEnabled();
+});
+
+test('the review lists the Owner after the Type', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: ownerState });
+  await chooseOwnerPartner(page);
+  await page.getByRole('button', { name: /Web app/ }).click();
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+  await fillBasics(page, 'pilot-pay-shop', 'Pilot Pay Shop');
+  await addRedirectUri(page, 'https://shop.pilotpay.example/complete');
+  await continueToThirdStep(page);
+  await continueToReview(page);
+  const type = page.getByRole('region', { name: 'Type', exact: true });
+  const owner = page.getByRole('region', { name: 'Owner', exact: true });
+  await expect(type).toBeVisible();
+  expect((await type.boundingBox())!.y).toBeLessThan((await owner.boundingBox())!.y);
+  expect((await owner.boundingBox())!.y).toBeLessThan((await page.getByRole('region', { name: 'General', exact: true }).boundingBox())!.y);
+});
+
+test('a partner-owned client is held to the partner\'s domains, scopes and caps, and is registered with partnerId', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: ownerState });
+  await chooseOwnerPartner(page);
+  await page.getByRole('button', { name: /Web app/ }).click();
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+  await fillBasics(page, 'pilot-pay-shop', 'Pilot Pay Shop');
+
+  await addRedirectUri(page, 'https://shop.pilot-partner.net/complete');
+  await expect(page.getByText("Outside the partner's redirect domains: https, under pilotpay.example.")).toBeVisible();
+  await addRedirectUri(page, 'https://shop.pilotpay.example/complete');
+  await expect(page.locator('versola-client-form')).toContainText('https://shop.pilotpay.example/complete');
+  // The credential is the group certificate or a key, as the partner's limits allow; never edge's own.
+  await expect(page.getByRole('group', { name: 'Client authentication' }).getByRole('button', { name: 'group certificate' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByText('tls_client_auth · san_uri = urn:versola:edge-group:pilot-pay')).toBeVisible();
+  await continueToThirdStep(page);
+
+  // Scopes outside the partner's list are not offered; consent cannot be turned off.
+  await expect(page.locator('versola-client-form').getByRole('button', { name: 'orders', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Consent' })).toContainText('Owned by Pilot Pay: users are always asked for consent');
+  await expect(page.getByRole('button', { name: /First party app|Partner app/ })).toHaveCount(0);
+  await continueToReview(page);
+  await expect(page.getByRole('region', { name: 'Owner', exact: true })).toContainText('Pilot Pay (pilot-pay) · served by the edges of group pilot-pay');
+  // The access token is capped: the kind's 1 hour became the partner's 10 minutes.
+  await expect(page.getByRole('region', { name: 'Tokens' })).toContainText('10 minutes');
+  await submitCreate(page);
+
+  const request = await findClientWrite(api.requests, 'POST');
+  expect(request.pathname).toBe('/configuration/clients/web');
+  expect(request.body).toMatchObject({
+    partnerId: 'pilot-pay', id: 'pilot-pay-shop', authMethod: 'tls_client_auth', requirePushedAuthorizationRequests: true,
+    certificateBoundAccessTokens: false, mtlsAuth: { type: 'tls_client_auth', subjectType: 'san_uri', subjectValue: 'urn:versola:edge-group:pilot-pay' },
+    redirectUris: ['https://shop.pilotpay.example/complete'], accessTokenTtl: 600,
+  });
+  expect(request.body.consentFlow).not.toBeNull();
+  // Operator-created partner clients are approved at once; the record says who owns it.
+  await expect(page.locator('versola-clients-list .view-title')).toBeVisible();
+  await expect(page.locator('.chip', { hasText: 'Owned by Pilot Pay' })).toBeVisible();
+  await expect(page.locator('.chip', { hasText: 'Awaiting approval' })).toHaveCount(0);
+});
+
+test('a first-party registration carries no partnerId, and the Owner choice is absent without partners', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [alphaClient] } } });
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await expect(page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'Partner' })).toBeDisabled();
+  await expect(page.getByRole('region', { name: 'Owner' })).toContainText('Add a partner under Partners to own clients.');
+  await page.getByRole('button', { name: /Web app/ }).click();
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+  await fillBasics(page, 'plain-web', 'Plain Web');
+  await addRedirectUri(page, 'https://plain.example/callback');
+  await continueToThirdStep(page);
+  await continueToReview(page);
+  await submitCreate(page);
+  const request = await findClientWrite(api.requests, 'POST');
+  expect(request.body.partnerId).toBeUndefined();
+});
+
+test('the list and the record show the owner and the approval state of a partner-owned client', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { ...ownerState, clients: { 'tenant-alpha': [alphaClient, { ...alphaClient, id: 'pilot-pay-checkout', clientName: { en: 'Pilot Pay Checkout' }, partnerId: 'pilot-pay', approval: 'pending' }] } },
+  });
+  const row = page.locator('versola-data-table').getByRole('row').filter({ hasText: 'pilot-pay-checkout' });
+  await expect(row).toContainText('Owned by Pilot Pay');
+  await expect(row).toContainText('Awaiting approval');
+  await expect(page.locator('versola-data-table').getByRole('row').filter({ hasText: 'alpha-web' })).not.toContainText('Owned by');
+  await page.getByRole('button', { name: /^Open client Pilot Pay Checkout/ }).click();
+  await expect(page.locator('versola-record-header')).toContainText('Owned by Pilot Pay');
+  await expect(page.locator('versola-record-header')).toContainText('Awaiting approval');
+});
+
+test('a partner client\'s refresh lifetime above the partner\'s cap is refused inline, not clamped', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      ...ownerState,
+      clients: { 'tenant-alpha': [{ ...offlineClient, accessTokenTtl: 300, id: 'pilot-pay-checkout', clientName: { en: 'Pilot Pay Checkout' }, partnerId: 'pilot-pay', approval: 'approved' as const }] },
+      scopes: { 'tenant-alpha': [...ownerState.scopes['tenant-alpha'], { scope: 'offline_access', description: { en: 'Offline access scope' }, claims: [] }] },
+    },
+  });
+  await openClientPage(page, 'pilot-pay-checkout');
+  await openEditSection(page, 'Token lifetimes');
+  const field = page.getByLabel('Refresh Token TTL (days) *');
+  await field.fill('60');
+  // What was typed stays as typed; the cap is named under the field.
+  await expect(field).toHaveValue('60');
+  await expect(page.getByRole('alert').filter({ hasText: "At most 30 days: the partner's cap." })).toBeVisible();
+  await expect(field).toHaveAttribute('aria-invalid', 'true');
+  await saveEdit(page);
+  expect(clientWrites(api.requests, 'PUT')).toHaveLength(0);
+  await field.fill('30');
+  await expect(page.getByRole('alert').filter({ hasText: "the partner's cap" })).toHaveCount(0);
+  await saveEdit(page);
+  expect((await findClientWrite(api.requests, 'PUT')).body).toMatchObject({ refreshTokenTtl: 30 * 24 * 60 * 60 });
 });

@@ -3,6 +3,7 @@ package versola.central.configuration.resources
 import org.scalamock.stubs.ZIOStubs
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeId
+import versola.central.configuration.partners.PartnerId
 import versola.central.configuration.sync.SyncEvent
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.configuration.{
@@ -49,7 +50,17 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val createdEndpoint =
     ResourceEndpointRecord(createdEndpointId, "/users", "POST", false, denyAware, Vector.empty, None, None, None, rateLimit = None)
   private val resource =
-    ResourceRecord(tenantId, resourceId, originalUri, audience, Vector(existingEndpoint, removedEndpoint), None, None, audienceRateLimits = Nil)
+    ResourceRecord(
+      tenantId,
+      resourceId,
+      originalUri,
+      audience,
+      Vector(existingEndpoint, removedEndpoint),
+      None,
+      None,
+      audienceRateLimits = Nil,
+      partnerId = None,
+    )
   private val otherTenantResource =
     ResourceRecord(
       otherTenantId,
@@ -60,6 +71,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       None,
       None,
       audienceRateLimits = Nil,
+      partnerId = None,
     )
   private val centralSecret = Secret(Array.fill(32)(7.toByte))
   private val previousCentralSecret = Secret(Array.fill(32)(8.toByte))
@@ -72,6 +84,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
     secret = Some(centralSecret),
     previousSecret = Some(previousCentralSecret),
     audienceRateLimits = Nil,
+    partnerId = None,
   )
 
   private val createRequest = CreateResourceRequest(
@@ -107,6 +120,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     internal = false,
     audienceRateLimits = Nil,
+    partnerId = None,
   )
 
   private val updateRequest = UpdateResourceRequest(
@@ -192,7 +206,8 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(result == Vector(resource))
     },
     test("getTenantResources applies pagination after filtering") {
-      val pagedResource = ResourceRecord(tenantId, ResourceId("paged"), updatedUri, audience, Vector.empty, None, None, audienceRateLimits = Nil)
+      val pagedResource =
+        ResourceRecord(tenantId, ResourceId("paged"), updatedUri, audience, Vector.empty, None, None, audienceRateLimits = Nil, partnerId = None)
       val env = new Env(Vector(resource, pagedResource, otherTenantResource))
 
       for result <- env.service.getTenantResources(tenantId, offset = 1, limit = Some(1))
@@ -216,6 +231,18 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         ))
         result <- env.service.getResourcesForSync(Some(syncEdgeId))
       yield assertTrue(result == Vector(resource))
+    },
+    // #962: a partner's resource (upstream secret, endpoint rules) is not served to the operator's own edge, even in a tenant bound to it.
+    test("getResourcesForSync with an edge leaves out a partner's resources, in a tenant bound to the edge too") {
+      val syncEdgeId = EdgeId("edge-1")
+      val partnersResource = resource.copy(resourceId = ResourceId("partner-resource"), partnerId = Some(PartnerId("acme")))
+      val env = new Env(Vector(resource, partnersResource))
+
+      for
+        _ <- env.tenantRepository.getAll.succeedsWith(Vector(TenantRecord(tenantId, "tenant a", Some(syncEdgeId))))
+        forEdge <- env.service.getResourcesForSync(Some(syncEdgeId))
+        forAuth <- env.service.getResourcesForSync(None)
+      yield assertTrue(forEdge == Vector(resource), forAuth == Vector(resource, partnersResource))
     },
     // Gap: ResourceService.live's ZLayer wiring (the reloading cache and the
     // secret-decrypting CacheSource built on top of the repository) was never built by any
@@ -257,6 +284,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
             ResourceEndpointRecord(existingEndpointId, "/users", "GET", false, allow, inject, None, None, None, rateLimit = None),
             ResourceEndpointRecord(createdEndpointId, "/users", "POST", true, denyAware, Vector.empty, None, None, None, rateLimit = None),
           ),
+          None,
           None,
         )),
       )
@@ -983,7 +1011,17 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val storedParameterized =
         ResourceEndpointRecord(existingEndpointId, "/users/{id}", "GET", false, None, Vector.empty, None, None, None, rateLimit = None)
       val storedResource =
-        ResourceRecord(tenantId, resourceId, originalUri, audience, Vector(storedParameterized), None, None, audienceRateLimits = Nil)
+        ResourceRecord(
+          tenantId,
+          resourceId,
+          originalUri,
+          audience,
+          Vector(storedParameterized),
+          None,
+          None,
+          audienceRateLimits = Nil,
+          partnerId = None,
+        )
       val request = UpdateResourceRequest(
         resourceId = resourceId,
         resource = None,
@@ -1020,7 +1058,17 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val storedParameterized =
         ResourceEndpointRecord(existingEndpointId, "/users/{id}", "GET", false, None, Vector.empty, None, None, None, rateLimit = None)
       val storedResource =
-        ResourceRecord(tenantId, resourceId, originalUri, audience, Vector(storedParameterized), None, None, audienceRateLimits = Nil)
+        ResourceRecord(
+          tenantId,
+          resourceId,
+          originalUri,
+          audience,
+          Vector(storedParameterized),
+          None,
+          None,
+          audienceRateLimits = Nil,
+          partnerId = None,
+        )
       val request = UpdateResourceRequest(
         resourceId = resourceId,
         resource = None,
@@ -1108,7 +1156,17 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("sync upserts fetched resource for non-delete event") {
       val env = new Env(Vector(resource, otherTenantResource))
       val updatedResource =
-        ResourceRecord(tenantId, resourceId, updatedUri, audience, Vector(updatedEndpoint, createdEndpoint), None, None, audienceRateLimits = Nil)
+        ResourceRecord(
+          tenantId,
+          resourceId,
+          updatedUri,
+          audience,
+          Vector(updatedEndpoint, createdEndpoint),
+          None,
+          None,
+          audienceRateLimits = Nil,
+          partnerId = None,
+        )
 
       for
         _ <- env.repository.findResource.succeedsWith(Some(updatedResource))

@@ -206,8 +206,25 @@ components:
       type: object
       title: refresh_token
       description: |
-        Issues a fresh access token. Refresh tokens rotate: the presented token is
-        invalidated and a new one is returned.
+        Issues a fresh access token. The refresh token of a bearer grant rotates: the presented
+        token is invalidated and a new one is returned. The refresh token of a sender-constrained
+        grant (one whose `cnf` carries `jkt` or `x5t#S256`) is not rotated: the same value is
+        returned and stays valid until the grant expires or is revoked.
+
+        A sender-constrained grant is refreshed only with what it is bound to: a DPoP proof of
+        the key in `cnf.jkt` (RFC 9449 §5) and the client certificate in `cnf.x5t#S256`
+        (RFC 8705 §3). Anything else is refused with `invalid_grant`, even when the certificate
+        presented authenticates the client.
+
+        One kind of client is exempt from the certificate half: a confidential client registered
+        `tls_client_auth` by the name of an edge group (`san_uri`
+        `urn:versola:edge-group:<group>`), which every edge of the group authenticates with a
+        certificate of its own. For it, a refresh over another certificate that authenticates
+        the client succeeds: the grant and the new access token are bound to that certificate
+        from then on (RFC 8705 §7.1, §6.3), and the re-binding is recorded in the audit log as
+        `token.rebound`. The DPoP key of such a grant, where it has one, is still required.
+        Access tokens issued before stay bound to the certificate they were issued over, and
+        `GET /userinfo` honours each only over that certificate.
       required: [grant_type, refresh_token]
       properties:
         grant_type:
@@ -401,9 +418,12 @@ components:
         - `invalid_request` — a required field is missing or malformed, or a field other than
           `resource` is repeated.
         - `invalid_grant` — the code or refresh token is unknown, expired, already used, bound
-          to a different client or redirect URI, PKCE verification failed, or the code was
+          to a different client or redirect URI, PKCE verification failed, the code was
           committed to a key with `dpop_jkt` and this request's proof is for another key
-          (or absent) (RFC 9449 §10.1).
+          (or absent) (RFC 9449 §10.1), or the refresh token's grant is bound to a DPoP key or
+          to a client certificate other than the one this request was made with (RFC 9449 §5,
+          RFC 8705 §3). A client registered by an edge-group name is not refused for another
+          certificate of its group: see the `refresh_token` grant.
         - `unsupported_grant_type` — `grant_type` is absent or not one of the three supported values.
         - `invalid_scope` — the requested scope exceeds what was granted.
         - `invalid_target` — a `resource` value is unknown for the client's tenant, is not

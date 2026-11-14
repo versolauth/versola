@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.util.PrivateClientCertificate
-import zio.{UIO, URLayer, ZLayer}
+import zio.{UIO, URLayer, ZIO, ZLayer}
 
 /** Boundary 2 of #555: how this edge proves to auth which edge it is.
   *
@@ -27,15 +27,22 @@ object EdgeIdentity:
   def forMode(mode: EdgeMode): ZLayer[EdgeCertificateHolder, Throwable, EdgeIdentity] =
     mode match
       case EdgeMode.FirstParty => registered
-      // Unreachable through `EdgeConfig.validated`, which refuses the mode first; kept so the
-      // boundary is total and a wiring that skips validation fails naming the same cause.
-      // #564 puts standard client authentication here: auth holds no edge CA for a partner
-      // edge, so its certificate is not one auth can take as proof.
-      case EdgeMode.Partner => ZLayer.fail(EdgeMode.NotImplemented(mode))
+      case EdgeMode.Partner => partner
 
   /** [[EdgeMode.FirstParty]]: the certificate central issued this edge (or the operator deployed
     * it with), which is the one it presents to central too. */
   val registered: URLayer[EdgeCertificateHolder, EdgeIdentity] = ZLayer.fromFunction(Registered(_))
+
+  /** [[EdgeMode.Partner]]: none, whatever certificate the edge holds. A partner edge authenticates to auth as the partner's
+    * clients do, with their credential (`PartnerOAuthClientsSyncClient`), and is never an edge auth vouches for: auth's registry
+    * excludes partner-kind edges (#962 §5), so the certificate would be refused anyway, and presenting it would be offering a
+    * proof that a partner's infrastructure must not be able to make. A call that needs the edge's own certificate (the
+    * `/userinfo` of a key-bound token, whose proof the edge verified) is refused by the caller as `EdgeCertificateUnavailable`
+    * rather than made without it. */
+  val partner: URLayer[EdgeCertificateHolder, EdgeIdentity] = ZLayer.succeed(Absent)
+
+  object Absent extends EdgeIdentity:
+    override def certificate: UIO[Option[PrivateClientCertificate.Material]] = ZIO.none
 
   class Registered(holder: EdgeCertificateHolder) extends EdgeIdentity:
     override def certificate: UIO[Option[PrivateClientCertificate.Material]] = holder.material

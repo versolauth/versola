@@ -2,6 +2,7 @@ package versola.oauth.token
 
 import versola.audit.AuditSupport.*
 import versola.audit.{AuditSupport, AuthActors, AuthAuditDetails, AuthAuditKinds}
+import versola.oauth.AuthMetrics
 import versola.oauth.client.model.{
   AuthorizationDetail,
   ClientCredentials,
@@ -27,7 +28,7 @@ import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Observability
 import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
 import zio.prelude.These
-import zio.{Duration, IO, Task, ZIO, ZLayer}
+import zio.{Duration, IO, Task, UIO, ZIO, ZLayer}
 
 trait OAuthTokenService:
 
@@ -75,7 +76,13 @@ object OAuthTokenService:
       // means the same: in both cases the row already holds the right value, so the renewal
       // leaves the column alone rather than paying a row version to rewrite it.
       narrowedScope: Option[Set[ScopeToken]],
+      // `Some` only when this refresh binds the grant to another certificate. See `Rebinding`.
+      rebinding: Option[Rebinding],
   )
+
+  /** A certificate-bound grant being bound to another certificate, from the thumbprint it was
+    * issued or last renewed with to the one of the certificate this refresh presented. */
+  private case class Rebinding(previousThumbprint: String, thumbprint: String)
 
   /** Which token the refresh actually continues from, and whether getting there needed the
     * idempotency key. Normally the one presented; for a retry, the family's live tip, since
@@ -158,6 +165,28 @@ object OAuthTokenService:
             ),
           ),
         )
+
+    /** `token.rebound`, and its counter, once the statement that re-binds the grant has. Recorded whatever
+      * the tenant's `auditSettings.tokenRefresh` says: a bound grant is renewed in place, so nothing else shows that the refresh token was
+      * used with a certificate other than the one it was bound to. */
+    private def recordRebinding(client: OAuthClientRecord, record: RefreshTokenRecord, rebinding: Rebinding): UIO[Unit] =
+      AuditSupport.currentAuth.flatMap: auth =>
+        audit.log(
+          AuditDraft(
+            kind = AuthAuditKinds.TokenRebound,
+            outcome = AuditOutcome.success,
+            reason = None,
+            actor = Some((AuthActors.client, Some(client.id))),
+            userId = Some(record.userId),
+            target = None,
+            details = AuthAuditDetails.TokenRebound(
+              familyId = record.familyId.toString,
+              refreshPrefix = auth.previousRefreshToken,
+              previousThumbprint = rebinding.previousThumbprint,
+              thumbprint = rebinding.thumbprint,
+            ),
+          ),
+        ) *> AuthMetrics.refreshTokenRebound
 
     /** Bounds how many concurrent copies of the same idempotent refresh request
       * [[continueRefresh]] will chase through the rotation chain before giving up and treating
@@ -423,8 +452,26 @@ object OAuthTokenService:
         // matters even where the client also authenticates by certificate: a confidential
         // client can rotate to a new certificate and would otherwise keep refreshing a grant
         // bound to the old one, which is the binding the resource server still enforces.
-        _ <- ZIO.fail(TokenEndpointError.InvalidGrant.RefreshTokenCertificateMismatch)
-          .when(tokenRecord.cnf.flatMap(_.x5tS256).exists(!certificate.map(_.thumbprint).contains(_)))
+        //
+        // Stricter than RFC 8705 asks of a confidential client (§7.1 binds its refresh token
+        // through client authentication, not to one certificate), and deliberately so, with one
+        // exception: a client registered by an edge-group name. Every edge of the group
+        // authenticates it with a certificate of its own, renewed with a new key, so the grant
+        // meets a certificate it was not issued over as a matter of course. The certificate here
+        // has just authenticated that client (`authenticateClient`, unchanged), so the grant is
+        // bound to it from now on and the access token with it (§6.3: a client gets a new access
+        // token after a certificate change). Every other client, and every `jkt` above, keeps
+        // the strict rule.
+        rebinding <- (tokenRecord.cnf.flatMap(_.x5tS256), certificate.map(_.thumbprint)) match
+          case (Some(bound), Some(presented)) if bound == presented => ZIO.none
+          // `!resolved.retried`: only where the grant is renewed in place, which is every bound grant (a retry is
+          // reached through a retired row, and a bound token is never rotated). It keeps one path writing the new
+          // binding, and that path records it.
+          case (Some(bound), Some(presented)) if client.authenticatesByEdgeGroup && !resolved.retried =>
+            ZIO.some(Rebinding(previousThumbprint = bound, thumbprint = presented))
+          case (Some(_), _) => ZIO.fail(TokenEndpointError.InvalidGrant.RefreshTokenCertificateMismatch)
+          case (None, _) => ZIO.none
+        grantConfirmation = rebinding.fold(tokenRecord.cnf)(to => tokenRecord.cnf.map(_.copy(x5tS256 = Some(to.thumbprint))))
 
         // RFC 6749 §6: the request may narrow the underlying grant but never widen it, so the
         // comparison is against what was granted, not against the client's registration —
@@ -450,6 +497,7 @@ object OAuthTokenService:
             // Fixed at issuance (code exchange) and never extended: a successor inherits the
             // predecessor's absolute expiry, so a family cannot outlive it by refreshing.
             expiresAt = tokenRecord.expiresAt,
+            cnf = grantConfirmation,
           ),
           previousRefreshToken = Some(resolved.previousToken),
           idempotencyKey = idempotencyKeyMac,
@@ -460,7 +508,12 @@ object OAuthTokenService:
           // stop paying for themselves.
           // A retry can only be reached through a retired row, which a bound token never has.
           boundRenewal = Option.when(tokenRecord.cnf.isDefined && !resolved.retried)(
-            BoundRenewal(refreshToken, resolved.previousToken, scope.filter(_ != tokenRecord.scope)),
+            BoundRenewal(
+              token = refreshToken,
+              mac = resolved.previousToken,
+              narrowedScope = scope.filter(_ != tokenRecord.scope),
+              rebinding = rebinding,
+            ),
           ),
           accessTokenAudience = audience,
           accessTokenAuthorizationDetails = details,
@@ -709,28 +762,42 @@ object OAuthTokenService:
         accessTokenAuthorizationDetails: List[AuthorizationDetail],
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
       for
-        refreshToken <- ZIO.when(record.scope.contains(ScopeToken.OfflineAccess))(
-          boundRenewal match
-            // Sender-constrained: nothing is rotated, so the client keeps the token it already
-            // has and the row keeps the expiry it was issued with. The single failure mode is
-            // the grant having been revoked or expired between the read and this call.
-            case Some(renewal) =>
-              Observability.setRefreshToken(Base64.urlEncode(renewal.token)) *>
-                sessionRepository.renewBoundToken(renewal.mac, renewal.narrowedScope)
-                  .filterOrFail(identity)(TokenEndpointError.InvalidGrant.RefreshTokenNotFound)
-                  .as(renewal.token)
+        issuesRefreshToken = record.scope.contains(ScopeToken.OfflineAccess)
+        refreshToken <- boundRenewal match
+          // Sender-constrained: nothing is rotated, so the client keeps the token it already
+          // has and the row keeps the expiry it was issued with. The single failure mode is
+          // the grant having been revoked or expired between the read and this call.
+          //
+          // A re-binding is of the grant, not of this response: it is written, and recorded once
+          // it is, even where the request narrowed `offline_access` away and no refresh token
+          // goes back. Otherwise the access token would name a certificate the grant does not,
+          // and the event would say what did not happen.
+          case Some(renewal) if issuesRefreshToken || renewal.rebinding.isDefined =>
+            for
+              _ <- Observability.setRefreshToken(Base64.urlEncode(renewal.token)).when(issuesRefreshToken)
+              _ <- sessionRepository
+                .renewBoundToken(
+                  token = renewal.mac,
+                  scope = renewal.narrowedScope.filter(_ => issuesRefreshToken),
+                  cnf = record.cnf.filter(_ => renewal.rebinding.isDefined),
+                )
+                .filterOrFail(identity)(TokenEndpointError.InvalidGrant.RefreshTokenNotFound)
+              _ <- ZIO.foreachDiscard(renewal.rebinding): rebinding =>
+                recordRebinding(client = client, record = record, rebinding = rebinding)
+            yield Option.when(issuesRefreshToken)(renewal.token)
 
-            case None =>
-              for
-                token <- authPropertyGenerator.nextRefreshToken
-                _ <- Observability.setRefreshToken(Base64.urlEncode(token))
-                mac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
-                _ <- sessionRepository.createRefreshToken(mac, previousRefreshToken, record, idempotencyKey)
-                  .mapError:
-                    case ex: Throwable => ex
-                    case _ => TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged
-              yield token,
-        )
+          case None if issuesRefreshToken =>
+            for
+              token <- authPropertyGenerator.nextRefreshToken
+              _ <- Observability.setRefreshToken(Base64.urlEncode(token))
+              mac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
+              _ <- sessionRepository.createRefreshToken(mac, previousRefreshToken, record, idempotencyKey)
+                .mapError:
+                  case ex: Throwable => ex
+                  case _ => TokenEndpointError.InvalidGrant.RefreshChainAlreadyExchanged
+            yield Some(token)
+
+          case _ => ZIO.none
 
         // Fetch user if openid scope is present (needed for ID token generation)
         user <- ZIO.when(record.scope.contains(ScopeToken.OpenId))(

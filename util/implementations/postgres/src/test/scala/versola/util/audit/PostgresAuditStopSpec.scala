@@ -116,6 +116,20 @@ object PostgresAuditStopSpec extends PostgresSpec:
   private def warnings: UIO[List[String]] =
     ZTestLogger.logOutput.map(_.toList.filter(_.logLevel >= LogLevel.Warning).map(_.message()))
 
+  /** The counts of the queued and the held rows once nothing is committing any more. The stop abandons, and does not wait for, a statement
+    * the transactor will not interrupt, so the writer's chunk in flight when the stop began and the drain's chunk in flight at its limit
+    * both commit after the stop has returned, each about `writeChunk` rows at the cost of a row. A count taken at the moment the stop
+    * returns is therefore a count at a moment that depends on how fast the machine is. Waits, bounded, until both counts have not moved
+    * for two seconds, longer than such a statement takes. */
+  private def settled(xa: TransactorZIO): Task[(Long, Long)] =
+    def counts = countReason(xa, "queued").zip(countReason(xa, "held"))
+    def go(last: (Long, Long), stillFor: Int, polls: Int): Task[(Long, Long)] =
+      ZIO.sleep(250.millis) *> counts.flatMap: now =>
+        if now == last && stillFor >= 7 then ZIO.succeed(now)
+        else if polls >= 80 then ZIO.succeed(now)
+        else go(now, if now == last then stillFor + 1 else 0, polls + 1)
+    counts.flatMap(go(_, 0, 0))
+
   private val taken = raw"(\d+) events taken, (\d+) not written".r.unanchored
 
   private case class Outcome(
@@ -127,6 +141,9 @@ object PostgresAuditStopSpec extends PostgresSpec:
       queuedStored: Long,
       heldBefore: Long,
       heldAfter: Long,
+      /** The same two counts once the abandoned statements have ended (see [[settled]]): what the database ends up holding. */
+      queuedSettled: Long,
+      heldSettled: Long,
       perRowMillis: Double,
       /** The stop's own line and every warning the service logged up to the end of the scenario: what a failed check needs to say why
         * the stop wrote less than the window carries (a chunk that failed is named there by its exception classes and SQLSTATE). */
@@ -171,6 +188,7 @@ object PostgresAuditStopSpec extends PostgresSpec:
       warned <- warnings
       queuedStored <- countReason(xa, "queued")
       heldAfter <- countReason(xa, "held")
+      ended <- settled(xa)
       _ <- table.endSessions(xa, marker)
       counts = lines.headOption.collect { case taken(all, left) => (all.toLong, left.toLong) }.getOrElse((0L, 0L))
     yield Outcome(
@@ -182,6 +200,8 @@ object PostgresAuditStopSpec extends PostgresSpec:
       queuedStored = queuedStored,
       heldBefore = heldBefore,
       heldAfter = heldAfter,
+      queuedSettled = ended._1,
+      heldSettled = ended._2,
       perRowMillis = perRow,
       logged = lines ++ warned,
     )
@@ -201,9 +221,11 @@ object PostgresAuditStopSpec extends PostgresSpec:
       outcome.elapsedMillis < 9500L,
       // The rows queued behind the writer's statement are stored by the stop, as many as the window carries.
       outcome.queuedStored >= required(outcome, queued),
-      // And the held rows come after them: the stop has stored none of them before every queued row, so the held count did not move,
-      // or moved by what the abandoned chunk commits on its own, a chunk and no more.
-      outcome.queuedStored == queued.toLong || (outcome.heldAfter - outcome.heldBefore) <= sizing.writeChunk.toLong,
+      // And the held rows come after them: the stop has stored none of them before every queued row. Once the abandoned statements have
+      // ended, either every queued row is stored, or the held count moved only by those statements: the writer's chunk in flight when
+      // the stop began and the drain's chunk in flight at its limit, a chunk each and no more. (Read at the moment the stop returns it
+      // moved by more on a slow machine, 234 rows against a bound of 100, because the second chunk had not committed yet.)
+      outcome.queuedSettled == queued.toLong || (outcome.heldSettled - outcome.heldBefore) <= 2L * sizing.writeChunk,
     )
     // Timings decide these checks, and a failure on a loaded machine is otherwise only a number: say what was measured.
     result ?? s"queued=$queued, required=${required(outcome, queued)}, $outcome"

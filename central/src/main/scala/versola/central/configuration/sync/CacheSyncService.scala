@@ -8,6 +8,7 @@ import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.forms.FormService
 import versola.central.configuration.jwks.JwksService
 import versola.central.configuration.metadata.ServerMetadataService
+import versola.central.configuration.partners.PartnerRegistry
 import versola.central.configuration.permissions.PermissionService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.roles.RoleService
@@ -23,11 +24,11 @@ trait CacheSyncService:
 
 object CacheSyncService:
   def live: ZLayer[
-    CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & AuthorizationDetailTypeService & RoleService & AuthorizationPresetService & EdgeService & FormService & OtpChallengeService & ChallengeSettingsService & SystemSettingsService & DeliverySettingsService & JwksService & ThemeService & ServerMetadataService & Scope,
+    CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & AuthorizationDetailTypeService & RoleService & AuthorizationPresetService & EdgeService & FormService & OtpChallengeService & ChallengeSettingsService & SystemSettingsService & DeliverySettingsService & JwksService & ThemeService & ServerMetadataService & PartnerRegistry & Scope,
     Nothing,
     CacheSyncService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >>>
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >>>
       ZLayer(ZIO.serviceWithZIO[CacheSyncService.Impl](service => service.sync().forkScoped.as(service)))
 
   class Impl(
@@ -49,6 +50,7 @@ object CacheSyncService:
       jwksService: JwksService,
       themeService: ThemeService,
       serverMetadataService: ServerMetadataService,
+      partnerRegistry: PartnerRegistry,
   ) extends CacheSyncService:
 
     override def sync(): Task[Unit] =
@@ -68,6 +70,9 @@ object CacheSyncService:
 
           case event: SyncEvent.ClientsUpdated =>
             clientService.sync(event).either
+
+          case event: SyncEvent.PartnersUpdated =>
+            partnerRegistry.sync(event).either
 
           case event: SyncEvent.ScopesUpdated =>
             scopeService.sync(event).either

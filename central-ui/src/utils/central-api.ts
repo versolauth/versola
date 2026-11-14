@@ -17,7 +17,14 @@ import type {
   OtpTemplateRecord,
   ChallengeSettingsChanges,
   ChallengeSettingsRecord,
+  ClientApproval,
   ClientEstState,
+  CreatePartnerRequest,
+  CreatedPartner,
+  EdgeGroupKind,
+  Partner,
+  PartnerApproval,
+  PartnerLimits,
   ClientTemplate,
   JwksKeySummary,
   MutualTlsAuth,
@@ -116,9 +123,15 @@ type ResourceEndpointDto = {
   maxAge?: number;
   rateLimit?: DeclaredRateLimit | null;
 };
-type ResourceResponseDto = { resourceId: string; resource: string; audience: string[]; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; secretRotation: boolean; audienceRateLimits?: AudienceRateLimit[] };
+type ResourceResponseDto = { resourceId: string; resource: string; audience: string[]; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; secretRotation: boolean; audienceRateLimits?: AudienceRateLimit[]; partnerId?: string | null };
 
-type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: OverloadPolicy | null; accessLogPolicy?: AccessLogPolicy | null; rateLimitPolicies?: RateLimitPolicies | null; policyRevisions?: Record<string, number> };
+type EdgeResponseDto = {
+  id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: OverloadPolicy | null; accessLogPolicy?: AccessLogPolicy | null;
+  rateLimitPolicies?: RateLimitPolicies | null; policyRevisions?: Record<string, number>;
+  groupId?: string; groupKind?: EdgeGroupKind; partnerId?: string | null; partnerDisplayName?: string | null; partnerTenantId?: string | null; publicUrl?: string; certificateNotAfter?: string; lastRenewedAt?: string;
+};
+type PartnersResponse = { partners: Partner[] };
+type PartnerApprovalsResponse = { approvals: PartnerApproval[] };
 type EdgesResponse = { edges: EdgeResponseDto[] };
 type ServiceKeyResponseDto = { keyId: string; privateKey: string };
 
@@ -170,6 +183,8 @@ type ClientsResponse = {
     createdAt?: string;
     themeOverrides?: ThemeOverrides | null;
     est?: ClientEstState | null;
+    partnerId?: string | null;
+    approval?: ClientApproval;
   }>;
 };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
@@ -677,6 +692,7 @@ function mapResource(resource: ResourceResponseDto): Resource {
     hasSecret: resource.internal,
     hasPreviousSecret: resource.secretRotation,
     ...(resource.audienceRateLimits?.length ? { audienceRateLimits: resource.audienceRateLimits.map(limit => ({ clientId: limit.clientId, rateLimit: limit.rateLimit })) } : {}),
+    ...(resource.partnerId ? { partnerId: resource.partnerId } : {}),
   };
 }
 
@@ -793,6 +809,8 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         createdAt: client.createdAt ?? null,
         themeOverrides: nonEmptyOverrides(client.themeOverrides),
         est: client.est ?? null,
+        partnerId: client.partnerId ?? null,
+        ...(client.approval ? { approval: client.approval } : {}),
         tenantId,
       };
     }),
@@ -1172,9 +1190,9 @@ const SIGN_IN_FIELDS = [
 const CREATE_FIELDS: Record<ClientKind, readonly string[]> = {
   web: [
     ...COMMON_CREATE_FIELDS, ...SIGN_IN_FIELDS, 'dpopBoundAccessTokens', 'certificateBoundAccessTokens', 'jwks',
-    'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'estEnrollment',
+    'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'estEnrollment', 'partnerId',
   ],
-  device: [...COMMON_CREATE_FIELDS, ...SIGN_IN_FIELDS],
+  device: [...COMMON_CREATE_FIELDS, ...SIGN_IN_FIELDS, 'partnerId'],
   // Permissions are what a token issued to the client itself may call: only a service client has any.
   service: [...COMMON_CREATE_FIELDS, 'permissions', 'dpopBoundAccessTokens', 'certificateBoundAccessTokens', 'jwks', 'estEnrollment'],
 };
@@ -1239,6 +1257,8 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       issueEdgeClientCertificate: !!client.edgeFronted && kind !== 'device',
       enrollEdgeClientCertificate: !!client.edgeFronted && kind === 'device',
       estEnrollment: false,
+      // Central refuses `partnerId` on a service registration: a partner owns apps that sign users in (#549).
+      partnerId: client.partnerId || undefined,
     }, CREATE_FIELDS[kind]),
   });
 
@@ -1408,7 +1428,57 @@ export async function fetchEdges(): Promise<Edge[]> {
     ...(edge.accessLogPolicy ? { accessLogPolicy: edge.accessLogPolicy } : {}),
     ...(edge.rateLimitPolicies ? { rateLimitPolicies: edge.rateLimitPolicies } : {}),
     ...(edge.policyRevisions && Object.keys(edge.policyRevisions).length > 0 ? { policyRevisions: edge.policyRevisions } : {}),
+    // An edge central reports no group for was registered before groups existed: it is the operator's own.
+    groupId: edge.groupId ?? 'default',
+    groupKind: edge.groupKind ?? 'first_party',
+    partnerId: edge.partnerId ?? null,
+    ...(edge.partnerDisplayName ? { partnerDisplayName: edge.partnerDisplayName } : {}),
+    ...(edge.partnerTenantId ? { partnerTenantId: edge.partnerTenantId } : {}),
+    ...(edge.publicUrl ? { publicUrl: edge.publicUrl } : {}),
+    ...(edge.certificateNotAfter ? { certificateNotAfter: edge.certificateNotAfter } : {}),
+    ...(edge.lastRenewedAt ? { lastRenewedAt: edge.lastRenewedAt } : {}),
   })));
+}
+
+// ── Partners (#549) ──────────────────────────────────────────────────────────
+
+export async function fetchPartners(tenantId: string): Promise<Partner[]> {
+  const response = await request<PartnersResponse>('/configuration/partners', { query: { tenantId } });
+  return sortById(response.partners);
+}
+
+/** One request creates the partner, its edge group, its console client, its first edge and the enrollment token. */
+export async function createPartner(body: CreatePartnerRequest): Promise<CreatedPartner> {
+  return request<CreatedPartner>('/configuration/partners', { method: 'POST', body });
+}
+
+export async function updatePartner(partner: Pick<Partner, 'id' | 'displayName' | 'logoUri' | 'contact' | 'reviewAt'>): Promise<void> {
+  await requestVoid('/configuration/partners', { method: 'PUT', body: partner });
+}
+
+export async function suspendPartner(id: string, note: string): Promise<void> {
+  await requestVoid('/configuration/partners/suspend', { method: 'POST', body: { id, note } });
+}
+
+export async function resumePartner(id: string): Promise<void> {
+  await requestVoid('/configuration/partners/resume', { method: 'POST', body: { id } });
+}
+
+export async function updatePartnerLimits(id: string, limits: PartnerLimits): Promise<void> {
+  await requestVoid('/configuration/partners/limits', { method: 'PUT', body: { id, limits } });
+}
+
+export async function fetchPartnerApprovals(tenantId: string, status?: PartnerApproval['status']): Promise<PartnerApproval[]> {
+  const response = await request<PartnerApprovalsResponse>('/configuration/partners/approvals', { query: { tenantId, status } });
+  return response.approvals;
+}
+
+export async function approvePartnerApproval(id: string, note: string, overrides?: Record<string, unknown>): Promise<void> {
+  await requestVoid('/configuration/partners/approvals/approve', { method: 'POST', body: { id, note, ...(overrides ? { overrides } : {}) } });
+}
+
+export async function rejectPartnerApproval(id: string, note: string): Promise<void> {
+  await requestVoid('/configuration/partners/approvals/reject', { method: 'POST', body: { id, note } });
 }
 
 export async function setEdgeDpopNonce(edgeId: string, requireDpopNonce: boolean): Promise<void> {

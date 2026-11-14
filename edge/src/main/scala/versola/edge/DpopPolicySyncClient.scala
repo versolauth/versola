@@ -28,7 +28,7 @@ object DpopPolicySyncClient:
       config: EdgeConfig,
       centralSyncTokenService: CentralSyncTokenService,
   ) extends DpopPolicySyncClient:
-    private val DpopPolicyURL = config.central.url / "edge" / "sync" / "dpop"
+    private val DpopPolicyURL = config.syncUrl("dpop")
 
     override def getAll: Task[DpopPolicy] =
       for

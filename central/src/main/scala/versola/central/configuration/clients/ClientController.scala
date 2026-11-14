@@ -9,7 +9,7 @@ import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.http.Unauthorized
-import versola.util.{Base64Url, Patch, Secret, SecurityService}
+import versola.util.{Base64Url, CertificateSubject, Patch, Secret, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -82,6 +82,8 @@ object ClientController extends AuditedController:
               kind = ClientKind.of(client),
               themeOverrides = client.themeOverrides,
               est = estStates.get(client.id),
+              partnerId = client.partnerId,
+              approval = client.approval,
             )
           })
       yield Response.json(GetAllClientsResponse(clients.toList).toJson)
@@ -136,44 +138,79 @@ object ClientController extends AuditedController:
           edgeClientCertificate <- ZIO.foreach(
             client.edgeClientCertificate.filter(_ => edgeId.isDefined),
           )(transportEncrypt)
-        yield SyncOAuthClientRecord(
-          id = client.id,
-          tenantId = client.tenantId,
-          clientName = client.clientName,
-          redirectUris = client.redirectUris,
-          scope = client.scope,
+        yield toSyncRecord(
+          client = client,
           secret = secret,
           previousSecret = previousSecret,
-          accessTokenTtl = client.accessTokenTtl,
-          refreshTokenTtl = client.refreshTokenTtl,
-          permissions = client.permissions,
-          theme = client.theme,
-          authFlow = client.authFlow,
-          otpTemplateId = client.otpTemplateId,
-          frontChannelLogoutUri = client.frontChannelLogoutUri.map(_.encode),
-          frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
-          backChannelLogoutUri = client.backChannelLogoutUri.map(_.encode),
-          logoUri = client.logoUri,
-          policyUri = client.policyUri,
-          tosUri = client.tosUri,
-          consentFlow = client.consentFlow,
-          dpopBoundAccessTokens = client.dpopBoundAccessTokens,
-          dpopSigningAlgs = client.dpopSigningAlgs,
-          dpopMinRsaKeySize = client.dpopMinRsaKeySize,
-          authMethod = client.authMethod,
-          mtlsAuth = client.mtlsAuth,
-          certificateBoundAccessTokens = client.certificateBoundAccessTokens,
-          jwks = client.jwks,
-          requireSignedRequestObject = client.requireSignedRequestObject,
-          requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
           edgeSigningKey = edgeSigningKey,
           edgeClientCertificate = edgeClientCertificate,
-          applicationType = client.applicationType,
           edgeCertificateSubject = enrollmentSubjects.get(client.id),
-          themeOverrides = client.themeOverrides,
         )
       }
     yield GetOAuthClientsSyncResponse(clients = encryptedClients)
+
+  /** The clients of a partner as its edge is served them (#962): the same record as the first-party sync, without `secret`,
+    * `previousSecret`, `edgeSigningKey`, `edgeClientCertificate` and `edgeCertificateSubject`. A partner client has no client
+    * secret, and the partner's edge holds its own credential (the group's certificate, or the keys the partner registered),
+    * so central has nothing to hand it and nothing to encrypt to it. */
+  def partnerClientsSyncResponse(clients: Vector[OAuthClientRecord]): GetOAuthClientsSyncResponse =
+    GetOAuthClientsSyncResponse(clients =
+      clients.map(client =>
+        toSyncRecord(
+          client = client,
+          secret = None,
+          previousSecret = None,
+          edgeSigningKey = None,
+          edgeClientCertificate = None,
+          edgeCertificateSubject = None,
+        ),
+      ),
+    )
+
+  private def toSyncRecord(
+      client: OAuthClientRecord,
+      secret: Option[String],
+      previousSecret: Option[String],
+      edgeSigningKey: Option[String],
+      edgeClientCertificate: Option[String],
+      edgeCertificateSubject: Option[CertificateSubject],
+  ): SyncOAuthClientRecord =
+    SyncOAuthClientRecord(
+      id = client.id,
+      tenantId = client.tenantId,
+      clientName = client.clientName,
+      redirectUris = client.redirectUris,
+      scope = client.scope,
+      secret = secret,
+      previousSecret = previousSecret,
+      accessTokenTtl = client.accessTokenTtl,
+      refreshTokenTtl = client.refreshTokenTtl,
+      permissions = client.permissions,
+      theme = client.theme,
+      authFlow = client.authFlow,
+      otpTemplateId = client.otpTemplateId,
+      frontChannelLogoutUri = client.frontChannelLogoutUri.map(_.encode),
+      frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
+      backChannelLogoutUri = client.backChannelLogoutUri.map(_.encode),
+      logoUri = client.logoUri,
+      policyUri = client.policyUri,
+      tosUri = client.tosUri,
+      consentFlow = client.consentFlow,
+      dpopBoundAccessTokens = client.dpopBoundAccessTokens,
+      dpopSigningAlgs = client.dpopSigningAlgs,
+      dpopMinRsaKeySize = client.dpopMinRsaKeySize,
+      authMethod = client.authMethod,
+      mtlsAuth = client.mtlsAuth,
+      certificateBoundAccessTokens = client.certificateBoundAccessTokens,
+      jwks = client.jwks,
+      requireSignedRequestObject = client.requireSignedRequestObject,
+      requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
+      edgeSigningKey = edgeSigningKey,
+      edgeClientCertificate = edgeClientCertificate,
+      applicationType = client.applicationType,
+      edgeCertificateSubject = edgeCertificateSubject,
+      themeOverrides = client.themeOverrides,
+    )
 
   // ── One registration and one update per kind of client ─────────────────────────────────────
   //
@@ -217,6 +254,8 @@ object ClientController extends AuditedController:
         create = toRequest(body)
         _ <- Audit.target(create.id)
         _ <- Audit.tenant(create.tenantId)
+        // a client of a partner is in the partner's audit feed as well
+        _ <- ZIO.foreachDiscard(create.partnerId)(Audit.partner)
         _ <- ZIO.when(create.frontChannelLogoutUri.isDefined && create.backChannelLogoutUri.isDefined):
           ZIO.fail(InvalidClientLogoutConfiguration(create.id))
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateKindRegistration(kind, create))(ZIO.fail(_))
@@ -254,6 +293,7 @@ object ClientController extends AuditedController:
               ).status(Status.Conflict)
           case Some(client) =>
             for
+              _ <- ZIO.foreachDiscard(client.partnerId)(Audit.partner)
               enrolled <- certificates.isEnrolled(client.id)
               edgeFronted = client.edgeClientCertificate.nonEmpty || enrolled
               _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateKindUpdate(kind, update, client, edgeFronted))(ZIO.fail(_))

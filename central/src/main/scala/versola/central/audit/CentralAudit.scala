@@ -29,6 +29,10 @@ object CentralAudit:
     /** An edge that asked central for a certificate on the mutual-TLS listener or for one of its clients. */
     val Edge: ActorType = ActorType("edge")
 
+    /** A member of a partner's staff, acting through the partner's edge (#549 decision 4): the `sub` of the access token the
+      * edge forwarded in `Versola-Principal`, verified against the partner's console client. */
+    val PartnerStaff: ActorType = ActorType("partner-staff")
+
   // explicit events: the ones that are not `admin.<resource>.<operation>`
   val AdminUserViewed: AuditKind = AuditKind("admin.user.viewed")
   val AdminSecretRevealed: AuditKind = AuditKind("admin.secret.revealed")
@@ -114,6 +118,11 @@ object CentralAudit:
     "antifraud-list",
     "antifraud-settings",
     "antifraud-counters",
+    "partner",
+    "partner-approval",
+    "partner-client",
+    "partner-resource",
+    "partner-edge",
   )
 
   val AdminCreate = "create"
@@ -138,7 +147,8 @@ object CentralAudit:
 
   /** An action on these is `high` whatever its outcome: each is a way to take over an account or a client, or to change the keys of
     * the system. */
-  private val highResources = Set("jwks", "client-secret", "resource-secret", "role", "permission", "edge-key", "user-password", "user-roles")
+  private val highResources =
+    Set("jwks", "client-secret", "resource-secret", "role", "permission", "edge-key", "user-password", "user-roles")
 
   private val explicit = Set(AdminUserViewed, AdminSecretRevealed, AdminAuditQueried, SystemBootstrap, CertEnrolled, CertRenewed, CertRevoked)
 

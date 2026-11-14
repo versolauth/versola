@@ -1630,7 +1630,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
          |mutual-tls {
          |  certificate          = "${File(centralMutualTlsDir, "server.crt").getAbsolutePath}"
          |  private-key          = "${File(centralMutualTlsDir, "server.key").getAbsolutePath}"
-         |  trusted-certificates = "${File(centralMutualTlsDir, "ca.crt").getAbsolutePath}"
+         |  trusted-certificates = "${File(centralMutualTlsDir, "trusted-edges.crt").getAbsolutePath}"
          |}
          |""".stripMargin
     else
@@ -2178,13 +2178,27 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
         |""".stripMargin
     else ""
 
+  // The names a partner's edge reaches central by (#549, #962): the address in an enrollment token is the first, the second is
+  // told to the edge when it enrols. Where the deployment has no public name for them (every profile but `local`) the operator sets
+  // `public-urls { enroll, mtls }` by hand (deploy.md, "Partner edge"), and no partner can be created until it does.
+  val centralPublicUrlsBlock =
+    if isLocal then
+      s"""
+         |# Where a partner's edge reaches central from outside: the enrollment listener (APORT) and the mutual-TLS one (MPORT).
+         |public-urls {
+         |  enroll = "https://localhost:9094"
+         |  mtls   = "https://localhost:$centralMutualTlsPort"
+         |}
+         |""".stripMargin
+    else ""
+
   val centralConf =
     s"""env = $env
        |
        |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
        |
        |# otel-exporter = "http://localhost:4317"
-       |$clientCertificatesBlock$edgeCertificateAuthorityBlock
+       |$clientCertificatesBlock$edgeCertificateAuthorityBlock$centralPublicUrlsBlock
        |bootstrap {
        |  login = "$bootstrapLogin"
        |  admin-user-id = "$adminUserId"
@@ -2268,7 +2282,8 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |
        |# What this edge is to the installation (EdgeConfig.mode, #555): "first-party" -- the
        |# operator's own edge, configuration synced from central, EdgeAssertion to auth, the
-       |# internal /service surface mounted -- or "partner" (#564, not available yet). Absent
+       |# internal /service surface mounted -- or "partner" (a partner's own edge, #564: `central.identity`,
+       |# no `security.internal-secret`, a `partner` block). Absent
        |# means first-party.
        |mode = "first-party"
        |
@@ -2387,6 +2402,16 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
     writeFile(edgeInternalTlsDir, "nginx.conf", internalTlsNginxConf(edgeInternalTlsDir, edgeInternalTlsPort, authInternalUrl))
     genAuthMutualTlsCertificate(authMutualTlsDir)
     genCentralMutualTlsCertificate(centralMutualTlsDir, edgeId)
+    // Central issues the certificate of an edge that enrols (a partner's: #564) from its `client-certificate-authority`, which
+    // here is the terminator's CA, and a JDK TLS client offers a certificate to auth's terminator only if that CA issued it. So
+    // the listener of the edge surface trusts that CA besides the one of `edge-client.*`, and one certificate reaches both.
+    writeFile(
+      centralMutualTlsDir,
+      "trusted-edges.crt",
+      Seq(File(centralMutualTlsDir, "ca.crt"), File(edgeInternalTlsDir, "ca.crt"))
+        .map(file => scala.io.Source.fromFile(file).mkString.trim)
+        .mkString("\n") + "\n",
+    )
     genEdgeMutualTlsCertificate(edgeMutualTlsDir)
     writeFile(
       authMutualTlsDir,

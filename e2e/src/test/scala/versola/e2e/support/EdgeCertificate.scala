@@ -52,6 +52,12 @@ final class EdgeCertificate private (
 
   val edgeClientCertificate: String = s"$certificatePem\n$privateKeyPem\n"
 
+  /** RFC 8705 §3.1 `x5t#S256`: the base64url SHA-256 of the certificate's DER encoding, which is what auth binds a
+    * token issued over this certificate to. */
+  val thumbprint: String =
+    val der = Base64.getMimeDecoder.decode(certificatePem.linesIterator.filterNot(_.startsWith("-----")).mkString)
+    Base64.getUrlEncoder.withoutPadding.encodeToString(java.security.MessageDigest.getInstance("SHA-256").digest(der))
+
   /** The certificate alone, as the header nginx forwards it (`ngx_escape_uri`: everything
     * outside the unreserved set percent-encoded) -- what a spec presents straight to auth to
     * be issued a token bound to this certificate, the way edge's own handshake gets one. */
@@ -85,7 +91,7 @@ object EdgeCertificate:
   def make(
       commonName: String = s"e2e-edge-mtls-${UUID.randomUUID().toString.take(8)}",
       caDirectory: String = "edge/dev/internal-tls",
-      uri: Option[String] = None,
+      uris: List[String] = Nil,
   ): Task[EdgeCertificate] =
     ZIO.attempt:
       val generator = java.security.KeyPairGenerator.getInstance("RSA").nn
@@ -122,9 +128,9 @@ object EdgeCertificate:
         // Signed by the same CA nginx's own certificate is (see the class doc): its issuer is
         // what a JDK-provider TLS client is offered against the handshake's advertised list.
         // A URI name rides in an extension file: `x509 -req` copies none from the request.
-        val extensions = uri.map: name =>
+        val extensions = Option.when(uris.nonEmpty):
           val file = directory.resolve("extensions.cnf").nn
-          Files.writeString(file, s"subjectAltName=URI:$name\n")
+          Files.writeString(file, s"subjectAltName=${uris.map(name => s"URI:$name").mkString(",")}\n")
           Seq("-extfile", file.toString)
         run(
           Seq(
@@ -153,6 +159,39 @@ object EdgeCertificate:
       finally
         deleteRecursively(directory)
 
+  /** A certificate authority nothing in the stack trusts, as the directory [[make]] signs from (`caDirectory`): for the
+    * cases that show a certificate is refused for its issuer, whatever names it carries. */
+  def strangerAuthority: Task[String] =
+    ZIO.attempt:
+      val directory = Files.createTempDirectory("e2e-stranger-ca").nn
+      directory.toFile.nn.deleteOnExit()
+      val key = directory.resolve("ca.key").nn
+      val certificate = directory.resolve("ca.crt").nn
+      val command = Seq(
+        "openssl",
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-days",
+        "2",
+        "-keyout",
+        key.toString,
+        "-out",
+        certificate.toString,
+        "-subj",
+        "/CN=e2e-stranger-ca",
+        // A certificate authority, as the trusted ones are: what makes it a stranger is that nothing lists it.
+        "-addext",
+        "basicConstraints=critical,CA:TRUE",
+      )
+      val exit = Process(command).!
+      if exit != 0 then throw RuntimeException(s"openssl failed (exit $exit): ${command.mkString(" ")}")
+      key.toFile.nn.deleteOnExit()
+      certificate.toFile.nn.deleteOnExit()
+      directory.toString
+
   /** A `tls_client_auth` certificate for auth's own mutual-TLS listener (#417/#420): issued by
     * the CA in auth's `mutual-tls.trusted-certificates`, since the listener validates the chain
     * in the handshake and zio-http hands auth the leaf only. Its subject DN is
@@ -163,12 +202,40 @@ object EdgeCertificate:
   /** The certificate an edge presents on central's mutual-TLS listener (#554), issued by the CA that
     * listener trusts. `edgeId` is the edge it names (`urn:versola:edge:<id>`); `None` is one the
     * CA vouches for that names no edge, which `authorizeEdge` refuses. */
-  def forCentralListener(edgeId: Option[String]): Task[EdgeCertificate] =
+  def forCentralListener(edgeId: Option[String], groupId: Option[String] = None): Task[EdgeCertificate] =
     make(
       commonName = edgeId.getOrElse(s"e2e-unnamed-${UUID.randomUUID().toString.take(8)}"),
       caDirectory = "central/dev/mtls",
-      uri = edgeId.map(id => s"urn:versola:edge:$id"),
+      uris = edgeId.map(id => s"urn:versola:edge:$id").toList ++ groupId.map(id => s"urn:versola:edge-group:$id"),
     )
+
+  /** What an edge sends to renew its certificate (`POST /edge/certificate/renew`): a PKCS#10 request with a key of its own,
+    * naming exactly the edge and its group. */
+  def renewalRequest(edgeId: String, groupId: String): Task[String] =
+    ZIO.attempt:
+      val directory = Files.createTempDirectory("e2e-edge-csr").nn
+      try
+        val keyFile = directory.resolve("key.pem").nn
+        val csrFile = directory.resolve("csr.pem").nn
+        def run(args: String*): Unit =
+          val exit = Process(Seq("openssl") ++ args).!
+          if exit != 0 then throw RuntimeException(s"openssl failed (exit $exit): ${args.mkString(" ")}")
+        run("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", keyFile.toString)
+        run(
+          "req",
+          "-new",
+          "-key",
+          keyFile.toString,
+          "-out",
+          csrFile.toString,
+          "-subj",
+          s"/CN=$edgeId",
+          "-addext",
+          s"subjectAltName=URI:urn:versola:edge:$edgeId,URI:urn:versola:edge-group:$groupId",
+        )
+        Files.readString(csrFile).nn
+      finally
+        deleteRecursively(directory)
 
   private def pem(label: String, der: Array[Byte]): String =
     val body = Base64.getMimeEncoder(64, "\n".getBytes).encodeToString(der)

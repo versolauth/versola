@@ -45,6 +45,7 @@ import zio.*
 import zio.http.*
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps}
+import zio.logging.logContext
 import zio.metrics.{Metric, MetricLabel}
 import zio.test.*
 
@@ -108,12 +109,21 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
 
   /** A client that authenticates by certificate (RFC 8705 §2), which is what makes the tokens
     * auth issues it certificate-bound (§3). */
+  private val certificateMaterial = PrivateClientCertificate(TestCertificates.generate().bundle).material.toOption.get
   private val certificateClient = oauthClient.copy(
     id = ClientId("mtls-1"),
-    credential = ClientCredential.MutualTls(
-      PrivateClientCertificate(TestCertificates.generate().bundle).material.toOption.get,
-    ),
+    credential = ClientCredential.MutualTls(certificateMaterial),
   )
+
+  /** RFC 8705 §3.1 `x5t#S256` of the certificate this edge presents as [[certificateClient]]: what auth binds the tokens it
+    * issues over that certificate to. */
+  private val ownCertificateThumbprint = TokenBinding.thumbprint(certificateMaterial.leaf)
+
+  /** The same of some other certificate that authenticates the client: another edge of its group, or this edge before a renewal. */
+  private val otherCertificateThumbprint = TokenBinding.thumbprint(TestCertificates.generate().certificate)
+
+  /** The preset whose sessions are [[certificateClient]]'s. */
+  private val certificatePreset = preset.copy(clientId = certificateClient.id)
 
   /** What central currently says about this edge -- the only thing DpopVerifier reads it for.
     * Nonce required, algorithms as the metadata document defaults to. */
@@ -188,6 +198,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         audience: List[String] = List(backendUrl.encode),
         cnfJkt: Option[String] = None,
         cnfX5t: Option[String] = None,
+        family: Option[String] = None,
     ): Task[AccessToken] =
       Clock.instant.flatMap { now =>
         ZIO.attemptBlocking {
@@ -206,6 +217,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
             .claim("role", role)
             .claim("sid", sid)
             .claim("tenant_id", tenantId)
+          family.foreach(value => builder.claim("fam", value))
           // One `cnf` claim carrying whichever bindings were asked for -- a token may be bound to both.
           val cnf = new java.util.LinkedHashMap[String, String]()
           cnfJkt.foreach(cnf.put("jkt", _))
@@ -383,6 +395,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     override def findBySessionId(sid: SessionId): Task[List[session.EdgeSessionRecord]] =
       rows.get.map(_.values.map(_._1).filter(_.publicSessionId == sid).toList)
 
+    override def findLive(now: Instant): Task[List[session.EdgeSessionRecord]] =
+      rows.get.map(_.values.map(_._1).filter(_.expiresAt.isAfter(now)).toList)
+
   private object FakeSessions:
     def make: UIO[FakeSessions] =
       Ref.make(Map.empty[(SessionId, PresetId), (session.EdgeSessionRecord, Option[Instant])]).map(FakeSessions(_))
@@ -468,7 +483,11 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
 
   def spec = suite("EdgeService.proxy")(
     proxySuite,
+    userInfoSessionSuite,
     rateLimitSuite,
+    partnerSuite,
+    consoleSessionSuite,
+    revokeSessionsSuite,
   ).provideLayer(TestClient.layer ++ securityServiceLayer) @@ TestAspect.silentLogging
 
   private val usersEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000401"))
@@ -683,6 +702,595 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     Request.get(URL.decode(path).toOption.get)
       .addHeader(Header.Custom("Authorization", s"DPoP $token"))
       .addHeader(Header.Custom("DPoP", proof))
+
+  /** A session row with a refresh token to present, as a login leaves it. */
+  private def sessionRow(env: Env, security: SecurityService, jti: String) =
+    for
+      encrypted <- security.encryptAes256("rt-secret".getBytes("UTF-8"), SecretKeySpec(env.edgeConfig.security.tokenEncryption.key, "AES"))
+      now <- Clock.instant
+    yield session.EdgeSessionRecord(
+      publicSessionId = SessionId("sso-session-1"),
+      presetId = presetId,
+      accessTokenId = AccessTokenId(jti),
+      encryptedRefreshToken = Some(Secret(encrypted)),
+      expiresAt = now.plusSeconds(3600),
+      previousAccessTokenId = None,
+      encryptedAccessToken = None,
+      rotatedAt = None,
+    )
+
+  private def refreshed(accessToken: AccessToken) =
+    TokenResponse(
+      accessToken = accessToken,
+      tokenType = "Bearer",
+      expiresIn = 600L,
+      refreshToken = Some(RefreshToken("rt-secret")),
+      refreshTokenExpiresIn = Some(7200L),
+      scope = None,
+      idToken = None,
+    )
+
+  private def isReauthenticate(response: Response) =
+    response.status == Status.Unauthorized &&
+      response.header(Header.Location).exists(_.url.encode == s"/login/${presetId}") &&
+      response.header(Header.SetCookie).map(_.value).contains(EdgeSessionCookie.clear(preset.cookieDomain, preset.cookiePath))
+
+  private def rotatedTo(response: Response, accessToken: AccessToken) =
+    response.header(Header.SetCookie).map(_.value).exists(c => c.name == EdgeSessionCookie.name && c.content == s"${presetId}:${accessToken}")
+
+  /** What a session of the `EDGE_SESSION` cookie does when its token has to be shown to auth (`/userinfo`) and cannot pass, or
+    * does not: edge refreshes it, since it holds the refresh token, where a caller's own token is left alone (RFC 8705 §6.3). */
+  private val userInfoSessionSuite = suite("a cookie session asked about at auth")(
+    test("a token bound to another certificate than the one this edge presents is refreshed first, and the call goes on with the new one") {
+      val env = new Env
+      val endpoint = usersEndpoint(inject = Vector(InjectRule(InjectTarget.header, "x-user-email", "user.email")), fetchUserInfo = true)
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        _ <- env.withPresets(certificatePreset)
+        _ <- env.withClients(certificateClient)
+        // issued over another edge's certificate, or over this edge's before it was renewed: still valid, and of no use here
+        staleToken <- env.signToken(jti = "old-jti", clientId = certificateClient.id.toString, cnfX5t = Some(otherCertificateThumbprint))
+        newToken <- env.signToken(jti = "new-jti", clientId = certificateClient.id.toString, cnfX5t = Some(ownCertificateThumbprint))
+        record <- sessionRow(env = env, security = security, jti = "old-jti")
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+        _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(refreshed(newToken))
+        _ <- env.sessionRepository.create.succeedsWith(())
+        _ <- env.ssoClient.userInfo.succeedsWith(Json.Obj("email" -> Json.Str("john@example.com")))
+        service = env.buildService(client, security)
+        response <-
+          service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(staleToken)))
+        upstream <- capture.get
+      yield assertTrue(
+        ownCertificateThumbprint != otherCertificateThumbprint,
+        response.status == Status.Ok,
+        // one refresh, through the lease of the row the cookie's token names, as this client
+        env.sessionRepository.claimRefresh.calls.map(_._1) == List(AccessTokenId("old-jti")),
+        env.ssoClient.exchangeRefreshToken.calls == List((RefreshToken("rt-secret"), certificateClient.id, certificateClient.credential)),
+        // auth is asked once, with the token that can pass, never with the stale one
+        env.ssoClient.userInfo.calls ==
+          List((newToken, SSOClient.TokenBinding.Certificate(certificateClient.id, certificateClient.credential))),
+        // the rest of the request and the browser get the new token
+        upstream.exists(_.header(Header.Authorization).contains(Header.Authorization.Bearer(newToken))),
+        upstream.exists(_.rawHeader("x-user-email").contains("john@example.com")),
+        rotatedTo(response, newToken),
+      )
+    },
+    test("a token bound to another certificate is left alone where the endpoint asks auth nothing") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(certificatePreset)
+        _ <- env.withClients(certificateClient)
+        staleToken <- env.signToken(clientId = certificateClient.id.toString, cnfX5t = Some(otherCertificateThumbprint))
+        service = env.buildService(client, security)
+        response <-
+          service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(staleToken)))
+        upstream <- capture.get
+      yield assertTrue(
+        response.status == Status.Ok,
+        upstream.isDefined,
+        env.sessionRepository.claimRefresh.calls.isEmpty,
+        env.ssoClient.exchangeRefreshToken.calls.isEmpty,
+        response.header(Header.SetCookie).isEmpty,
+      )
+    },
+    test("a refresh for the binding that auth refuses ends the session, and auth is never asked about the stale token") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(fetchUserInfo = true)))
+        _ <- env.withPresets(certificatePreset)
+        _ <- env.withClients(certificateClient)
+        staleToken <- env.signToken(jti = "old-jti", clientId = certificateClient.id.toString, cnfX5t = Some(otherCertificateThumbprint))
+        record <- sessionRow(env = env, security = security, jti = "old-jti")
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+        // what auth answers a client it holds to the certificate of the grant (every client not registered by a group name)
+        _ <- env.ssoClient.exchangeRefreshToken.failsWith(SSOClient.InvalidGrant)
+        service = env.buildService(client, security)
+        response <-
+          service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(staleToken)))
+        upstream <- capture.get
+      yield assertTrue(
+        isReauthenticate(response),
+        env.ssoClient.exchangeRefreshToken.calls.size == 1,
+        env.ssoClient.userInfo.calls.isEmpty,
+        // the lease is handed back, as after any refresh that did not rotate the row
+        env.sessionRepository.releaseRefresh.calls == List(AccessTokenId("old-jti")),
+        upstream.isEmpty,
+      )
+    },
+    test("a token refreshed for its binding that auth refuses all the same is not refreshed again: one refresh, one call, 401") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(fetchUserInfo = true)))
+        _ <- env.withPresets(certificatePreset)
+        _ <- env.withClients(certificateClient)
+        staleToken <- env.signToken(jti = "old-jti", clientId = certificateClient.id.toString, cnfX5t = Some(otherCertificateThumbprint))
+        newToken <- env.signToken(jti = "new-jti", clientId = certificateClient.id.toString, cnfX5t = Some(ownCertificateThumbprint))
+        record <- sessionRow(env = env, security = security, jti = "old-jti")
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+        _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(refreshed(newToken))
+        _ <- env.sessionRepository.create.succeedsWith(())
+        _ <- env.ssoClient.userInfo.failsWith(SSOClient.UserInfoUnauthorized)
+        service = env.buildService(client, security)
+        response <-
+          service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(staleToken)))
+        upstream <- capture.get
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        // a request refreshes once at most: the 401 of the token it just obtained stands
+        env.ssoClient.exchangeRefreshToken.calls.size == 1,
+        env.ssoClient.userInfo.calls.map(_._1) == List(newToken),
+        upstream.isEmpty,
+        rotatedTo(response, newToken),
+      )
+    },
+    test("a session with no refresh token whose token is bound to another certificate is sent to log in") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(fetchUserInfo = true)))
+        _ <- env.withPresets(certificatePreset)
+        _ <- env.withClients(certificateClient)
+        staleToken <- env.signToken(jti = "old-jti", clientId = certificateClient.id.toString, cnfX5t = Some(otherCertificateThumbprint))
+        record <- sessionRow(env = env, security = security, jti = "old-jti")
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record.copy(encryptedRefreshToken = None)))
+        service = env.buildService(client, security)
+        response <-
+          service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(staleToken)))
+      yield assertTrue(
+        isReauthenticate(response),
+        env.ssoClient.exchangeRefreshToken.calls.isEmpty,
+        env.ssoClient.userInfo.calls.isEmpty,
+      )
+    },
+    test("the token a refresh for the binding produced is held to the checks the first one passed: revoked, it is refused") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(fetchUserInfo = true)))
+        _ <- env.withPresets(certificatePreset)
+        _ <- env.withClients(certificateClient)
+        staleToken <- env.signToken(jti = "old-jti", clientId = certificateClient.id.toString, cnfX5t = Some(otherCertificateThumbprint))
+        newToken <- env.signToken(jti = "new-jti", clientId = certificateClient.id.toString, cnfX5t = Some(ownCertificateThumbprint))
+        record <- sessionRow(env = env, security = security, jti = "old-jti")
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+        _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(refreshed(newToken))
+        _ <- env.sessionRepository.create.succeedsWith(())
+        _ <- env.revocationService.isRevoked.returnsZIO((keys, _) => ZIO.succeed(keys.contains(RevocationKey.Jti(AccessTokenId("new-jti")))))
+        service = env.buildService(client, security)
+        response <-
+          service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(staleToken)))
+        upstream <- capture.get
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        env.ssoClient.userInfo.calls.isEmpty,
+        upstream.isEmpty,
+        // a revoked token is not handed to the browser: the cookie it holds is the one that leads to the login
+        response.header(Header.SetCookie).isEmpty,
+      )
+    },
+    test("two concurrent requests whose token is bound to another certificate refresh once and share the new token") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        _ <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(fetchUserInfo = true)))
+        _ <- env.withPresets(certificatePreset)
+        _ <- env.withClients(certificateClient)
+        sessions <- FakeSessions.make
+        staleToken <- env.signToken(jti = "old-jti", clientId = certificateClient.id.toString, cnfX5t = Some(otherCertificateThumbprint))
+        newToken <- env.signToken(jti = "new-jti", clientId = certificateClient.id.toString, cnfX5t = Some(ownCertificateThumbprint))
+        record <- sessionRow(env = env, security = security, jti = "old-jti")
+        _ <- sessions.seed(record)
+        gate <- Promise.make[Nothing, Unit]
+        // The refresh is held open until both requests are in, so the second one meets the lease.
+        _ <- env.ssoClient.exchangeRefreshToken.returnsZIO((_, _, _) => gate.await.as(refreshed(newToken)))
+        _ <- env.ssoClient.userInfo.succeedsWith(Json.Obj())
+        service = env.buildService(client, security, sessions = sessions)
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(staleToken))
+        first <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request).fork
+        second <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request).fork
+        _ <- ZIO.yieldNow.repeatUntilZIO(_ => sessions.lease(AccessTokenId("old-jti")).map(_.isDefined))
+        _ <- ZIO.yieldNow.repeat(Schedule.recurs(200))
+        _ <- gate.succeed(())
+        _ <- runClockUntilDone(first, second)
+        responses <- ZIO.foreach(List(first, second))(_.join)
+      yield assertTrue(
+        responses.forall(_.status == Status.Ok),
+        env.ssoClient.exchangeRefreshToken.calls.size == 1,
+        responses.forall(rotatedTo(_, newToken)),
+        env.ssoClient.userInfo.calls.map(_._1).distinct == List(newToken),
+      )
+    },
+    test("a /userinfo 401 is answered by one refresh and one more call, which goes on with the new token") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(fetchUserInfo = true)))
+        _ <- env.withPresets(preset)
+        token <- env.signToken(jti = "old-jti")
+        newToken <- env.signToken(jti = "new-jti")
+        record <- sessionRow(env = env, security = security, jti = "old-jti")
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+        _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(refreshed(newToken))
+        _ <- env.sessionRepository.create.succeedsWith(())
+        // auth refuses the token the cookie carried (a renewal between the comparison and the call, say) and takes the new one
+        _ <- env.ssoClient.userInfo.returnsZIO((asked, _) =>
+          if asked == token then ZIO.fail(SSOClient.UserInfoUnauthorized) else ZIO.succeed(Json.Obj()),
+        )
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(token)))
+        upstream <- capture.get
+        error <- logContext.get.map(_.get(Observability.error))
+      yield assertTrue(
+        response.status == Status.Ok,
+        env.ssoClient.userInfo.calls.map(_._1) == List(token, newToken),
+        env.ssoClient.exchangeRefreshToken.calls.size == 1,
+        upstream.exists(_.header(Header.Authorization).contains(Header.Authorization.Bearer(newToken))),
+        rotatedTo(response, newToken),
+        // a refusal that did not stand is not the request's outcome
+        error.isEmpty,
+      )
+    },
+    test("a second /userinfo 401 stands: one refresh, two calls, 401") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(fetchUserInfo = true)))
+        _ <- env.withPresets(preset)
+        token <- env.signToken(jti = "old-jti")
+        newToken <- env.signToken(jti = "new-jti")
+        record <- sessionRow(env = env, security = security, jti = "old-jti")
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+        _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(refreshed(newToken))
+        _ <- env.sessionRepository.create.succeedsWith(())
+        _ <- env.ssoClient.userInfo.failsWith(SSOClient.UserInfoUnauthorized)
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(token)))
+        upstream <- capture.get
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        env.ssoClient.userInfo.calls.map(_._1) == List(token, newToken),
+        env.ssoClient.exchangeRefreshToken.calls.size == 1,
+        upstream.isEmpty,
+        // the row names the new token now, so the browser gets its cookie with the refusal
+        rotatedTo(response, newToken),
+      )
+    },
+    test("a refresh after a /userinfo 401 that auth refuses ends the session as an expired token's does") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(fetchUserInfo = true)))
+        _ <- env.withPresets(preset)
+        token <- env.signToken(jti = "old-jti")
+        record <- sessionRow(env = env, security = security, jti = "old-jti")
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+        _ <- env.ssoClient.exchangeRefreshToken.failsWith(SSOClient.InvalidGrant)
+        _ <- env.ssoClient.userInfo.failsWith(SSOClient.UserInfoUnauthorized)
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(token)))
+        upstream <- capture.get
+      yield assertTrue(
+        isReauthenticate(response),
+        env.ssoClient.userInfo.calls.size == 1,
+        env.ssoClient.exchangeRefreshToken.calls.size == 1,
+        env.sessionRepository.releaseRefresh.calls == List(AccessTokenId("old-jti")),
+        upstream.isEmpty,
+      )
+    },
+    // A refresh moves the session's row to the new token. A response without its cookie leaves the browser with one the
+    // row no longer names: its next refresh, once the rotation window has passed, is sent to sign in.
+    suite("a request that refreshed the session hands the browser the rotated cookie whatever it ends in")(
+      test("a 403 from an access rule, after a refresh for the binding") {
+        val env = new Env
+        val endpoint = usersEndpoint(allow = Some("user.email == 'someone-else@example.com'"), fetchUserInfo = true)
+        for
+          _ <- env.setupDefaults()
+          capture <- captureUpstream()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(endpoint))
+          _ <- env.withPresets(certificatePreset)
+          _ <- env.withClients(certificateClient)
+          staleToken <- env.signToken(jti = "old-jti", clientId = certificateClient.id.toString, cnfX5t = Some(otherCertificateThumbprint))
+          newToken <- env.signToken(jti = "new-jti", clientId = certificateClient.id.toString, cnfX5t = Some(ownCertificateThumbprint))
+          record <- sessionRow(env = env, security = security, jti = "old-jti")
+          _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+          _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(refreshed(newToken))
+          _ <- env.sessionRepository.create.succeedsWith(())
+          _ <- env.ssoClient.userInfo.succeedsWith(Json.Obj("email" -> Json.Str("john@example.com")))
+          service = env.buildService(client, security)
+          response <-
+            service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(staleToken)))
+          upstream <- capture.get
+        yield assertTrue(response.status == Status.Forbidden, upstream.isEmpty, rotatedTo(response, newToken))
+      },
+      test("a step-up challenge, after a refresh for the binding") {
+        val env = new Env
+        val endpoint = usersEndpoint(fetchUserInfo = true, stepUpCondition = Some("true"), stepUpAcr = Some("urn:versola:acr:passkey"))
+        for
+          _ <- env.setupDefaults()
+          capture <- captureUpstream()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(endpoint))
+          _ <- env.withPresets(certificatePreset)
+          _ <- env.withClients(certificateClient)
+          staleToken <- env.signToken(jti = "old-jti", clientId = certificateClient.id.toString, cnfX5t = Some(otherCertificateThumbprint))
+          newToken <- env.signToken(jti = "new-jti", clientId = certificateClient.id.toString, cnfX5t = Some(ownCertificateThumbprint))
+          record <- sessionRow(env = env, security = security, jti = "old-jti")
+          _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+          _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(refreshed(newToken))
+          _ <- env.sessionRepository.create.succeedsWith(())
+          _ <- env.ssoClient.userInfo.succeedsWith(Json.Obj())
+          service = env.buildService(client, security)
+          response <-
+            service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(staleToken)))
+          upstream <- capture.get
+        yield assertTrue(
+          response.status == Status.Unauthorized,
+          response.rawHeader("WWW-Authenticate").exists(_.contains("insufficient_user_authentication")),
+          response.header(Header.Location).isDefined,
+          upstream.isEmpty,
+          rotatedTo(response, newToken),
+        )
+      },
+      test("a 403 from an access rule, after the refresh of an expired token") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          capture <- captureUpstream()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(usersEndpoint(allow = Some("token.role == 'nobody'"))))
+          _ <- env.withPresets(preset)
+          expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+          _ <- TestClock.adjust(2.seconds)
+          newToken <- env.signToken(jti = "new-jti")
+          record <- sessionRow(env = env, security = security, jti = "old-jti")
+          _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+          _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(refreshed(newToken))
+          _ <- env.sessionRepository.create.succeedsWith(())
+          service = env.buildService(client, security)
+          response <-
+            service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken)))
+          upstream <- capture.get
+        yield assertTrue(response.status == Status.Forbidden, upstream.isEmpty, rotatedTo(response, newToken))
+      },
+      test("a /userinfo 401 after the refresh of an expired token, which is not refreshed a second time") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          capture <- captureUpstream()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(usersEndpoint(fetchUserInfo = true)))
+          _ <- env.withPresets(preset)
+          expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+          _ <- TestClock.adjust(2.seconds)
+          newToken <- env.signToken(jti = "new-jti")
+          record <- sessionRow(env = env, security = security, jti = "old-jti")
+          _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+          _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(refreshed(newToken))
+          _ <- env.sessionRepository.create.succeedsWith(())
+          _ <- env.ssoClient.userInfo.failsWith(SSOClient.UserInfoUnauthorized)
+          service = env.buildService(client, security)
+          response <-
+            service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken)))
+          upstream <- capture.get
+        yield assertTrue(
+          response.status == Status.Unauthorized,
+          env.ssoClient.exchangeRefreshToken.calls.size == 1,
+          env.ssoClient.userInfo.calls.map(_._1) == List(newToken),
+          upstream.isEmpty,
+          rotatedTo(response, newToken),
+        )
+      },
+      test("a failure of the call to the resource: answered as the server answers it, with the cookie") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(usersEndpoint()))
+          _ <- env.withPresets(preset)
+          expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+          _ <- TestClock.adjust(2.seconds)
+          newToken <- env.signToken(jti = "new-jti")
+          record <- sessionRow(env = env, security = security, jti = "old-jti")
+          _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+          _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(refreshed(newToken))
+          _ <- env.sessionRepository.create.succeedsWith(())
+          unreachable = client.mapZIO[Any, Throwable, Response](_ => ZIO.fail(RuntimeException("the resource is unreachable")))
+          service = env.buildService(unreachable, security)
+          response <-
+            service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken)))
+          cause <- Observability.cause.get
+        yield assertTrue(
+          response.status == Status.InternalServerError,
+          rotatedTo(response, newToken),
+          // recorded for the request's log line as the server records a failure it answers
+          cause.exists(_.failureOption.exists { case error: Throwable => error.getMessage == "the resource is unreachable"; case _ => false }),
+        )
+      },
+      test("a failure of a request that refreshed nothing is still the server's to answer") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(usersEndpoint()))
+          token <- env.signToken()
+          unreachable = client.mapZIO[Any, Throwable, Response](_ => ZIO.fail(RuntimeException("the resource is unreachable")))
+          service = env.buildService(unreachable, security)
+          result <-
+            service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(token))).either
+        yield assertTrue(result.left.toOption.exists(_.getMessage == "the resource is unreachable"))
+      },
+      test("no cookie is handed to a caller that refreshed nothing: a cookie session's 403, and a header token's") {
+        val env = new Env
+        for
+          _ <- env.setupDefaults()
+          _ <- captureUpstream()
+          client <- ZIO.service[Client]
+          security <- ZIO.service[SecurityService]
+          _ <- env.withResources(usersResource(usersEndpoint(allow = Some("token.role == 'nobody'"))))
+          _ <- env.withPresets(preset)
+          token <- env.signToken()
+          // a row exists that a refresh could take, were one attempted
+          record <- sessionRow(env = env, security = security, jti = "any-jti")
+          _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+          service = env.buildService(client, security)
+          cookie <- service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(token)))
+          header <- service.proxy(
+            ResourceId("users-api"),
+            Path.decode("/users"),
+            Request.get(URL.empty / "users").addHeader(Header.Authorization.Bearer(token)),
+          )
+        yield assertTrue(
+          cookie.status == Status.Forbidden,
+          header.status == Status.Forbidden,
+          cookie.header(Header.SetCookie).isEmpty,
+          header.header(Header.SetCookie).isEmpty,
+          env.sessionRepository.claimRefresh.calls.isEmpty,
+        )
+      },
+    ),
+    // Two requests of one session on two edges of a group, with a token bound to neither's certificate: the other edge
+    // refreshed first and this request is handed its rotation. Refreshing again here would rotate the row twice in one
+    // burst and race two different cookies to the browser (see `EdgeService.userInfoFor`), so the request is answered.
+    test("a rotation adopted from another edge, bound to that edge's certificate, is answered 401 without asking auth or refreshing again") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(fetchUserInfo = true)))
+        _ <- env.withPresets(certificatePreset)
+        _ <- env.withClients(certificateClient)
+        thirdThumbprint = TokenBinding.thumbprint(TestCertificates.generate().certificate)
+        staleToken <- env.signToken(jti = "old-jti", clientId = certificateClient.id.toString, cnfX5t = Some(thirdThumbprint))
+        // what the other edge's refresh produced: bound to its certificate, not to this edge's
+        othersToken <- env.signToken(jti = "others-jti", clientId = certificateClient.id.toString, cnfX5t = Some(otherCertificateThumbprint))
+        row <- sessionRow(env = env, security = security, jti = "others-jti")
+        sealedToken <- security.encryptAes256(othersToken.getBytes("UTF-8"), SecretKeySpec(env.edgeConfig.security.tokenEncryption.key, "AES"))
+        now <- Clock.instant
+        // the lease is the other edge's, and its rotation is there to adopt
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(None)
+        _ <- env.sessionRepository.findByPreviousAccessTokenId.succeedsWith(
+          Some(row.copy(
+            previousAccessTokenId = Some(AccessTokenId("old-jti")),
+            encryptedAccessToken = Some(Secret(sealedToken)),
+            rotatedAt = Some(now),
+          )),
+        )
+        service = env.buildService(client, security)
+        response <-
+          service.proxy(ResourceId("users-api"), Path.decode("/users"), Request.get(URL.empty / "users").addCookie(sessionCookie(staleToken)))
+        upstream <- capture.get
+        error <- logContext.get.map(_.get(Observability.error))
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        // not the end of the session: no login to go to, and the cookie the row names, for the next request to re-bind here
+        response.header(Header.Location).isEmpty,
+        rotatedTo(response, othersToken),
+        error.map(_.code).contains("session_bound_to_other_edge"),
+        env.ssoClient.userInfo.calls.isEmpty,
+        env.ssoClient.exchangeRefreshToken.calls.isEmpty,
+        env.sessionRepository.claimRefresh.calls.map(_._1) == List(AccessTokenId("old-jti")),
+        upstream.isEmpty,
+      )
+    },
+    test("a token from an Authorization header is never refreshed: a /userinfo 401 is a 401, Bearer or DPoP") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(fetchUserInfo = true)))
+        _ <- env.withPresets(preset)
+        _ <- env.ssoClient.userInfo.failsWith(SSOClient.UserInfoUnauthorized)
+        // a row exists that a refresh could take, were one attempted
+        record <- sessionRow(env = env, security = security, jti = "header-jti")
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+        bearerToken <- env.signToken(jti = "header-jti")
+        dpopToken <- env.signToken(jti = "header-jti", cnfJkt = Some(dpopJkt))
+        proof <- dpopProof(dpopToken, "/users")
+        service = env.buildService(client, security)
+        bearer <- service.proxy(
+          ResourceId("users-api"),
+          Path.decode("/users"),
+          Request.get(URL.empty / "users").addHeader(Header.Authorization.Bearer(bearerToken)),
+        )
+        dpop <- service.proxy(ResourceId("users-api"), Path.decode("/users"), dpopRequest("/users", dpopToken, proof))
+        upstream <- capture.get
+      yield assertTrue(
+        bearer.status == Status.Unauthorized,
+        dpop.status == Status.Unauthorized,
+        bearer.header(Header.Location).isEmpty,
+        bearer.header(Header.SetCookie).isEmpty,
+        env.ssoClient.userInfo.calls.size == 2,
+        env.sessionRepository.claimRefresh.calls.isEmpty,
+        env.ssoClient.exchangeRefreshToken.calls.isEmpty,
+        upstream.isEmpty,
+      )
+    },
+  )
 
   private val proxySuite = suite("scenarios")(
     test("returns 401 when EDGE_SESSION cookie is missing") {
@@ -3001,7 +3609,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         env.ssoClient.userInfo.calls.map(_._2) == List(SSOClient.TokenBinding.Key),
       )
     },
-    test("returns 401 when userInfo is unauthorized") {
+    // A refused `/userinfo` is answered by a refresh (see "a cookie session asked about at auth"); a cookie with no session
+    // row behind it has nothing to refresh from, which is a session that is over.
+    test("returns 401 pointing at the login when userInfo is unauthorized and the cookie has no session to refresh") {
       val env = new Env
       val endpoint = usersEndpoint(
         allow = Some("user.email == 'john@example.com'"),
@@ -3014,6 +3624,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         security <- ZIO.service[SecurityService]
         _ <- env.withResources(usersResource(endpoint))
+        _ <- env.withPresets(preset)
         token <- env.signToken()
         request = Request.get(URL.empty / "users")
           .addCookie(sessionCookie(token))
@@ -3024,8 +3635,14 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           Path.decode("/users"),
           request,
         )
+        cleared = response.header(Header.SetCookie).map(_.value)
       yield assertTrue(
         response.status == Status.Unauthorized,
+        response.header(Header.Location).exists(_.url.encode == s"/login/${presetId}"),
+        // no row, so nothing says which domain and path the cookie was set with: cleared as the cookie's own preset id names it
+        cleared.exists(c => c.name == EdgeSessionCookie.name && c.content.isEmpty && c.maxAge.contains(Duration.Zero)),
+        env.ssoClient.userInfo.calls.size == 1,
+        env.ssoClient.exchangeRefreshToken.calls.isEmpty,
       )
     },
     test("returns 500 when userInfo request fails") {
@@ -3490,7 +4107,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         security <- ZIO.service[SecurityService]
         _ <- env.withResources(usersResource(endpoint))
-        token <- env.signToken(clientId = certificateClient.id.toString, cnfX5t = Some("certificate-thumbprint"))
+        token <- env.signToken(clientId = certificateClient.id.toString, cnfX5t = Some(ownCertificateThumbprint))
         request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
         service = env.buildService(client, security)
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
@@ -3500,6 +4117,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         calls.map(_._2) == List(
           SSOClient.TokenBinding.Certificate(certificateClient.id, certificateClient.credential),
         ),
+        // bound to the certificate this edge presents: the call can pass, so nothing is refreshed
+        env.sessionRepository.claimRefresh.calls.isEmpty,
+        env.ssoClient.exchangeRefreshToken.calls.isEmpty,
       )
     },
     // The one place edge sees a caller's certificate: the handshake of its own mutual-TLS listener.
@@ -3672,6 +4292,245 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
   private def decisions(policy: String, result: String): UIO[Double] =
     Metric.counter("edge_rate_limit_decisions_total")
       .tagged(Set(MetricLabel("policy", policy), MetricLabel("result", result))).value.map(_.count)
+
+  /** A partner has no roles and no permissions (#962 §4): what lets a call through an endpoint of its resource is the endpoint's own
+    * `allow` rule, and an endpoint without one lets nobody through. A first-party edge keeps the permission check it always had. */
+  private val partnerSuite = suite("partner mode")(
+    test("an endpoint with an allow rule that holds is served, and the roles and permissions are not consulted") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        upstream <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(allow = Some("token.sub == 'user-1'"))))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security, config = env.edgeConfig.copy(mode = EdgeMode.Partner))
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        reached <- upstream.get
+      yield assertTrue(
+        response.status == Status.Ok,
+        reached.isDefined,
+        env.permissionService.getAllowedEndpointsForRoles.calls.isEmpty,
+        env.permissionService.getAllowedEndpointsForClient.calls.isEmpty,
+      )
+    },
+    test("an endpoint without an allow rule is 403, whatever permissions would have let it through: deny by default") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        upstream <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(allow = None)))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security, config = env.edgeConfig.copy(mode = EdgeMode.Partner))
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        reached <- upstream.get
+      yield assertTrue(response.status == Status.Forbidden, reached.isEmpty)
+    },
+    test("an allow rule that does not hold is 403") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(allow = Some("token.sub == 'someone-else'"))))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security, config = env.edgeConfig.copy(mode = EdgeMode.Partner))
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(response.status == Status.Forbidden)
+    },
+    test("a first-party edge still refuses an endpoint its roles do not grant, though its allow rule holds") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        _ <- env.permissionService.getAllowedEndpointsForRoles.succeedsWith(Set.empty)
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(allow = Some("token.sub == 'user-1'"))))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(response.status == Status.Forbidden)
+    },
+  )
+
+  /** `EdgeService.consoleSession`: the cookie of the partner's console, checked as a proxied call checks it, and nothing else. */
+  private val consoleSessionSuite = suite("consoleSession")(
+    test("a live token in the cookie is the session: its claims, the preset of the cookie and the token itself") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        token <- env.signToken(clientId = "acme-console", sub = "staff-1")
+        service = env.buildService(client, security)
+        session <- service.consoleSession(Request.get(URL.empty / "partner").addCookie(sessionCookie(token)))
+      yield assertTrue(
+        session.claims.subject == "staff-1",
+        session.claims.clientId == ClientId("acme-console"),
+        session.presetId == presetId,
+        session.accessToken == token,
+        session.rotatedCookie.isEmpty,
+      )
+    },
+    test("no cookie is no session, and a bearer token in Authorization is not a console session") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        token <- env.signToken()
+        service = env.buildService(client, security)
+        none <- service.consoleSession(Request.get(URL.empty / "partner")).flip
+        bearer <- service.consoleSession(Request.get(URL.empty / "partner").addHeader(Header.Authorization.Bearer(token))).flip
+      yield assertTrue(none == EdgeService.NoSession(None), bearer == EdgeService.NoSession(None))
+    },
+    test("a token that does not verify, and one that has been revoked, are no session") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        token <- env.signToken(jti = "revoked-jti")
+        service = env.buildService(client, security)
+        forged <- service.consoleSession(Request.get(URL.empty / "partner").addCookie(sessionCookie("not.a.token"))).flip
+        _ <- env.revocationService.isRevoked.succeedsWith(true)
+        revoked <- service.consoleSession(Request.get(URL.empty / "partner").addCookie(sessionCookie(token))).flip
+      yield assertTrue(forged == EdgeService.NoSession(None), revoked == EdgeService.NoSession(None))
+    },
+    test("a console session whose token is bound to another certificate is refreshed first, and the console goes on with the new token and cookie") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withPresets(certificatePreset)
+        _ <- env.withClients(certificateClient)
+        // issued over another edge's certificate of the group, or this edge's before a renewal
+        staleToken <-
+          env.signToken(jti = "old-jti", clientId = certificateClient.id.toString, sub = "staff-1", cnfX5t = Some(otherCertificateThumbprint))
+        newToken <- env.signToken(jti = "new-jti", clientId = certificateClient.id.toString, sub = "staff-1", cnfX5t = Some(ownCertificateThumbprint))
+        record <- sessionRow(env = env, security = security, jti = "old-jti")
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+        _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(refreshed(newToken))
+        _ <- env.sessionRepository.create.succeedsWith(())
+        service = env.buildService(client, security)
+        session <- service.consoleSession(Request.get(URL.empty / "partner").addCookie(sessionCookie(staleToken)))
+      yield assertTrue(
+        session.accessToken == newToken,
+        session.claims.subject == "staff-1",
+        env.sessionRepository.claimRefresh.calls.map(_._1) == List(AccessTokenId("old-jti")),
+        env.ssoClient.exchangeRefreshToken.calls == List((RefreshToken("rt-secret"), certificateClient.id, certificateClient.credential)),
+        session.rotatedCookie.exists(cookie => cookie.name == EdgeSessionCookie.name && cookie.content == s"${presetId}:${newToken}"),
+      )
+    },
+    test("a console session whose refresh is another edge's rotation (bound elsewhere too) is 401 with that cookie, and is not refreshed twice") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withPresets(certificatePreset)
+        _ <- env.withClients(certificateClient)
+        staleToken <- env.signToken(jti = "old-jti", clientId = certificateClient.id.toString, cnfX5t = Some(otherCertificateThumbprint))
+        // what the edge that took the lease produced: bound to its certificate, not to this one's
+        elsewhereToken <- env.signToken(jti = "new-jti", clientId = certificateClient.id.toString, cnfX5t = Some(otherCertificateThumbprint))
+        record <- sessionRow(env = env, security = security, jti = "old-jti")
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+        _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(refreshed(elsewhereToken))
+        _ <- env.sessionRepository.create.succeedsWith(())
+        service = env.buildService(client, security)
+        refused <- service.consoleSession(Request.get(URL.empty / "partner").addCookie(sessionCookie(staleToken))).flip
+      yield assertTrue(
+        env.ssoClient.exchangeRefreshToken.calls.size == 1,
+        refused.isInstanceOf[EdgeService.NoSession],
+        // the rotation is handed to the browser, so that its next request finds the row where it moved
+        refused.asInstanceOf[EdgeService.NoSession].clear.exists(_.content == s"${presetId}:${elsewhereToken}"),
+      )
+    },
+  )
+
+  /** `EdgeService.revokeSessions`: what a partner's administrator ends on this edge, by user, session or refresh family. */
+  private val revokeSessionsSuite =
+    def row(env: Env, security: SecurityService, token: AccessToken, jti: String, sid: String, preset: PresetId = presetId) =
+      for
+        now <- Clock.instant
+        key = SecretKeySpec(env.edgeConfig.security.tokenEncryption.key, "AES")
+        sealed_ <- security.encryptAes256(token.getBytes("UTF-8"), key)
+      yield session.EdgeSessionRecord(
+        publicSessionId = SessionId(sid),
+        presetId = preset,
+        accessTokenId = AccessTokenId(jti),
+        encryptedRefreshToken = Some(Secret("rt".getBytes("UTF-8"))),
+        expiresAt = now.plusSeconds(3600),
+        previousAccessTokenId = None,
+        encryptedAccessToken = Some(Secret(sealed_)),
+        rotatedAt = None,
+      )
+
+    def setup(env: Env) =
+      for
+        _ <- env.setupDefaults()
+        _ <- env.revocationService.revokeUser.succeedsWith(())
+        _ <- env.revocationService.revokeSession.succeedsWith(())
+        _ <- env.revocationService.revokeTokens.succeedsWith(())
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        sessions <- FakeSessions.make
+        ann <- env.signToken(sub = "ann", jti = "ann-jti", sid = "sid-ann", family = Some("fam-ann"))
+        bob <- env.signToken(sub = "bob", jti = "bob-jti", sid = "sid-bob", family = Some("fam-bob"))
+        _ <- row(env, security, ann, "ann-jti", "sid-ann").flatMap(sessions.seed(_))
+        _ <- row(env, security, bob, "bob-jti", "sid-bob").flatMap(sessions.seed(_))
+      yield (env.buildService(client, security, sessions = sessions), sessions)
+
+    suite("revokeSessions")(
+      test("by user ends that user's sessions and puts the user on the edge's own revocation list, and no other's") {
+        val env = new Env
+        for
+          (service, sessions) <- setup(env)
+          ended <- service.revokeSessions(EdgeService.SessionRevocation.User("ann"))
+          left <- sessions.findBySessionId(SessionId("sid-ann"))
+          other <- sessions.findBySessionId(SessionId("sid-bob"))
+        yield assertTrue(
+          ended == 1,
+          left.isEmpty,
+          other.size == 1,
+          env.revocationService.revokeUser.calls.map(_._1) == List("ann"),
+          env.revocationService.revokeSession.calls.isEmpty,
+        )
+      },
+      test("by session ends that session, by refresh family the sessions of that family") {
+        val env = new Env
+        for
+          (service, sessions) <- setup(env)
+          bySession <- service.revokeSessions(EdgeService.SessionRevocation.Session(SessionId("sid-ann")))
+          byFamily <- service.revokeSessions(EdgeService.SessionRevocation.Family(RefreshTokenFamilyId("fam-bob")))
+          left <- sessions.findLive(java.time.Instant.EPOCH)
+          unknown <- service.revokeSessions(EdgeService.SessionRevocation.Family(RefreshTokenFamilyId("fam-nobody")))
+        yield assertTrue(
+          bySession == 1,
+          byFamily == 1,
+          unknown == 0,
+          left.isEmpty,
+          env.revocationService.revokeSession.calls == List(SessionId("sid-ann")),
+          env.revocationService.revokeTokens.calls.size == 2,
+        )
+      },
+      test("a session that expired is not counted, and a user with no session here is still put on the list") {
+        val env = new Env
+        for
+          (service, _) <- setup(env)
+          _ <- TestClock.adjust(2.hours)
+          ended <- service.revokeSessions(EdgeService.SessionRevocation.User("ann"))
+        yield assertTrue(ended == 0, env.revocationService.revokeUser.calls.map(_._1) == List("ann"))
+      },
+    )
 
   private val rateLimitSuite = suite("rate limits")(
     test("with no policy configured the limiter is inactive and the request is served as before") {

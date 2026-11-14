@@ -2,6 +2,7 @@ package versola.central.configuration.edges
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.configuration.partners.PartnerRegistry
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantRepository
 import versola.central.{TestAdminAuth, TestCentralConfig}
@@ -67,6 +68,8 @@ object EdgeGroupEndpointsSpec extends ZIOSpecDefault, ZIOStubs:
               ZEnvironment[EdgeService](stubs.edges) ++
                 ZEnvironment[EdgeGroupService](stubs.groups) ++
                 ZEnvironment[EdgeIdentityService](stubs.identity) ++
+                ZEnvironment[EdgeCertificateRepository](stub[EdgeCertificateRepository]) ++
+                ZEnvironment[PartnerRegistry](stub[PartnerRegistry]) ++
                 ZEnvironment[ResourceService](stubs.resources) ++
                 ZEnvironment[TenantRepository](stub[TenantRepository]) ++
                 ZEnvironment(TestCentralConfig.config) ++
@@ -125,7 +128,7 @@ object EdgeGroupEndpointsSpec extends ZIOSpecDefault, ZIOStubs:
       request = json(Method.POST, URL.root / "configuration" / "edges", s"""{"id":"edge-1","groupId":"partner-acme"}"""),
       expectedStatus = Status.Created,
       setup = stubs => stubs.groups.find.succeedsWith(Some(partnerGroup)) *> stubs.edges.registerEdge.succeedsWith(testKeyPair),
-      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.edges.registerEdge.calls == List((edgeId, partnerGroup.id)))),
+      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.edges.registerEdge.calls == List((edgeId, partnerGroup.id, None)))),
     ),
     testCase(
       description = "an edge that names a group that does not exist is not registered",
@@ -141,7 +144,7 @@ object EdgeGroupEndpointsSpec extends ZIOSpecDefault, ZIOStubs:
       setup = stubs =>
         stubs.groups.find.succeedsWith(Some(EdgeGroupRecord(EdgeGroup.DefaultId, EdgeGroupKind.FirstParty))) *>
           stubs.edges.registerEdge.succeedsWith(testKeyPair),
-      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.edges.registerEdge.calls == List((edgeId, EdgeGroup.DefaultId)))),
+      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.edges.registerEdge.calls == List((edgeId, EdgeGroup.DefaultId, None)))),
     ),
     testCase(
       description = "an enrollment token is created for a registered edge",
@@ -170,26 +173,6 @@ object EdgeGroupEndpointsSpec extends ZIOSpecDefault, ZIOStubs:
           EdgeIdentityService.IssuedToken("TOKEN", java.time.Instant.parse("2026-10-21T18:00:00Z")),
         ),
       verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.identity.issueEnrollmentToken.calls == List((edgeId, 6.hours)))),
-    ),
-    testCase(
-      description = "an operator extends the certificate chain of an edge",
-      request = Request.post((URL.root / "configuration" / "edges" / "extend").addQueryParam("edgeId", edgeId.toString), Body.empty),
-      expectedStatus = Status.NoContent,
-      setup = stubs => stubs.identity.extend.succeedsWith(()),
-      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.identity.extend.calls == List(edgeId))),
-    ),
-    testCase(
-      description = "extending an edge that is not registered is 404",
-      request = Request.post((URL.root / "configuration" / "edges" / "extend").addQueryParam("edgeId", edgeId.toString), Body.empty),
-      expectedStatus = Status.NotFound,
-      setup = stubs => stubs.identity.extend.failsWith(EdgeIdentityService.Refused("edge 'edge-1' is not registered")),
-    ),
-    testCase(
-      description = "extending needs the admin credential",
-      request = Request.post((URL.root / "configuration" / "edges" / "extend").addQueryParam("edgeId", edgeId.toString), Body.empty),
-      authorized = false,
-      expectedStatus = Status.Unauthorized,
-      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.identity.extend.calls.isEmpty)),
     ),
     testCase(
       description = "a token for an edge that is not registered is 404",

@@ -23,7 +23,7 @@ object ResourcesSyncClient:
       centralSyncTokenService: CentralSyncTokenService,
       celEvaluator: CelEvaluator,
   ) extends ResourcesSyncClient:
-    private val ResourcesURL = config.central.url / "edge" / "sync" / "resources"
+    private val ResourcesURL = config.syncUrl("resources")
 
     override def getAll: Task[Map[ResourceId, Resource]] =
       for
@@ -54,7 +54,8 @@ object ResourcesSyncClient:
     private def decryptSecret(value: String): Task[Secret] =
       for
         encrypted <- ZIO.attempt(Base64.urlDecode(value))
-        decrypted <- securityService.decryptRsa(encrypted, config.privateKey)
+        keys <- centralSyncTokenService.decryptionKeys(config.privateKey)
+        decrypted <- CentralSyncTokenService.firstDecrypting(keys)(securityService.decryptRsa(encrypted, _))
       yield Secret(decrypted)
 
     private case class SyncResource(

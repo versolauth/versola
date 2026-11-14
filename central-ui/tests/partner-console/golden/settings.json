@@ -1,0 +1,11 @@
+{
+  "contact": {
+    "email": "ops@acme.example.com",
+    "phone": null
+  },
+  "defaults": {
+    "backChannelLogoutUri": "https://acme.example.com/logout/backchannel",
+    "accessTokenTtl": 900,
+    "refreshTokenTtl": 86400
+  }
+}

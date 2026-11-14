@@ -33,16 +33,16 @@ object SecurityServiceSpec extends ZIOSpecDefault:
       yield
         val jwk = keyPair.toPublicJwk
         val fieldsMap = jwk.fields.toMap
-        val timestampPattern = "\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}".r
+        val timestampPattern = "\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}-[0-9a-f]{6}".r
 
         assertTrue(
           // Key properties
           keyPair.publicKey.getAlgorithm == "RSA",
           keyPair.privateKey.getAlgorithm == "RSA",
           keyPair.publicKey.getModulus.bitLength() == 2048,
-          // Key ID format (YYYY-MM-DD_HH-MM-SS)
+          // Key ID format (YYYY-MM-DD_HH-MM-SS-<6 hex>)
           timestampPattern.matches(keyPair.keyId),
-          keyPair.keyId.length == 19,
+          keyPair.keyId.length == 26,
           // JWK structure
           fieldsMap.contains("kty"),
           fieldsMap.contains("kid"),
@@ -173,7 +173,7 @@ object SecurityServiceSpec extends ZIOSpecDefault:
         keyPair <- service.generateEcKeyPair
       yield
         val fieldsMap = keyPair.toPublicJwk.fields.toMap
-        val timestampPattern = "\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}".r
+        val timestampPattern = "\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}-[0-9a-f]{6}".r
 
         assertTrue(
           keyPair.publicKey.getAlgorithm == "EC",
@@ -181,7 +181,7 @@ object SecurityServiceSpec extends ZIOSpecDefault:
           // ES256 is defined on P-256 only, so the curve is part of the contract.
           keyPair.publicKey.getParams.getCurve.getField.getFieldSize == 256,
           timestampPattern.matches(keyPair.keyId),
-          keyPair.keyId.length == 19,
+          keyPair.keyId.length == 26,
           fieldsMap.get("kty") == Some(zio.json.ast.Json.Str("EC")),
           fieldsMap.get("crv") == Some(zio.json.ast.Json.Str("P-256")),
           fieldsMap.get("alg") == Some(zio.json.ast.Json.Str("ES256")),
@@ -191,6 +191,18 @@ object SecurityServiceSpec extends ZIOSpecDefault:
           // The private half must never reach the published JWK.
           !fieldsMap.contains("d"),
         )
+    }.provide(SecurityService.live, SecureRandom.live),
+    test("keys generated within one second have distinct ids") {
+      for
+        service <- ZIO.service[SecurityService]
+        ecKeys <- ZIO.foreach(1 to 300)(_ => service.generateEcKeyPair)
+        rsaKeys <- ZIO.foreachPar(1 to 6)(_ => service.generateRsaKeyPair)
+        ids = ecKeys.map(_.keyId) ++ rsaKeys.map(_.keyId)
+      yield assertTrue(
+        ids.distinct.size == ids.size,
+        // the seconds are still the prefix: ids sort by the time the key was made
+        ids.forall(_.matches("\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}-[0-9a-f]{6}")),
+      )
     }.provide(SecurityService.live, SecureRandom.live),
     test("generated EC keys can sign and verify data") {
       val originalData = "Hello, World! This is a test message.".getBytes("UTF-8")
