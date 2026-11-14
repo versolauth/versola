@@ -1,7 +1,7 @@
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
 import { expectSheetWidth, findRequest } from '../fixtures';
 import { scan } from './axe';
-import { loadPartnerApp, sidePanel, sidePanelDialog } from './fixtures';
+import { loadPartnerApp, sidePanel, sidePanelDialog, test } from './fixtures';
 import { PARTNER_NOW, asLevel, partnerSeedState, suspendedPartner } from './partner-fixtures';
 
 /**
@@ -140,12 +140,26 @@ test('a waiting edge: revoke the unused token, issue a new one', async ({ page }
 test('removes an edge through the confirm dialog', async ({ page }) => {
   const api = await loadPartnerApp(page, { path: `${edgesPath}&id=edge-pilot-eu-2` });
   await sidePanel(page, 'edge-pilot-eu-2').getByRole('button', { name: 'Remove edge edge-pilot-eu-2' }).click();
-  await expect(page.getByRole('dialog', { name: 'Remove edge' })).toContainText('sessions on it end');
+  await expect(page.getByRole('dialog', { name: 'Remove edge' })).toContainText('not ended by this');
   await page.getByRole('dialog', { name: 'Remove edge' }).getByRole('button', { name: 'Remove', exact: true }).click();
   await findRequest(api.requests, 'DELETE', '/edges/edge-pilot-eu-2');
   await expect(sidePanel(page, 'edge-pilot-eu-2')).toHaveCount(0);
   await expect(page.locator('versola-data-table').getByRole('button', { name: /^Open edge/ })).toHaveText(['edge-pilot-eu-1', 'edge-pilot-kz-1']);
   await expect(page.getByRole('button', { name: '+ Add edge' })).toBeEnabled();
+});
+
+test('the edge that serves the console cannot be removed from it (central refuses with 409)', async ({ page }) => {
+  await loadPartnerApp(page, { path: `${edgesPath}&id=edge-pilot-eu-1` });
+  const panel = sidePanel(page, 'edge-pilot-eu-1');
+  await expect(panel.getByRole('region', { name: "The operator's policies" })).toBeVisible();
+  await expect(panel.getByRole('region', { name: 'Remove edge' })).toHaveCount(0);
+  await expect(panel.getByRole('button', { name: 'Remove edge edge-pilot-eu-1' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Actions for edge-pilot-eu-1' }).click();
+  await expect(page.getByRole('menuitem', { name: 'Open' })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'Remove edge' })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Actions for edge-pilot-eu-2' }).click();
+  await expect(page.getByRole('menuitem', { name: 'Remove edge' })).toBeVisible();
 });
 
 test('suspended: central refuses the read, so the list says so and offers no write', async ({ page }) => {

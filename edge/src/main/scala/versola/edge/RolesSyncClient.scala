@@ -20,7 +20,7 @@ object RolesSyncClient:
       config: EdgeConfig,
       centralSyncTokenService: CentralSyncTokenService,
   ) extends RolesSyncClient:
-    private val RolesURL = config.central.url / "edge" / "sync" / "roles"
+    private val RolesURL = config.syncUrl("roles")
 
     override def getAll: Task[Map[(TenantId, RoleId), Set[PermissionId]]] =
       for

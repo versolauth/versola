@@ -1,14 +1,30 @@
 package versola.central.configuration.edges
 
+import com.nimbusds.jose.jwk.RSAKey
 import org.scalamock.stubs.ZIOStubs
 import versola.central.audit.{CentralAudit, RecordedAudit}
 import versola.central.configuration.clients.certificates.{CertificateSigningRequest, ClientCertificateIssuer}
+import versola.central.configuration.clients.{AuthMethod, ClientId}
+import versola.central.configuration.partners.{
+  PartnerContact,
+  PartnerId,
+  PartnerLimits,
+  PartnerRecord,
+  PartnerRegistry,
+  PartnerSettings,
+  PartnerStatus,
+}
+import versola.central.configuration.scopes.ScopeToken
+import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestCentralConfig}
-import versola.util.{CertificateSubject, SecureRandom, TestCertificates}
+import versola.util.{CertificateSubject, EnrollmentToken, RsaKeyPair, SecureRandom, TestCertificates}
 import zio.*
 import zio.json.ast.Json
 import zio.test.*
 
+import java.security.KeyPairGenerator
+import java.security.MessageDigest
+import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
 import java.time.Instant
 
 object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
@@ -20,7 +36,7 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private def edgeRecord(id: EdgeId, groupId: EdgeGroupId = EdgeGroup.DefaultId, kind: EdgeGroupKind = EdgeGroupKind.FirstParty) =
     EdgeRecord(
       id = id,
-      publicKey = Json.Obj(),
+      publicKey = Some(Json.Obj()),
       oldPublicKey = None,
       requireDpopNonce = true,
       groupId = groupId,
@@ -29,6 +45,7 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
       accessLogPolicy = None,
       rateLimitPolicies = None,
       policyMeta = None,
+      publicUrl = None,
     )
 
   private class InMemoryTokens(state: Ref[Map[String, (EdgeId, Instant, Boolean)]]) extends EdgeEnrollmentTokenRepository:
@@ -45,18 +62,16 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
             (Some(edge), tokens.updated(tokenHash, (edge, expiresAt, true)))
           case _ => (None, tokens)
 
+    override def revoke(edgeId: EdgeId): Task[Int] =
+      state.modify(tokens => (tokens.count((_, v) => v._1 == edgeId && !v._3), tokens.filterNot((_, v) => v._1 == edgeId && !v._3)))
+
     def hashes: UIO[Set[String]] = state.get.map(_.keySet)
-
-  private class InMemoryChains(state: Ref[Map[EdgeId, Instant]]) extends EdgeIdentityChainRepository:
-    override def start(edgeId: EdgeId, at: Instant): Task[Unit] = state.update(_.updated(edgeId, at))
-
-    override def startedAt(edgeId: EdgeId): Task[Option[Instant]] = state.get.map(_.get(edgeId))
-
-    override def all: Task[Map[EdgeId, Instant]] = state.get
 
   private class InMemoryCertificates(state: Ref[Vector[(EdgeId, String)]]) extends EdgeCertificateRepository:
     override def record(edgeId: EdgeId, serial: String, notAfter: Instant, issuedAt: Instant): Task[Unit] =
       state.update(_ :+ (edgeId -> serial))
+
+    override def latest: Task[Map[EdgeId, EdgeCertificateRepository.Issued]] = ZIO.succeed(Map.empty)
 
     def all: UIO[Vector[(EdgeId, String)]] = state.get
 
@@ -64,6 +79,14 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val honestIssuer: ClientCertificateIssuer =
     (request: CertificateSigningRequest) =>
       ZIO.succeed(TestCertificates.generate(subject = s"CN=${request.commonName}", uris = request.uris).certificatePem)
+
+  /** Issues what was asked and remembers the lifetime each request asked for. */
+  private class RecordingIssuer extends ClientCertificateIssuer:
+    val validities = Unsafe.unsafe(Ref.unsafe.make(Vector.empty[Duration])(using _))
+    val requests = Unsafe.unsafe(Ref.unsafe.make(Vector.empty[CertificateSigningRequest])(using _))
+
+    override def sign(request: CertificateSigningRequest): Task[String] =
+      validities.update(_ :+ request.validity) *> requests.update(_ :+ request) *> honestIssuer.sign(request)
 
   /** Issues a certificate that names a different edge than the one asked for. */
   private val lyingIssuer: ClientCertificateIssuer =
@@ -73,30 +96,91 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private class Env(
       edges: List[EdgeRecord],
       issuer: ClientCertificateIssuer = honestIssuer,
-      policy: CentralConfig.EdgeIdentityConfig = CentralConfig.EdgeIdentityConfig(),
+      config: CentralConfig = TestCentralConfig.config,
+      partnerStatus: PartnerStatus = PartnerStatus.Active,
   ):
     val edgeService = stub[EdgeService]
+    val partners = stub[PartnerRegistry]
     val tokens = InMemoryTokens(Unsafe.unsafe(Ref.unsafe.make(Map.empty[String, (EdgeId, Instant, Boolean)])(using _)))
     val certificates = InMemoryCertificates(Unsafe.unsafe(Ref.unsafe.make(Vector.empty[(EdgeId, String)])(using _)))
-    val chains = InMemoryChains(Unsafe.unsafe(Ref.unsafe.make(Map.empty[EdgeId, Instant])(using _)))
     val audit = RecordedAudit.unsafe
     val service: URIO[SecureRandom, EdgeIdentityService] =
       for
         _ <- edgeService.find.returnsZIO(id => ZIO.succeed(edges.find(_.id == id)))
         _ <- edgeService.getAllEdges.succeedsWith(edges.toVector)
+        _ <- partners.findByGroup.returnsZIO(group => ZIO.succeed(Some(partnerRecord(group, partnerStatus))))
         random <- ZIO.service[SecureRandom]
       yield EdgeIdentityService.Impl(
         edgeService,
         tokens,
         certificates,
-        chains,
         EdgeCertificateIssuer(issuer),
         random,
-        TestCentralConfig.config.copy(edgeIdentity = policy),
+        config,
         audit,
+        partners,
       )
 
+  private def partnerRecord(group: EdgeGroupId, status: PartnerStatus) = PartnerRecord(
+    id = PartnerId(group),
+    tenantId = TenantId("tenant-a"),
+    displayName = "Acme",
+    logoUri = None,
+    contact = PartnerContact("ops@acme.example", None),
+    status = status,
+    limits = PartnerLimits(
+      scopes = Set(ScopeToken("openid")),
+      redirectDomains = Set("acme.example"),
+      resourceDomains = None,
+      maxClients = 5,
+      maxEdges = 2,
+      accessTokenTtlMax = 600,
+      refreshTokenTtlMax = 86400,
+      clientAuthMethods = Set(AuthMethod.tls_client_auth),
+    ),
+    groupId = group,
+    consoleClientId = ClientId(s"$group-console"),
+    settings = PartnerSettings.empty,
+    reviewAt = None,
+    createdAt = Instant.EPOCH,
+    version = 0L,
+  )
+
   private def partnerEdge(id: EdgeId) = edgeRecord(id, partnerGroup, EdgeGroupKind.Partner)
+
+  /** A partner's edge as it is registered: no signing key until it enrols. */
+  private def keylessPartnerEdge(id: EdgeId) = partnerEdge(id).copy(publicKey = None)
+
+  private def rsaPair(bits: Int): java.security.KeyPair =
+    val generator = KeyPairGenerator.getInstance("RSA")
+    generator.initialize(bits)
+    generator.generateKeyPair()
+
+  private def publicJwk(kid: String, pair: java.security.KeyPair): Json.Obj =
+    RsaKeyPair(kid, pair.getPublic.asInstanceOf[RSAPublicKey], pair.getPrivate.asInstanceOf[RSAPrivateKey]).toPublicJwk
+
+  private val pairA = rsaPair(2048)
+  private val keyA = publicJwk("edge-key-a", pairA)
+  private val pairB = rsaPair(2048)
+  private val keyB = publicJwk("edge-key-b", pairB)
+
+  /** Everything, the private half included: what a key pasted by mistake looks like. */
+  private val privateJwk: Json.Obj =
+    import zio.json.*
+    RSAKey.Builder(pairA.getPublic.asInstanceOf[RSAPublicKey]).privateKey(pairA.getPrivate).keyID("leaky").build().toJSONString
+      .fromJson[Json.Obj].toOption.get
+
+  private val smallJwk = publicJwk("small", rsaPair(1024))
+
+  private val withAddresses = TestCentralConfig.config.copy(
+    publicUrls = Some(CentralConfig.PublicUrlsConfig(
+      enroll = zio.http.URL.decode("https://central.example.com").toOption.get,
+      mtls = zio.http.URL.decode("https://central-mtls.example.com").toOption.get,
+    )),
+  )
+
+  private def sha256(text: String): String =
+    MessageDigest.getInstance("SHA-256").digest(text.getBytes("UTF-8")).map(b => f"${b & 0xff}%02x").mkString
 
   private def csrFor(edge: EdgeRecord): UIO[String] =
     CertificateSubject.generate(EdgeIdentityService.subjectFor(edge)).orDie.map(_.csrPem)
@@ -109,9 +193,9 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         service <- env.service
         issued <- service.issueEnrollmentToken(edgeId)
         csr <- csrFor(edge)
-        refused <- service.enroll(edgeId, "not-a-token", csr).flip
+        refused <- service.enroll(Some(edgeId), "not-a-token", csr).flip
         none <- env.audit.drafts
-        _ <- service.enroll(edgeId, issued.token, csr)
+        _ <- service.enroll(Some(edgeId), issued.token, csr)
         recorded <- env.audit.drafts
       yield assertTrue(
         refused == EdgeIdentityService.InvalidToken,
@@ -128,7 +212,7 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         service <- env.service
         issued <- service.issueEnrollmentToken(edgeId)
         csr <- csrFor(edge)
-        _ <- service.enroll(edgeId, issued.token, csr)
+        _ <- service.enroll(Some(edgeId), issued.token, csr)
         refused <- csrFor(edgeRecord(otherEdgeId)).flatMap(service.renew(edgeId, _)).flip
         _ <- csrFor(edge).flatMap(service.renew(edgeId, _))
         recorded <- env.audit.drafts
@@ -155,6 +239,24 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         hashes <- env.tokens.hashes
       yield assertTrue(hashes.size == 1, !hashes.contains(issued.token), issued.token.nonEmpty)
     },
+    test("a new token voids the unused ones issued before it: an edge has one live token") {
+      val edge = edgeRecord(edgeId)
+      val env = Env(List(edge))
+      for
+        service <- env.service
+        first <- service.issueEnrollmentToken(edgeId)
+        csr <- csrFor(edge)
+        second <- service.issueEnrollmentToken(edgeId)
+        voided <- service.enroll(Some(edgeId), first.token, csr).flip
+        hashes <- env.tokens.hashes
+        enrolled <- service.enroll(Some(edgeId), second.token, csr)
+      yield assertTrue(
+        voided == EdgeIdentityService.InvalidToken,
+        // the first is forgotten, not kept beside the second
+        hashes.size == 1,
+        enrolled.chain.contains("BEGIN CERTIFICATE"),
+      )
+    },
     test("a token cannot be created for an edge that is not registered") {
       val env = Env(Nil)
       for
@@ -169,9 +271,9 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         service <- env.service
         issued <- service.issueEnrollmentToken(edgeId)
         csr <- csrFor(edge)
-        enrolledIdentity <- service.enroll(edgeId, issued.token, csr)
+        enrolledIdentity <- service.enroll(Some(edgeId), issued.token, csr)
         chain = enrolledIdentity.chain
-        again <- service.enroll(edgeId, issued.token, csr).flip
+        again <- service.enroll(Some(edgeId), issued.token, csr).flip
         recorded <- env.certificates.all
       yield assertTrue(
         chain.contains("BEGIN CERTIFICATE"),
@@ -184,10 +286,10 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = Env(List(edge))
       for
         service <- env.service
-        unregistered <- service.enroll(EdgeId("nobody"), "not-a-token", "garbage").flip
-        registered <- service.enroll(edgeId, "not-a-token", "garbage").flip
+        unregistered <- service.enroll(Some(EdgeId("nobody")), "not-a-token", "garbage").flip
+        registered <- service.enroll(Some(edgeId), "not-a-token", "garbage").flip
         right <- csrFor(edge)
-        registeredGoodRequest <- service.enroll(edgeId, "not-a-token", right).flip
+        registeredGoodRequest <- service.enroll(Some(edgeId), "not-a-token", right).flip
       yield assertTrue(
         unregistered == EdgeIdentityService.InvalidToken,
         registered == EdgeIdentityService.InvalidToken,
@@ -200,8 +302,8 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         service <- env.service
         issued <- service.issueEnrollmentToken(edgeId)
-        withToken <- service.enroll(edgeId, issued.token, "garbage").flip
-        stillGood <- csrFor(edge).flatMap(csr => service.enroll(edgeId, issued.token, csr))
+        withToken <- service.enroll(Some(edgeId), issued.token, "garbage").flip
+        stillGood <- csrFor(edge).flatMap(csr => service.enroll(Some(edgeId), issued.token, csr))
       yield assertTrue(withToken.isInstanceOf[EdgeIdentityService.Refused], stillGood.chain.contains("BEGIN CERTIFICATE"))
     },
     test("a token of another edge does not enrol this one") {
@@ -212,7 +314,7 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         service <- env.service
         issued <- service.issueEnrollmentToken(otherEdgeId)
         csr <- csrFor(edge)
-        failure <- service.enroll(edgeId, issued.token, csr).flip
+        failure <- service.enroll(Some(edgeId), issued.token, csr).flip
       yield assertTrue(failure == EdgeIdentityService.InvalidToken)
     },
     test("an expired token is refused the same way as an unknown one") {
@@ -223,8 +325,8 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         issued <- service.issueEnrollmentToken(edgeId)
         _ <- TestClock.adjust(EdgeIdentityService.TokenValidity + 1.second)
         csr <- csrFor(edge)
-        expired <- service.enroll(edgeId, issued.token, csr).flip
-        unknown <- service.enroll(edgeId, "not-a-token", csr).flip
+        expired <- service.enroll(Some(edgeId), issued.token, csr).flip
+        unknown <- service.enroll(Some(edgeId), "not-a-token", csr).flip
       yield assertTrue(expired == EdgeIdentityService.InvalidToken, unknown == EdgeIdentityService.InvalidToken)
     },
     test("a request that names something else is refused before the token is spent") {
@@ -235,9 +337,9 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         issued <- service.issueEnrollmentToken(edgeId)
         // asks for a group the edge is not in
         wrong <- csrFor(edgeRecord(edgeId, partnerGroup))
-        refused <- service.enroll(edgeId, issued.token, wrong).flip
+        refused <- service.enroll(Some(edgeId), issued.token, wrong).flip
         right <- csrFor(edge)
-        chain <- service.enroll(edgeId, issued.token, right)
+        chain <- service.enroll(Some(edgeId), issued.token, right)
       yield assertTrue(refused.isInstanceOf[EdgeIdentityService.Refused], chain.chain.contains("BEGIN CERTIFICATE"))
     },
     test("a certificate the CA returns with other names than asked is not handed to the edge") {
@@ -247,96 +349,47 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         service <- env.service
         issued <- service.issueEnrollmentToken(edgeId)
         csr <- csrFor(edge)
-        failure <- service.enroll(edgeId, issued.token, csr).flip
+        failure <- service.enroll(Some(edgeId), issued.token, csr).flip
         recorded <- env.certificates.all
       yield assertTrue(failure.isInstanceOf[EdgeIdentityService.Refused], recorded.isEmpty)
     },
-    test("by default an edge renews its way along past the maximum age, and central extends the chain itself") {
-      val edge = edgeRecord(edgeId)
-      val env = Env(List(edge))
+    // #549 decision 8: renewal is always on, for both kinds; a partner is stopped by suspending it, not by a chain's age.
+    test("an edge of either kind renews its way along, however old its enrollment: there is no chain that ends") {
+      val own = edgeRecord(edgeId)
+      val partner = partnerEdge(otherEdgeId)
+      val env = Env(List(own, partner))
       for
         service <- env.service
-        issued <- service.issueEnrollmentToken(edgeId)
-        enrolled <- csrFor(edge).flatMap(service.enroll(edgeId, issued.token, _))
+        issuedOwn <- service.issueEnrollmentToken(edgeId)
+        issuedPartner <- service.issueEnrollmentToken(otherEdgeId)
+        _ <- csrFor(own).flatMap(service.enroll(Some(edgeId), issuedOwn.token, _))
+        _ <- csrFor(partner).flatMap(service.enroll(Some(otherEdgeId), issuedPartner.token, _))
         _ <- TestClock.adjust(400.days)
-        late <- csrFor(edge).flatMap(service.renew(edgeId, _))
-        later <- TestClock.adjust(400.days) *> csrFor(edge).flatMap(service.renew(edgeId, _))
-        ends <- service.chainEnds
+        ownLate <- csrFor(own).flatMap(service.renew(edgeId, _))
+        partnerLate <- csrFor(partner).flatMap(service.renew(otherEdgeId, _))
+        _ <- TestClock.adjust(400.days)
+        partnerLater <- csrFor(partner).flatMap(service.renew(otherEdgeId, _))
       yield assertTrue(
-        enrolled.chainEndsAt.isEmpty,
-        late.chain.contains("BEGIN CERTIFICATE"),
-        late.chainEndsAt.isEmpty,
-        later.chain.contains("BEGIN CERTIFICATE"),
-        ends.isEmpty,
+        ownLate.chain.contains("BEGIN CERTIFICATE"),
+        partnerLate.chain.contains("BEGIN CERTIFICATE"),
+        partnerLater.chain.contains("BEGIN CERTIFICATE"),
       )
     },
-    suite("with auto-extend off, for a partner's edge")(
-      test("the operator's own edges are extended whatever the setting says") {
-        val edge = edgeRecord(edgeId)
-        val env = Env(List(edge), policy = CentralConfig.EdgeIdentityConfig(maxAge = 100.days, autoExtend = false))
-        for
-          service <- env.service
-          issued <- service.issueEnrollmentToken(edgeId)
-          enrolled <- csrFor(edge).flatMap(service.enroll(edgeId, issued.token, _))
-          _ <- TestClock.adjust(400.days)
-          late <- csrFor(edge).flatMap(service.renew(edgeId, _))
-          ends <- service.chainEnds
-        yield assertTrue(enrolled.chainEndsAt.isEmpty, late.chain.contains("BEGIN CERTIFICATE"), late.chainEndsAt.isEmpty, ends.isEmpty)
-      },
-      test("the edge is told when its chain ends, in the answer to the enrollment and to every renewal") {
-        val edge = partnerEdge(edgeId)
-        val env = Env(List(edge), policy = CentralConfig.EdgeIdentityConfig(maxAge = 100.days, autoExtend = false))
-        for
-          service <- env.service
-          issued <- service.issueEnrollmentToken(edgeId)
-          now <- Clock.instant
-          enrolled <- csrFor(edge).flatMap(service.enroll(edgeId, issued.token, _))
-          _ <- TestClock.adjust(30.days)
-          renewed <- csrFor(edge).flatMap(service.renew(edgeId, _))
-          ends <- service.chainEnds
-        yield assertTrue(
-          enrolled.chainEndsAt == Some(now.plusSeconds(100 * 86400L)),
-          renewed.chainEndsAt == enrolled.chainEndsAt,
-          ends == Map(edgeId -> now.plusSeconds(100 * 86400L)),
-        )
-      },
-      test("at the maximum age renewal stops, with what to do, and an operator's extension makes it go on") {
-        val edge = partnerEdge(edgeId)
-        val env = Env(List(edge), policy = CentralConfig.EdgeIdentityConfig(maxAge = 100.days, autoExtend = false))
-        for
-          service <- env.service
-          issued <- service.issueEnrollmentToken(edgeId)
-          _ <- csrFor(edge).flatMap(service.enroll(edgeId, issued.token, _))
-          _ <- TestClock.adjust(101.days)
-          refused <- csrFor(edge).flatMap(service.renew(edgeId, _)).flip
-          _ <- service.extend(edgeId)
-          extended <- csrFor(edge).flatMap(service.renew(edgeId, _))
-          ends <- service.chainEnds
-          now <- Clock.instant
-        yield assertTrue(
-          refused.isInstanceOf[EdgeIdentityService.Refused],
-          refused.getMessage.contains("/configuration/edges/extend"),
-          refused.getMessage.contains("enrol it again"),
-          extended.chain.contains("BEGIN CERTIFICATE"),
-          ends == Map(edgeId -> now.plusSeconds(100 * 86400L)),
-        )
-      },
-      test("an edge that is not registered cannot be extended") {
-        val env = Env(Nil, policy = CentralConfig.EdgeIdentityConfig(autoExtend = false))
-        for
-          service <- env.service
-          failure <- service.extend(edgeId).flip
-        yield assertTrue(failure.isInstanceOf[EdgeIdentityService.Refused])
-      },
-    ),
-    test("an edge that has no chain recorded, enrolled before chains were kept, starts one with its first renewal") {
-      val edge = partnerEdge(edgeId)
-      val env = Env(List(edge), policy = CentralConfig.EdgeIdentityConfig(maxAge = 100.days, autoExtend = false))
+    test("a partner's edge is asked a certificate of edge-certificates.partner-validity, a first-party edge the global validity") {
+      val own = edgeRecord(edgeId)
+      val partner = partnerEdge(otherEdgeId)
+      val issuer = RecordingIssuer()
+      val env = Env(
+        List(own, partner),
+        issuer,
+        TestCentralConfig.config.copy(edgeCertificates = Some(CentralConfig.ClientCertificatesConfig(validity = 30.days, partnerValidity = 7.days))),
+      )
       for
         service <- env.service
-        now <- Clock.instant
-        renewed <- csrFor(edge).flatMap(service.renew(edgeId, _))
-      yield assertTrue(renewed.chainEndsAt == Some(now.plusSeconds(100 * 86400L)))
+        _ <- csrFor(own).flatMap(service.renew(edgeId, _))
+        _ <- csrFor(partner).flatMap(service.renew(otherEdgeId, _))
+        asked <- issuer.validities.get
+      yield assertTrue(asked == Vector(CentralConfig.ClientCertificatesConfig().validity, 7.days))
     },
     test("an enrollment token is valid for an hour unless asked for longer, and for no more than a day") {
       val env = Env(List(edgeRecord(edgeId)))
@@ -361,9 +414,301 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         service <- env.service
         issued <- service.issueEnrollmentToken(edgeId)
         csr <- csrFor(edge)
-        chain <- service.enroll(edgeId, issued.token, csr)
+        chain <- service.enroll(Some(edgeId), issued.token, csr)
       yield assertTrue(chain.chain.contains("BEGIN CERTIFICATE"))
     },
+    test("an edge of a suspended partner is given no certificate, and keeps its token") {
+      val edge = edgeRecord(edgeId, partnerGroup, EdgeGroupKind.Partner)
+      val env = Env(List(edge), partnerStatus = PartnerStatus.Suspended)
+      for
+        service <- env.service
+        issued <- service.issueEnrollmentToken(edgeId)
+        csr <- csrFor(edge)
+        refused <- service.enroll(Some(edgeId), issued.token, csr).flip
+        certificates <- env.certificates.all
+      yield assertTrue(refused == EdgeIdentityService.PartnerSuspended, certificates.isEmpty)
+    },
+    suite("one token (#962)")(
+      test("a token says where to enrol: vtk1.<address>.<secret>, of which only the hash is kept") {
+        val env = Env(List(keylessPartnerEdge(edgeId)), config = withAddresses)
+        for
+          service <- env.service
+          issued <- service.issueEnrollmentToken(edgeId, 24.hours)
+          hashes <- env.tokens.hashes
+          parsed = EnrollmentToken.parse(issued.token)
+        yield assertTrue(
+          issued.token.startsWith("vtk1."),
+          parsed.map(_.enrollUrl) == Right("https://central.example.com"),
+          parsed.exists(_.secret.nonEmpty),
+          // the hash is of the whole string: that is what the edge sends back
+          hashes == Set(sha256(issued.token)),
+          !issued.token.contains(hashes.head),
+        )
+      },
+      test("without a public enrollment address the token is the bare secret, as before") {
+        val env = Env(List(edgeRecord(edgeId)))
+        for
+          service <- env.service
+          issued <- service.issueEnrollmentToken(edgeId)
+        yield assertTrue(!issued.token.startsWith("vtk1."), EnrollmentToken.parse(issued.token).isLeft)
+      },
+      test("a partner's edge enrols with its own public key: the token alone says which edge, the key is registered for it") {
+        val edge = keylessPartnerEdge(otherEdgeId)
+        val env = Env(List(edge), config = withAddresses)
+        for
+          service <- env.service
+          _ <- env.edgeService.setSigningKey.succeedsWith(true)
+          issued <- service.issueEnrollmentToken(otherEdgeId, 24.hours)
+          csr <- csrFor(edge)
+          identity <- service.enroll(None, issued.token, csr, Some(keyA))
+          again <- csrFor(edge).flatMap(service.enroll(None, issued.token, _, Some(keyA))).flip
+        yield assertTrue(
+          identity.edge.id == otherEdgeId,
+          identity.edge.groupId == partnerGroup,
+          identity.chain.contains("BEGIN CERTIFICATE"),
+          env.edgeService.setSigningKey.calls == List((otherEdgeId, keyA)),
+          // single use
+          again == EdgeIdentityService.InvalidToken,
+        )
+      },
+      test("an edge registered without a key is refused an enrolment that brings none, and keeps its token") {
+        val edge = keylessPartnerEdge(otherEdgeId)
+        val env = Env(List(edge))
+        for
+          service <- env.service
+          _ <- env.edgeService.setSigningKey.succeedsWith(true)
+          issued <- service.issueEnrollmentToken(otherEdgeId)
+          csr <- csrFor(edge)
+          refused <- service.enroll(None, issued.token, csr).flip
+          // the token was not spent: the same one enrols once the key is there
+          enrolled <- service.enroll(None, issued.token, csr, Some(keyA))
+          certificates <- env.certificates.all
+        yield assertTrue(
+          refused.isInstanceOf[EdgeIdentityService.Refused],
+          enrolled.chain.contains("BEGIN CERTIFICATE"),
+          certificates.size == 1,
+        )
+      },
+      test("a key that is registered already is refused: the edge's own, and another edge's under any name") {
+        val withKey = partnerEdge(otherEdgeId).copy(publicKey = Some(keyB))
+        val keyless = keylessPartnerEdge(edgeId)
+        val env = Env(List(withKey, keyless))
+        for
+          service <- env.service
+          _ <- env.edgeService.setSigningKey.succeedsWith(true)
+          issuedWithKey <- service.issueEnrollmentToken(otherEdgeId)
+          issuedKeyless <- service.issueEnrollmentToken(edgeId)
+          csrWithKey <- csrFor(withKey)
+          csrKeyless <- csrFor(keyless)
+          // an edge that has a key does not take another through an enrolment
+          own <- service.enroll(None, issuedWithKey.token, csrWithKey, Some(keyA)).flip
+          // and a key another edge has (the old one is just as taken) is not registered twice
+          _ <- env.edgeService.getAllEdges.succeedsWith(Vector(withKey, keyless.copy(publicKey = None)))
+          sameAsOther <- service.enroll(None, issuedKeyless.token, csrKeyless, Some(publicJwk("another-name", pairB))).flip
+          certificates <- env.certificates.all
+        yield assertTrue(
+          own.isInstanceOf[EdgeIdentityService.Refused],
+          sameAsOther.isInstanceOf[EdgeIdentityService.Refused],
+          env.edgeService.setSigningKey.calls.isEmpty,
+          certificates.isEmpty,
+        )
+      },
+      test("a key that is not a public key central can trust is refused before the token is spent") {
+        val edge = keylessPartnerEdge(otherEdgeId)
+        val env = Env(List(edge))
+        for
+          service <- env.service
+          issued <- service.issueEnrollmentToken(otherEdgeId)
+          csr <- csrFor(edge)
+          leaked <- service.enroll(None, issued.token, csr, Some(privateJwk)).flip
+          small <- service.enroll(None, issued.token, csr, Some(smallJwk)).flip
+          garbage <- service.enroll(None, issued.token, csr, Some(Json.Obj("kty" -> Json.Str("oct")))).flip
+          unnamed <- service.enroll(None, issued.token, csr, Some(Json.Obj(keyA.fields.filterNot(_._1 == "kid")*))).flip
+          _ <- env.edgeService.setSigningKey.succeedsWith(true)
+          fine <- service.enroll(None, issued.token, csr, Some(keyA))
+        yield assertTrue(
+          leaked.isInstanceOf[EdgeIdentityService.Refused],
+          leaked.getMessage.contains("public"),
+          small.isInstanceOf[EdgeIdentityService.Refused],
+          garbage.isInstanceOf[EdgeIdentityService.Refused],
+          unnamed.isInstanceOf[EdgeIdentityService.Refused],
+          fine.chain.contains("BEGIN CERTIFICATE"),
+        )
+      },
+      test("an edge enrolling with the token alone sends a request that names nothing: the signature is checked, the names are central's") {
+        val edge = keylessPartnerEdge(otherEdgeId)
+        val issuer = RecordingIssuer()
+        val env = Env(List(edge), issuer = issuer)
+        val anonymous = CertificateSubject("CN=enrolling", "enrolling", Nil, Nil, Nil, Nil)
+        for
+          service <- env.service
+          _ <- env.edgeService.setSigningKey.succeedsWith(true)
+          issued <- service.issueEnrollmentToken(otherEdgeId)
+          generated <- CertificateSubject.generate(anonymous).orDie
+          enrolled <- service.enroll(None, issued.token, generated.csrPem, Some(keyA))
+          requests <- issuer.requests.get
+        yield assertTrue(
+          enrolled.chain.contains("BEGIN CERTIFICATE"),
+          // central tells the CA what to name the certificate, whatever the request carries
+          requests.map(_.subjectDn) == Vector(Some(EdgeIdentityService.subjectFor(edge).distinguishedName)),
+          requests.head.uris == EdgeIdentityService.subjectFor(edge).uris,
+        )
+      },
+      test("a token-resolved enrolment still needs a request signed by its own key, in a key worth issuing for") {
+        val edge = keylessPartnerEdge(otherEdgeId)
+        val env = Env(List(edge))
+        for
+          service <- env.service
+          issued <- service.issueEnrollmentToken(otherEdgeId)
+          garbage <- service.enroll(None, issued.token, "not a request", Some(keyA)).flip
+          // a request signed by another key than the one it names is made by editing one: here, a request with its signature cut
+          good <- CertificateSubject.generate(CertificateSubject("CN=enrolling", "enrolling", Nil, Nil, Nil, Nil)).orDie
+          tampered = good.csrPem.replace(
+            "\n",
+            "",
+          ).dropRight(60).grouped(64).mkString("-----BEGIN CERTIFICATE REQUEST-----\n", "\n", "\n-----END CERTIFICATE REQUEST-----\n")
+          broken <- service.enroll(None, issued.token, tampered, Some(keyA)).flip
+        yield assertTrue(garbage.isInstanceOf[EdgeIdentityService.Refused], broken.isInstanceOf[EdgeIdentityService.Refused])
+      },
+      test("an edge that names itself in the body is still held to naming exactly itself") {
+        val edge = keylessPartnerEdge(otherEdgeId)
+        val issuer = RecordingIssuer()
+        val env = Env(List(edge), issuer = issuer)
+        for
+          service <- env.service
+          _ <- env.edgeService.setSigningKey.succeedsWith(true)
+          issued <- service.issueEnrollmentToken(otherEdgeId)
+          anonymous <- CertificateSubject.generate(CertificateSubject("CN=enrolling", "enrolling", Nil, Nil, Nil, Nil)).orDie
+          refused <- service.enroll(Some(otherEdgeId), issued.token, anonymous.csrPem, Some(keyA)).flip
+          csr <- csrFor(edge)
+          enrolled <- service.enroll(Some(otherEdgeId), issued.token, csr, Some(keyA))
+          requests <- issuer.requests.get
+        yield assertTrue(
+          refused.isInstanceOf[EdgeIdentityService.Refused],
+          enrolled.chain.contains("BEGIN CERTIFICATE"),
+          requests.map(_.subjectDn) == Vector(None),
+        )
+      },
+      // Owner requirement: a partner has no way to choose first-party, and the operator's edge none to join a partner's group.
+      test("a request that names the other kind of group is refused, whichever way: the token's edge decides the group") {
+        val partner = keylessPartnerEdge(otherEdgeId)
+        val own = edgeRecord(edgeId).copy(publicKey = None)
+        val env = Env(List(partner, own))
+        for
+          service <- env.service
+          _ <- env.edgeService.setSigningKey.succeedsWith(true)
+          partnerToken <- service.issueEnrollmentToken(otherEdgeId)
+          ownToken <- service.issueEnrollmentToken(edgeId)
+          // the partner edge's token, a request for the same edge in the operator's group (and the reverse), naming the edge itself
+          asFirstParty <- csrFor(partner.copy(groupId = EdgeGroup.DefaultId, groupKind = EdgeGroupKind.FirstParty))
+          asPartner <- csrFor(own.copy(groupId = partnerGroup, groupKind = EdgeGroupKind.Partner))
+          partnerAsFirstParty <- service.enroll(Some(otherEdgeId), partnerToken.token, asFirstParty, Some(keyA)).flip
+          firstPartyAsPartner <- service.enroll(Some(edgeId), ownToken.token, asPartner, Some(keyB)).flip
+          // a token of one kind used with the other kind's edge id
+          crossed <- service.enroll(Some(edgeId), partnerToken.token, asPartner, Some(keyA)).flip
+          certificates <- env.certificates.all
+        yield assertTrue(
+          partnerAsFirstParty.isInstanceOf[EdgeIdentityService.Refused],
+          firstPartyAsPartner.isInstanceOf[EdgeIdentityService.Refused],
+          crossed == EdgeIdentityService.InvalidToken,
+          certificates.isEmpty,
+          env.edgeService.setSigningKey.calls.isEmpty,
+        )
+      },
+      test("an enrolment with the token alone is issued the names of the token's edge and group, whatever group its request names") {
+        val partner = keylessPartnerEdge(otherEdgeId)
+        val own = edgeRecord(edgeId).copy(publicKey = None)
+        val issuer = RecordingIssuer()
+        val env = Env(List(partner, own), issuer = issuer)
+        for
+          service <- env.service
+          _ <- env.edgeService.setSigningKey.succeedsWith(true)
+          partnerToken <- service.issueEnrollmentToken(otherEdgeId)
+          ownToken <- service.issueEnrollmentToken(edgeId)
+          // each request names the OTHER kind of group, with the right edge name
+          namesFirstParty <- csrFor(partner.copy(groupId = EdgeGroup.DefaultId, groupKind = EdgeGroupKind.FirstParty))
+          namesPartner <- csrFor(own.copy(groupId = partnerGroup, groupKind = EdgeGroupKind.Partner))
+          _ <- service.enroll(None, partnerToken.token, namesFirstParty, Some(keyA))
+          _ <- service.enroll(None, ownToken.token, namesPartner, Some(keyB))
+          requests <- issuer.requests.get
+        yield assertTrue(
+          requests.map(_.uris) == Vector(
+            List("urn:versola:edge:edge-b", "urn:versola:edge-group:partner-acme"),
+            List("urn:versola:edge:edge-a", "urn:versola:edge-group:default"),
+          ),
+          requests.forall(_.subjectDn.isDefined),
+        )
+      },
+      test("a token for another edge enrols nothing, with the right key and the wrong name") {
+        val one = keylessPartnerEdge(edgeId)
+        val other = keylessPartnerEdge(otherEdgeId)
+        val env = Env(List(one, other))
+        for
+          service <- env.service
+          _ <- env.edgeService.setSigningKey.succeedsWith(true)
+          issued <- service.issueEnrollmentToken(edgeId)
+          csr <- csrFor(other)
+          refused <- service.enroll(Some(otherEdgeId), issued.token, csr, Some(keyA)).flip
+        yield assertTrue(
+          refused == EdgeIdentityService.InvalidToken,
+          env.edgeService.setSigningKey.calls.isEmpty,
+        )
+      },
+      test("a suspended partner's edge is not enrolled and registers no key") {
+        val edge = keylessPartnerEdge(otherEdgeId)
+        val env = Env(List(edge), partnerStatus = PartnerStatus.Suspended)
+        for
+          service <- env.service
+          issued <- service.issueEnrollmentToken(otherEdgeId)
+          csr <- csrFor(edge)
+          refused <- service.enroll(None, issued.token, csr, Some(keyA)).flip
+        yield assertTrue(refused == EdgeIdentityService.PartnerSuspended, env.edgeService.setSigningKey.calls.isEmpty)
+      },
+      test("a CA that fails costs the token and not the key: nothing is registered for an edge that got no certificate") {
+        val edge = keylessPartnerEdge(otherEdgeId)
+        val env = Env(List(edge), issuer = lyingIssuer)
+        for
+          service <- env.service
+          issued <- service.issueEnrollmentToken(otherEdgeId)
+          csr <- csrFor(edge)
+          refused <- service.enroll(None, issued.token, csr, Some(keyA)).flip
+        yield assertTrue(refused.isInstanceOf[EdgeIdentityService.Refused], env.edgeService.setSigningKey.calls.isEmpty)
+      },
+      test("renewal with a new public key replaces the edge's key once the certificate is signed") {
+        val edge = partnerEdge(otherEdgeId)
+        val env = Env(List(edge))
+        for
+          service <- env.service
+          _ <- env.edgeService.replaceSigningKey.succeedsWith(true)
+          csr <- csrFor(edge)
+          identity <- service.renew(otherEdgeId, csr, None, Some(keyA))
+          withoutKey <- csrFor(edge).flatMap(service.renew(otherEdgeId, _))
+        yield assertTrue(
+          identity.chain.contains("BEGIN CERTIFICATE"),
+          withoutKey.chain.contains("BEGIN CERTIFICATE"),
+          // the second renewal brought no key and left the key alone
+          env.edgeService.replaceSigningKey.calls == List((otherEdgeId, keyA)),
+        )
+      },
+      test("renewal with a key central cannot accept, or that another edge has, signs nothing and replaces nothing") {
+        val edge = partnerEdge(otherEdgeId)
+        val other = partnerEdge(edgeId).copy(publicKey = Some(keyB))
+        val env = Env(List(edge, other))
+        for
+          service <- env.service
+          _ <- env.edgeService.replaceSigningKey.succeedsWith(true)
+          csr <- csrFor(edge)
+          leaked <- service.renew(otherEdgeId, csr, None, Some(privateJwk)).flip
+          taken <- service.renew(otherEdgeId, csr, None, Some(keyB)).flip
+          certificates <- env.certificates.all
+        yield assertTrue(
+          leaked.isInstanceOf[EdgeIdentityService.Refused],
+          taken.isInstanceOf[EdgeIdentityService.Refused],
+          certificates.isEmpty,
+          env.edgeService.replaceSigningKey.calls.isEmpty,
+        )
+      },
+    ),
     test("renewal answers the edge's own request with a new certificate, and refuses another name") {
       val edge = edgeRecord(edgeId)
       val env = Env(List(edge))

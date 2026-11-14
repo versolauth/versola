@@ -412,7 +412,13 @@ paths:
         3. checks that the caller's roles (or, for a client-credentials token, its client)
            are permitted to call that endpoint (`403` otherwise) and that the token's
            audience covers the resource;
-        4. fetches `userinfo` from Auth when the endpoint asks for it;
+        4. fetches `userinfo` from Auth when the endpoint asks for it. For a token out of the
+           `EDGE_SESSION` cookie, edge first refreshes the session when the token is bound to
+           a client certificate other than the one this edge presents for the client (the
+           certificate was renewed, or the session started on another edge of the group), and
+           answers a `401` from Auth with one refresh and one more call. A request refreshes
+           the session once at most; a token from an `Authorization` header is never
+           refreshed;
         5. evaluates the endpoint's CEL rules and step-up requirements — the required `acr`
            and a maximum authentication age (`401` with `insufficient_user_authentication`
            when unmet);
@@ -423,6 +429,11 @@ paths:
         `Set-Cookie` headers from the upstream are stripped. The body of the upstream
         response and its status are otherwise returned unchanged, so the responses below
         list only the statuses edge itself produces.
+
+        A request that refreshed the session sets the rotated `EDGE_SESSION` cookie on its
+        response whatever the status (the upstream's, or a `401`, `403`, `404`, `429` or
+        `5xx` of edge's own), except where the response clears the cookie because the
+        session is over, and where the refreshed token turned out to be revoked.
       tags: [Proxy]
       security: &proxySecurity
         - bearer: []
@@ -452,6 +463,11 @@ paths:
 
             When the session could not be refreshed, a `Location` header names where to sign
             in again and the session cookie is cleared.
+
+            A `401` with neither header for a cookie session can also mean that another edge
+            of the group refreshed the session at the same moment and its token is bound to
+            that edge's certificate: the response sets the rotated cookie and the same request,
+            repeated, succeeds.
           headers:
             WWW-Authenticate:
               schema:
@@ -464,7 +480,9 @@ paths:
               schema:
                 type: string
             Set-Cookie:
-              description: An expiring `EDGE_SESSION`, when the session could not be refreshed.
+              description: |
+                An expiring `EDGE_SESSION`, when the session could not be refreshed; the
+                rotated `EDGE_SESSION`, when this request refreshed it.
               schema:
                 type: string
         '403':

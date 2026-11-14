@@ -215,7 +215,14 @@ builds (`npm run build` runs `vite build` and `vite build --mode partner`), each
 partner's `versola-partner.js` shares no chunk with `versola-admin.js`. The guarantee is on the output:
 `npm run check:bundles` (a CI step after the build) fails if `dist` holds anything but those two files or the
 partner file mentions `/configuration/`, `/users/`, `permissions/me` or `/central/`, so a shared util cannot
-carry an operator path into a partner's browser. Reference: `partner-app.ts`, `partner-navigation.ts`, `views/partner-no-access.ts`.
+carry an operator path into a partner's browser. **A partner has no way to choose, or see, "first-party"** as an edge, a group
+kind, an owner or a binding: the edge fixes the group from the partner's certificate, so Add edge takes an ID and a public URL, the
+client wizard has no owner or edge field, and the group is only told, as a locked row. Three guards keep it so: a unit test greps the
+sources of `src/partner` and of every file it imports (`no-first-party.test.ts`) and the built file when there is one, `check:bundles`
+greps the built partner file for `first-party`, `groupKind`, the Owner step's copy, and a Playwright spec walks every view, editor and
+wizard step, shadow roots included (`tests/partner-console/no-first-party.spec.ts`); after each partner-console spec, every write its
+page sent is checked against the contract table in `tests/partner-console/write-contract.ts` (only contract fields, never a group, a
+group kind, an owner, a binding or a party). Reference: `partner-app.ts`, `partner-navigation.ts`, `views/partner-no-access.ts`.
 
 Page header: `content-header` with `title`, an optional `description` (one line under the title)
 and the single primary action in its `actions` slot. A record page uses `versola-record-header`
@@ -344,6 +351,9 @@ carries both zones in its `title`; a flag emoji is always followed by the countr
 `versola-side-panel` with `overlay` (the panel covers the page instead of making room for it, because the table is wide). A scrollable table
 wrapper that has nothing focusable inside is `tabindex="0"` with a role and a name, so a keyboard user can scroll it.
 Reference: `user-activity.ts`; tests `tests/user-activity.spec.ts`.
+The other times of the user page (devices, sessions, passkeys; `when()` in `user-record.ts`) are read in the browser's own zone through the same
+`utils/date-format.ts`, in the same English text in every browser, each with the offset in force at that time (`Nov 4, 14:50 (UTC+5)`,
+`Nov 4, 09:50 UTC`); a date alone has none. Tests `tests/local-times.spec.ts`.
 
 **Record that is its own editor (Forms, Themes).** A record whose whole content is an editor keeps the
 record header (ID as the title, kind, status chips) and skips the view-then-edit step: the page is the
@@ -381,13 +391,24 @@ reason), and a review step in the page's own groups with `Change` back to the st
 Reference: `client-form.ts`.
 
 **Owner step and fixed rows (client wizard).** A client is owned by the operator or by a partner. The first
-step of the wizard asks for the owner above the kind cards (`Operator` or `Partner` with a typeahead of
-partners; a suspended one is listed as "suspended"). Choosing a partner does not hide fields, it fixes them:
+step of the wizard asks the type first (the kind cards and the plan the type sets) and the owner below them,
+right above the action row (`First-party` or `Partner` with a typeahead of partners; a suspended one is
+listed as "suspended"); the plan under the cards follows the owner chosen below it ("Web app, owned by
+<partner>, sets:"). The review lists Owner after Type. Choosing a partner does not hide fields, it fixes them:
 the service kind is disabled with its reason, and the plan under the cards lists the rules as locked rows
-(lock icon, text, reason): the group certificate or private_key_jwt the partner uses, served by the edges of
-its group, PAR, certificate-bound tokens off, and for a device client DPoP on (the device holds its tokens, so
+(lock icon, text, reason): the group certificate or private_key_jwt the partner uses (with a note that it may
+also use the other, when its limits allow both), served by the edges of
+its group, PAR, certificate-bound tokens (with the group certificate; bearer with a key), and for a device client DPoP on (the device holds its tokens, so
 DPoP is their only sender-constraint; DPoP-bound tokens live at least an hour, so a partner whose access token
-cap is lower is told to raise it first) and App Link redirects, and the token lifetime cap. A partner is held to the same limits as the operator's own clients: central's rule (an access token lives at most 24 hours, at least 1 hour when DPoP-bound) applies in the wizard, the record's editor, the defaults in Settings and the partner API, and the operator's cap can only narrow it (`partnerAccessTtlError`). Scopes and redirect URIs are filtered to the partner's limits; a URI outside its
+cap is lower is told to raise it first) and App Link redirects, and the token lifetime cap. **One fact appears once on the step:** the
+type panel keeps the protocol facts, and the Owner section keeps only what the type panel does not say (consent
+required and names the partner, scopes within the partner's list, redirect URIs under its domains, a suspended
+partner). **Consent follows from the owner and from nothing else:** a first-party client has no consent at all (the
+owner hint says users are not asked), so step 3 shows no consent section and the wizard has no switch for one; a
+partner's client always has one, and step 3 shows its Consent section (settings and branding). Switching the owner back
+to First-party drops the consent flow and the theme set for the partner. The client record shows the owner as read-only
+text (`Owner` row of the Ownership card, which has no Edit for a client without consent); a client that has a consent
+flow keeps its consent settings editable under the same card, with the owner above them as text. A partner is held to the same limits as the operator's own clients: central's rule (an access token lives at most 24 hours, at least 1 hour when DPoP-bound) applies in the wizard, the record's editor, the defaults in Settings and the partner API, and the operator's cap can only narrow it (`partnerAccessTtlError`). Scopes and redirect URIs are filtered to the partner's limits; a URI outside its
 domains and a refresh lifetime above its cap are refused inline (the typed value stays as typed), not clamped and not found out after submit. The same locked-row
 treatment is how the partner console shows what the operator set (`Operator` / `Your group` marks on record
 rows, `plan-line` in the editors). Reference: `client-form.ts` (`renderOwnerSection`, `applyPartnerRules`),
@@ -396,7 +417,7 @@ rows, `plan-line` in the editors). Reference: `client-form.ts` (`renderOwnerSect
 **Approval diff.** A partner's request (a new client, a change) is a record in the operator's Approvals tab:
 the requested values against the registered ones in a `role="group"` named "Requested against registered",
 one `.diff-row[data-field]` per field (`display: contents` rows so the grid stays one table: label, registered,
-requested), and a mark on each requested cell, `within limits` or `needs operator`. A field that appears on
+requested; the cells' padding and separators are set on `.diff-row > div`, since a rule on `.diff > div` reaches only the header), and a mark on each requested cell, `within limits` or `needs operator`. A field that appears on
 the consent screen (name, logo, scopes) is always `needs operator`, whatever the limits say. Under the diff:
 the consent preview (`client-consent-preview` when central has a consent form, a static sketch otherwise),
 a note field, and `Approve as requested`, `Approve with overrides…` (the rows that need the operator become

@@ -94,6 +94,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     enrollEdgeClientCertificate = false,
     themeOverrides = None,
     estEnrollment = false,
+    partnerId = None,
   )
 
   /** What the web endpoint registers the general request as: its kind recorded. */
@@ -181,6 +182,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       createdAt = registeredAt,
       themeOverrides = None,
       applicationType = ApplicationType.web,
+      partnerId = None,
+      approval = ClientApproval.Approved,
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -218,6 +221,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       createdAt = registeredAt,
       themeOverrides = None,
       applicationType = ApplicationType.web,
+      partnerId = None,
+      approval = ClientApproval.Approved,
     ),
   )
 
@@ -255,6 +260,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     edgeSigningKey = None,
     edgeClientCertificate = None,
     estEnrollment = false,
+    partnerId = None,
   )
 
   private val partnerTheme =
@@ -287,6 +293,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     dpopMinRsaKeySize = None,
     mtlsAuth = None,
     edgeClientCertificate = None,
+    partnerId = None,
   )
 
   private val createServiceRequest = CreateServiceClientRequest(
@@ -511,6 +518,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 kind = ClientKind.web,
                 themeOverrides = None,
                 est = None,
+                partnerId = None,
+                approval = ClientApproval.Approved,
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
@@ -546,6 +555,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 kind = ClientKind.web,
                 themeOverrides = None,
                 est = None,
+                partnerId = None,
+                approval = ClientApproval.Approved,
               ),
             ),
           ),
@@ -658,7 +669,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         for
           body <- response.body.asJson[CreateClientResponse]
         yield assertTrue(
-          service.registerClient.calls == List((registeredAsWeb(createRequest), None, true)),
+          service.registerClient.calls == List((registeredAsWeb(createRequest), None, true, ClientApproval.Approved, false)),
           // The registration time is the service's, handed back as it recorded it.
           body == CreateClientResponse(Some(Base64Url.encode(rotatedSecret)), registeredAt, None),
         ),
@@ -741,7 +752,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.findClient.succeedsWith(clients.headOption) *> service.updateClient.succeedsWith(()),
       verify = (_, service, _) =>
         ZIO.succeed(
-          assertTrue(service.updateClient.calls == List((updateRequest, true, false))),
+          assertTrue(service.updateClient.calls == List((updateRequest, true, false, false))),
         ),
     ),
     controllerTestCase(
@@ -794,7 +805,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.findClient.succeedsWith(clients.headOption) *> service.updateClient.succeedsWith(()),
       verify = (_, service, _) =>
         ZIO.succeed(
-          assertTrue(service.updateClient.calls == List((updateRequest.copy(frontChannelLogoutUri = Some(Patch.Deleted)), true, false))),
+          assertTrue(service.updateClient.calls == List((updateRequest.copy(frontChannelLogoutUri = Some(Patch.Deleted)), true, false, false))),
         ),
     ),
     controllerTestCase(
@@ -924,7 +935,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = _.registerClient.succeedsWith(RegisteredClient(Some(rotatedSecret), registeredAt, None)),
       verify = (_, service, _) =>
         ZIO.succeed(assertTrue(
-          service.registerClient.calls == List((createWebRequest.toCreateClientRequest, None, true)),
+          service.registerClient.calls == List((createWebRequest.toCreateClientRequest, None, true, ClientApproval.Approved, false)),
           createWebRequest.toCreateClientRequest.template == Some(ClientTemplate(ClientKind.web)),
           createWebRequest.toCreateClientRequest.applicationType == Some(ApplicationType.web),
         )),
@@ -1009,6 +1020,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
           service.updateClient.calls == List((
             UpdateWebClientRequest.of(clientId).copy(accessTokenTtl = Some(900L)).toUpdateClientRequest,
             true,
+            false,
             false,
           )),
         )),

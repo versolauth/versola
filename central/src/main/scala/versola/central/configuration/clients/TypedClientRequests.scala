@@ -1,6 +1,7 @@
 package versola.central.configuration.clients
 
 import versola.central.configuration.*
+import versola.central.configuration.partners.PartnerId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
@@ -63,6 +64,8 @@ case class CreateWebClientRequest(
     enrollEdgeClientCertificate: Boolean,
     themeOverrides: Option[ThemeOverrides],
     estEnrollment: Boolean,
+    /** The partner that owns the client (#549); absent for a first-party one. */
+    partnerId: Option[PartnerId],
 ) derives Schema, JsonCodec:
   def toCreateClientRequest: CreateClientRequest =
     CreateClientRequest(
@@ -102,6 +105,7 @@ case class CreateWebClientRequest(
       enrollEdgeClientCertificate,
       themeOverrides,
       estEnrollment = estEnrollment,
+      partnerId = partnerId,
     )
 
 /** An app installed on a device, which holds a DPoP key of its own and no credential. Either
@@ -139,6 +143,8 @@ case class CreateNativeClientRequest(
     issueEdgeClientCertificate: Boolean,
     enrollEdgeClientCertificate: Boolean,
     themeOverrides: Option[ThemeOverrides],
+    /** The partner that owns the client (#549); absent for a first-party one. */
+    partnerId: Option[PartnerId],
 ) derives Schema, JsonCodec:
   def toCreateClientRequest: CreateClientRequest =
     CreateClientRequest(
@@ -181,6 +187,7 @@ case class CreateNativeClientRequest(
       enrollEdgeClientCertificate,
       themeOverrides,
       estEnrollment = false,
+      partnerId = partnerId,
     )
 
 /** Code calling an API on its own behalf, with no user present: no redirect URIs, sign-in flow,
@@ -241,6 +248,9 @@ case class CreateServiceClientRequest(
       enrollEdgeClientCertificate = false,
       themeOverrides = None,
       estEnrollment = estEnrollment,
+      // never a partner's: a partner owns apps that sign the operator's users in, and a body naming `partnerId` here is refused
+      // (400) like any member a kind does not have
+      partnerId = None,
     )
 
 // An update names the client and what changes. The client's kind, its `authMethod` and what a

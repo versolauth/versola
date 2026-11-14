@@ -142,6 +142,7 @@ const clients: ClientDto[] = [
 // ── Partner (#549): Pilot Pay runs its own edge and owns two clients and one resource inside the tenant ──
 export const pilotPay: PartnerDto = {
   id: 'pilot-pay',
+  version: 1,
   tenantId: tenant,
   displayName: 'Pilot Pay',
   logoUri: 'https://pay.pilotpay.example/brand/pilot-pay.svg',
@@ -154,8 +155,7 @@ export const pilotPay: PartnerDto = {
     maxEdges: 3,
     accessTokenTtlMax: 24 * 60 * 60,
     refreshTokenTtlMax: 30 * 24 * 60 * 60,
-    clientAuthMethods: ['tls_client_auth', 'private_key_jwt'],
-    rateLimitPolicy: 'partner-default',
+    clientAuthMethods: ['tls_client_auth'],
   },
   groupId: 'pilot-pay',
   consoleClientId: 'pilot-pay-console',

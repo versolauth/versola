@@ -49,8 +49,7 @@
     "refreshTokenTtlMax": 86400,
     "clientAuthMethods": [
       "tls_client_auth"
-    ],
-    "rateLimitPolicy": "partner-default"
+    ]
   },
   "logoUri": "https://shop.example/logo.svg",
   "policyUri": "https://shop.example/privacy",

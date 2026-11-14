@@ -25,7 +25,8 @@ export type PartnerMe = {
 };
 
 export type PartnerClientKind = 'web' | 'native';
-export type PartnerClientAuthMethod = 'tls_client_auth' | 'private_key_jwt';
+/** A partner's client authenticates with the group certificate and nothing else; the operator's limit may still list other methods, the console shows none. */
+export type PartnerClientAuthMethod = 'tls_client_auth';
 
 export type PartnerClientApproval = {
   /** Whether the request is the client's creation or a change to an approved client: the console never infers it from `waitingFields`. */
@@ -141,6 +142,8 @@ export type StaffMember = {
 export type StaffInvite = { identifier: string; level: StaffLevel; expiresInDays: number };
 
 export type PartnerSettings = {
+  /** Of the settings as read. A save sends it back, and central refuses it when the settings changed since. */
+  version: number;
   contact: { email: string; phone?: string | null };
   /** What the console offers for a new client; every part may be absent (a fresh partner has none). Seconds for the lifetimes. */
   defaults: { backChannelLogoutUri?: string | null; accessTokenTtl?: number | null; refreshTokenTtl?: number | null };

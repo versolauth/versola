@@ -52,6 +52,86 @@ trait CentralAuditRepositorySpec extends DatabaseSpecBase[CentralAuditRepository
 
   override def testCases(env: CentralAuditRepositorySpec.Env) =
     List(
+      test("the rows of a partner are those whose details name it, newest first, narrowed by actor, kind and text, and paged by key") {
+        def about(n: Int, partner: String, actor: String, kind: String, target: String, at: Instant) =
+          event(n, at = at, userId = None).copy(
+            kind = AuditKind(kind),
+            actorType = CentralAudit.Actors.PartnerStaff,
+            actorId = Some(actor),
+            targetId = Some(target),
+            targetType = None,
+            details = Json.Obj("partnerId" -> Json.Str(partner)),
+          )
+        val first = about(11, "acme", "partner-staff:alice", "partner.client.create", "acme-app", day)
+        val second =
+          about(12, "acme", "partner-staff:bob", "partner.client.update", "acme-web", day.plusSeconds(60))
+        val third =
+          about(13, "acme", "partner-staff:alice", "partner.client.update", "acme-app", day.plusSeconds(120))
+        val foreign = about(
+          14,
+          "globex",
+          "partner-staff:carol",
+          "partner.client.create",
+          "globex-app",
+          day.plusSeconds(180),
+        )
+        val unrelated = event(15, userId = None)
+        for
+          _ <- env.repository.insertBatch(List(first, second, third, foreign, unrelated))
+          all <- env.repository.partnerEvents("acme", None, None, None, None, 10)
+          byActor <- env.repository.partnerEvents("acme", None, Some("partner-staff:alice"), None, None, 10)
+          byKind <- env.repository.partnerEvents("acme", None, None, Some("partner.client.create"), None, 10)
+          byText <- env.repository.partnerEvents("acme", None, None, None, Some("acme-web"), 10)
+          page <- env.repository.partnerEvents("acme", None, None, None, None, 2)
+          next <- env.repository.partnerEvents("acme", Some(CentralAuditRepository.Key(page.last.at, page.last.id)), None, None, None, 2)
+          nobody <- env.repository.partnerEvents("initech", None, None, None, None, 10)
+        yield assertTrue(
+          all.map(_.id) == List(third.id, second.id, first.id),
+          byActor.map(_.id) == List(third.id, first.id),
+          byKind.map(_.id) == List(first.id),
+          byText.map(_.id) == List(second.id),
+          page.map(_.id) == List(third.id, second.id),
+          next.map(_.id) == List(first.id),
+          nobody.isEmpty,
+        )
+      },
+      test("a partner's search text is text, not a pattern, and the operator's staff are not found through it") {
+        def about(n: Int, actorType: versola.util.audit.ActorType, actor: String, target: String, at: Instant) =
+          event(n, at = at, userId = None).copy(
+            kind = AuditKind("partner.client.create"),
+            actorType = actorType,
+            actorId = Some(actor),
+            targetId = Some(target),
+            targetType = None,
+            details = Json.Obj("partnerId" -> Json.Str("acme")),
+          )
+        val percent = about(21, CentralAudit.Actors.PartnerStaff, "partner-staff:alice", "100%-shop", day)
+        val plain =
+          about(22, CentralAudit.Actors.PartnerStaff, "partner-staff:bob", "1000-shop", day.plusSeconds(1))
+        val underscore =
+          about(23, CentralAudit.Actors.PartnerStaff, "partner-staff:carol", "a_b", day.plusSeconds(2))
+        val other = about(24, CentralAudit.Actors.PartnerStaff, "partner-staff:dave", "axb", day.plusSeconds(3))
+        val operator = about(25, CentralAudit.Actors.Admin, "secret-admin-id", "acme", day.plusSeconds(4))
+        for
+          _ <- env.repository.insertBatch(List(percent, plain, underscore, other, operator))
+          byPercent <- env.repository.partnerEvents("acme", None, None, None, Some("%"), 10)
+          byHundredPercent <- env.repository.partnerEvents("acme", None, None, None, Some("100%"), 10)
+          byUnderscore <- env.repository.partnerEvents("acme", None, None, None, Some("a_b"), 10)
+          byBang <- env.repository.partnerEvents("acme", None, None, None, Some("!"), 10)
+          // the operator's administrator is neither found by name nor filtered by id: the partner may not probe for them
+          byOperatorText <- env.repository.partnerEvents("acme", None, None, None, Some("secret-admin"), 10)
+          byOperatorActor <- env.repository.partnerEvents("acme", None, Some("secret-admin-id"), None, None, 10)
+          byStaff <- env.repository.partnerEvents("acme", None, Some("partner-staff:bob"), None, None, 10)
+        yield assertTrue(
+          byPercent.map(_.id) == List(percent.id),
+          byHundredPercent.map(_.id) == List(percent.id),
+          byUnderscore.map(_.id) == List(underscore.id),
+          byBang.isEmpty,
+          byOperatorText.isEmpty,
+          byOperatorActor.isEmpty,
+          byStaff.map(_.id) == List(plain.id),
+        )
+      },
       test("every field of an event comes back as it was written, the address and the payload included") {
         val written = event(1).copy(
           reason = Some("http_409"),

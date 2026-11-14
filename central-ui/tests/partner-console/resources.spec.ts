@@ -1,7 +1,7 @@
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
 import { expectSheetWidth, findRequest } from '../fixtures';
 import { scan } from './axe';
-import { loadPartnerApp, sidePanel, sidePanelDialog } from './fixtures';
+import { loadPartnerApp, sidePanel, sidePanelDialog, test } from './fixtures';
 import { PARTNER_NOW, asLevel } from './partner-fixtures';
 
 /**
@@ -33,7 +33,7 @@ test('lists the resources, opens one with its endpoints, the secret and the limi
   await expect(panel.getByRole('region', { name: 'Secret' })).toContainText('Current');
   await expect(panel.getByRole('region', { name: 'Endpoints' }).locator('tr[data-endpoint]')).toHaveCount(4);
   await expect(panel.getByRole('region', { name: 'Endpoints' })).toContainText("'profile' in token.scope");
-  await expect(panel.getByRole('region', { name: 'Limits from the operator' })).toContainText('partner-default');
+  await expect(panel.getByRole('region', { name: 'Limits from the operator' })).toContainText('Step-up ACR');
   await expect(panel.getByRole('region', { name: 'Limits from the operator' })).toContainText('sensitive');
   await expect(panel.getByRole('button', { name: 'Edit endpoints' })).toBeVisible();
   expect(await scan(page)).toEqual([]);

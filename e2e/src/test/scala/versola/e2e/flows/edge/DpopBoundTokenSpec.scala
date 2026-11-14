@@ -76,6 +76,7 @@ object DpopBoundTokenSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & E
     nativeApp = false,
     issuedCertificate = false,
     enrolledCertificate = false,
+    groupCertificate = None,
   )
 
   override val bootstrap: ZLayer[Any, Any, OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub] =

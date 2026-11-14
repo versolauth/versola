@@ -1457,8 +1457,8 @@ export class VersolaClientsList extends LitElement {
         ></versola-record-row>
       `, '') : ''}
 
-      ${signsUsersIn ? this.viewSection('Ownership', '', 'registration', client, html`
-        ${this.viewRow('Ownership', client.consentFlow ? 'Partner app (users are asked for consent, cannot be turned off)' : 'First party app (no consent prompt)')}
+      ${signsUsersIn ? this.viewSection('Ownership', '', client.consentFlow ? 'registration' : null, client, html`
+        ${this.viewRow('Owner', `${client.partnerId ? this.availablePartners.find(candidate => candidate.id === client.partnerId)?.displayName ?? client.partnerId : client.consentFlow ? 'A partner app' : 'First-party'} (${client.consentFlow ? 'users are asked for consent, cannot be turned off' : 'users are not asked for consent'})`)}
       `) : ''}
 
       ${signsUsersIn ? this.viewSection('Branding and logout', '', 'branding', client, html`

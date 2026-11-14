@@ -50,6 +50,7 @@ object NativeAppAttestationSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeA
     nativeApp = true,
     issuedCertificate = true,
     enrolledCertificate = false,
+    groupCertificate = None,
   )
 
   override val bootstrap: ZLayer[Any, Any, OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub] =

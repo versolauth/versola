@@ -76,8 +76,10 @@ export class VersolaPartnerApprovals extends LitElement {
 
       .diff { display: grid; grid-template-columns: 9rem 1fr 1fr; border: 1px solid var(--border-default); border-radius: var(--radius-inner); font-size: var(--text-sm); }
       .diff-row { display: contents; }
-      .diff > div { padding: 0.5rem 0.75rem; border-top: 1px solid var(--border-subtle); min-width: 0; overflow-wrap: anywhere; }
-      .diff > .h { border-top: 0; background: var(--surface-inset); font-size: var(--text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary); }
+      /* The cells of a row are children of .diff-row (display: contents), not of .diff: a rule on .diff > div reaches only the header. */
+      .diff > .h, .diff-row > div { padding: 0.5rem 0.75rem; min-width: 0; overflow-wrap: anywhere; }
+      .diff-row > div { border-top: 1px solid var(--border-subtle); }
+      .diff > .h { background: var(--surface-inset); font-size: var(--text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary); }
       .diff .field { color: var(--text-secondary); }
       .diff .requested { background: var(--success-subtle); color: var(--text-primary); }
       .diff .requested.outside { background: var(--warning-subtle); }
@@ -90,6 +92,9 @@ export class VersolaPartnerApprovals extends LitElement {
       @container (max-width: 480px) {
         .diff { grid-template-columns: 1fr; }
         .diff > .h { display: none; }
+        /* One separator per row, above its label, not one above each of the three stacked cells. */
+        .diff-row > div { border-top: 0; }
+        .diff-row > .field { border-top: 1px solid var(--border-subtle); }
         .diff .field { padding-bottom: 0; font-weight: 600; }
         .diff .current::before { content: 'Registered: '; font-weight: 600; }
         .diff .requested::before { content: 'Requested: '; font-weight: 600; }

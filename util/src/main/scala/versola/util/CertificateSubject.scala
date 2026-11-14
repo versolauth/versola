@@ -133,6 +133,16 @@ object CertificateSubject:
       case (_, _, false) => Left("the request's alternative names are not the ones the client is registered by")
       case _ => Right(())
 
+  /** Whether `csrPem` is a readable request signed by the key it names, for a key worth issuing for ([[requestedKey]]): proof that
+    * its author holds the key, and nothing about the names it carries. For a request whose names the issuer does not take from it. */
+  def provesPossession(csrPem: String): Either[String, Unit] =
+    scala.util.Try:
+      val csr = JcaPKCS10CertificationRequest(PEMParser(StringReader(csrPem)).readObject().asInstanceOf[PKCS10CertificationRequest])
+      csr.isSignatureValid(JcaContentVerifierProviderBuilder().build(csr.getPublicKey))
+    .toEither.left.map(error => s"the request is not a readable PKCS#10: ${error.getMessage}").flatMap:
+      case false => Left("the request is not signed by the key it names")
+      case true => requestedKey(csrPem).map(_ => ())
+
   /** The public key `csrPem` asks a certificate for, when it is one worth issuing for: EC on P-256, or RSA of at least
     * 2048 bits. Anything else (a weak RSA key, another curve, a key type this does not know) is refused with the reason,
     * so a client cannot be handed a certificate no policy of ours would have admitted. */

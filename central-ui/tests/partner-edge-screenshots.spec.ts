@@ -33,10 +33,10 @@ type Shot = {
 
 const walkClientWizardToOwner = async (page: Page) => {
   await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByRole('button', { name: /Web app/ }).click();
   await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'Partner' }).click();
   await page.getByRole('combobox', { name: 'Partner' }).click();
   await page.getByRole('option', { name: /Pilot Pay/ }).click();
-  await page.getByRole('button', { name: /Web app/ }).click();
   await expect(page.getByText('Consent required, names the partner')).toBeVisible();
 };
 
@@ -52,7 +52,7 @@ const shots: Shot[] = [
     await expect(page.getByRole('region', { name: 'Activity' })).toBeVisible();
   } },
   { name: 'op-partner-suspended', app: 'operator', path: `${partnersPath}&id=nomad-travel`, before: async page => {
-    await expect(sidePanel(page, 'Nomad Travel').getByText('Suspended: every call of this partner is refused')).toBeVisible();
+    await expect(sidePanel(page, 'Nomad Travel').getByText('Suspended: its edges are refused')).toBeVisible();
   } },
   { name: 'op-partner-edit-limits', app: 'operator', path: `${partnersPath}&id=pilot-pay&edit=limits`, before: async page => {
     await expect(sidePanel(page, 'Edit limits').getByLabel('Redirect domains *')).toBeVisible();

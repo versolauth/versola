@@ -4,7 +4,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
 import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectType, MutualTlsAuth, OAuthClient, FormPreviewScenario, FormRecord, OAuthScope, OtpTemplateRecord, Partner, Permission, Resource, Role, SecurityProfile, ThemeOverrides, ThemePreset, ThemeRecord, ThemeTokens, ResolvedThemeTokens } from '../types';
-import { partnerKindPlan, redirectUriWithinDomains, ttlCapsLabel, ttlLabel } from '../utils/partners';
+import { partnerKindPlan, redirectUriWithinDomains, ttlLabel } from '../utils/partners';
 import './typeahead-select';
 import { createDefaultAuthFlow, createDefaultConsentFlow, DEFAULT_CONSENT_REMEMBER_DAYS, otpTemplateForConsent, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import './nav-toggle';
@@ -2460,30 +2460,42 @@ export class VersolaClientForm extends LitElement {
 
   private selectOwner(owner: 'first-party' | 'partner') {
     this.owner = owner;
-    if (owner === 'first-party') this.partnerId = null;
+    if (owner === 'first-party') {
+      this.partnerId = null;
+      this.clearConsent();
+    }
     // A partner owns apps that sign users in: a service client cannot be partner-owned.
     if (owner === 'partner' && this.kind === 'service') this.kind = null;
     this.applyPreset();
+    this.syncPartnerTemplate();
   }
 
   private selectPartner(partnerId: string) {
     this.partnerId = partnerId || null;
     if (this.kind === 'service') this.kind = null;
     this.applyPreset();
+    this.syncPartnerTemplate();
   }
 
-  /** The credential a partner client authenticates with: the group certificate when the partner may use it, else private_key_jwt. */
+  /**
+   * Consent follows from the owner and from nothing else: a partner's client always has a consent flow (`applyPartnerRules`),
+   * a first-party client never does. The appearance block goes with the flow, and so must what was set in it: a theme picked
+   * for a partner does not stay behind.
+   */
+  private clearConsent() {
+    this.formData = { ...this.formData, consentFlow: null, themeOverrides: null, theme: 'default' };
+    this.themeBrandInvalid = false;
+  }
+
+  /** A partner client authenticates with the group certificate. The central API still accepts private_key_jwt for one, but this console does not offer it. */
   private get partnerCredentialMode(): ClientCredentialMode {
-    const methods = this.partner?.limits.clientAuthMethods ?? [];
-    if (this.clientCredentialMode === 'private-key-jwt' && methods.includes('private_key_jwt')) return 'private-key-jwt';
-    if (this.clientCredentialMode === 'mtls' && methods.includes('tls_client_auth')) return 'mtls';
-    return methods.includes('tls_client_auth') ? 'mtls' : 'private-key-jwt';
+    return 'mtls';
   }
 
   /**
    * What the owner fixes (#549): consent is required, the flow is code + PKCE + PAR, the credential is the group
-   * certificate (`san_uri = urn:versola:edge-group:<group>`) or private_key_jwt, tokens are not certificate-bound (every
-   * replica presents the group certificate), scopes stay within the partner's list and the lifetimes under its caps.
+   * certificate (`san_uri = urn:versola:edge-group:<group>`), tokens are certificate-bound to it and re-bound through the group's
+   * other edges on refresh, scopes stay within the partner's list and the lifetimes under its caps.
    */
   private applyPartnerRules() {
     const partner = this.partner;
@@ -2532,10 +2544,10 @@ export class VersolaClientForm extends LitElement {
           </div>
           <div class="hint" style="margin:0 0 ${this.owner === 'partner' ? '.9rem' : '0'}">
             ${this.owner === 'partner'
-              ? 'An application of a partner. Consent is always shown with the partner\'s name; the client is held to the partner\'s limits and served by its edges.'
+              ? 'An application of a partner.'
               : this.availablePartners.length === 0
-                ? 'Your own application, served by first-party edges; consent optional. Add a partner under Partners to own clients.'
-                : 'Your own application, served by first-party edges; consent optional.'}
+                ? 'Your own application, served by first-party edges; users are not asked for consent. Add a partner under Partners to own clients.'
+                : 'Your own application, served by first-party edges; users are not asked for consent.'}
           </div>
           ${this.owner === 'partner' ? html`
             <div class="wizard-field" style="margin-bottom:var(--spacing-md)">
@@ -2547,12 +2559,8 @@ export class VersolaClientForm extends LitElement {
             ${partner ? html`
               <div class="plan">
                 ${this.renderPlanLine('fixed', 'Consent required, names the partner', 'Every client of a partner. Users see who they sign in to.')}
-                ${this.renderPlanLine('fixed', 'Authorization code + PKCE, pushed authorization requests', 'Every partner client.')}
-                ${this.renderPlanLine('fixed', partner.limits.clientAuthMethods.includes('tls_client_auth') ? `tls_client_auth with san_uri = urn:versola:edge-group:${partner.groupId}` : 'private_key_jwt', partner.limits.clientAuthMethods.length > 1 ? 'The partner may also use private_key_jwt; choose on the next step.' : 'From the partner\'s limits.')}
-                ${this.renderPlanLine('fixed', `Served by the edges of group ${partner.groupId}`, 'The partner\'s own edges; tokens are not certificate-bound because every replica presents the group certificate.')}
                 ${this.renderPlanLine('fixed', `Scopes within ${partner.limits.scopes.join(', ')}`, 'The partner\'s limit. Scopes outside it need the limits changed first.')}
                 ${this.renderPlanLine('fixed', `Redirect URIs under ${partner.limits.redirectDomains.join(', ')}`, 'https only. A URI elsewhere is refused.')}
-                ${this.renderPlanLine('fixed', `Lifetimes ${ttlCapsLabel(partner.limits)}`, 'The partner\'s caps.')}
                 ${partner.status === 'suspended' ? this.renderPlanLine('na', 'The partner is suspended', 'The client is registered but cannot be used until the partner is resumed.') : ''}
               </div>` : ''}
           ` : ''}
@@ -2632,26 +2640,11 @@ export class VersolaClientForm extends LitElement {
     };
   }
 
-  /** A client that already asks for consent is a partner for good: central refuses to take the consent flow away. */
-  private get consentLocked(): boolean {
-    return this.client?.consentFlow != null;
-  }
-
   private toggleRequiredScope(scope: string) {
     const required = this.consentFlow.requiredScopes;
     this.setConsentFlow({
       requiredScopes: required.includes(scope) ? required.filter(s => s !== scope) : [...required, scope],
     });
-  }
-
-  private toggleConsentEnabled() {
-    if (this.consentLocked) return;
-    const consentFlow = this.hasConsentFlow ? null : createDefaultConsentFlow();
-    // The appearance block goes with the consent flow, and so must what was set in it.
-    // Creating a first-party app offers no branding, so a theme picked for a partner does not stay behind.
-    this.formData = { ...this.formData, consentFlow, ...(consentFlow ? {} : { themeOverrides: null, ...(this.client ? {} : { theme: 'default' }) }) };
-    if (!consentFlow) this.themeBrandInvalid = false;
-    this.syncPartnerTemplate();
   }
 
   /** Keeps the OTP template in step with consent: partners get the one that names their app. */
@@ -2976,17 +2969,17 @@ export class VersolaClientForm extends LitElement {
         'This decides what the client can safely be trusted to hold.',
       )}
 
-      ${this.renderOwnerSection()}
-
       <versola-client-kind-step
         .kind=${this.kind}
         .profile=${this.securityProfile}
         .disabledKinds=${this.owner === 'partner' ? ['service' as const] : []}
         disabledReason="Not available to partner-owned clients: a partner owns apps that sign users in."
-        .plan=${this.partner && this.kind && this.kind !== 'service' ? partnerKindPlan(this.kind, this.partner, this.partnerCredentialMode === 'mtls' ? 'mtls' : 'private-key-jwt') : null}
+        .plan=${this.partner && this.kind && this.kind !== 'service' ? partnerKindPlan(this.kind, this.partner) : null}
         .planOwner=${this.partner?.displayName ?? ''}
         @kind-change=${(e: CustomEvent<{ kind: ClientKind }>) => this.selectKind(e.detail.kind)}
       ></versola-client-kind-step>
+
+      ${this.renderOwnerSection()}
 
       <div class="form-actions">
         <span class="wizard-actions-note">Step 1 of 4 · a lock marks a rule the type${this.owner === 'partner' ? ' or the owner' : ''} sets, not a choice</span>
@@ -3044,21 +3037,11 @@ export class VersolaClientForm extends LitElement {
   private renderWizardCredentialBlock() {
     const partner = this.partner;
     if (partner) {
-      const methods = partner.limits.clientAuthMethods;
-      const mtls = this.clientCredentialMode === 'mtls';
       return html`
-        ${methods.length > 1 ? html`
-          <div class="seg" role="group" aria-label="Client authentication" style="margin-bottom:var(--spacing-md)">
-            <button type="button" aria-pressed=${mtls} @click=${() => { this.clientCredentialMode = 'mtls'; this.applyPartnerRules(); }}>group certificate</button>
-            <button type="button" aria-pressed=${!mtls} @click=${() => { this.clientCredentialMode = 'private-key-jwt'; this.applyPartnerRules(); }}>key</button>
-          </div>` : ''}
         <div class="plan">
-          ${mtls
-            ? this.renderPlanLine('fixed', `tls_client_auth · san_uri = urn:versola:edge-group:${partner.groupId}`, 'The group certificate every edge of the partner presents. Nothing to register here.')
-            : this.renderPlanLine('fixed', 'private_key_jwt', 'The partner registers the public keys its edge signs assertions with.')}
-          ${this.renderPlanLine('fixed', 'Tokens not bound to a certificate', 'Every replica of the partner\'s edges presents the same group certificate, so binding would say nothing.')}
+          ${this.renderPlanLine('fixed', `tls_client_auth · san_uri = urn:versola:edge-group:${partner.groupId}`, 'The group certificate every edge of the partner presents. Nothing to register here.')}
+          ${this.renderPlanLine('fixed', 'Tokens bound to the edge\'s certificate', 'Bound to the certificate of the edge that asked. Another edge of the group re-binds the session on refresh, so every edge can serve it.')}
         </div>
-        ${mtls ? '' : this.renderWizardJwksField('Key set', 'The public keys the partner\'s edge signs its assertions with.')}
       `;
     }
     if (this.clientCredentialMode === 'edge') {
@@ -3468,7 +3451,7 @@ export class VersolaClientForm extends LitElement {
     return html`
       ${this.renderWizardHead(
         'How users sign in',
-        'Sign-in, scopes and consent, for this client only. Two clients on one tenant can sign the same users in differently.',
+        `${this.hasConsentFlow ? 'Sign-in, scopes and consent' : 'Sign-in and scopes'}, for this client only. Two clients on one tenant can sign the same users in differently.`,
       )}
 
       ${this.wizardSection(
@@ -3585,36 +3568,21 @@ export class VersolaClientForm extends LitElement {
         `,
       )}
 
-      ${this.wizardSection(
-        'Ownership',
-        'Whose app this is decides whether its users are asked for consent.',
+      ${this.hasConsentFlow ? this.wizardSection(
+        'Consent',
+        this.partner
+          ? `Owned by ${this.partner.displayName}: users are always asked for consent, and the screen names the partner.`
+          : 'Users are always asked for consent, and the screen names the owner.',
         html`
-        <div class="seg" role="group" aria-label="Who the app belongs to" style="margin-bottom:.6rem">
-          <button type="button" aria-pressed=${!this.hasConsentFlow} ?disabled=${this.consentLocked || !!this.partner} @click=${() => this.hasConsentFlow && this.toggleConsentEnabled()}>
-            First party app
-          </button>
-          <button type="button" aria-pressed=${this.hasConsentFlow} @click=${() => !this.hasConsentFlow && this.toggleConsentEnabled()}>
-            Partner app
-          </button>
-        </div>
-        <div class="hint" style="margin:0 0 ${this.hasConsentFlow ? '.9rem' : '0'}">
-          ${this.partner
-            ? `Owned by ${this.partner.displayName}: users are always asked for consent, and the screen names the partner.`
-            : this.hasConsentFlow
-              ? 'Someone else\'s app: users are asked for consent, its SMS codes name the app, and consent cannot be turned off once the client is created.'
-              : 'Your own app: users are not asked for consent. Pick Partner app for an app that belongs to someone else.'}
-        </div>
-        ${this.hasConsentFlow ? html`
-          ${this.renderWizardConsentSettings()}
-          ${this.hasAuthFlow ? html`
-            <div class="wizard-group-head" style="font-size:.875rem;margin-top:var(--spacing-md)">Branding</div>
-            <div class="wizard-group-sub">How the sign-in and consent screens look for this partner's users.</div>
-            ${this.renderThemeSelect()}
-            ${this.renderAppearance()}
-          ` : ''}
+        ${this.renderWizardConsentSettings()}
+        ${this.hasAuthFlow ? html`
+          <div class="wizard-group-head" style="font-size:.875rem;margin-top:var(--spacing-md)">Branding</div>
+          <div class="wizard-group-sub">How the sign-in and consent screens look for this partner's users.</div>
+          ${this.renderThemeSelect()}
+          ${this.renderAppearance()}
         ` : ''}
         `,
-      )}
+      ) : ''}
     `;
   }
 
@@ -3658,8 +3626,7 @@ export class VersolaClientForm extends LitElement {
 
         <div class="wizard-group-head" style="font-size:.875rem">What the screen shows</div>
         <div class="wizard-group-sub">
-          Auth renders these three on the consent screen and nowhere else, so they are only worth
-          filling in with consent on.
+          Auth renders these three on the consent screen and nowhere else.
         </div>
         <div class="wizard-field-grid">
           <div class="wizard-field">
@@ -3841,13 +3808,13 @@ export class VersolaClientForm extends LitElement {
 
       ${this.renderReviewConformance()}
 
+      ${this.renderReviewGroup('Type', 1, [['Kind', `${kindName} · cannot be changed once the client is created`, false]])}
+
       ${this.renderReviewGroup('Owner', 1, [[
         'Owner',
-        this.partner ? `${this.partner.displayName} (${this.partner.id}) · served by the edges of group ${this.partner.groupId}; approved at once, since you register it` : 'First-party · your own application',
+        this.partner ? `${this.partner.displayName} (${this.partner.id}) · served by the edges of group ${this.partner.groupId}; users are asked for consent; approved at once, since you register it` : 'First-party · your own application; users are not asked for consent',
         false,
       ]])}
-
-      ${this.renderReviewGroup('Type', 1, [['Kind', `${kindName} · cannot be changed once the client is created`, false]])}
 
       ${this.renderReviewGroup('General', 2, service
         ? [
@@ -3900,9 +3867,6 @@ export class VersolaClientForm extends LitElement {
             ])}
             ${this.renderReviewGroup('Scopes', 3, [
               ['Scopes', scopes.length ? scopes.join(', ') : 'none', scopes.length === 0],
-            ])}
-            ${this.renderReviewGroup('Ownership', 3, [
-              ['Ownership', this.hasConsentFlow ? 'partner, users are asked for consent' : 'first party', !this.hasConsentFlow],
             ])}
             ${this.renderReviewGroup('Logout', 2, [
               ['Logout notice', this.logoutMode === 'none' ? 'none' : `${this.logoutMode}-channel`, this.logoutMode === 'none'],
@@ -4714,31 +4678,33 @@ export class VersolaClientForm extends LitElement {
     `;
   }
 
+  /** Who owns the client being edited, as read-only text: it is chosen when the client is created. Consent follows from it, and only a client that has a consent flow has settings to edit. */
+  private renderOwnerText() {
+    const partner = this.client?.partnerId ? this.availablePartners.find(candidate => candidate.id === this.client?.partnerId) ?? null : null;
+    const owner = this.client?.partnerId ? (partner ? `${partner.displayName} (${partner.id})` : this.client.partnerId) : this.hasConsentFlow ? 'A partner app, with no partner recorded' : 'First-party';
+    const consent = !this.hasConsentFlow ? 'Users are not asked for consent.'
+      : this.client?.partnerId ? 'Users are always asked for consent, and the screen names the partner.' : 'Users are always asked for consent.';
+    return html`
+      <div class="flow-toggle-row">
+        <span style="margin: 0; line-height: 18px; font-weight: 600;" id="ownership-label">Owner</span>
+        ${this.renderOptionInfo(
+          'consent',
+          'Owner',
+          html`<div class="option-tooltip-item">The owner is chosen when the client is created and cannot be changed. A first-party client is yours: users are not asked for consent. A partner's client belongs to someone else: users see which scopes it requests before an authorization code is issued.</div>`,
+          'Owner info',
+        )}
+        ${this.statusIcon('lock', 'locked-icon')}
+      </div>
+      <div style="margin-top:.5rem">${owner}</div>
+      <div class="hint" style="margin-top:.35rem">${consent}</div>
+    `;
+  }
+
   private renderConsentSection() {
     return html`
             ${this.hasAuthFlow ? html`
               <div class="form-group">
-                <div class="flow-toggle-row">
-                  <span style="margin: 0; line-height: 18px; font-weight: 600;" id="ownership-label">Ownership</span>
-                  ${this.renderOptionInfo(
-                    'consent',
-                    'Ownership',
-                    html`<div class="option-tooltip-item">A first party app is yours: users are not asked for consent. A partner app belongs to someone else: users see which scopes it requests before an authorization code is issued.</div>`,
-                    'Ownership info',
-                  )}
-                  ${this.consentLocked ? this.statusIcon('lock', 'locked-icon') : ''}
-                </div>
-                <div class="seg" role="group" aria-labelledby="ownership-label" style="margin-top:.5rem">
-                  <button type="button" aria-pressed=${!this.hasConsentFlow} ?disabled=${this.consentLocked} @click=${() => this.hasConsentFlow && this.toggleConsentEnabled()}>
-                    First party app
-                  </button>
-                  <button type="button" aria-pressed=${this.hasConsentFlow} @click=${() => !this.hasConsentFlow && this.toggleConsentEnabled()}>
-                    Partner app
-                  </button>
-                </div>
-                ${this.consentLocked ? html`
-                  <div class="hint" style="margin-top:.35rem">A partner app asks users for consent for good: it cannot be made a first party app.</div>
-                ` : ''}
+                ${this.renderOwnerText()}
 
                 ${this.hasConsentFlow ? html`
                   <div class="registration-settings">

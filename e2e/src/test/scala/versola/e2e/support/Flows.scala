@@ -152,6 +152,9 @@ object Flows:
       /** Phone number (`phone` credential flow). */
       phone: Option[String],
       password: String,
+      /** RFC 8705 (header form): the certificate a partner's client authenticates with at `/token`, instead of a secret. Set for a
+        * client that asks for consent, which only a partner's can (owner decision, 2026-11-13). */
+      certificate: Option[String] = None,
   )
 
   // ── Setup helpers ───────────────────────────────────────────────────────
@@ -346,11 +349,56 @@ object Flows:
       ).success
     yield Setup(clientId, clientResult.secret, redirectUri, new UUID(0L, 0L), None, Some(email), None, password)
 
-  /** Register a login + inline password client that additionally requires consent. */
+  /** A partner that owns the clients which ask for consent: consent exists only on a partner's client (owner decision, 2026-11-13).
+    * Created through the operator's API in the suite tenant, with limits wide enough for the clients the specs register, and the
+    * certificate of its group, which is what such a client authenticates with. */
+  case class PartnerOwner(partnerId: String, certificate: String):
+    def groupUri: String = s"urn:versola:edge-group:$partnerId"
+
+    /** `https` under the partner's domain: a partner's redirect URIs are nothing else. */
+    def redirectUri(path: String = "cb"): String = s"https://app.$partnerId.example/$path"
+
+    def mtlsAuth: Json.Obj = Fixtures.mutualTlsAuth("san_uri", groupUri)
+
+  def createPartnerOwner(): RIO[OAuthClient, PartnerOwner] =
+    val partnerId = s"e2e-owner-${UUID.randomUUID().toString.replace("-", "").take(10)}"
+    for
+      oauthClient <- ZIO.service[OAuthClient]
+      body = Json.Obj(
+        "partner" -> Json.Obj(
+          "id" -> Json.Str(partnerId),
+          "tenantId" -> Json.Str(Fixtures.suiteTenant),
+          "displayName" -> Json.Str(s"Partner $partnerId"),
+          "contact" -> Json.Obj("email" -> Json.Str(s"ops@$partnerId.example")),
+          "limits" -> Json.Obj(
+            "scopes" -> Json.Arr(Json.Str("openid"), Json.Str("email"), Json.Str("phone"), Json.Str("offline_access")),
+            "redirectDomains" -> Json.Arr(Json.Str(s"$partnerId.example")),
+            "maxClients" -> Json.Num(20),
+            "maxEdges" -> Json.Num(1),
+            "accessTokenTtlMax" -> Json.Num(3600),
+            "refreshTokenTtlMax" -> Json.Num(31536000),
+            "clientAuthMethods" -> Json.Arr(Json.Str("tls_client_auth")),
+          ),
+        ),
+        "consoleClient" -> Json.Obj("redirectUri" -> Json.Str(s"https://console.$partnerId.example/callback")),
+        "firstEdge" -> Json.Obj("id" -> Json.Str(s"$partnerId-edge"), "publicUrl" -> Json.Str(s"https://login.$partnerId.example")),
+      )
+      created <- oauthClient.createPartner(body)
+      _ <- ZIO.fail(RuntimeException(s"partner $partnerId was refused: ${created._1} ${created._2}")).unless(created._1 == zio.http.Status.Created)
+      certificate <- EdgeCertificate.make(
+        commonName = s"$partnerId-owner",
+        caDirectory = "auth/dev/mtls",
+        uris = List(s"urn:versola:edge-group:$partnerId"),
+      )
+    yield PartnerOwner(partnerId, certificate.urlEncodedPem)
+
+  /** Register a login + inline password client that additionally requires consent, owned by a partner of its own (consent exists
+    * only on a partner's client): it authenticates with its group's certificate (`Setup.certificate`), not a secret, and redirects to
+    * an `https` address under the partner's domain. */
   def setupConsent(
       consentFlow: Json = rememberedConsentFlow,
       allowedScopes: Set[String] = Set("openid", "email", "offline_access"),
-      redirectUri: String = "http://localhost:3000",
+      redirectUri: Option[String] = None,
   ): RIO[OAuthClient, Setup] =
     val uid = UUID.randomUUID().toString.replace("-", "").take(8)
     val login = s"consent-user-$uid"
@@ -358,18 +406,23 @@ object Flows:
     val clientId = s"consent-client-$uid"
     for
       oauthClient <- ZIO.service[OAuthClient]
+      owner <- createPartnerOwner()
+      redirect = redirectUri.getOrElse(owner.redirectUri())
       clientResult <- oauthClient.registerClient(
         clientId,
         "Consent Test Client",
-        Set(redirectUri),
+        Set(redirect),
         allowedScopes = allowedScopes,
         authFlow = Some(loginPasswordAuthFlow),
         consentFlow = Some(consentFlow),
+        authMethod = "tls_client_auth",
+        mtlsAuth = Some(owner.mtlsAuth),
+        partnerId = Some(owner.partnerId),
       ).success
       userId <- oauthClient.registerUser(login = Some(login))
       _ <- oauthClient.flushUserOutbox()
       _ <- oauthClient.setUserPassword(userId, password)
-    yield Setup(clientId, clientResult.secret, redirectUri, userId, Some(login), None, None, password)
+    yield Setup(clientId, clientResult.secret, redirect, userId, Some(login), None, None, password, Some(owner.certificate))
 
   /** Register a client that receives security events at the edge, so that revoking one of
     * its tokens reaches the edge enforcing it.

@@ -213,7 +213,7 @@ export class VersolaPartnerEdges extends LitElement {
       title: 'Remove edge',
       messagePrefix: 'Remove edge ',
       messageSubject: edge.id,
-      messageSuffix: '? The operator stops renewing its certificate and refuses it at once; sessions on it end.',
+      messageSuffix: '? The operator stops renewing its certificate and refuses it. Sessions already open on it are not ended by this: stop the edge itself.',
       confirmLabel: 'Remove',
     });
     if (!confirmed) return;
@@ -257,7 +257,7 @@ export class VersolaPartnerEdges extends LitElement {
     const menuItems = (edge: PartnerEdge): RowMenuItem[] => [
       { label: 'Open', onSelect: () => this.openView(edge) },
       { label: 'Copy edge ID', onSelect: () => void copyToClipboard(edge.id) },
-      ...(this.canManage ? [{ label: 'Remove edge', danger: true, ariaLabel: `Remove edge ${edge.id}`, onSelect: () => void this.handleDelete(edge) }] : []),
+      ...(this.canManage && edge.id !== this.me.edge.id ? [{ label: 'Remove edge', danger: true, ariaLabel: `Remove edge ${edge.id}`, onSelect: () => void this.handleDelete(edge) }] : []),
     ];
     return html`
       <versola-data-table selectable .columns=${columns} .rows=${this.edges} .rowKey=${(edge: PartnerEdge) => edge.id}
@@ -340,8 +340,8 @@ export class VersolaPartnerEdges extends LitElement {
 
       <versola-record-card heading="The operator's policies" subheading=${`Set by ${me.partner.operator.name} for your group. Read-only.`} .body=${this.policyRows(edge)}></versola-record-card>
 
-      ${edit ? html`
-        <versola-danger-card heading="Remove edge" text="The operator stops renewing its certificate and refuses it at once; sessions on it end."
+      ${edit && edge.id !== me.edge.id ? html`
+        <versola-danger-card heading="Remove edge" text="The operator stops renewing its certificate and refuses it. Sessions already open on it are not ended by this: stop the edge itself."
           actionLabel="Remove edge" .actionAriaLabel=${`Remove edge ${edge.id}`} @action=${() => this.handleDelete(edge)}></versola-danger-card>` : ''}
     `;
   }

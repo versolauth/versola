@@ -12,6 +12,17 @@ export const PARTNER_API_BASE = '/partner/api';
 
 /** The edge's fixed console paths: they redirect to `/login/<console preset>` and `/logout/<console preset>`. The edge has no `/login` or `/logout` of its own. */
 export const PARTNER_LOGIN_PATH = '/partner/login';
+
+/** Where to send a signed-out browser: the path the edge named, but only when it stays under `/partner/` on this origin; anything else is the fixed login path. */
+export function signInPath(named: unknown, origin = window.location.origin): string {
+  if (typeof named !== 'string' || !named.startsWith('/partner/')) return PARTNER_LOGIN_PATH;
+  try {
+    const resolved = new URL(named, origin);
+    return resolved.origin === origin && resolved.pathname.startsWith('/partner/') ? `${resolved.pathname}${resolved.search}` : PARTNER_LOGIN_PATH;
+  } catch {
+    return PARTNER_LOGIN_PATH;
+  }
+}
 export const PARTNER_LOGOUT_PATH = '/partner/logout';
 
 /** What the edge answered with: the HTTP status, the error code of the contract when it sent one, and the fields it named. */
@@ -79,7 +90,7 @@ async function request<T>(path: string, options: { method?: string; query?: Quer
   if (response.status === 401) {
     // No session on the edge: it names where to sign in (`loginPath`, `/partner/login`); go there and fail the call so nothing waits on it.
     const refusal = tryParse(await response.text()) as { loginPath?: string } | string | undefined;
-    window.location.assign(typeof refusal === 'object' && refusal?.loginPath ? refusal.loginPath : PARTNER_LOGIN_PATH);
+    window.location.assign(signInPath(typeof refusal === 'object' ? refusal?.loginPath : undefined));
     throw new PartnerApiError(401, null, 'Your session ended. Signing you in again…');
   }
   const text = await response.text();

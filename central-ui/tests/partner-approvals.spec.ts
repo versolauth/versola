@@ -1,5 +1,5 @@
 import AxeBuilder from '@axe-core/playwright';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator } from '@playwright/test';
 import { consentForm, consentPreviews } from './consent-preview-fixtures';
 import { expectSheetWidth, findRequest, loadAdminApp, sidePanel, sidePanelDialog } from './fixtures';
 import { PARTNER_NOW, partnerState, partnersPath } from './partners-fixtures';
@@ -88,6 +88,40 @@ test('renders central\'s consent form in the preview when it has one', async ({ 
   });
   await expect(page.locator('versola-client-consent-preview iframe')).toHaveCount(1);
   expect(await scan(page)).toEqual([]);
+});
+
+/** The cells of a diff row are children of `.diff-row` (`display: contents`), so a rule written on `.diff > div` skips them. */
+const cellStyle = (cell: Locator) => cell.evaluate(element => {
+  const style = getComputedStyle(element);
+  return { top: style.paddingTop, right: style.paddingRight, bottom: style.paddingBottom, left: style.paddingLeft, border: style.borderTopWidth };
+});
+
+test('every cell of the diff has its padding and each row its separator, in the grid and in the narrow layout', async ({ page }) => {
+  await loadAdminApp(page, { path: `${approvalsPath}&id=apr-1001`, state: partnerState });
+  const diff = sidePanel(page, 'New client “Pilot Pay Checkout”').getByRole('group', { name: 'Requested against registered' });
+  const row = diff.locator('.diff-row[data-field="clientName"]');
+  const padded = { top: '8px', right: '12px', bottom: '8px', left: '12px' };
+
+  // Wide: label, registered and requested cells are padded and separated from the row above.
+  for (const cell of ['.field', '.current', '.requested']) {
+    expect(await cellStyle(row.locator(cell)), cell).toMatchObject({ ...padded, border: '1px' });
+  }
+  // The text of the first column starts inside the card, not on its border.
+  const diffBox = (await diff.boundingBox())!;
+  const textLeft = await row.locator('.field').evaluate(element => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    return range.getBoundingClientRect().left;
+  });
+  expect(textLeft - diffBox.x).toBeGreaterThanOrEqual(12);
+
+  // Narrow: the three cells stack, each keeps its padding, and only the label draws the separator.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(diff.locator('.h').first()).toBeHidden();
+  expect(await cellStyle(row.locator('.field'))).toMatchObject({ top: '8px', right: '12px', left: '12px', bottom: '0px', border: '1px' });
+  for (const cell of ['.current', '.requested']) {
+    expect(await cellStyle(row.locator(cell)), cell).toMatchObject({ ...padded, border: '0px' });
+  }
 });
 
 test('a change request shows registered against requested, and a decided one shows who decided', async ({ page }) => {

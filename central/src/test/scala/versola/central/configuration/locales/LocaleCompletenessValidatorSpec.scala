@@ -52,6 +52,8 @@ object LocaleCompletenessValidatorSpec extends ZIOSpecDefault, ZIOStubs:
     createdAt = Instant.EPOCH,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
+    approval = ClientApproval.Approved,
   )
   private val scope = ScopeRecord(
     tenantId,

@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
 import { scan } from './axe';
-import { loadPartnerApp } from './fixtures';
+import { loadPartnerApp, test } from './fixtures';
 import { PARTNER_NOW } from './partner-fixtures';
 
 /** Audit: the partner's own log, filtered by actor and kind, paged by cursor, exported as CSV. */
@@ -74,6 +74,23 @@ test('exports what is loaded as CSV named after the partner', async ({ page }) =
   expect(lines[0]).toBe('at,actor,sub,action,target,outcome,from');
   expect(lines).toHaveLength(9);
   expect(lines[1]).toContain('"Ended 3 sessions by user u_2b91d4e0"');
+});
+
+test('the CSV export makes text of anything a spreadsheet would run as a formula', async ({ page }) => {
+  const event = (id: string, display: string, target: string) => ({ id, kind: 'clients.change', at: '2026-11-07T10:00:00Z', actor: { sub: 'u_1', display }, action: 'changed', target, outcome: 'ok' as const });
+  await loadPartnerApp(page, { path: auditPath, state: { audit: [event('ev-a', '=cmd|calc', '=HYPERLINK("https://evil.example","x")'), event('ev-b', '＠Eve', '+1-555'), event('ev-c', 'Dana', 'client pilot-pay-web')] } });
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export CSV' }).click();
+  const stream = await (await download).createReadStream();
+  let text = '';
+  for await (const chunk of stream) text += String(chunk);
+  const lines = text.split('\n');
+  expect(lines[1]).toContain(`"'=cmd|calc"`);
+  expect(lines[1]).toContain(`"'=HYPERLINK(""https://evil.example"",""x"")"`);
+  expect(lines[2]).toContain(`"'＠Eve"`);
+  expect(lines[2]).toContain(`"'+1-555"`);
+  expect(lines[3]).toContain('"Dana"');
+  expect(lines[3]).toContain('"client pilot-pay-web"');
 });
 
 test('an edge that cannot read its log shows the error card; below 720px the rows stack', async ({ page }) => {

@@ -7,6 +7,7 @@ import { confirmDiscardDraft } from '../../utils/draft-guard';
 import { formatDate } from '../../utils/helpers';
 import { partnerAccessTtlError, ttlCapsLabel, ttlLabel } from '../../utils/partners';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../../utils/record-route';
+import { recallProfileApproval, rememberProfileApproval } from '../pending-profile';
 import { fetchProfileApproval, fetchSettings, requestProfileChange, updateSettings, writeErrorMessage, readErrorMessage } from '../partner-api';
 import type { PartnerMe, PartnerSettings, ProfileApproval } from '../partner-types';
 import { partnerViewStyles } from '../partner-styles';
@@ -83,7 +84,7 @@ export class VersolaPartnerSettings extends LitElement {
     try {
       const [settings, approval] = await Promise.all([fetchSettings(), fetchProfileApproval().catch(() => null)]);
       this.settings = settings;
-      this.approval = approval;
+      this.approval = approval ?? recallProfileApproval(this.me.partner);
     } catch (error) {
       this.errorMessage = readErrorMessage(error, 'Failed to load the settings');
     } finally {
@@ -147,16 +148,19 @@ export class VersolaPartnerSettings extends LitElement {
       if (this.editTarget === 'profile') {
         const { approval } = await requestProfileChange({ displayName: draft.displayName.trim(), logoUri: draft.logoUri.trim() || null });
         this.approval = approval;
+        rememberProfileApproval(this.me.partner.id, approval);
         this.notice = `Sent to ${this.me.partner.operator.name} for approval. Users keep seeing the current name and logo until it is approved.`;
       } else {
         const settings: PartnerSettings = {
+          version: this.settings!.version,
           contact: this.editTarget === 'contacts' ? { email: draft.email.trim(), phone: draft.phone.trim() || null } : this.settings!.contact,
           defaults: this.editTarget === 'defaults'
             ? { backChannelLogoutUri: draft.backChannelLogoutUri.trim(), accessTokenTtl: Number(draft.accessTokenTtlMinutes) * 60, refreshTokenTtl: Number(draft.refreshTokenTtlDays) * 86_400 }
             : this.settings!.defaults,
         };
         await updateSettings(settings);
-        this.settings = settings;
+        // Every save bumps the version: the next one is sent on the settings central holds now.
+        this.settings = await fetchSettings();
         this.notice = 'Saved.';
       }
       dispatchRecordRoute(this, { edit: null, create: false });
@@ -258,7 +262,7 @@ export class VersolaPartnerSettings extends LitElement {
                   ${this.row('Scopes allowed', tags(limits.scopes))}
                   ${this.row('Redirect domains', tags(limits.redirectDomains))}
                   ${this.row('Caps', `${limits.maxClients} clients · ${limits.maxEdges} edges · ${ttlCapsLabel(limits)}`)}
-                  ${this.row('Client authentication', limits.clientAuthMethods.map(method => method === 'tls_client_auth' ? 'group certificate' : 'private_key_jwt').join(' or '))}
+                  ${this.row('Client authentication', 'group certificate')}
                   ${this.row('Consent', `always shown, names ${me.partner.displayName}`, 'Operator')}
                 `}></versola-record-card>
                 <versola-record-card heading="Operator endpoints" subheading="What your edges talk to. For your firewall." .body=${html`

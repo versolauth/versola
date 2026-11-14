@@ -883,12 +883,12 @@ export class VersolaEdgesList extends LitElement {
           </div>`}></versola-record-row>` : ''}
       `} @edit=${() => this.openEditor('access-log')}></versola-record-card>
 
-      <versola-record-card heading="Rate limits" subheading="Who may send how much through this edge. Start in shadow (counts only), then enforce. Reaches the edge on its next configuration sync." ?editable=${this.canManage} .body=${html`
+      <versola-record-card heading="Rate limits" subheading=${partnerEdge ? 'Set by the partner, once for its whole group of edges, and the same on every edge of it. You cannot change them here; overload protection and the access log stay yours.' : 'Who may send how much through this edge. Start in shadow (counts only), then enforce. Reaches the edge on its next configuration sync.'} ?editable=${this.canManage && !partnerEdge} .body=${html`
         ${this.row('Policies', rateLimitCountText(edge.rateLimitPolicies))}
         ${this.row('Edge pods', rateLimitPodsText(edge.rateLimitPolicies))}
         ${(edge.rateLimitPolicies?.policies ?? []).slice(0, 5).map(policy => this.row(policy.name, rateLimitSummary(policy)))}
         ${(edge.rateLimitPolicies?.policies.length ?? 0) > 5 ? this.row('', `and ${edge.rateLimitPolicies!.policies.length - 5} more`) : ''}
-        ${this.canManage && !isEmptyRateLimitPolicies(edge.rateLimitPolicies) ? html`
+        ${this.canManage && !partnerEdge && !isEmptyRateLimitPolicies(edge.rateLimitPolicies) ? html`
           <versola-record-row .value=${html`<div class="key-actions">
             <button type="button" class="btn btn-secondary btn-sm" ?disabled=${this.isSaving} @click=${() => this.handleResetRateLimits(edge)}>Remove all policies</button>
           </div>`}></versola-record-row>` : ''}

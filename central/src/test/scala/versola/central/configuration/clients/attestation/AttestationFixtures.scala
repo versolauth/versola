@@ -53,6 +53,8 @@ private[attestation] object AttestationFixtures:
     template = None,
     createdAt = Instant.EPOCH,
     themeOverrides = None,
+    partnerId = None,
+    approval = ClientApproval.Approved,
     applicationType = application,
   )
 

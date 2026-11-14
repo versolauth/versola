@@ -1063,6 +1063,14 @@ final class OAuthClient(client: Client, config: E2EConfig):
     yield AuthorizeResult(response, pushed.verifier, pushed.state, OAuthClient.extractConversationCookie(response))
 
   /** POST /users — registers a new user via the Central API, returns the generated user ID. */
+  /** POST /configuration/partners -- the operator creates a partner (its group, console client and first edge). Answers the
+    * status and the body. */
+  def createPartner(body: Json.Obj): Task[(Status, String)] =
+    val req = Request.post(s"${config.centralUrl}/configuration/partners", Body.fromString(body.toJson))
+      .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
+      .addHeader(Header.ContentType(MediaType.application.json))
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(resp => resp.body.asString.map(resp.status -> _))
+
   def registerUser(email: Option[String] = None, login: Option[String] = None, phone: Option[String] = None): Task[java.util.UUID] =
     val fields = List(
       email.map("email" -> Json.Str(_)),
@@ -1290,6 +1298,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       enrollEdgeClientCertificate: Boolean = false,
       /** Seconds; absent takes central's default (180 days). */
       refreshTokenTtl: Option[Int] = None,
+      /** The partner that owns the client. Consent exists only on a partner's client (owner decision, 2026-11-13): a `consentFlow`
+        * without one is refused, and a partner's client always has one. */
+      partnerId: Option[String] = None,
   ): Task[RegisterClientResult] =
     val flat = OAuthClient.RegisterClientBody(
       tenantId = tenantId,
@@ -1324,6 +1335,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       issueEdgeClientCertificate = issueEdgeClientCertificate,
       enrollEdgeClientCertificate = enrollEdgeClientCertificate,
       estEnrollment = false,
+      partnerId = partnerId,
     ).toJson
     val (kindPath, typed) = ClientEndpoints.registration(flat.fromJson[Json.Obj].getOrElse(Json.Obj()))
     val req = Request.post(s"${config.centralUrl}$kindPath", Body.fromString(typed.toJson))
@@ -2115,4 +2127,5 @@ object OAuthClient:
       issueEdgeClientCertificate: Boolean,
       enrollEdgeClientCertificate: Boolean,
       estEnrollment: Boolean,
+      partnerId: Option[String] = None,
   ) derives JsonEncoder

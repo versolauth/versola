@@ -47,11 +47,12 @@ import versola.user.UserRepository
 import versola.user.model.UserId
 import versola.util.Base64
 import versola.util.audit.{AuditEvents, AuditOutcome, AuditUnavailableException}
-import versola.util.{AuthPropertyGenerator, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
+import versola.util.{AuthPropertyGenerator, CoreConfig, EdgeIdentityNames, JsonSchemaValidator, MAC, Secret, SecurityService, TestCertificates}
 import zio.*
 import zio.http.URL
 import zio.json.*
 import zio.json.ast.Json
+import zio.metrics.Metric
 import zio.prelude.EqualOps
 import zio.test.*
 
@@ -218,6 +219,58 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
   /** RFC 8705 §3.4: authenticates by secret, and asks for its tokens to be bound anyway. */
   val certificateBoundClient = testClient.copy(certificateBoundAccessTokens = true)
   val jkt2 = "R0NfNEZOWnR5LURXcHFxMzBqWnlKR0hUTjBkMkhnbEI"
+
+  /** The certificate central issues an edge: the edge's own name and the name of its group, nothing else. */
+  def edgeCertificate(edgeId: String, groupId: String): ClientCertificate =
+    ClientCertificate.of(
+      TestCertificates.generate(
+        subject = s"CN=$edgeId",
+        uris = List(EdgeIdentityNames.edgeUri(edgeId), EdgeIdentityNames.groupUri(groupId)),
+      ).certificate,
+    )
+
+  /** Two edges of one group, each with a certificate of its own, and an edge of another group. */
+  val groupCertificate1 = edgeCertificate("edge-pilot-1", "pilot")
+  val groupCertificate2 = edgeCertificate("edge-pilot-2", "pilot")
+  val otherGroupCertificate = edgeCertificate("edge-rival-1", "rival")
+
+  /** The subject central registers a first-party client by when it issues the certificate its edge presents, and that
+    * certificate after a renewal: the same subject, a new key, so another thumbprint. */
+  val firstPartySubjectDn = "CN=test-client-1,OU=default,O=Versola"
+  val renewedFirstPartyCertificate = ClientCertificate.of(TestCertificates.generate(subject = firstPartySubjectDn).certificate)
+
+  /** Registered by the name of an edge group, so any edge of the group authenticates it. */
+  val groupClient = mtlsClient.copy(
+    mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_uri, EdgeIdentityNames.groupUri("pilot"))),
+  )
+
+  /** A refresh of `record` by `client` over `certificate`, with the stubs a successful one needs. */
+  def refreshOver(
+      env: Env,
+      client: OAuthClientRecord,
+      record: RefreshTokenRecord,
+      certificate: Option[ClientCertificate],
+      dpopJkt: Option[String] = None,
+      scope: Option[Set[ScopeToken]] = None,
+  ): ZIO[Any, Nothing, Either[Throwable | TokenEndpointError, IssuedTokens]] =
+    for
+      _ <- env.clientService.find.succeedsWith(Some(client))
+      _ <- env.clientService.verifySecret.succeedsWith(Some(client))
+      // read for a public client only, which a `fapi2` tenant refuses outright
+      _ <- env.clientService.getSecurityProfile.succeedsWith(SecurityProfile.standard)
+      _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+      _ <- env.tokenRepo.findToken.succeedsWith(Some(record))
+      _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+      _ <- env.tokenRepo.renewBoundToken.succeedsWith(true)
+      _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+      result <- env.service.refreshAccessToken(
+        RefreshTokenRequest(refreshToken1, scope, None, None),
+        ClientIdWithSecret(clientId1, client.secret),
+        dpopJkt,
+        certificate,
+        None,
+      ).either
+    yield result
 
   /** A refresh token record bound to `cnf`, or unbound when it is `None`. */
   def boundRecord(now: Instant, cnf: Option[Cnf]) = RefreshTokenRecord(
@@ -1855,7 +1908,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
           _ <- env.service.refreshAccessToken(request, credentials, Some(jkt1), None, None)
         yield assertTrue(
-          // (mac, scope) is the whole signature: there is no expiry argument left to slide.
+          // (mac, scope, cnf) is the whole signature: there is no expiry argument left to slide.
           env.tokenRepo.renewBoundToken.calls.length == 1,
           env.tokenRepo.renewBoundToken.calls.head._2.isEmpty,
         )
@@ -2367,6 +2420,376 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result <- env.service.clientCredentials(request, credentials, None, Some(clientCertificate1))
         yield assertTrue(result.cnf.flatMap(_.x5tS256).contains(certificateThumbprint1))
       },
+    ),
+    // RFC 8705 §7.1: a confidential client's refresh token is bound through client authentication. Versola is stricter and pins
+    // the grant to one certificate, except for a client registered by an edge-group name, which every edge of the group
+    // authenticates with a certificate of its own.
+    suite("certificate re-binding of a client registered by an edge-group name")(
+      test("a second certificate of the group refreshes the grant, which is bound to it from then on") {
+        val env = new Env
+        // Process-global and driven by the other tests of this suite in parallel: only this test's own increment can be relied on.
+        val reboundTotal = Metric.counter("auth_refresh_token_rebound_total").value.map(_.count)
+        for
+          now <- Clock.instant
+          countedBefore <- reboundTotal
+          result <- refreshOver(
+            env = env,
+            client = groupClient,
+            record = boundRecord(now, Some(Cnf.certificate(groupCertificate1.thumbprint))),
+            certificate = Some(groupCertificate2),
+          )
+          countedAfter <- reboundTotal
+          rebound <- env.audit.of(AuthAuditKinds.TokenRebound)
+        yield assertTrue(
+          countedAfter - countedBefore >= 1.0,
+          groupCertificate1.thumbprint != groupCertificate2.thumbprint,
+          // the access token is bound to the certificate that was presented (RFC 8705 §6.3)
+          result.toOption.flatMap(_.cnf) == Some(Cnf.certificate(groupCertificate2.thumbprint)),
+          // and so is the grant, by the statement that renews it in place
+          env.tokenRepo.renewBoundToken.calls.map(_._3) == List(Some(Cnf.certificate(groupCertificate2.thumbprint))),
+          env.tokenRepo.createRefreshToken.calls.isEmpty,
+          result.toOption.flatMap(_.refreshToken).contains(refreshToken1),
+          rebound.map(_.outcome) == List(AuditOutcome.success),
+          rebound.map(_.actor) == List(Some((AuthActors.client, Some(clientId1: String)))),
+          rebound.map(_.userId) == List(Some(userId1)),
+          rebound.map(_.details) == List(
+            AuthAuditDetails.TokenRebound(
+              familyId = familyId1.toString,
+              refreshPrefix = Some(Base64.urlEncode(refreshToken1).take(9)),
+              previousThumbprint = groupCertificate1.thumbprint,
+              thumbprint = groupCertificate2.thumbprint,
+            ),
+          ),
+          // the token itself is nowhere in the event, only its prefix
+          !rebound.exists(_.details.toJson.toString.contains(Base64.urlEncode(refreshToken1))),
+        )
+      },
+      test("the re-binding is recorded even where the deployment left audit.events.token-refresh off") {
+        val env = new Env
+        val off = env.serviceWith(CapturingAuditEvents.tiers.copy(tokenRefresh = false))
+        for
+          now <- Clock.instant
+          _ <- env.clientService.find.succeedsWith(Some(groupClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(Cnf.certificate(groupCertificate1.thumbprint)))))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.tokenRepo.renewBoundToken.succeedsWith(true)
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+          _ <- off.refreshAccessToken(
+            RefreshTokenRequest(refreshToken1, None, None, None),
+            ClientIdWithSecret(clientId1, None),
+            None,
+            Some(groupCertificate2),
+            None,
+          )
+          drafts <- env.audit.recorded
+        yield assertTrue(drafts.map(_.kind) == List(AuthAuditKinds.TokenRebound))
+      },
+      test("a re-bound grant refreshed with the first certificate again is bound back to it, and that is recorded too") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          // the grant as the previous test left it: bound to the second edge's certificate
+          result <- refreshOver(
+            env = env,
+            client = groupClient,
+            record = boundRecord(now, Some(Cnf.certificate(groupCertificate2.thumbprint))),
+            certificate = Some(groupCertificate1),
+          )
+          rebound <- env.audit.of(AuthAuditKinds.TokenRebound)
+        yield assertTrue(
+          result.toOption.flatMap(_.cnf) == Some(Cnf.certificate(groupCertificate1.thumbprint)),
+          env.tokenRepo.renewBoundToken.calls.map(_._3) == List(Some(Cnf.certificate(groupCertificate1.thumbprint))),
+          rebound.map(_.details).collect { case d: AuthAuditDetails.TokenRebound => (d.previousThumbprint, d.thumbprint) } ==
+            List((groupCertificate2.thumbprint, groupCertificate1.thumbprint)),
+        )
+      },
+      test("the certificate the grant is bound to refreshes it without re-binding or recording anything of the kind") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          result <- refreshOver(
+            env = env,
+            client = groupClient,
+            record = boundRecord(now, Some(Cnf.certificate(groupCertificate1.thumbprint))),
+            certificate = Some(groupCertificate1),
+          )
+          rebound <- env.audit.of(AuthAuditKinds.TokenRebound)
+        yield assertTrue(
+          result.toOption.flatMap(_.cnf) == Some(Cnf.certificate(groupCertificate1.thumbprint)),
+          // nothing to write: the row already carries this confirmation
+          env.tokenRepo.renewBoundToken.calls.map(_._3) == List(None),
+          rebound.isEmpty,
+        )
+      },
+      test("a narrowed scope and the new certificate reach the row together") {
+        val env = new Env
+        val reducedScope = Set(ScopeToken("read"), ScopeToken.OfflineAccess)
+        for
+          now <- Clock.instant
+          result <- refreshOver(
+            env = env,
+            client = groupClient,
+            record = boundRecord(now, Some(Cnf.certificate(groupCertificate1.thumbprint))),
+            certificate = Some(groupCertificate2),
+            scope = Some(reducedScope),
+          )
+        yield assertTrue(
+          result.isRight,
+          env.tokenRepo.renewBoundToken.calls.map(call => (call._2, call._3)) ==
+            List((Some(reducedScope), Some(Cnf.certificate(groupCertificate2.thumbprint)))),
+        )
+      },
+      test("a refresh that narrows offline_access away still re-binds the grant, and returns no refresh token") {
+        val env = new Env
+        val withoutOffline = Set(ScopeToken("read"))
+        for
+          now <- Clock.instant
+          result <- refreshOver(
+            env = env,
+            client = groupClient,
+            record = boundRecord(now, Some(Cnf.certificate(groupCertificate1.thumbprint))),
+            certificate = Some(groupCertificate2),
+            scope = Some(withoutOffline),
+          )
+          rebound <- env.audit.of(AuthAuditKinds.TokenRebound)
+        yield assertTrue(
+          result.toOption.exists(_.refreshToken.isEmpty),
+          result.toOption.flatMap(_.cnf) == Some(Cnf.certificate(groupCertificate2.thumbprint)),
+          // The access token names the new certificate, so the grant has to as well: the binding is written, the
+          // scope is left as it was (no refresh token goes back to carry the narrowing), and the event is true.
+          env.tokenRepo.renewBoundToken.calls.map(call => (call._2, call._3)) ==
+            List((None, Some(Cnf.certificate(groupCertificate2.thumbprint)))),
+          rebound.size == 1,
+        )
+      },
+      test("a refresh that narrows offline_access away over the certificate of the grant writes nothing, as before") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          result <- refreshOver(
+            env = env,
+            client = groupClient,
+            record = boundRecord(now, Some(Cnf.certificate(groupCertificate1.thumbprint))),
+            certificate = Some(groupCertificate1),
+            scope = Some(Set(ScopeToken("read"))),
+          )
+        yield assertTrue(
+          result.toOption.exists(_.refreshToken.isEmpty),
+          env.tokenRepo.renewBoundToken.calls.isEmpty,
+        )
+      },
+      test("a grant revoked between the read and the renewal is not re-bound: no tokens, no event") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          _ <- env.clientService.find.succeedsWith(Some(groupClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(Cnf.certificate(groupCertificate1.thumbprint)))))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.tokenRepo.renewBoundToken.succeedsWith(false)
+          result <- env.service.refreshAccessToken(
+            RefreshTokenRequest(refreshToken1, None, None, None),
+            ClientIdWithSecret(clientId1, None),
+            None,
+            Some(groupCertificate2),
+            None,
+          ).either
+          drafts <- env.audit.recorded
+        yield assertTrue(result == Left(TokenEndpointError.InvalidGrant.RefreshTokenNotFound), drafts.isEmpty)
+      },
+      test("a certificate of another group does not authenticate the client: InvalidClient, the grant is not read") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          result <- refreshOver(
+            env = env,
+            client = groupClient,
+            record = boundRecord(now, Some(Cnf.certificate(groupCertificate1.thumbprint))),
+            certificate = Some(otherGroupCertificate),
+          )
+          drafts <- env.audit.recorded
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidClient),
+          env.tokenRepo.findToken.calls.isEmpty,
+          env.tokenRepo.renewBoundToken.calls.isEmpty,
+          drafts.isEmpty,
+        )
+      },
+      test("another client's certificate does not authenticate the client: InvalidClient") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          // a certificate a CA the deployment trusts issued to some other client: it names no group
+          result <- refreshOver(
+            env = env,
+            client = groupClient,
+            record = boundRecord(now, Some(Cnf.certificate(groupCertificate1.thumbprint))),
+            certificate = Some(clientCertificate1),
+          )
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidClient),
+          env.tokenRepo.findToken.calls.isEmpty,
+          env.tokenRepo.renewBoundToken.calls.isEmpty,
+        )
+      },
+      test("no certificate at all does not authenticate the client: InvalidClient") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          result <- refreshOver(
+            env = env,
+            client = groupClient,
+            record = boundRecord(now, Some(Cnf.certificate(groupCertificate1.thumbprint))),
+            certificate = None,
+          )
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidClient),
+          env.tokenRepo.findToken.calls.isEmpty,
+          env.tokenRepo.renewBoundToken.calls.isEmpty,
+        )
+      },
+      test("a grant of another client is not re-bound by a certificate of the group: RefreshTokenClientMismatch") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          result <- refreshOver(
+            env = env,
+            client = groupClient,
+            record = boundRecord(now, Some(Cnf.certificate(groupCertificate1.thumbprint))).copy(clientId = ClientId("someone-else")),
+            certificate = Some(groupCertificate2),
+          )
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidGrant.RefreshTokenClientMismatch),
+          env.tokenRepo.renewBoundToken.calls.isEmpty,
+        )
+      },
+      test("the DPoP key of the grant is still required: another key is refused, the right one keeps its place in the confirmation") {
+        val bound = Cnf(jkt = Some(jkt1), x5tS256 = Some(groupCertificate1.thumbprint))
+        val wrongKey = new Env
+        val rightKey = new Env
+        for
+          now <- Clock.instant
+          refused <- refreshOver(
+            env = wrongKey,
+            client = groupClient,
+            record = boundRecord(now, Some(bound)),
+            certificate = Some(groupCertificate2),
+            dpopJkt = Some(jkt2),
+          )
+          noProof <- refreshOver(
+            env = new Env,
+            client = groupClient,
+            record = boundRecord(now, Some(bound)),
+            certificate = Some(groupCertificate2),
+            dpopJkt = None,
+          )
+          accepted <- refreshOver(
+            env = rightKey,
+            client = groupClient,
+            record = boundRecord(now, Some(bound)),
+            certificate = Some(groupCertificate2),
+            dpopJkt = Some(jkt1),
+          )
+          expected = Cnf(jkt = Some(jkt1), x5tS256 = Some(groupCertificate2.thumbprint))
+        yield assertTrue(
+          refused == Left(TokenEndpointError.InvalidGrant.RefreshTokenKeyMismatch),
+          noProof == Left(TokenEndpointError.InvalidGrant.RefreshTokenKeyMismatch),
+          wrongKey.tokenRepo.renewBoundToken.calls.isEmpty,
+          accepted.toOption.flatMap(_.cnf) == Some(expected),
+          rightKey.tokenRepo.renewBoundToken.calls.map(_._3) == List(Some(expected)),
+        )
+      },
+      test("a grant of the group client that was never bound to a certificate is not bound by refreshing it") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(refreshToken2)
+          _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
+          result <- refreshOver(env = env, client = groupClient, record = boundRecord(now, None), certificate = Some(groupCertificate2))
+          rebound <- env.audit.of(AuthAuditKinds.TokenRebound)
+        yield assertTrue(
+          result.toOption.exists(_.cnf.isEmpty),
+          env.tokenRepo.renewBoundToken.calls.isEmpty,
+          env.tokenRepo.createRefreshToken.calls.map(_._3.cnf) == List(None),
+          rebound.isEmpty,
+        )
+      },
+      suite("every other client keeps the strict rule: a second certificate that authenticates it is still InvalidGrant")(
+        List(
+          // RFC 8705 §2.1.2 subject types other than a group name, each with a second certificate that carries the registered value
+          "a san_dns subject" ->
+            (mtlsClient, clientCertificate1.copy(thumbprint = certificateThumbprint2)),
+          "a san_uri subject outside the reserved namespace" ->
+            (
+              mtlsClient.copy(mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_uri, "https://client.example.com/id"))),
+              groupCertificate2.copy(subjectAlternativeNames = Map(MutualTlsSubjectType.san_uri -> Set("https://client.example.com/id"))),
+            ),
+          "the name of one edge, not of a group" ->
+            (
+              mtlsClient.copy(
+                mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_uri, EdgeIdentityNames.edgeUri("edge-pilot-2"))),
+              ),
+              groupCertificate2,
+            ),
+          "a group name in another case" ->
+            (
+              mtlsClient.copy(mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_uri, "URN:versola:edge-group:pilot"))),
+              groupCertificate2.copy(subjectAlternativeNames = Map(MutualTlsSubjectType.san_uri -> Set("URN:versola:edge-group:pilot"))),
+            ),
+          "the group prefix with no group id" ->
+            (
+              mtlsClient.copy(mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_uri, EdgeIdentityNames.GroupPrefix))),
+              groupCertificate2.copy(subjectAlternativeNames = Map(MutualTlsSubjectType.san_uri -> Set(EdgeIdentityNames.GroupPrefix))),
+            ),
+          "a group name registered under another subject type" ->
+            (
+              mtlsClient.copy(
+                mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, EdgeIdentityNames.groupUri("pilot"))),
+              ),
+              groupCertificate2.copy(subjectAlternativeNames = Map(MutualTlsSubjectType.san_dns -> Set(EdgeIdentityNames.groupUri("pilot")))),
+            ),
+          "an edge-fronted native client registered by a group name" ->
+            (groupClient.copy(applicationType = ApplicationType.native, dpopBoundAccessTokens = true), groupCertificate2),
+          // What central does for a first-party client with `issueEdgeClientCertificate`: registered by its own subject
+          // (`CN=<client>,OU=<tenant>,O=Versola`), and its certificate renewed with a new key before it expires. The renewed
+          // certificate authenticates the client and the grant is refused all the same, so the user signs in again. #1008
+          // leaves this as it is; whether such a client should follow its certificate too is a separate decision.
+          "a first-party client registered by its own subject_dn, after central renewed its edge certificate" ->
+            (
+              mtlsClient.copy(mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, firstPartySubjectDn))),
+              renewedFirstPartyCertificate,
+            ),
+          "a client that authenticates by secret and registered certificate-bound tokens" ->
+            (certificateBoundClient, groupCertificate2),
+          "a public client with certificate-bound tokens (RFC 8705 §4)" ->
+            (publicClient.copy(id = clientId1, scope = scope1, certificateBoundAccessTokens = true), groupCertificate2),
+        ).map: (name, fixture) =>
+          val (client, secondCertificate) = fixture
+          test(name) {
+            val env = new Env
+            for
+              now <- Clock.instant
+              result <- refreshOver(
+                env = env,
+                client = client,
+                record = boundRecord(now, Some(Cnf.certificate(groupCertificate1.thumbprint))),
+                certificate = Some(secondCertificate),
+                // the native client's proof: its registration requires one, and the grant here names no key
+                dpopJkt = Option.when(client.dpopBoundAccessTokens)(jkt1),
+              )
+              rebound <- env.audit.of(AuthAuditKinds.TokenRebound)
+            yield assertTrue(
+              secondCertificate.thumbprint != groupCertificate1.thumbprint,
+              result == Left(TokenEndpointError.InvalidGrant.RefreshTokenCertificateMismatch),
+              // the certificate did authenticate the client, or the answer would be InvalidClient: only the grant's binding refused it
+              env.tokenRepo.findToken.calls.nonEmpty,
+              env.tokenRepo.renewBoundToken.calls.isEmpty,
+              env.tokenRepo.createRefreshToken.calls.isEmpty,
+              rebound.isEmpty,
+            )
+          },
+      ),
     ),
     suite("audit log")(
       /** The prefix of a refresh token the log keeps (`Observability.setRefreshToken`), enough to tell one from another and no more. */

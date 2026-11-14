@@ -1468,20 +1468,27 @@ export async function createPartner(body: CreatePartnerRequest): Promise<Created
   return request<CreatedPartner>('/configuration/partners', { method: 'POST', body });
 }
 
-export async function updatePartner(partner: Pick<Partner, 'id' | 'displayName' | 'logoUri' | 'contact' | 'reviewAt'>): Promise<void> {
+/** The partner as it was read: `version` is what central checks the write against, so a save made on a stale copy is refused. */
+export async function updatePartner(partner: Pick<Partner, 'id' | 'version' | 'displayName' | 'logoUri' | 'contact' | 'reviewAt'>): Promise<void> {
   await requestVoid('/configuration/partners', { method: 'PUT', body: partner });
 }
 
-export async function suspendPartner(id: string, note: string): Promise<void> {
-  await requestVoid('/configuration/partners/suspend', { method: 'POST', body: { id, note } });
+/** `authSynced: false` is central's `207`: the partner is suspended all the same, but auth could not be told to reload its clients. */
+export interface PartnerStatusChange { authSynced: boolean }
+
+export async function suspendPartner(id: string, note: string): Promise<PartnerStatusChange> {
+  return (await request<PartnerStatusChange | undefined>('/configuration/partners/suspend', { method: 'POST', body: { id, note } })) ?? { authSynced: true };
 }
 
-export async function resumePartner(id: string): Promise<void> {
-  await requestVoid('/configuration/partners/resume', { method: 'POST', body: { id } });
+export async function resumePartner(id: string): Promise<PartnerStatusChange> {
+  return (await request<PartnerStatusChange | undefined>('/configuration/partners/resume', { method: 'POST', body: { id } })) ?? { authSynced: true };
 }
 
-export async function updatePartnerLimits(id: string, limits: PartnerLimits): Promise<void> {
-  await requestVoid('/configuration/partners/limits', { method: 'PUT', body: { id, limits } });
+/** The clients of the partner that the new limits leave outside them: kept as they are, named so the operator can look at them. */
+export interface PartnerLimitsResult { outsideLimits: Array<{ clientId: string; fields: string[] }> }
+
+export async function updatePartnerLimits(id: string, limits: PartnerLimits): Promise<PartnerLimitsResult> {
+  return (await request<PartnerLimitsResult | undefined>('/configuration/partners/limits', { method: 'PUT', body: { id, limits } })) ?? { outsideLimits: [] };
 }
 
 export async function fetchPartnerApprovals(tenantId: string, status?: PartnerApproval['status']): Promise<PartnerApproval[]> {

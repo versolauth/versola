@@ -483,7 +483,7 @@ dump and the rollback is lost. With extra replicas of `auth` or `edge`, remove t
 unfinished `versola rollout` is undone with `versola rollout --abort` instead; secrets the new
 version added stay in OpenBao either way.
 
-#### New: app attestation for native apps (migrations `V1035` for `central`, `V2010` for `edge`; off by default)
+#### New: app attestation for native apps (migrations `V1039` for `central`, `V2011` for `edge`; off by default)
 
 `POST /native/start/{clientId}` authenticates as the client for any caller, so a script can run its own login through `edge` (#423).
 Central can now hold, per native client, whether `edge` asks the app to prove it is the genuine build on a genuine device (Apple App
@@ -494,7 +494,7 @@ satisfy one once it carries a version of the SDK that sends attestation.
 - **Roll out in two steps.** Set `report` first: `edge` verifies what the app sends, counts the outcome and answers as if it had not
   (`attestation_requests_total{platform,mode,result}`; `result` is `verified` or why not). Move to `enforce` when the count shows the
   installs in use pass. `enforce` before the apps send attestation turns those apps away with `invalid_client_attestation`.
-- **Migrations.** `V1035__client_attestation_policies.sql` (central) holds the policy per client; `V2010__attested_keys.sql` (edge) holds
+- **Migrations.** `V1039__client_attestation_policies.sql` (central) holds the policy per client; `V2011__attested_keys.sql` (edge) holds
   the App Attest keys that have been attested and the counter of their last assertion, which is what makes an assertion single use.
   Both are new tables, additive: the previous release runs on them and a rollback works; neither can be undone except by the
   pre-migration dump. `attested_keys` has a row per iOS install and client. A row is forgotten 365 days after the key was last used
@@ -1230,8 +1230,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   **What is recorded, and how often.** Refusals reachable without signing in (`client.auth_failed`, `token.refused`, a
   failed `authorize.request`, a refused `par.request`) are counted in memory per (kind, client, address, reason) and written
   as one row a minute with `details.count`; the table of keys holds at most 10 000, past which new keys are counted
-  together in one more row. The `token.issued` of a refresh-token grant is off by default (`events.token-refresh = false`); `token.refused` and
-  `token.reuse_detected` are always recorded. `PUT /users` records `account.updated` (actor `service`, `details.changed`
+  together in one more row. The `token.issued` of a refresh-token grant is off by default (`events.token-refresh = false`); `token.refused`,
+  `token.reuse_detected` and `token.rebound` (a grant of a client registered by an edge-group name bound to another certificate of
+  the group) are always recorded. `PUT /users` records `account.updated` (actor `service`, `details.changed`
   names `email`, `phone` or `login` and never a value, only when one changed); `DELETE /users` ends the user's sessions with
   `session.ended` and the cause `user_deleted`.
 
@@ -1553,8 +1554,8 @@ in `central` (`outcome`: `issued`, `unauthorized`, `bad_request`, `forbidden`, `
 
 > **Design for the next release.** This section describes what that release contains, so a deployment
 > can be planned. Nothing here is released yet and nothing is certified. The user-facing version, with
-> the same facts, is "Network, domains and certificates" and "Partner edge" in the documentation
-> (versolauth/versola-website, in the pull request versolauth/versola-website#144).
+> the same facts, is in the documentation: "Network, domains and certificates", "Partners" and
+> "Running an edge in partner mode".
 
 Ports, to avoid mixing them up: `central` has `PORT` (internal), `MPORT` (the edges' mutual TLS) and `APORT` (public; there it serves the enrollment route `POST /edge/enroll` behind a TLS terminator, and it binds only where `APORT` is set). `auth` has its own `APORT`, a different service and a different port.
 
@@ -1590,18 +1591,17 @@ certificate expiry.
    `central.<domain>` URL) and a persistent `identity { directory }`. The edge makes its key locally,
    sends a CSR with exactly `urn:versola:edge:<id>` and `urn:versola:edge-group:<group>` to
    `POST /edge/enroll`, and renews with `POST /edge/certificate/renew` at a third of its lifetime left,
-   with a new key each time. The certificate lives 30 days; an outage of `central` of about twenty days is survived. Renewals form a chain from the enrollment; `central`'s `edge-identity { max-age = 365d, auto-extend = true }` extends it itself at `max-age`, so no edge stops for want of a new enrollment. `auto-extend = false` applies only to partners' edges: `central` then stops at `max-age` until `POST /configuration/edges/extend?edgeId=<id>` or a new enrollment (token up to 24 hours). The edge is told the end date in every answer and warns daily from 30 days before; `GET /configuration/edges` shows `identityChainEndsAt`. First-party edges are always extended. Without the volume it must enroll again on every restart.
+   with a new key each time. The certificate lives 30 days (`edge-certificates.validity`); an outage of `central` of about twenty days is survived. An edge of a `partner` group gets `edge-certificates.partner-validity` (14 days unless set). Renewal is always on for as long as the edge is registered; a partner's edge is stopped by suspending the partner (`POST /configuration/partners/suspend`), which refuses it on `/edge/partner/*`, renewal included, so its certificate expires within `partner-validity`. Without the volume it must enroll again on every restart.
 4. Set `central.url` to `https://central-mtls.<domain>` and `native.auth-mutual-tls-url` to
    `https://id-mtls.<domain>`, and pin the server leaves (documentation page "Edge configuration"). In this release the operator updates a remote edge's pins (0.8.0 is planned to publish them from `central`).
 
-**Partner edge.** The operator decides, in `central`: an edge group has a `kind` of `first_party` or
-`partner`, set at creation and never changed by the edge. The `mode` key in an edge's own configuration
-is only a declaration: at start the edge compares it with the group in its credentials and refuses to
-start on a mismatch. A partner group never reaches `/edge/sync/*`, so a partner edge cannot read
-`central`'s configuration; a client of a partner group needs standard client authentication (`private_key_jwt` or
-`tls_client_auth`). Planned, not in this release: `auth` accepting an edge's certificate for the clients of its group. Onboarding: create a `partner` group and its edge, register the partner's clients
-bound to that group, publish `id.<domain>` (and `id-mtls.<domain>` for `tls_client_auth`). A partner
-never gets `central-mtls.<domain>`.
+**Partner edges.** A partner runs its own `edge` in its own network and owns clients inside one of your tenants. What
+you do at deploy time: set `public-urls { enroll, mtls }` in `central`'s configuration (the public names of its enrollment
+and mutual-TLS listeners; the first is written into every enrollment token, and no partner can be created without it) and
+`auth.mtls-url` (the public name of `auth`'s mutual-TLS listener), route those names as in the table above, and hand each
+partner the one enrollment token `POST /configuration/partners` answers. How a partner is onboarded, limited, approved
+and suspended is in the documentation page "Partners" (operations section); the partner's side is "Running an edge in
+partner mode".
 
 **Behaviour change and breaking items** (read before upgrading; `central`, `auth` and every `edge`
 move together and `configure` is re-run)
@@ -1615,7 +1615,7 @@ move together and `configure` is re-run)
   stay with the client CA.
 - The edge identity is 30 days (`vps`) and renewed by the edge itself, not by `versola certs renew`;
   it needs a persistent `identity.directory`. Revocation: deleting the edge, or rotating its signing
-  key (`POST /configuration/edges/rotate-key`), cuts it off at once, because `central` needs both the
+  key (`POST /configuration/edges/rotate-key`, first-party edges only: a partner's edge makes its own), cuts it off at once, because `central` needs both the
   certificate and the edge's signed token. A list of revoked serials comes later.
 - **Not in this release:** `auth` accepting an edge's certificate for a client served by an edge
   (such clients still need their own certificate or `issueEdgeClientCertificate`), and `central`

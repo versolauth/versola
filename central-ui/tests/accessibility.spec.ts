@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 import { consentForm, consentPreviews } from './consent-preview-fixtures';
 import { ftPath, ftState } from './forms-themes-fixtures';
 import { loadAdminApp, sidePanel, sidePanelDialog } from './fixtures';
+import { pilotPay } from './partners-fixtures';
 import { ordersApi, shopState } from './resources-fixtures';
 import type { UserAuditMock } from './mocks';
 import { ACTIVITY_NOW, activityAudit, emptyActivityAudit, partialActivityAudit } from './user-activity-fixtures';
@@ -414,17 +415,20 @@ for (const theme of themes) {
         themePresets: [{ id: 'versola', title: { en: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } }],
         forms: [consentForm],
         formPreviews: [consentPreviews],
+        partners: [pilotPay],
       },
     });
     await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
     await page.getByRole('button', { name: /Web app/ }).click();
+    await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'Partner' }).click();
+    await page.getByRole('combobox', { name: 'Partner' }).click();
+    await page.getByRole('option', { name: /Pilot Pay/ }).click();
     await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
     await page.locator('versola-client-form #client-id').fill('wizard-a11y');
     await page.locator('versola-client-form input#client-name').fill('Wizard A11y');
-    await page.locator('#redirect-uri').fill('https://a11y.example/callback');
+    await page.locator('#redirect-uri').fill('https://a11y.pilotpay.example/callback');
     await page.locator('#redirect-uri').press('Enter');
     await page.getByRole('button', { name: /^Continue to sign-in$/ }).click();
-    await page.getByRole('button', { name: 'Partner app', exact: true }).click();
     await expect(page.getByRole('region', { name: 'Appearance for this app' })).toBeVisible();
     // The preview is part of the block: scan it drawn, not while central is still rendering it.
     await expect(page.locator('versola-client-consent-preview iframe')).toHaveCount(1);

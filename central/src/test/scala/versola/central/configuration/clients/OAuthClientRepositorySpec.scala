@@ -1,10 +1,13 @@
 package versola.central.configuration.clients
 
 import com.augustnagro.magnum.magzio.TransactorZIO
+import versola.central.configuration.partners.{PartnerClientLimitReached, PartnerId}
 import versola.central.configuration.permissions.Permission
+import versola.central.configuration.resources.{AudienceRateLimit, ResourceId, ResourceRepository}
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
-import versola.central.configuration.{PatchClientRedirectUris, PatchClientScope, PatchPermissions}
+import versola.central.configuration.{PatchClientRedirectUris, PatchClientScope, PatchPermissions, ResourceUri}
+import versola.util.http.{DeclaredRateLimit, DeclaredRateLimitBy, GuardMode, RateLimitWindow}
 import versola.util.theme.{Background, BrandColor, Mode, Shape, Surface, ThemeOverrides}
 import versola.util.{DatabaseSpecBase, Dpop, Patch, RedirectUri, Secret}
 import zio.*
@@ -66,6 +69,8 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     createdAt = Instant.EPOCH,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
+    approval = ClientApproval.Approved,
   )
 
   /** Applies a patch to the nullable fields, leaving every other field of the client alone. */
@@ -86,6 +91,71 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
 
   override def testCases(env: OAuthClientRepositorySpec.Env) =
     List(
+      // #962 review: client ids are global, so one registered later under the id of a deleted client must not find itself in an audience
+      test("deleting a client takes its id out of the audience of every resource, and out of the limits set for it, and no other's") {
+        val deleted = clientId
+        val kept = ClientId("other-app")
+        val limit = DeclaredRateLimit(
+          limits = List(RateLimitWindow(limit = 60, windowSeconds = 60)),
+          burst = 10,
+          by = DeclaredRateLimitBy.Client,
+          mode = GuardMode.Enforce,
+        )
+        val resourceA = ResourceId("res-a")
+        val resourceB = ResourceId("res-b")
+        val resourceC = ResourceId("res-c")
+        def create(id: ResourceId, audience: List[ClientId]) =
+          env.resources.createResource(tenantId, id, ResourceUri(s"https://$id.example.com"), audience, Vector.empty, None, None)
+        for
+          _ <- env.repository.createClient(client)
+          _ <- create(resourceA, List(deleted, kept))
+          _ <- create(resourceB, List(deleted))
+          _ <- create(resourceC, List(kept))
+          _ <- env.resources.updateAudienceRateLimits(resourceA, List(AudienceRateLimit(deleted, limit), AudienceRateLimit(kept, limit)))
+          _ <- env.repository.deleteClient(deleted)
+          a <- env.resources.findResource(resourceA)
+          b <- env.resources.findResource(resourceB)
+          c <- env.resources.findResource(resourceC)
+          gone <- env.repository.find(deleted)
+        yield assertTrue(
+          gone.isEmpty,
+          a.map(_.audience) == Some(List(kept)),
+          a.map(_.audienceRateLimits.map(_.clientId)) == Some(List(kept)),
+          b.map(_.audience) == Some(Nil),
+          c.map(_.audience) == Some(List(kept)),
+        )
+      },
+      // #962: the limit is the repository's to hold, whatever is created at once; the decision is made in code under the partner's lock
+      test("a partner's clients are as many as its limit and no more, however many are created at once, and its console is not counted") {
+        val acme = PartnerId("acme")
+        def owned(n: Int) = client.copy(id = ClientId(s"acme-$n"), partnerId = Some(acme), approval = ClientApproval.Pending)
+        def stored = env.repository.getAll.map(_.count(_.partnerId.contains(acme)))
+        for
+          console <- env.partners.partner(acme, maxClients = 2)
+          results <- ZIO.foreachPar(1 to 8)(n => env.repository.createClient(owned(n)).either)
+          storedAtLimit <- stored
+          // the console is registered with the partner, whatever is full
+          consoleResult <- env.repository.createClient(client.copy(id = console, partnerId = Some(acme))).either
+          again <- env.repository.createClient(owned(99)).either
+          storedAfter <- stored
+          // a first-party client has no limit
+          free <- ZIO.foreach(1 to 4)(n => env.repository.createClient(client.copy(id = ClientId(s"own-$n"))).either)
+        yield assertTrue(
+          results.count(_.isRight) == 2,
+          // the refusal is the typed one, and no other failure
+          results.forall:
+            case Right(_) => true
+            case Left(PartnerClientLimitReached(partner, 2)) => partner == acme
+            case Left(_) =>
+              false
+          ,
+          storedAtLimit == 2,
+          consoleResult.isRight,
+          again.left.exists(_.isInstanceOf[PartnerClientLimitReached]),
+          storedAfter == 3,
+          free.forall(_.isRight),
+        )
+      },
       test("create and find client") {
         for
           _ <- env.repository.createClient(client)
@@ -345,4 +415,9 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     )
 
 object OAuthClientRepositorySpec:
-  case class Env(repository: OAuthClientRepository)
+  /** What a store has to be able to put in place for the tests that need a partner: its row (with `maxClients`) and the group it points
+    * at. Answers the partner's console client id. */
+  trait PartnerFixtures:
+    def partner(id: PartnerId, maxClients: Int): Task[ClientId]
+
+  case class Env(repository: OAuthClientRepository, partners: PartnerFixtures, resources: ResourceRepository)

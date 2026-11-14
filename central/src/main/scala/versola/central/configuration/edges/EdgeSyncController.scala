@@ -2,9 +2,10 @@ package versola.central.configuration.edges
 
 import versola.central.configuration.clients.attestation.ClientAttestationService
 import versola.central.configuration.clients.certificates.ClientCertificateService
-import versola.central.configuration.clients.{AuthorizationPresetService, ClientController, OAuthClientService}
+import versola.central.configuration.clients.{AuthorizationPreset, AuthorizationPresetService, ClientController, OAuthClientService}
 import versola.central.configuration.jwks.JwksService
 import versola.central.configuration.metadata.ServerMetadataService
+import versola.central.configuration.partners.PartnerRegistry
 import versola.central.configuration.permissions.PermissionService
 import versola.central.configuration.resources.{ResourceRecord, ResourceService}
 import versola.central.configuration.roles.RoleService
@@ -21,8 +22,8 @@ import versola.central.configuration.{
   SignEdgeCertificateRequest,
   SignEdgeCertificateResponse,
 }
-import versola.central.{CentralConfig, authorizeEdge}
-import versola.util.http.{Controller, Unauthorized}
+import versola.central.{CentralConfig, authorizeEdge, authorizeRenewal}
+import versola.util.http.{Controller, Forbidden, Unauthorized}
 import versola.util.{Base64Url, Dpop, SecurityService}
 import zio.ZIO
 import zio.http.*
@@ -41,7 +42,7 @@ import java.security.cert.X509Certificate
   */
 object EdgeSyncController extends Controller:
   type Env = Tracing & CentralConfig & EdgeService & EdgeIdentityService & SecurityService & OAuthClientService & ClientCertificateService &
-    ClientAttestationService & AuthorizationPresetService & ResourceService & RoleService & PermissionService & JwksService & ServerMetadataService
+    ClientAttestationService & AuthorizationPresetService & ResourceService & RoleService & PermissionService & JwksService & ServerMetadataService & PartnerRegistry
 
   def routes: Routes[Env, Throwable] = Routes(
     clientsEndpoint,
@@ -174,24 +175,27 @@ object EdgeSyncController extends Controller:
         edgeId <- authorizeEdge(request)
         service <- ZIO.service[AuthorizationPresetService]
         presets <- service.getPresetsForSync(Some(edgeId))
-        response = GetAuthorizationPresetsSyncResponse(presets.map { preset =>
-          AuthorizationPresetSyncResponse(
-            id = preset.id,
-            clientId = preset.clientId,
-            description = preset.description,
-            redirectUri = preset.redirectUri,
-            postLoginRedirectUri = preset.postLoginRedirectUri,
-            postLogoutRedirectUri = preset.postLogoutRedirectUri,
-            scope = preset.scope,
-            responseType = preset.responseType,
-            uiLocales = preset.uiLocales,
-            customParameters = preset.customParameters,
-            cookieDomain = preset.cookieDomain,
-            cookiePath = preset.cookiePath,
-          )
-        })
-      yield Response.json(response.toJson)
+      yield Response.json(presetsSyncResponse(presets).toJson)
     }
+
+  /** Presets as an edge is served them; shared with the partner surface. */
+  private[central] def presetsSyncResponse(presets: Vector[AuthorizationPreset]): GetAuthorizationPresetsSyncResponse =
+    GetAuthorizationPresetsSyncResponse(presets.map { preset =>
+      AuthorizationPresetSyncResponse(
+        id = preset.id,
+        clientId = preset.clientId,
+        description = preset.description,
+        redirectUri = preset.redirectUri,
+        postLoginRedirectUri = preset.postLoginRedirectUri,
+        postLogoutRedirectUri = preset.postLogoutRedirectUri,
+        scope = preset.scope,
+        responseType = preset.responseType,
+        uiLocales = preset.uiLocales,
+        customParameters = preset.customParameters,
+        cookieDomain = preset.cookieDomain,
+        cookiePath = preset.cookiePath,
+      )
+    })
 
   /** The one field of the authorization server metadata an edge acts on: the DPoP proof
     * algorithms (RFC 9449 §5.1), which it checks proxied calls' proofs against (edge's
@@ -203,12 +207,17 @@ object EdgeSyncController extends Controller:
     Method.GET / "edge" / "sync" / "server-metadata" -> handler { (request: Request) =>
       for
         _ <- authorizeEdge(request)
-        service <- ZIO.service[ServerMetadataService]
-        metadata <- service.getMetadata
-        algorithms = metadata.flatMap(_.get(Dpop.Algorithm.MetadataField))
-        reduced = Json.Obj(algorithms.map(Dpop.Algorithm.MetadataField -> _).toSeq*)
+        reduced <- reducedServerMetadata
       yield Response.json(reduced.toJson)
     }
+
+  /** The DPoP algorithms of the metadata document, and nothing else; shared with the partner surface. */
+  private[central] val reducedServerMetadata: ZIO[ServerMetadataService, Throwable, Json.Obj] =
+    for
+      service <- ZIO.service[ServerMetadataService]
+      metadata <- service.getMetadata
+      algorithms = metadata.flatMap(_.get(Dpop.Algorithm.MetadataField))
+    yield Json.Obj(algorithms.map(Dpop.Algorithm.MetadataField -> _).toSeq*)
 
   /** #463: an edge's request for a certificate for a client it generated the key of. Authenticated
     * as the edge itself (the signed token it syncs with), never as an admin: it is not on the admin
@@ -231,22 +240,25 @@ object EdgeSyncController extends Controller:
 
   /** A new certificate for the calling edge itself, for the one it has: asked for over the mutual-TLS listener, so the
     * handshake and the token have already said which edge this is. The request must name exactly that edge and its
-    * group, and carries a new key every time. */
+    * group, and carries a new key every time. The one route an edge of either kind reaches ([[authorizeRenewal]]): a
+    * partner's edge keeps renewing for as long as it is registered and its partner is not suspended (403 then). */
   val renewIdentityEndpoint =
     Method.POST / "edge" / "certificate" / "renew" -> handler { (request: Request) =>
       (for
-        edgeId <- authorizeEdge(request)
+        edge <- authorizeRenewal(request)
         body <- request.bodyAs[RenewEdgeCertificateRequest]
         identity <- ZIO.serviceWithZIO[EdgeIdentityService](_.renew(
-          edgeId,
+          edge.id,
           body.csr,
           request.remoteCertificate.collect { case certificate: X509Certificate => certificate.getSerialNumber.toString(16) },
+          body.signingKey,
         ))
-      yield Response.json(EdgeIdentityResponse(identity.chain, identity.chainEndsAt).toJson))
+      yield Response.json(EdgeIdentityResponse(identity.chain).toJson))
         .catchAll {
           case error: EdgeIdentityService.Refused =>
             ZIO.succeed(Response.text(error.getMessage).status(Status.UnprocessableEntity))
           case Unauthorized => ZIO.succeed(Response.status(Status.Unauthorized))
+          case Forbidden => ZIO.succeed(Response.status(Status.Forbidden))
           case error: Throwable => ZIO.fail(error)
         }
     }
@@ -259,7 +271,8 @@ object EdgeSyncController extends Controller:
       edge <- ZIO.serviceWithZIO[EdgeService](_.find(edgeId)).someOrFail(Unauthorized)
     yield edge
 
-  private def toResourceSyncResponse(record: ResourceRecord, edge: EdgeRecord) =
+  /** A resource as an edge is served it, the secret encrypted to the edge's key; shared with the partner surface. */
+  private[central] def toResourceSyncResponse(record: ResourceRecord, edge: EdgeRecord) =
     // Keep edge on the old secret until the previous secret is explicitly removed.
     val effectiveSecret = record.previousSecret.orElse(record.secret)
     ZIO.foreach(effectiveSecret)(secret =>
@@ -288,6 +301,9 @@ object EdgeSyncController extends Controller:
       )
     }
 
+/** `signingKey` is a new public JWK for the edge to sign with: central replaces the edge's key with it once the certificate is
+  * signed, and the edge switches after it has installed the certificate. */
 case class RenewEdgeCertificateRequest(
     csr: String,
+    signingKey: Option[Json.Obj] = None,
 ) derives JsonCodec, Schema
