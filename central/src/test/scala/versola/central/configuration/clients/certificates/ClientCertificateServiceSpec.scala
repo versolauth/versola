@@ -122,6 +122,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     enrollEdgeClientCertificate = false,
     themeOverrides = None,
     estEnrollment = false,
+    partnerId = None,
   )
 
   private def record =
@@ -161,6 +162,8 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       createdAt = registeredAt,
       applicationType = ApplicationType.native,
       themeOverrides = None,
+      partnerId = None,
+      approval = ClientApproval.Approved,
     )
 
   private val config =

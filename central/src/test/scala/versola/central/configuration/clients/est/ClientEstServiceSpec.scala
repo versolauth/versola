@@ -184,6 +184,8 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
       createdAt = registeredAt,
       applicationType = ApplicationType.web,
       themeOverrides = None,
+      partnerId = None,
+      approval = ClientApproval.Approved,
     )
 
   /** Short chains and certificates that outlive them, so that a chain can end while the certificate in hand is still good. */
@@ -749,4 +751,5 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
       enrollEdgeClientCertificate = enrollEdge,
       themeOverrides = None,
       estEnrollment = true,
+      partnerId = None,
     )

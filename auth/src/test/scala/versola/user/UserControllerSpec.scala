@@ -89,6 +89,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
   )
 
   /** A configuration that knows the TTLs, and the client `find` is asked for, if any. */

@@ -71,6 +71,7 @@ object ConsentFlowSpec extends E2ESpec:
           authorize.verifier,
           clientId = Some(s.clientId),
           clientSecret = Some(s.clientSecret),
+          certificate = s.certificate,
           redirectUri = Some(s.redirectUri),
         ).success
       yield assertTrue(token.accessToken.nonEmpty)
@@ -210,6 +211,7 @@ object ConsentFlowSpec extends E2ESpec:
           authorize.verifier,
           clientId = Some(s.clientId),
           clientSecret = Some(s.clientSecret),
+          certificate = s.certificate,
           redirectUri = Some(s.redirectUri),
         ).success
       yield assertTrue(!token.scope.exists(_.contains("email")))
@@ -257,6 +259,7 @@ object ConsentFlowSpec extends E2ESpec:
           authorize.verifier,
           clientId = Some(s.clientId),
           clientSecret = Some(s.clientSecret),
+          certificate = s.certificate,
           redirectUri = Some(s.redirectUri),
         ).success
       yield assertTrue(step.step.contains(ConversationStep.Consent))
@@ -275,6 +278,7 @@ object ConsentFlowSpec extends E2ESpec:
           authorize.verifier,
           clientId = Some(s.clientId),
           clientSecret = Some(s.clientSecret),
+          certificate = s.certificate,
           redirectUri = Some(s.redirectUri),
         ).success
       yield assertTrue(token.refreshToken.isEmpty)

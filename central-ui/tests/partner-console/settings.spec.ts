@@ -1,7 +1,7 @@
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
 import { findRequest } from '../fixtures';
 import { scan } from './axe';
-import { loadPartnerApp } from './fixtures';
+import { loadPartnerApp, test } from './fixtures';
 import { PARTNER_NOW, asLevel, suspendedPartner } from './partner-fixtures';
 
 /**

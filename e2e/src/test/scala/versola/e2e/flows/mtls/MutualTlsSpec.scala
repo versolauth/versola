@@ -49,6 +49,7 @@ object MutualTlsSpec extends E2ESpec:
       subjectType: String,
       subjectValue: String,
       scopes: Set[String] = Set("openid", "email"),
+      authFlow: Option[Json] = None,
   ): Task[(String, String)] =
     for
       id <- uid.map(s => s"mtls-client-$s")
@@ -57,6 +58,7 @@ object MutualTlsSpec extends E2ESpec:
         "Mutual TLS Test Client",
         Set(redirectUri),
         allowedScopes = scopes,
+        authFlow = authFlow,
         authMethod = "tls_client_auth",
         mtlsAuth = Some(Fixtures.mutualTlsAuth(subjectType, subjectValue)),
       ).success
@@ -139,6 +141,62 @@ object MutualTlsSpec extends E2ESpec:
 
   private def thumbprintOf(accessToken: String): Task[Option[String]] =
     confirmation(accessToken).map(_.flatMap(_.get("x5t#S256")).collect { case Json.Str(value) => value })
+
+  /** A user signed in at a client with `offline_access`, and the code redeemed over `certificate`: the grant a refresh
+    * test starts from, bound to that certificate. */
+  private def boundGrant(
+      auth: OAuthClient,
+      clientId: String,
+      clientSecret: String,
+      certificate: String,
+  ): Task[(UUID, TokenResult.Success, String)] =
+    for
+      email <- uid.map(s => s"mtls-grant-$s@example.test")
+      userId <- auth.registerUser(email = Some(email))
+      _ <- auth.flushUserOutbox()
+      authorize <- auth.authorize(
+        scope = "openid email offline_access",
+        clientId = Some(clientId),
+        redirectUri = Some(redirectUri),
+      ).assertChallengeRedirect
+      cookie = authorize.conversationCookie.get
+      credential <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+      _ <- auth.submitEmail(cookie, email, credential.csrf)
+      otp <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
+      code <- auth.submitOtp(cookie, fixedOtp, otp.csrf).assertRedirect
+      issued <- auth.token(
+        code,
+        authorize.verifier,
+        clientId = Some(clientId),
+        clientSecret = Some(clientSecret),
+        redirectUri = Some(redirectUri),
+        certificate = Some(certificate),
+      ).success
+      refreshToken <- ZIO.fromOption(issued.refreshToken)
+        .orElseFail(RuntimeException("Expected a refresh token for the offline_access scope"))
+    yield (userId, issued, refreshToken)
+
+  /** The `token.rebound` events auth's audit log holds for `userId`, oldest first, as the thumbprints each one moved the
+    * grant from and to. Waits, within a bound, for `expected` of them: the log's writer batches, so a row is there up to
+    * a second after the request that made it. */
+  private def rebindings(auth: OAuthClient, userId: UUID, expected: Int): Task[List[(String, String)]] =
+    def read: Task[List[(String, String)]] =
+      for
+        response <- auth.auditGet(s"/users/audit-events?id=$userId&limit=500")
+        body <- response.body.asString
+        _ <- ZIO.fail(RuntimeException(s"the audit log answered ${response.status}: $body")).unless(response.status == Status.Ok)
+        json <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(RuntimeException(_))
+        events = json.get("events").flatMap(_.asArray).map(_.toList).getOrElse(Nil).flatMap(_.asObject)
+      yield events
+        .filter(_.get("kind").flatMap(_.asString).contains("token.rebound"))
+        .flatMap(_.get("details").flatMap(_.asObject))
+        .flatMap(details =>
+          details.get("previousThumbprint").flatMap(_.asString).zip(details.get("thumbprint").flatMap(_.asString)),
+        )
+        .reverse
+    def attempt(left: Int): Task[List[(String, String)]] =
+      read.flatMap(found => if found.size >= expected || left == 0 then ZIO.succeed(found) else ZIO.sleep(250.millis) *> attempt(left - 1))
+    attempt(80).withClock(Clock.ClockLive)
 
   /** RFC 6749 §5.2 error body, of which only the code is asserted on. */
   private case class OAuthError(error: String) derives JsonDecoder
@@ -442,6 +500,92 @@ object MutualTlsSpec extends E2ESpec:
           .label("a certificate-bound grant must not refresh under a different certificate") &&
         assertTrue(thumbprint.contains(certificate.thumbprint))
           .label("the renewed token must carry the same binding")
+    },
+    // RFC 8705 §7.1 binds a confidential client's refresh token to the client through its authentication. Versola pins
+    // the grant to one certificate all the same (the test above), with one exception (#1008): a client registered by
+    // the name of an edge group, which every edge of the group authenticates with a certificate of its own, renewed
+    // with a new key. The spec plays those edges here; `EdgeGroupCertificateSpec` runs real ones.
+    test("a client registered by an edge-group name refreshes over another certificate of its group, and the grant follows it") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        group <- uid.map(s => s"e2e-rebind-$s")
+        first <- EdgeCertificate.make(commonName = s"$group-edge-1", uri = Some(EdgeFixture.groupName(group)))
+        second <- EdgeCertificate.make(commonName = s"$group-edge-2", uri = Some(EdgeFixture.groupName(group)))
+        stranger <- EdgeCertificate.make(commonName = s"$group-stranger", uri = Some(EdgeFixture.groupName(s"$group-other")))
+        (clientId, clientSecret) <- mtlsClient(
+          auth,
+          "san_uri",
+          EdgeFixture.groupName(group),
+          scopes = Set("openid", "email", "offline_access"),
+          authFlow = Some(Flows.emailOtpAuthFlow),
+        )
+        (userId, issued, refreshToken) <- boundGrant(auth = auth, clientId = clientId, clientSecret = clientSecret, certificate = first.urlEncodedPem)
+        boundAtIssue <- thumbprintOf(issued.accessToken)
+
+        // Neither authenticates the client, so the grant is never reached: a certificate of another group, and none.
+        foreign <- auth.refresh(refreshToken, Some(clientId), Some(clientSecret), certificate = Some(stranger.urlEncodedPem))
+        (foreignStatus, foreignError) <- rejection(foreign)
+        bare <- auth.refresh(refreshToken, Some(clientId), Some(clientSecret))
+        (bareStatus, bareError) <- rejection(bare)
+
+        moved <- auth.refresh(refreshToken, Some(clientId), Some(clientSecret), certificate = Some(second.urlEncodedPem)).success
+        boundAfterMove <- thumbprintOf(moved.accessToken)
+        // The access token is checked as strictly as ever: only the certificate it names serves it.
+        overSecond <- auth.userinfo(moved.accessToken, certificate = Some(second.urlEncodedPem))
+        overFirst <- auth.userinfo(moved.accessToken, certificate = Some(first.urlEncodedPem))
+        // The grant itself moved, so the same certificate again changes nothing and records nothing ...
+        again <- auth.refresh(refreshToken, Some(clientId), Some(clientSecret), certificate = Some(second.urlEncodedPem)).success
+        boundAgain <- thumbprintOf(again.accessToken)
+        // ... and the first one, still a member of the group, takes it back.
+        back <- auth.refresh(refreshToken, Some(clientId), Some(clientSecret), certificate = Some(first.urlEncodedPem)).success
+        boundBack <- thumbprintOf(back.accessToken)
+        recorded <- rebindings(auth = auth, userId = userId, expected = 2)
+        _ <- auth.deleteUser(userId)
+      yield assertTrue(boundAtIssue.contains(first.thumbprint), first.thumbprint != second.thumbprint)
+        .label("the control: the grant starts out bound to the first edge's certificate") &&
+        assertTrue(foreignError == "invalid_client", foreignStatus == Status.Unauthorized)
+          .label("a certificate of another group must not authenticate the client") &&
+        assertTrue(bareError == "invalid_client", bareStatus == Status.Unauthorized)
+          .label("no certificate must not authenticate the client") &&
+        assertTrue(boundAfterMove.contains(second.thumbprint), moved.refreshToken.contains(refreshToken))
+          .label("the new access token is bound to the certificate that refreshed, and the refresh token stays the client's") &&
+        assertTrue(overSecond.isInstanceOf[UserinfoResult.Success])
+          .label("/userinfo serves the re-bound token over the certificate it now names") &&
+        assertTrue(overFirst match { case f: UserinfoResult.Failure => f.response.status == Status.Unauthorized; case _ => false })
+          .label("and refuses it over the certificate the grant was first bound to") &&
+        assertTrue(boundAgain.contains(second.thumbprint), boundBack.contains(first.thumbprint))
+          .label("the grant stays where it was moved, and moves back with the first certificate") &&
+        assertTrue(recorded == List(first.thumbprint -> second.thumbprint, second.thumbprint -> first.thumbprint))
+          .label("each re-binding is in the audit log with both thumbprints, and the refresh that moved nothing is not")
+    },
+    // What #1008 leaves alone, as a first-party client meets it: registered by its own subject, and its certificate
+    // renewed with a new key (what central does for `issueEdgeClientCertificate`). The renewed certificate
+    // authenticates the client and the grant is refused all the same.
+    test("a client registered by its own subject is still refused a refresh over its renewed certificate") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        name <- uid.map(s => s"e2e-own-subject-$s")
+        issuedCertificate <- EdgeCertificate.make(commonName = name)
+        renewedCertificate <- EdgeCertificate.make(commonName = name)
+        (clientId, clientSecret) <- mtlsClient(
+          auth,
+          "subject_dn",
+          s"CN=$name",
+          scopes = Set("openid", "email", "offline_access"),
+          authFlow = Some(Flows.emailOtpAuthFlow),
+        )
+        (userId, _, refreshToken) <-
+          boundGrant(auth = auth, clientId = clientId, clientSecret = clientSecret, certificate = issuedCertificate.urlEncodedPem)
+        renewed <- auth.refresh(refreshToken, Some(clientId), Some(clientSecret), certificate = Some(renewedCertificate.urlEncodedPem))
+        (status, error) <- rejection(renewed)
+        same <- auth.refresh(refreshToken, Some(clientId), Some(clientSecret), certificate = Some(issuedCertificate.urlEncodedPem)).success
+        boundAfter <- thumbprintOf(same.accessToken)
+        _ <- auth.deleteUser(userId)
+      yield assertTrue(issuedCertificate.thumbprint != renewedCertificate.thumbprint) &&
+        assertTrue(error == "invalid_grant", status == Status.BadRequest)
+          .label("the renewed certificate authenticates the client (or this would be invalid_client) and the grant still refuses it") &&
+        assertTrue(boundAfter.contains(issuedCertificate.thumbprint))
+          .label("the certificate of the grant still refreshes it, and the grant has not moved")
     },
     test("/userinfo honours a certificate-bound token only over the certificate it is bound to") {
       for

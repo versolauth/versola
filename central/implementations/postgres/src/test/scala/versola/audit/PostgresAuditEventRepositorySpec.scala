@@ -2,7 +2,7 @@ package versola.audit
 
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.central.audit.{CentralAudit, CentralAuditRepositorySpec}
+import versola.central.audit.{CentralAudit, CentralAuditRepository, CentralAuditRepositorySpec}
 import versola.util.audit.*
 import versola.util.postgres.PostgresSpec
 import zio.*

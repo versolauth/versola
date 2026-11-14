@@ -2197,13 +2197,27 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
         |""".stripMargin
     else ""
 
+  // The names a partner's edge reaches central by (#549, #962): the address in an enrollment token is the first, the second is
+  // told to the edge when it enrols. Where the deployment has no public name for them (every profile but `local`) the operator sets
+  // `public-urls { enroll, mtls }` by hand (deploy.md, "Partner edge"), and no partner can be created until it does.
+  val centralPublicUrlsBlock =
+    if isLocal then
+      s"""
+         |# Where a partner's edge reaches central from outside: the enrollment listener (APORT) and the mutual-TLS one (MPORT).
+         |public-urls {
+         |  enroll = "https://localhost:9094"
+         |  mtls   = "https://localhost:$centralMutualTlsPort"
+         |}
+         |""".stripMargin
+    else ""
+
   val centralConf =
     s"""env = $env
        |
        |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
        |
        |# otel-exporter = "http://localhost:4317"
-       |$clientCertificatesBlock$edgeCertificateAuthorityBlock
+       |$clientCertificatesBlock$edgeCertificateAuthorityBlock$centralPublicUrlsBlock
        |bootstrap {
        |  login = "$bootstrapLogin"
        |  admin-user-id = "$adminUserId"

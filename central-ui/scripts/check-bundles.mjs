@@ -16,6 +16,10 @@ const FORBIDDEN = ['/configuration/', '/users/', 'permissions/me', '/central/', 
 // The in-page mock of the partner API is for the dev server only: a production file that still carries it would answer for the edge.
 const MOCK_MARKERS = ['No mock handler for', 'installMockFetch', 'partner-default', 'pilot-pay-web'];
 
+// A partner has no way to choose, or see, first-party as an edge, a group kind, an owner or an edge binding: the edge fixes the group from the
+// certificate that names the partner. The operator's words for these (its Owner step, the Edges Group and Kind columns) are not in the partner file.
+const FIRST_PARTY = [/first[\s_-]?party/i, /group[\s_-]?kind/i, /who owns the client/i, /decides consent, limits and which edges serve the client/i];
+
 const files = (await readdir(dist)).filter(name => name.endsWith('.js')).sort();
 const problems = [];
 if (JSON.stringify(files) !== JSON.stringify(EXPECTED)) {
@@ -39,6 +43,10 @@ while (queue.length > 0) {
   for (const needle of [...FORBIDDEN, ...MOCK_MARKERS]) {
     const at = code.indexOf(needle);
     if (at >= 0) problems.push(`${name} contains "${needle}": …${code.slice(Math.max(0, at - 40), at + 60).replace(/\s+/g, ' ')}…`);
+  }
+  for (const pattern of FIRST_PARTY) {
+    const found = pattern.exec(code);
+    if (found) problems.push(`${name} contains ${pattern}: …${code.slice(Math.max(0, found.index - 40), found.index + 60).replace(/\s+/g, ' ')}…`);
   }
   for (const match of code.matchAll(/(?:from\s*|import\s*\(\s*)["']\.\/([^"']+\.js)["']/g)) queue.push(match[1]);
 }

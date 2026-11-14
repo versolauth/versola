@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
 import { scan } from './axe';
-import { loadPartnerApp } from './fixtures';
+import { loadPartnerApp, test } from './fixtures';
 import { PARTNER_NOW } from './partner-fixtures';
 
 /** Audit: the partner's own log, filtered by actor and kind, paged by cursor, exported as CSV. */

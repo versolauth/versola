@@ -69,6 +69,7 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
   )
 
   /** The same client, but one that shows the user a consent screen. */

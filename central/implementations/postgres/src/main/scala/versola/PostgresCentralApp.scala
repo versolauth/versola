@@ -47,7 +47,6 @@ import versola.central.configuration.edges.{
   EdgeEnrollmentTokenRepository,
   EdgeGroupRepository,
   EdgeGroupService,
-  EdgeIdentityChainRepository,
   EdgeIdentityService,
   EdgeRepository,
   EdgeService,
@@ -57,6 +56,15 @@ import versola.central.configuration.forms.{FormController, FormRepository, Form
 import versola.central.configuration.jwks.{JwksController, JwksService}
 import versola.central.configuration.locales.{LocaleCompletenessValidator, LocaleController, LocaleRepository, LocaleService}
 import versola.central.configuration.metadata.{ServerMetadataController, ServerMetadataRepository, ServerMetadataService}
+import versola.central.configuration.partners.{
+  PartnerApprovalRepository,
+  PartnerClientService,
+  PartnerController,
+  PartnerEdgeController,
+  PartnerRegistry,
+  PartnerRepository,
+  PartnerService,
+}
 import versola.central.configuration.permissions.{PermissionController, PermissionRepository, PermissionService}
 import versola.central.configuration.resources.{ResourceController, ResourceRepository, ResourceService}
 import versola.central.configuration.roles.{RoleController, RoleRecord, RoleRepository, RoleService}
@@ -81,13 +89,13 @@ import versola.configuration.edges.{
   PostgresEdgeCertificateRepository,
   PostgresEdgeEnrollmentTokenRepository,
   PostgresEdgeGroupRepository,
-  PostgresEdgeIdentityChainRepository,
   PostgresEdgeRepository,
 }
 import versola.configuration.forms.PostgresFormRepository
 import versola.configuration.jwks.PostgresJwksRepository
 import versola.configuration.locales.PostgresLocaleRepository
 import versola.configuration.metadata.PostgresServerMetadataRepository
+import versola.configuration.partners.{PostgresPartnerApprovalRepository, PostgresPartnerRepository}
 import versola.configuration.permissions.PostgresPermissionRepository
 import versola.configuration.resources.PostgresResourceRepository
 import versola.configuration.roles.PostgresRoleRepository
@@ -142,8 +150,12 @@ object PostgresCentralApp extends VersolaApp("central"):
       EdgeRepository &
       EdgeGroupRepository &
       EdgeEnrollmentTokenRepository &
-      EdgeIdentityChainRepository &
       EdgeCertificateRepository &
+      PartnerRepository &
+      PartnerApprovalRepository &
+      PartnerRegistry &
+      PartnerClientService &
+      PartnerService &
       EdgeService &
       EdgeGroupService &
       EdgeCertificateIssuer &
@@ -212,6 +224,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       AuthorizationDetailTypeController.endpoints,
       RoleController.endpoints,
       EdgeController.endpoints,
+      PartnerController.endpoints,
       FormController.endpoints,
       LocaleController.endpoints,
       ThemeController.endpoints,
@@ -242,7 +255,7 @@ object PostgresCentralApp extends VersolaApp("central"):
   /** The edge surface, on its own mutual-TLS listener and not on the main one: an edge is
     * authenticated by the certificate it presents in the handshake as well as by its token. */
   override def mutualTlsRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
-    Some(EdgeSyncController.routes)
+    Some(EdgeSyncController.routes ++ PartnerEdgeController.routes)
 
   /** `ClientAuth.Required` for the reasons given on `PostgresOAuthApp.mutualTlsServerConfig`:
     * `Optional` with `includeClientCert` drops the connection of a client that sends no
@@ -281,8 +294,9 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresEdgeRepository.live >++>
           PostgresEdgeGroupRepository.live >++>
           PostgresEdgeEnrollmentTokenRepository.live >++>
-          PostgresEdgeIdentityChainRepository.live >++>
           PostgresEdgeCertificateRepository.live >++>
+          PostgresPartnerRepository.live >++>
+          PostgresPartnerApprovalRepository.live >++>
           PostgresFormRepository.live >++>
           PostgresLocaleRepository.live >++>
           PostgresThemeRepository.live >++>
@@ -328,6 +342,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       // RFC 8705 §6.5: registering `mtlsAuth` is refused unless the client's tenant names a
       // certificate header, so client registration reads the challenge settings.
       ClientCertificateAuthority.live >++>
+      PartnerRegistry.live >++>
       OAuthClientService.live >++>
       ClientCertificateIssuer.live >++>
       EdgeCertificateIssuer.live >++>
@@ -354,6 +369,8 @@ object PostgresCentralApp extends VersolaApp("central"):
       DeliverySettingsService.live >++>
       CacheSyncService.live >++>
       AuthClient.live >++>
+      PartnerClientService.live >++>
+      PartnerService.live >++>
       AuditReportService.live >++>
       UserService.live >++>
       AntifraudListService.live >++>
