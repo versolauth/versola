@@ -125,6 +125,7 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
   )
 
   /** [[clientCertificate]]'s own public key as an RFC 7517 key set, which is what RFC 8705

@@ -4,6 +4,7 @@ import versola.central.configuration.challenges.{OtpTemplateChannel, OtpTemplate
 import versola.central.configuration.clients.{ClientId, PresetId}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.forms.FormId
+import versola.central.configuration.partners.PartnerId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.ResourceId
 import versola.central.configuration.roles.RoleId
@@ -32,6 +33,7 @@ object PostgresCacheSyncRepository:
     "edge_change",
     "jwks_change",
     "client_change",
+    "partner_change",
     "scope_change",
     "authorization_detail_type_change",
     "role_change",
@@ -94,6 +96,10 @@ object PostgresCacheSyncRepository:
       case "client_change" =>
         parseOpEvent(rawPayload): (payload, op) =>
           SyncEvent.ClientsUpdated(id = ClientId(payload.id), op = op)
+
+      case "partner_change" =>
+        parseOpEvent(rawPayload): (payload, op) =>
+          SyncEvent.PartnersUpdated(id = PartnerId(payload.id), op = op)
 
       case "role_change" =>
         parseTenantOpEvent(rawPayload): (payload, tenantId, op) =>

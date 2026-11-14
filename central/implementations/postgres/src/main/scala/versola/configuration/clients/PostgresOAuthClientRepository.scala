@@ -8,6 +8,7 @@ import versola.central.configuration.clients.{
   AuthFlow,
   AuthMethod,
   ClientAlreadyExists,
+  ClientApproval,
   ClientId,
   ClientTemplate,
   ConsentFlow,
@@ -16,6 +17,7 @@ import versola.central.configuration.clients.{
   OAuthClientRecord,
   OAuthClientRepository,
 }
+import versola.central.configuration.partners.{PartnerClientLimitReached, PartnerId, PartnerLimits}
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
@@ -55,6 +57,9 @@ class PostgresOAuthClientRepository(
   given DbCodec[ApplicationType] = DbCodec.StringCodec.biMap(decodeApplicationType, _.toString)
   given DbCodec[ThemeOverrides] = jsonBCodec[ThemeOverrides]
   given DbCodec[Instant] = DbCodec.InstantCodec
+  given DbCodec[PartnerId] = DbCodec.StringCodec.biMap(PartnerId(_), identity[String])
+  given DbCodec[PartnerLimits] = jsonBCodec[PartnerLimits]
+  given DbCodec[ClientApproval] = DbCodec.StringCodec.biMap(decodeApproval, _.code)
   given DbCodec[OAuthClientRecord] = DbCodec.derived
 
   /** A name the enum no longer has is a corrupt row, not a client to serve with a policy it
@@ -74,9 +79,12 @@ class PostgresOAuthClientRepository(
     ApplicationType.values.find(_.toString == name)
       .getOrElse(throw IllegalStateException(s"unknown client application type: $name"))
 
+  private def decodeApproval(code: String): ClientApproval =
+    ClientApproval.from(code).getOrElse(throw IllegalStateException(s"unknown client approval: $code"))
+
   private def findClient(clientId: ClientId) =
     sql"""
-      SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, dpop_signing_algs, dpop_min_rsa_key_size, auth_method, mtls_auth, certificate_bound_access_tokens, jwks, require_signed_request_object, require_pushed_authorization_requests, edge_signing_key, edge_client_certificate, template, created_at, application_type, theme_overrides
+      SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, dpop_signing_algs, dpop_min_rsa_key_size, auth_method, mtls_auth, certificate_bound_access_tokens, jwks, require_signed_request_object, require_pushed_authorization_requests, edge_signing_key, edge_client_certificate, template, created_at, application_type, theme_overrides, partner_id, approval
       FROM oauth_clients
       WHERE id = $clientId
     """
@@ -84,7 +92,7 @@ class PostgresOAuthClientRepository(
   override def getAll: Task[Vector[OAuthClientRecord]] =
     xa.connectMeasured("get-all-clients"):
       sql"""
-        SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, dpop_signing_algs, dpop_min_rsa_key_size, auth_method, mtls_auth, certificate_bound_access_tokens, jwks, require_signed_request_object, require_pushed_authorization_requests, edge_signing_key, edge_client_certificate, template, created_at, application_type, theme_overrides
+        SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, dpop_signing_algs, dpop_min_rsa_key_size, auth_method, mtls_auth, certificate_bound_access_tokens, jwks, require_signed_request_object, require_pushed_authorization_requests, edge_signing_key, edge_client_certificate, template, created_at, application_type, theme_overrides, partner_id, approval
         FROM oauth_clients
       """
         .query[OAuthClientRecord].run()
@@ -93,15 +101,27 @@ class PostgresOAuthClientRepository(
     xa.connectMeasured("find-client"):
       findClient(clientId).query[OAuthClientRecord].run().headOption
 
-  override def createClient(client: OAuthClientRecord): IO[ClientAlreadyExists | Throwable, Unit] =
-    xa.connectMeasured("create-client"):
+  override def createClient(client: OAuthClientRecord): IO[ClientAlreadyExists | PartnerClientLimitReached | Throwable, Unit] =
+    xa.transactMeasured("create-client"):
+      // A partner's client is counted against the partner's limit under the partner's row lock (`FOR NO KEY UPDATE`, which the foreign
+      // keys that point at the row do not wait on), so two creations of one partner run one after the other and the second counts
+      // the first. The decision is made here, not in the database: the lock and the count are all SQL does.
+      client.partnerId.foreach: partnerId =>
+        val limits = sql"SELECT limits FROM partners WHERE id = $partnerId FOR NO KEY UPDATE".query[PartnerLimits].run().headOption
+        limits.foreach: limits =>
+          val console = sql"SELECT console_client_id FROM partners WHERE id = $partnerId".query[ClientId].run().head
+          if client.id != console then
+            val existing =
+              sql"SELECT COUNT(*) FROM oauth_clients WHERE partner_id = $partnerId AND id <> $console".query[Long].run().head
+            if existing >= limits.maxClients then throw PartnerClientLimitReached(partnerId, limits.maxClients)
       sql"""
-        INSERT INTO oauth_clients (id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, dpop_signing_algs, dpop_min_rsa_key_size, auth_method, mtls_auth, certificate_bound_access_tokens, jwks, require_signed_request_object, require_pushed_authorization_requests, edge_signing_key, edge_client_certificate, template, created_at, application_type, theme_overrides)
+        INSERT INTO oauth_clients (id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, dpop_signing_algs, dpop_min_rsa_key_size, auth_method, mtls_auth, certificate_bound_access_tokens, jwks, require_signed_request_object, require_pushed_authorization_requests, edge_signing_key, edge_client_certificate, template, created_at, application_type, theme_overrides, partner_id, approval)
         VALUES (${client.id}, ${client.tenantId}, ${client.clientName}, ${client.redirectUris}, ${client.scope},
-                ${client.secret}, ${client.previousSecret}, ${client.accessTokenTtl}, ${client.refreshTokenTtl}, ${client.permissions}, ${client.theme}, ${client.authFlow}, ${client.otpTemplateId}, ${client.frontChannelLogoutUri}, ${client.frontChannelLogoutSessionRequired}, ${client.backChannelLogoutUri}, ${client.logoUri}, ${client.policyUri}, ${client.tosUri}, ${client.consentFlow}, ${client.dpopBoundAccessTokens}, ${client.dpopSigningAlgs}, ${client.dpopMinRsaKeySize}, ${client.authMethod}, ${client.mtlsAuth}, ${client.certificateBoundAccessTokens}, ${client.jwks}, ${client.requireSignedRequestObject}, ${client.requirePushedAuthorizationRequests}, ${client.edgeSigningKey}, ${client.edgeClientCertificate}, ${client.template}, ${client.createdAt}, ${client.applicationType}, ${client.themeOverrides})
+                ${client.secret}, ${client.previousSecret}, ${client.accessTokenTtl}, ${client.refreshTokenTtl}, ${client.permissions}, ${client.theme}, ${client.authFlow}, ${client.otpTemplateId}, ${client.frontChannelLogoutUri}, ${client.frontChannelLogoutSessionRequired}, ${client.backChannelLogoutUri}, ${client.logoUri}, ${client.policyUri}, ${client.tosUri}, ${client.consentFlow}, ${client.dpopBoundAccessTokens}, ${client.dpopSigningAlgs}, ${client.dpopMinRsaKeySize}, ${client.authMethod}, ${client.mtlsAuth}, ${client.certificateBoundAccessTokens}, ${client.jwks}, ${client.requireSignedRequestObject}, ${client.requirePushedAuthorizationRequests}, ${client.edgeSigningKey}, ${client.edgeClientCertificate}, ${client.template}, ${client.createdAt}, ${client.applicationType}, ${client.themeOverrides}, ${client.partnerId}, ${client.approval})
       """.update.run()
     .unit
       .mapError {
+        case e: PartnerClientLimitReached => e
         case e if PostgresOAuthClientRepository.isUniqueViolation(e) => ClientAlreadyExists(client.id)
         case e: Throwable => e
       }
@@ -111,7 +131,7 @@ class PostgresOAuthClientRepository(
       // Lock the row (READ_COMMITTED + FOR UPDATE) to prevent lost updates from concurrent writers.
       val client =
         sql"""
-        SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, dpop_signing_algs, dpop_min_rsa_key_size, auth_method, mtls_auth, certificate_bound_access_tokens, jwks, require_signed_request_object, require_pushed_authorization_requests, edge_signing_key, edge_client_certificate, template, created_at, application_type, theme_overrides
+        SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, dpop_signing_algs, dpop_min_rsa_key_size, auth_method, mtls_auth, certificate_bound_access_tokens, jwks, require_signed_request_object, require_pushed_authorization_requests, edge_signing_key, edge_client_certificate, template, created_at, application_type, theme_overrides, partner_id, approval
         FROM oauth_clients
         WHERE id = $clientId
         FOR UPDATE
@@ -198,6 +218,10 @@ class PostgresOAuthClientRepository(
         WHERE id = $clientId
       """.update.run()
     .unit
+
+  override def setApproval(clientId: ClientId, approval: ClientApproval): Task[Boolean] =
+    xa.connectMeasured("set-client-approval"):
+      sql"""UPDATE oauth_clients SET approval = $approval WHERE id = $clientId""".update.run() > 0
 
   override def deleteClient(clientId: ClientId): Task[Unit] =
     xa.connectMeasured("delete-client"):

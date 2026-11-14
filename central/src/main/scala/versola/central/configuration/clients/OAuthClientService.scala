@@ -3,6 +3,14 @@ package versola.central.configuration.clients
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, SecurityProfile}
 import versola.central.configuration.edges.EdgeId
+import versola.central.configuration.partners.{
+  PartnerClientLimitReached,
+  PartnerClientRequest,
+  PartnerId,
+  PartnerRecord,
+  PartnerRegistry,
+  PartnerStatus,
+}
 import versola.central.configuration.permissions.{Permission, PermissionRepository}
 import versola.central.configuration.scopes.{OAuthScopeRepository, ScopeToken}
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
@@ -47,7 +55,14 @@ trait OAuthClientService:
 
   def getAllClients: Task[Vector[OAuthClientRecord]]
 
+  /** What a sync caller is served. Auth (`None`): every approved client whose partner, if any, is not suspended -- a
+    * suspended partner's clients are left out, so auth answers `invalid_client` for them (#962 kill switch). A first-party
+    * edge (`Some`): the approved clients of the tenants bound to it that are nobody's partner's; a partner's clients go to
+    * the partner's own edges ([[getPartnerClients]]) and never to the operator's, with their edge credentials. */
   def getClientsForSync(edgeId: Option[EdgeId]): Task[Vector[OAuthClientRecord]]
+
+  /** Every client of the partner, approved or not: what the partner's console lists and what its limits count. */
+  def getPartnerClients(partnerId: PartnerId): Task[Vector[OAuthClientRecord]]
 
   def getTenantClients(
       tenantId: TenantId,
@@ -65,6 +80,8 @@ trait OAuthClientService:
       request: CreateClientRequest,
       presetSecret: Option[Secret] = None,
       enforceSecurityProfile: Boolean = true,
+      approval: ClientApproval = ClientApproval.Approved,
+      allowOutsideLimits: Boolean = false,
   ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient]
 
   /** @param enforceSecurityProfile holds the client, as the patch leaves it, to its tenant's
@@ -73,15 +90,26 @@ trait OAuthClientService:
     *                               API caller is held to the profile.
     * @param edgeCertificateEnrolled the client has its edge generate the certificate (#463), so
     *                                none is stored on it and an update must not read that as a
-    *                                native client missing one. */
+    *                                native client missing one.
+    * @param allowOutsideLimits for a partner's client: store it although it is outside the partner's limits, which the
+    *                           partner surface does for a change that waits for the operator's approval. The invariant
+    *                           ([[PartnerClientRules.invariant]]) is never waived. */
   def updateClient(
       request: UpdateClientRequest,
       enforceSecurityProfile: Boolean = true,
       edgeCertificateEnrolled: Boolean = false,
+      allowOutsideLimits: Boolean = false,
   ): IO[InvalidRegistrationConfiguration | Throwable, Unit]
+
+  /** Where a partner's client stands with the operator (#549 decision 7). `false` when there is no such client. */
+  def setApproval(clientId: ClientId, approval: ClientApproval): Task[Boolean]
 
   /** The stored client, read through the repository when it has not reached the cache yet. */
   def findClient(clientId: ClientId): Task[Option[OAuthClientRecord]]
+
+  /** The client as stored now, not as the cache last saw it: what a decision about the client (an approval, a change that is
+    * computed against what is there) must be made on. */
+  def findClientFresh(clientId: ClientId): Task[Option[OAuthClientRecord]]
 
   def rotateClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Secret]
 
@@ -108,7 +136,8 @@ trait OAuthClientService:
 
 object OAuthClientService:
   def live: ZLayer[
-    Scope & OAuthClientRepository & TenantRepository & ChallengeSettingsService & SecureRandom & SecurityService & ClientCertificateAuthority & CentralConfig & EnvName,
+    Scope & OAuthClientRepository & TenantRepository & ChallengeSettingsService & SecureRandom & SecurityService & ClientCertificateAuthority &
+      PartnerRegistry & CentralConfig & EnvName,
     Throwable,
     OAuthClientService,
   ] =
@@ -117,7 +146,7 @@ object OAuthClientService:
         ZIO.serviceWithZIO[CentralConfig](config =>
           ReloadingCache.make[Vector[OAuthClientRecord]](config.configurationCacheRefreshInterval),
         )) >>>
-      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _))
+      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _))
 
   /** A [[CacheSource]] that reads the client records from the
     * repository and decrypts their secrets, so the in-memory cache holds plaintext
@@ -162,6 +191,7 @@ object OAuthClientService:
       secureRandom: SecureRandom,
       securityService: SecurityService,
       certificateAuthority: ClientCertificateAuthority,
+      partners: PartnerRegistry,
       config: CentralConfig,
       envName: EnvName,
   ) extends OAuthClientService:
@@ -188,13 +218,20 @@ object OAuthClientService:
 
     override def getClientsForSync(edgeId: Option[EdgeId]): Task[Vector[OAuthClientRecord]] =
       edgeId match
-        case None => cache.get
+        case None =>
+          for
+            clients <- cache.get
+            suspended <- partners.getAll.map(_.filter(_.status == PartnerStatus.Suspended).map(_.id).toSet)
+          yield clients.filter(c => c.isApproved && !c.partnerId.exists(suspended.contains))
         case Some(id) =>
           for
             clients <- cache.get
             tenants <- tenantRepository.getAll
             allowedTenantIds = tenants.filter(_.edgeId.contains(id)).map(_.id).toSet
-          yield clients.filter(c => allowedTenantIds.contains(c.tenantId))
+          yield clients.filter(c => allowedTenantIds.contains(c.tenantId) && c.partnerId.isEmpty)
+
+    override def getPartnerClients(partnerId: PartnerId): Task[Vector[OAuthClientRecord]] =
+      cache.get.map(_.filter(_.partnerId.contains(partnerId)))
 
     override def getTenantClients(
         tenantId: TenantId,
@@ -211,6 +248,8 @@ object OAuthClientService:
         request: CreateClientRequest,
         presetSecret: Option[Secret] = None,
         enforceSecurityProfile: Boolean = true,
+        approval: ClientApproval = ClientApproval.Approved,
+        allowOutsideLimits: Boolean = false,
     ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient] =
       for
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateIssuedEdgeClientCertificate(
@@ -237,15 +276,58 @@ object OAuthClientService:
           ),
           presetSecret,
           enforceSecurityProfile,
+          approval,
+          allowOutsideLimits,
         )
       yield registered
 
+    /** The partner that owns a registration, when it names one: through the repository when the cache has not seen it yet,
+      * since a partner is created and its console client registered in one request. */
+    private def partnerOf(clientId: ClientId, partnerId: Option[PartnerId]): IO[InvalidRegistrationConfiguration | Throwable, Option[PartnerRecord]] =
+      ZIO.foreach(partnerId): id =>
+        partners.findFresh(id).someOrFail(InvalidRegistrationConfiguration(clientId, s"partner '$id' does not exist"))
+
+    /** The partner client rules on `subject` (#549): the invariant always, the limits unless the caller records a request
+      * for approval instead. */
+    private def validatePartnerClient(
+        clientId: ClientId,
+        partner: Option[PartnerRecord],
+        subject: PartnerClientRules.Subject,
+        allowOutsideLimits: Boolean,
+    ): IO[InvalidRegistrationConfiguration, Unit] =
+      ZIO.foreachDiscard(partner): partner =>
+        ZIO.foreachDiscard(PartnerClientRules.invariant(clientId, partner, subject))(ZIO.fail(_)) *>
+          // the partner's console is the operator's own doing, with the scope the console needs: not held to the partner's limits, at
+          // registration or when the operator changes it afterwards
+          ZIO.foreachDiscard(PartnerClientRules.validateLimits(clientId, partner, subject).filterNot(_ =>
+            allowOutsideLimits || clientId == partner.consoleClientId,
+          ))(ZIO.fail(_))
+
     private def register(
-        request: CreateClientRequest,
+        submitted: CreateClientRequest,
         presetSecret: Option[Secret],
         enforceSecurityProfile: Boolean,
+        approval: ClientApproval,
+        allowOutsideLimits: Boolean,
     ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient] =
       for
+        partner <- partnerOf(submitted.id, submitted.partnerId)
+        // Consent is for a partner's client and always on there (owner decision, 2026-11-13): none on a first-party client, and a
+        // partner's gets the default screen when the request names none. The partner's console is the one client of a partner without
+        // it: it signs in the partner's own staff, not the operator's users.
+        request =
+          if submitted.partnerId.isDefined && submitted.consentFlow.isEmpty && !partner.exists(_.consoleClientId == submitted.id) then
+            submitted.copy(consentFlow = Some(PartnerClientRequest.DefaultConsent))
+          else submitted
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateConsentOnlyForPartner(
+          request.id,
+          request.consentFlow,
+          request.partnerId,
+        ))(ZIO.fail(_))
+        _ <- ZIO.foreachDiscard(partner): partner =>
+          // the console client is the partner's own, registered with it, and is not one of the clients its limit counts
+          cache.get.map(_.count(c => c.partnerId.contains(partner.id) && c.id != partner.consoleClientId)).flatMap: existing =>
+            ZIO.foreachDiscard(PartnerClientRules.validateClientCount(request.id, partner, existing))(ZIO.fail(_))
         _ <- validateConsentUris(
           "logoUri" -> request.logoUri,
           "policyUri" -> request.policyUri,
@@ -315,11 +397,12 @@ object OAuthClientService:
           redirectUris = request.redirectUris.map(uri => uri: String),
         ))(ZIO.fail(_))
         // An edge-fronted native client reaches auth on its own mutual-TLS listener (#417),
-        // which reads the certificate off the handshake -- the tenant header is never consulted.
+        // which reads the certificate off the handshake -- the tenant header is never consulted. Neither is it for a
+        // partner's client, whose edge presents the group's certificate on that same listener (#549).
         _ <- validateMtlsTermination(
           request.id,
           request.tenantId,
-          request.mtlsAuth.filterNot(_ => isEdgeFrontedNative(applicationType, request.authMethod)),
+          request.mtlsAuth.filterNot(_ => isEdgeFrontedNative(applicationType, request.authMethod) || request.partnerId.isDefined),
         )
         secret <- request.authMethod match
           case AuthMethod.client_secret => presetSecret.fold(generateSecret)(ZIO.succeed(_)).asSome
@@ -367,15 +450,23 @@ object OAuthClientService:
           createdAt = registeredAt,
           applicationType = applicationType,
           themeOverrides = request.themeOverrides.filterNot(_.isEmpty),
+          partnerId = request.partnerId,
+          approval = if request.partnerId.isDefined then approval else ClientApproval.Approved,
         )
+        _ <- validatePartnerClient(request.id, partner, PartnerClientRules.Subject.of(client), allowOutsideLimits)
         _ <- validateSecurityProfile(client).when(enforceSecurityProfile)
-        _ <- clientRepository.createClient(client)
+        _ <- clientRepository.createClient(client).mapError:
+          // made by the repository under the partner's row lock: the same refusal as the count the registration checked against the cache
+          case error: PartnerClientLimitReached =>
+            InvalidRegistrationConfiguration(client.id, s"partner '${error.partnerId}' may register at most ${error.max} clients")
+          case error => error
       yield RegisteredClient(secret, registeredAt, generatedKey.map(_.privateKey))
 
     override def updateClient(
         request: UpdateClientRequest,
         enforceSecurityProfile: Boolean = true,
         edgeCertificateEnrolled: Boolean = false,
+        allowOutsideLimits: Boolean = false,
     ): IO[InvalidRegistrationConfiguration | Throwable, Unit] =
       for
         _ <- validateConsentUris(
@@ -397,6 +488,13 @@ object OAuthClientService:
           InvalidRegistrationConfiguration.validateAuthMethodUnchanged(request.clientId, request.authMethod, client.authMethod))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(current.flatMap: client =>
           InvalidRegistrationConfiguration.validateConsentFlowKept(request.clientId, request.consentFlow, client.consentFlow))(ZIO.fail(_))
+        _ <- ZIO.foreachDiscard(current.flatMap: client =>
+          InvalidRegistrationConfiguration.validateConsentNotAdded(
+            request.clientId,
+            request.consentFlow,
+            client.consentFlow,
+            client.partnerId,
+          ))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(current.flatMap: client =>
           InvalidRegistrationConfiguration.validateThemeOverridesForPartner(
             request.clientId,
@@ -461,7 +559,9 @@ object OAuthClientService:
             request.clientId,
             client.tenantId,
             request.mtlsAuth.applyTo(client.mtlsAuth)
-              .filterNot(_ => isEdgeFrontedNative(applicationType, authMethod)),
+              .filterNot(_ => isEdgeFrontedNative(applicationType, authMethod) || client.partnerId.isDefined),
+          ) *> partnerOf(request.clientId, client.partnerId).flatMap(partner =>
+            validatePartnerClient(request.clientId, partner, PartnerClientRules.Subject.of(patchedForPartner(request, client)), allowOutsideLimits),
           ) *> validateSecurityProfile(patchedForProfile(request, client)).when(enforceSecurityProfile)
         edgeSigningKeyPatch <- ZIO.foreach(request.edgeSigningKey):
           case Patch.Modified(key) => encryptEdgeSigningKey(key).map(Patch.Modified(_))
@@ -504,10 +604,16 @@ object OAuthClientService:
         )
       yield ()
 
+    override def setApproval(clientId: ClientId, approval: ClientApproval): Task[Boolean] =
+      clientRepository.setApproval(clientId, approval)
+
     override def findClient(clientId: ClientId): Task[Option[OAuthClientRecord]] =
       cache.get.map(_.find(_.id == clientId)).flatMap:
         case some @ Some(_) => ZIO.succeed(some)
         case None => clientRepository.find(clientId).flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, clientSecretsKey)))
+
+    override def findClientFresh(clientId: ClientId): Task[Option[OAuthClientRecord]] =
+      clientRepository.find(clientId).flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, clientSecretsKey)))
 
     override def rotateClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Secret] =
       for
@@ -537,6 +643,19 @@ object OAuthClientService:
           request.requirePushedAuthorizationRequests.getOrElse(client.requirePushedAuthorizationRequests),
         redirectUris = client.redirectUris -- request.redirectUris.remove ++ request.redirectUris.add,
         applicationType = request.applicationType.getOrElse(client.applicationType),
+      )
+
+    /** The client as the patch will leave it, in the settings the partner rules read ([[PartnerClientRules.Subject]]); the
+      * redirect URIs folded as [[patchedForProfile]] folds them. */
+    private def patchedForPartner(request: UpdateClientRequest, client: OAuthClientRecord): OAuthClientRecord =
+      patchedForProfile(request, client).copy(
+        consentFlow = request.consentFlow match
+          case Some(Patch.Modified(flow)) => Some(flow.toDomain)
+          case Some(Patch.Deleted) => None
+          case None => client.consentFlow,
+        scope = client.scope -- request.scope.remove ++ request.scope.add,
+        accessTokenTtl = request.accessTokenTtl.map(Duration.fromSeconds).getOrElse(client.accessTokenTtl),
+        refreshTokenTtl = request.refreshTokenTtl.map(Duration.fromSeconds).getOrElse(client.refreshTokenTtl),
       )
 
     /** Refuses a client whose method is not `client_secret`, public or not: handing a

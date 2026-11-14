@@ -57,6 +57,7 @@ object ConsentServiceSpec extends UnitSpecBase:
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
   )
 
   private def clientWith(

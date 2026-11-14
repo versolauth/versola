@@ -62,6 +62,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
   )
 
   private val theme = ThemeRecord("custom-theme", ".body { color: red; }", Some(tenantId), tokens = None)

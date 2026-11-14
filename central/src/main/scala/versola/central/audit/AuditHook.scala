@@ -161,16 +161,17 @@ object AuditHook:
           // The handler may be interrupted (the client went away, a timeout) after its change committed: the record that follows it
           // is not interrupted, and the interruption goes on afterwards.
           response <- Audit.tenantOfTarget.locally(None):
-            AuditContext.reset(initial):
-              ZIO.uninterruptibleMask: restore =>
-                // A call that names no valid actor is answered here and the handler is not run; the answer is recorded (a denial) like any
-                // other the route gives.
-                restore(if actor.named then handler(request) else refusal(actor)).exit.flatMap: exit =>
-                  val status = exit match
-                    case Exit.Success(response) => response.status
-                    case Exit.Failure(cause) => cause.failureOption.fold(Status.InternalServerError)(_.status)
-                  val interrupted = exit.causeOption.exists(_.isInterruptedOnly)
-                  AuditContext.current.flatMap(state => record(pattern, status, interrupted, state, actor, change, read)) *> ZIO.done(exit)
+            Audit.partnerOfTarget.locally(None):
+              AuditContext.reset(initial):
+                ZIO.uninterruptibleMask: restore =>
+                  // A call that names no valid actor is answered here and the handler is not run; the answer is recorded (a denial) like any
+                  // other the route gives.
+                  restore(if actor.named then handler(request) else refusal(actor)).exit.flatMap: exit =>
+                    val status = exit match
+                      case Exit.Success(response) => response.status
+                      case Exit.Failure(cause) => cause.failureOption.fold(Status.InternalServerError)(_.status)
+                    val interrupted = exit.causeOption.exists(_.isInterruptedOnly)
+                    AuditContext.current.flatMap(state => record(pattern, status, interrupted, state, actor, change, read)) *> ZIO.done(exit)
         yield response
 
   private def record(
@@ -182,7 +183,9 @@ object AuditHook:
       change: Option[Entry.Change],
       read: Option[Entry.Read],
   ): URIO[AuditEvents & CentralConfig, Unit] =
-    Audit.tenantOfTarget.get.flatMap(tenantOfTarget => recordWith(pattern, status, interrupted, state, actor, change, read, tenantOfTarget))
+    Audit.tenantOfTarget.get.zip(Audit.partnerOfTarget.get).flatMap((tenantOfTarget, partnerOfTarget) =>
+      recordWith(pattern, status, interrupted, state, actor, change, read, tenantOfTarget, partnerOfTarget),
+    )
 
   private def recordWith(
       pattern: String,
@@ -193,6 +196,7 @@ object AuditHook:
       change: Option[Entry.Change],
       read: Option[Entry.Read],
       tenantOfTarget: Option[String],
+      partnerOfTarget: Option[String],
   ): URIO[AuditEvents & CentralConfig, Unit] =
     val succeeded = status.isSuccess || status.isRedirection
     val targetType = change.map(_.targetType).orElse(read.map(_.targetType))
@@ -204,6 +208,7 @@ object AuditHook:
       status = status.code,
       changed = Option.when(changedNames.nonEmpty)(changedNames),
       tenantId = tenantOfTarget.map(clipped),
+      partnerId = partnerOfTarget.map(clipped),
     )
     def draft(kind: AuditKind, outcome: AuditOutcome, reason: Option[String]) = AuditDraft(
       kind = kind,
@@ -248,11 +253,12 @@ object AuditHook:
     request.url.queryParams.map.get(name).flatMap(_.headOption)
 
   /** What an administrator's action says about itself: the route (its pattern, a closed set), the status, the identifiers in the query, and the names of the fields an update
-    * changed (never their values). */
+    * changed (never their values). `partnerId` is the partner the action is about (#962), the column the partner's feed is read by. */
   private case class AdminDetails(
       path: String,
       status: Int,
       changed: Option[List[String]],
       tenantId: Option[String],
+      partnerId: Option[String],
   ) extends AuditDetails derives JsonEncoder:
     override def toJson: Json.Obj = AuditDetails.render(this)

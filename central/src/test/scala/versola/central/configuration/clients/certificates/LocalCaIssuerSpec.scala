@@ -3,7 +3,7 @@ package versola.central.configuration.clients.certificates
 import versola.central.CentralConfig.ClientCertificateAuthorityConfig
 import versola.central.configuration.clients.{ClientId, MutualTlsAuth, MutualTlsSubjectType}
 import versola.central.configuration.tenants.TenantId
-import versola.util.{PrivateClientCertificate, TestCertificates}
+import versola.util.{CertificateSubject, EdgeIdentityNames, PrivateClientCertificate, TestCertificates}
 import zio.*
 import zio.test.*
 
@@ -44,6 +44,29 @@ object LocalCaIssuerSpec extends ZIOSpecDefault:
       val dn = "CN=mobile-app,OU=tenant-a,O=Versola"
       for material <- issued(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, dn))
       yield assertTrue(material.subjectValues("subject_dn") == Set(dn))
+    },
+    // An edge enrolling with a token alone cannot name itself in its request: central names the certificate, and the request is the
+    // proof of the key.
+    test("when central names the certificate, the request's own subject and names are not used") {
+      val named = EdgeIdentityNames.subject(
+        edgeId = versola.central.configuration.edges.EdgeId("edge-a"),
+        groupId = versola.central.configuration.edges.EdgeGroupId("acme"),
+      )
+      val anonymous = CertificateSubject("CN=enrolling", "enrolling", Nil, Nil, Nil, Nil)
+      for
+        issuer <- issuer
+        generated <- CertificateSubject.generate(anonymous)
+        request = ClientCertificateRequests.signingRequest(generated.csrPem, named, 14.days, namedByCentral = true)
+        leaf <- issuer.sign(request)
+        material <- ZIO.fromEither(PrivateClientCertificate(leaf + "\n" + generated.privateKeyPem).material).mapError(RuntimeException(_))
+        asRequested <- issuer.sign(ClientCertificateRequests.signingRequest(generated.csrPem, named, 14.days))
+        plain <- ZIO.fromEither(PrivateClientCertificate(asRequested + "\n" + generated.privateKeyPem).material).mapError(RuntimeException(_))
+      yield assertTrue(
+        material.leaf.getSubjectX500Principal == named.principal,
+        material.subjectValues("san_uri") == Set("urn:versola:edge:edge-a", "urn:versola:edge-group:acme"),
+        // signed as ever when the request is the authority: the anonymous request's names, none
+        plain.subjectValues("san_uri").isEmpty,
+      )
     },
     // The test CA is valid for one day, so a 10-day request is cut to what the CA itself outlives.
     test("is never valid past the CA's own expiry") {

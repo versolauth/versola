@@ -47,7 +47,7 @@ object EdgeCallerRefusalSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val edgeRecord = EdgeRecord(
     edgeId,
-    edgeKeyPair.toPublicJwk,
+    Some(edgeKeyPair.toPublicJwk),
     None,
     requireDpopNonce = true,
     overloadPolicy = None,
@@ -56,6 +56,7 @@ object EdgeCallerRefusalSpec extends ZIOSpecDefault, ZIOStubs:
     policyMeta = None,
     groupId = EdgeGroup.DefaultId,
     groupKind = EdgeGroupKind.FirstParty,
+    publicUrl = None,
   )
 
   private val edgeToken: Task[String] =
