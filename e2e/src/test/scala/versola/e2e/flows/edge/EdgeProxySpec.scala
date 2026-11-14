@@ -494,6 +494,71 @@ object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
       yield assertTrue(!response.response.headers.exists(_.headerName.equalsIgnoreCase("set-cookie")))
         .label("an upstream must not be able to plant a cookie on edge's origin, where the session cookie lives")
     },
+    test("a state-changing call with the session cookie from another origin is refused and does not reach the upstream") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        stub <- upstream
+        _ <- stub.reset
+        established <- session
+        foreignOrigin <- edgeApi.proxy(
+          Method.POST,
+          f.resourceId,
+          "/items",
+          established.auth,
+          body = Some(Json.Obj()),
+          headers = List("Origin" -> "https://forum.example.test"),
+        )
+        foreignSite <- edgeApi.proxy(
+          Method.DELETE,
+          f.resourceId,
+          "/items/1",
+          established.auth,
+          headers = List("Sec-Fetch-Site" -> "same-site"),
+        )
+        seen <- stub.requests
+      yield assertTrue(foreignOrigin.status == Status.Forbidden, foreignSite.status == Status.Forbidden, seen.isEmpty)
+        .label("SameSite=Strict lets a sibling subdomain through; the origin check is what stops it")
+    },
+    test("a state-changing call with the session cookie from edge's own origin, or from no browser, is forwarded") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        stub <- upstream
+        _ <- stub.reset
+        established <- session
+        own <- edgeApi.proxy(
+          Method.POST,
+          f.resourceId,
+          "/items",
+          established.auth,
+          body = Some(Json.Obj()),
+          headers = List("Origin" -> edgeApi.baseUrl, "Sec-Fetch-Site" -> "same-origin"),
+        )
+        script <- edgeApi.proxy(Method.POST, f.resourceId, "/items", established.auth, body = Some(Json.Obj()))
+        seen <- stub.requests
+      yield assertTrue(own.status == Status.Ok, script.status == Status.Ok, seen.size == 2)
+    },
+    test("a read with the cookie, and a call with a bearer token, are not checked for where they come from") {
+      for
+        edgeApi <- edge
+        f <- fixture
+        established <- session
+        read <- clean(
+          edgeApi.proxy(Method.GET, f.resourceId, "/items", established.auth, headers = List("Origin" -> "https://forum.example.test")),
+        )
+        bearer <- clean(
+          edgeApi.proxy(
+            Method.POST,
+            f.resourceId,
+            "/items",
+            EdgeAuth.Bearer(established.accessToken),
+            body = Some(Json.Obj()),
+            headers = List("Origin" -> "https://forum.example.test", "Sec-Fetch-Site" -> "cross-site"),
+          ),
+        )
+      yield assertTrue(read.status == Status.Ok, bearer.status == Status.Ok)
+    },
     test("every registered method reaches the upstream") {
       for
         edgeApi <- edge

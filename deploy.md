@@ -554,6 +554,25 @@ in a compose file or a Helm `env` block is ignored. See [Access log](#access-log
 - Schema: migration `V1028` adds the nullable `edges.access_log_policy` column; additive, the previous release runs on it.
   `LOG_LEVEL` is unchanged.
 
+#### Behaviour change: edge refuses a state-changing call with the session cookie that a browser says comes from another origin
+
+`SameSite=Strict` keeps a cross-**site** page from using the `EDGE_SESSION` cookie, but not another subdomain of the same site: that is the
+same site. So on `/resources/*`, a call that is authenticated by the cookie and whose method is not `GET`, `HEAD`, `OPTIONS` or `TRACE` is
+now answered `403` (error code `cross_origin_rejected`, nothing is sent on) when the browser says where it comes from and that is not an
+origin of ours:
+
+- `Origin` present: it decides. It has to be the origin of `edge-url`, or of the `redirect-uri`, `post-login-redirect-uri` or
+  `post-logout-redirect-uri` of the preset the session was made for. `null` and anything else is refused.
+- No `Origin`, `Sec-Fetch-Site` present: `same-site` and `cross-site` are refused; `same-origin`, `none` and an unknown value go on.
+- Neither: goes on. A script, a test or an old client is not a browser holding someone else's cookie.
+
+A call with a bearer or DPoP token, and every read, is not checked. Nothing else changes: no setting, no migration.
+
+- **Who can notice.** A browser app that calls `/resources/*` with the cookie from an origin that is not `edge-url` and not one of its
+  preset's URIs, for example a single-page app on `app.example.com` whose preset sends the user back to `edge.example.com`. Put the app's
+  origin in the preset (its post-login redirect URI) and the call goes on. A session whose preset was removed accepts only `edge-url`'s origin
+  until the user signs in again.
+
 #### Behaviour change: `auth` keeps its own list of revoked access tokens (migration `V0032`)
 
 `auth` stores no access tokens, but it now stores what was revoked, in the new `auth_revocations` table, and refuses
