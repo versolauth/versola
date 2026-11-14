@@ -5,7 +5,7 @@ import com.typesafe.config.ConfigFactory
 import versola.cleanup.PostgresCleanupManager
 import versola.edge.dpop.{DpopPolicyService, DpopProofRepository, DpopReplayGuard, DpopVerifier}
 import versola.edge.login.LoginRepository
-import versola.edge.nativeapp.{NativeAuthClient, NativeController, NativeService}
+import versola.edge.nativeapp.{NativeAuthClient, NativeController, NativeService, NativeStartLimit}
 import versola.edge.revocation.{EdgeRevocationRepository, RevocationFeedClient, RevocationFeedPuller, TokenRevocationService}
 import versola.edge.session.EdgeSessionRepository
 import versola.edge.{
@@ -196,6 +196,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       DpopVerifier.live >++>
       EdgeService.live >++>
       NativeAuthClient.live >++>
+      NativeStartLimit.live >++>
       NativeService.live >++>
       SSOClientWarmUp.live
 
