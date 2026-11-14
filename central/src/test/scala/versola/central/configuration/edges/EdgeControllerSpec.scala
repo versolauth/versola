@@ -3,7 +3,16 @@ package versola.central.configuration.edges
 import com.nimbusds.jose.jwk.RSAKey
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.configuration.partners.PartnerRegistry
+import versola.central.configuration.clients.ClientId
+import versola.central.configuration.partners.{
+  PartnerContact,
+  PartnerId,
+  PartnerLimits,
+  PartnerRecord,
+  PartnerRegistry,
+  PartnerSettings,
+  PartnerStatus,
+}
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.{TestAdminAuth, TestCentralConfig}
@@ -58,6 +67,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus: Status,
       setup: Stub[EdgeService] => UIO[Unit] = _ => ZIO.unit,
       verify: (Response, Stub[EdgeService]) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
+      owner: Option[PartnerRecord] = None,
   ) =
     test(description) {
       for
@@ -69,7 +79,8 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         identityService = stub[EdgeIdentityService]
         partners = stub[PartnerRegistry]
         certificates = stub[EdgeCertificateRepository]
-        _ <- partners.getAll.succeedsWith(Vector.empty)
+        _ <- partners.getAll.succeedsWith(owner.toVector)
+        _ <- partners.findByGroup.succeedsWith(owner)
         _ <- certificates.latest.succeedsWith(Map.empty)
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
@@ -196,6 +207,22 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       mode = GuardMode.Shadow,
     )),
     replicas = 1,
+  )
+
+  private def partnerOwning(groupId: EdgeGroupId) = PartnerRecord(
+    id = PartnerId("acme"),
+    tenantId = TenantId("tenant-a"),
+    displayName = "ACME",
+    logoUri = None,
+    contact = PartnerContact("ops@acme.example", None),
+    status = PartnerStatus.Active,
+    limits = PartnerLimits(Set.empty, Set("acme.example"), None, 10, 3, 600L, 86400L, PartnerLimits.AllowedAuthMethods),
+    groupId = groupId,
+    consoleClientId = ClientId("acme-console"),
+    settings = PartnerSettings.empty,
+    reviewAt = None,
+    createdAt = java.time.Instant.parse("2026-01-01T00:00:00Z"),
+    version = 0L,
   )
 
   // lazy: it reads vals declared below it, which an object initialises in order
@@ -497,7 +524,10 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "PATCH policies: absent sections are kept, null removes, an object replaces; the answer is the new state",
       request = patch(s"""{"overload":null,"rateLimits":${rateLimits.toJson}}"""),
       expectedStatus = Status.Ok,
-      setup = service => service.patchPolicies.succeedsWith(Some(Right(storedRecord.copy(overloadPolicy = None)))),
+      setup = service =>
+        service.findFresh.succeedsWith(Some(storedRecord)) *> service.patchPolicies.succeedsWith(Some(Right(storedRecord.copy(overloadPolicy =
+          None,
+        )))),
       verify = (response, service) =>
         for body <- decoded[EdgePoliciesResponse](response)
         yield assertTrue(
@@ -510,7 +540,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "PATCH policies with expectedRevisions passes them on, and dryRun=true says so",
       request = patch("""{"accessLog":{"mode":"full"},"expectedRevisions":{"accessLog":0}}""", "dryRun" -> "true"),
       expectedStatus = Status.Ok,
-      setup = service => service.patchPolicies.succeedsWith(Some(Right(storedRecord))),
+      setup = service => service.findFresh.succeedsWith(Some(storedRecord)) *> service.patchPolicies.succeedsWith(Some(Right(storedRecord))),
       verify = (_, service) =>
         ZIO.succeed(
           assertTrue(
@@ -532,10 +562,11 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = patch(s"""{"rateLimits":${rateLimits.toJson}}"""),
       expectedStatus = Status.BadRequest,
       setup = service =>
-        service.patchPolicies.succeedsWith(Some(Left(PolicyPatchError.Invalid(
-          PolicySection.RateLimits,
-          "policy per-client: burst must not exceed the smallest limit",
-        )))),
+        service.findFresh.succeedsWith(Some(storedRecord)) *>
+          service.patchPolicies.succeedsWith(Some(Left(PolicyPatchError.Invalid(
+            PolicySection.RateLimits,
+            "policy per-client: burst must not exceed the smallest limit",
+          )))),
       verify = (response, _) => response.body.asString.map(body => assertTrue(body.isEmpty)),
     ),
     controllerTestCase(
@@ -554,14 +585,65 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "a revision that has moved on is answered 409 with no body (the client reads the state again)",
       request = patch("""{"overload":{},"expectedRevisions":{"overload":1}}"""),
       expectedStatus = Status.Conflict,
-      setup = service => service.patchPolicies.succeedsWith(Some(Left(PolicyPatchError.Conflict(PolicySection.Overload, storedRecord)))),
+      setup = service =>
+        service.findFresh.succeedsWith(Some(storedRecord)) *>
+          service.patchPolicies.succeedsWith(Some(Left(PolicyPatchError.Conflict(PolicySection.Overload, storedRecord)))),
       verify = (response, _) => response.body.asString.map(body => assertTrue(body.isEmpty)),
     ),
     controllerTestCase(
       description = "PATCH policies of an unregistered edge returns 404",
       request = patchFor("edge-missing", """{"overload":{}}"""),
       expectedStatus = Status.NotFound,
-      setup = service => service.patchPolicies.succeedsWith(None),
+      setup = service => service.findFresh.succeedsWith(None) *> service.patchPolicies.succeedsWith(None),
+    ),
+    // The rate limits of a partner's edges are the partner's: one setting for the group, written once through the partner's own route. Two writers
+    // (this one and that) would leave the edges with different limits and nobody told.
+    controllerTestCase(
+      description = "PATCH policies naming rateLimits for an edge of a partner's group is refused with 422 and a text that says whose setting it is",
+      request = patch(s"""{"rateLimits":${rateLimits.toJson}}"""),
+      expectedStatus = Status.UnprocessableEntity,
+      setup =
+        service => service.findFresh.succeedsWith(Some(storedRecord.copy(groupId = EdgeGroupId("partner-acme"), groupKind = EdgeGroupKind.Partner))),
+      verify = (response, service) =>
+        response.body.asString.map(body =>
+          assertTrue(body.contains("partner's setting"), body.contains("overload and accessLog stay yours"), service.patchPolicies.calls.isEmpty),
+        ),
+    ),
+    controllerTestCase(
+      description = "PATCH policies naming rateLimits null is refused for a partner's edge too, and dryRun does not get round it",
+      request = patch("""{"rateLimits":null}""", "dryRun" -> "true"),
+      expectedStatus = Status.UnprocessableEntity,
+      setup =
+        service => service.findFresh.succeedsWith(Some(storedRecord.copy(groupId = EdgeGroupId("partner-acme"), groupKind = EdgeGroupKind.Partner))),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.patchPolicies.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "PATCH policies naming overload only is still the operator's for an edge of a partner's group",
+      request = patch("""{"overload":{}}"""),
+      expectedStatus = Status.Ok,
+      setup = service =>
+        service.findFresh.succeedsWith(Some(storedRecord.copy(groupId = EdgeGroupId("partner-acme"), groupKind = EdgeGroupKind.Partner))) *>
+          service.patchPolicies.succeedsWith(Some(Right(storedRecord.copy(
+            groupId = EdgeGroupId("partner-acme"),
+            groupKind = EdgeGroupKind.Partner,
+          )))),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.patchPolicies.calls.size == 1)),
+    ),
+    controllerTestCase(
+      description = "GET policies of an edge of a partner's group serve the partner's rate limits and their revision, not the edge's own",
+      request = Request(method = Method.GET, url = (URL.root / "configuration" / "edges" / "policies").addQueryParam("edgeId", edgeId.toString)),
+      expectedStatus = Status.Ok,
+      setup =
+        service => service.findFresh.succeedsWith(Some(storedRecord.copy(groupId = EdgeGroupId("partner-acme"), groupKind = EdgeGroupKind.Partner))),
+      owner = Some(partnerOwning(EdgeGroupId("partner-acme")).copy(rateLimits = Some(RateLimitPolicies.recommended), rateLimitsRevision = 7)),
+      verify = (response, _) =>
+        for body <- decoded[EdgePoliciesResponse](response)
+        yield assertTrue(
+          body.rateLimits.contains(RateLimitPolicies.recommended),
+          body.revisions("rateLimits") == 7,
+          !body.updatedAt.contains("rateLimits"),
+          body.revisions("overload") == 2,
+        ),
     ),
     controllerTestCase(
       description = "the recommended rate limit policies are served, all in shadow, and are a set the PATCH accepts",

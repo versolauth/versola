@@ -759,6 +759,23 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             body.events.forall(_.traceId.isEmpty),
           ),
       ),
+      testCase(
+        description = "the note an operator gave a suspension is in the operator's audit log and not in the partner's feed",
+        request = Request.get(partnerPath("audit")),
+        principal = Some(staffToken()),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.auditRepository.partnerEvents.succeedsWith(
+            List(operatorEvent.copy(details = Json.Obj("partnerId" -> Json.Str("acme"), "note" -> Json.Str("Unpaid invoices since October.")))),
+          ),
+        verify = (response, _) =>
+          for body <- decodeBody[PartnerAuditResponse](response)
+          yield assertTrue(
+            body.events.size == 1,
+            !body.events.head.details.fields.exists(_._1 == "note"),
+            body.events.head.details == Json.Obj("partnerId" -> Json.Str("acme")),
+          ),
+      ),
     ),
     suite("what a partner may register")(
       testCase(

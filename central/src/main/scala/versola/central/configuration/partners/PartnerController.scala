@@ -73,7 +73,7 @@ object PartnerController extends AuditedController:
           certificates <- ZIO.serviceWithZIO[EdgeCertificateRepository](_.latest)
           response = CreatedPartnerResponse(
             partner = PartnerResponse.of(created.partner),
-            edge = EdgeResponse.of(created.edge.edge, Some(created.partner.id), certificates.get(created.edge.edge.id)),
+            edge = EdgeResponse.of(created.edge.edge, Some(created.partner), certificates.get(created.edge.edge.id)),
             enrollmentToken = created.edge.token.token,
             expiresAt = created.edge.token.expiresAt,
           )

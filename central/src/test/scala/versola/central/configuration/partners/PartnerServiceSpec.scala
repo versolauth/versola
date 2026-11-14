@@ -649,86 +649,70 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
     ),
     suite("the rate limits of the group (the partner's to manage, once for the group)")(
-      test("setting them writes every edge of the group, and no edge of another group, and answers the highest revision") {
+      test("setting them writes the partner once, not an edge, and the cache is told at once") {
         val env = Env()
-        val own = Vector(edge(EdgeId("e-1")), edge(EdgeId("e-2")))
         val policies = RateLimitPolicies.recommended
         for
-          _ <- env.edges.getAllEdges.succeedsWith(own :+ edge(EdgeId("other"), EdgeGroupId("globex")))
-          _ <- env.edges.findFresh.returnsZIO(id => ZIO.succeed(own.find(_.id == id)))
-          _ <- env.edges.patchPolicies.returnsZIO((id, _, _) => ZIO.succeed(own.find(_.id == id).map(Right(_))))
-          set <- env.service.setRateLimits(acme, Some(policies), None)
-          calls = env.edges.patchPolicies.calls
+          _ <- env.partners.setRateLimits.succeedsWith(Some(acme.copy(rateLimits = Some(policies), rateLimitsRevision = 3)))
+          _ <- env.registry.refreshNow.succeedsWith(())
+          set <- env.service.setRateLimits(acme, Some(policies), Some(2))
         yield assertTrue(
-          // each edge is asked first (a dry run) and then written, and only the partner's own edges
-          calls.map(_._1).toSet == Set(EdgeId("e-1"), EdgeId("e-2")),
-          calls.count(_._3) == 2,
-          calls.count(!_._3) == 2,
-          calls.forall(_._2.rateLimits == Change.Replace(policies)),
-          // nothing but the rate limits: overload and the access log stay as they are
-          calls.forall(call => call._2.overload == Change.Keep && call._2.accessLog == Change.Keep),
-          set.revision == 0,
+          env.partners.setRateLimits.calls == List((acme.id, Some(policies), Some(2))),
+          // what an edge is served is the partner's value: no edge is written
+          env.edges.patchPolicies.calls.isEmpty,
+          env.registry.refreshNow.calls.size == 1,
+          set == PartnerService.GroupRateLimits(Some(policies), 3),
         )
       },
-      test("nothing is written when an edge refuses the policies, and a limit read earlier than the last change is a conflict") {
+      test("an empty set is stored as none, and the validation is done once, before any write") {
         val env = Env()
-        val withLimits = edge(EdgeId("e-1")).copy(
-          rateLimitPolicies = Some(RateLimitPolicies.recommended),
-          policyMeta = Some(Map("rateLimits" -> PolicySectionMeta(4, now))),
-        )
+        // two policies of one name are refused by the same validation as an edge's own
+        val invalid = RateLimitPolicies(RateLimitPolicies.recommended.policies ++ RateLimitPolicies.recommended.policies.take(1), 1)
         for
-          _ <- env.edges.getAllEdges.succeedsWith(Vector(withLimits, edge(EdgeId("e-2"))))
-          _ <- env.edges.findFresh.returnsZIO(id => ZIO.succeed(Vector(withLimits, edge(EdgeId("e-2"))).find(_.id == id)))
-          stale <- env.service.setRateLimits(acme, None, Some(3)).flip
-          _ <- env.edges.patchPolicies.returnsZIO((id, _, dryRun) =>
-            ZIO.succeed(Some(if id == EdgeId("e-2") && dryRun then Left(PolicyPatchError.Invalid(PolicySection.RateLimits, "too many"))
-            else Right(withLimits))),
-          )
-          refused <- env.service.setRateLimits(acme, Some(RateLimitPolicies.recommended), Some(4)).flip
-          written = env.edges.patchPolicies.calls.filterNot(_._3)
+          _ <- env.partners.setRateLimits.succeedsWith(Some(acme))
+          _ <- env.registry.refreshNow.succeedsWith(())
+          _ <- env.service.setRateLimits(acme, Some(RateLimitPolicies(Nil, 1)), None)
+          refused <- env.service.setRateLimits(acme, Some(invalid), None).flip
         yield assertTrue(
-          stale.isInstanceOf[PartnerError.Conflict],
+          env.partners.setRateLimits.calls == List((acme.id, None, None)),
           refused.isInstanceOf[PartnerError.Invalid],
-          written.isEmpty,
         )
       },
-      test("what is read is what the most recently changed edge has, with its revision") {
+      test("a revision the limits have moved on from is a conflict") {
         val env = Env()
-        val older = edge(EdgeId("e-1")).copy(rateLimitPolicies = None, policyMeta = Some(Map("rateLimits" -> PolicySectionMeta(1, now))))
-        val newer = edge(EdgeId("e-2")).copy(
-          rateLimitPolicies = Some(RateLimitPolicies.recommended),
-          policyMeta = Some(Map("rateLimits" -> PolicySectionMeta(2, now))),
-        )
         for
-          _ <- env.edges.getAllEdges.succeedsWith(Vector(older, newer))
+          _ <- env.partners.setRateLimits.failsWith(PartnerRateLimitsChanged(acme.id, 5))
+          refused <- env.service.setRateLimits(acme, None, Some(4)).flip
+        yield assertTrue(refused.isInstanceOf[PartnerError.Conflict], env.registry.refreshNow.calls.isEmpty)
+      },
+      test("what is read is what the partner stores, with its revision; a partner that has none set reads none") {
+        val env = Env()
+        for
+          _ <- env.registry.findFresh.succeedsWith(Some(acme.copy(rateLimits = Some(RateLimitPolicies.recommended), rateLimitsRevision = 2)))
           read <- env.service.rateLimits(acme)
-          _ <- env.edges.getAllEdges.succeedsWith(Vector.empty)
+          _ <- env.registry.findFresh.succeedsWith(Some(acme))
           none <- env.service.rateLimits(acme)
         yield assertTrue(
           read == PartnerService.GroupRateLimits(Some(RateLimitPolicies.recommended), 2),
           none == PartnerService.GroupRateLimits(None, 0),
         )
       },
-      test("an edge that joins the group has the limits the group has") {
+      test("a partner that has no edge can set them, and an edge that joins copies nothing") {
         val env = Env()
-        val existing = edge(EdgeId("edge-acme-1")).copy(
-          rateLimitPolicies = Some(RateLimitPolicies.recommended),
-          policyMeta = Some(Map("rateLimits" -> PolicySectionMeta(1, now))),
-        )
         for
-          _ <- env.edges.getAllEdges.succeedsWith(Vector(existing))
+          _ <- env.partners.setRateLimits.succeedsWith(Some(acme.copy(rateLimits = Some(RateLimitPolicies.recommended), rateLimitsRevision = 1)))
+          _ <- env.registry.refreshNow.succeedsWith(())
+          _ <- env.edges.getAllEdges.succeedsWith(Vector.empty)
+          _ <- env.service.setRateLimits(acme, Some(RateLimitPolicies.recommended), None)
+          _ <- env.edges.getAllEdges.succeedsWith(Vector(edge(EdgeId("edge-acme-1"))))
           _ <- env.edges.findFresh.returnsZIO(id =>
             ZIO.succeed(Option.when(id == EdgeId("edge-acme-2") && env.edges.registerEdgeWithoutKey.calls.nonEmpty)(edge(id))),
           )
           _ <- env.edges.registerEdgeWithoutKey.succeedsWith(())
           _ <- env.edges.sync().succeedsWith(())
           _ <- env.identity.issueEnrollmentToken.succeedsWith(EdgeIdentityService.IssuedToken("TOKEN", now.plusSeconds(86400)))
-          _ <- env.edges.patchPolicies.succeedsWith(None)
           _ <- env.service.addEdge(acme.copy(limits = acme.limits.copy(maxEdges = 5)), EdgeId("edge-acme-2"), "https://login2.acme.example")
-        yield assertTrue(
-          env.edges.patchPolicies.calls.map(call => (call._1, call._2.rateLimits, call._3)) ==
-            List((EdgeId("edge-acme-2"), Change.Replace(RateLimitPolicies.recommended), false)),
-        )
+        yield assertTrue(env.edges.patchPolicies.calls.isEmpty)
       },
     ),
     suite("what the operator and the partner may write as text and numbers")(

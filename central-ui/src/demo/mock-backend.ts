@@ -1561,6 +1561,10 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
       const patch = body as Record<string, unknown> & { expectedRevisions?: Record<string, number> };
       const sections = (['overload', 'accessLog', 'rateLimits'] as const).filter(section => section in patch);
+      if (edge.groupKind === 'partner' && sections.includes('rateLimits')) {
+        await route.fulfill({ status: 422, contentType: 'text/plain', body: `rateLimits of edge '${edge.id}' are its partner's setting, one for the whole group '${edge.groupId}': the partner sets them. overload and accessLog stay yours, per edge` });
+        return;
+      }
       const delay = Math.max(0, ...sections.map(section => ({ overload: state.overloadDelayMs, accessLog: state.accessLogDelayMs, rateLimits: state.rateLimitDelayMs })[section] ?? 0));
       if (delay) await new Promise(resolve => setTimeout(resolve, delay));
       for (const section of sections) {

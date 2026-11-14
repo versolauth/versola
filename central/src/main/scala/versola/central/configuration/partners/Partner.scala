@@ -4,6 +4,7 @@ import versola.central.configuration.clients.{AuthMethod, ClientId}
 import versola.central.configuration.edges.EdgeGroupId
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
+import versola.util.http.RateLimitPolicies
 import zio.json.{JsonCodec, JsonDecoder, JsonEncoder}
 import zio.schema.*
 
@@ -114,6 +115,10 @@ case class PartnerRecord(
     /** Bumped by every write of the row; a write of the profile or the settings names the version it read and loses when the row
       * has moved on (#962 review: the operator, the partner and an approved profile change write the same row). */
     version: Long,
+    /** The rate limits of the partner's edges: one setting for the group, which every edge of it is served. `None` means none set. Not
+      * part of [[version]]: it has a revision of its own, which `PUT /edge/partner/rate-limits` compares. */
+    rateLimits: Option[RateLimitPolicies] = None,
+    rateLimitsRevision: Int = 0,
 ) derives Schema, CanEqual
 
 object PartnerRecord:
@@ -127,6 +132,10 @@ case class PartnerAlreadyExists(id: PartnerId) extends RuntimeException(s"partne
   * client, which counts under the partner's row lock, so two creations at `max - 1` cannot both pass. */
 case class PartnerClientLimitReached(partnerId: PartnerId, max: Int)
   extends RuntimeException(s"partner '$partnerId' may register at most $max clients")
+
+/** The partner's rate limits are no longer at the revision the caller read: somebody wrote them since. */
+case class PartnerRateLimitsChanged(partnerId: PartnerId, revision: Int)
+  extends RuntimeException(s"the rate limits of partner '$partnerId' changed since they were read (now at revision $revision)")
 
 /** The partner's group has as many edges as the partner's limits allow. Answered the same way by the repository that inserts the edge. */
 case class PartnerEdgeLimitReached(partnerId: PartnerId, max: Int)

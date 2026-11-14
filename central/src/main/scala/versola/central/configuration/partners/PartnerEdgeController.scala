@@ -184,7 +184,7 @@ object PartnerEdgeController extends Controller:
 
   val syncRateLimitsEndpoint =
     Method.GET / "edge" / "partner" / "sync" / "rate-limits" -> read { (caller, _) =>
-      ZIO.succeed(Response.json(EdgeRateLimitSyncResponse(rateLimitPolicies = caller.edge.rateLimitPolicies).toJson))
+      ZIO.succeed(Response.json(EdgeRateLimitSyncResponse(rateLimitPolicies = caller.partner.rateLimits).toJson))
     }
 
   val syncServerMetadataEndpoint =
@@ -363,7 +363,7 @@ object PartnerEdgeController extends Controller:
       for
         edges <- ZIO.serviceWithZIO[PartnerService](_.edges(caller.partner))
         certificates <- ZIO.serviceWithZIO[EdgeCertificateRepository](_.latest)
-      yield Response.json(PartnerEdgesResponse(edges.map(edge => EdgeResponse.of(edge, Some(caller.partner.id), certificates.get(edge.id)))).toJson)
+      yield Response.json(PartnerEdgesResponse(edges.map(edge => EdgeResponse.of(edge, Some(caller.partner), certificates.get(edge.id)))).toJson)
     }
 
   /** Another edge of the partner, within `maxEdges`: the edge (without a signing key, which it registers when it enrols) and its
@@ -376,7 +376,7 @@ object PartnerEdgeController extends Controller:
         enrolled <- ZIO.serviceWithZIO[PartnerService](_.addEdge(caller.partner, body.id, body.publicUrl))
         certificates <- ZIO.serviceWithZIO[EdgeCertificateRepository](_.latest)
         response = CreatedPartnerEdgeResponse(
-          edge = EdgeResponse.of(enrolled.edge, Some(caller.partner.id), certificates.get(enrolled.edge.id)),
+          edge = EdgeResponse.of(enrolled.edge, Some(caller.partner), certificates.get(enrolled.edge.id)),
           token = enrolled.token.token,
           expiresAt = enrolled.token.expiresAt,
         )
@@ -418,8 +418,9 @@ object PartnerEdgeController extends Controller:
         yield Response.status(Status.NoContent)
       }
 
-  /** The rate limits the partner's edges apply: one setting for the group. What the partner sets here is what `/edge/partner/sync/rate-limits`
-    * serves each of its edges; `overload` and `access-log` are the operator's, set per edge with `PATCH /configuration/edges/policies`. */
+  /** The rate limits the partner's edges apply: one setting for the group, stored once on the partner with a revision of its own. What the
+    * partner sets here is what `/edge/partner/sync/rate-limits` serves each of its edges; `overload` and `access-log` are the operator's, set
+    * per edge with `PATCH /configuration/edges/policies`, which refuses `rateLimits` for an edge of a partner's group. */
   val getRateLimitsEndpoint =
     Method.GET / "edge" / "partner" / "rate-limits" -> managed("partner-edge", None, "/edge/partner/rate-limits") { (caller, _, _) =>
       ZIO.serviceWithZIO[PartnerService](_.rateLimits(caller.partner)).map(limits => Response.json(GroupRateLimitsResponse.of(limits).toJson))
@@ -432,7 +433,7 @@ object PartnerEdgeController extends Controller:
         ZIO.succeed(Response.json(RateLimitPolicies.recommended.toJson))
       }
 
-  /** Sets the rate limits of every edge of the group, as `PATCH /configuration/edges/policies` sets `rateLimits` of one edge: the body is
+  /** Sets the rate limits of the group, validated as `PATCH /configuration/edges/policies` validates `rateLimits` of one edge: the body is
     * `{rateLimits: <policies> | null, expectedRevision?: n}`, `null` removes them, the key must be there (an empty body is refused, not
     * read as a removal), and `expectedRevision` is the `revision` of the last read (`409` when the limits changed since). */
   val putRateLimitsEndpoint =

@@ -19,7 +19,6 @@ import versola.central.configuration.clients.{
   ResponseType,
 }
 import versola.central.configuration.edges.{
-  Change,
   EdgeEnrollmentTokenRepository,
   EdgeGroupId,
   EdgeGroupKind,
@@ -27,10 +26,8 @@ import versola.central.configuration.edges.{
   EdgeGroupService,
   EdgeId,
   EdgeIdentityService,
-  EdgePoliciesPatch,
   EdgeRecord,
   EdgeService,
-  PolicySection,
 }
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
@@ -119,15 +116,14 @@ trait PartnerService:
   /** The edges of the partner's group. */
   def edges(partner: PartnerRecord): UIO[Vector[EdgeRecord]]
 
-  /** The rate limits of the partner's edges, which are one setting for the group (see [[setRateLimits]]). */
-  def rateLimits(partner: PartnerRecord): UIO[PartnerService.GroupRateLimits]
+  /** The rate limits of the partner's edges: one setting for the group, stored once on the partner, as stored now. */
+  def rateLimits(partner: PartnerRecord): IO[PartnerError | Throwable, PartnerService.GroupRateLimits]
 
-  /** Sets the `rateLimits` policy section of every edge of the partner's group to `policies` (`None` removes it): the partner manages
-    * the limits its edges apply, once for the group, so that a new edge joins with them and the partner has one setting to reason about.
-    * The same validation as `PATCH /configuration/edges/policies`. `expectedRevision`, when given, is the revision the caller read
-    * ([[PartnerService.GroupRateLimits.revision]]): the change is refused with a conflict if the limits changed since. Nothing is
-    * written unless every edge accepts the policies. `overload` and `accessLog` are not touched: they stay the operator's, set per edge
-    * with `PATCH /configuration/edges/policies`. */
+  /** Sets the partner's rate limits (`None` removes them), once for the group: every edge of the group is served what is stored here, and an
+    * edge that joins later is served it too. The policies are validated as `PATCH /configuration/edges/policies` validates `rateLimits`;
+    * that validation does not depend on the edge, so it is done once. `expectedRevision`, when given, is the revision the caller read: the
+    * comparison and the write are one transaction under the partner's lock, and a change that finds the limits moved on is a conflict.
+    * `overload` and `accessLog` are not touched: they stay the operator's, set per edge with `PATCH /configuration/edges/policies`. */
   def setRateLimits(
       partner: PartnerRecord,
       policies: Option[RateLimitPolicies],
@@ -583,11 +579,8 @@ object PartnerService:
         ).when(own.size >= partner.limits.maxEdges)
         _ <- ZIO.fail(PartnerError.Invalid("publicUrl must be an https URL")).unless(publicUrl.startsWith("https://"))
         _ <- edgeService.findFresh(id).flatMap(found => ZIO.fail(PartnerError.Conflict(s"edge '$id' already exists")).when(found.isDefined))
+        // the rate limits are stored once on the partner and served to every edge of the group: there is nothing to copy to an edge that joins
         enrolled <- enrol(partner, id, publicUrl)
-        // the rate limits are one setting for the group: an edge that joins has them
-        group <- rateLimits(partner)
-        _ <- ZIO.foreachDiscard(group.policies): policies =>
-          edgeService.patchPolicies(id, EdgePoliciesPatch(rateLimits = Change.Replace(policies)), dryRun = false)
       yield enrolled
 
     override def enrollmentToken(partner: PartnerRecord, edgeId: EdgeId): IO[PartnerError | Throwable, Token] =
@@ -601,39 +594,25 @@ object PartnerService:
     override def edges(partner: PartnerRecord): UIO[Vector[EdgeRecord]] =
       edgeService.getAllEdges.map(_.filter(_.groupId == partner.groupId))
 
-    private def revisionOf(edge: EdgeRecord): Int =
-      edge.policyMeta.flatMap(_.get(PolicySection.RateLimits.key)).fold(0)(_.revision)
-
-    private def groupRateLimits(edges: Vector[EdgeRecord]): GroupRateLimits =
-      // all of them carry what the partner set; where an edge was set apart by the operator, the latest change is the group's
-      val latest = edges.sortBy(edge => (-revisionOf(edge), edge.id.toString)).headOption
-      GroupRateLimits(latest.flatMap(_.rateLimitPolicies), latest.fold(0)(revisionOf))
-
-    override def rateLimits(partner: PartnerRecord): UIO[GroupRateLimits] =
-      edges(partner).map(groupRateLimits)
+    override def rateLimits(partner: PartnerRecord): IO[PartnerError | Throwable, GroupRateLimits] =
+      this.partner(partner.id).map(stored => GroupRateLimits(stored.rateLimits, stored.rateLimitsRevision))
 
     override def setRateLimits(
         partner: PartnerRecord,
         policies: Option[RateLimitPolicies],
         expectedRevision: Option[Int],
     ): IO[PartnerError | Throwable, GroupRateLimits] =
-      val patch = EdgePoliciesPatch(rateLimits = policies.fold[Change[RateLimitPolicies]](Change.Remove)(Change.Replace(_)))
       for
-        own <- edges(partner).flatMap(listed => ZIO.foreach(listed)(edge => edgeService.findFresh(edge.id))).map(_.flatten)
-        _ <- ZIO.fail(PartnerError.Invalid(s"partner '${partner.id}' has no edge to set limits on")).when(own.isEmpty)
-        _ <- ZIO.fail(PartnerError.Conflict("the rate limits changed since they were read; read them again"))
-          .when(expectedRevision.exists(_ != groupRateLimits(own).revision))
-        // every edge is asked first and none is written unless all accept: a policy an edge refuses is refused for the group
-        _ <- ZIO.foreachDiscard(own): edge =>
-          edgeService.patchPolicies(edge.id, patch, dryRun = true).flatMap:
-            case Some(Left(error)) => ZIO.fail(PartnerError.Invalid(error.message))
-            case _ => ZIO.unit
-        _ <- ZIO.foreachDiscard(own): edge =>
-          edgeService.patchPolicies(edge.id, patch, dryRun = false).flatMap:
-            case Some(Left(error)) => ZIO.fail(PartnerError.Invalid(error.message))
-            case _ => ZIO.unit
-        after <- ZIO.foreach(own)(edge => edgeService.findFresh(edge.id)).map(_.flatten)
-      yield groupRateLimits(after)
+        // an empty set is the same as none, as for an edge's own
+        valid <- ZIO.foreach(policies)(set => ZIO.fromEither(set.validate).mapError(detail => PartnerError.Invalid(detail)))
+          .map(_.filter(_.policies.nonEmpty))
+        stored <- partners.setRateLimits(partner.id, valid, expectedRevision)
+          .catchSome:
+            case _: PartnerRateLimitsChanged => ZIO.fail(PartnerError.Conflict("the rate limits changed since they were read; read them again"))
+          .someOrFail(PartnerError.NotFound(s"partner '${partner.id}'"))
+        // the partners are cached and the cache hears of a write through a notification: this one is seen by the next sync of an edge at once
+        _ <- registry.refreshNow
+      yield GroupRateLimits(stored.rateLimits, stored.rateLimitsRevision)
 
   /** The partner's own name and logo, as asked (`requested`) and as registered (`current`). */
   case class ProfileChange(displayName: String, logoUri: Option[String]) derives JsonCodec

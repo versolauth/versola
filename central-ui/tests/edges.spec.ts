@@ -695,6 +695,12 @@ test('a partner edge has a group card with its partner and certificate, no signi
   await expect(dialog.getByRole('region', { name: 'Signing key' })).toHaveCount(0);
   await expect(dialog.getByRole('region', { name: 'Linked tenants' })).toHaveCount(0);
   await expect(dialog.getByRole('region', { name: 'Overload protection' })).toBeVisible();
+  // The rate limits are the partner's, one setting for the group: shown here, not editable (the operator's PATCH is refused for them).
+  const limits = dialog.getByRole('region', { name: 'Rate limits' });
+  await expect(limits).toContainText('Set by the partner');
+  await expect(limits.getByRole('button', { name: 'Edit rate limits' })).toHaveCount(0);
+  await expect(limits.getByRole('button', { name: 'Remove all policies' })).toHaveCount(0);
+  await expect(dialog.getByRole('region', { name: 'Overload protection' }).getByRole('button', { name: /Edit/ })).toBeVisible();
   await group.getByRole('button', { name: 'Pilot Pay' }).click();
   await expect(page).toHaveURL(/view=partners/);
   await expect(page).toHaveURL(/id=pilot-pay/);

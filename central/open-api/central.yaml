@@ -43,9 +43,12 @@ info:
       settings changed since), `GET`/`PUT /edge/partner/rate-limits` and `GET /edge/partner/rate-limits/recommended` and `GET /edge/partner/audit`.
       The rate limits are one setting for the partner's group: `GET` answers `{rateLimits, revision}`, `PUT` takes
       `{rateLimits: <policies> | null, expectedRevision?}` (`null` removes them; the key must be present; `expectedRevision` is the revision of
-      the last read, `409` when the limits changed since), validates them as `PATCH /configuration/edges/policies` does for `rateLimits`,
-      writes them to every edge of the group only if every edge accepts them, and is audited with the staff member as the actor; a new edge
-      of the group starts with the group's limits. It touches `rateLimits` only: `overload` and `access-log` stay the operator's, set per edge
+      the last read, `409` when the limits changed since), validates them as `PATCH /configuration/edges/policies` does for `rateLimits`
+      (that validation does not depend on the edge, so it is done once), and is audited with the staff member as the actor. They are stored
+      once, on the partner, with a revision of their own: the comparison and the write are one transaction under the partner's lock, so two
+      writes at one revision give one winner and one `409`; `GET /edge/partner/sync/rate-limits` serves that value to every edge of the group
+      (an edge that joins later too, with nothing copied to it), and a partner with no edge can set them. The operator's
+      `PATCH /configuration/edges/policies` refuses `rateLimits` for an edge of a partner's group (`422`). It touches `rateLimits` only: `overload` and `access-log` stay the operator's, set per edge
       with `PATCH /configuration/edges/policies`. A management
       call carries the staff member's access token in `Versola-Principal` besides the edge's bearer token; it is
       verified against auth's keys, the issuer and the partner's console client, and its `sub` is the actor of the
@@ -2845,7 +2848,8 @@ paths:
       description: |
         The three policy sections of one edge as they are stored now (not the console's cached copy): `overload`, `accessLog` and
         `rateLimits`, each absent when none is set, with the `revisions` and `updatedAt` of every section that has ever changed. A section
-        that never changed has revision 0.
+        that never changed has revision 0. For an edge of a partner's group the `rateLimits` and their revision are the partner's, one setting
+        for the whole group (they carry no `updatedAt`).
       operationId: getEdgePolicies
       parameters:
         - $ref: '#/components/parameters/EdgeIdQuery'
@@ -2875,7 +2879,9 @@ paths:
           `HTTP_CLIENT_GUARD_*` environment when set, the built-in defaults otherwise).
         - `accessLog`: which requests the edge writes a `receive-http` log line for. Every field is optional and means the edge's
           built-in default when absent (`off`, 500 ms, 0.05). `auth` and `central` have no such setting.
-        - `rateLimits`: who may send how much through the edge. Start from `GET /configuration/edges/rate-limits/recommended`.
+        - `rateLimits`: who may send how much through the edge. Start from `GET /configuration/edges/rate-limits/recommended`. Not for an edge
+          of a partner's group: the partner's rate limits are one setting for its group, set once by the partner (`PUT /edge/partner/rate-limits`),
+          so naming `rateLimits` there, a removal and a dry run included, is `422`. `overload` and `accessLog` stay the operator's, per edge.
 
         **Conditional change.** `expectedRevisions` names, per section, the revision the client last read. The patch is applied only if every
         named section is still at that revision; otherwise nothing is written and the answer is `409` with no body (read the state again). A
@@ -2932,6 +2938,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           description: No edge is registered under that id.
+        '422':
+          description: The body names `rateLimits` and the edge belongs to a partner's group. `text/plain`, saying whose setting it is. Nothing was written.
         '409':
           description: |
             A section named in `expectedRevisions` has changed since it was read. Nothing was written. No body: read the state again with `GET`.
@@ -7559,7 +7567,7 @@ components:
           description: The edge's access-log policy; absent when none is set.
         rateLimitPolicies:
           $ref: '#/components/schemas/RateLimitPolicies'
-          description: The edge's rate limit policies; absent when none are set.
+          description: The edge's rate limit policies; absent when none are set. For an edge of a partner's group, the partner's (one setting for the group).
         policyRevisions:
           type: object
           additionalProperties: { type: integer }
