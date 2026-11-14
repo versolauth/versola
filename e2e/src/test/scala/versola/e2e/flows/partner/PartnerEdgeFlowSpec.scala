@@ -286,6 +286,51 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
         denied._1 == Status.Unauthorized,
       )
     },
+    test("a second edge of the partner's group, with a certificate of its own, continues the session of the first: the console works on both") {
+      def cnf(cookie: String): Task[Option[String]] =
+        ZIO.attempt(String(java.util.Base64.getUrlDecoder.decode(cookie.dropWhile(_ != ':').drop(1).split('.')(1)), "UTF-8")).flatMap(payload =>
+          ZIO.fromEither(payload.fromJson[Json.Obj]).mapError(RuntimeException(_)),
+        ).map(_.obj("cnf").flatMap(_.str("x5t#S256")))
+      for
+        f <- fixture
+        session <- signIn(f, f.admin)
+        // the partner's administrator adds the edge in the console: central answers the token and the edge, and that is all that is shown
+        added <- call(
+          f,
+          Some(session),
+          Method.POST,
+          "/partner/api/edges",
+          Some(Json.Obj("id" -> Json.Str(s"${f.partnerId}-edge-2"), "publicUrl" -> Json.Str(s"https://login-2.${f.partnerId}.example"))),
+        )
+        second <- ZIO.scoped:
+          for
+            api <- PartnerEdgeFixture.startAnotherEdge(f, s"${f.partnerId}-edge-2")
+            other = f.copy(baseUrl = s"http://localhost:${PartnerEdgeFixture.SecondPort}", api = api)
+            onSecond <- call(other, Some(session), Method.GET, "/partner/api/me")
+            // asked as a browser would: the cookie the second edge answers with, if it rotated the session, is the one the browser holds next
+            raw <- ZIO.fromEither(URL.decode(s"${other.baseUrl}/partner/api/me")).mapError(RuntimeException(_)).flatMap(url =>
+              Client.batched(Request.get(url).addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request(EdgeApi.sessionCookieName, session.cookie))))),
+            )
+            rotated = EdgeApi.sessionCookie(raw).filter(_.nonEmpty)
+            bound <- cnf(session.cookie)
+            back <- call(f, Some(session.copy(cookie = rotated.getOrElse(session.cookie))), Method.GET, "/partner/api/me")
+          yield (onSecond, raw.status, rotated, bound, back)
+        (onSecond, rawStatus, rotated, bound, back) = second
+      yield assertTrue(
+        added._1 == Status.Created,
+        added._2.str("token").exists(_.startsWith("vtk1.")),
+        added._2.obj("edge").flatMap(_.str("id")).contains(s"${f.partnerId}-edge-2"),
+        // no bundle, no key: the token is what the console shows
+        !added._2.fields.exists(field => Set("bundle", "bundleComplete", "signingKey").contains(field._1)),
+        onSecond._1 == Status.Ok,
+        onSecond._2.obj("staff").flatMap(_.str("level")).contains("admin"),
+        rawStatus == Status.Ok,
+        // a token bound to the first edge's certificate is re-bound on the second (a new cookie); an unbound token (auth's current exemption of
+        // a partner's clients) needs nothing, and the cookie is left as it was
+        bound.isEmpty || rotated.isDefined,
+        back._1 == Status.Ok,
+      )
+    },
     test("a suspended partner is 403 partner_suspended on a management call, and its edge serves again once it is resumed") {
       for
         f <- fixture

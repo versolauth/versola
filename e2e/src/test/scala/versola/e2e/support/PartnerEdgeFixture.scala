@@ -149,18 +149,7 @@ object PartnerEdgeFixture:
              |""".stripMargin
         // the staged first-party edge's configuration, less what a partner's edge refuses or does not hold: the internal secret, and the
         // certificate deployed with the edge (`central.identity` is the partner's)
-        partnerEnvConf <- ZIO.attemptBlocking:
-          val text = Files.readString(Path.of(config.edgeEnvConf))
-            .replaceAll("(?m)^\\s*internal-secret\\s*=.*$", "")
-            // what the enrollment fixes is not in a partner edge's file: its id, its signing key, central's and auth's addresses
-            .replaceAll("(?ms)^private-key\\s*=\\s*\"\"\".*?\"\"\"", "")
-            .replaceAll("(?m)^(id|key-id|versola-url)\\s*=.*$", "")
-            .replaceAll("(?m)^\\s+url\\s*=\\s*\"https?://[^\"]*\"\\s*$", "")
-            .replaceAll("(?m)^\\s*(certificate|private-key)\\s*=\\s*\"[^\"]*edge-client\\.(crt|key)\"\\s*$", "")
-          val file = Files.createTempFile("e2e-partner-env", ".conf").nn
-          file.toFile.nn.deleteOnExit()
-          Files.writeString(file, text)
-          file.toString
+        partnerEnvConf <- partnerEnvConf(config)
         running <- ExtraService.start(
           launcher = config.edgeLauncher,
           envConf = partnerEnvConf,
@@ -174,6 +163,80 @@ object PartnerEdgeFixture:
         _ <- ExtraService.awaitReady(running).provide(ZLayer.succeed(client))
         api = EdgeApi(client, config.copy(edgeUrl = baseUrl))
       yield PartnerEdgeFixture(id, groupId, edgeId, s"$id-console", baseUrl, api, admin, Fixtures.suiteTenant)
+
+  /** The staged first-party edge's configuration, less what a partner's edge refuses or does not hold: the internal secret, what the
+    * enrollment fixes (its id, its signing key, central's and auth's addresses) and the certificate deployed with the edge. */
+  private def partnerEnvConf(config: E2EConfig): Task[String] =
+    ZIO.attemptBlocking:
+      val text = Files.readString(Path.of(config.edgeEnvConf))
+        .replaceAll("(?m)^\\s*internal-secret\\s*=.*$", "")
+        .replaceAll("(?ms)^private-key\\s*=\\s*\"\"\".*?\"\"\"", "")
+        .replaceAll("(?m)^(id|key-id|versola-url)\\s*=.*$", "")
+        .replaceAll("(?m)^\\s+url\\s*=\\s*\"https?://[^\"]*\"\\s*$", "")
+        .replaceAll("(?m)^\\s*(certificate|private-key)\\s*=\\s*\"[^\"]*edge-client\\.(crt|key)\"\\s*$", "")
+      val file = Files.createTempFile("e2e-partner-env", ".conf").nn
+      file.toFile.nn.deleteOnExit()
+      Files.writeString(file, text)
+      file.toString
+
+  /** A second edge of the partner's group, as the partner's console registered it (`POST /partner/api/edges` answered `edgeId`): its own
+    * signing key (registered at central as an enrollment would), its own certificate naming it and the group, its own identity directory,
+    * its own ports, and the database of the first edge, so that the two share the sessions. Waits until it serves. */
+  def startAnotherEdge(f: PartnerEdgeFixture, edgeId: String): ZIO[Scope & CentralApi & E2EConfig & Client, Throwable, EdgeApi] =
+    for
+      central <- ZIO.service[CentralApi]
+      config <- ZIO.service[E2EConfig]
+      client <- ZIO.service[Client]
+      key <- ZIO.attemptBlocking(RSAKeyGenerator(2048).keyID(s"$edgeId-key").generate())
+      _ <- CentralDatabase.registerEdgeKey(edgeId, key.toPublicJWK.toJSONString)
+      certificate <- EdgeCertificate.make(
+        commonName = edgeId,
+        caDirectory = "edge/dev/internal-tls",
+        uris = List(s"urn:versola:edge:$edgeId", s"urn:versola:edge-group:${f.groupId}"),
+      )
+      ssl <- certificate.clientSsl(config.centralMutualTlsServerCertificate)
+      token <- EdgeToken.sign(edgeId, key.getKeyID, key.toRSAPrivateKey)
+      known <- eventually(central.onEdgeSurface(Some(token), Some(ssl)).get("/edge/partner/sync/dpop"), attempts = 100)(_.status == Status.Ok)
+      _ <- ZIO.fail(RuntimeException("central never served the second edge")).unless(known.status == Status.Ok)
+      identity <- ZIO.attemptBlocking:
+        val directory = Files.createTempDirectory("e2e-partner-identity-2").nn
+        val generation = Files.createDirectory(directory.resolve("gen-0000000001")).nn
+        Files.writeString(generation.resolve("edge.crt"), certificate.certificatePem)
+        Files.writeString(generation.resolve("edge.key"), certificate.privateKeyPemValue)
+        Files.writeString(
+          directory.resolve("enrolled.json"),
+          Json.Obj(
+            "edgeId" -> Json.Str(edgeId),
+            "group" -> Json.Str(f.groupId),
+            "keyId" -> Json.Str(key.getKeyID),
+            "privateKey" -> Json.Str(java.util.Base64.getEncoder.encodeToString(key.toRSAPrivateKey.getEncoded)),
+            "central" -> Json.Obj("mtlsUrl" -> Json.Str(config.centralMutualTlsUrl)),
+            "auth" -> Json.Obj("issuer" -> Json.Str(config.authUrl)),
+          ).toJson,
+        )
+        directory
+      stub <- ZIO.attemptBlocking:
+        val directory = Files.createTempDirectory("e2e-partner-console-2").nn
+        Files.writeString(directory.resolve("partner.html"), "<!doctype html><title>partner console</title>")
+        directory
+      baseUrl = s"http://localhost:$SecondPort"
+      envConf <- partnerEnvConf(config)
+      running <- ExtraService.start(
+        launcher = config.edgeLauncher,
+        envConf = envConf,
+        extraConfig =
+          s"""mode = "partner"
+             |configuration-cache-refresh-interval = "2 seconds"
+             |edge-url = "$baseUrl"
+             |central { identity { directory = "$identity" } }
+             |partner { console-directory = "$stub" }
+             |""".stripMargin,
+        ports = Map("PORT" -> SecondPort, "DPORT" -> "9132", "MPORT" -> "9133"),
+      )
+      _ <- ExtraService.awaitReady(running).provide(ZLayer.succeed(client))
+    yield EdgeApi(client, config.copy(edgeUrl = baseUrl))
+
+  val SecondPort = "9131"
 
   /** A person at the operator who signs in with an email and a code, and whose `/userinfo` carries that email with `email_verified`. `phone` is
     * the identifier the team knows them by: the email. */

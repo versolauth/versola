@@ -573,8 +573,23 @@ object EdgeService:
         typedClaims <- ZIO.fromEither(session.claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
         _ <- logAccessTokenClaims(typedClaims)
         _ <- checkRevoked(typedClaims)
-        _ <- checkTokenBinding(request, session.accessToken, typedClaims, authSource)
-      yield ConsoleSession(session.accessToken, typedClaims, presetId, session.rotatedCookie))
+        // A token bound to another certificate than the one this edge presents is another edge's of the group (or this edge's before a
+        // renewal): auth would refuse it on /userinfo, so the session is re-bound with its refresh token first, as a proxied call does
+        // (`userInfoFor`). One refresh a request: a token that is still bound elsewhere afterwards (another edge's rotation, adopted) is
+        // answered 401 with the cookie of that rotation, and the next request re-binds it here.
+        bound <- boundToAnotherCertificate(typedClaims)
+        (current, currentClaims) <-
+          if !bound || session.rotatedCookie.isDefined then
+            ZIO.when(bound)(ZIO.fail(NoSession(session.rotatedCookie))).as((session, typedClaims))
+          else
+            for
+              refreshed <- refreshSession(typedClaims.jti, presetId, now)
+              refreshedClaims <- ZIO.fromEither(refreshed.claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
+              _ <- checkRevoked(refreshedClaims)
+              _ <- ZIO.fail(NoSession(refreshed.rotatedCookie)).whenZIO(boundToAnotherCertificate(refreshedClaims))
+            yield (refreshed, refreshedClaims)
+        _ <- checkTokenBinding(request, current.accessToken, currentClaims, authSource)
+      yield ConsoleSession(current.accessToken, currentClaims, presetId, current.rotatedCookie))
         .catchAll:
           case Outcome.Reauthenticate(_, clear) => ZIO.fail(NoSession(Some(clear)))
           case _: Outcome => ZIO.fail(NoSession(None))

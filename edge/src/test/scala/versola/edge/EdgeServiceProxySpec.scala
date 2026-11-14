@@ -4404,6 +4404,56 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         revoked <- service.consoleSession(Request.get(URL.empty / "partner").addCookie(sessionCookie(token))).flip
       yield assertTrue(forged == EdgeService.NoSession(None), revoked == EdgeService.NoSession(None))
     },
+    test("a console session whose token is bound to another certificate is refreshed first, and the console goes on with the new token and cookie") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withPresets(certificatePreset)
+        _ <- env.withClients(certificateClient)
+        // issued over another edge's certificate of the group, or this edge's before a renewal
+        staleToken <-
+          env.signToken(jti = "old-jti", clientId = certificateClient.id.toString, sub = "staff-1", cnfX5t = Some(otherCertificateThumbprint))
+        newToken <- env.signToken(jti = "new-jti", clientId = certificateClient.id.toString, sub = "staff-1", cnfX5t = Some(ownCertificateThumbprint))
+        record <- sessionRow(env = env, security = security, jti = "old-jti")
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+        _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(refreshed(newToken))
+        _ <- env.sessionRepository.create.succeedsWith(())
+        service = env.buildService(client, security)
+        session <- service.consoleSession(Request.get(URL.empty / "partner").addCookie(sessionCookie(staleToken)))
+      yield assertTrue(
+        session.accessToken == newToken,
+        session.claims.subject == "staff-1",
+        env.sessionRepository.claimRefresh.calls.map(_._1) == List(AccessTokenId("old-jti")),
+        env.ssoClient.exchangeRefreshToken.calls == List((RefreshToken("rt-secret"), certificateClient.id, certificateClient.credential)),
+        session.rotatedCookie.exists(cookie => cookie.name == EdgeSessionCookie.name && cookie.content == s"${presetId}:${newToken}"),
+      )
+    },
+    test("a console session whose refresh is another edge's rotation (bound elsewhere too) is 401 with that cookie, and is not refreshed twice") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withPresets(certificatePreset)
+        _ <- env.withClients(certificateClient)
+        staleToken <- env.signToken(jti = "old-jti", clientId = certificateClient.id.toString, cnfX5t = Some(otherCertificateThumbprint))
+        // what the edge that took the lease produced: bound to its certificate, not to this one's
+        elsewhereToken <- env.signToken(jti = "new-jti", clientId = certificateClient.id.toString, cnfX5t = Some(otherCertificateThumbprint))
+        record <- sessionRow(env = env, security = security, jti = "old-jti")
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
+        _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(refreshed(elsewhereToken))
+        _ <- env.sessionRepository.create.succeedsWith(())
+        service = env.buildService(client, security)
+        refused <- service.consoleSession(Request.get(URL.empty / "partner").addCookie(sessionCookie(staleToken))).flip
+      yield assertTrue(
+        env.ssoClient.exchangeRefreshToken.calls.size == 1,
+        refused.isInstanceOf[EdgeService.NoSession],
+        // the rotation is handed to the browser, so that its next request finds the row where it moved
+        refused.asInstanceOf[EdgeService.NoSession].clear.exists(_.content == s"${presetId}:${elsewhereToken}"),
+      )
+    },
   )
 
   /** `EdgeService.revokeSessions`: what a partner's administrator ends on this edge, by user, session or refresh family. */
