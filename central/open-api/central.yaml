@@ -108,7 +108,16 @@ info:
     lists, settings and counters) is recorded here with its outcome too, and auth records its effect: the two rows carry
     the same trace id.
     Certificates central issues are recorded as `cert.enrolled`, `cert.renewed` and `cert.revoked`, by the client,
-    the edge or the system.
+    the edge or the system. Their `details` say which certificate it is: `operation`, the `serial` (hex), `notAfter`
+    (an ISO-8601 instant) and the `subject` (RFC 4514), and `clientId` for a client's. `operation` is one of `enroll`
+    (the first certificate), `renew` (a new one for the one in hand, also for the EST re-enrolment `auth` records),
+    `sign` (an edge obtained a certificate for a client whose key it generated), `issue` (central issued it when the
+    client was registered) and `revoke_renewal` (the `cert.revoked` of a chain closed as forked: the right to renew
+    ended, and the `serial` is that of the certificate presented, which keeps authenticating until it expires). A certificate issued when a
+    client is registered with `issueEdgeClientCertificate` is a `cert.enrolled` by the administrator. No key, PEM or
+    request is ever in them. An attempt that gave no certificate is recorded with `denied` (a rule refused it) or `failure`
+    (the issuer or central could not do it), a `reason` that is a code and no `serial`; an automatic renewal that keeps
+    failing is recorded when it starts to fail and not on every pass, and the `cert.renewed` that succeeds ends it.
 
     The administrator is the one edge has authenticated. Edge adds query parameters to every call and removes
     any a client sent under the same names: `actorId` (the `sub` of the access token), `actorTenantId` (its tenant),

@@ -231,6 +231,11 @@ object EstEnrollmentSpec extends ZIOSpec[Flows.Setups & CentralApi]:
         yield assertTrue(
           certificates.map(row => (row.kind, row.actorType, row.actorId)) ==
             List(("cert.enrolled", "client", Some(id)), ("cert.renewed", "client", Some(id))),
+          // which certificate each event is about: the serial openssl reads from it (details is stored as jsonb, so the text has spaces)
+          certificates.map(row => """"serial":\s*"([0-9a-f]+)"""".r.findFirstMatchIn(row.details).map(_.group(1))) ==
+            List(firstSerial, secondSerial).map(serial => Some(serial.stripPrefix("serial=").toLowerCase.dropWhile(_ == '0'))),
+          certificates.forall(row => row.details.contains("\"subject\"") && row.details.contains("\"notAfter\"")),
+          certificates.forall(row => !row.details.contains("PRIVATE KEY") && !row.details.contains("BEGIN")),
           enrolled._1.status == Status.Ok,
           enrolled._1.rawHeader("Content-Type").exists(_.startsWith("application/pkcs7-mime")),
           enrolled._1.rawHeader("Content-Transfer-Encoding").contains("base64"),
@@ -258,8 +263,22 @@ object EstEnrollmentSpec extends ZIOSpec[Flows.Setups & CentralApi]:
           again <- estPost(url, body, Some(Header.Authorization.Basic(id, token)))
           freshToken <- enrolmentToken(central, id).map(_._1)
           bearer <- estPost(url, body, Some(Header.Authorization.Bearer(freshToken)))
+          // Central records what it refused, for the client the caller named, and once a minute however many times it tried: the writer
+          // rests up to a second between batches, so wait for the row.
+          denied <- CentralDatabase.auditEvents(id)
+            .repeat(
+              Schedule.spaced(200.millis) *>
+                Schedule.recurUntil[List[CentralDatabase.AuditRow]](_.exists(row => row.kind == "cert.enrolled" && row.outcome == "denied")),
+            )
+            .timeout(20.seconds)
+            .someOrElseZIO(CentralDatabase.auditEvents(id))
+            .map(_.filter(row => row.kind.startsWith("cert.") && row.outcome == "denied"))
           _ <- central.delete("/configuration/clients", "clientId" -> other).ignore
         yield assertTrue(
+          denied.nonEmpty,
+          denied.size <= 2,
+          denied.forall(row => row.reason.contains("invalid_credentials") && row.actorId.contains(id)),
+          !denied.exists(row => row.details.contains("not-a-token") || row.details.contains(token)),
           anonymous._1.status == Status.Unauthorized,
           anonymous._1.rawHeader("WWW-Authenticate").exists(_.startsWith("Basic")),
           wrong._1.status == Status.Unauthorized,

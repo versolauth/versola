@@ -2464,9 +2464,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           !rebound.exists(_.details.toJson.toString.contains(Base64.urlEncode(refreshToken1))),
         )
       },
-      test("the re-binding is recorded even where the deployment left audit.events.token-refresh off") {
+      test("the re-binding is recorded even where the tenant left auditSettings.tokenRefresh off") {
         val env = new Env
-        val off = env.serviceWith(CapturingAuditEvents.tiers.copy(tokenRefresh = false))
         for
           now <- Clock.instant
           _ <- env.clientService.find.succeedsWith(Some(groupClient))
@@ -2475,7 +2474,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.tokenRepo.renewBoundToken.succeedsWith(true)
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
-          _ <- off.refreshAccessToken(
+          _ <- env.clientService.auditTokenRefresh.succeedsWith(false)
+          _ <- env.service.refreshAccessToken(
             RefreshTokenRequest(refreshToken1, None, None, None),
             ClientIdWithSecret(clientId1, None),
             None,

@@ -1,7 +1,8 @@
 package versola.central.configuration.clients.est
 
 import versola.central.CentralConfig
-import versola.central.audit.CentralAudit
+import versola.central.audit.CentralAudit.CertReasons
+import versola.central.audit.{CentralAudit, DenialThrottle}
 import versola.central.configuration.CreateClientRequest
 import versola.central.configuration.clients.certificates.{ClientCertificateIssuer, ClientCertificateRequests}
 import versola.central.configuration.clients.{
@@ -15,7 +16,7 @@ import versola.central.configuration.clients.{
   RegisteredClient,
 }
 import versola.central.configuration.edges.EdgeCertificate
-import versola.util.audit.{ActorType, AuditEvents, AuditKind}
+import versola.util.audit.{ActorType, AuditEvents, AuditKind, AuditOutcome, CertAuditDetails, CertOperation}
 import versola.util.http.Observability
 import versola.util.{Base64Url, CertificateSubject, SecureRandom}
 import zio.*
@@ -28,6 +29,7 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.cert.{CertificateFactory, X509Certificate}
 import java.time.{Duration as JavaDuration, Instant}
+import javax.security.auth.x500.X500Principal
 
 /** How a client that is registered with `estEnrollment` gets and renews its mTLS client certificate: the policy half of
   * EST (RFC 7030), which auth serves to the client and calls central for. Central alone holds the power to issue --
@@ -147,7 +149,16 @@ object ClientEstService:
   val live: URLayer[
     ClientEstRepository & OAuthClientService & ClientCertificateIssuer & SecureRandom & CentralConfig & AuditEvents,
     ClientEstService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
+  ] = ZLayer.fromZIO:
+    for
+      est <- ZIO.service[ClientEstRepository]
+      clients <- ZIO.service[OAuthClientService]
+      issuer <- ZIO.service[ClientCertificateIssuer]
+      random <- ZIO.service[SecureRandom]
+      config <- ZIO.service[CentralConfig]
+      events <- ZIO.service[AuditEvents]
+      throttle <- DenialThrottle.perMinute
+    yield Impl(est, clients, issuer, random, config, events, throttle)
 
   class Impl(
       est: ClientEstRepository,
@@ -156,16 +167,68 @@ object ClientEstService:
       random: SecureRandom,
       config: CentralConfig,
       events: AuditEvents,
+      throttle: DenialThrottle,
   ) extends ClientEstService:
     /** A certificate event of a client, by the client itself or, where nothing of its own caused it, the system. */
-    private def certificateEvent(kind: AuditKind, actor: ActorType, clientId: ClientId): UIO[Unit] =
+    private def certificateEvent(
+        kind: AuditKind,
+        actor: ActorType,
+        clientId: ClientId,
+        outcome: AuditOutcome,
+        reason: Option[String],
+        details: CertAuditDetails,
+    ): UIO[Unit] =
       CentralAudit.certificate(
         events,
         kind,
         actor,
         Option.when(actor == CentralAudit.Actors.Client)(clientId.toString),
         ("client", clientId.toString),
+        outcome,
+        reason,
+        details,
       )
+
+    /** What is known of one attempt when it fails, filled in as the request is understood: the client it is for, the subject it would
+      * have had, and -- where the failure is the CA's rather than a rule's -- what to call it. */
+    private case class Attempt(clientId: Option[ClientId], subject: Option[X500Principal], verdict: Option[(AuditOutcome, String)])
+
+    /** Runs one EST request for the audit log's sake: when it fails, an event says how, if it is known whose attempt it was. */
+    private def audited[A](operation: CertOperation, kind: AuditKind, claimed: Option[ClientId])(
+        effect: Ref[Attempt] => IO[Refused | InvalidCredentials.type | Throwable, A],
+    ): IO[Refused | InvalidCredentials.type | Throwable, A] =
+      for
+        attempt <- Ref.make(Attempt(claimed, None, None))
+        result <- counted(operation.name)(effect(attempt)).tapError(error => attempt.get.flatMap(failed(operation, kind, _, error)))
+      yield result
+
+    /** A refusal is `denied`, whatever its kind; anything else is a `failure`, called what the attempt says it was (the CA's) or
+      * `unexpected`. Nobody identified, nothing recorded: auth, which took the request, records the attempt.
+      *
+      * The credentials that are not good are the refusal anybody can cause (a token that is unknown, spent or another's): recorded only
+      * for a client registered with EST, and once a minute for each. */
+    private def failed(operation: CertOperation, kind: AuditKind, attempt: Attempt, error: Refused | InvalidCredentials.type | Throwable): UIO[Unit] =
+      ZIO.foreachDiscard(attempt.clientId): clientId =>
+        val (outcome, reason) = attempt.verdict.getOrElse:
+          error match
+            case InvalidCredentials => (AuditOutcome.denied, CertReasons.InvalidCredentials)
+            case Refused(Refusal.BadRequest, _) => (AuditOutcome.denied, CertReasons.BadRequest)
+            case Refused(Refusal.Forbidden, _) => (AuditOutcome.denied, CertReasons.Forbidden)
+            case Refused(Refusal.ChainClosed, _) => (AuditOutcome.denied, CertReasons.ChainFork)
+            case _ => (AuditOutcome.failure, CertReasons.Unexpected)
+        val record = certificateEvent(
+          kind,
+          CentralAudit.Actors.Client,
+          clientId,
+          outcome,
+          Some(reason),
+          CertAuditDetails.refused(operation = operation, clientId = Some(clientId.toString), subject = attempt.subject),
+        )
+        if reason != CertReasons.InvalidCredentials then record
+        else
+          est.isEnabled(clientId).orElseSucceed(false).flatMap: registered =>
+            // the key is admitted only for a client that is registered, so that what the throttle keeps is bounded by the registered ones
+            ZIO.when(registered)(throttle.admit(clientId.toString)).flatMap(admitted => record.when(admitted.contains(true)).unit)
 
     private val validity: Duration =
       config.certificateBackends.map(_.validity)
@@ -228,15 +291,17 @@ object ClientEstService:
         claimedClientId: Option[ClientId],
         csrPem: String,
     ): IO[Refused | InvalidCredentials.type | Throwable, Issued] =
-      counted("enroll"):
+      audited(CertOperation.Enroll, CentralAudit.CertEnrolled, claimedClientId): attempt =>
         for
           now <- Clock.instant
           // Nothing is parsed on the strength of a token before the token is known good: the caller is not yet authenticated,
           // so an unregistered client, a registered one and a bad token are one and the same answer.
           owner <- est.peekToken(hash(token), now)
           clientId <- ZIO.fromOption(owner.filter(id => claimedClientId.forall(_ == id))).orElseFail(InvalidCredentials)
+          _ <- attempt.update(_.copy(clientId = Some(clientId)))
           client <- estClient(clientId).orElseFail(InvalidCredentials)
           subject <- subjectOf(client)
+          _ <- attempt.update(_.copy(subject = Some(subject.principal)))
           // Authenticated from here on, so a mistake in the request may be told -- and it is checked before the token is
           // spent, so it does not cost the operator a token.
           _ <- check(csrPem, subject, presentedKey = None)
@@ -246,22 +311,30 @@ object ClientEstService:
           // A token spent for an enrolment the CA could not serve is given back, so that the operator is not asked to make
           // another -- but only for that: once the CA has signed, or if the request is interrupted, the token stays spent,
           // and there is never a second certificate for one token.
-          chain <- sign(subject, csrPem).tapError(_ => est.releaseToken(hash(token)).ignore)
-          leaf <- verified(subject, chain)
+          chain <- signed(attempt, subject, csrPem).tapError(_ => est.releaseToken(hash(token)).ignore)
+          leaf <- verifiedAudited(attempt, subject, chain)
           // The generation, the start of the chain and the certificate are recorded together.
           _ <- est.recordEnrollment(record(clientId, leaf, now), now)
-          _ <- certificateEvent(CentralAudit.CertEnrolled, CentralAudit.Actors.Client, clientId)
+          _ <- certificateEvent(
+            CentralAudit.CertEnrolled,
+            CentralAudit.Actors.Client,
+            clientId,
+            AuditOutcome.success,
+            None,
+            CertAuditDetails.of(CertOperation.Enroll, Some(clientId.toString), leaf),
+          )
           _ <- ZIO.logInfo(issuedMessage(clientId, leaf))
         yield Issued(chain, endOf(now))
 
     override def renew(presentedCertificatePem: String, csrPem: String): IO[Refused | InvalidCredentials.type | Throwable, Issued] =
-      counted("renew"):
+      audited(CertOperation.Renew, CentralAudit.CertRenewed, None): attempt =>
         for
           now <- Clock.instant
           presented <- ZIO.attempt(parse(presentedCertificatePem).head).orElseFail(InvalidCredentials)
           // Only a certificate central issued through EST renews: one an operator supplied, or issued for edge, is not
           // the start of a chain.
           known <- est.findCertificate(thumbprint(presented)).someOrFail(InvalidCredentials)
+          _ <- attempt.update(_.copy(clientId = Some(known.clientId)))
           // The handshake has checked the validity already; an expired certificate is one an operator must re-enrol.
           _ <- ZIO.fail(InvalidCredentials).when(now.isBefore(presented.getNotBefore.toInstant) || !now.isBefore(presented.getNotAfter.toInstant))
           // The right to renew belongs to the current generation: after a re-enrolment, a revocation or a fork the old
@@ -271,10 +344,19 @@ object ClientEstService:
           client <- estClient(known.clientId).orElseFail(Refused(Refusal.Forbidden, "EST enrolment is not enabled for this client"))
           // A certificate a renewal replaced, used again after the grace: the key is in two hands. Close the chain, for the
           // client and for whoever has the copy: the operator enrols the client again.
+          // What the event records is the end of the right to renew (`revoke_renewal`), with the serial of the certificate that was
+          // presented: that certificate keeps authenticating until it expires.
           _ <- known.supersededAt match
             case Some(at) if now.isAfter(at.plus(ForkGrace)) =>
               est.revoke(client.id) *>
-                certificateEvent(CentralAudit.CertRevoked, ActorType.system, client.id) *>
+                certificateEvent(
+                  CentralAudit.CertRevoked,
+                  ActorType.system,
+                  client.id,
+                  AuditOutcome.success,
+                  None,
+                  CertAuditDetails.of(CertOperation.RevokeRenewal, Some(client.id.toString), presented),
+                ) *>
                 Observability.setError("est_chain_fork_detected") *>
                 ZIO.logWarning(s"the certificate chain of client '${client.id}' was closed: a certificate that had been replaced renewed again") *>
                 ZIO.fail(Refused(
@@ -283,6 +365,7 @@ object ClientEstService:
                 ))
             case _ => ZIO.unit
           subject <- subjectOf(client)
+          _ <- attempt.update(_.copy(subject = Some(subject.principal)))
           _ <- ZIO.fail(Refused(Refusal.Forbidden, "the presented certificate does not carry the subject the client is registered by"))
             .unless(subject.describes(presented, tolerateCommonNameDns = true))
           // Only in the last part of its life: a certificate that is not near its end has no need of a successor, and a
@@ -299,12 +382,19 @@ object ClientEstService:
           // At the end of a chain: extend it, or stop, as the operator chose. Never a surprise: the client has been told the
           // date in every answer since its enrolment. Judged again, with the row locked, when the certificate is recorded.
           _ <- ZIO.fail(chainLimit(client.id)).when(!policy.autoExtend && recorded.exists(started => ended(started, now)))
-          chain <- sign(subject, csrPem)
-          leaf <- verified(subject, chain)
+          chain <- signed(attempt, subject, csrPem)
+          leaf <- verifiedAudited(attempt, subject, chain)
           outcome <- est.recordRenewal(thumbprint(presented), record(client.id, leaf, now), known.generation, now, policy.maxAge, policy.autoExtend)
           begun <- outcome match
             case RenewalRecorded.Recorded(start) =>
-              certificateEvent(CentralAudit.CertRenewed, CentralAudit.Actors.Client, client.id).as(start)
+              certificateEvent(
+                CentralAudit.CertRenewed,
+                CentralAudit.Actors.Client,
+                client.id,
+                AuditOutcome.success,
+                None,
+                CertAuditDetails.of(CertOperation.Renew, Some(client.id.toString), leaf),
+              ).as(start)
             // Revoked, or enrolled again, while the CA was answering: the certificate it signed is not recorded and cannot renew.
             case RenewalRecorded.GenerationChanged => ZIO.fail(InvalidCredentials)
             case RenewalRecorded.ChainEnded => ZIO.fail(chainLimit(client.id))
@@ -361,6 +451,16 @@ object ClientEstService:
 
     private def sign(subject: CertificateSubject, csrPem: String): Task[String] =
       issuer.sign(ClientCertificateRequests.signingRequest(csrPem, subject, validity))
+
+    /** [[sign]], saying why for the audit log when the CA does not: it could not be reached, refused, or is not there to ask. */
+    private def signed(attempt: Ref[Attempt], subject: CertificateSubject, csrPem: String): Task[String] =
+      sign(subject, csrPem).tapError: error =>
+        attempt.update(_.copy(verdict = Some((AuditOutcome.failure, ClientCertificateIssuer.reasonOf(error)))))
+
+    /** [[verified]], saying for the audit log that what the CA signed cannot be used when it is not. */
+    private def verifiedAudited(attempt: Ref[Attempt], subject: CertificateSubject, chain: String): IO[Refused | Throwable, X509Certificate] =
+      verified(subject, chain).tapError: _ =>
+        attempt.update(_.copy(verdict = Some((AuditOutcome.failure, CertReasons.CertificateRejected))))
 
     /** What the CA returned must say exactly what the client is registered by, or it would never be accepted at /token
       * (or worse, name an edge): refuse here rather than hand over a certificate that cannot be used. */

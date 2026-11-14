@@ -2,7 +2,9 @@ package versola.central.configuration.edges
 
 import com.nimbusds.jose.jwk.RSAKey
 import org.scalamock.stubs.ZIOStubs
-import versola.central.audit.{CentralAudit, RecordedAudit}
+import versola.central.audit.CentralAudit.CertReasons
+import versola.central.audit.CertAuditChecks.{describe, detail, leafOf, onlyKnownMembers, withoutPemMaterial}
+import versola.central.audit.{CentralAudit, DenialThrottle, RecordedAudit, TestCertAuditState}
 import versola.central.configuration.clients.certificates.{CertificateSigningRequest, ClientCertificateIssuer}
 import versola.central.configuration.clients.{AuthMethod, ClientId}
 import versola.central.configuration.partners.{
@@ -17,8 +19,10 @@ import versola.central.configuration.partners.{
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestCentralConfig}
+import versola.util.audit.{AuditOutcome, CertOperation}
 import versola.util.{CertificateSubject, EnrollmentToken, RsaKeyPair, SecureRandom, TestCertificates}
 import zio.*
+import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
 
@@ -104,6 +108,7 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val tokens = InMemoryTokens(Unsafe.unsafe(Ref.unsafe.make(Map.empty[String, (EdgeId, Instant, Boolean)])(using _)))
     val certificates = InMemoryCertificates(Unsafe.unsafe(Ref.unsafe.make(Vector.empty[(EdgeId, String)])(using _)))
     val audit = RecordedAudit.unsafe
+    val throttle = TestCertAuditState.throttle()
     val service: URIO[SecureRandom, EdgeIdentityService] =
       for
         _ <- edgeService.find.returnsZIO(id => ZIO.succeed(edges.find(_.id == id)))
@@ -119,6 +124,7 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         config,
         audit,
         partners,
+        throttle,
       )
 
   private def partnerRecord(group: EdgeGroupId, status: PartnerStatus) = PartnerRecord(
@@ -167,7 +173,6 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   /** Everything, the private half included: what a key pasted by mistake looks like. */
   private val privateJwk: Json.Obj =
-    import zio.json.*
     RSAKey.Builder(pairA.getPublic.asInstanceOf[RSAPublicKey]).privateKey(pairA.getPrivate).keyID("leaky").build().toJSONString
       .fromJson[Json.Obj].toOption.get
 
@@ -187,7 +192,7 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
     CertificateSubject.generate(EdgeIdentityService.subjectFor(edge)).orDie.map(_.csrPem)
 
   def spec = suite("EdgeIdentityService")(
-    test("enrolling an edge records cert.enrolled by that edge, and a refused enrolment records nothing") {
+    test("enrolling an edge records cert.enrolled by that edge, after a refused enrolment that was recorded as denied") {
       val edge = edgeRecord(edgeId)
       val env = Env(List(edge))
       for
@@ -195,18 +200,23 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         issued <- service.issueEnrollmentToken(edgeId)
         csr <- csrFor(edge)
         refused <- service.enroll(Some(edgeId), "not-a-token", csr).flip
-        none <- env.audit.drafts
-        _ <- service.enroll(Some(edgeId), issued.token, csr)
-        recorded <- env.audit.drafts
+        denied <- env.audit.drafts
+        identity <- service.enroll(Some(edgeId), issued.token, csr)
+        all <- env.audit.drafts
+        recorded = all.filter(_.outcome == AuditOutcome.success)
       yield assertTrue(
         refused == EdgeIdentityService.InvalidToken,
-        none.isEmpty,
+        denied.map(d => (d.kind, d.outcome, d.reason)) == Vector((CentralAudit.CertEnrolled, AuditOutcome.denied, Some(CertReasons.TokenInvalid))),
         recorded.map(_.kind) == Vector(CentralAudit.CertEnrolled),
         recorded.head.actor == Some((CentralAudit.Actors.Edge, Some(edgeId.toString))),
         recorded.head.target == Some(("edge", edgeId.toString)),
+        // which certificate: its serial, end of validity and subject, and nothing of the request or the chain
+        describe(recorded.head, CertOperation.Enroll, None, leafOf(identity.chain)),
+        withoutPemMaterial(recorded.head, csr, identity.chain),
+        onlyKnownMembers(recorded.head),
       )
     },
-    test("renewing records cert.renewed by that edge, and a request that names another edge records nothing") {
+    test("renewing records cert.renewed by that edge, and a request that names another edge is recorded as denied") {
       val edge = edgeRecord(edgeId)
       val env = Env(List(edge, edgeRecord(otherEdgeId)))
       for
@@ -215,14 +225,235 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         csr <- csrFor(edge)
         _ <- service.enroll(Some(edgeId), issued.token, csr)
         refused <- csrFor(edgeRecord(otherEdgeId)).flatMap(service.renew(edgeId, _)).flip
-        _ <- csrFor(edge).flatMap(service.renew(edgeId, _))
-        recorded <- env.audit.drafts
+        renewalCsr <- csrFor(edge)
+        renewed <- service.renew(edgeId, renewalCsr, None)
+        all <- env.audit.drafts
+        recorded = all.filter(_.outcome == AuditOutcome.success)
       yield assertTrue(
         refused.isInstanceOf[EdgeIdentityService.Refused],
+        all.map(d => (d.kind, d.outcome, d.reason)) == Vector(
+          (CentralAudit.CertEnrolled, AuditOutcome.success, None),
+          (CentralAudit.CertRenewed, AuditOutcome.denied, Some(CertReasons.RequestMismatch)),
+          (CentralAudit.CertRenewed, AuditOutcome.success, None),
+        ),
         recorded.map(_.kind) == Vector(CentralAudit.CertEnrolled, CentralAudit.CertRenewed),
         recorded.last.actor == Some((CentralAudit.Actors.Edge, Some(edgeId.toString))),
+        describe(recorded.last, CertOperation.Renew, None, leafOf(renewed.chain)),
+        withoutPemMaterial(recorded.last, renewalCsr, renewed.chain),
+        onlyKnownMembers(recorded.last),
       )
     },
+    suite("refused and failed attempts are recorded")(
+      test("a token that is not good is denied for a registered edge, with no subject: the request is not read") {
+        val edge = edgeRecord(edgeId)
+        val env = Env(List(edge))
+        for
+          service <- env.service
+          csr <- csrFor(edge)
+          _ <- service.enroll(Some(edgeId), "not-a-token", csr).flip
+          recorded <- env.audit.drafts
+        yield assertTrue(
+          recorded.map(d => (d.kind, d.outcome, d.reason)) == Vector((
+            CentralAudit.CertEnrolled,
+            AuditOutcome.denied,
+            Some(CertReasons.TokenInvalid),
+          )),
+          recorded.head.actor == Some((CentralAudit.Actors.Edge, Some(edgeId.toString))),
+          recorded.head.target == Some(("edge", edgeId.toString)),
+          detail(recorded.head, "operation") == Some("enroll"),
+          detail(recorded.head, "subject").isEmpty,
+          detail(recorded.head, "serial").isEmpty,
+          onlyKnownMembers(recorded.head),
+          // neither the token nor the request is in the event
+          withoutPemMaterial(recorded.head, csr),
+          !recorded.head.details.toJson.toJson.contains("not-a-token"),
+        )
+      },
+      test("an edge that is not registered is not recorded, and the throttle keeps nothing for it") {
+        val env = Env(List(edgeRecord(edgeId)))
+        for
+          service <- env.service
+          _ <- ZIO.foreachDiscard(1 to 20)(i => service.enroll(Some(EdgeId(s"nobody-$i")), "not-a-token", "garbage").flip)
+          recorded <- env.audit.drafts
+          kept <- env.throttle.tracked
+        yield assertTrue(recorded.isEmpty, kept.isEmpty)
+      },
+      test("guesses at the token of one edge are one event a minute, whatever their number, and each edge has its own") {
+        val env = Env(List(edgeRecord(edgeId), edgeRecord(otherEdgeId)))
+        for
+          service <- env.service
+          _ <- ZIO.foreachDiscard(1 to 50)(i => service.enroll(Some(edgeId), s"guess-$i", "garbage").flip)
+          afterFlood <- env.audit.drafts
+          _ <- service.enroll(Some(otherEdgeId), "guess", "garbage").flip
+          withOther <- env.audit.drafts
+          _ <- TestClock.adjust(DenialThrottle.Interval + 1.second)
+          _ <- service.enroll(Some(edgeId), "guess", "garbage").flip
+          later <- env.audit.drafts
+          kept <- env.throttle.tracked
+        yield assertTrue(
+          afterFlood.size == 1,
+          withOther.map(_.target) == Vector(Some(("edge", edgeId.toString)), Some(("edge", otherEdgeId.toString))),
+          later.size == 3,
+          // an entry is dropped once its minute is over, so what is kept is only the edges refused within the last one
+          kept == Set(edgeId.toString),
+        )
+      },
+      test("a token already spent is denied the same way") {
+        val edge = edgeRecord(edgeId)
+        val env = Env(List(edge))
+        for
+          service <- env.service
+          issued <- service.issueEnrollmentToken(edgeId)
+          csr <- csrFor(edge)
+          _ <- service.enroll(Some(edgeId), issued.token, csr)
+          _ <- service.enroll(Some(edgeId), issued.token, csr).flip
+          recorded <- env.audit.drafts
+        yield assertTrue(recorded.map(_.reason) == Vector(None, Some(CertReasons.TokenInvalid)))
+      },
+      test("a request that names something else is denied with the subject the edge would have had, and the token stays good") {
+        val edge = edgeRecord(edgeId)
+        val env = Env(List(edge))
+        for
+          service <- env.service
+          issued <- service.issueEnrollmentToken(edgeId)
+          wrong <- csrFor(edgeRecord(edgeId, partnerGroup))
+          _ <- service.enroll(Some(edgeId), issued.token, wrong).flip
+          recorded <- env.audit.drafts
+          _ <- csrFor(edge).flatMap(service.enroll(Some(edgeId), issued.token, _))
+        yield assertTrue(
+          recorded.map(d => (d.outcome, d.reason)) == Vector((AuditOutcome.denied, Some(CertReasons.RequestMismatch))),
+          detail(recorded.head, "subject").isDefined,
+          withoutPemMaterial(recorded.head, wrong),
+          // the reason is a code: what the request got wrong is not repeated
+          !recorded.head.details.toJson.toJson.contains("subject is not the one"),
+        )
+      },
+      test("renewing for an edge that is not registered, or with a request for another edge, is denied") {
+        val partner = partnerEdge(edgeId)
+        val env = Env(List(partner))
+        for
+          service <- env.service
+          issued <- service.issueEnrollmentToken(edgeId)
+          csr <- csrFor(partner)
+          _ <- service.enroll(Some(edgeId), issued.token, csr)
+          _ <- csrFor(edgeRecord(otherEdgeId)).flatMap(service.renew(edgeId, _, None)).flip
+          _ <- service.renew(EdgeId("nobody"), csr, None).flip
+          recorded <- env.audit.drafts
+          denied = recorded.filter(_.outcome == AuditOutcome.denied)
+        yield assertTrue(
+          denied.map(_.reason) == Vector(Some(CertReasons.RequestMismatch), Some(CertReasons.EdgeUnknown)),
+          denied.forall(_.kind == CentralAudit.CertRenewed),
+          denied.forall(d => detail(d, "operation") == Some("renew")),
+        )
+      },
+      test("a suspended partner's edge, and a signing key that is refused, are denied with the subject, and the request is not in the event") {
+        val suspended = Env(List(keylessPartnerEdge(edgeId)), partnerStatus = PartnerStatus.Suspended)
+        val refusing = Env(List(keylessPartnerEdge(otherEdgeId)))
+        for
+          suspendedService <- suspended.service
+          refusingService <- refusing.service
+          suspendedToken <- suspendedService.issueEnrollmentToken(edgeId)
+          suspendedCsr <- csrFor(keylessPartnerEdge(edgeId))
+          _ <- suspendedService.enroll(None, suspendedToken.token, suspendedCsr, Some(keyA)).flip
+          refusingToken <- refusingService.issueEnrollmentToken(otherEdgeId)
+          refusingCsr <- csrFor(keylessPartnerEdge(otherEdgeId))
+          _ <- refusingService.enroll(None, refusingToken.token, refusingCsr, Some(privateJwk)).flip
+          bad <- suspended.audit.drafts
+          refused <- refusing.audit.drafts
+        yield assertTrue(
+          bad.map(d => (d.outcome, d.reason)) == Vector((AuditOutcome.denied, Some(CertReasons.Forbidden))),
+          bad.head.target == Some(("edge", edgeId.toString)),
+          detail(bad.head, "subject").isDefined,
+          refused.map(d => (d.outcome, d.reason)) == Vector((AuditOutcome.denied, Some(CertReasons.BadRequest))),
+          refused.head.target == Some(("edge", otherEdgeId.toString)),
+          // the private half of the key sent is in neither event
+          !refused.head.details.toJson.toJson.contains("\"d\""),
+          withoutPemMaterial(refused.head, refusingCsr),
+        )
+      },
+      test("a token that is not good, presented without naming an edge, belongs to no edge and is not recorded") {
+        val env = Env(List(keylessPartnerEdge(edgeId)))
+        for
+          service <- env.service
+          csr <- csrFor(keylessPartnerEdge(edgeId))
+          _ <- service.enroll(None, "not-a-token", csr, Some(keyA)).flip
+          recorded <- env.audit.drafts
+        yield assertTrue(recorded.isEmpty)
+      },
+      suite("an issuer that does not answer")(
+        List(
+          (
+            "is unreachable",
+            ClientCertificateIssuer.IssuerFailed.unreachable(java.net.ConnectException("connection refused: ca.internal:9000")),
+            CertReasons.IssuerUnreachable,
+          ),
+          (
+            "refuses",
+            ClientCertificateIssuer.IssuerFailed.refused("step-ca refused the signing request with 400: {\"csr\":\"secret-looking text\"}"),
+            CertReasons.IssuerRefused,
+          ),
+          (
+            "does not answer in time",
+            ClientCertificateIssuer.IssuerFailed.timedOut("cert-manager did not sign request x within 60 seconds"),
+            CertReasons.IssuerTimeout,
+          ),
+          ("answers what is no certificate", ClientCertificateIssuer.IssuerFailed.invalidAnswer("not json: <html>"), CertReasons.IssuerInvalidAnswer),
+          ("fails in a way nothing names", RuntimeException("boom: stack trace here"), CertReasons.IssuerError),
+          ("is not configured", ClientCertificateIssuer.NotConfigured, CertReasons.CaNotConfigured),
+        ).map: (what, error, reason) =>
+          test(s"an issuer that $what fails an enrolment and a renewal, as $reason, and says nothing of what it answered") {
+            val edge = edgeRecord(edgeId)
+            val failing: ClientCertificateIssuer = (_: CertificateSigningRequest) => ZIO.fail(error)
+            val env = Env(List(edge), failing)
+            for
+              service <- env.service
+              issued <- service.issueEnrollmentToken(edgeId)
+              csr <- csrFor(edge)
+              enrolment <- service.enroll(Some(edgeId), issued.token, csr).exit
+              renewal <- service.renew(edgeId, csr, None).exit
+              recorded <- env.audit.drafts
+              text = recorded.map(_.details.toJson.toJson).mkString + recorded.flatMap(_.reason).mkString
+            yield assertTrue(
+              enrolment.isFailure,
+              renewal.isFailure,
+              recorded.map(d => (d.kind, d.outcome, d.reason)) == Vector(
+                (CentralAudit.CertEnrolled, AuditOutcome.failure, Some(reason)),
+                (CentralAudit.CertRenewed, AuditOutcome.failure, Some(reason)),
+              ),
+              recorded.forall(d => detail(d, "serial").isEmpty && detail(d, "notAfter").isEmpty && detail(d, "subject").nonEmpty),
+              recorded.forall(onlyKnownMembers),
+              !text.contains("secret-looking") && !text.contains("stack trace") && !text.contains("ca.internal") && !text.contains("<html>"),
+            )
+          },
+      ),
+      test("a certificate the CA returns with other names than asked is a failure, certificate_rejected") {
+        val edge = edgeRecord(edgeId)
+        val env = Env(List(edge), lyingIssuer)
+        for
+          service <- env.service
+          issued <- service.issueEnrollmentToken(edgeId)
+          csr <- csrFor(edge)
+          _ <- service.enroll(Some(edgeId), issued.token, csr).flip
+          recorded <- env.audit.drafts
+        yield assertTrue(
+          recorded.map(d => (d.kind, d.outcome, d.reason)) == Vector((
+            CentralAudit.CertEnrolled,
+            AuditOutcome.failure,
+            Some(CertReasons.CertificateRejected),
+          )),
+        )
+      },
+      test("every reason an edge's attempt can have is in the closed vocabulary") {
+        val reasons = Set(
+          CertReasons.TokenInvalid,
+          CertReasons.RequestMismatch,
+          CertReasons.EdgeUnknown,
+          CertReasons.CertificateRejected,
+          CertReasons.IssuerUnreachable,
+        )
+        assertTrue(reasons.subsetOf(CertReasons.all))
+      },
+    ),
     test("the certificate of an edge names the edge and its group, and nothing else") {
       val subject = EdgeIdentityService.subjectFor(edgeRecord(edgeId, partnerGroup, EdgeGroupKind.Partner))
       assertTrue(

@@ -156,13 +156,3 @@ object AuthAuditDetails:
   /** `account.claims_updated`: the names of the claims, never their values. */
   case class ClaimsUpdated(claims: List[String]) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)
-
-  /** `cert.enrolled`, `cert.renewed`: `serial` and `notAfter` of what central issued, `csrCn` the requested subject. */
-  case class Cert(
-      operation: String,
-      clientId: Option[String],
-      serial: Option[String],
-      notAfter: Option[String],
-      csrCn: Option[String],
-  ) extends AuditDetails derives JsonEncoder:
-    def toJson = AuditDetails.render(this)

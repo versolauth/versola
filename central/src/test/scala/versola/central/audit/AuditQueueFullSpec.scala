@@ -99,7 +99,16 @@ object AuditQueueFullSpec extends ZIOSpecDefault:
         for
           dropping <- fullQueue(AuditEvents.Overflow.drop)
           _ <- ZIO.foreachDiscard(1 to 5)(_ =>
-            CentralAudit.certificate(dropping, CentralAudit.CertRenewed, CentralAudit.Actors.Edge, Some("edge-1"), ("edge", "edge-1")),
+            CentralAudit.certificate(
+              dropping,
+              CentralAudit.CertRenewed,
+              CentralAudit.Actors.Edge,
+              Some("edge-1"),
+              ("edge", "edge-1"),
+              AuditOutcome.success,
+              None,
+              CertAuditDetails(operation = CertOperation.Renew, clientId = None, serial = None, notAfter = None, subject = None),
+            ),
           )
           blocking <- fullQueue(AuditEvents.Overflow.block)
           _ <- ZIO.foreachDiscard(1 to 5)(_ =>
