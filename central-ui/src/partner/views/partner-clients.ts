@@ -410,7 +410,7 @@ export class VersolaPartnerClients extends LitElement {
       `} @edit=${() => this.openEditor('signin')}></versola-record-card>
 
       <versola-record-card heading="Credentials & tokens" subheading="How your edge authenticates as this client, and how long its tokens live." ?editable=${edit} .body=${html`
-        ${this.row('Client authentication', client.fixed.authMethod === 'tls_client_auth' ? html`tls_client_auth with your group certificate <span class="mono">urn:versola:edge-group:${client.fixed.group}</span>` : 'private_key_jwt with the keys your edge holds', 'Operator')}
+        ${this.row('Client authentication', html`tls_client_auth with your group certificate <span class="mono">urn:versola:edge-group:${client.fixed.group}</span>`, 'Operator')}
         ${this.row('Token lifetimes', html`access ${ttlLabel(client.accessTokenTtl)} · refresh ${client.refreshTokenTtl == null ? 'none' : ttlLabel(client.refreshTokenTtl)} <span class="muted small">(caps ${ttlCapsLabel(limits)})</span>${this.waitingMark(client, 'accessTokenTtl')}${this.waitingMark(client, 'refreshTokenTtl')}`)}
         ${this.row('Refresh rotation', 'On', 'Operator')}
       `} @edit=${() => this.openEditor('tokens')}></versola-record-card>

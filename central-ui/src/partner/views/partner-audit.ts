@@ -12,6 +12,7 @@ import { partnerViewStyles } from '../partner-styles';
 import '../../components/content-header';
 import '../../components/empty-state';
 import '../../components/error-card';
+import { csvCell } from '../csv';
 import '../../components/filter-bar';
 import '../../components/loading-cards';
 
@@ -108,9 +109,8 @@ export class VersolaPartnerAudit extends LitElement {
   }
 
   private exportCsv() {
-    const escape = (value: string) => `"${value.replace(/"/g, '""')}"`;
     const lines = [['at', 'actor', 'sub', 'action', 'target', 'outcome', 'from'].join(','),
-      ...this.events.map(event => [event.at, event.actor.display ?? '', event.actor.sub, event.action, event.target, event.outcome, event.from ?? ''].map(escape).join(','))];
+      ...this.events.map(event => [event.at, event.actor.display ?? '', event.actor.sub, event.action, event.target, event.outcome, event.from ?? ''].map(csvCell).join(','))];
     const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');

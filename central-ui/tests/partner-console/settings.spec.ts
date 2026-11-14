@@ -29,7 +29,7 @@ test('shows the organisation, the contacts, the defaults, the agreement and the 
   await expect(agreement).toContainText('active');
   await expect(agreement).toContainText('Nov 27, 2026');
   await expect(agreement).toContainText('10 clients · 3 edges · access ≤ 1 day · refresh ≤ 30 days');
-  await expect(agreement).toContainText('group certificate or private_key_jwt');
+  await expect(agreement).toContainText('group certificate');
   await expect(agreement.getByRole('button')).toHaveCount(0);
   const endpoints = page.getByRole('region', { name: 'Operator endpoints' });
   await expect(endpoints).toContainText('id-mtls.acme.example:443');
@@ -63,6 +63,24 @@ test('a change of name or logo goes to the operator and shows as waiting', async
   await expect(organisation).toContainText('Nov 7, 2026; users keep seeing the current name until the operator decides');
   await page.getByRole('button', { name: 'Dismiss' }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Sent to' })).toHaveCount(0);
+
+  // The edge cannot read a waiting change from the operator (GET /profile says null), so the console remembers it across a reload.
+  await page.reload();
+  const reloaded = page.getByRole('region', { name: 'Organisation' });
+  await expect(reloaded).toContainText('Pilot Pay → Pilot Pay Group');
+  await expect(reloaded.getByText('waiting for the operator')).toHaveCount(2);
+});
+
+test('a remembered change that the operator has applied stops showing as waiting', async ({ page }) => {
+  await loadPartnerApp(page, { path: settingsPath });
+  await page.evaluate(() => localStorage.setItem('versola-partner-profile-approval:pilot-pay', JSON.stringify({
+    approval: { id: 'apr-1', status: 'waiting', requestedAt: '2026-11-05T10:00:00Z', requested: { displayName: 'Pilot Pay', logoUri: 'https://pay.pilotpay.example/brand/pilot-pay.svg' } }, savedAt: Date.now(),
+  })));
+  await page.reload();
+  const organisation = page.getByRole('region', { name: 'Organisation' });
+  await expect(organisation).toContainText('Pilot Pay');
+  await expect(organisation.getByText('waiting for the operator')).toHaveCount(0);
+  expect(await page.evaluate(() => localStorage.getItem('versola-partner-profile-approval:pilot-pay'))).toBeNull();
 });
 
 test('contacts save at once; the defaults are capped by the operator', async ({ page }) => {
