@@ -9,7 +9,10 @@ import java.time.Instant
 
 /** What every [[AntifraudSettingsRepository]] promises: one row, empty until the first change; a seed that writes once and
   * never over an operator's row; a put that replaces the row whole and moves both the row's version and the reload signal;
-  * a put on a named version that writes only while the row is still at it, with 0 the version of a row that is not there. */
+  * a put on a named version that writes only while the row is still at it, with 0 the version of a row that is not there; and
+  * a row another build wrote reads by the rules of the codec (a key added since has its default, a retired key is passed over, a
+  * key nothing knows or a value of the wrong type fails the read). Such a row is stored through
+  * [[AntifraudSettingsRepositorySpec.Fixtures]]. */
 trait AntifraudSettingsRepositorySpec extends DatabaseSpecBase[AntifraudSettingsRepositorySpec.Env]:
   self: ZIOSpec[TransactorZIO] =>
 
@@ -95,10 +98,53 @@ trait AntifraudSettingsRepositorySpec extends DatabaseSpecBase[AntifraudSettings
           row <- repository.find
         yield assertTrue(results.count(_.isDefined) == 1, results.count(_.isEmpty) == 3, row.map(_.version).contains(2L))
       },
+      test("a value that is not a Tuning fails the read the way the codec reports it, and the row is left as it is") {
+        for
+          _ <- env.fixtures.store(settings = """{"challengeAt": "many"}""", updatedBy = "hand", updatedAt = at)
+          failure <- repository.find.flip
+          raw <- env.fixtures.stored
+        yield assertTrue(env.fixtures.isReadFailure(failure), failure.getMessage.contains("challengeAt(expected an Int)"), raw.contains("many"))
+      },
+      test("a row written before a key existed reads with the key's default: shadow for the mode, off for the rest") {
+        for
+          _ <- env.fixtures.store(settings = """{"blockAt": 80, "shadowRules": ["velocity_ip_1m"]}""", updatedBy = "old", updatedAt = at)
+          stored <- repository.find
+        yield assertTrue(
+          stored.map(_.tuning).contains(Tuning.off.copy(blockAt = 80, shadowRules = Set("velocity_ip_1m"))),
+          stored.exists(_.tuning.mode == TuningMode.shadow),
+        )
+      },
+      test("a row that names a key retired by an earlier build still reads; one that names a key nothing knows fails the read") {
+        for
+          _ <- env.fixtures.store(settings = """{"blockAt": 80, "delayAt": 3, "delayMillis": 2000}""", updatedBy = "old", updatedAt = at)
+          retired <- repository.find
+          _ <- env.fixtures.replace(settings = """{"blokAt": 80}""")
+          unknown <- repository.find.flip
+        yield assertTrue(
+          retired.map(_.tuning).contains(Tuning.off.copy(blockAt = 80)),
+          env.fixtures.isReadFailure(unknown),
+          unknown.getMessage.contains("invalid extra field"),
+        )
+      },
     )
 
 object AntifraudSettingsRepositorySpec:
-  case class Env(repository: AntifraudSettingsRepository)
+  case class Env(repository: AntifraudSettingsRepository, fixtures: Fixtures)
+
+  /** The row as it is stored, which the repository only writes from a [[Tuning]]: what another build, or a hand, left there. The
+    * storage's runner supplies it. */
+  trait Fixtures:
+    /** Writes the one row with `settings` as its JSON, where there is none. */
+    def store(settings: String, updatedBy: String, updatedAt: Instant): Task[Unit]
+
+    /** Puts `settings` in place of the JSON of the row that is there. */
+    def replace(settings: String): Task[Unit]
+
+    /** The JSON of the row, as text. */
+    def stored: Task[String]
+
+    /** Whether `failure` is how this storage reports a value it could not read into the type asked for. */
+    def isReadFailure(failure: Throwable): Boolean
 
   val at: Instant = Instant.parse("2026-10-26T10:00:00Z")
 

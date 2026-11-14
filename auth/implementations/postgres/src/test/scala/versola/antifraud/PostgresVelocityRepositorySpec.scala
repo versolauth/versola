@@ -10,11 +10,17 @@ import java.util.UUID
 
 object PostgresVelocityRepositorySpec extends PostgresSpec, VelocityRepositorySpec:
 
+  private class PostgresFixtures(xa: TransactorZIO) extends VelocityRepositorySpec.Fixtures:
+    override def bucketOfKind(keyType: String, key: String, minute: Long, instance: UUID, count: Int): Task[Unit] =
+      xa.connect(
+        sql"INSERT INTO af_velocity (key_type, key, minute, instance_id, count) VALUES ($keyType, $key, $minute, $instance, $count)".update.run(),
+      ).unit
+
   override lazy val environment =
     ZLayer:
       for
         xa <- ZIO.service[TransactorZIO]
-      yield VelocityRepositorySpec.Env(PostgresVelocityRepository(xa))
+      yield VelocityRepositorySpec.Env(PostgresVelocityRepository(xa), PostgresFixtures(xa))
 
   override def beforeEach(env: VelocityRepositorySpec.Env) =
     for
@@ -37,14 +43,5 @@ object PostgresVelocityRepositorySpec extends PostgresSpec, VelocityRepositorySp
           loaded <- impatient.loadOthers(UUID.randomUUID(), 0, 1000, 10).exit
           _ <- holder.join
         yield assertTrue(forgotten.isFailure, loaded.isFailure)
-      },
-      test("a value in the table that is not a key kind is left out, not a failure") {
-        for
-          xa <- ZIO.service[TransactorZIO]
-          _ <- xa.connect(
-            sql"INSERT INTO af_velocity (key_type, key, minute, instance_id, count) VALUES ('future', 'x', 100, ${UUID.randomUUID()}, 1)".update.run(),
-          )
-          seen <- env.repository.loadOthers(UUID.randomUUID(), 0, Long.MaxValue, 100)
-        yield assertTrue(seen.isEmpty)
       },
     )

@@ -10,11 +10,17 @@ object PostgresAntifraudCounterResetRepositorySpec extends PostgresSpec, Antifra
 
   import AntifraudCounterResetRepositorySpec.*
 
+  private class PostgresFixtures(xa: TransactorZIO) extends Fixtures:
+    override def resetOfScope(generation: Long, scope: String, requestedBy: String): Task[Unit] =
+      xa.connect(
+        sql"INSERT INTO af_counter_reset (generation, scope, requested_by, at) VALUES ($generation, $scope, $requestedBy, now())".update.run(),
+      ).unit
+
   override lazy val environment =
     ZLayer:
       for
         xa <- ZIO.service[TransactorZIO]
-      yield Env(PostgresAntifraudCounterResetRepository(xa))
+      yield Env(PostgresAntifraudCounterResetRepository(xa), PostgresFixtures(xa))
 
   override def beforeEach(env: Env) =
     for
@@ -24,16 +30,6 @@ object PostgresAntifraudCounterResetRepositorySpec extends PostgresSpec, Antifra
 
   override def implementationCases(env: Env) =
     List(
-      test("a row of a scope this version does not know is skipped, not fatal") {
-        for
-          xa <- ZIO.service[TransactorZIO]
-          _ <- env.repository.record(whole, "alice", at)
-          _ <- xa.connect(
-            sql"INSERT INTO af_counter_reset (generation, scope, requested_by, at) VALUES (2, 'future', 'x', now())".update.run(),
-          )
-          read <- env.repository.since(0, 10)
-        yield assertTrue(read.map(_.generation) == List(1L))
-      },
       test("it is under the statement timeout") {
         for
           xa <- ZIO.service[TransactorZIO]

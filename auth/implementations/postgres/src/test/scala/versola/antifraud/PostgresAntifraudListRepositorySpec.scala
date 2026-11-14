@@ -23,6 +23,12 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec, AntifraudListRe
     override def clearStats: Task[Unit] =
       xa.connect(sql"DELETE FROM af_dest_stats".update.run()).unit
 
+    override def entryOfKind(listType: String, valueType: String, value: String): Task[Unit] =
+      xa.connect(
+        sql"""INSERT INTO af_list_entry (id, type, value_type, value, source, created_by, created_at)
+              VALUES (${UUID.randomUUID()}, $listType, $valueType, $value, 's', 'c', now())""".update.run(),
+      ).unit
+
   override lazy val environment =
     ZLayer:
       for
@@ -46,7 +52,6 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec, AntifraudListRe
     yield ()
 
   override def implementationCases(env: Env) =
-    val repository = env.repository
     List(
       test("every method is under the statement timeout: a lock held on its tables fails it instead of hanging") {
         for
@@ -77,18 +82,5 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec, AntifraudListRe
           exits.filterNot(_._2.isFailure).map(_._1) == Nil,
           exits.forall(_._2.causeOption.exists(_.squash.getMessage.contains("statement timeout"))),
         )
-      },
-      test("a row of a kind this version does not know is stored, and skipped when the cache loads") {
-        for
-          xa <- ZIO.service[TransactorZIO]
-          now <- Clock.instant
-          _ <- xa.connect(
-            sql"""INSERT INTO af_list_entry (id, type, value_type, value, source, created_by, created_at)
-                VALUES (${UUID.randomUUID()}, 'ban', 'ip', 'x', 's', 'c', now()),
-                       (${UUID.randomUUID()}, 'deny', 'fingerprint', 'y', 's', 'c', now()),
-                       (${UUID.randomUUID()}, 'deny', 'ip', '203.0.113.7', 's', 'c', now())""".update.run(),
-          )
-          loaded <- repository.loadActive(now)
-        yield assertTrue(loaded.map(_.value) == List("203.0.113.7"))
       },
     )
