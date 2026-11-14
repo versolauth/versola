@@ -68,9 +68,10 @@ trait StaffRepository:
   def claimConfigAdmin(kind: IdentifierKind, identifierHash: String, now: Instant): zio.Task[Boolean]
 
   /** Turns the invite `invite` into the member `member` in one transaction, so two sign-ins of one person at once admit one
-    * member and the invite is spent once. `false` when the invite was already gone (taken by the other, or removed). A member who
-    * is already there is left as they are. */
-  def admit(invite: UUID, member: StaffMember): zio.Task[Boolean]
+    * member and the invite is spent once. The level and the inviter are the invite's, read in the same transaction: an invite lowered or
+    * re-issued while the person was signing in admits them at what it says now, whatever `member` says. `None` when the invite was
+    * already gone (taken by the other, or removed), else the member as stored. A member who is there already is left as they are. */
+  def admit(invite: UUID, member: StaffMember): zio.Task[Option[StaffMember]]
 
   def removeInvite(id: UUID): zio.Task[Boolean]
 

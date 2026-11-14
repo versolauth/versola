@@ -99,8 +99,14 @@ trait EdgeService:
 
   /** The `/userinfo` of the operator for the person of `session`, asked as a proxied call asks it for a cookie's token: a token bound
     * to the certificate of the client (a partner's client authenticates with the group's, so its tokens are) is presented over that
-    * certificate. The console reads the phone number or email from it to match an invite. */
-  def consoleUserInfo(session: EdgeService.ConsoleSession): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj]
+    * certificate. The console reads the phone number or email from it to match an invite.
+    *
+    * When auth refuses the token (a renewal between the comparison of `consoleSession` and the call, a token it no longer honours) the
+    * session is refreshed once and the call made again, as `userInfoFor` does for a proxied call; the session that answers is returned,
+    * with the cookie of that refresh, and a second refusal stands. */
+  def consoleUserInfo(
+      session: EdgeService.ConsoleSession,
+  ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, (EdgeService.ConsoleSession, Json.Obj)]
 
   /** Front-channel logout, either OP-initiated (`iss`/`sid` query params, rendered in an
     * iframe) or first-party (the browser navigating to the endpoint itself). The presented
@@ -629,8 +635,24 @@ object EdgeService:
                     case SessionRevocation.Session(_) => true,
                 )
 
-    override def consoleUserInfo(session: ConsoleSession): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
-      fetchUserInfo(session.accessToken, session.claims, BindingCheck.Accept)
+    override def consoleUserInfo(
+        session: ConsoleSession,
+    ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, (ConsoleSession, Json.Obj)] =
+      def ask(current: ConsoleSession) = fetchUserInfo(current.accessToken, current.claims, BindingCheck.Accept).map(current -> _)
+      ask(session).catchSome:
+        case SSOClient.UserInfoUnauthorized if session.rotatedCookie.isEmpty =>
+          (for
+            now <- Clock.instant
+            refreshed <- refreshSession(session.claims.jti, session.presetId, now)
+            claims <- ZIO.fromEither(refreshed.claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
+            _ <- checkRevoked(claims)
+          yield ConsoleSession(refreshed.accessToken, claims, session.presetId, refreshed.rotatedCookie))
+            .mapError {
+              // a refresh that cannot be had ends the session, as everywhere else
+              case _: Outcome => SSOClient.UserInfoUnauthorized
+              case error: Throwable => error
+            }
+            .flatMap(ask)
 
     override def frontChannelLogout(
         iss: Option[String],

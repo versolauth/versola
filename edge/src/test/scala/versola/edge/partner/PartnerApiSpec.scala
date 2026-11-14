@@ -103,7 +103,7 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
       ).orDie
       edge = stub[EdgeService]
       _ <- edge.consoleSession.succeedsWith(current)
-      _ <- edge.consoleUserInfo.succeedsWith(userInfo)
+      _ <- edge.consoleUserInfo.succeedsWith((current, userInfo))
       central = FakeCentral(answer)
       partnerState <- if liveState then liveStateOf
       else ZIO.succeed(PartnerState.fixed(if suspended then me.copy(partner = me.partner.copy(status = "suspended")) else me, reachable))
@@ -635,11 +635,63 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
       test("a suspended partner is refused a change at once by the edge, central is not asked, and /me says so") {
         for
           h <- harness(Some(StaffLevel.admin), suspended = true)
-          write <- send(h, write(Method.POST, "/clients", "{}"))
+          write <- send(h, write(Method.POST, "/edges", """{"id":"e","publicUrl":"https://x.example"}"""))
           read <- send(h, get("/me")).flatMap(_.body.asString)
           calls <- h.central.calls.get
           (code, _) <- errorOf(write)
         yield assertTrue(write.status == Status.Forbidden, code == "partner_suspended", read.contains("\"status\":\"suspended\""), calls.isEmpty)
+      },
+      test("what is local keeps working while the partner is suspended: ending sessions and the team; what is central's is refused") {
+        for
+          h <- harness(Some(StaffLevel.admin), suspended = true)
+          _ <- h.edge.revokeSessions.succeedsWith(1)
+          revoke <- send(h, write(Method.POST, "/revocations", """{"by":"user","value":"u-1"}"""))
+          invite <- send(h, write(Method.POST, "/staff", """{"identifier":"+77010000001","level":"viewer"}"""))
+          edge <- send(h, write(Method.POST, "/edges", """{"id":"e","publicUrl":"https://x.example"}"""))
+          calls <- h.central.calls.get
+        yield assertTrue(revoke.status == Status.Ok, invite.status == Status.Created, edge.status == Status.Forbidden, calls.isEmpty)
+      },
+      test("the cookie of a refresh made by /userinfo is set on the answer, a refusal of the person included, and a fault of any kind") {
+        val refreshed = EdgeService.ConsoleSession(
+          AccessToken("staff-access-token-2"),
+          claims(),
+          PresetId("acme-console"),
+          Some(Cookie.Response("EDGE_SESSION", "acme-console:after-userinfo")),
+        )
+        for
+          stranger <- harness(None)
+          _ <- stranger.edge.consoleUserInfo.succeedsWith((
+            refreshed,
+            Json.Obj("phone_number" -> Json.Str("+70000000000"), "phone_number_verified" -> Json.Bool(true)),
+          ))
+          refused <- send(stranger, get("/clients"))
+          fault <- harness(
+            Some(StaffLevel.viewer),
+            current = session(rotated = Some(Cookie.Response("EDGE_SESSION", "acme-console:next"))),
+            answer = (_, _) => ZIO.die(new RuntimeException("boom")),
+          )
+          faulted <- send(fault, get("/clients"))
+        yield assertTrue(
+          refused.status == Status.Forbidden,
+          refused.headers.get("set-cookie").exists(_.contains("acme-console:after-userinfo")),
+          faulted.status == Status.InternalServerError,
+          faulted.headers.get("set-cookie").exists(_.contains("acme-console:next")),
+        )
+      },
+      test("what central says in an error of its own is not the person's to read: a 5xx is a code, a refusal of the request keeps central's text") {
+        for
+          server <- harness(
+            Some(StaffLevel.admin),
+            answer = (_, _) => reply(Status.InternalServerError, "java.sql.SQLException: password authentication failed for user central"),
+          )
+          refused <- harness(Some(StaffLevel.admin), answer = (_, _) => reply(Status.BadRequest, "redirect uri is outside the limits of the partner"))
+          serverBody <- send(server, write(Method.POST, "/edges", """{"id":"e","publicUrl":"https://x.example"}""")).flatMap(_.body.asString)
+          refusedBody <- send(refused, write(Method.POST, "/edges", """{"id":"e","publicUrl":"https://x.example"}""")).flatMap(_.body.asString)
+        yield assertTrue(
+          !serverBody.contains("SQLException"),
+          serverBody.contains("central_answered_500"),
+          refusedBody.contains("outside the limits"),
+        )
       },
       test("a refusal of central that says suspended is remembered by the state, which then reports it") {
         for

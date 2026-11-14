@@ -8,7 +8,7 @@ import versola.util.http.Observability
 import zio.http.*
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps}
-import zio.{Chunk, Clock, Duration, IO, Schedule, Task, UIO, ZIO, durationInt}
+import zio.{Chunk, Clock, Duration, IO, Ref, Schedule, Task, UIO, ZIO, durationInt}
 
 import java.time.Instant
 import java.util.UUID
@@ -60,7 +60,7 @@ final class PartnerApi(
       Method.DELETE / "partner" / "api" / "edges" / string("id") -> endpointWith(StaffLevel.developer)(deleteEdge),
       Method.POST / "partner" / "api" / "edges" / string("id") / "enrollment-tokens" -> endpointWith(StaffLevel.developer)(issueToken),
       Method.DELETE / "partner" / "api" / "edges" / string("id") / "enrollment-tokens" -> endpointWith(StaffLevel.developer)(revokeToken),
-      // revocations: through central, never edge-local
+      // revocations: edge-local
       Method.POST / "partner" / "api" / "revocations" -> endpoint(StaffLevel.admin)(revoke),
       Method.GET / "partner" / "api" / "revocations" -> endpoint(StaffLevel.admin)(listRevocations),
       // audit
@@ -99,23 +99,24 @@ final class PartnerApi(
     (for
       _ <- sameOrigin(request)
       console <- consoleOf(request)
-      // the cookie of a refresh is set on whatever the answer is, a refusal of the person included: the refresh token it replaced is
-      // spent, so a browser left with the old cookie would be sent to sign in again for a call that merely failed
+      // The cookie of a refresh goes out on every answer, whatever it is: a refusal of the person, and a fault of any kind. The refresh token
+      // it replaced is spent, so a browser left with the old cookie would be sent to sign in again for a call that merely failed.
+      rotation <- Ref.make(console.rotatedCookie)
       response <- (for
-        session <- memberOf(console)
+        session <- memberOf(console, rotation)
         _ <- ZIO.fail(Fail(Status.Forbidden, "insufficient_level", extra = List("required" -> Json.Str(level.toString))))
           .unless(session.member.level.atLeast(level))
           .tapError(_ => Observability.setError("insufficient_level"))
-        // a partner central has suspended changes nothing: central refuses it, and so does the edge, which may not have asked yet
-        _ <- ZIO.fail(Fail(Status.Forbidden, "partner_suspended"))
-          .when(request.method != Method.GET && session.me.partner.status == "suspended")
-          .tapError(_ => Observability.setError("partner_suspended"))
         response <- run(session, request)
-      yield response).catchAll(failure(_)).map(response => console.rotatedCookie.fold(response)(response.addCookie))
+      yield response)
+        .catchAll(failure(_))
+        .catchAllCause(cause => ZIO.logErrorCause("partner api", cause).as(internalError))
+        .flatMap(response => rotation.get.map(_.fold(response)(response.addCookie)))
     yield response)
       .catchAll(failure(_))
-      .tapErrorCause(cause => ZIO.logErrorCause("partner api", cause))
-      .catchAllCause(_ => ZIO.succeed(json(Status.InternalServerError, Json.Obj("error" -> Json.Str("internal_error")))))
+      .catchAllCause(cause => ZIO.logErrorCause("partner api", cause).as(internalError))
+
+  private val internalError: Response = json(Status.InternalServerError, Json.Obj("error" -> Json.Str("internal_error")))
 
   /** A state-changing request from another origin is not the console's: the cookie is `SameSite=Strict`, which already keeps it from
     * being sent, and this refuses what a browser that ignored that would send. A request with no `Origin` is not a browser's. */
@@ -137,13 +138,22 @@ final class PartnerApi(
       case noSession: EdgeService.NoSession => unauthenticated(noSession.clear)
       case error: Throwable => ZIO.fail(error)
 
-  private def memberOf(console: EdgeService.ConsoleSession): IO[Fail | Throwable, Session] =
+  private def memberOf(console: EdgeService.ConsoleSession, rotation: Ref[Option[zio.http.Cookie.Response]]): IO[Fail | Throwable, Session] =
     for
       me <- state.me
       // a session of one of the partner's own applications (an end user of its clients) shares the cookie, and is not staff
       _ <- unauthenticated(None).unless(console.presetId.toString == me.console.presetId && console.claims.clientId.toString == me.console.clientId)
         .tapError(_ => Observability.setError("console_client_mismatch"))
-      admission <- staff.admit(console.claims.subject, userInfo(console)).catchSome:
+      // `/userinfo` may refresh the session (see `consoleUserInfo`): what the rest of the request goes on with is the session that answered
+      latest <- Ref.make(console)
+      admission <- staff.admit(
+        console.claims.subject,
+        edgeService.consoleUserInfo(console).flatMap((refreshed, info) =>
+          latest.set(refreshed) *> rotation.set(refreshed.rotatedCookie).as(info),
+        ).catchAll:
+          case SSOClient.UserInfoUnauthorized => ZIO.fail(UserInfoRefused)
+          case error: Throwable => ZIO.fail(error),
+      ).catchSome:
         // the operator no longer honours the token (revoked a moment ago, or signed out elsewhere): the session is over
         case UserInfoRefused => unauthenticated(None)
       member <- admission match
@@ -156,15 +166,11 @@ final class PartnerApi(
               extra = List("identifier" -> Json.Str(masked.getOrElse("")), "partner" -> Json.Str(me.partner.displayName)),
             ),
           )
-    yield Session(console, member, me)
+      current <- latest.get
+    yield Session(current, member, me)
 
   private def unauthenticated[A](clear: Option[zio.http.Cookie.Response]): IO[Fail, A] =
     ZIO.fail(Fail(Status.Unauthorized, "unauthenticated", extra = List("loginPath" -> Json.Str(LoginPath)), clear = clear))
-
-  private def userInfo(console: EdgeService.ConsoleSession): IO[Throwable, Json.Obj] =
-    edgeService.consoleUserInfo(console).catchAll:
-      case SSOClient.UserInfoUnauthorized => ZIO.fail(UserInfoRefused)
-      case error: Throwable => ZIO.fail(error)
 
   // ── me ───────────────────────────────────────────────────────────────────────────────────────
 
@@ -469,7 +475,7 @@ final class PartnerApi(
       forward(session, Method.GET, List("audit"), query = query).flatMap: answer =>
         val page = arrayOf(answer, "events")
         val next = answer.obj.flatMap(str(_, "next"))
-        // the operator's reveal of the bundle secret at the partner's creation is the operator's own business, not an event of the partner's trail
+        // the operator's reveal of a secret is the operator's own business, not an event of the partner's trail
         val kept = page.filter(event => !str(event, "kind").contains("admin.secret.revealed")).filter(event =>
           kinds.forall(ks => str(event, "kind").exists(k => ks.exists(k.contains))) && actor.forall(a => AuditGroups.actor(a, event)),
         )
@@ -601,24 +607,30 @@ final class PartnerApi(
       query: Map[String, String] = Map.empty,
       body: Option[Json] = None,
   ): IO[Fail | Throwable, Answer] =
-    central.call(method, path, query, body, Some(session.principal)).tapError {
-      case Failure.Suspended => state.noteSuspended
-      case _ => ZIO.unit
-    }.mapError {
-      case Failure.Unavailable => Fail(Status.ServiceUnavailable, "central_unavailable")
-      case Failure.Suspended => Fail(Status.Forbidden, "partner_suspended")
-      case Failure.PrincipalMismatch => Fail(Status.Forbidden, "partner_principal_mismatch")
-      case error: Throwable => error
-    }.flatMap: answer =>
-      if answer.status.isSuccess then ZIO.succeed(answer)
-      else
-        val message = Some(answer.text)
-        val (status, code) = answer.status match
-          case Status.NotFound => (Status.NotFound, "not_found")
-          case Status.Conflict => (Status.Conflict, "conflict")
-          case Status.BadRequest => (Status.BadRequest, "invalid_request")
-          case other => (Status.BadGateway, s"central_answered_${other.code}")
-        Observability.setError(code, Some(s"central answered ${answer.status.code}")) *> ZIO.fail(Fail(status, code, message = message))
+    // a partner central has suspended changes nothing at central: the edge says so without asking. What is local (the team, ending sessions)
+    // does not come here and keeps working.
+    ZIO.fail(Fail(Status.Forbidden, "partner_suspended"))
+      .when(method != Method.GET && session.me.partner.status == "suspended")
+      .tapError(_ => Observability.setError("partner_suspended")) *>
+      central.call(method, path, query, body, Some(session.principal)).tapError {
+        case Failure.Suspended => state.noteSuspended
+        case _ => ZIO.unit
+      }.mapError {
+        case Failure.Unavailable => Fail(Status.ServiceUnavailable, "central_unavailable")
+        case Failure.Suspended => Fail(Status.Forbidden, "partner_suspended")
+        case Failure.PrincipalMismatch => Fail(Status.Forbidden, "partner_principal_mismatch")
+        case error: Throwable => error
+      }.flatMap: answer =>
+        if answer.status.isSuccess then ZIO.succeed(answer)
+        else
+          // central's own text goes to the person only where it is meant for them: what it refused in the request (a limit, a conflict)
+          val message = Option.when(answer.status == Status.BadRequest || answer.status == Status.Conflict)(answer.text)
+          val (status, code) = answer.status match
+            case Status.NotFound => (Status.NotFound, "not_found")
+            case Status.Conflict => (Status.Conflict, "conflict")
+            case Status.BadRequest => (Status.BadRequest, "invalid_request")
+            case other => (Status.BadGateway, s"central_answered_${other.code}")
+          Observability.setError(code, Some(s"central answered ${answer.status.code}")) *> ZIO.fail(Fail(status, code, message = message))
 
   private def failure(error: Fail | Throwable): IO[Throwable, Response] =
     error match
@@ -905,7 +917,6 @@ object PartnerApi:
     "partner-client" -> "client",
     "partner-resource" -> "resource",
     "partner-edge" -> "edge",
-    "partner-revocation" -> "revocation",
     "partner-approval" -> "approval",
     "partner" -> "organisation",
   )
@@ -928,8 +939,7 @@ object PartnerApi:
     kind.split('.').toList match
       case "admin" :: "secret" :: "revealed" :: Nil => "Revealed a secret"
       case "admin" :: resource :: operation :: Nil if Nouns.contains(resource) && Verbs.contains(operation.stripPrefix("action:")) =>
-        if resource == "partner-revocation" && operation == "create" then "Ended grants of clients"
-        else s"${Verbs(operation.stripPrefix("action:"))} ${Nouns(resource)}"
+        s"${Verbs(operation.stripPrefix("action:"))} ${Nouns(resource)}"
       case _ => kind
 
   /** An event of central's audit log as the console's timeline reads it. `displays` names the members by `sub`. */

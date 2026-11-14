@@ -125,6 +125,22 @@ object PartnerEnrollmentSpec extends ZIOSpecDefault:
   private def read(provider: ConfigProvider): Task[Probe] =
     provider.load(zio.config.magnolia.deriveConfig[Probe]).mapError(error => RuntimeException(error.getMessage))
 
+  def interrupted(dir: java.nio.file.Path) =
+    for
+      old <- ZIO.attemptBlocking(com.nimbusds.jose.jwk.gen.RSAKeyGenerator(2048).keyID("old").generate())
+      fresh <- ZIO.attemptBlocking(com.nimbusds.jose.jwk.gen.RSAKeyGenerator(2048).keyID("fresh").generate())
+      enrolled = Enrolled(
+        edgeId = "edge-9",
+        group = "acme",
+        keyId = "old",
+        privateKey = Base64.getEncoder.encodeToString(old.toRSAPrivateKey.getEncoded),
+        central = Enrolled.Central("https://central-mtls.example"),
+        auth = Enrolled.Auth("https://idp.example", None),
+        pending = Some(Enrolled.Key("fresh", Base64.getEncoder.encodeToString(fresh.toRSAPrivateKey.getEncoded))),
+      )
+      _ <- Enrolled.write(dir, enrolled)
+    yield enrolled
+
   def spec = suite("partner enrollment")(
     suite("the token")(
       test("carries central's https address and a secret") {
@@ -384,6 +400,78 @@ object PartnerEnrollmentSpec extends ZIOSpecDefault:
           material <- holder.material
         yield assertTrue(noCentral.getMessage.contains("mutual-TLS"), noIssuer.getMessage.contains("issuer"), kept.isEmpty, material.isEmpty)
       },
+      test("an enrollment interrupted after central's answer is finished by the next start: the certificate is installed, no token and no request") {
+        for
+          dir <- directory
+          central <- central()
+          generated <- versola.util.CertificateSubject.generate(versola.util.EdgeIdentityNames.subject(edgeId = "edge-9", groupId = "acme"))
+          now <- Clock.instant
+          chain = sign(generated.csrPem, names, now.minusSeconds(60), now.plusSeconds(86400))
+          key <- ZIO.attemptBlocking(com.nimbusds.jose.jwk.gen.RSAKeyGenerator(2048).keyID("k-1").generate())
+          _ <- Enrolled.write(
+            dir,
+            Enrolled(
+              edgeId = "edge-9",
+              group = "acme",
+              keyId = "k-1",
+              privateKey = Base64.getEncoder.encodeToString(key.toRSAPrivateKey.getEncoded),
+              central = Enrolled.Central("https://central-mtls.example"),
+              auth = Enrolled.Auth("https://idp.example", None),
+              certificate = Some(Enrolled.Unfinished(chain, generated.privateKeyPem)),
+            ),
+          )
+          probe <- PartnerEnrollment.resolve(provider(dir)).flatMap(read)
+          holder <- EdgeCertificateHolder.directory(dir)
+          material <- holder.material
+          kept <- Enrolled.read(dir)
+          bodies <- central.bodies.get
+        yield assertTrue(probe.id == "edge-9", material.isDefined, kept.exists(_.certificate.isEmpty), bodies.isEmpty)
+      },
+      test("the answer is on disk with its certificate before the certificate is installed: a failing installation leaves what finishes it") {
+        for
+          dir <- directory
+          file <- tokenFile(token)
+          _ <- central()
+          // a regular file where the holder wants its generation directory makes the installation fail after the answer
+          _ <- ZIO.attemptBlocking(Files.writeString(dir.resolve("gen-0000000001"), "in the way"))
+          failure <- PartnerEnrollment.resolve(provider(dir, token = Some(file))).flip
+          kept <- Enrolled.read(dir)
+        yield assertTrue(failure.isInstanceOf[Throwable], kept.exists(_.certificate.isDefined))
+      },
+      test("a token that central refuses says why a token fails, and that a new one is made in the console") {
+        for
+          dir <- directory
+          file <- tokenFile(token)
+          _ <- central(status = Status.Unauthorized)
+          failure <- PartnerEnrollment.resolve(provider(dir, token = Some(file))).flip
+        yield assertTrue(failure.getMessage.contains("single use"), failure.getMessage.contains("create a new one"))
+      },
+      suite("which signing key an interrupted renewal left")(
+        test("a pending key central takes is promoted") {
+          for
+            dir <- directory
+            enrolled <- interrupted(dir)
+            chosen <- PartnerEnrollment.chooseKey(enrolled, dir, _ => ZIO.some(true))
+            kept <- Enrolled.read(dir)
+          yield assertTrue(chosen.keyId == "fresh", chosen.pending.isEmpty, kept.exists(_.keyId == "fresh"), kept.exists(_.pending.isEmpty))
+        },
+        test("a pending key central refuses is dropped, and the one in use stays") {
+          for
+            dir <- directory
+            enrolled <- interrupted(dir)
+            chosen <- PartnerEnrollment.chooseKey(enrolled, dir, _ => ZIO.some(false))
+            kept <- Enrolled.read(dir)
+          yield assertTrue(chosen.keyId == "old", chosen.pending.isEmpty, kept.exists(_.keyId == "old"), kept.exists(_.pending.isEmpty))
+        },
+        test("central not answering leaves both in the file and the key in use stays") {
+          for
+            dir <- directory
+            enrolled <- interrupted(dir)
+            unreachable <- PartnerEnrollment.chooseKey(enrolled, dir, _ => ZIO.none)
+            failed <- PartnerEnrollment.chooseKey(enrolled, dir, _ => ZIO.fail(RuntimeException("down")))
+          yield assertTrue(unreachable == enrolled, failed == enrolled)
+        },
+      ),
       test("a certificate that has expired is enrolled again with the token, and not without one") {
         for
           dir <- directory

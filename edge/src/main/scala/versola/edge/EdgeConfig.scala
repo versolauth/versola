@@ -253,6 +253,10 @@ object EdgeConfig:
           invalid(
             "mode = partner refuses security.internal-secret: it authorizes the /service/* surface, which a partner edge does not serve",
           )
+        else if config.revocation.feed.enabled then
+          invalid(
+            "mode = partner refuses revocation.feed.enabled: a partner edge has no pull feed (back-channel logout and the access-token lifetime cover it)",
+          )
         else if config.partner.admins.exists(_.isBlank) then invalid("partner.admins names a blank phone number or email")
         else if config.central.identity.flatMap(_.enrollment).exists(_.url.isDefined) then
           invalid("central.identity.enrollment.url is not set on a partner edge: the enrollment token carries the address")

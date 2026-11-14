@@ -124,13 +124,18 @@ object EdgeIdentityEnrollment:
           ZIO.when(due(material.leaf.getNotBefore.toInstant, material.leaf.getNotAfter.toInstant, now))(renew)
       yield ()
 
-    /** A partner edge sends a new public signing key with the request for the certificate and switches to it when central has
-      * answered: central replaced the key in the same step, so what the edge signs from then on is with the new one. The key is
-      * written to `enrolled.json` first, so that a restart finds the one central holds. */
+    /** A partner edge sends a new public signing key with the request for the certificate and switches to it when central has answered:
+      * central replaced the key in the same step, so what the edge signs from then on is with the new one.
+      *
+      * The new key is written to `enrolled.json` as pending before central is asked, and a failure to write it ends the renewal there (nothing
+      * has been asked yet). After the answer it is promoted to the key in use. An interruption in between leaves the pending key in the file,
+      * and the next start asks central which of the two it holds (`PartnerEnrollment.chooseKey`); central keeps the key it replaced valid until
+      * the next replacement, so the key in use works meanwhile either way. */
     private def renew: Task[Unit] =
       for
         generated <- CertificateSubject.generate(subject)
         fresh <- ZIO.when(config.mode == EdgeMode.Partner)(security.generateRsaKeyPair)
+        _ <- ZIO.foreachDiscard(fresh)(keepPending)
         token <- tokens.getToken
         body = RenewRequest(generated.csrPem, fresh.map(_.toPublicJwk)).toJson
         request = Request.post(config.central.url / "edge" / "certificate" / "renew", Body.fromString(body))
@@ -142,15 +147,25 @@ object EdgeIdentityEnrollment:
         _ <- ZIO.logInfo(s"renewed the certificate of edge '${config.id}'${if fresh.isDefined then " and its signing key" else ""}")
       yield ()
 
-    private def switchKey(fresh: versola.util.RsaKeyPair): UIO[Unit] =
-      val directory = config.central.identity.map(identity => Path.of(identity.directory))
+    private val directory: Option[Path] = config.central.identity.map(identity => Path.of(identity.directory))
+
+    private def encoded(key: versola.util.RsaKeyPair): Enrolled.Key =
+      Enrolled.Key(key.keyId, Base64.getEncoder.encodeToString(key.privateKey.getEncoded))
+
+    /** Before central is asked: fails the renewal when it cannot be written. */
+    private def keepPending(fresh: versola.util.RsaKeyPair): Task[Unit] =
       ZIO.foreachDiscard(directory): directory =>
-        Enrolled.read(directory).flatMap(_.fold(ZIO.unit): known =>
-          Enrolled.write(
-            directory,
-            known.copy(keyId = fresh.keyId, privateKey = Base64.getEncoder.encodeToString(fresh.privateKey.getEncoded)),
-          )).catchAll(error =>
-          ZIO.logError(s"the new signing key of this edge could not be kept in ${directory}: ${error.getMessage}; a restart will not find it"),
+        Enrolled.read(directory).flatMap(ZIO.foreachDiscard(_)(known => Enrolled.write(directory, known.copy(pending = Some(encoded(fresh))))))
+
+    /** After central's answer: the key in use is the new one in this process whatever the file says. */
+    private def switchKey(fresh: versola.util.RsaKeyPair): UIO[Unit] =
+      ZIO.foreachDiscard(directory): directory =>
+        Enrolled.read(directory).flatMap(ZIO.foreachDiscard(_)(known =>
+          Enrolled.write(directory, known.copy(keyId = fresh.keyId, privateKey = encoded(fresh).privateKey, pending = None)),
+        )).catchAll(error =>
+          ZIO.logError(
+            s"the new signing key of this edge could not be promoted in $directory: ${error.getMessage}; it stays pending there and a restart asks central which key it holds",
+          ),
         )
       *> tokens.switchKey(fresh.keyId, fresh.privateKey)
 

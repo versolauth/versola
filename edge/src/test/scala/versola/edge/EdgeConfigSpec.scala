@@ -604,6 +604,17 @@ object EdgeConfigSpec extends ZIOSpecDefault:
             .flip
         yield assertTrue(error.getMessage.contains("internal-secret"))
       },
+      test("refuses the pull feed of revocations in partner mode: a partner edge has none") {
+        for
+          error <- ZIO.service[EdgeConfig]
+            .provideLayer(
+              ZLayer.succeed(
+                partnerConfig.copy(revocation = partnerConfig.revocation.copy(feed = EdgeConfig.RevocationFeed(enabled = true))),
+              ) >>> EdgeConfig.validated,
+            )
+            .flip
+        yield assertTrue(error.getMessage.contains("revocation.feed"))
+      },
       test("refuses a blank entry of partner.admins") {
         for
           error <- ZIO.service[EdgeConfig]

@@ -120,11 +120,12 @@ object StaffService:
               addedBy = invite.invitedBy,
               addedAt = now,
             )
-            repository.admit(invite.id, member).flatMap: admitted =>
+            repository.admit(invite.id, member).flatMap:
+              // the level is the invite's as the transaction read it, which is not the one the lookup saw if it was changed meanwhile
+              case Some(admitted) =>
+                event(subject, "admit", masked, Some(admitted.level.toString), now).as(Admission.Member(admitted))
               // the invite was spent a moment ago by this person's other request: the member is there, or the invite was withdrawn
-              if admitted then
-                event(subject, "admit", masked, Some(invite.level.toString), now).as(Admission.Member(member))
-              else repository.findMember(subject).map(_.fold(Admission.NotAMember(Some(masked)))(Admission.Member(_)))
+              case None => repository.findMember(subject).map(_.fold(Admission.NotAMember(Some(masked)))(Admission.Member(_)))
           case None =>
             val masked = claimed.headOption.map(_.masked)
             Observability.setError("not_a_member") *>

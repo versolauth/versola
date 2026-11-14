@@ -68,24 +68,25 @@ class PostgresStaffRepository(xa: TransactorZIO) extends StaffRepository, BasicC
       """.update.run()
     .unit
 
-  override def admit(invite: UUID, member: StaffMember): Task[Boolean] =
+  override def admit(invite: UUID, member: StaffMember): Task[Option[StaffMember]] =
     xa.transactMeasured("admit-partner-staff"):
-      val identifier =
-        sql"SELECT identifier_kind, identifier_hash FROM partner_staff_invites WHERE id = $invite".query[(IdentifierKind, String)].run().headOption
-      identifier match
-        case None => false
-        case Some((kind, identifierHash)) =>
-          sql"DELETE FROM partner_staff_invites WHERE id = $invite".update.run()
-          sql"""
-            INSERT INTO partner_staff (subject, level, display, added_by, added_at)
-            VALUES (${member.subject}, ${member.level}, ${member.display}, ${member.addedBy}, ${member.addedAt})
-            ON CONFLICT (subject) DO NOTHING
-          """.update.run()
-          sql"""
-            UPDATE partner_staff_config_admins SET admitted_at = ${member.addedAt}
-            WHERE identifier_kind = $kind AND identifier_hash = $identifierHash AND admitted_at IS NULL
-          """.update.run()
-          true
+      // taken and deleted in one statement: of two sign-ins at once, one gets the row; its level is what the row says at that moment
+      val taken = sql"""
+        DELETE FROM partner_staff_invites WHERE id = $invite
+        RETURNING identifier_kind, identifier_hash, level, invited_by
+      """.query[(IdentifierKind, String, StaffLevel, String)].run().headOption
+      taken.map: (kind, identifierHash, level, invitedBy) =>
+        val admitted = member.copy(level = level, addedBy = invitedBy)
+        sql"""
+          INSERT INTO partner_staff (subject, level, display, added_by, added_at)
+          VALUES (${admitted.subject}, ${admitted.level}, ${admitted.display}, ${admitted.addedBy}, ${admitted.addedAt})
+          ON CONFLICT (subject) DO NOTHING
+        """.update.run()
+        sql"""
+          UPDATE partner_staff_config_admins SET admitted_at = ${admitted.addedAt}
+          WHERE identifier_kind = $kind AND identifier_hash = $identifierHash AND admitted_at IS NULL
+        """.update.run()
+        admitted
 
   override def removeInvite(id: UUID): Task[Boolean] =
     xa.connectMeasured("remove-partner-staff-invite")(sql"DELETE FROM partner_staff_invites WHERE id = $id".update.run()).map(_ > 0)

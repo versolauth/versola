@@ -60,7 +60,22 @@ trait StaffRepositorySpec extends DatabaseSpecBase[StaffRepositorySpec.Env]:
           admitted <- env.repository.admit(made.id, member("sub-1", StaffLevel.admin))
           found <- env.repository.findMember("sub-1")
           invites <- env.repository.invites(at)
-        yield assertTrue(admitted, found.map(_.level) == Some(StaffLevel.admin), invites.isEmpty)
+        yield assertTrue(admitted.isDefined, found.map(_.level) == Some(StaffLevel.admin), invites.isEmpty)
+      },
+      test("an invite lowered or re-issued while the person signs in admits them at its level now, not at the one that was read") {
+        val made = invite("hash-1", StaffLevel.admin)
+        for
+          _ <- env.repository.invite(made)
+          read <- env.repository.findInvite(IdentifierKind.phone, "hash-1").someOrFail(RuntimeException("no invite"))
+          // an administrator lowers it after the sign-in has read it
+          _ <- env.repository.setInviteLevel(made.id, StaffLevel.viewer)
+          admitted <- env.repository.admit(read.id, member("sub-1", read.level))
+          found <- env.repository.findMember("sub-1")
+        yield assertTrue(
+          read.level == StaffLevel.admin,
+          admitted.map(_.level) == Some(StaffLevel.viewer),
+          found.map(_.level) == Some(StaffLevel.viewer),
+        )
       },
       test("an invite that is gone admits nobody: the second of two sign-ins at once finds it spent") {
         val made = invite("hash-1")
@@ -69,14 +84,15 @@ trait StaffRepositorySpec extends DatabaseSpecBase[StaffRepositorySpec.Env]:
           first <- env.repository.admit(made.id, member("sub-1"))
           second <- env.repository.admit(made.id, member("sub-2"))
           members <- env.repository.members
-        yield assertTrue(first, !second, members.map(_.subject) == List("sub-1"))
+        yield assertTrue(first.isDefined, second.isEmpty, members.map(_.subject) == List("sub-1"))
       },
       test("a member who is there already is left as they are when the invite of the same person is spent") {
-        val made = invite("hash-1", StaffLevel.admin)
+        val made = invite("hash-1", StaffLevel.viewer)
         for
           _ <- env.repository.invite(made)
           _ <- env.repository.admit(made.id, member("sub-1", StaffLevel.viewer))
-          _ <- env.repository.invite(made.copy(id = UUID.randomUUID()))
+          // a second invite, for a higher level, of the person who is on the team already
+          _ <- env.repository.invite(made.copy(id = UUID.randomUUID(), level = StaffLevel.admin))
           again <- env.repository.invites(at)
           _ <- env.repository.admit(again.head.id, member("sub-1", StaffLevel.admin))
           found <- env.repository.findMember("sub-1")

@@ -1,9 +1,9 @@
 package versola.edge.partner
 
-import versola.edge.EdgeCertificateHolder
-import versola.util.{CertificateSubject, EnrollmentToken, SecureRandom, SecurityService}
+import versola.edge.{EdgeCertificateHolder, EdgeConfig}
+import versola.util.{CertificateSubject, EnrollmentToken, JWT, SecureRandom, SecurityService}
 import zio.*
-import zio.http.{Body, Client, Header, MediaType, Request, Scheme, URL}
+import zio.http.{Body, Client, ClientSSLCertConfig, ClientSSLConfig, Header, MediaType, Request, Status, URL}
 import zio.json.*
 import zio.json.ast.Json
 
@@ -26,6 +26,12 @@ case class Enrolled(
     privateKey: String,
     central: Enrolled.Central,
     auth: Enrolled.Auth,
+    /** A signing key written before central was asked to replace this one (renewal), and not yet promoted: central may or may not hold
+      * it, and a start finds out (see `PartnerEnrollment.chooseKey`). */
+    pending: Option[Enrolled.Key] = None,
+    /** The certificate of an enrollment, written together with the answer and before it was installed: an interruption between the
+      * two leaves it here, and the next start installs it. */
+    certificate: Option[Enrolled.Unfinished] = None,
 ) derives JsonCodec:
 
   /** The configuration values this fixes, in the spelling of the file (kebab-case, dotted paths). */
@@ -43,6 +49,8 @@ case class Enrolled(
   def defaults: Map[String, String] = auth.mtlsUrl.map("versola-internal-url" -> _).toMap
 
 object Enrolled:
+  case class Key(keyId: String, privateKey: String) derives JsonCodec
+  case class Unfinished(chain: String, privateKeyPem: String) derives JsonCodec
   case class Central(mtlsUrl: String) derives JsonCodec
   case class Auth(issuer: String, mtlsUrl: Option[String] = None) derives JsonCodec
 
@@ -118,13 +126,18 @@ object PartnerEnrollment:
         .someOrFail(IllegalArgumentException("mode = partner needs central.identity.directory: where the edge keeps what enrollment gave it"))
       directory = Path.of(directoryName)
       holder <- EdgeCertificateHolder.directory(directory)
+      client <- ZIO.service[Client]
+      // an enrollment interrupted between the answer and the installation of the certificate is finished before anything else
+      stored <- Enrolled.read(directory).flatMap(ZIO.foreach(_)(finishInstall(_, holder, directory)))
       held <- holder.material
       now <- Clock.instant
       valid = held.exists(material => !now.isBefore(material.leaf.getNotBefore.toInstant) && now.isBefore(material.leaf.getNotAfter.toInstant))
-      enrolled <- Enrolled.read(directory)
       token <- tokenOf(base)
-      result <- (enrolled, token) match
-        case (Some(known), _) if valid => ZIO.succeed(known)
+      result <- (stored, token) match
+        case (Some(known), configured) if valid =>
+          ZIO.foreachDiscard(configured)(_ =>
+            ZIO.logInfo("the enrollment token is not read: this edge is enrolled and its certificate is valid; the token can be removed"),
+          ) *> chooseKey(known, directory, probe(base, known, holder, client))
         case (_, Some(raw)) => enroll(raw, holder, directory)
         case (Some(_), None) =>
           ZIO.fail(
@@ -145,6 +158,67 @@ object PartnerEnrollment:
   /** The values the enrollment fixed come before the file, the file before the defaults enrollment suggests. */
   private[partner] def overlay(base: ConfigProvider, enrolled: Enrolled): ConfigProvider =
     ConfigProvider.fromMap(enrolled.derived).kebabCase.orElse(base).orElse(ConfigProvider.fromMap(enrolled.defaults).kebabCase)
+
+  /** Installs the certificate an interrupted enrollment left in `enrolled.json`, and takes it out of the file. */
+  private def finishInstall(enrolled: Enrolled, holder: EdgeCertificateHolder, directory: Path): Task[Enrolled] =
+    enrolled.certificate match
+      case None => ZIO.succeed(enrolled)
+      case Some(unfinished) =>
+        for
+          _ <- holder.install(unfinished.chain, unfinished.privateKeyPem)
+          done = enrolled.copy(certificate = None)
+          _ <- Enrolled.write(directory, done)
+          _ <- ZIO.logInfo(s"finished the installation of the certificate of an enrollment that was interrupted, for edge '${enrolled.edgeId}'")
+        yield done
+
+  /** A renewal that was interrupted may or may not have made central replace the signing key with the pending one. Central keeps the key
+    * it replaced valid until the next replacement, so the key in use works either way; but which is central's current is found out, once:
+    * `probe` says whether central takes the pending key (`Some(true)`), refuses it (`Some(false)`), or could not be asked (`None`). Accepted
+    * is promoted, refused is dropped, and not asked leaves both in the file and the key in use stays. */
+  private[partner] def chooseKey(
+      enrolled: Enrolled,
+      directory: Path,
+      probe: Enrolled.Key => Task[Option[Boolean]],
+  ): Task[Enrolled] =
+    enrolled.pending match
+      case None => ZIO.succeed(enrolled)
+      case Some(pending) =>
+        probe(pending).orElseSucceed(None).flatMap:
+          case Some(true) =>
+            val promoted = enrolled.copy(keyId = pending.keyId, privateKey = pending.privateKey, pending = None)
+            Enrolled.write(directory, promoted).as(promoted)
+          case Some(false) =>
+            val dropped = enrolled.copy(pending = None)
+            Enrolled.write(directory, dropped).as(dropped)
+          case None => ZIO.succeed(enrolled)
+
+  /** Whether central takes a token signed with `key` on a read that needs only an authenticated edge, over the certificate in hand. */
+  private def probe(base: ConfigProvider, enrolled: Enrolled, holder: EdgeCertificateHolder, client: Client)(
+      key: Enrolled.Key,
+  ): Task[Option[Boolean]] =
+    holder.paths match
+      case None => ZIO.none
+      case Some((certificate, certificateKey)) =>
+        for
+          pins <- base.load(Config.listOf(Config.string("trustedCertificates")).nested("mutualTls").nested("central")).orElseSucceed(Nil)
+          privateKey <- ZIO.attempt(
+            java.security.KeyFactory.getInstance("RSA").generatePrivate(
+              java.security.spec.PKCS8EncodedKeySpec(Base64.getDecoder.decode(key.privateKey)),
+            ),
+          )
+          token <- JWT.serialize(
+            claims = JWT.Claims(issuer = "edge", subject = "edge", audience = List("central"), custom = Json.Obj()),
+            ttl = 1.minute,
+            signature = JWT.Signature.Asymmetric(algorithm = JWT.Algorithm.RS256, keyId = key.keyId, privateKey = privateKey),
+            headers = Map("edge_id" -> enrolled.edgeId),
+          )
+          ssl = ClientSSLConfig.FromClientAndServerCert(
+            EdgeConfig.pinnedTrust(pins.toSet),
+            ClientSSLCertConfig.FromClientCertFile(certificate, certificateKey),
+          )
+          url <- ZIO.fromEither(URL.decode(enrolled.central.mtlsUrl)).mapError(_ => RuntimeException("central.url is not a URL"))
+          response <- ZIO.scoped(client.ssl(ssl).request(Request.get(url / "edge" / "partner" / "me").addHeader(Header.Authorization.Bearer(token))))
+        yield Some(response.status != Status.Unauthorized)
 
   private def refuseDerived(base: ConfigProvider): Task[Unit] =
     ZIO.foreachDiscard(Derived): (name, config) =>
@@ -184,7 +258,14 @@ object PartnerEnrollment:
       result <- ZIO.scoped(client.request(request).flatMap(response => response.body.asString.map(response.status -> _)))
       (status, text) = result
       _ <-
-        ZIO.fail(RuntimeException(s"central refused the enrollment with $status${if text.isEmpty then "" else s": $text"}")).unless(status.isSuccess)
+        ZIO.fail(
+          RuntimeException(
+            s"central refused the enrollment with $status${if text.isEmpty then "" else s": $text"}" +
+              (if status == Status.Unauthorized then
+                 ": the token is not valid, was used already, or has expired; a token is single use and lives 24 hours, create a new one in the console"
+               else ""),
+          ),
+        ).unless(status.isSuccess)
       answer <- ZIO.fromEither(text.fromJson[EnrollResponse]).mapError(error =>
         RuntimeException(s"central's answer to the enrollment is not understood: $error"),
       )
@@ -201,6 +282,9 @@ object PartnerEnrollment:
         central = Enrolled.Central(mtlsUrl),
         auth = Enrolled.Auth(issuer, answer.auth.mtlsUrl),
       )
+      // the answer is kept with its certificate in one atomic write, before the certificate is installed: the token is spent, so an interruption
+      // between the two must leave what finishes the job (the next start installs it)
+      _ <- Enrolled.write(directory, enrolled.copy(certificate = Some(Enrolled.Unfinished(answer.certificate, generated.privateKeyPem))))
       _ <- holder.install(answer.certificate, generated.privateKeyPem)
       _ <- Enrolled.write(directory, enrolled)
       _ <- ZIO.logInfo(s"enrolled with central as edge '${enrolled.edgeId}' of group '${enrolled.group}'")

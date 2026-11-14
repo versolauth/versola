@@ -43,14 +43,13 @@ object StaffMemoryRepository:
         all.get(invite) match
           case Some(taken) => Some(taken) -> all.removed(invite)
           case None => None -> all
-      .tap(taken =>
-        ZIO.foreachDiscard(taken)(taken =>
-          memberRows.update(m => if m.contains(member.subject) then m else m.updated(member.subject, member)) *>
+      .flatMap: taken =>
+        ZIO.foreach(taken): taken =>
+          val admitted = member.copy(level = taken.level, addedBy = taken.invitedBy)
+          memberRows.update(m => if m.contains(admitted.subject) then m else m.updated(admitted.subject, admitted)) *>
             configRows.update(all =>
               if all.contains((taken.kind, taken.identifierHash)) then all.updated((taken.kind, taken.identifierHash), true) else all,
-            ),
-        ),
-      ).map(_.isDefined)
+            ).as(admitted)
     override def removeInvite(id: UUID) = inviteRows.modify(all => all.contains(id) -> all.removed(id))
     private def guarded(subject: String, demotes: Boolean)(change: Map[String, StaffMember] => Map[String, StaffMember]): UIO[Change] =
       memberRows.modify: all =>

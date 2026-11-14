@@ -392,6 +392,28 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
             body = asked.head._2.fromJson[zio.json.ast.Json.Obj].toOption.get
           yield assertTrue(!body.keys.contains("signingKey"))
         },
+        test("the new key is kept as pending before central is asked, and a renewal that cannot keep it asks central nothing") {
+          for
+            directory <- tempDirectory
+            calls <- central(lifetime = 14.days)
+            client <- ZIO.service[Client]
+            security <- ZIO.service[SecurityService]
+            holder <- openHolder(ZLayer.succeed(config(directory, None)))
+            generated <- CertificateSubject.generate(subject)
+            _ <- holder.install(
+              sign(generated.csrPem, subject.uris, Instant.now.minusSeconds(25 * 86400), Instant.now.plusSeconds(5 * 86400)),
+              generated.privateKeyPem,
+            )
+            old <- security.generateRsaKeyPair
+            _ <- Enrolled.write(directory, enrolled(old))
+            partner = config(directory, None).copy(mode = EdgeMode.Partner)
+            // the directory cannot be written to: the pending key cannot be kept
+            _ <- ZIO.attemptBlocking(Files.setPosixFilePermissions(directory, PosixFilePermissions.fromString("r-x------")))
+            failure <- EdgeIdentityEnrollment.Impl(partner, client, holder, tokens, security).renewIfDue.flip
+            _ <- ZIO.attemptBlocking(Files.setPosixFilePermissions(directory, PosixFilePermissions.fromString("rwx------")))
+            asked <- calls.renew.get
+          yield assertTrue(failure.isInstanceOf[Throwable], asked.isEmpty)
+        },
         test("a renewal central refuses switches nothing") {
           for
             directory <- tempDirectory
@@ -414,7 +436,12 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
             _ <- EdgeIdentityEnrollment.Impl(partner, client, holder, recording, security).renewIfDue.flip
             kept <- Enrolled.read(directory)
             count <- switched.get
-          yield assertTrue(count == 0, kept.contains(enrolled(old)))
+          yield assertTrue(
+            count == 0,
+            // the key in use is as it was; the one that was to replace it stays pending, for a start to find out whether central took it
+            kept.map(_.copy(pending = None)).contains(enrolled(old)),
+            kept.flatMap(_.pending).isDefined,
+          )
         },
       ),
     ).provideSomeLayer(TestClient.layer ++ (SecureRandom.live >>> SecurityService.live)),
