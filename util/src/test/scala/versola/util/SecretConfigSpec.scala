@@ -68,6 +68,25 @@ object SecretConfigSpec extends ZIOSpecDefault:
       },
     ),
     suite("rsaPrivateKey")(
+      test("reads the URL-safe alphabet as well as the standard one: a key central generated has `-` and `_` in it") {
+        val generator = KeyPairGenerator.getInstance("RSA")
+        generator.initialize(2048)
+        // 2048-bit keys that carry both characters are common; draw until one does so the test never passes on a key that has neither
+        val key = Iterator.continually(generator.generateKeyPair().getPrivate).find: candidate =>
+          val url = Base64.getUrlEncoder.withoutPadding.encodeToString(candidate.getEncoded)
+          url.contains('-') && url.contains('_')
+        .get
+        val standard = Base64.getEncoder.encodeToString(key.getEncoded)
+        val urlSafe = Base64.getUrlEncoder.withoutPadding.encodeToString(key.getEncoded)
+        val urlSafePadded = Base64.getUrlEncoder.encodeToString(key.getEncoded)
+        assertTrue(
+          standard.contains('+') || standard.contains('/'),
+          urlSafe.contains('-') && urlSafe.contains('_'),
+          SecretConfig.rsaPrivateKey(standard).map(_.getEncoded.toSeq) == Right(key.getEncoded.toSeq),
+          SecretConfig.rsaPrivateKey(urlSafe).map(_.getEncoded.toSeq) == Right(key.getEncoded.toSeq),
+          SecretConfig.rsaPrivateKey(urlSafePadded).map(_.getEncoded.toSeq) == Right(key.getEncoded.toSeq),
+        )
+      },
       test("accepts a base64-encoded PKCS#8 key") {
         assertTrue(SecretConfig.rsaPrivateKey(rsaKey).map(_.getAlgorithm) == Right("RSA"))
       },

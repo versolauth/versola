@@ -75,6 +75,9 @@ secrets:
 # the versola chart). Required.
 central:
   mtlsUrl: "" # https://central-mtls.example.com
+  # The edge group the edge is registered in (`POST /configuration/edges`, `groupId`). `central` refuses the certificate request of an
+  # edge that names another.
+  group: default
   # The leaf certificate(s) of central's listener, PEM, as the `server-pin/tls.crt` the in-cluster
   # edge gets. A set, not one: put the next leaf in beside the current one before central switches,
   # so a rotation does not cut the edge off (design 4.3). A leaf, not the CA -- the pin is what
