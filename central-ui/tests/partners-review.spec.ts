@@ -75,10 +75,10 @@ const deviceState = {
 async function startDeviceClient(page: Page) {
   await loadAdminApp(page, { path: `/?view=clients&tenant=${partnerTenant}`, state: deviceState });
   await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByRole('button', { name: /Mobile or desktop app/ }).click();
   await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'Partner' }).click();
   await page.getByRole('combobox', { name: 'Partner' }).click();
   await page.getByRole('option', { name: /Pilot Pay/ }).click();
-  await page.getByRole('button', { name: /Mobile or desktop app/ }).click();
 }
 
 test('a partner\'s device client keeps DPoP on: the device holds its tokens', async ({ page }) => {
@@ -94,10 +94,10 @@ test('a partner\'s device client keeps DPoP on: the device holds its tokens', as
 test('with a cap of an hour the device plan carries no warning', async ({ page }) => {
   await loadAdminApp(page, { path: `/?view=clients&tenant=${partnerTenant}`, state: { ...deviceState, partners: [{ ...pilotPay, limits: { ...pilotPay.limits, scopes: ['openid', 'profile', 'offline_access'] } }] } });
   await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByRole('button', { name: /Mobile or desktop app/ }).click();
   await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'Partner' }).click();
   await page.getByRole('combobox', { name: 'Partner' }).click();
   await page.getByRole('option', { name: /Pilot Pay/ }).click();
-  await page.getByRole('button', { name: /Mobile or desktop app/ }).click();
   const plan = page.locator('versola-client-kind-step .plan');
   await expect(plan.locator('.plan-line.on').filter({ hasText: 'DPoP-bound access tokens' })).toBeVisible();
   await expect(plan).not.toContainText('raise Pilot Pay');

@@ -68,6 +68,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
   )
 
   /** A tenant ACR vocabulary defining each of `acrs` as satisfied by a password. */

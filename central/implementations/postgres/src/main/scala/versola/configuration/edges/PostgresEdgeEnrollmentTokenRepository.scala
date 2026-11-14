@@ -35,6 +35,10 @@ class PostgresEdgeEnrollmentTokenRepository(xa: TransactorZIO) extends EdgeEnrol
         RETURNING edge_id
       """.query[EdgeId].run().headOption
 
+  override def revoke(edgeId: EdgeId): Task[Int] =
+    xa.connectMeasured("revoke-edge-enrollment-tokens"):
+      sql"DELETE FROM edge_enrollment_tokens WHERE edge_id = $edgeId AND used_at IS NULL".update.run()
+
 object PostgresEdgeEnrollmentTokenRepository:
   def live: ZLayer[TransactorZIO, Nothing, EdgeEnrollmentTokenRepository] =
     ZLayer.fromFunction(PostgresEdgeEnrollmentTokenRepository(_))

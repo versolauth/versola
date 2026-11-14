@@ -17,7 +17,7 @@ object EdgePoliciesPatchSpec extends ZIOSpecDefault:
 
   private val record = EdgeRecord(
     EdgeId("edge-1"),
-    Json.Obj(),
+    Some(Json.Obj()),
     None,
     requireDpopNonce = true,
     overloadPolicy = None,
@@ -26,6 +26,7 @@ object EdgePoliciesPatchSpec extends ZIOSpecDefault:
     policyMeta = None,
     groupId = EdgeGroup.DefaultId,
     groupKind = EdgeGroupKind.FirstParty,
+    publicUrl = None,
   )
 
   private val perClient = RateLimitPolicy(

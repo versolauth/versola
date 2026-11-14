@@ -51,6 +51,8 @@ object PostgresEdgeCertificateEnrollmentRepositorySpec extends PostgresSpec, Edg
     createdAt = Instant.EPOCH,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
+    approval = ClientApproval.Approved,
   )
 
   private class PostgresFixtures(xa: TransactorZIO) extends Fixtures:

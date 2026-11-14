@@ -63,6 +63,7 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
       secret = secret,
       previousSecret = previousSecret,
       audienceRateLimits = Nil,
+      partnerId = None,
     )
 
   override def testCases(env: ResourceRepositorySpec.Env) =
@@ -75,6 +76,7 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
             resourceUri,
             audience,
             Vector(endpointRecord(usersListEndpointId, allow = allow, inject = inject)),
+            None,
             None,
           )
           found <- env.resourceRepository.findResource(resourceId)
@@ -94,7 +96,7 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
         val limited = endpointRecord(usersListEndpointId).copy(rateLimit = Some(limit))
         val plain = endpointRecord(usersDeleteEndpointId, method = "DELETE")
         for
-          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector(limited, plain), None)
+          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector(limited, plain), None, None)
           found <- env.resourceRepository.findResource(resourceId)
           _ <- env.resourceRepository.updateResource(
             resourceId,
@@ -118,7 +120,7 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
         )
         val client = audience.head
         for
-          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector.empty, None)
+          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector.empty, None, None)
           fresh <- env.resourceRepository.findResource(resourceId)
           _ <- env.resourceRepository.updateAudienceRateLimits(resourceId, List(AudienceRateLimit(client, limit)))
           set <- env.resourceRepository.findResource(resourceId)
@@ -135,7 +137,7 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
       test("create resource with secret") {
         val secret = Array.fill(32)(9.toByte)
         for
-          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector.empty, Some(secret))
+          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector.empty, Some(secret), None)
           found <- env.resourceRepository.findResource(resourceId)
         yield assertTrue(found.map(_.secret.map(_.toVector)) == Some(Some(secret.toVector)))
       },
@@ -143,7 +145,7 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
         val initial = Array.fill(32)(3.toByte)
         val replacement = Array.fill(32)(4.toByte)
         for
-          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector.empty, None)
+          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector.empty, None, None)
           initialized <- env.resourceRepository.initializeSecret(resourceId, initial)
           initializedAgain <- env.resourceRepository.initializeSecret(resourceId, replacement)
           found <- env.resourceRepository.findResource(resourceId)
@@ -158,7 +160,7 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
         val secret1 = Array.fill(32)(1.toByte)
         val secret2 = Array.fill(32)(2.toByte)
         for
-          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector.empty, Some(secret1))
+          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector.empty, Some(secret1), None)
           _ <- env.resourceRepository.rotateSecret(resourceId, secret2)
           afterRotate <- env.resourceRepository.findResource(resourceId)
           _ <- env.resourceRepository.deletePreviousSecret(resourceId)
@@ -177,6 +179,7 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
             resourceUri,
             audience,
             Vector(endpointRecord(usersListEndpointId), endpointRecord(usersDeleteEndpointId, method = "DELETE")),
+            None,
             None,
           )
           _ <- env.resourceRepository.updateResource(
@@ -216,7 +219,7 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
       },
       test("audience patches add and remove without submitting the whole list") {
         for
-          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector.empty, None)
+          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector.empty, None, None)
           _ <- env.resourceRepository.updateResource(
             resourceId = resourceId,
             resourcePatch = None,
@@ -251,7 +254,15 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
       },
       test("delete resource") {
         for
-          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector(endpointRecord(usersListEndpointId)), None)
+          _ <- env.resourceRepository.createResource(
+            tenantId,
+            resourceId,
+            resourceUri,
+            audience,
+            Vector(endpointRecord(usersListEndpointId)),
+            None,
+            None,
+          )
           _ <- env.resourceRepository.deleteResource(resourceId)
           found <- env.resourceRepository.findResource(resourceId)
         yield assertTrue(found.isEmpty)

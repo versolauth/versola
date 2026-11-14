@@ -111,7 +111,9 @@ object ResourceService:
             resources <- cache.get
             tenants <- tenantRepository.getAll
             allowedTenantIds = tenants.filter(_.edgeId.contains(id)).map(_.id).toSet
-          yield resources.filter(r => allowedTenantIds.contains(r.tenantId))
+          // A partner's resource is served to the partner's own edge (`/edge/partner/sync/resources`) and to auth, never to the
+          // operator's edges: it carries the upstream secret and endpoint rules of another organisation.
+          yield resources.filter(r => r.partnerId.isEmpty && allowedTenantIds.contains(r.tenantId))
 
     override def verifySecret(provided: Secret): Task[Boolean] =
       cache.get.map: resources =>
@@ -141,6 +143,7 @@ object ResourceService:
                     audience = request.audience,
                     endpoints = request.endpoints.map(asRecord),
                     secret = encryptedSecret,
+                    partnerId = request.partnerId,
                   )
                   _ <- ZIO.when(request.audienceRateLimits.nonEmpty)(
                     resourceRepository.updateAudienceRateLimits(request.resourceId, request.audienceRateLimits),

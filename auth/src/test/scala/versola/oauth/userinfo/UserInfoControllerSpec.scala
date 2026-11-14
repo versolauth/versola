@@ -92,6 +92,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
   )
 
   val userInfoResponse = UserInfoResponse(

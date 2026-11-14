@@ -70,6 +70,7 @@ object NativeAppFlowSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
     nativeApp = true,
     issuedCertificate = true,
     enrolledCertificate = false,
+    groupCertificate = None,
   )
 
   override val bootstrap: ZLayer[Any, Any, OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub] =

@@ -62,3 +62,8 @@ object EdgeCertificate:
     * than the edge's is refused, so an edge cannot present itself as a member of another group. */
   def isIssuedTo(certificate: Certificate, edgeId: EdgeId, groupId: EdgeGroupId): Boolean =
     isIssuedTo(certificate, edgeId) && groupIds(certificate).subsetOf(Set(groupId.toString))
+
+  /** The same, and the group name has to be there: what a partner's edge presents is a certificate that says which partner it
+    * speaks for (#962), where the older ones of the operator's own edges may not. */
+  def isIssuedToMemberOf(certificate: Certificate, edgeId: EdgeId, groupId: EdgeGroupId): Boolean =
+    isIssuedTo(certificate, edgeId) && groupIds(certificate) == Set(groupId.toString)

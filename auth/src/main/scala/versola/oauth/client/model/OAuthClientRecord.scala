@@ -1,7 +1,7 @@
 package versola.oauth.client.model
 
 import versola.util.theme.ThemeOverrides
-import versola.util.{Dpop, JsonWebKeySet, Secret}
+import versola.util.{Dpop, EdgeIdentityNames, JsonWebKeySet, Secret}
 import zio.Duration
 import zio.http.URL
 import zio.json.{JsonCodec, JsonEncoder}
@@ -85,6 +85,9 @@ case class OAuthClientRecord(
     applicationType: ApplicationType,
     /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
     themeOverrides: Option[ThemeOverrides],
+    /** The partner that owns the client (#549, #962), as central names it; `None` for a first-party client. Only what
+      * [[bindsAccessTokens]] needs: auth knows nothing else of partners. */
+    partnerId: Option[String],
 ) derives CanEqual, Equal:
 
   /** Whether this client's credential card can lead to account creation: it asks for an email or
@@ -128,8 +131,28 @@ case class OAuthClientRecord(
     * certificate is edge's, the same for every installation of the app, so a token bound to
     * it would be replayable by anyone who can reach edge. Its `cnf` carries only the device's
     * `jkt`, which `dpopBoundAccessTokens` -- enforced for it at registration -- guarantees.
+    *
+    * A partner's client is the other (#549, #962): it authenticates with the certificate of its edge group, and every edge of
+    * the group holds a certificate of its own, so a token bound to the one that asked for it would be refused through every
+    * other replica. Central keeps `certificateBoundAccessTokens` off for it; this is the same rule, read from the sync.
     */
   def bindsAccessTokens: Boolean =
-    (mtlsAuth.nonEmpty && !isEdgeFrontedNative) || certificateBoundAccessTokens
+    (mtlsAuth.nonEmpty && !isEdgeFrontedNative && partnerId.isEmpty) || certificateBoundAccessTokens
+
+  /** Whether this client is registered by the name of a group of edges (`tls_client_auth`, `san_uri`
+    * `urn:versola:edge-group:<group>`), so that every edge of the group authenticates it, each with a
+    * certificate of its own that is renewed with a new key.
+    *
+    * It is the one kind of client whose refresh grant follows the certificate it authenticates with
+    * (RFC 8705 §7.1, see `OAuthTokenService`), so the test is as narrow as the registration: the method,
+    * the subject type and the exact prefix central writes, with a group id after it. A name that only
+    * resembles one (another case, an edge's own name, the same text under another subject type) is any
+    * other client's. An edge-fronted native client is left out: its grant carries no certificate.
+    */
+  def authenticatesByEdgeGroup: Boolean =
+    authMethod == AuthMethod.tls_client_auth && !isEdgeFrontedNative && mtlsAuth.exists:
+      case MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_uri, name) =>
+        name.startsWith(EdgeIdentityNames.GroupPrefix) && name.length > EdgeIdentityNames.GroupPrefix.length
+      case _ => false
 
   def isPublic: Boolean = !isConfidential

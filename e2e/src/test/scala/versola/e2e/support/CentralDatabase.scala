@@ -40,6 +40,28 @@ object CentralDatabase:
         .unless(updated == 1)
     yield ()
 
+  /** Registers the public key of an edge that was created without one, as an enrolment does (`POST /edge/enroll`, which the staged stack
+    * cannot serve: it has no enrollment listener and no CA that signs edge certificates). Fails when the edge already has a key. */
+  def registerEdgeKey(edgeId: String, publicJwk: String): Task[Unit] =
+    for
+      url <- env("E2E_CENTRAL_DB_URL", "jdbc:postgresql://localhost:5432/auth")
+      user <- env("E2E_CENTRAL_DB_USER", "dev")
+      password <- env("E2E_CENTRAL_DB_PASSWORD", "1234")
+      updated <- ZIO.attemptBlocking:
+        val connection = DriverManager.getConnection(url, user, password).nn
+        try
+          val statement = connection
+            .prepareStatement("UPDATE edges SET public_key_jwk = ?::jsonb WHERE id = ? AND public_key_jwk IS NULL").nn
+          try
+            statement.setString(1, publicJwk)
+            statement.setString(2, edgeId)
+            statement.executeUpdate()
+          finally statement.close()
+        finally connection.close()
+      _ <- ZIO.fail(RuntimeException(s"Expected to register the key of edge '$edgeId', updated $updated rows"))
+        .unless(updated == 1)
+    yield ()
+
   /** A row of central's audit log (`central_audit_event`), as stored. */
   case class AuditRow(
       kind: String,

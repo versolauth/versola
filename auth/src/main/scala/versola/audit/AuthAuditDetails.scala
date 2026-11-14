@@ -90,6 +90,18 @@ object AuthAuditDetails:
     derives JsonEncoder:
     def toJson = AuditDetails.render(this)
 
+  /** `token.rebound`: a client registered by an edge-group name refreshed a grant with another certificate of its group, and the
+    * grant is bound to that certificate from now on. A bound grant is renewed in place, so this event is the only record that the
+    * refresh token was used with a certificate other than the one it was bound to. The thumbprints are `x5t#S256` values (the
+    * SHA-256 of a certificate, RFC 8705 §3.1), which are not secret. */
+  case class TokenRebound(
+      familyId: String,
+      refreshPrefix: Option[String],
+      previousThumbprint: String,
+      thumbprint: String,
+  ) extends AuditDetails derives JsonEncoder:
+    def toJson = AuditDetails.render(this)
+
   case class TokenRevoked(tokenType: String, jti: Option[String], refreshPrefix: Option[String], cause: String, count: Option[Int])
     extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)

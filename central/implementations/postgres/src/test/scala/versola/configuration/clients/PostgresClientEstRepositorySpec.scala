@@ -52,6 +52,8 @@ object PostgresClientEstRepositorySpec extends PostgresSpec, ClientEstRepository
     createdAt = Instant.EPOCH,
     themeOverrides = None,
     applicationType = ApplicationType.web,
+    partnerId = None,
+    approval = ClientApproval.Approved,
   )
 
   override lazy val environment =

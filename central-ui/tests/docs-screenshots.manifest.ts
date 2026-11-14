@@ -145,6 +145,16 @@ const partnerClient = {
   consentFlow: { allowPartial: true, rememberDuration: 15552000, requiredScopes: ['phone'], offlineAccessOptional: true },
 };
 
+/** The partner that owns a client in the wizard shot of the consent step: consent exists for a partner's client only, and the owner is chosen on step 1. */
+const acmePartner = {
+  id: 'acme', tenantId: tenant, displayName: 'Acme Wallet', logoUri: null, contact: { email: 'security@example.com' },
+  status: 'active' as const, groupId: 'acme', consoleClientId: 'acme-console', reviewAt: null, createdAt: '2026-09-02T10:00:00Z',
+  limits: {
+    scopes: ['openid', 'profile', 'email', 'phone'], redirectDomains: ['example.com'], maxClients: 10, maxEdges: 3, accessTokenTtlMax: 86_400,
+    refreshTokenTtlMax: 30 * 86_400, clientAuthMethods: ['tls_client_auth' as const, 'private_key_jwt' as const], rateLimitPolicy: 'partner-default',
+  },
+};
+
 const serviceClient = {
   id: 'billing-job',
   kind: 'service' as const,
@@ -676,7 +686,7 @@ const consoleShots: DocsShot[] = [
     name: 'console/client-page-partner', kind: 'frame', path: clientsPath, state: withClients(partnerClient),
     before: async page => {
       await openClient('acme-wallet')(page);
-      await expect(page.getByRole('region', { name: 'Ownership' })).toContainText('Partner app');
+      await expect(page.getByRole('region', { name: 'Ownership' })).toContainText('users are asked for consent');
     },
   },
   {
@@ -738,16 +748,11 @@ const consoleShots: DocsShot[] = [
     },
   },
   {
-    name: 'console/client-edit-registration-consent', kind: 'frame', path: clientsPath, state: withClients(webClient),
-    before: async page => {
-      await editClient('storefront-web', 'ownership', 'Ownership')(page);
-      await expect(page.getByRole('button', { name: 'First party app', exact: true })).toHaveAttribute('aria-pressed', 'true');
-    },
-  },
-  {
-    name: 'console/client-edit-registration-consent-partner', kind: 'frame', fullPage: true, path: clientsPath, state: withClients(partnerClient),
+    name: 'console/client-edit-registration-consent-partner', kind: 'frame', fullPage: true, path: clientsPath,
+    state: { ...withClients({ ...partnerClient, partnerId: 'acme' }), partners: [acmePartner] },
     before: async page => {
       await editClient('acme-wallet', 'ownership', 'Ownership')(page);
+      await expect(page.getByText('Acme Wallet (acme)', { exact: true })).toBeVisible();
       await expect(page.getByRole('group', { name: 'Required scopes' }).getByRole('button', { name: 'phone', exact: true })).toHaveAttribute('aria-pressed', 'true');
     },
   },
@@ -822,10 +827,19 @@ const consoleShots: DocsShot[] = [
     },
   },
   {
-    name: 'console/client-wizard-partner-3-consent', kind: 'frame', fullPage: true, path: clientsPath, state: alpha,
+    name: 'console/client-wizard-partner-3-consent', kind: 'frame', fullPage: true, path: clientsPath, state: { ...alpha, partners: [acmePartner] },
     before: async page => {
-      await webSignIn(page);
-      await page.getByRole('button', { name: 'Partner app', exact: true }).click();
+      await startWizard(/Web app/)(page);
+      await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'Partner' }).click();
+      await page.getByRole('combobox', { name: 'Partner' }).click();
+      await page.getByRole('option', { name: /Acme Wallet/ }).click();
+      await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+      await page.getByLabel('Client ID').fill('checkout-web');
+      await page.getByLabel('Client Name').fill('Checkout Web');
+      await page.getByPlaceholder('https://app.example.com/callback').fill('https://checkout.example.com/callback');
+      await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+      await page.getByRole('button', { name: 'Continue to sign-in', exact: true }).click();
+      await expect(page.getByRole('region', { name: 'Consent' })).toContainText('Owned by Acme Wallet');
       await expect(page.getByText("How the sign-in and consent screens look for this partner's users.")).toBeVisible();
     },
   },
