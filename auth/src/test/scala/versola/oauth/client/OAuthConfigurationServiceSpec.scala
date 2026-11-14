@@ -50,7 +50,6 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
-    partnerId = None,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -83,7 +82,6 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
-    partnerId = None,
   )
 
   val testScopes = Vector(ScopeRecord(ScopeToken("read"), Map("en" -> "Read access"), Vector.empty))

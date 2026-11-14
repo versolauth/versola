@@ -155,12 +155,13 @@ case class OAuthClientRecord(
     * by every installation of the app, so binding a token to it would bind it to nothing the
     * device holds -- its tokens are bound to the device's DPoP key (`cnf.jkt`) instead.
     *
-    * A partner's client is the other (#549): it authenticates with the certificate of its edge group, and every edge
-    * of the group holds a certificate of its own, so a token bound to the one that asked for it would be refused
-    * through every other replica. Registration keeps `certificateBoundAccessTokens` off for it as well.
+    * A partner's client is not an exception (#549, #962): it authenticates with the certificate of its edge group, and its
+    * tokens are bound to the certificate of the edge that asked for them like any `tls_client_auth` client's. Every edge of the
+    * group holds a certificate of its own, so auth re-binds the token when a refresh comes with another edge's certificate
+    * (`authenticatesByEdgeGroup`), which is how a session continues through every edge of the group.
     */
   def bindsAccessTokens: Boolean =
-    (mtlsAuth.nonEmpty && !isEdgeFrontedNative && partnerId.isEmpty) || certificateBoundAccessTokens
+    (mtlsAuth.nonEmpty && !isEdgeFrontedNative) || certificateBoundAccessTokens
 
   /** Whether this client is served at all: a first-party client always, a partner's once the operator approved it. */
   def isApproved: Boolean = approval == ClientApproval.Approved

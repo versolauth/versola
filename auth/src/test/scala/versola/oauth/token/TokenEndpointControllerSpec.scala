@@ -163,7 +163,6 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
-    partnerId = None,
   )
 
   case class Services(

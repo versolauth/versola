@@ -17,7 +17,23 @@ describe('partnerKindPlan', () => {
     expect(partnerKindPlan('web', partner(['tls_client_auth', 'private_key_jwt']), 'mtls').filter(line => line.why.includes('choose on the next step'))).toHaveLength(1);
   });
 
-  it('keeps the protocol facts: PKCE, credential, edges, PAR, binding off, lifetime cap', () => {
+  it('says the tokens are certificate-bound with the group certificate, and bearer with a key', () => {
+    const line = (credential: 'mtls' | 'private-key-jwt') =>
+      partnerKindPlan('web', partner(['tls_client_auth', 'private_key_jwt']), credential).find(l => l.text === 'Certificate-bound access tokens')!;
+    expect(line('mtls').state).toBe('on');
+    expect(line('mtls').why).toContain('Another edge of the group re-binds');
+    expect(line('private-key-jwt').state).toBe('off');
+    expect(line('private-key-jwt').why).toContain('bearer tokens');
+  });
+
+  it('does not say the tokens never reach the browser: the HttpOnly session cookie carries the access token', () => {
+    const served = partnerKindPlan('web', partner(['tls_client_auth']), 'mtls').find(l => l.text.startsWith('Served by the edges'))!;
+    expect(served.why).toContain('HttpOnly');
+    expect(served.why).toContain('carries the access token');
+    expect(served.why).not.toContain('never reach the browser');
+  });
+
+  it('keeps the protocol facts: PKCE, credential, edges, PAR, binding, lifetime cap', () => {
     const texts = partnerKindPlan('web', partner(['tls_client_auth']), 'mtls').map(line => line.text);
     expect(texts).toEqual([
       'PKCE, S256 only',

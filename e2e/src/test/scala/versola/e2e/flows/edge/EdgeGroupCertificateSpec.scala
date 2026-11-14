@@ -168,7 +168,7 @@ object EdgeGroupCertificateSpec
     for
       auth <- ZIO.service[OAuthClient]
       f <- fixture
-      renewed <- EdgeCertificate.make(uri = Some(EdgeFixture.groupName(Group)))
+      renewed <- EdgeCertificate.make(uris = List(EdgeFixture.groupName(Group)))
       _ <- auth.updateClient(Fixtures.clientUpdate(f.clientId, "edgeClientCertificate" -> Json.Str(renewed.edgeClientCertificate)))
       // Awaited: the edge holds the new certificate. Each attempt is a fresh pull, for the reason `startSecondEdge` gives.
       presented <- (edge.syncConfiguration *> signIn(edge).flatMap(session => boundTo(session.cookie)).map(_.contains(renewed.thumbprint)))

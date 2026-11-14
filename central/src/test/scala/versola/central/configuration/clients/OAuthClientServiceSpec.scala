@@ -401,9 +401,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     partnerId = Some(acme.id),
   )
 
-  private val fapi2SenderConstraintMessage =
-    "FAPI 2.0 requires sender-constrained access tokens: set dpopBoundAccessTokens, or authenticate with or bind tokens to a certificate"
-
   /** What a partner's console sends to `POST /edge/partner/clients`. */
   private def partnerEdgeRequest(kind: PartnerClientKind, accessTokenTtl: Int = 300) = PartnerClientRequest(
     id = ClientId("acme-shop"),
@@ -2326,20 +2323,22 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       // (PartnerClientService.create calls registerClient with it, `Pending`, `allowOutsideLimits`), and the operator's
       // `POST /configuration/clients/web` with `partnerId` reaches the same registerClient.
       suite("under a fapi2 tenant")(
-        test("a partner's web client (tls_client_auth, the group's certificate) is refused: tokens are bound to nothing") {
+        test(
+          "a partner's web client (tls_client_auth, the group's certificate) is accepted: its tokens are certificate-bound, so sender-constrained",
+        ) {
           val env = new Env()
           val registration = partnerEdgeRequest(PartnerClientKind.web).toCreateClientRequest(acme)
           for
             _ <- env.partners.findFresh.succeedsWith(Some(acme))
             _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
+            _ <- env.repository.createClient.succeedsWith(())
             result <- env.service.registerClient(registration, approval = ClientApproval.Pending, allowOutsideLimits = true).either
+            stored = env.repository.createClient.calls.headOption
           yield assertTrue(
             !registration.dpopBoundAccessTokens,
-            !registration.certificateBoundAccessTokens,
-            result.left.toOption.exists:
-              case error: InvalidRegistrationConfiguration => error.reason == fapi2SenderConstraintMessage
-              case _ => false,
-            env.repository.createClient.calls.isEmpty,
+            result.isRight,
+            // bound by what it authenticates with, like any tls_client_auth client, with no flag of its own
+            stored.exists(_.bindsAccessTokens),
           )
         },
         // Not the profile's doing: the rule for a native client in any tenant (#421) wants it public or edge-fronted with an
@@ -2365,7 +2364,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             standard._2.isEmpty,
           )
         },
-        test("the console client of a partner (a web client, as the partner service registers it) is refused the same way") {
+        test("the console client of a partner (a web client, as the partner service registers it) is accepted for the same reason") {
           val env = new Env()
           // what PartnerService.consoleClient registers: web, tls_client_auth by the group, no DPoP, no certificate-bound tokens, no consent
           val console =
@@ -2373,24 +2372,35 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
           for
             _ <- env.partners.findFresh.succeedsWith(Some(acme))
             _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
+            _ <- env.repository.createClient.succeedsWith(())
             result <- env.service.registerClient(console, allowOutsideLimits = true).either
+          yield assertTrue(result.isRight, env.repository.createClient.calls.headOption.exists(_.bindsAccessTokens))
+        },
+        test("checkSecurityProfile answers what registerClient would, and writes nothing") {
+          val env = new Env()
+          val console = partnerEdgeRequest(PartnerClientKind.web).toCreateClientRequest(acme).copy(id = ClientId("acme-console"), consentFlow = None)
+          // what a profile refuses: a client that authenticates with a secret and binds nothing
+          val unbound = console.copy(authMethod = AuthMethod.client_secret, mtlsAuth = None)
+          for
+            _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
+            fine <- env.service.checkSecurityProfile(console).either
+            refused <- env.service.checkSecurityProfile(unbound).either
           yield assertTrue(
-            result.left.toOption.exists:
-              case error: InvalidRegistrationConfiguration => error.reason == fapi2SenderConstraintMessage
+            fine.isRight,
+            refused.left.toOption.exists:
+              case error: InvalidRegistrationConfiguration => error.reason.contains("sender-constrained")
               case _ => false,
+            env.repository.createClient.calls.isEmpty,
           )
         },
-        test("the operator's POST /configuration/clients/web with partnerId is refused the same way (the same registerClient, profile enforced)") {
+        test("the operator's POST /configuration/clients/web with partnerId is accepted the same way (the same registerClient, profile enforced)") {
           val env = new Env()
           for
             _ <- env.partners.findFresh.succeedsWith(Some(acme))
             _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
+            _ <- env.repository.createClient.succeedsWith(())
             result <- env.service.registerClient(partnerRequest.copy(requirePushedAuthorizationRequests = true)).either
-          yield assertTrue(
-            result.left.toOption.exists:
-              case error: InvalidRegistrationConfiguration => error.reason == fapi2SenderConstraintMessage
-              case _ => false,
-          )
+          yield assertTrue(result.isRight)
         },
         // not about the profile: the rule that a DPoP-bound access token lives at least an hour holds in every tenant, and a partner's
         // native client is DPoP-bound, so a native client that asks for fewer seconds is refused in a standard tenant as well
@@ -2405,17 +2415,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
               case error: InvalidRegistrationConfiguration => error.reason.contains("at least 3600s")
               case _ => false,
           )
-        },
-        test("the same web client with DPoP on (and an access token of an hour) is accepted, which is the shape the options below would give it") {
-          val env = new Env()
-          val registration =
-            partnerEdgeRequest(PartnerClientKind.web, accessTokenTtl = 3600).toCreateClientRequest(acme).copy(dpopBoundAccessTokens = true)
-          for
-            _ <- env.partners.findFresh.succeedsWith(Some(acme))
-            _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
-            _ <- env.repository.createClient.succeedsWith(())
-            result <- env.service.registerClient(registration, approval = ClientApproval.Pending, allowOutsideLimits = true).either
-          yield assertTrue(result.isRight)
         },
       ),
       test("registerClient never stores a partner's client without consent: none sent is the default screen") {
@@ -2547,7 +2546,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         )
       },
       test(
-        "a partner's tls_client_auth web client does not bind its tokens, and needs no mTLS header from its tenant: its edge presents the group's certificate on auth's own listener",
+        "a partner's tls_client_auth web client binds its tokens like any other, and needs no mTLS header from its tenant: its edge presents the group's certificate on auth's own listener",
       ) {
         val env = new Env()
         for
@@ -2558,9 +2557,10 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
           created = env.repository.createClient.calls.head
         yield assertTrue(
           created.mtlsAuth == Some(groupAuth),
+          // no flag of its own: authenticating with a certificate binds the tokens, as for a first-party client, and a refresh through
+          // another edge of the group re-binds them (auth, `authenticatesByEdgeGroup`)
           !created.certificateBoundAccessTokens,
-          !created.bindsAccessTokens,
-          // the same registration of a first-party client binds
+          created.bindsAccessTokens,
           created.copy(partnerId = None).bindsAccessTokens,
         )
       },

@@ -126,7 +126,6 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
-    partnerId = None,
   )
 
   val publicClientId = ClientId("public-client-1")
@@ -161,7 +160,6 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
-    partnerId = None,
   )
 
   val adminClient = testClient.copy(id = OAuthTokenService.centralAdminClientId)
@@ -2208,32 +2206,6 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result.cnf.flatMap(_.x5tS256).isEmpty,
           env.tokenRepo.createRefreshToken.calls.head._3.cnf.flatMap(_.x5tS256).isEmpty,
           env.tokenRepo.createRefreshToken.calls.head._3.cnf.flatMap(_.jkt).contains(jkt1),
-        )
-      },
-      test("binds a partner's tls_client_auth client's tokens to no certificate: every edge of the group holds one of its own") {
-        val env = new Env
-        val partners = mtlsClient.copy(partnerId = Some("acme"))
-        for
-          _ <- env.clientService.find.succeedsWith(Some(partners))
-          _ <- env.securityService.mac.succeedsWith(codeMac1)
-          _ <- env.authCodeRepo.find.succeedsWith(Some(authorizationCodeRecord.copy(scope = scope1)))
-          _ <- env.authCodeRepo.markAsUsed.succeedsWith(Right(()))
-          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
-          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(refreshToken1)
-          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
-          _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
-          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
-
-          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
-          credentials = ClientIdWithSecret(clientId1, None)
-
-          // authenticated with the certificate of one replica of the group; the token is for all of them
-          result <- env.service.exchangeAuthorizationCode(request, credentials, None, Some(clientCertificate1))
-        yield assertTrue(
-          partners.authenticatesWithCertificate,
-          !partners.bindsAccessTokens,
-          result.cnf.isEmpty,
-          env.tokenRepo.createRefreshToken.calls.head._3.cnf.isEmpty,
         )
       },
       test("authenticates a subject_dn client against the certificate's RFC 4514 subject") {
