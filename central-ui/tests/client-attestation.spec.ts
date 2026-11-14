@@ -111,6 +111,26 @@ test('sets a policy: Report first, one iOS App ID and one Android app, saved as 
   await expect(card(page)).toContainText('com.example.app · 1 certificate');
 });
 
+test('an Android build can be made to require a Play Integrity verdict, and says so on the card', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [edgeNativeClient] } } });
+  await openClientPage(page, 'acme-mobile');
+
+  await card(page).getByRole('button', { name: 'Set a policy' }).click();
+  await card(page).getByRole('button', { name: 'Add Android app' }).click();
+  await card(page).getByLabel('Package name').fill('com.example.app');
+  await card(page).getByLabel('Signing certificate SHA-256').fill(DIGEST);
+  await expect(card(page).getByLabel('Require a Play Integrity verdict')).not.toBeChecked();
+  await card(page).getByLabel('Require a Play Integrity verdict').check();
+  await card(page).getByRole('button', { name: 'Save attestation' }).click();
+
+  const put = await findRequest(api.requests, 'PUT', '/configuration/clients/attestation');
+  expect(put.body).toEqual({
+    mode: 'report',
+    android: [{ packageName: 'com.example.app', certificateDigests: [DIGEST], playIntegrity: true }],
+  });
+  await expect(card(page)).toContainText('com.example.app · 1 certificate · Play Integrity');
+});
+
 test('says what central would refuse before it is asked, and sends nothing', async ({ page }) => {
   const api = await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [edgeNativeClient] } } });
   await openClientPage(page, 'acme-mobile');

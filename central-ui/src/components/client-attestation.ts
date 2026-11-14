@@ -45,6 +45,8 @@ export class VersolaClientAttestation extends LitElement {
       .text-line { margin: 0; font-size: var(--text-sm); color: var(--text-secondary); }
       .android-row { display: grid; gap: 0.5rem; padding: var(--spacing-sm) 0; border-top: 1px solid var(--border-default); }
       .android-row:first-of-type { border-top: 0; }
+      .check-row { display: flex; align-items: center; gap: 0.4rem; font-size: var(--text-sm); color: var(--text-primary); cursor: pointer; }
+      .check-row input[type='checkbox'] { cursor: pointer; }
       .actions { display: flex; flex-wrap: wrap; gap: var(--spacing-sm); align-items: center; }
       .actions .spacer { flex: 1; }
       .lines { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.25rem; font-family: var(--font-mono, monospace); font-size: var(--text-sm); }
@@ -234,6 +236,14 @@ export class VersolaClientAttestation extends LitElement {
             .value=${row.digests} @input=${(e: Event) => this.patchAndroid(index, { digests: (e.target as HTMLTextAreaElement).value })}></textarea>
           ${error ? html`<div class="error-message" role="alert">${error}</div>` : nothing}
           <div class="hint">One per line, 64 hexadecimal digits; colons are fine. List the old and the new one while a signing key rotates.</div>
+        </div>
+        <div class="form-group">
+          <label class="check-row">
+            <input type="checkbox" .checked=${!!row.playIntegrity}
+              @change=${(e: Event) => this.patchAndroid(index, { playIntegrity: (e.target as HTMLInputElement).checked })} />
+            Require a Play Integrity verdict
+          </label>
+          <div class="hint">The Play Store's word that this is the genuine app on a genuine device. Needs an edge set up for Play Integrity and an app configured with a Google Cloud project number; without them, requests for this build are refused.</div>
         </div>
         <div>
           <button type="button" class="btn btn-secondary btn-sm" aria-label=${`Remove Android app ${index + 1}`}
