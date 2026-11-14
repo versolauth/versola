@@ -47,8 +47,8 @@ export const CLIENT_KINDS: ClientKindDescriptor[] = [
   {
     id: 'web',
     name: 'Web app',
-    blurb: 'A site with a backend. Users sign in; tokens stay on the server.',
-    gets: ['Tokens never reach the browser', 'No secret to store'],
+    blurb: 'A site with a backend. Users sign in; the browser holds an HttpOnly session cookie.',
+    gets: ['Page scripts cannot read the tokens', 'No secret to store'],
     examples: 'Shop, dashboard, internal portal',
     clientTypeLabel: 'web (confidential) · fronted by edge',
   },
@@ -151,7 +151,7 @@ const EDGE_FRONTED: Record<'web' | 'device', Omit<ClientPreset, 'credentialModes
       {
         state: 'on',
         text: 'Edge fronts the client',
-        why: 'Tokens stay inside edge behind a session cookie and never reach the browser.',
+        why: 'The browser holds an HttpOnly session cookie, which carries the access token; the token is bound to the certificate of the edge.',
       },
       PAR,
       {

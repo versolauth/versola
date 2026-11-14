@@ -19,7 +19,7 @@ object AuthorizationPresetsSyncClient:
       config: EdgeConfig,
       centralSyncTokenService: CentralSyncTokenService,
   ) extends AuthorizationPresetsSyncClient:
-    private val PresetsURL = config.central.url / "edge" / "sync" / "auth-request-presets"
+    private val PresetsURL = config.syncUrl("auth-request-presets")
 
     override def getAll: Task[Map[PresetId, AuthorizationPreset]] =
       for

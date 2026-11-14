@@ -12,6 +12,7 @@ import versola.central.configuration.clients.{
   ClientId,
   ClientKind,
   ClientTemplate,
+  InvalidRegistrationConfiguration,
   MutualTlsAuth,
   MutualTlsSubjectType,
   OAuthClientRecord,
@@ -191,7 +192,8 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         groups.find.succeedsWith(None) *>
         clients.findClient.succeedsWith(None) *>
         edges.findFresh.succeedsWith(None) *>
-        registry.refreshNow.succeedsWith(())
+        registry.refreshNow.succeedsWith(()) *>
+        clients.checkSecurityProfile.succeedsWith(())
 
   private val configured = TestCentralConfig.config.copy(
     auth = TestCentralConfig.config.auth.copy(mtlsUrl = Some(URL.decode("https://id-mtls.example.com").toOption.get)),
@@ -262,6 +264,28 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // no key is made or shown for the edge: it makes its own and registers the public half when it enrols
           env.edges.registerEdge.calls.isEmpty,
           created.edge.edge.publicKey.isEmpty,
+        )
+      },
+      test("a tenant whose security profile refuses the console client refuses the partner before anything is written") {
+        val env = Env(configured)
+        for
+          _ <- env.empty
+          _ <- env.clients.checkSecurityProfile.failsWith(
+            InvalidRegistrationConfiguration(ClientId("acme-console"), "FAPI 2.0 requires sender-constrained access tokens"),
+          )
+          refused <- env.service.create(newPartner).flip
+        yield assertTrue(
+          refused.isInstanceOf[PartnerError.Invalid],
+          // no group, no partner, no client, no preset, no edge, no token
+          env.groups.create.calls.isEmpty,
+          env.partners.create.calls.isEmpty,
+          env.clients.registerClient.calls.isEmpty,
+          env.presets.savePresets.calls.isEmpty,
+          env.edges.registerEdgeWithoutKey.calls.isEmpty,
+          env.identity.issueEnrollmentToken.calls.isEmpty,
+          // and what was asked of the profile is the console client the creation would register
+          env.clients.checkSecurityProfile.calls.map(c => (c.id, c.partnerId, c.consentFlow)) ==
+            List((ClientId("acme-console"), Some(PartnerId("acme")), None)),
         )
       },
       // The group of a partner is of kind `partner` because the service makes it so, and for no other reason: no input names a group, and

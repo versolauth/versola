@@ -158,10 +158,9 @@ test('token lifetimes are capped by the operator in the editor itself', async ({
 });
 
 test('a partner client has nothing to rotate; deleting a client goes through the confirm dialog', async ({ page }) => {
-  const jwtClient = { ...partnerSeedState.clients[1], authMethod: 'private_key_jwt' as const, fixed: { ...partnerSeedState.clients[1].fixed, authMethod: 'private_key_jwt' as const } };
-  const api = await loadPartnerApp(page, { path: `${clientsPath}&id=pilot-pay-ios`, state: { clients: [partnerSeedState.clients[0], jwtClient] } });
+  const api = await loadPartnerApp(page, { path: `${clientsPath}&id=pilot-pay-ios`, state: { clients: [partnerSeedState.clients[0], partnerSeedState.clients[1]] } });
   const panel = sidePanel(page, 'Pilot Pay iOS');
-  await expect(panel.getByRole('region', { name: 'Credentials & tokens' })).toContainText('private_key_jwt with the keys your edge holds');
+  await expect(panel.getByRole('region', { name: 'Credentials & tokens' })).toContainText('tls_client_auth with your group certificate');
   // The edge answers 409 not_supported to a rotation, so the console offers none.
   await expect(panel.getByRole('button', { name: 'Rotate keys' })).toHaveCount(0);
 
@@ -191,7 +190,10 @@ test('the wizard makes the operator\'s choices, keeps the limits inline, and end
   await expect(page.getByRole('group', { name: 'Scopes' }).getByRole('checkbox')).toHaveCount(4);
   await expect(page.getByRole('checkbox', { name: /^openid/ })).toBeDisabled();
   await expect(page.getByText('Cap: 1 day.')).toBeVisible();
-  await expect(page.getByRole('group', { name: 'Client authentication' })).toBeVisible();
+  // The operator's limit allows two methods, but a partner's client authenticates with the group certificate and nothing else is offered.
+  await expect(page.getByRole('group', { name: 'Client authentication' })).toHaveCount(0);
+  await expect(page.getByText('private_key_jwt')).toHaveCount(0);
+  await expect(page.getByText('Client authentication: tls_client_auth with your group certificate')).toBeVisible();
   await page.getByRole('button', { name: 'Continue to review' }).click();
   await expect(page.getByRole('alert').first()).toHaveText('A client ID is required.');
   await expect(page.getByLabel('Client ID *')).toBeFocused();
@@ -227,7 +229,7 @@ test('the wizard makes the operator\'s choices, keeps the limits inline, and end
   expect(request.body).toEqual({
     id: 'pilot-pay-portal', kind: 'web', clientName: 'Pilot Pay Portal', logoUri: null, policyUri: null, tosUri: null,
     redirectUris: ['https://portal.pilotpay.example/complete'], scope: ['openid', 'profile', 'email'], accessTokenTtl: 300, refreshTokenTtl: 14 * 86_400,
-    backChannelLogoutUri: 'https://login.pilotpay.example/logout/backchannel', authMethod: 'tls_client_auth',
+    backChannelLogoutUri: 'https://login.pilotpay.example/logout/backchannel',
   });
   await expect(page).toHaveURL(/id=pilot-pay-portal/);
   await expect(page).not.toHaveURL(/new=1/);

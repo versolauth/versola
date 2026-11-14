@@ -210,7 +210,6 @@ object ClientController extends AuditedController:
       applicationType = client.applicationType,
       edgeCertificateSubject = edgeCertificateSubject,
       themeOverrides = client.themeOverrides,
-      partnerId = client.partnerId,
     )
 
   // ── One registration and one update per kind of client ─────────────────────────────────────

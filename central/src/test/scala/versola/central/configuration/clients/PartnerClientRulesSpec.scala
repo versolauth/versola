@@ -99,8 +99,14 @@ object PartnerClientRulesSpec extends ZIOSpecDefault:
       test("private_key_jwt needs no mtlsAuth") {
         assertTrue(invariant(conforming.copy(authMethod = AuthMethod.private_key_jwt, mtlsAuth = None)).isEmpty)
       },
-      test("tokens are never bound to one replica's certificate") {
-        assertTrue(invariant(conforming.copy(certificateBoundAccessTokens = true)).exists(_.contains("certificateBoundAccessTokens")))
+      // a tls_client_auth client's tokens are bound already, by what it authenticates with; the flag is for a client with no group
+      // certificate to re-bind through
+      test("certificateBoundAccessTokens is refused for private_key_jwt, and redundant, so allowed, for tls_client_auth") {
+        val keyed = conforming.copy(authMethod = AuthMethod.private_key_jwt, mtlsAuth = None)
+        assertTrue(
+          invariant(keyed.copy(certificateBoundAccessTokens = true)).exists(_.contains("certificateBoundAccessTokens")),
+          invariant(conforming.copy(certificateBoundAccessTokens = true)).isEmpty,
+        )
       },
     ),
     suite("the limits: what the operator may grant anyway")(

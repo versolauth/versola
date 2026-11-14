@@ -34,6 +34,10 @@ object PartnerManagementSpec extends CentralApiSpec:
     )
 
   /** The claims of a JWT, read without verifying it: what is asked is whether a claim is there. */
+  /** The `x5t#S256` of the access token, the thumbprint of the certificate it is bound to. */
+  private def thumbprintOf(jwt: String): Option[String] =
+    confirmations(jwt).get("cnf").flatMap(_.asObject).flatMap(_.get("x5t#S256")).collect { case Json.Str(value) => value }
+
   private def confirmations(jwt: String): Json.Obj =
     jwt.split('.').lift(1)
       .flatMap(payload => scala.util.Try(String(java.util.Base64.getUrlDecoder.decode(payload), "UTF-8")).toOption)
@@ -116,7 +120,9 @@ object PartnerManagementSpec extends CentralApiSpec:
               )
       yield result
     },
-    test("a partner's client issues tokens that are bound to no certificate, the group's certificate is its credential and another group's is not") {
+    test(
+      "a partner's client issues tokens bound to the certificate of the edge that asked, a refresh through another edge of the group re-binds them, another group's certificate is no credential",
+    ) {
       for
         central <- api
         result <- fixture(central): (a, b, _) =>
@@ -130,24 +136,71 @@ object PartnerManagementSpec extends CentralApiSpec:
                 replica2 <- groupCertificate(a, "replica-2")
                 otherGroup <- groupCertificate(b, "replica-1")
                 token <- signIn(auth, clientId, shopRedirect(a), Set("openid", "offline_access"), replica1.urlEncodedPem, user)
-                // the token was issued to a request authenticated by one replica's certificate, and is used by another, and by none
-                fromOtherReplica <- auth.userinfo(token.accessToken, certificate = Some(replica2.urlEncodedPem)).success
-                withoutCertificate <- auth.userinfo(token.accessToken).success
-                refreshedElsewhere <-
-                  auth.refresh(token.refreshToken.getOrElse(""), Some(clientId), Some(""), certificate = Some(replica2.urlEncodedPem))
+                refreshToken = token.refreshToken.getOrElse("")
+                // the token is the first replica's: its certificate serves it, another replica's and none do not
+                overFirst <- auth.userinfo(token.accessToken, certificate = Some(replica1.urlEncodedPem)).either
+                overSecond <- auth.userinfo(token.accessToken, certificate = Some(replica2.urlEncodedPem)).either
+                withoutCertificate <- auth.userinfo(token.accessToken).either
+                // the second replica refreshes the grant: the client is the group's, so it authenticates, and the new token is its own
+                moved <- auth.refresh(refreshToken, Some(clientId), Some(""), certificate = Some(replica2.urlEncodedPem))
                 pushedByOtherGroup <- auth.pushAuthorizationRequest(clientId, "", shopRedirect(a), certificate = Some(otherGroup.urlEncodedPem))
                 pushedWithoutCertificate <- auth.pushAuthorizationRequest(clientId, "", shopRedirect(a))
-              yield (fromOtherReplica, withoutCertificate, refreshedElsewhere, pushedByOtherGroup, pushedWithoutCertificate, token)
-            (fromOtherReplica, withoutCertificate, refreshedElsewhere, pushedByOtherGroup, pushedWithoutCertificate, token) = outcome
-          yield assertTrue(token.refreshToken.isDefined).label("the client has offline access") &&
-            assertTrue(fromOtherReplica.sub == withoutCertificate.sub, !confirmations(token.accessToken).has("cnf"))
-              .label(
-                "the token carries no cnf (x5t#S256): every edge of the group holds a certificate of its own, and the token works through all of them",
-              ) &&
-            assertTrue(refreshedElsewhere.isInstanceOf[TokenResult.Success]).label("a grant is refreshed through another replica as well") &&
+                refreshedByOtherGroup <- auth.refresh(refreshToken, Some(clientId), Some(""), certificate = Some(otherGroup.urlEncodedPem))
+                movedOver <- moved match
+                  case success: TokenResult.Success =>
+                    for
+                      overMoved <- auth.userinfo(success.accessToken, certificate = Some(replica2.urlEncodedPem)).either
+                      overOld <- auth.userinfo(success.accessToken, certificate = Some(replica1.urlEncodedPem)).either
+                    yield Some((success, overMoved, overOld))
+                  case _ => ZIO.none
+              yield (
+                token,
+                overFirst,
+                overSecond,
+                withoutCertificate,
+                moved,
+                movedOver,
+                pushedByOtherGroup,
+                pushedWithoutCertificate,
+                refreshedByOtherGroup,
+                (replica1.thumbprint, replica2.thumbprint),
+              )
+            (
+              token,
+              overFirst,
+              overSecond,
+              withoutCertificate,
+              moved,
+              movedOver,
+              pushedByOtherGroup,
+              pushedWithoutCertificate,
+              refreshedByOtherGroup,
+              (first, second),
+            ) =
+              outcome
+          yield assertTrue(
+            token.refreshToken.isDefined,
+            first != second,
+          ).label("the client has offline access, and the replicas hold different certificates") &&
+            assertTrue(thumbprintOf(token.accessToken).contains(first))
+              .label("the token is bound (cnf x5t#S256) to the certificate of the replica that asked for it") &&
+            assertTrue(
+              overFirst.exists(_.isInstanceOf[UserinfoResult.Success]),
+              !overSecond.exists(_.isInstanceOf[UserinfoResult.Success]),
+              !withoutCertificate.exists(_.isInstanceOf[UserinfoResult.Success]),
+            ).label("only that certificate serves it: another replica's, and none, are refused") &&
+            assertTrue(moved.isInstanceOf[TokenResult.Success]).label("the grant is refreshed through another replica of the group") &&
+            assertTrue(
+              movedOver.exists { case (success, overMoved, overOld) =>
+                thumbprintOf(success.accessToken).contains(second) &&
+                overMoved.exists(_.isInstanceOf[UserinfoResult.Success]) &&
+                !overOld.exists(_.isInstanceOf[UserinfoResult.Success])
+              },
+            ).label("and the new token is bound to that replica's certificate: re-bound, not unbound") &&
             assertTrue(
               pushedByOtherGroup.isInstanceOf[PushedAuthorizationResult.Failure],
               pushedWithoutCertificate.isInstanceOf[PushedAuthorizationResult.Failure],
+              errorOf(refreshedByOtherGroup) == "invalid_client",
             ).label("the certificate of another partner's group, or none, does not authenticate this partner's client")
       yield result
     },
@@ -172,23 +225,29 @@ object PartnerManagementSpec extends CentralApiSpec:
                 // the client is unknown to auth: nothing is refreshed through it, a new code flow does not start
                 during <- auth.refresh(refreshToken, Some(clientId), Some(""), certificate = Some(header))
                 pushedDuring <- auth.pushAuthorizationRequest(clientId, "", shopRedirect(a), certificate = Some(header))
-                // the access token that was issued is not revoked: it keeps working until it expires
-                accessDuring <- auth.userinfo(token.accessToken).either
+                // the access token is bound to the certificate that asked for it, and auth has to know the client to check that: while the
+                // client is unknown, the token is not served (it is not revoked, see after the resume)
+                accessDuring <- auth.userinfo(token.accessToken, certificate = Some(header)).either
                 edgeDuring <- onSurface(central, a).get("/edge/partner/me")
                 resumed <- central.post("/configuration/partners/resume", Json.Obj("id" -> Json.Str(a.id)))
                 _ <- authKnows(central, a)(known = true)
                 // nothing was revoked: the refresh token that was issued before the suspension is good again
                 after <- auth.refresh(refreshToken, Some(clientId), Some(""), certificate = Some(header))
-              yield (suspended, during, pushedDuring, accessDuring, edgeDuring, resumed, after)
-            (suspended, during, pushedDuring, accessDuring, edgeDuring, resumed, after) = outcome
+                accessAfter <- auth.userinfo(token.accessToken, certificate = Some(header)).either
+              yield (suspended, during, pushedDuring, accessDuring, edgeDuring, resumed, after, accessAfter)
+            (suspended, during, pushedDuring, accessDuring, edgeDuring, resumed, after, accessAfter) = outcome
           yield assertTrue(suspended.status == Status.NoContent).label(s"${suspended.status} ${suspended.body}") &&
             assertTrue(errorOf(during) == "invalid_client", pushedDuring.isInstanceOf[PushedAuthorizationResult.Failure])
               .label("a suspended partner's client is unknown to auth, whatever certificate of the group is presented") &&
-            assertTrue(accessDuring.exists(_.isInstanceOf[UserinfoResult.Success]))
-              .label("an access token that was issued is not revoked: it expires on its own") &&
+            assertTrue(!accessDuring.exists(_.isInstanceOf[UserinfoResult.Success]))
+              .label("an access token of the partner is bound to a certificate and auth does not know the client: it is not served meanwhile") &&
             assertTrue(edgeDuring.status == Status.Forbidden).label("the partner's edge is refused") &&
-            assertTrue(resumed.status == Status.NoContent, after.isInstanceOf[TokenResult.Success])
-              .label("after resuming the client is back, and the grant that was never revoked works again")
+            assertTrue(
+              resumed.status == Status.NoContent,
+              after.isInstanceOf[TokenResult.Success],
+              accessAfter.exists(_.isInstanceOf[UserinfoResult.Success]),
+            )
+              .label("after resuming the client is back: the grant and the access token that were never revoked work again")
       yield result
     },
   ) @@ TestAspect.sequential @@ TestAspect.timeout(300.seconds)

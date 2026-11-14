@@ -47,7 +47,6 @@ object SubmissionLimiterSpec extends UnitSpecBase:
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
-    partnerId = None,
   )
 
   // Short window 3/min acts as an immediate rate limit; the broadest 9/hour window applies the ban.

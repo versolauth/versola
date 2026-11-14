@@ -1566,7 +1566,11 @@ mutual-TLS address of `central`, and the issuer and the mutual-TLS address of `a
 its certificate with a new public key whenever it likes (`POST /edge/certificate/renew` takes an optional `signingKey`). Its
 staff register the partner's clients, which wait for the operator's approval
 (`GET /configuration/partners/approvals`, `POST .../approve`, `POST .../reject`) before auth knows them. A partner client
-authenticates with `tls_client_auth` (the group's certificate) or `private_key_jwt`, never with a shared secret. **Set
+authenticates with `tls_client_auth` (the group's certificate) or `private_key_jwt`, never with a shared secret. Access tokens of a
+`tls_client_auth` partner client are bound to the certificate of the edge that asked for them, like any such client's (RFC 8705 §3),
+so a `fapi2` tenant accepts the partner's web clients and its console; a refresh through another edge of the group re-binds the
+session to that edge's certificate, which is how every edge of the group serves it. (A `private_key_jwt` client's tokens are bearer
+tokens, which a `fapi2` tenant refuses for a web client.) **Set
 `public-urls { enroll, mtls }`** in `central`'s configuration (the public names of its enrollment and mutual-TLS listeners; the
 first is the address inside every token, and no partner or partner edge can be created without it) and `auth.mtls-url` (the public
 name of `auth`'s mutual-TLS listener) so that the enrollment answer and `/edge/partner/me` tell the partner's edge where
@@ -1577,7 +1581,9 @@ answers `invalid_client` for them at `/par`, `/token` and `/introspect` (this is
 is what makes a certificate of the group that is still valid useless at `auth`). The answer is `204`, or `207` when `auth`
 could not be asked to reload its clients at once (it then omits them at its next reload). It does **not** revoke anything:
 `central` and `auth` end no session, delete no refresh token and revoke no access token of the partner; what was issued runs
-out on its own (an access token within the partner's `accessTokenTtlMax`, a refresh token at its TTL), and a partner ends
+out on its own (an access token within the partner's `accessTokenTtlMax`, a refresh token at its TTL; as the access tokens are
+bound to a certificate and `auth` must know the client to check it, `/userinfo` does not serve one while the client is unknown,
+and serves it again after `resume`), and a partner ends
 sessions on its own edges. `POST /configuration/partners/resume` reverses what suspension did. Deleting an edge of a partner
 does **not** revoke the certificate it holds: the certificate names the group, so it keeps authenticating the group's clients
 at `auth` until it expires (`edge-certificates.partner-validity`, 14 days by default); to cut a partner off, suspend it. The

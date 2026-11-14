@@ -102,6 +102,17 @@ class PostgresEdgeSessionRepository(xa: TransactorZIO) extends EdgeSessionReposi
       """.update.run()
     }.unit
 
+  override def findLive(now: Instant): Task[List[EdgeSessionRecord]] =
+    xa.connectMeasured("find-live-edge-sessions") {
+      sql"""
+        SELECT public_session_id, preset_id, access_token_id, refresh_token, expires_at, previous_access_token_id, access_token, rotated_at
+        FROM edge_sessions WHERE expires_at > $now
+      """
+        .query[EdgeSessionRecord]
+        .run()
+        .toList
+    }
+
   override def findBySessionId(sid: SessionId): Task[List[EdgeSessionRecord]] =
     xa.connectMeasured("find-edge-sessions-by-sid") {
       sql"""

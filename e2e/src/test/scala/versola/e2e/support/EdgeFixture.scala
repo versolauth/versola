@@ -145,7 +145,7 @@ object EdgeFixture:
 
       signer <- ZIO.when(config.privateKeyJwt)(AssertionSigner.make)
       selfSigned <- ZIO.when(config.mutualTls)(EdgeCertificate.make())
-      groupCertificate <- ZIO.foreach(config.groupCertificate)(group => EdgeCertificate.make(uri = Some(groupName(group))))
+      groupCertificate <- ZIO.foreach(config.groupCertificate)(group => EdgeCertificate.make(uris = List(groupName(group))))
       certificate = selfSigned.orElse(groupCertificate)
       nativeCommonName = s"e2e-native-${clientId.takeRight(12)}"
       nativeCertificate <- ZIO.when(config.nativeApp && !config.issuedCertificate && !config.enrolledCertificate)(

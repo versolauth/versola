@@ -2454,12 +2454,13 @@ test('the Owner step fixes the rows a partner sets and recomputes the kind plan 
   for (const said of ['PKCE', 'Pushed authorization', 'pushed authorization', 'tls_client_auth', 'private_key_jwt', 'Served by the edges', 'Lifetimes', 'Certificate-bound']) {
     await expect(owner, said).not.toContainText(said);
   }
-  // The kind plan follows the owner: group certificate, no certificate binding, the partner's cap.
+  // The kind plan follows the owner: group certificate, certificate-bound tokens, the partner's cap.
   await expect(page.getByText('Web app, owned by Pilot Pay, sets:')).toBeVisible();
   const plan = page.locator('versola-client-kind-step .plan');
   await expect(plan).toContainText('Group certificate: tls_client_auth, san_uri = urn:versola:edge-group:pilot-pay');
   await expect(plan).toContainText('10 min access token at most');
-  await expect(plan.locator('.plan-line.off')).toContainText('Certificate-bound access tokens');
+  await expect(plan.locator('.plan-line.on').filter({ hasText: 'Certificate-bound access tokens' })).toHaveCount(1);
+  await expect(plan.locator('.plan-line.off')).toHaveCount(0);
   await expect(plan).not.toContainText('mTLS by edge');
   // The partner may also use a key: said once, on the credential line.
   await expect(plan).toContainText('The partner may also use private_key_jwt; choose on the next step.');
