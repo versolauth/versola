@@ -2371,6 +2371,12 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |      interval   = "1 hour"
        |      key-column = "revoked_key"
        |    }
+       |    {
+       |      table-name = "attested_keys"
+       |      batch-size = 1000
+       |      interval   = "1 hour"
+       |      key-column = "ctid"
+       |    }
        |  ]
        |}
        |

@@ -155,7 +155,68 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
       else ZIO.succeed(Set.empty[String])
     eventually(read)(_.contains(own))
 
+  /** A native client fronted by edge (`tls_client_auth`, with the certificate edge presents for it), in the tenant of the second edge. */
+  private def nativeClientBody(id: String, tenantId: String, certificate: EdgeCertificate): Json.Obj =
+    Json.Obj(
+      "tenantId" -> Json.Str(tenantId),
+      "id" -> Json.Str(id),
+      "clientName" -> Fixtures.text("Attested native"),
+      "redirectUris" -> Json.Arr(Json.Str("https://app.test/callback")),
+      "allowedScopes" -> Json.Arr(Json.Str("openid")),
+      "accessTokenTtl" -> Json.Num(3600),
+      "authMethod" -> Json.Str("tls_client_auth"),
+      "mtlsAuth" -> Fixtures.mutualTlsAuth("subject_dn", s"CN=$id"),
+      "edgeClientCertificate" -> Json.Str(certificate.edgeClientCertificate),
+      "issueEdgeClientCertificate" -> Json.Bool(false),
+      "enrollEdgeClientCertificate" -> Json.Bool(false),
+      "theme" -> Json.Str("default"),
+      "otpTemplateId" -> Json.Str("default"),
+      "frontChannelLogoutSessionRequired" -> Json.Bool(false),
+      "dpopSigningAlgs" -> Json.Arr(),
+    )
+
+  /** The sync entry of a client, once it satisfies `ready`: central serves these from caches a Postgres notification refreshes. */
+  private def clientEntry(central: CentralApi, edge: SecondEdge, id: String)(ready: Json.Obj => Boolean): Task[Option[Json.Obj]] =
+    val read = onSurface(central, edge).get("/edge/sync/clients").flatMap: result =>
+      if result.status == Status.Ok then result.items("clients").map(_.find(_.str("id").contains(id)))
+      else ZIO.succeed(None)
+    eventually(read)(_.exists(ready))
+
   def spec = suite("Central API: the edge-facing surface")(
+    // #423: what an operator sets through the admin API is what the edge fronting the client is told, in the sync it already reads.
+    test("an attestation policy set through the admin API reaches the edge that fronts the client, in the clients sync") {
+      for
+        central <- api
+        result <- withSecondEdge(central): edge =>
+          for
+            id <- CentralApi.id("e2e-attested")
+            certificate <- EdgeCertificate.make(commonName = id)
+            _ <- write(central, "/configuration/clients/native", nativeClientBody(id, edge.tenantId, certificate))
+            before <- clientEntry(central, edge, id)(_ => true)
+            put <- central.put(
+              "/configuration/clients/attestation",
+              Json.Obj(
+                "mode" -> Json.Str("report"),
+                "ios" -> Json.Obj("appIds" -> Json.Arr(Json.Str("ABCDE12345.com.example.app")), "environment" -> Json.Str("production")),
+                "android" -> Json.Arr(
+                  Json.Obj("packageName" -> Json.Str("com.example.app"), "certificateDigests" -> Json.Arr(Json.Str("ab" * 32))),
+                ),
+              ),
+              "clientId" -> id,
+            )
+            after <- clientEntry(central, edge, id)(_.obj("attestation").isDefined)
+            _ <- central.delete("/configuration/clients", "clientId" -> id).ignore
+          yield
+            val policy = after.flatMap(_.obj("attestation"))
+            assertTrue(
+              before.exists(entry => entry.obj("attestation").isEmpty),
+              put.status == Status.Ok,
+              policy.flatMap(_.str("mode")).contains("report"),
+              policy.flatMap(_.obj("ios")).flatMap(_.strings("appIds").headOption).contains("ABCDE12345.com.example.app"),
+              policy.map(_.objs("android").flatMap(_.strings("certificateDigests"))).exists(_.toSet == Set("ab" * 32)),
+            ).label("a client with no policy carries none, and one with a policy carries it, builds and all")
+      yield result
+    },
     test("a second edge reads only the tenant bound to it, on every sync resource") {
       for
         central <- api

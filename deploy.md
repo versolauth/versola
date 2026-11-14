@@ -483,6 +483,62 @@ dump and the rollback is lost. With extra replicas of `auth` or `edge`, remove t
 unfinished `versola rollout` is undone with `versola rollout --abort` instead; secrets the new
 version added stay in OpenBao either way.
 
+#### New: app attestation for native apps (migrations `V1039` for `central`, `V2011` for `edge`; off by default)
+
+`POST /native/start/{clientId}` authenticates as the client for any caller, so a script can run its own login through `edge` (#423).
+Central can now hold, per native client, whether `edge` asks the app to prove it is the genuine build on a genuine device (Apple App
+Attest, Android Key Attestation) and which builds those are. The mode is `off`, `report` or `enforce`; a client with no policy is
+`off`, which is what every client is today. **Nothing changes for an app or an operator until a policy is set**, and an app can only
+satisfy one once it carries a version of the SDK that sends attestation.
+
+- **Roll out in two steps.** Set `report` first: `edge` verifies what the app sends, counts the outcome and answers as if it had not
+  (`attestation_requests_total{platform,mode,result}`; `result` is `verified` or why not). Move to `enforce` when the count shows the
+  installs in use pass. `enforce` before the apps send attestation turns those apps away with `invalid_client_attestation`.
+- **Migrations.** `V1039__client_attestation_policies.sql` (central) holds the policy per client; `V2011__attested_keys.sql` (edge) holds
+  the App Attest keys that have been attested and the counter of their last assertion, which is what makes an assertion single use.
+  Both are new tables, additive: the previous release runs on them and a rollback works; neither can be undone except by the
+  pre-migration dump. `attested_keys` has a row per iOS install and client. A row is forgotten 365 days after the key was last used
+  (`expires_at`, moved forward by every assertion), by the `attested_keys` entry of the `cleanup` block that `versola configure` generates.
+  **A deployment configured before this release has a `cleanup` block without that entry**: add it (`table-name = "attested_keys"`,
+  `batch-size = 1000`, `interval = "1 hour"`, `key-column = "ctid"`) or run `versola configure` again, or the table grows. An app whose
+  key was forgotten attests a new one on its next request.
+- **API.** `GET`, `PUT` and `DELETE /configuration/clients/attestation?clientId=...` (`central/open-api/central.yaml`), for a native client
+  that authenticates with `tls_client_auth` only; recorded in the audit log as `admin.client-attestation.update` / `.delete`. The app
+  sends `attestation_*` fields on `/native/start` (`edge/open-api/edge.yaml`).
+- **Sync.** `GET /edge/sync/clients` carries an optional `attestation` on a native client whose mode is not `off`; auth's sync never
+  does. An older `edge` ignores it and a newer one reads its absence as `off`, so central and edge can be upgraded in either order --
+  but an older `edge` replica does not enforce a policy it ignores, so **set `enforce` only once every `edge` replica runs this version**.
+  A policy a newer central sends that this `edge` cannot read is treated as `enforce` over no builds for that client alone (its apps are
+  refused, with a warning in the log naming the client); it does not stop the rest of the sync.
+- **Play Integrity (optional, per Android build).** An Android build in the policy can also be marked `playIntegrity`: `edge` then
+  requires the Play Store's verdict (the app is the Play-recognised build, signed with one of the listed certificates, on a device that
+  meets device integrity) beside the key attestation. It needs, on `edge`, `native.attestation.play-integrity { service-account-file =
+  "<path>" }`: the JSON key of a Google service account of the Google Cloud project the app's Play Integrity API is linked to, with that
+  API enabled. **Mount the file as you do the other credentials; it is never put in the configuration**, and `edge` reads it at start (an
+  unreadable or malformed file stops the start). `edge` then calls `playintegrity.googleapis.com` and `oauth2.googleapis.com`, so the host
+  needs outbound HTTPS to both. A policy that asks for the verdict on an `edge` without that block refuses (under `report`, counts) the
+  request as `Unsupported`. A fault of Google or of the service account is answered as a server error, never as the app's fault, and the
+  app retries. Google limits token requests per app, and the app asks for one on every `/native/start` once it is given the project
+  number (`playIntegrityCloudProjectNumber`), so apps that need no verdict should not be given one. A policy stored before this
+  existed reads as "no verdict required": nothing changes until the box is ticked.
+- **Trust.** The roots of Apple's App Attestation CA and Google's Key Attestation CAs ship with `edge`
+  (`edge/src/main/resources/attestation/`, with their provenance and fingerprints). When a platform rotates a root before a release of
+  `edge` carries it, point `native.attestation.apple-roots` / `android-roots` at a PEM file. **`edge` fetches Google's list of revoked
+  attestation certificates** from `android.googleapis.com` (`native.attestation.android-revocation-url`, every
+  `revocation-refresh-interval`, 6 hours by default), **but only once the first Android attestation under a policy needs it**: an `edge`
+  with no policy set never contacts Google, and start is not delayed. From then on the host needs outbound HTTPS to it; a failed fetch
+  keeps the last list and is counted in `attestation_revocation_refresh_failures_total`; a list that could not be fetched is tried again
+  every minute, and **until one has been fetched no certificate is treated as revoked: attestations are accepted, not refused**. An `edge`
+  that must not reach Google sets `android-revocation-enabled = false` and then trusts a stolen attestation key until the roots change.
+- **What an attestation says.** An Android chain says the key was generated in the secure hardware of a device that was locked and booted
+  verified *when the key was made*, by an accepted build; it is not a statement about the device later. An App Attest key says the same of
+  the app and the Secure Enclave at attestation, and each assertion that the same key signed that request. An iOS key is attested once
+  and bound to the request it was attested for, so an attestation object cannot be re-sent: if it was refused, the app attests a new key,
+  and if the request failed after it was accepted, the key is known and the app asserts with it next.
+- **Not covered yet.** Play Integrity (Android attestation of the app by Play) is not checked; Key Attestation is. The verifiers are
+  proven against evidence built to the platforms' documented formats, not against output from a device: run `report` and look at the
+  counts from real devices before `enforce`.
+
 #### Behaviour change: edge refuses a resource path whose segments a resource could read differently
 
 A call to `/resources/{resourceId}/{path}` whose path has a segment that is a separator once decoded (`%2F`, `%5C`, a raw `\`), a

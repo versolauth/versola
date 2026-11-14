@@ -2,11 +2,13 @@ package versola.edge
 
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.RSAKey
+import versola.edge.attestation.{AndroidApp, AttestationMode, AttestationPolicy, IosApps, IosEnvironment}
 import versola.edge.model.{ClientCredential, ClientId, EdgeId, PermissionId}
 import versola.util.{Base64, Secret, SecurityService, TestCertificates}
 import zio.*
 import zio.http.*
 import zio.json.*
+import zio.json.ast.Json
 import zio.test.*
 
 import java.security.KeyPairGenerator
@@ -67,6 +69,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
       applicationType: String,
       redirectUris: Set[String],
       edgeCertificateSubject: Option[versola.util.CertificateSubject],
+      attestation: Option[Json.Obj] = None,
   ) derives JsonCodec
 
   private case class SyncResponseMirror(clients: Vector[SyncClientRecordMirror]) derives JsonCodec
@@ -320,6 +323,84 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
         clients(ClientId("mobile")).isEdgeFrontedNative,
         clients(ClientId("mobile")).redirectUris == Set("https://app.example/cb"),
         !clients(ClientId("legacy")).isEdgeFrontedNative,
+      )
+    },
+    // #423: central's wire form of the policy, as `ClientAttestation` encodes it -- written out here rather than built from edge's own
+    // type, so that the two ends are held to one document.
+    test("carries a native client's attestation policy as central sends it, ignores what it does not know, and reads none as off") {
+      val certificateCiphertext = Base64.urlEncode(Array.fill(32)(55.toByte))
+      val centralForm =
+        """{"mode":"enforce","ios":{"appIds":["ABCDE12345.com.example.app"],"environment":"development"},""" +
+          """"android":[{"packageName":"com.example.app","certificateDigests":["""" + "ab" * 32 + """"]}],"future":1}"""
+      def record(id: String, attestation: Option[Json.Obj]) =
+        SyncClientRecordMirror(
+          ClientId(id),
+          None,
+          15.minutes,
+          edgeClientCertificate = Some(certificateCiphertext),
+          applicationType = "native",
+          redirectUris = Set("https://app.example/cb"),
+          permissions = Set.empty,
+          requireSignedRequestObject = false,
+          requirePushedAuthorizationRequests = false,
+          edgeSigningKey = None,
+          edgeCertificateSubject = None,
+          attestation = attestation,
+        )
+      val body = SyncResponseMirror(Vector(record("policed", centralForm.fromJson[Json.Obj].toOption), record("plain", None))).toJson
+      for
+        _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)
+        client <- ZIO.service[Client]
+        service = OAuthClientsSyncClient.Impl(
+          client,
+          config,
+          fakeSecurityService(Map(certificateCiphertext -> clientCertificate.bundle.getBytes("UTF-8").nn)),
+          centralSyncTokenService,
+          noEnrollment,
+        )
+        clients <- service.getAll
+      yield assertTrue(
+        clients(ClientId("policed")).attestation == AttestationPolicy(
+          mode = AttestationMode.enforce,
+          ios = Some(IosApps(appIds = Set("ABCDE12345.com.example.app"), environment = IosEnvironment.development)),
+          android = List(AndroidApp(packageName = "com.example.app", certificateDigests = Set("ab" * 32))),
+        ),
+        clients(ClientId("plain")).attestation == AttestationPolicy.off,
+      )
+    },
+    test("a policy this edge cannot read is the strictest one for that client only, and does not fail the sync") {
+      val certificateCiphertext = Base64.urlEncode(Array.fill(32)(56.toByte))
+      def record(id: String, attestation: Option[Json.Obj]) =
+        SyncClientRecordMirror(
+          ClientId(id),
+          None,
+          15.minutes,
+          edgeClientCertificate = Some(certificateCiphertext),
+          applicationType = "native",
+          redirectUris = Set("https://app.example/cb"),
+          permissions = Set.empty,
+          requireSignedRequestObject = false,
+          requirePushedAuthorizationRequests = false,
+          edgeSigningKey = None,
+          edgeCertificateSubject = None,
+          attestation = attestation,
+        )
+      val newerMode = """{"mode":"monitor","android":[]}""".fromJson[Json.Obj].toOption
+      val body = SyncResponseMirror(Vector(record("newer", newerMode), record("plain", None))).toJson
+      for
+        _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)
+        client <- ZIO.service[Client]
+        service = OAuthClientsSyncClient.Impl(
+          client,
+          config,
+          fakeSecurityService(Map(certificateCiphertext -> clientCertificate.bundle.getBytes("UTF-8").nn)),
+          centralSyncTokenService,
+          noEnrollment,
+        )
+        clients <- service.getAll
+      yield assertTrue(
+        clients(ClientId("newer")).attestation == AttestationPolicy(mode = AttestationMode.enforce, ios = None, android = Nil),
+        clients(ClientId("plain")).attestation == AttestationPolicy.off,
       )
     },
     test("fails the whole sync on an unusable certificate rather than dropping the client") {

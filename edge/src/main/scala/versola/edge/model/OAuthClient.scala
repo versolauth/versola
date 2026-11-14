@@ -1,5 +1,6 @@
 package versola.edge.model
 
+import versola.edge.attestation.AttestationPolicy
 import zio.Duration
 
 case class OAuthClient(
@@ -19,6 +20,9 @@ case class OAuthClient(
     applicationType: ApplicationType,
     /** The redirect URIs the client registered, which a native start may choose among. */
     redirectUris: Set[String],
+    /** #423: what `/native/start` asks of an app to prove it is the genuine build on a genuine device. `off` for a client central
+      * sent no policy for, which is what every client was before. */
+    attestation: AttestationPolicy = AttestationPolicy.off,
 ):
   /** A native app whose client authentication this edge does (#420): a `native` client edge
     * holds a certificate for. Central only allows a native client that certificate with

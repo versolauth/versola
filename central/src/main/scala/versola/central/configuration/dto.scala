@@ -1,6 +1,7 @@
 package versola.central.configuration
 
 import versola.central.configuration.challenges.SecurityProfile
+import versola.central.configuration.clients.attestation.ClientAttestation
 import versola.central.configuration.clients.est.ClientEstService
 import versola.central.configuration.clients.{
   ApplicationType,
@@ -832,6 +833,10 @@ case class SyncOAuthClientRecord(
     edgeCertificateSubject: Option[CertificateSubject],
     /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
     themeOverrides: Option[ThemeOverrides],
+    /** #423: how an edge treats the app attestation sent on `/native/start`. Present for an edge only, and only for an
+      * edge-fronted native client whose mode is not `off`; absent is `off`. Last and defaulted, so an edge reading a central
+      * that predates it, and one that does not know the field reading a newer central, both see no policy. */
+    attestation: Option[ClientAttestation] = None,
 ) derives JsonCodec, Schema
 
 /** An edge's request for a certificate for a client it holds the key of (#463). */

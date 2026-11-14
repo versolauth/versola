@@ -41,6 +41,16 @@ object NativeControllerSpec extends ZIOSpecDefault:
         proofBody.contains("\"error\":\"invalid_dpop_proof\""),
       )
     },
+    test("a refused attestation is an invalid_client_attestation, a 400, never cached") {
+      for
+        refused <- call(NativeError.InvalidClientAttestation("the attestation is for an app this client does not accept"), "start")
+        body <- refused.body.asString
+      yield assertTrue(
+        refused.status == Status.BadRequest,
+        body == """{"error":"invalid_client_attestation","error_description":"the attestation is for an app this client does not accept"}""",
+        refused.header(Header.CacheControl).contains(Header.CacheControl.NoStore),
+      )
+    },
     // §9: the same challenge shape as the proxy's Outcome.UseDpopNonce -- a bare 401 with the
     // nonce to retry over, not an RFC 6749 error object.
     test("a required nonce is a bare, uncached 401 carrying the nonce to retry over") {

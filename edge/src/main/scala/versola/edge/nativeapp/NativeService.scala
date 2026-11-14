@@ -1,8 +1,10 @@
 package versola.edge.nativeapp
 
+import versola.edge.attestation.{AttestationEvidence, AttestationMode, AttestationPolicy, AttestationService}
 import versola.edge.dpop.{DpopPolicyService, DpopReplayGuard, DpopVerifier}
 import versola.edge.model.{ClientCredential, ClientId}
 import versola.edge.{EdgeConfig, OAuthClientService}
+import versola.util.http.Observability
 import versola.util.{Base64, Dpop, DpopNonce, PrivateClientCertificate, SecureRandom, SecurityService}
 import zio.http.*
 import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder, jsonField}
@@ -52,12 +54,38 @@ enum NativeError:
   case InvalidDpopProof(description: String)
   case InvalidGrant(description: String)
 
+  /** #423: the client's policy asks for app attestation and what the app sent was not accepted. Says what was wrong, never a
+    * value the app sent. */
+  case InvalidClientAttestation(description: String)
+
   /** RFC 9449 §9: this edge requires a nonce and the proof carried none it issued, or one
     * that has expired. Carries a fresh one for the retry, the same challenge shape as the
     * proxied path's `Outcome.UseDpopNonce`. */
   case NonceRequired(nonce: String)
 
 object NativeService:
+
+  /** The form fields an app attestation (#423) travels in on `/native/start`. */
+  object AttestationFields:
+    /** `ios` or `android`. */
+    val Platform = "attestation_platform"
+
+    /** iOS: the App Attest key id, base64. */
+    val KeyId = "attestation_key_id"
+
+    /** iOS, once per key: the attestation object, base64. */
+    val Object = "attestation_object"
+
+    /** iOS, on every later request: the assertion, base64. */
+    val Assertion = "attestation_assertion"
+
+    /** Android: the certificates of the attestation chain, leaf first, each base64 DER; the field repeats, or holds them separated by
+      * commas. */
+    val Chain = "attestation_chain"
+
+    /** Android, when the client's policy asks for Play Integrity of the build: the token the Play Integrity API returned for the
+      * nonce `SHA-256("versola-attest-v1\n" + clientId + "\n" + jkt + "\n" + jti)`, URL-safe base64 without padding. */
+    val IntegrityToken = "attestation_integrity_token"
 
   /** `/native/start`'s answer. `authorization_endpoint` plus `client_id` and `request_uri` is
     * the whole of what the system browser is opened on; `token_endpoint` and
@@ -87,6 +115,7 @@ object NativeService:
       native: EdgeConfig.Native,
       certificate: PrivateClientCertificate.Material,
       redirectUris: Set[String],
+      attestation: AttestationPolicy,
   )
 
   /** The authorization request edge builds on the app's behalf: the form pushed to `/par`, and
@@ -116,14 +145,14 @@ object NativeService:
     "authorization_details",
   )
 
-  /** Parameters that may legitimately repeat (RFC 8707 §2). */
-  private val Repeatable: Set[String] = Set("resource")
+  /** Parameters that may legitimately repeat: RFC 8707 §2's `resource`, and the certificates of an Android attestation chain. */
+  private val Repeatable: Set[String] = Set("resource", AttestationFields.Chain)
 
   val live: URLayer[
     EdgeConfig & OAuthClientService & NativeAuthClient & DpopPolicyService & DpopReplayGuard &
-      SecureRandom & SecurityService,
+      SecureRandom & SecurityService & AttestationService,
     NativeService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
+  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _))
 
   class Impl(
       config: EdgeConfig,
@@ -133,6 +162,7 @@ object NativeService:
       replayGuard: DpopReplayGuard,
       secureRandom: SecureRandom,
       securityService: SecurityService,
+      attestation: AttestationService,
   ) extends NativeService:
 
     private val defaultIatLeeway = Duration.fromSeconds(60)
@@ -147,6 +177,9 @@ object NativeService:
         fresh <- replayGuard.recordIfAbsent(proof.jkt, proof.jti, proof.iat)
         _ <- ZIO.fail(NativeError.InvalidDpopProof("proof has already been used")).unless(fresh)
         form <- readForm(request)
+        // #423: before anything is pushed to auth, so an app that does not pass costs auth nothing. A client with no policy is not
+        // looked at: its form is read exactly as it was.
+        _ <- attestationOf(form, client, proof)
         authorization <- authorizationRequest(form, client, proof)
         relayed <- authClient.par(clientId, client.certificate, authorization.pushed)
         response <-
@@ -226,7 +259,31 @@ object NativeService:
         certificate <- client.credential match
           case ClientCredential.MutualTls(material) => ZIO.succeed(material)
           case _ => ZIO.fail(NativeError.UnknownClient)
-      yield NativeClient(clientId, native, certificate, client.redirectUris)
+      yield NativeClient(clientId, native, certificate, client.redirectUris, client.attestation)
+
+    /** App attestation of the request, under the client's policy: what the app sent, held to what the policy accepts. */
+    private def attestationOf(form: Form, client: NativeClient, proof: Dpop.Proof): IO[NativeError, Unit] =
+      if client.attestation.mode == AttestationMode.off then ZIO.unit
+      else
+        for
+          // Read as they are, not as `optional` reads a field: this must not refuse a request that `report` has promised not to.
+          platform = firstOf(form, AttestationFields.Platform)
+          keyId = firstOf(form, AttestationFields.KeyId)
+          attestationObject = firstOf(form, AttestationFields.Object)
+          assertion = firstOf(form, AttestationFields.Assertion)
+          integrityToken = firstOf(form, AttestationFields.IntegrityToken)
+          // zio-http reads a field that repeats as one value with the occurrences joined by commas. Base64 has no comma, so a
+          // certificate chain is the one list this can carry without ambiguity: sent repeated or comma-separated, it is the same.
+          chain <- values(form, AttestationFields.Chain).map(_.flatMap(_.split(',')).map(_.trim).filter(_.nonEmpty))
+          _ <- attestation.verify(
+            clientId = client.id,
+            policy = client.attestation,
+            jkt = proof.jkt,
+            jti = proof.jti,
+            evidence = AttestationEvidence(platform, keyId, attestationObject, assertion, chain, integrityToken),
+          ).tapError(failure => Observability.setError("invalid_client_attestation", Some(failure.kind.toString)))
+            .mapError(failure => NativeError.InvalidClientAttestation(failure.detail))
+        yield ()
 
     /** What `/native/start` decides before auth is called. The three values only edge knows are
       * kept beside the form they were pushed in, because the blob has to carry them back to
@@ -409,6 +466,9 @@ object NativeService:
 
     private def optional(form: Form, name: String): IO[NativeError, Option[String]] =
       values(form, name).map(_.headOption.filter(_.nonEmpty))
+
+    private def firstOf(form: Form, name: String): Option[String] =
+      form.formData.find(_.name == name).flatMap(_.stringValue).filter(_.nonEmpty)
 
     private def required(form: Form, name: String): IO[NativeError, String] =
       optional(form, name).someOrFail(NativeError.InvalidRequest(s"$name is required"))

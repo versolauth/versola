@@ -176,6 +176,51 @@ object EdgeConfigSpec extends ZIOSpecDefault:
           config.native.map(_.blobTtl) == Some(10.minutes),
         )
       },
+      // #423: nothing in a configuration written before attestation names it, and what it asks Google for is on by default.
+      test("a native block with no attestation settings trusts the bundled roots and asks Google for the revocation list") {
+        val block =
+          s"""native {
+             |  auth-mutual-tls-url = "https://localhost:9008"
+             |  trusted-certificates = "/tmp/server.crt"
+             |  blob-key = "$secret32"
+             |}""".stripMargin
+        for config <- TypesafeConfigProvider
+            .fromHoconString(hocon(includeInternalUrl = false, dpopBlock = block))
+            .kebabCase
+            .load(edgeConfigDescriptor)
+        yield assertTrue(
+          config.native.map(_.attestation) == Some(EdgeConfig.Attestation()),
+          config.native.map(_.attestation.androidRevocationUrl.encode) == Some("https://android.googleapis.com/attestation/status"),
+          config.native.map(_.attestation.androidRevocationEnabled) == Some(true),
+          config.native.map(_.attestation.revocationRefreshInterval) == Some(6.hours),
+        )
+      },
+      test("an attestation block replaces the roots and the revocation source") {
+        val block =
+          s"""native {
+             |  auth-mutual-tls-url = "https://localhost:9008"
+             |  trusted-certificates = "/tmp/server.crt"
+             |  blob-key = "$secret32"
+             |  attestation {
+             |    apple-roots = "/etc/versola/apple.pem"
+             |    android-roots = "/etc/versola/android.pem"
+             |    android-revocation-url = "https://internal.example/status"
+             |    android-revocation-enabled = false
+             |    revocation-refresh-interval = 1 hour
+             |  }
+             |}""".stripMargin
+        for config <- TypesafeConfigProvider
+            .fromHoconString(hocon(includeInternalUrl = false, dpopBlock = block))
+            .kebabCase
+            .load(edgeConfigDescriptor)
+        yield assertTrue(
+          config.native.map(_.attestation.appleRoots) == Some(Some("/etc/versola/apple.pem")),
+          config.native.map(_.attestation.androidRoots) == Some(Some("/etc/versola/android.pem")),
+          config.native.map(_.attestation.androidRevocationUrl.encode) == Some("https://internal.example/status"),
+          config.native.map(_.attestation.androidRevocationEnabled) == Some(false),
+          config.native.map(_.attestation.revocationRefreshInterval) == Some(1.hour),
+        )
+      },
       // The feed is off for every configuration written before it existed, and the cache keys read as they always did.
       test("a file without a revocation block parses with the feed off and the cache defaults") {
         for config <- TypesafeConfigProvider
