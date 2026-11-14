@@ -167,6 +167,13 @@ object SecretSchemaSpec extends ZIOSpecDefault:
           SecretSchema.specs.forall(spec => spec.since >= 1 && spec.since <= SecretSchema.Revision),
         )
       },
+      // Added after 0.7.5, whose schema was revision 1: see the rule at SecretSchema.Revision.
+      test("ANTIFRAUD_SUBJECT_SECRET is new in revision 2, and the revision has been raised for it") {
+        assertTrue(
+          SecretSchema.Revision >= 2,
+          specNamed("ANTIFRAUD_SUBJECT_SECRET").since == 2,
+        )
+      },
       test("the members of a group appeared in the same revision") {
         val byGroup = SecretSchema.specs.flatMap(spec => spec.group.map(_ -> spec.since)).groupBy(_._1)
         assertTrue(byGroup.nonEmpty, byGroup.values.forall(_.map(_._2).distinct.size == 1))
