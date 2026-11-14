@@ -2571,8 +2571,10 @@ paths:
         void); the partner's clients are omitted from `GET /configuration/clients/sync` (configuration only: nothing is
         deleted), so auth answers `invalid_client` for them at `/par`, `/token` and `/introspect`, which is what makes a
         certificate of the group that is still valid useless there. Central and auth **revoke nothing**: sessions, refresh
-        tokens and access tokens that were issued run out on their own (an access token keeps working at `/userinfo` until it
-        expires, within `limits.accessTokenTtlMax`). Audited: the log keeps that a `note` came with the call, not what it says
+        tokens and access tokens that were issued run out on their own (within `limits.accessTokenTtlMax` for an access token).
+        An access token of a partner's client is bound to a certificate and auth has to know the client to check it, so
+        while the client is unknown to auth `/userinfo` does not serve the token; it is served again after `resume`, if it has not
+        expired. Audited: the log keeps that a `note` came with the call, not what it says
         (it is not stored).
 
         The status is written, and auth is asked to reload its clients at once rather than at its next interval. When it
@@ -4554,8 +4556,10 @@ components:
             The partner that owns the client (#549). The client is then held to the partner's limits and to the
             partner client invariant (400 otherwise): a `consentFlow`; `authMethod` among the partner's
             `clientAuthMethods`, for `tls_client_auth` with `mtlsAuth` `san_uri` `urn:versola:edge-group:<partner group>`;
-            `certificateBoundAccessTokens` false (every edge of the group presents a certificate of its own, so a token is
-            never bound to one); every redirect URI `https` and under one of `limits.redirectDomains`; scope within
+            `certificateBoundAccessTokens` false for a `private_key_jwt` client (a token would be bound to one edge's
+            certificate with no way to re-bind it); a `tls_client_auth` client's access tokens are bound to the certificate of
+            the edge that asked, like any `tls_client_auth` client's, and a refresh through another edge of the group re-binds
+            them (RFC 8705 §3), so every edge can serve the session; every redirect URI `https` and under one of `limits.redirectDomains`; scope within
             `limits.scopes`; `accessTokenTtl` and `refreshTokenTtl` within the caps; at most `maxClients` clients. The
             operator's registration is `approved` at once. Absent registers a first-party client.
       required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate, theme, otpTemplateId, frontChannelLogoutSessionRequired, dpopBoundAccessTokens, dpopSigningAlgs, certificateBoundAccessTokens, requireSignedRequestObject, requirePushedAuthorizationRequests, estEnrollment]
@@ -7179,7 +7183,7 @@ components:
           type: integer
         accessTokenTtlMax:
           type: integer
-          description: Seconds. Also how long a suspended partner's issued access tokens keep working at `/userinfo`.
+          description: Seconds. Also how long an access token issued to a partner's client lives at most.
         refreshTokenTtlMax:
           type: integer
           description: Seconds.

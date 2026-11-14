@@ -84,6 +84,11 @@ trait OAuthClientService:
       allowOutsideLimits: Boolean = false,
   ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient]
 
+  /** Whether the tenant's [[SecurityProfile]] would admit the client `request` describes, answered without writing anything: for the
+    * caller that creates other rows around the client (a partner, its group and its edge) and must know before it creates the first
+    * one. The same refusal [[registerClient]] gives for the same request. */
+  def checkSecurityProfile(request: CreateClientRequest): IO[InvalidRegistrationConfiguration | Throwable, Unit]
+
   /** @param enforceSecurityProfile holds the client, as the patch leaves it, to its tenant's
     *                               [[SecurityProfile]]. Only bootstrap turns it off, and only
     *                               for a seeded client it cannot yet make conformant -- every
@@ -243,6 +248,20 @@ object OAuthClientService:
           .filter(_.tenantId == tenantId)
           .slice(offset, limit.fold(records.size)(offset + _))
       }
+
+    override def checkSecurityProfile(request: CreateClientRequest): IO[InvalidRegistrationConfiguration | Throwable, Unit] =
+      val native = request.applicationType.contains(ApplicationType.native)
+      val subject = InvalidRegistrationConfiguration.ProfileSubject(
+        authMethod = request.authMethod,
+        // what `OAuthClientRecord.bindsAccessTokens` says of the record this request becomes
+        senderConstrained = request.dpopBoundAccessTokens || request.certificateBoundAccessTokens ||
+          (request.mtlsAuth.nonEmpty && !(native && request.authMethod == AuthMethod.tls_client_auth)),
+        requirePushedAuthorizationRequests = request.requirePushedAuthorizationRequests,
+        redirectUris = request.redirectUris,
+        native = native || request.template.exists(_.kind == ClientKind.device),
+      )
+      challengeSettingsService.getSecurityProfile(request.tenantId).flatMap: profile =>
+        ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateSecurityProfile(request.id, profile, subject, allowHttpLoopback))(ZIO.fail(_))
 
     override def registerClient(
         request: CreateClientRequest,

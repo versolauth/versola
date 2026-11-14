@@ -231,6 +231,9 @@ object PartnerService:
           createdAt = now,
           version = 0L,
         )
+        // The tenant's security profile admits the console client or it does not (a `fapi2` tenant holds it to its rules), and that is
+        // known before anything is written: a refusal here leaves no group, no partner and no edge behind.
+        _ <- registration(clients.checkSecurityProfile(consoleClient(record, request.consoleRedirectUri)))
         created <- groups.create(EdgeGroupRecord(groupId, EdgeGroupKind.Partner))
         _ <- ZIO.fail(PartnerError.Conflict(s"edge group '$groupId' already exists")).unless(created)
         _ <- partners.create(record).catchAll:
