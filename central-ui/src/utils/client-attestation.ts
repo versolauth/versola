@@ -8,6 +8,8 @@ export type IosEnvironment = 'production' | 'development';
 export interface AndroidApp {
   packageName: string;
   certificateDigests: string[];
+  /** Also require a Play Integrity verdict for this build. Absent means no. */
+  playIntegrity?: boolean;
 }
 
 /** The policy as central stores and serves it. `ios` is absent when no iOS build is accepted. */
@@ -46,7 +48,7 @@ export interface AttestationDraft {
   mode: AttestationMode;
   iosAppIds: string;
   iosEnvironment: IosEnvironment;
-  android: { packageName: string; digests: string }[];
+  android: { packageName: string; digests: string; playIntegrity?: boolean }[];
 }
 
 export interface AttestationErrors {
@@ -67,7 +69,7 @@ export function draftFromPolicy(policy: ClientAttestationPolicy | null): Attesta
     mode: policy.mode,
     iosAppIds: (policy.ios?.appIds ?? []).join('\n'),
     iosEnvironment: policy.ios?.environment ?? 'production',
-    android: policy.android.map(app => ({ packageName: app.packageName, digests: app.certificateDigests.join('\n') })),
+    android: policy.android.map(app => ({ packageName: app.packageName, digests: app.certificateDigests.join('\n'), ...(app.playIntegrity ? { playIntegrity: true } : {}) })),
   };
 }
 
@@ -95,6 +97,7 @@ export function policyFromDraft(draft: AttestationDraft): ClientAttestationPolic
     android: draft.android.filter(row => !rowIsBlank(row)).map(row => ({
       packageName: row.packageName.trim(),
       certificateDigests: unique(words(row.digests).map(normalizeDigest)),
+      ...(row.playIntegrity ? { playIntegrity: true } : {}),
     })),
   };
 }
@@ -155,6 +158,6 @@ export function describePolicy(policy: ClientAttestationPolicy): { ios: string; 
     : 'None accepted';
   return {
     ios,
-    android: policy.android.map(app => `${app.packageName} · ${app.certificateDigests.length} certificate${app.certificateDigests.length === 1 ? '' : 's'}`),
+    android: policy.android.map(app => `${app.packageName} · ${app.certificateDigests.length} certificate${app.certificateDigests.length === 1 ? '' : 's'}${app.playIntegrity ? ' · Play Integrity' : ''}`),
   };
 }

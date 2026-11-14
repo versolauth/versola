@@ -44,7 +44,7 @@ object AndroidKeyAttestationSpec extends ZIOSpecDefault:
       assertTrue(verify().isRight)
     },
     test("a key in StrongBox is reported as such") {
-      assertTrue(verify(options = AndroidOptions(attestationLevel = 2, keyMintLevel = 2)) == Right(AndroidKeyAttestation.Verified(strongBox = true)))
+      assertTrue(verify(options = AndroidOptions(attestationLevel = 2, keyMintLevel = 2)) == Right(AndroidKeyAttestation.Verified(strongBox = true, app = app)))
     },
     test("a key that is not the DPoP key of the request is refused, so a chain is no use to anyone without its key") {
       assertTrue(kind(verify(key = Some(jkt(p256())))) == Some(Kind.Mismatch))

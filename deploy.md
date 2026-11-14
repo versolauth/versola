@@ -510,6 +510,17 @@ satisfy one once it carries a version of the SDK that sends attestation.
   but an older `edge` replica does not enforce a policy it ignores, so **set `enforce` only once every `edge` replica runs this version**.
   A policy a newer central sends that this `edge` cannot read is treated as `enforce` over no builds for that client alone (its apps are
   refused, with a warning in the log naming the client); it does not stop the rest of the sync.
+- **Play Integrity (optional, per Android build).** An Android build in the policy can also be marked `playIntegrity`: `edge` then
+  requires the Play Store's verdict (the app is the Play-recognised build, signed with one of the listed certificates, on a device that
+  meets device integrity) beside the key attestation. It needs, on `edge`, `native.attestation.play-integrity { service-account-file =
+  "<path>" }`: the JSON key of a Google service account of the Google Cloud project the app's Play Integrity API is linked to, with that
+  API enabled. **Mount the file as you do the other credentials; it is never put in the configuration**, and `edge` reads it at start (an
+  unreadable or malformed file stops the start). `edge` then calls `playintegrity.googleapis.com` and `oauth2.googleapis.com`, so the host
+  needs outbound HTTPS to both. A policy that asks for the verdict on an `edge` without that block refuses (under `report`, counts) the
+  request as `Unsupported`. A fault of Google or of the service account is answered as a server error, never as the app's fault, and the
+  app retries. Google limits token requests per app, and the app asks for one on every `/native/start` once it is given the project
+  number (`playIntegrityCloudProjectNumber`), so apps that need no verdict should not be given one. A policy stored before this
+  existed reads as "no verdict required": nothing changes until the box is ticked.
 - **Trust.** The roots of Apple's App Attestation CA and Google's Key Attestation CAs ship with `edge`
   (`edge/src/main/resources/attestation/`, with their provenance and fingerprints). When a platform rotates a root before a release of
   `edge` carries it, point `native.attestation.apple-roots` / `android-roots` at a PEM file. **`edge` fetches Google's list of revoked

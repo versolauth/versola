@@ -88,6 +88,15 @@ describe('what central would refuse, said before it is asked', () => {
     expect(errors.android[1]).toMatch(/more than once/);
   });
 
+  it('carries Play Integrity only for an app that asks for it', () => {
+    const asks = policyFromDraft(draft({ android: [{ packageName: 'com.example.app', digests: DIGEST, playIntegrity: true }] }));
+    const plain = policyFromDraft(draft({ android: [{ packageName: 'com.example.app', digests: DIGEST, playIntegrity: false }] }));
+    expect(asks.android[0]).toEqual({ packageName: 'com.example.app', certificateDigests: [DIGEST], playIntegrity: true });
+    expect('playIntegrity' in plain.android[0]).toBe(false);
+    expect(draftFromPolicy(asks).android[0].playIntegrity).toBe(true);
+    expect(describePolicy(asks).android[0]).toBe('com.example.app · 1 certificate · Play Integrity');
+  });
+
   it('holds the numbers central holds: 20 apps, 10 digests', () => {
     const manyIds = Array.from({ length: 21 }, (_, index) => `ABCDE12345.com.example.app${index}`).join('\n');
     const manyDigests = Array.from({ length: 11 }, (_, index) => index.toString(16).padStart(64, '0')).join('\n');

@@ -61,6 +61,16 @@ object ClientAttestationSpec extends ZIOSpecDefault:
       val json = ClientAttestation.off.toJson
       assertTrue(json == """{"mode":"off","android":[]}""", json.fromJson[ClientAttestation] == Right(ClientAttestation.off))
     },
+    test("a build asks for Play Integrity only when the policy says so, and a policy stored before it existed does not") {
+      val digest = "ab" * 32
+      val stored = s"""{"mode":"report","android":[{"packageName":"com.example.app","certificateDigests":["$digest"]}]}"""
+      val asks = s"""{"mode":"report","android":[{"packageName":"com.example.app","certificateDigests":["$digest"],"playIntegrity":true}]}"""
+      assertTrue(
+        stored.fromJson[ClientAttestation].map(_.android.map(_.playIntegrity)) == Right(List(false)),
+        asks.fromJson[ClientAttestation].map(_.android.map(_.playIntegrity)) == Right(List(true)),
+        asks.fromJson[ClientAttestation].flatMap(_.toJson.fromJson[ClientAttestation]) == asks.fromJson[ClientAttestation],
+      )
+    },
     test("a field the policy does not know is refused rather than dropped") {
       val misspelt = """{"mode":"enforce","IOS":{"appIds":["ABCDE12345.com.example.app"],"environment":"production"},"android":[]}"""
       val nested = """{"mode":"off","android":[{"packageName":"com.example.app","certificateDigests":[],"extra":1}]}"""
