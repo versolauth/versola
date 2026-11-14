@@ -39,6 +39,9 @@ trait ResourceService:
 
   def sync(event: SyncEvent.ResourcesUpdated): Task[Unit]
 
+  /** Reads the whole cache again from the database, for when notifications may have been missed. */
+  def reload: Task[Unit]
+
 object ResourceService:
   case object SecretRotationInProgress extends RuntimeException("Resource secret rotation is already in progress")
 
@@ -195,6 +198,11 @@ object ResourceService:
 
     override def deletePreviousSecret(resourceId: ResourceId): Task[Unit] =
       resourceRepository.deletePreviousSecret(resourceId)
+
+    override def reload: Task[Unit] =
+      resourceRepository.getAll
+        .flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, secretsKey)))
+        .flatMap(cache.set(_))
 
     override def sync(event: SyncEvent.ResourcesUpdated): Task[Unit] =
       SyncOps.syncCache(event)(

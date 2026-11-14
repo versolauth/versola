@@ -1145,6 +1145,19 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         result <- env.service.rotateSecret(resourceId).either
       yield assertTrue(result == Left(ResourceService.SecretRotationInProgress))
     },
+    test("reload replaces the cache with the repository's resources, secrets decrypted") {
+      val env = new Env(Vector(otherTenantResource))
+      val encryptedSecret = Array.fill(32)(9.toByte)
+      val decryptedSecret = Secret(Array.fill(32)(5.toByte))
+      val stored = resource.copy(secret = Some(Secret(encryptedSecret)), previousSecret = Some(Secret(encryptedSecret)))
+
+      for
+        _ <- env.repository.getAll.succeedsWith(Vector(stored))
+        _ <- env.securityService.decryptAes256.succeedsWith(decryptedSecret)
+        _ <- env.service.reload
+        cached <- env.cache.get
+      yield assertTrue(cached == Vector(stored.copy(secret = Some(decryptedSecret), previousSecret = Some(decryptedSecret))))
+    },
     test("sync removes cached resource on delete event") {
       val env = new Env(Vector(resource, otherTenantResource))
 

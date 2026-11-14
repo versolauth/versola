@@ -34,6 +34,15 @@ object OtpChallengeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         result <- env.service.getTemplates(tenantA)
       yield assertTrue(result == Vector(rec1, rec3))
     },
+    test("reload replaces the cache with what the repository holds") {
+      val env = new Env(Vector(rec1))
+
+      for
+        _ <- env.repository.getAll.succeedsWith(Vector(rec2))
+        _ <- env.service.reload
+        cached <- env.cache.get
+      yield assertTrue(cached == Vector(rec2))
+    },
     test("getAllTemplates returns all cached records") {
       val env = Env(Vector(rec1, rec2))
       for

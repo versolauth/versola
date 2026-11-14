@@ -134,6 +134,15 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
   )
 
   override def spec = suite("AuthorizationPresetService")(
+    test("reload replaces the cache with what the repository holds") {
+      val env = new Env(Vector(preset1))
+
+      for
+        _ <- env.presetRepo.getAll.succeedsWith(Vector(preset1.copy(id = PresetId("other"))))
+        _ <- env.service.reload
+        cached <- env.cache.get
+      yield assertTrue(cached == Vector(preset1.copy(id = PresetId("other"))))
+    },
     test("save presets successfully when client exists and data is valid") {
       val env = Env()
       for

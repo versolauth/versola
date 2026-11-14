@@ -20,14 +20,18 @@ import zio.stream.Stream
 class PostgresCacheSyncRepository(listener: PostgresNotificationListener) extends CacheSyncRepository:
 
   def getNotifications: Stream[Throwable, SyncEvent] =
-    listener.notifications.collect:
-      // A reconnect needs no event of its own: every cache fed from here also reloads on a
-      // timer, so a change missed while the feed was down is picked up by the next reload
-      // rather than being lost until the next edit of the same record.
-      case NotificationEvent.Received(notification) =>
-        PostgresCacheSyncRepository.parseNotification(notification.getName, notification.getParameter)
+    listener.notifications.collect(PostgresCacheSyncRepository.toSyncEvent)
 
 object PostgresCacheSyncRepository:
+  private[sync] val toSyncEvent: PartialFunction[NotificationEvent, SyncEvent] =
+    // After a reconnect the feed may have missed changes; waiting for each cache's timer
+    // reload would leave stale configuration for minutes.
+    case NotificationEvent.Resubscribed =>
+      SyncEvent.Reload
+
+    case NotificationEvent.Received(notification) =>
+      parseNotification(notification.getName, notification.getParameter)
+
   private val notificationChannels = List(
     "tenant_change",
     "edge_change",

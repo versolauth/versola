@@ -25,6 +25,9 @@ trait FormService:
   def setActiveVersion(id: FormId, version: Int): Task[Unit]
   def sync(event: SyncEvent.FormsUpdated): Task[Unit]
 
+  /** Reads the whole cache again from the database, for when notifications may have been missed. */
+  def reload: Task[Unit]
+
 object FormService:
   def live: ZLayer[FormRepository & Scope & LocaleService & CentralConfig, Throwable, FormService] =
     (ZLayer.fromZIO:
@@ -68,6 +71,9 @@ object FormService:
 
     override def setActiveVersion(id: FormId, version: Int): Task[Unit] =
       repository.setActiveVersion(id, version)
+
+    override def reload: Task[Unit] =
+      repository.getAll.flatMap(cache.set(_))
 
     override def sync(event: SyncEvent.FormsUpdated): Task[Unit] =
       SyncOps.syncCache(event)(

@@ -10,6 +10,7 @@ import versola.central.configuration.roles.RoleId
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.sync.SyncEvent
 import versola.central.configuration.tenants.TenantId
+import versola.util.postgres.NotificationEvent
 import zio.test.*
 
 /** Pure parsing tests for [[PostgresCacheSyncRepository.parseNotification]] (no database required).
@@ -22,7 +23,12 @@ object PostgresCacheSyncRepositorySpec extends ZIOSpecDefault:
 
   import PostgresCacheSyncRepository.parseNotification
 
-  def spec = suite("PostgresCacheSyncRepository.parseNotification")(
+  def spec = suite("PostgresCacheSyncRepository")(
+    suite("toSyncEvent")(
+      test("a resubscribe of the listener becomes a Reload, so changes missed meanwhile are not left to the timer") {
+        assertTrue(PostgresCacheSyncRepository.toSyncEvent(NotificationEvent.Resubscribed) == SyncEvent.Reload)
+      },
+    ),
     suite("payload-less channels")(
       test("tenant_change ignores the payload") {
         assertTrue(parseNotification("tenant_change", "") == SyncEvent.TenantsUpdated)

@@ -36,6 +36,9 @@ trait RoleService:
 
   def sync(event: SyncEvent.RolesUpdated): Task[Unit]
 
+  /** Reads the whole cache again from the database, for when notifications may have been missed. */
+  def reload: Task[Unit]
+
 object RoleService:
   /** The role is one of the tenant's `defaultRoles`: deleting it would make every new registration grant
     * a role that does not exist. */
@@ -113,6 +116,9 @@ object RoleService:
         permissions = request.permissions,
         active = request.active,
       )
+
+    override def reload: Task[Unit] =
+      roleRepository.getAll.flatMap(cache.set(_))
 
     override def sync(
         event: SyncEvent.RolesUpdated,
