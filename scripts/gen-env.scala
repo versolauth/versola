@@ -1645,6 +1645,16 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
          |  trusted-certificates = "$centralMutualTlsTrust"
          |}
          |""".stripMargin
+  // An edge outside the cluster has no certificate of its own to name here: it enrolls with a one-time token and `central` issues it
+  // (`central.identity`), and an edge names its certificate one way or the other, never both. The `versola-edge` chart's `central.conf`,
+  // which `env.conf` includes last, supplies the identity, the pins and the addresses.
+  val remoteEdge = isKubernetes && promptYN(
+    "  Does this edge run outside the cluster, enrolling with a token (the versola-edge chart)?",
+    flag = "remote-edge",
+  )
+  // The id the edge was registered under in `central` (the edge's own, not `edge-default`, which the installation seeds for its in-cluster edge).
+  val edgeConfigId =
+    if remoteEdge then prompt("  Edge ID, as registered in central [edge-default]: ", "edge-default", flag = "edge-id") else "edge-default"
   val edgeCentralBlock =
     val (certificate, key, pins) =
       if isLocal then
@@ -1654,16 +1664,21 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
           Seq(File(centralMutualTlsDir, "server.crt").getAbsolutePath),
         )
       else (edgeCentralCertificate, edgeCentralKey, edgeCentralPins)
-    s"""central {
-       |  url = "$centralMutualTlsUrl"
-       |  # The certificate this edge presents -- it must carry urn:versola:edge:$edgeId -- and the
-       |  # pin for central's own leaf (a list, so it can be rotated with an overlap window).
-       |  mutual-tls {
-       |    certificate          = "$certificate"
-       |    private-key          = "$key"
-       |    trusted-certificates = [${pins.map(pin => s"\"$pin\"").mkString(", ")}]
-       |  }
-       |}""".stripMargin
+    if remoteEdge then
+      s"""central {
+         |  url = "$centralMutualTlsUrl"
+         |}""".stripMargin
+    else
+      s"""central {
+         |  url = "$centralMutualTlsUrl"
+         |  # The certificate this edge presents -- it must carry urn:versola:edge:$edgeId -- and the
+         |  # pin for central's own leaf (a list, so it can be rotated with an overlap window).
+         |  mutual-tls {
+         |    certificate          = "$certificate"
+         |    private-key          = "$key"
+         |    trusted-certificates = [${pins.map(pin => s"\"$pin\"").mkString(", ")}]
+         |  }
+         |}""".stripMargin
 
   // centralUrl IS a real network call from both auth and edge, so it needs
   // the same treatment.
@@ -2297,7 +2312,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |
        |# otel-exporter = "http://localhost:4317"
        |
-       |id = "edge-default"
+       |id = "$edgeConfigId"
        |
        |# What this edge is to the installation (EdgeConfig.mode, #555): "first-party" -- the
        |# operator's own edge, configuration synced from central, EdgeAssertion to auth, the

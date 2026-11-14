@@ -744,19 +744,27 @@ diagnostics port from `metricsFrom` (empty: any pod), and from `extraIngress`. E
 region, another cloud, an operator's own site. Everything about the rest of the system is reached by
 public name, so install the main chart's `exposure` first (section 9a).
 
-1. In central, create the edge (`POST /configuration/edges`, with a `groupId`) and an enrollment token
-   (`POST /configuration/edges/enrollment-tokens?edgeId=...`). The token is shown once, lives an
+1. In central, create the edge (`POST /configuration/edges`, with a `groupId`; or **Edges** in the admin console) and an
+   enrollment token (`POST /configuration/edges/enrollment-tokens?edgeId=...`). The token is shown once, lives an
    hour and works once. Put it in a Secret: `kubectl create secret generic edge-enrollment --from-literal=token=...`.
+   Central shows the edge's signing key once as well, at registration: keep the key id and the private key.
 2. Copy the leaf certificate of central's listener (the Secret `<release>-versola-central-mtls`, `tls.crt`)
    to `central.pins`; do the same for auth's if the edge calls it (`auth.pins`). Pins are a *set*: put the
    next leaf beside the current one before the listener switches, so a rotation does not cut the edge off.
-3. Generate the edge's `env.conf` (`scripts/gen-env.scala`) into a Secret and its secret vars into
-   `secrets.existingSecret`, as for the main chart, and add one line to the `env.conf`:
-   `include file("/app/remote-edge/central.conf")`.
+3. Generate the edge's `env.conf` (`scripts/gen-env.scala`, answer `k8s`, and `--remote-edge=true --edge-id=<the id from step 1>`)
+   into a Secret and its secret vars into `secrets.existingSecret`, as for the main chart, and add one line to the
+   `env.conf`: `include file("/app/remote-edge/central.conf")`. With `--remote-edge` the file names no certificate: it
+   comes from enrollment, and the chart's `central.conf` carries the `central` block (url, pins, `identity`). Two of the
+   generated values are not the edge's: `EDGE_KEY_ID` and `EDGE_PRIVATE_KEY` must be the key central showed in step 1
+   (the console and the admin API show the private key as base64url; the edge reads standard base64, so replace `-` by
+   `+` and `_` by `/`: `printf '%s' "$KEY" | tr '_-' '/+'`). Set `central.group` when the edge is not in the `default` group.
+   `gen-env` also writes a `native` block, which needs auth's mutual-TLS address and pin: set `auth.mtlsUrl` and `auth.pins` (the chart's
+   `central.conf` then carries the matching `native` block).
 
 ```bash
 helm upgrade --install edge-eu k8s/versola-edge --namespace versola-edge --create-namespace \
   --set central.mtlsUrl=https://central-mtls.example.com \
+  --set central.group=default \
   --set central.enrollment.url=https://central.example.com \
   --set central.enrollment.existingSecret=edge-enrollment \
   --set-file 'central.pins[0]=central-leaf.pem' \
@@ -765,8 +773,8 @@ helm upgrade --install edge-eu k8s/versola-edge --namespace versola-edge --creat
 ```
 
 What it renders: a StatefulSet (one replica), a Service, an optional Ingress, a ConfigMap with
-`central.conf` (the `central { url, mutual-tls { trusted-certificates }, enrollment { url, token-file } }`
-and `identity { directory }` blocks of the v1 contract, plus the pins as files) and, if you pass `central.enrollment.token`
+`central.conf` (the `central { url, mutual-tls { trusted-certificates }, identity { directory, group, enrollment { url, token-file } } }`
+block the edge reads, plus the pins as files) and, if you pass `central.enrollment.token`
 instead of `existingSecret`, the token Secret. The edge generates its key locally, enrolls once, keeps the key and
 certificate chain on a PVC (`persistence`, on by default) and renews at a third of the certificate's life
 left. **Without the PVC** the identity is gone with the pod: the edge enrolls again at every restart, which
