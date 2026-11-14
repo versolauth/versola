@@ -3,20 +3,17 @@ package versola.configuration.clients
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
 import versola.central.configuration.clients.*
-import versola.central.configuration.edges.EdgeId
+import versola.central.configuration.clients.certificates.EdgeCertificateEnrollmentRepositorySpec
 import versola.central.configuration.tenants.TenantId
 import versola.util.RedirectUri
 import versola.util.postgres.PostgresSpec
 import zio.*
-import zio.test.*
 
 import java.time.Instant
 
-object PostgresEdgeCertificateEnrollmentRepositorySpec extends PostgresSpec:
+object PostgresEdgeCertificateEnrollmentRepositorySpec extends PostgresSpec, EdgeCertificateEnrollmentRepositorySpec:
 
-  private val clientId = ClientId("mobile-app")
-  private val other = ClientId("other-app")
-  private val t0 = Instant.parse("2026-03-01T00:00:00Z")
+  import EdgeCertificateEnrollmentRepositorySpec.*
 
   private def record(id: ClientId) = OAuthClientRecord(
     id = id,
@@ -56,51 +53,29 @@ object PostgresEdgeCertificateEnrollmentRepositorySpec extends PostgresSpec:
     applicationType = ApplicationType.web,
   )
 
-  private val setup =
+  private class PostgresFixtures(xa: TransactorZIO) extends Fixtures:
+    override def lastIssued(clientId: ClientId): Task[List[(String, String)]] =
+      val id: String = clientId
+      xa.connect:
+        sql"SELECT last_serial, last_edge_id FROM edge_certificate_enrollment WHERE client_id = $id".query[(String, String)].run().toList
+
+  override lazy val environment =
+    ZLayer:
+      for xa <- ZIO.service[TransactorZIO]
+      yield Env(PostgresEdgeCertificateEnrollmentRepository(xa), PostgresOAuthClientRepository(xa), PostgresFixtures(xa))
+
+  override def beforeEach(env: Env) =
     for
       xa <- ZIO.service[TransactorZIO]
       _ <- xa.connect(sql"TRUNCATE TABLE tenants RESTART IDENTITY CASCADE".update.run())
       _ <- xa.connect(sql"INSERT INTO themes (id, css) VALUES ('default', '') ON CONFLICT (id) DO NOTHING".update.run())
       _ <- xa.connect(sql"INSERT INTO tenants (id, description) VALUES ('tenant-a', 'Tenant A')".update.run())
-      clients = PostgresOAuthClientRepository(xa)
-      _ <- clients.createClient(record(clientId))
-      _ <- clients.createClient(record(other))
-    yield (xa, clients, PostgresEdgeCertificateEnrollmentRepository(xa))
+      _ <- registered(env, clientId)
+      _ <- registered(env, other)
+    yield ()
 
-  def spec = suite("PostgresEdgeCertificateEnrollmentRepository")(
-    test("enrolls a client once, however often it is asked") {
-      for
-        (_, _, repository) <- setup
-        before <- repository.isEnrolled(clientId)
-        _ <- repository.enroll(clientId, t0)
-        _ <- repository.enroll(clientId, t0.plusSeconds(60))
-        after <- repository.isEnrolled(clientId)
-        all <- repository.enrolledClients
-      yield assertTrue(!before, after, all == Set(clientId))
-    },
-    test("records what was last signed, and for which edge") {
-      for
-        (xa, _, repository) <- setup
-        _ <- repository.enroll(clientId, t0)
-        _ <- repository.recordIssued(clientId, "ab12", t0.plusSeconds(5), EdgeId("edge-1"))
-        row <- xa.connect(sql"SELECT last_serial, last_edge_id FROM edge_certificate_enrollment WHERE client_id = 'mobile-app'".query[(
-            String,
-            String,
-        )].run())
-      yield assertTrue(row == Vector(("ab12", "edge-1")))
-    },
-    test("deleting the client removes its enrolment") {
-      for
-        (_, clients, repository) <- setup
-        _ <- repository.enroll(clientId, t0)
-        _ <- clients.deleteClient(clientId)
-        enrolled <- repository.isEnrolled(clientId)
-      yield assertTrue(!enrolled)
-    },
-    test("a client that does not exist cannot be enrolled") {
-      for
-        (_, _, repository) <- setup
-        exit <- repository.enroll(ClientId("ghost"), t0).exit
-      yield assertTrue(exit.isFailure)
-    },
-  ) @@ TestAspect.sequential
+  /** The client in the repository of clients, on tables just emptied: one that is there already is a failure of the reset. */
+  private def registered(env: Env, id: ClientId): Task[Unit] =
+    env.clients.createClient(record(id)).mapError:
+      case failure: Throwable => failure
+      case _: ClientAlreadyExists => IllegalStateException(s"client $id was there before the case started")

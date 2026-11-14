@@ -3,20 +3,17 @@ package versola.configuration.clients
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
 import versola.central.configuration.clients.*
-import versola.central.configuration.clients.certificates.ClientCertificateIssuance
+import versola.central.configuration.clients.certificates.ClientCertificateIssuanceRepositorySpec
 import versola.central.configuration.tenants.TenantId
 import versola.util.RedirectUri
 import versola.util.postgres.PostgresSpec
 import zio.*
-import zio.test.*
 
 import java.time.Instant
 
-object PostgresClientCertificateIssuanceRepositorySpec extends PostgresSpec:
+object PostgresClientCertificateIssuanceRepositorySpec extends PostgresSpec, ClientCertificateIssuanceRepositorySpec:
 
-  private val clientId = ClientId("mobile-app")
-  private val other = ClientId("other-app")
-  private val t0 = Instant.parse("2026-03-01T00:00:00Z")
+  import ClientCertificateIssuanceRepositorySpec.*
 
   private def record(id: ClientId) = OAuthClientRecord(
     id = id,
@@ -56,64 +53,23 @@ object PostgresClientCertificateIssuanceRepositorySpec extends PostgresSpec:
     applicationType = ApplicationType.web,
   )
 
-  private val setup =
+  override lazy val environment =
+    ZLayer:
+      for xa <- ZIO.service[TransactorZIO]
+      yield Env(PostgresClientCertificateIssuanceRepository(xa), PostgresOAuthClientRepository(xa))
+
+  override def beforeEach(env: Env) =
     for
       xa <- ZIO.service[TransactorZIO]
       _ <- xa.connect(sql"TRUNCATE TABLE tenants RESTART IDENTITY CASCADE".update.run())
       _ <- xa.connect(sql"INSERT INTO themes (id, css) VALUES ('default', '') ON CONFLICT (id) DO NOTHING".update.run())
       _ <- xa.connect(sql"INSERT INTO tenants (id, description) VALUES ('tenant-a', 'Tenant A')".update.run())
-      clients = PostgresOAuthClientRepository(xa)
-      _ <- clients.createClient(record(clientId))
-      _ <- clients.createClient(record(other))
-    yield (xa, clients, PostgresClientCertificateIssuanceRepository(xa))
+      _ <- registered(env, clientId)
+      _ <- registered(env, other)
+    yield ()
 
-  def spec = suite("PostgresClientCertificateIssuanceRepository")(
-    test("upsert records an issuance and a second one replaces it") {
-      for
-        (_, _, repository) <- setup
-        _ <- repository.upsert(ClientCertificateIssuance(clientId, "01", t0.plusSeconds(100), t0))
-        _ <- repository.upsert(ClientCertificateIssuance(clientId, "02", t0.plusSeconds(500), t0.plusSeconds(10)))
-        found <- repository.find(clientId)
-      yield assertTrue(found.map(_.serial) == Some("02"), found.map(_.notAfter) == Some(t0.plusSeconds(500)))
-    },
-    test("expiringBefore returns only the issuances inside the window, soonest first") {
-      for
-        (_, _, repository) <- setup
-        _ <- repository.upsert(ClientCertificateIssuance(clientId, "01", t0.plusSeconds(500), t0))
-        _ <- repository.upsert(ClientCertificateIssuance(other, "02", t0.plusSeconds(100), t0))
-        due <- repository.expiringBefore(t0.plusSeconds(300))
-        all <- repository.expiringBefore(t0.plusSeconds(1000))
-      yield assertTrue(due.map(_.clientId) == Vector(other), all.map(_.clientId) == Vector(other, clientId))
-    },
-    test("delete forgets an issuance") {
-      for
-        (_, _, repository) <- setup
-        _ <- repository.upsert(ClientCertificateIssuance(clientId, "01", t0, t0))
-        _ <- repository.delete(clientId)
-        found <- repository.find(clientId)
-      yield assertTrue(found.isEmpty)
-    },
-    test("replace updates an existing issuance and never creates one") {
-      for
-        (_, _, repository) <- setup
-        missing <- repository.replace(ClientCertificateIssuance(clientId, "09", t0, t0))
-        _ <- repository.upsert(ClientCertificateIssuance(clientId, "01", t0, t0))
-        replaced <- repository.replace(ClientCertificateIssuance(clientId, "02", t0.plusSeconds(60), t0))
-        found <- repository.find(clientId)
-      yield assertTrue(!missing, replaced, found.map(_.serial) == Some("02"))
-    },
-    test("deleting the client removes its issuance") {
-      for
-        (_, clients, repository) <- setup
-        _ <- repository.upsert(ClientCertificateIssuance(clientId, "01", t0, t0))
-        _ <- clients.deleteClient(clientId)
-        found <- repository.find(clientId)
-      yield assertTrue(found.isEmpty)
-    },
-    test("an issuance cannot exist for a client that does not") {
-      for
-        (_, _, repository) <- setup
-        exit <- repository.upsert(ClientCertificateIssuance(ClientId("ghost"), "01", t0, t0)).exit
-      yield assertTrue(exit.isFailure)
-    },
-  ) @@ TestAspect.sequential
+  /** The client in the repository of clients, on tables just emptied: one that is there already is a failure of the reset. */
+  private def registered(env: Env, id: ClientId): Task[Unit] =
+    env.clients.createClient(record(id)).mapError:
+      case failure: Throwable => failure
+      case _: ClientAlreadyExists => IllegalStateException(s"client $id was there before the case started")
