@@ -76,6 +76,19 @@ object EdgeGroupCertificateSpec
         stepUpAcr = None,
         maxAge = None,
       ),
+      // The same, behind a rule no user satisfies: the call is refused after the edge has asked auth, so after it re-bound the session.
+      EdgeFixture.Endpoint(
+        name = "denied",
+        method = "GET",
+        path = "/denied",
+        permitted = true,
+        fetchUserInfo = true,
+        allow = Some("user.sub == 'nobody'"),
+        inject = Nil,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
     ),
     scopes = Set("openid", "email", "offline_access"),
     // `offline_access`: the session needs the refresh token the edge re-binds it with.
@@ -226,5 +239,26 @@ object EdgeGroupCertificateSpec
           .label("the same cookie is served after the renewal, with no sign-in") &&
         assertTrue(boundAfter.contains(renewed.thumbprint), cookie != session.cookie)
           .label("because the edge re-bound the session to the renewed certificate")
+    },
+    // The refresh moves the session's row to the new token. Were the refusal to leave the browser with the old cookie,
+    // its next refresh would find no row and, ten seconds on, send the user to sign in.
+    test("a call an access rule refuses after the edge re-bound the session still hands the browser the new cookie") {
+      for
+        f <- fixture
+        first <- firstEdge
+        session <- signIn(first)
+        renewed <- renewOn(first)
+
+        refused <- first.proxy(Method.GET, f.resourceId, "/denied", EdgeAuth.Session(session.cookie))
+        rotated = EdgeApi.sessionCookie(refused.response).filter(_.nonEmpty)
+        boundAfter <- ZIO.foreach(rotated)(boundTo).map(_.flatten)
+        // The cookie of the refusal is the session's: the next call needs no refresh and sets nothing.
+        (after, kept) <- profile(first, rotated.getOrElse(session.cookie))
+      yield assertTrue(refused.status == Status.Forbidden)
+        .label("the control: the rule refuses the call") &&
+        assertTrue(rotated.exists(_ != session.cookie), boundAfter.contains(renewed.thumbprint))
+          .label("the 403 carries the cookie of the session the edge re-bound to its renewed certificate") &&
+        assertTrue(after.status == Status.Ok, rotated.contains(kept))
+          .label("and that cookie is served as it is")
     },
   ) @@ TestAspect.sequential
