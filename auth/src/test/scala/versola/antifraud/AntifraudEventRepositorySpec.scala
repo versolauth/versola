@@ -261,6 +261,22 @@ trait AntifraudEventRepositorySpec extends DatabaseSpecBase[AntifraudEventReposi
           late <- rollup(minute, 1.minute)
         yield assertTrue(first, !second, other, again, late)
       },
+      test("a minute that did not change is not rewritten, and one that did is") {
+        val minute = Instant.parse("2026-10-21T10:05:00Z")
+        def rollup = repository.rollupStats(from = minute, to = minute.plusSeconds(60), prefixLength = 4, interval = Duration.Zero)
+        for
+          _ <- repository.maintainPartitions(from = today, days = 1, keepFrom = today.minusDays(30))
+          _ <- repository.insertBatch(List(event(minute.plusSeconds(1)), event(minute.plusSeconds(2), AntifraudOutcome.throttled)))
+          _ <- rollup
+          first <- f.statWrites
+          _ <- rollup
+          unchanged <- f.statWrites
+          _ <- repository.insertBatch(List(event(minute.plusSeconds(3))))
+          _ <- rollup
+          changed <- f.statWrites
+          requests <- f.stats.map(_.map(_.requests))
+        yield assertTrue(first.size == 1, unchanged == first, changed != first, requests == List(3))
+      },
     )
 
 object AntifraudEventRepositorySpec:
@@ -310,6 +326,10 @@ object AntifraudEventRepositorySpec:
     def stats: Task[List[StatRow]]
 
     def clearStats: Task[Unit]
+
+    /** For every row of the rollup, a mark of the write that left it as it is: the same for as long as the row is not written
+      * again, another one after a write of it, whatever the write stored. */
+    def statWrites: Task[List[String]]
 
     /** Forgets when the rollup last ran, as if no instance had. */
     def clearRollupState: Task[Unit]

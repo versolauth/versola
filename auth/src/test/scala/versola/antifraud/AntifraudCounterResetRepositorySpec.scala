@@ -50,10 +50,22 @@ trait AntifraudCounterResetRepositorySpec extends DatabaseSpecBase[AntifraudCoun
           read <- repository.since(0, 100)
         yield assertTrue(generations.toSet == (1L to 12L).toSet, read.map(_.generation) == (1L to 12L).toList)
       },
+      test("a row of a scope this version does not know is skipped, not fatal") {
+        for
+          _ <- repository.record(whole, "alice", at)
+          _ <- env.fixtures.resetOfScope(generation = 2, scope = "future", requestedBy = "x")
+          read <- repository.since(0, 10)
+        yield assertTrue(read.map(_.generation) == List(1L))
+      },
     )
 
 object AntifraudCounterResetRepositorySpec:
-  case class Env(repository: AntifraudCounterResetRepository)
+  case class Env(repository: AntifraudCounterResetRepository, fixtures: Fixtures)
+
+  /** What a case stores that the repository under test cannot write: the storage's runner supplies it. */
+  trait Fixtures:
+    /** A reset as a later version would store it, `scope` by the name it is stored under and not one this version has to know. */
+    def resetOfScope(generation: Long, scope: String, requestedBy: String): Task[Unit]
 
   val at: Instant = Instant.parse("2026-11-02T10:00:00Z")
   val whole: CounterReset.Resolved = CounterReset.Resolved(CounterScope.all, None, None, None)

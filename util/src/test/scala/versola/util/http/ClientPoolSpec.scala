@@ -16,7 +16,10 @@ object ClientPoolSpec extends ZIOSpecDefault:
   private val routes = Routes(Method.GET / "slow" -> handler(ZIO.sleep(handlerDelay).as(Response.text("ok"))))
 
   /** Wall-clock time for `concurrent` simultaneous requests to a backend that takes `handlerDelay`
-    * through a client with the given pool.
+    * through a client with the given pool: the fastest of three runs. Whatever disturbs a run (the
+    * connections still being opened in the first, a runner that stalls for a moment) only adds to
+    * it, so the fastest run is the nearest to what the pool itself costs. One run of the larger
+    * pool was once slower on CI than the smaller pool's four rounds less one.
     */
   private def elapsed(pool: ConnectionPoolConfig): ZIO[Any, Throwable, Duration] =
     ZIO.scoped((for
@@ -25,10 +28,14 @@ object ClientPoolSpec extends ZIOSpecDefault:
       url = URL.decode(s"http://localhost:$port/slow").toOption.get
       get = ZIO.scoped(client.request(Request.get(url))).flatMap(_.body.asString)
       _ <- get // connection set-up outside the timing
-      started <- Clock.nanoTime
-      _ <- ZIO.foreachParDiscard(1 to concurrent)(_ => get)
-      done <- Clock.nanoTime
-    yield Duration.fromNanos(done - started)).provideSome[Scope](Server.defaultWith(_.port(0))))
+      run =
+        for
+          started <- Clock.nanoTime
+          _ <- ZIO.foreachParDiscard(1 to concurrent)(_ => get)
+          done <- Clock.nanoTime
+        yield Duration.fromNanos(done - started)
+      runs <- run.replicateZIO(3)
+    yield runs.reduce(_ min _)).provideSome[Scope](Server.defaultWith(_.port(0))))
 
   def spec = suite("Observability client pool")(
     test("the default maximum is 128 connections per target, not zio-http's 10") {

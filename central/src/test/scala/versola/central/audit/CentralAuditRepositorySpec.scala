@@ -8,13 +8,15 @@ import zio.*
 import zio.json.ast.Json
 import zio.test.*
 
-import java.time.Instant
+import java.time.{Instant, LocalDate}
 import java.util.UUID
 
 /** Conformance suite for any [[CentralAuditRepository]]; see `PostgresAuditEventRepositorySpec` in `central-postgres-impl` for the
   * one binding. */
 trait CentralAuditRepositorySpec extends DatabaseSpecBase[CentralAuditRepositorySpec.Env]:
   self: ZIOSpec[TransactorZIO] =>
+
+  import CentralAuditRepositorySpec.{oldAt, oldDay, written}
 
   private val user = UUID.fromString("00000000-0000-0000-0000-000000000001")
   private val other = UUID.fromString("00000000-0000-0000-0000-000000000002")
@@ -217,7 +219,68 @@ trait CentralAuditRepositorySpec extends DatabaseSpecBase[CentralAuditRepository
           read <- env.repository.userEvents(user, wide._1, wide._2, None, 10)
         yield assertTrue(read.isEmpty)
       },
+      test("a day whose rows sit in the default partition is reported and left alone, and is attached once they are pruned") {
+        for
+          _ <- env.fixtures.dropOldDayPartition
+          _ <- env.repository.insertBatch(List(written("00000000-0000-7000-8000-000000000002")))
+          held <- env.repository.maintainPartitions(oldDay, 1, LocalDate.of(2000, 1, 1))
+          stillThere <- env.fixtures.countUnpartitioned
+          pruned <- env.repository.pruneDefault(oldAt.plusSeconds(1))
+          attached <- env.repository.maintainPartitions(oldDay, 1, LocalDate.of(2000, 1, 1))
+          ahead <- env.repository.partitionDaysAhead(oldDay.minusDays(1))
+          _ <- env.fixtures.dropOldDayPartition
+        yield assertTrue(
+          // never moved: an insert-only replication of the table would see the row twice
+          held.daysLeftInDefault == List(oldDay),
+          held.created == 0,
+          held.movedFromDefault == 0L,
+          stillThere == 1L,
+          pruned == 1L,
+          attached.daysLeftInDefault.isEmpty,
+          attached.created == 1,
+          ahead >= 1,
+        )
+      },
+      test("the service is the owner of the table, so that it may maintain the partitions") {
+        for ownership <- env.repository.ownership
+        yield assertTrue(ownership.mayAlter, ownership.owner == ownership.role)
+      },
     )
 
 object CentralAuditRepositorySpec:
-  case class Env(repository: CentralAuditRepository)
+  case class Env(repository: CentralAuditRepository, fixtures: Fixtures)
+
+  /** What a case reads and resets of the storage's partitions, which no method of the trait does: the storage's runner supplies it. */
+  trait Fixtures:
+    /** How many events are held for a day that has no partition (the default partition's rows). */
+    def countUnpartitioned: Task[Long]
+
+    /** Forgets the partition of [[oldDay]], if a case or an earlier run made one: its events are then held for a day without one. */
+    def dropOldDayPartition: Task[Unit]
+
+  /** A day no run of this spec or of the service has a partition for, so that its rows are in the default partition. */
+  val oldDay: LocalDate = LocalDate.of(2001, 2, 3)
+  val oldAt: Instant = Instant.parse("2001-02-03T10:00:00Z")
+
+  def written(id: String): AuditEvent = AuditEvent(
+    id = UUID.fromString(id),
+    at = oldAt,
+    tenantId = None,
+    source = CentralAudit.Source,
+    nodeId = "node-1",
+    kind = CentralAudit.admin("tenant", "create"),
+    outcome = AuditOutcome.success,
+    reason = None,
+    severity = AuditSeverity.info,
+    actorType = CentralAudit.Actors.Admin,
+    actorId = None,
+    userId = Some(UUID.fromString("00000000-0000-0000-0000-000000000001")),
+    clientId = None,
+    sessionId = None,
+    ip = None,
+    userAgent = None,
+    traceId = None,
+    targetType = None,
+    targetId = None,
+    details = Json.Obj(),
+  )

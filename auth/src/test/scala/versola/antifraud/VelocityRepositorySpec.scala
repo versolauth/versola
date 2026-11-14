@@ -10,7 +10,8 @@ import java.util.UUID
 /** What every [[VelocityRepository]] promises: the counters an instance saves are what the others load, per instance and
   * without its own; a saved minute replaces the earlier value; a load is bounded by minutes and by keys, the busiest kept;
   * pruning is by minute and in batches; forgetting is by key, by range of numbers, or everything, for one instance or all.
-  * A storage adds what it alone promises (a statement timeout, a row it does not understand) in `implementationCases`. */
+  * A counter of a kind this version does not know, which the repository cannot write, is stored through
+  * [[VelocityRepositorySpec.Fixtures]]. A storage adds what it alone promises (a statement timeout) in `implementationCases`. */
 trait VelocityRepositorySpec extends DatabaseSpecBase[VelocityRepositorySpec.Env]:
   self: ZIOSpec[TransactorZIO] =>
 
@@ -163,10 +164,21 @@ trait VelocityRepositorySpec extends DatabaseSpecBase[VelocityRepositorySpec.Env
           left <- repository.loadOthers(UUID.randomUUID(), 0, Long.MaxValue, 100)
         yield assertTrue(gone == 1, left == List(shared(b, bucket(ip, "k", 100, 2))))
       },
+      test("a value in the table that is not a key kind is left out, not a failure") {
+        for
+          _ <- env.fixtures.bucketOfKind(keyType = "future", key = "x", minute = 100, instance = UUID.randomUUID(), count = 1)
+          seen <- repository.loadOthers(UUID.randomUUID(), 0, Long.MaxValue, 100)
+        yield assertTrue(seen.isEmpty)
+      },
     )
 
 object VelocityRepositorySpec:
-  case class Env(repository: VelocityRepository)
+  case class Env(repository: VelocityRepository, fixtures: Fixtures)
+
+  /** What a case stores that the repository under test cannot write: the storage's runner supplies it. */
+  trait Fixtures:
+    /** A counter as a later version would store it, `keyType` by the name it is stored under and not one this version has to know. */
+    def bucketOfKind(keyType: String, key: String, minute: Long, instance: UUID, count: Int): Task[Unit]
 
   def bucket(keyType: VelocityKey, key: String, minute: Long, count: Int): VelocityBucket =
     VelocityBucket(keyType = keyType, key = key, minute = minute, count = count)
