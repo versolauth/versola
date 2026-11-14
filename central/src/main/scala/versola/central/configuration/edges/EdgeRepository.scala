@@ -1,8 +1,9 @@
 package versola.central.configuration.edges
 
+import versola.central.configuration.partners.PartnerEdgeLimitReached
 import versola.util.CacheSource
-import zio.Task
 import zio.json.ast.Json
+import zio.{IO, Task}
 
 trait EdgeRepository extends CacheSource[Vector[EdgeRecord]]:
   def getAll: Task[Vector[EdgeRecord]]
@@ -10,7 +11,15 @@ trait EdgeRepository extends CacheSource[Vector[EdgeRecord]]:
   def find(id: EdgeId): Task[Option[EdgeRecord]]
 
   /** `publicKeyJwk` is `None` for a partner's edge, which brings its own key when it enrols ([[setPublicKey]]). */
-  def createEdge(id: EdgeId, publicKeyJwk: Option[Json.Obj], requireDpopNonce: Boolean, groupId: EdgeGroupId, publicUrl: Option[String]): Task[Unit]
+  /** Stores the edge. When `groupId` is a partner's group, the partner's row is locked and the group's edges counted in the same
+    * transaction, so that the partner's `maxEdges` holds however many are created at once: [[PartnerEdgeLimitReached]]. */
+  def createEdge(
+      id: EdgeId,
+      publicKeyJwk: Option[Json.Obj],
+      requireDpopNonce: Boolean,
+      groupId: EdgeGroupId,
+      publicUrl: Option[String],
+  ): IO[PartnerEdgeLimitReached | Throwable, Unit]
 
   def rotateEdgeKey(id: EdgeId, newPublicKeyJwk: Json.Obj): Task[Unit]
 

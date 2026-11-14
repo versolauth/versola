@@ -5,7 +5,8 @@ SET LOCAL lock_timeout = '5s';
 -- Partners (#549, #962): an organisation the operator lets run a Versola edge on its own infrastructure and own clients
 -- inside the operator's tenant. A partner is not a tenant: its clients, resources and presets live in `tenant_id` with
 -- `partner_id` ownership, and the user base is the operator's. `status` is the kill switch: `suspended` refuses the
--- partner's edges everything (renewal included), omits its clients from the sync to auth and ends their grants;
+-- partner's edges everything (renewal included) and omits its clients from the sync to auth; it ends and deletes nothing, and
+-- `resume` reverses it. `status` is `onboarding`, `active` or `suspended` (the Scala enum, which decides what is stored);
 -- `onboarding` is a partner whose first edge has not yet called central. `limits` is what the operator lets the partner
 -- have (PartnerLimits); `settings` what the partner itself keeps for its edge (PartnerSettings). `group_id` is the
 -- partner's own edge group, of kind `partner`, one to one. `console_client_id` names the partner's console client; no
@@ -16,31 +17,18 @@ CREATE TABLE partners (
     display_name      TEXT NOT NULL,
     logo_uri          TEXT,
     contact           JSONB NOT NULL,
-    status            TEXT NOT NULL CHECK (status IN ('onboarding', 'active', 'suspended')),
+    status            TEXT NOT NULL,
     limits            JSONB NOT NULL,
-    group_id          TEXT NOT NULL UNIQUE REFERENCES edge_groups(id),
+    group_id          TEXT NOT NULL REFERENCES edge_groups(id),
     console_client_id TEXT NOT NULL,
     settings          JSONB NOT NULL,
     review_at         TIMESTAMPTZ,
     created_at        TIMESTAMPTZ NOT NULL
 );
 
--- The group a partner points at is a partner group. A CHECK cannot read another table, so a trigger: the service checks
--- the same before it writes, and this keeps a direct write from binding a partner to the operator's own edges.
-CREATE FUNCTION partners_group_is_partner()
-RETURNS trigger AS $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM edge_groups WHERE id = NEW.group_id AND kind = 'partner') THEN
-    RAISE EXCEPTION 'partner % needs an edge group of kind partner, % is not one', NEW.id, NEW.group_id
-      USING ERRCODE = 'check_violation';
-  END IF;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER partners_group_is_partner
-BEFORE INSERT OR UPDATE OF group_id ON partners
-FOR EACH ROW EXECUTE FUNCTION partners_group_is_partner();
+-- One partner per group. Whether the group is of kind `partner` is checked by PartnerService (which creates the group itself), as
+-- the partner limits and the kinds of a group are: the rules of the business are in the code, not here.
+CREATE UNIQUE INDEX partners_group_idx ON partners (group_id);
 
 -- partner_change: JSON payload with id and op, as V1009 does for clients; partners are cached in memory and the status is
 -- read on every call of a partner's edge, so a change has to reach the cache at once.
@@ -67,7 +55,7 @@ FOR EACH ROW EXECUTE FUNCTION notify_partner_change();
 -- keeps serving during `versola migrate`; the code writes the value on every insert. It can go in a later release.
 ALTER TABLE oauth_clients
     ADD COLUMN partner_id TEXT REFERENCES partners(id),
-    ADD COLUMN approval TEXT NOT NULL DEFAULT 'approved' CHECK (approval IN ('pending', 'approved', 'rejected'));
+    ADD COLUMN approval TEXT NOT NULL DEFAULT 'approved';
 
 CREATE INDEX oauth_clients_partner_idx ON oauth_clients (partner_id) WHERE partner_id IS NOT NULL;
 
@@ -92,7 +80,7 @@ ALTER TABLE edges ALTER COLUMN public_key_jwk DROP NOT NULL;
 CREATE TABLE partner_approvals (
     id             TEXT PRIMARY KEY,
     partner_id     TEXT NOT NULL REFERENCES partners(id) ON DELETE CASCADE,
-    kind           TEXT NOT NULL CHECK (kind IN ('client_create', 'client_change', 'profile_change')),
+    kind           TEXT NOT NULL,
     target_id      TEXT NOT NULL,
     requested      JSONB NOT NULL,
     current        JSONB,
@@ -100,7 +88,7 @@ CREATE TABLE partner_approvals (
     outside_limits TEXT[] NOT NULL,
     requested_by   TEXT NOT NULL,
     requested_at   TIMESTAMPTZ NOT NULL,
-    status         TEXT NOT NULL CHECK (status IN ('waiting', 'approved', 'rejected', 'withdrawn')),
+    status         TEXT NOT NULL,
     decided_by     TEXT,
     decided_at     TIMESTAMPTZ,
     note           TEXT

@@ -111,11 +111,6 @@ object PartnerClientService:
     * decisions are. */
   val HistoryLimit: Int = 500
 
-  /** Whether a failure of a write is one of the triggers that enforce a partner's limits, which name themselves in the message of
-    * the exception (`partner_client_limit`, `partner_edge_limit`), however deep in the causes the database driver put it. */
-  def isLimitViolation(error: Throwable, marker: String): Boolean =
-    Option(error.getMessage).exists(_.contains(marker)) || Option(error.getCause).exists(isLimitViolation(_, marker))
-
   val live: URLayer[OAuthClientService & AuthorizationPresetService & PartnerApprovalRepository, PartnerClientService] =
     ZLayer.fromFunction(Impl(_, _, _))
 
@@ -132,9 +127,6 @@ object PartnerClientService:
       error match
         case error: InvalidRegistrationConfiguration => ZIO.fail(PartnerError.Invalid(s"Invalid registration configuration: ${error.reason}"))
         case error: ClientAlreadyExists => ZIO.fail(PartnerError.Conflict(s"client '${error.clientId}' already exists"))
-        // the count of clients is enforced by the table (a trigger that locks the partner), where two creations cannot both pass
-        case error: Throwable if PartnerClientService.isLimitViolation(error, "partner_client_limit") =>
-          ZIO.fail(PartnerError.Invalid("the partner has registered as many clients as its limits allow"))
         case error: Throwable => ZIO.fail(error)
 
     private def owned(partner: PartnerRecord, clientId: ClientId): IO[PartnerError | Throwable, OAuthClientRecord] =

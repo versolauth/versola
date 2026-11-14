@@ -68,6 +68,27 @@ object CrossClientSsoFlowSpec extends E2ESpec:
       _ <- auth.syncConfiguration()
     yield (clientId, result.secret)
 
+  /** The same client B, owned by a partner of its own: consent exists only on a partner's client (owner decision, 2026-11-13), so a
+    * second client that asks for it is a partner's, authenticated by its group's certificate and redirecting to its own address. */
+  private def registerPartnerClientB(auth: OAuthClient, consentFlow: Json): Task[(String, String)] =
+    val clientId = s"sso-client-b-${UUID.randomUUID().toString.replace("-", "").take(8)}"
+    for
+      owner <- Flows.createPartnerOwner().provideEnvironment(ZEnvironment(auth))
+      redirectUri = owner.redirectUri()
+      _ <- auth.registerClient(
+        clientId,
+        "Cross-Client SSO Client B",
+        Set(redirectUri),
+        allowedScopes = Set("openid", "email"),
+        authFlow = Some(Flows.emailOtpAuthFlow),
+        consentFlow = Some(consentFlow),
+        authMethod = "tls_client_auth",
+        mtlsAuth = Some(owner.mtlsAuth),
+        partnerId = Some(owner.partnerId),
+      ).success
+      _ <- auth.syncConfiguration()
+    yield (clientId, redirectUri)
+
   /** Full interactive email+OTP login with client A, for a user created just for this test.
     *
     * A per-test user keeps the resulting session out of the way of every other spec: sibling
@@ -270,12 +291,12 @@ object CrossClientSsoFlowSpec extends E2ESpec:
       for
         (a, auth) <- setup(Flows.Id.EmailOtp)
         login <- loginWithClientA(a, auth)
-        (clientB, _) <- registerClientB(auth, a.redirectUri, consentFlow = Some(Flows.rememberedConsentFlow))
+        (clientB, redirectB) <- registerPartnerClientB(auth, Flows.rememberedConsentFlow)
         // Authentication is settled by the session, so the conversation opens on consent
         // rather than on a credential card.
         interactive <- auth.authorizeRaw(
           clientId = clientB,
-          redirectUri = a.redirectUri,
+          redirectUri = redirectB,
           scope = Some("openid email"),
           sessionCookie = Some(login.sessionCookie),
         ).assertChallengeRedirect
@@ -284,7 +305,7 @@ object CrossClientSsoFlowSpec extends E2ESpec:
         // request names consent as the missing interaction.
         _ <- auth.authorizeRaw(
           clientId = clientB,
-          redirectUri = a.redirectUri,
+          redirectUri = redirectB,
           scope = Some("openid email"),
           prompt = Some("none"),
           sessionCookie = Some(login.sessionCookie),
@@ -296,10 +317,10 @@ object CrossClientSsoFlowSpec extends E2ESpec:
       for
         (a, auth) <- setup(Flows.Id.EmailOtp)
         login <- loginWithClientA(a, auth)
-        (clientB, _) <- registerClientB(auth, a.redirectUri, consentFlow = Some(Flows.rememberedConsentFlow))
+        (clientB, redirectB) <- registerPartnerClientB(auth, Flows.rememberedConsentFlow)
         interactive <- auth.authorizeRaw(
           clientId = clientB,
-          redirectUri = a.redirectUri,
+          redirectUri = redirectB,
           scope = Some("openid email"),
           sessionCookie = Some(login.sessionCookie),
         ).assertChallengeRedirect
@@ -313,7 +334,7 @@ object CrossClientSsoFlowSpec extends E2ESpec:
           .orElseFail(RuntimeException("No SSO_SESSION cookie in the consent submission response"))
         code <- auth.authorizeRaw(
           clientId = clientB,
-          redirectUri = a.redirectUri,
+          redirectUri = redirectB,
           scope = Some("openid email"),
           prompt = Some("none"),
           sessionCookie = Some(rotated),

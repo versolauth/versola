@@ -26,7 +26,7 @@ test('lists edges with their tenants, key state and DPoP nonce, filters and sear
   await loadAdminApp(page, { path: edgesPath, state: { edges: [alphaEdge, bravoEdge], tenants } });
 
   const table = page.locator('versola-data-table');
-  await expect(table.getByRole('columnheader')).toHaveText(['Edge', 'Tenants', 'Key', 'DPoP nonce', 'Actions']);
+  await expect(table.getByRole('columnheader')).toHaveText(['Edge', 'Group', 'Serves', 'Key', 'Certificate', 'DPoP nonce', 'Actions']);
   const alpha = table.getByRole('row').filter({ hasText: 'edge-alpha' });
   await expect(alpha).toContainText('tenant-alpha');
   await expect(alpha).toContainText('Key current');
@@ -645,4 +645,66 @@ test.describe('policies are one endpoint, with revisions', () => {
     expect(patchesOf(api.requests, 'overload')).toHaveLength(0);
     await expect(sidePanel(page, 'edge-alpha').getByRole('region', { name: 'Overload protection' })).toContainText('Enforce (set here)');
   });
+});
+
+// ── Edge groups (#549): first-party and partner edges ──────────────────────────────────────────
+
+const partnerOfEdges = {
+  id: 'pilot-pay', tenantId: 'tenant-alpha', displayName: 'Pilot Pay', logoUri: null, contact: { email: 'security@pilotpay.example' },
+  status: 'active' as const, groupId: 'pilot-pay', consoleClientId: 'pilot-pay-console', reviewAt: null, createdAt: '2026-09-02T10:00:00Z',
+  limits: { scopes: ['openid'], redirectDomains: ['pilotpay.example'], maxClients: 10, maxEdges: 3, accessTokenTtlMax: 600, refreshTokenTtlMax: 30 * 86_400, clientAuthMethods: ['tls_client_auth' as const], rateLimitPolicy: 'partner-default' },
+};
+const partnerEdge = { id: 'edge-pilot-eu-1', hasOldKey: false, requireDpopNonce: true, groupId: 'pilot-pay', groupKind: 'partner' as const, partnerId: 'pilot-pay', publicUrl: 'https://login.pilotpay.example', certificateNotAfter: '2026-11-17T00:00:00Z', lastRenewedAt: '2026-11-03T02:00:00Z' };
+const waitingEdge = { id: 'edge-pilot-kz-1', hasOldKey: false, requireDpopNonce: true, groupId: 'pilot-pay', groupKind: 'partner' as const, partnerId: 'pilot-pay', publicUrl: 'https://login-kz.pilotpay.example' };
+const groupedPath = `${edgesPath}&tenant=tenant-alpha`;
+
+test('shows the group, the kind and the certificate of every edge, and filters first-party from partner', async ({ page }) => {
+  await loadAdminApp(page, { path: groupedPath, state: { edges: [alphaEdge, partnerEdge, waitingEdge], tenants, partners: [partnerOfEdges] } });
+  const table = page.locator('versola-data-table');
+  await expect(table.getByRole('columnheader')).toHaveText(['Edge', 'Group', 'Serves', 'Key', 'Certificate', 'DPoP nonce', 'Actions']);
+  const alpha = table.getByRole('row').filter({ hasText: 'edge-alpha' });
+  await expect(alpha).toContainText('default');
+  await expect(alpha).toContainText('First-party');
+  await expect(alpha).toContainText('tenant-alpha');
+  const pilot = table.getByRole('row').filter({ hasText: 'edge-pilot-eu-1' });
+  await expect(pilot).toContainText('pilot-pay');
+  await expect(pilot).toContainText('Partner');
+  await expect(pilot).toContainText('Clients of Pilot Pay');
+  await expect(pilot).toContainText('Group certificate');
+  await expect(pilot).toContainText('to Nov 17, 2026');
+  await expect(pilot).toContainText('Renews by itself');
+  await expect(table.getByRole('row').filter({ hasText: 'edge-pilot-kz-1' })).toContainText('Waiting for enrollment');
+
+  await page.getByRole('button', { name: 'Partner', exact: true }).click();
+  await expect(table.getByRole('button', { name: /^Open edge/ })).toHaveText([/edge-pilot-eu-1/, /edge-pilot-kz-1/]);
+  await page.getByRole('button', { name: 'First-party', exact: true }).click();
+  await expect(table.getByRole('button', { name: /^Open edge/ })).toHaveText([/edge-alpha/]);
+
+  const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+  expect(results.violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+});
+
+test('a partner edge has a group card with its partner and certificate, no signing key and no tenants; the partner opens from it', async ({ page }) => {
+  await loadAdminApp(page, { path: `${groupedPath}&id=edge-pilot-eu-1`, state: { edges: [alphaEdge, partnerEdge], tenants, partners: [partnerOfEdges] } });
+  const dialog = panel(page, 'edge-pilot-eu-1');
+  await expect(dialog.getByRole('dialog')).toBeVisible();
+  const group = dialog.getByRole('region', { name: 'Group and certificate' });
+  await expect(group).toContainText('pilot-pay · partner');
+  await expect(group).toContainText('valid to Nov 17, 2026 · last renewed Nov 3, 2026');
+  await expect(group).toContainText('Renews by itself');
+  await expect(dialog.getByRole('region', { name: 'Signing key' })).toHaveCount(0);
+  await expect(dialog.getByRole('region', { name: 'Linked tenants' })).toHaveCount(0);
+  await expect(dialog.getByRole('region', { name: 'Overload protection' })).toBeVisible();
+  await group.getByRole('button', { name: 'Pilot Pay' }).click();
+  await expect(page).toHaveURL(/view=partners/);
+  await expect(page).toHaveURL(/id=pilot-pay/);
+});
+
+test('says the renewal is refused when the partner is suspended', async ({ page }) => {
+  await loadAdminApp(page, { path: `${groupedPath}&id=edge-pilot-eu-1`, state: { edges: [partnerEdge], tenants, partners: [{ ...partnerOfEdges, status: 'suspended' as const }] } });
+  await expect(page.locator('versola-data-table').getByRole('row').filter({ hasText: 'edge-pilot-eu-1' })).toContainText('Renewal refused');
+  const group = panel(page, 'edge-pilot-eu-1').getByRole('region', { name: 'Group and certificate' });
+  await expect(group).toContainText('Renewal refused');
+  await expect(group).toContainText('The partner is suspended: central refuses the renewal');
+  await expect(group).toContainText('suspended');
 });

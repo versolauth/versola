@@ -15,6 +15,9 @@ import versola.central.configuration.challenges.{
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.edges.{EdgeCertificate, EdgeGroupId}
 import versola.central.configuration.partners.{
+  PartnerClientKind,
+  PartnerClientLimitReached,
+  PartnerClientRequest,
   PartnerContact,
   PartnerId,
   PartnerLimits,
@@ -398,6 +401,27 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     partnerId = Some(acme.id),
   )
 
+  private val fapi2SenderConstraintMessage =
+    "FAPI 2.0 requires sender-constrained access tokens: set dpopBoundAccessTokens, or authenticate with or bind tokens to a certificate"
+
+  /** What a partner's console sends to `POST /edge/partner/clients`. */
+  private def partnerEdgeRequest(kind: PartnerClientKind, accessTokenTtl: Int = 300) = PartnerClientRequest(
+    id = ClientId("acme-shop"),
+    kind = kind,
+    clientName = Map("en" -> "ACME Shop"),
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    redirectUris = Set(RedirectUri("https://www.acme.example/cb")),
+    scope = Set(ScopeToken("openid")),
+    authMethod = AuthMethod.tls_client_auth,
+    jwks = None,
+    accessTokenTtl = accessTokenTtl,
+    refreshTokenTtl = Some(3600),
+    backChannelLogoutUri = None,
+    consentFlow = None,
+  )
+
   private def partnerClient(id: String, approval: ClientApproval): OAuthClientRecord =
     cachedClient.copy(
       id = ClientId(id),
@@ -567,8 +591,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val secretBytes = Array.fill(32)(11.toByte)
       val encryptedBytes = Array.fill(48)(17.toByte)
       val storedSecret = Secret(encryptedBytes)
-      val consentFlow =
-        ConsentFlowDto(allowPartial = true, rememberDuration = Some(14.days.toSeconds), requiredScopes = Set.empty, offlineAccessOptional = false)
       val expectedClient = OAuthClientRecord(
         id = clientId,
         tenantId = tenantId,
@@ -589,8 +611,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         logoUri = None,
         policyUri = None,
         tosUri = None,
-        consentFlow =
-          Some(ConsentFlow(allowPartial = true, rememberDuration = Some(14.days), requiredScopes = Set.empty, offlineAccessOptional = false)),
+        // a first-party client asks for no consent
+        consentFlow = None,
         dpopBoundAccessTokens = false,
         dpopSigningAlgs = Set.empty,
         dpopMinRsaKeySize = None,
@@ -614,7 +636,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.secureRandom.nextBytes.succeedsWith(secretBytes)
         _ <- env.securityService.encryptAes256.succeedsWith(encryptedBytes)
         _ <- env.repository.createClient.succeedsWith(())
-        result <- env.service.registerClient(createRequest.copy(consentFlow = Some(consentFlow)))
+        result <- env.service.registerClient(createRequest)
         created = env.repository.createClient.calls.head
         encryptCall = env.securityService.encryptAes256.calls.head
       yield assertTrue(
@@ -645,14 +667,12 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("registerClient stores the theme overrides it was given, and none for an empty value") {
       val env = new Env()
       val overrides = ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = None, surface = None, mode = None, background = None)
-      val partnerRequest = createRequest.copy(consentFlow =
-        Some(ConsentFlowDto(allowPartial = true, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
-      )
 
       for
         _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
         _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
         _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.partners.findFresh.succeedsWith(Some(acme))
         _ <- env.service.registerClient(partnerRequest.copy(themeOverrides = Some(overrides)))
         _ <- env.service.registerClient(partnerRequest.copy(themeOverrides =
           Some(ThemeOverrides(brand = None, shape = None, surface = None, mode = None, background = None)),
@@ -664,7 +684,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         stored = env.repository.createClient.calls.map(_.themeOverrides)
       yield assertTrue(stored == List(Some(overrides), None, None, None))
     },
-    test("registerClient refuses theme overrides on a client that does not ask for consent, and stores nothing") {
+    test("registerClient refuses theme overrides on a client that is not owned by a partner, and stores nothing") {
       val env = new Env()
 
       for
@@ -674,7 +694,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         createCalls = env.repository.createClient.times
       yield assertTrue(
         result.left.toOption.exists:
-          case error: InvalidRegistrationConfiguration => error.reason.startsWith("themeOverrides can only be set on a client that asks for consent")
+          case error: InvalidRegistrationConfiguration => error.reason.startsWith("themeOverrides can only be set on a client owned by a partner")
           case _ => false,
         createCalls == 0,
       )
@@ -700,7 +720,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         None,
       ))
     },
-    test("updateClient refuses theme overrides for a client without a consent flow, unless the patch gives it one") {
+    test("updateClient refuses theme overrides for a client without a consent flow, and refuses giving it one: consent is for a partner") {
       val overrides = ThemeOverrides(mode = Some(Mode.dark), brand = None, shape = None, surface = None, background = None)
       val firstParty = new Env(Vector(cachedClient.copy(consentFlow = None)))
       val partner = new Env(Vector(cachedClient.copy(consentFlow =
@@ -708,14 +728,18 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )))
       val refused = (result: Either[Any, Unit]) =>
         result.left.toOption.exists:
-          case error: InvalidRegistrationConfiguration => error.reason.startsWith("themeOverrides can only be set on a client that asks for consent")
+          case error: InvalidRegistrationConfiguration => error.reason.startsWith("themeOverrides can only be set on a client owned by a partner")
+          case _ => false
+      val refusedConsent = (result: Either[Any, Unit]) =>
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason == InvalidRegistrationConfiguration.ConsentOnlyForPartnerReason
           case _ => false
 
       for
         _ <- firstParty.repository.updateClient.succeedsWith(())
         _ <- partner.repository.updateClient.succeedsWith(())
         withoutConsent <- firstParty.service.updateClient(noopUpdate.copy(themeOverrides = Some(overrides))).either
-        // the same patch that gives the consent flow is a partner's from the start
+        // giving the consent flow is refused (consent is only for a partner's client), and with it the overrides
         giving <- firstParty.service.updateClient(noopUpdate.copy(
           themeOverrides = Some(overrides),
           consentFlow = Some(Patch.Modified(ConsentFlowDto(
@@ -733,10 +757,10 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         updateCalls = firstParty.repository.updateClient.times
       yield assertTrue(
         refused(withoutConsent),
-        giving.isRight,
+        refusedConsent(giving),
         clearing.isRight,
         keeping.isRight,
-        updateCalls == 2,
+        updateCalls == 1,
       )
     },
     test("registerClient leaves the template unset for a registration that names none") {
@@ -2297,16 +2321,209 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     suite("a partner's client (#549, #962)")(
-      test("registerClient holds it to the invariant: a client without consent is refused, and nothing is stored") {
+      // Recorded for the owner's decision (#962): what a `fapi2` tenant does with a partner's client. `PartnerClientRequest` is what a
+      // partner's console sends through `/edge/partner/clients`; `toCreateClientRequest` is exactly what central registers for it
+      // (PartnerClientService.create calls registerClient with it, `Pending`, `allowOutsideLimits`), and the operator's
+      // `POST /configuration/clients/web` with `partnerId` reaches the same registerClient.
+      suite("under a fapi2 tenant")(
+        test("a partner's web client (tls_client_auth, the group's certificate) is refused: tokens are bound to nothing") {
+          val env = new Env()
+          val registration = partnerEdgeRequest(PartnerClientKind.web).toCreateClientRequest(acme)
+          for
+            _ <- env.partners.findFresh.succeedsWith(Some(acme))
+            _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
+            result <- env.service.registerClient(registration, approval = ClientApproval.Pending, allowOutsideLimits = true).either
+          yield assertTrue(
+            !registration.dpopBoundAccessTokens,
+            !registration.certificateBoundAccessTokens,
+            result.left.toOption.exists:
+              case error: InvalidRegistrationConfiguration => error.reason == fapi2SenderConstraintMessage
+              case _ => false,
+            env.repository.createClient.calls.isEmpty,
+          )
+        },
+        // Not the profile's doing: the rule for a native client in any tenant (#421) wants it public or edge-fronted with an
+        // `edgeClientCertificate`, which a partner's client does not have (its credential is the group's certificate, which central does
+        // not hold). So a partner's native client cannot be registered at all, `standard` tenant included, and the profile is never reached.
+        test("a partner's native (device) client is refused in a fapi2 tenant, and in a standard one, by the native rule and not by the profile") {
+          val registration = partnerEdgeRequest(PartnerClientKind.native, accessTokenTtl = 3600).toCreateClientRequest(acme)
+          def refusal(profile: SecurityProfile) =
+            val env = new Env()
+            for
+              _ <- env.partners.findFresh.succeedsWith(Some(acme))
+              _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(profile)
+              result <- env.service.registerClient(registration, approval = ClientApproval.Pending, allowOutsideLimits = true).either
+            yield (result.left.toOption.collect { case error: InvalidRegistrationConfiguration => error.reason }, env.repository.createClient.calls)
+          for
+            fapi2 <- refusal(SecurityProfile.fapi2)
+            standard <- refusal(SecurityProfile.standard)
+          yield assertTrue(
+            registration.dpopBoundAccessTokens,
+            fapi2._1.exists(_.contains("needs edgeClientCertificate")),
+            standard._1.exists(_.contains("needs edgeClientCertificate")),
+            fapi2._2.isEmpty,
+            standard._2.isEmpty,
+          )
+        },
+        test("the console client of a partner (a web client, as the partner service registers it) is refused the same way") {
+          val env = new Env()
+          // what PartnerService.consoleClient registers: web, tls_client_auth by the group, no DPoP, no certificate-bound tokens, no consent
+          val console =
+            partnerEdgeRequest(PartnerClientKind.web).toCreateClientRequest(acme).copy(id = ClientId("acme-console"), consentFlow = None)
+          for
+            _ <- env.partners.findFresh.succeedsWith(Some(acme))
+            _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
+            result <- env.service.registerClient(console, allowOutsideLimits = true).either
+          yield assertTrue(
+            result.left.toOption.exists:
+              case error: InvalidRegistrationConfiguration => error.reason == fapi2SenderConstraintMessage
+              case _ => false,
+          )
+        },
+        test("the operator's POST /configuration/clients/web with partnerId is refused the same way (the same registerClient, profile enforced)") {
+          val env = new Env()
+          for
+            _ <- env.partners.findFresh.succeedsWith(Some(acme))
+            _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
+            result <- env.service.registerClient(partnerRequest.copy(requirePushedAuthorizationRequests = true)).either
+          yield assertTrue(
+            result.left.toOption.exists:
+              case error: InvalidRegistrationConfiguration => error.reason == fapi2SenderConstraintMessage
+              case _ => false,
+          )
+        },
+        // not about the profile: the rule that a DPoP-bound access token lives at least an hour holds in every tenant, and a partner's
+        // native client is DPoP-bound, so a native client that asks for fewer seconds is refused in a standard tenant as well
+        test("a partner's native client whose access token lives under an hour is refused, whatever the tenant's profile") {
+          val env = new Env()
+          val registration = partnerEdgeRequest(PartnerClientKind.native).toCreateClientRequest(acme)
+          for
+            _ <- env.partners.findFresh.succeedsWith(Some(acme))
+            result <- env.service.registerClient(registration, approval = ClientApproval.Pending, allowOutsideLimits = true).either
+          yield assertTrue(
+            result.left.toOption.exists:
+              case error: InvalidRegistrationConfiguration => error.reason.contains("at least 3600s")
+              case _ => false,
+          )
+        },
+        test("the same web client with DPoP on (and an access token of an hour) is accepted, which is the shape the options below would give it") {
+          val env = new Env()
+          val registration =
+            partnerEdgeRequest(PartnerClientKind.web, accessTokenTtl = 3600).toCreateClientRequest(acme).copy(dpopBoundAccessTokens = true)
+          for
+            _ <- env.partners.findFresh.succeedsWith(Some(acme))
+            _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
+            _ <- env.repository.createClient.succeedsWith(())
+            result <- env.service.registerClient(registration, approval = ClientApproval.Pending, allowOutsideLimits = true).either
+          yield assertTrue(result.isRight)
+        },
+      ),
+      test("registerClient never stores a partner's client without consent: none sent is the default screen") {
         val env = new Env()
         for
           _ <- env.partners.findFresh.succeedsWith(Some(acme))
-          refused <- env.service.registerClient(partnerRequest.copy(consentFlow = None)).either
+          _ <- env.repository.createClient.succeedsWith(())
+          _ <- env.service.registerClient(partnerRequest.copy(consentFlow = None))
+          stored = env.repository.createClient.calls.head
         yield assertTrue(
-          refused.left.toOption.exists:
-            case error: InvalidRegistrationConfiguration => error.reason.contains("consentFlow")
-            case _ => false,
+          stored.consentFlow.contains(PartnerClientRequest.DefaultConsent.toDomain),
+          stored.partnerId == Some(acme.id),
+        )
+      },
+      test("registerClient refuses a client with a consent flow and no partner, whichever kind, and stores nothing") {
+        val env = new Env()
+        val consent = Some(PartnerClientRequest.DefaultConsent)
+        for
+          web <- env.service.registerClient(createRequest.copy(consentFlow = consent)).either
+          native <- env.service.registerClient(createRequest.copy(consentFlow = consent, template = Some(ClientTemplate(ClientKind.device)))).either
+          fapi2Style <- env.service.registerClient(fapi2Request.copy(consentFlow = consent)).either
+        yield assertTrue(
+          List(web, native, fapi2Style).forall(
+            _.left.toOption.exists:
+              case error: InvalidRegistrationConfiguration => error.reason == InvalidRegistrationConfiguration.ConsentOnlyForPartnerReason
+              case _ => false,
+          ),
           env.repository.createClient.calls.isEmpty,
+        )
+      },
+      test("the partner's console is the one client of a partner without consent: registered with none, and consent cannot be given to it") {
+        val acmeConsole = partnerRequest.copy(id = ClientId("acme-console"), consentFlow = None)
+        val env = new Env(Vector(partnerClient("acme-console", ClientApproval.Approved).copy(consentFlow = None)))
+        val own = ConsentFlowDto(allowPartial = false, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)
+        for
+          _ <- env.partners.findFresh.succeedsWith(Some(acme))
+          _ <- env.repository.createClient.succeedsWith(())
+          _ <- env.repository.updateClient.succeedsWith(())
+          registered <- env.service.registerClient(acmeConsole, allowOutsideLimits = true).either
+          storedConsole = env.repository.createClient.calls.head
+          withConsent <- env.service.registerClient(acmeConsole.copy(consentFlow = Some(own)), allowOutsideLimits = true).either
+          adding <- env.service.updateClient(noopUpdate.copy(clientId = ClientId("acme-console"), consentFlow = Some(Patch.Modified(own)))).either
+          // every other client of the partner still gets one
+          _ <- env.service.registerClient(partnerRequest.copy(consentFlow = None))
+          other = env.repository.createClient.calls.last
+          refused = (result: Either[Any, Any]) =>
+            result.left.toOption.exists:
+              case error: InvalidRegistrationConfiguration => error.reason.contains("console")
+              case _ => false
+        yield assertTrue(
+          registered.isRight,
+          storedConsole.consentFlow.isEmpty,
+          refused(withConsent),
+          refused(adding),
+          env.repository.createClient.calls.size == 2,
+          other.consentFlow.contains(PartnerClientRequest.DefaultConsent.toDomain),
+        )
+      },
+      test("a partner that is full is the registration's refusal: what the repository answers under the lock is the client's 400") {
+        val env = new Env()
+        for
+          _ <- env.partners.findFresh.succeedsWith(Some(acme))
+          _ <- env.repository.createClient.failsWith(PartnerClientLimitReached(acme.id, 5))
+          result <- env.service.registerClient(partnerRequest).either
+        yield assertTrue(
+          result.left.toOption.exists:
+            case error: InvalidRegistrationConfiguration => error.reason.contains("at most 5 clients")
+            case _ => false,
+        )
+      },
+      test("registerClient keeps the consent a partner's client was sent, as sent") {
+        val env = new Env()
+        val own = ConsentFlowDto(allowPartial = true, rememberDuration = Some(3600), requiredScopes = Set.empty, offlineAccessOptional = true)
+        for
+          _ <- env.partners.findFresh.succeedsWith(Some(acme))
+          _ <- env.repository.createClient.succeedsWith(())
+          _ <- env.service.registerClient(partnerRequest.copy(consentFlow = Some(own)))
+        yield assertTrue(env.repository.createClient.calls.head.consentFlow.contains(own.toDomain))
+      },
+      test("updateClient: a first-party client without consent cannot be given one; one that has some (from before) stays editable") {
+        val withConsent = cachedClient.copy(consentFlow =
+          Some(ConsentFlow(allowPartial = false, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
+        )
+        val without = new Env(Vector(cachedClient.copy(consentFlow = None)))
+        val before = new Env(Vector(withConsent))
+        val owned = new Env(Vector(partnerClient("web-app", ClientApproval.Approved)))
+        val own = ConsentFlowDto(allowPartial = true, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)
+        for
+          _ <- before.repository.updateClient.succeedsWith(())
+          _ <- owned.repository.updateClient.succeedsWith(())
+          _ <- owned.partners.findFresh.succeedsWith(Some(acme))
+          adding <- without.service.updateClient(noopUpdate.copy(consentFlow = Some(Patch.Modified(own)))).either
+          modifying <- before.service.updateClient(noopUpdate.copy(consentFlow = Some(Patch.Modified(own)))).either
+          keeping <- before.service.updateClient(noopUpdate).either
+          removing <- before.service.updateClient(noopUpdate.copy(consentFlow = Some(Patch.Deleted))).either
+          ownedModifying <- owned.service.updateClient(noopUpdate.copy(consentFlow = Some(Patch.Modified(own)))).either
+        yield assertTrue(
+          adding.left.toOption.exists:
+            case error: InvalidRegistrationConfiguration => error.reason == InvalidRegistrationConfiguration.ConsentOnlyForPartnerReason
+            case _ => false,
+          without.repository.updateClient.calls.isEmpty,
+          modifying.isRight,
+          keeping.isRight,
+          // the existing rule stays as it was: consent is not taken away
+          removing.left.toOption.exists:
+            case error: InvalidRegistrationConfiguration => error.reason.startsWith("consentFlow cannot be removed")
+            case _ => false,
+          ownedModifying.isRight,
         )
       },
       test(
@@ -2405,7 +2622,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         )
       },
       test("the partner's console is not held to its limits when the operator changes it, nor counted among its clients") {
-        val console = partnerClient("acme-console", ClientApproval.Approved)
+        val console = partnerClient("acme-console", ClientApproval.Approved).copy(consentFlow = None)
         val own = Vector(partnerClient("acme-one", ClientApproval.Approved), partnerClient("acme-two", ClientApproval.Pending))
         val env = new Env(console +: own)
         def patch(clientId: ClientId) = UpdateClientRequest(

@@ -2397,3 +2397,151 @@ test('the wizard select shows a grant duration outside its presets as its own op
   await expect(select).toHaveValue('180');
   await expect(select.locator('option:checked')).toHaveText('180 days');
 });
+
+// ── Owner (#549): a partner-owned client ──────────────────────────────────────────────────────
+
+const ownerState = {
+  clients: { 'tenant-alpha': [alphaClient] },
+  partners: [{
+    id: 'pilot-pay', tenantId: 'tenant-alpha', displayName: 'Pilot Pay', logoUri: null, contact: { email: 'security@pilotpay.example' },
+    status: 'active' as const, groupId: 'pilot-pay', consoleClientId: 'pilot-pay-console', reviewAt: null, createdAt: '2026-09-02T10:00:00Z',
+    limits: { scopes: ['openid', 'profile', 'email'], redirectDomains: ['pilotpay.example'], maxClients: 10, maxEdges: 3, accessTokenTtlMax: 600, refreshTokenTtlMax: 30 * 86_400, clientAuthMethods: ['tls_client_auth' as const, 'private_key_jwt' as const], rateLimitPolicy: 'partner-default' },
+  }],
+  scopes: { 'tenant-alpha': [
+    { scope: 'openid', description: { en: 'OpenID' }, claims: [] }, { scope: 'profile', description: { en: 'Profile' }, claims: [] },
+    { scope: 'email', description: { en: 'Email' }, claims: [] }, { scope: 'orders', description: { en: 'Orders' }, claims: [] },
+  ] },
+};
+
+async function chooseOwnerPartner(page: Page) {
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'Partner' }).click();
+  await page.getByRole('combobox', { name: 'Partner' }).click();
+  await page.getByRole('option', { name: /Pilot Pay/ }).click();
+}
+
+test('the Owner step fixes the rows a partner sets and recomputes the kind plan from the owner', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: ownerState });
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  // First-party by default; the continue button waits for a partner once Partner is chosen.
+  await expect(page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'First-party' })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'Partner' }).click();
+  await page.getByRole('button', { name: /Web app/ }).click();
+  await expect(page.getByRole('button', { name: 'Continue to basics', exact: true })).toBeDisabled();
+  await page.getByRole('combobox', { name: 'Partner' }).click();
+  await page.getByRole('option', { name: /Pilot Pay/ }).click();
+
+  const owner = page.getByRole('region', { name: 'Owner' });
+  await expect(owner).toContainText('Consent required, names the partner');
+  await expect(owner).toContainText('Authorization code + PKCE, pushed authorization requests');
+  await expect(owner).toContainText('tls_client_auth with san_uri = urn:versola:edge-group:pilot-pay');
+  await expect(owner).toContainText('Served by the edges of group pilot-pay');
+  await expect(owner).toContainText('Scopes within openid, profile, email');
+  await expect(owner).toContainText('Redirect URIs under pilotpay.example');
+  await expect(owner).toContainText('Lifetimes access ≤ 10 min · refresh ≤ 30 days');
+  // The kind plan follows the owner: group certificate, no certificate binding, the partner's cap.
+  await expect(page.getByText('Web app, owned by Pilot Pay, sets:')).toBeVisible();
+  const plan = page.locator('versola-client-kind-step .plan');
+  await expect(plan).toContainText('Group certificate: tls_client_auth, san_uri = urn:versola:edge-group:pilot-pay');
+  await expect(plan).toContainText('10 min access token at most');
+  await expect(plan.locator('.plan-line.off')).toContainText('Certificate-bound access tokens');
+  await expect(plan).not.toContainText('mTLS by edge');
+  // A service app cannot be partner-owned.
+  await expect(page.getByRole('button', { name: /Service app/ })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Continue to basics', exact: true })).toBeEnabled();
+});
+
+test('a partner-owned client is held to the partner\'s domains, scopes and caps, and is registered with partnerId', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: ownerState });
+  await chooseOwnerPartner(page);
+  await page.getByRole('button', { name: /Web app/ }).click();
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+  await fillBasics(page, 'pilot-pay-shop', 'Pilot Pay Shop');
+
+  await addRedirectUri(page, 'https://shop.pilot-partner.net/complete');
+  await expect(page.getByText("Outside the partner's redirect domains: https, under pilotpay.example.")).toBeVisible();
+  await addRedirectUri(page, 'https://shop.pilotpay.example/complete');
+  await expect(page.locator('versola-client-form')).toContainText('https://shop.pilotpay.example/complete');
+  // The credential is the group certificate or a key, as the partner's limits allow; never edge's own.
+  await expect(page.getByRole('group', { name: 'Client authentication' }).getByRole('button', { name: 'group certificate' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByText('tls_client_auth · san_uri = urn:versola:edge-group:pilot-pay')).toBeVisible();
+  await continueToThirdStep(page);
+
+  // Scopes outside the partner's list are not offered; consent cannot be turned off.
+  await expect(page.locator('versola-client-form').getByRole('button', { name: 'orders', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'First party app', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Partner app', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await continueToReview(page);
+  await expect(page.getByRole('region', { name: 'Owner', exact: true })).toContainText('Pilot Pay (pilot-pay) · served by the edges of group pilot-pay');
+  // The access token is capped: the kind's 1 hour became the partner's 10 minutes.
+  await expect(page.getByRole('region', { name: 'Tokens' })).toContainText('10 minutes');
+  await submitCreate(page);
+
+  const request = await findClientWrite(api.requests, 'POST');
+  expect(request.pathname).toBe('/configuration/clients/web');
+  expect(request.body).toMatchObject({
+    partnerId: 'pilot-pay', id: 'pilot-pay-shop', authMethod: 'tls_client_auth', requirePushedAuthorizationRequests: true,
+    certificateBoundAccessTokens: false, mtlsAuth: { type: 'tls_client_auth', subjectType: 'san_uri', subjectValue: 'urn:versola:edge-group:pilot-pay' },
+    redirectUris: ['https://shop.pilotpay.example/complete'], accessTokenTtl: 600,
+  });
+  expect(request.body.consentFlow).not.toBeNull();
+  // Operator-created partner clients are approved at once; the record says who owns it.
+  await expect(page.locator('versola-clients-list .view-title')).toBeVisible();
+  await expect(page.locator('.chip', { hasText: 'Owned by Pilot Pay' })).toBeVisible();
+  await expect(page.locator('.chip', { hasText: 'Awaiting approval' })).toHaveCount(0);
+});
+
+test('a first-party registration carries no partnerId, and the Owner choice is absent without partners', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [alphaClient] } } });
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await expect(page.getByRole('group', { name: 'Who owns the client' }).getByRole('button', { name: 'Partner' })).toBeDisabled();
+  await expect(page.getByRole('region', { name: 'Owner' })).toContainText('Add a partner under Partners to own clients.');
+  await page.getByRole('button', { name: /Web app/ }).click();
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+  await fillBasics(page, 'plain-web', 'Plain Web');
+  await addRedirectUri(page, 'https://plain.example/callback');
+  await continueToThirdStep(page);
+  await continueToReview(page);
+  await submitCreate(page);
+  const request = await findClientWrite(api.requests, 'POST');
+  expect(request.body.partnerId).toBeUndefined();
+});
+
+test('the list and the record show the owner and the approval state of a partner-owned client', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { ...ownerState, clients: { 'tenant-alpha': [alphaClient, { ...alphaClient, id: 'pilot-pay-checkout', clientName: { en: 'Pilot Pay Checkout' }, partnerId: 'pilot-pay', approval: 'pending' }] } },
+  });
+  const row = page.locator('versola-data-table').getByRole('row').filter({ hasText: 'pilot-pay-checkout' });
+  await expect(row).toContainText('Owned by Pilot Pay');
+  await expect(row).toContainText('Awaiting approval');
+  await expect(page.locator('versola-data-table').getByRole('row').filter({ hasText: 'alpha-web' })).not.toContainText('Owned by');
+  await page.getByRole('button', { name: /^Open client Pilot Pay Checkout/ }).click();
+  await expect(page.locator('versola-record-header')).toContainText('Owned by Pilot Pay');
+  await expect(page.locator('versola-record-header')).toContainText('Awaiting approval');
+});
+
+test('a partner client\'s refresh lifetime above the partner\'s cap is refused inline, not clamped', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      ...ownerState,
+      clients: { 'tenant-alpha': [{ ...offlineClient, accessTokenTtl: 300, id: 'pilot-pay-checkout', clientName: { en: 'Pilot Pay Checkout' }, partnerId: 'pilot-pay', approval: 'approved' as const }] },
+      scopes: { 'tenant-alpha': [...ownerState.scopes['tenant-alpha'], { scope: 'offline_access', description: { en: 'Offline access scope' }, claims: [] }] },
+    },
+  });
+  await openClientPage(page, 'pilot-pay-checkout');
+  await openEditSection(page, 'Token lifetimes');
+  const field = page.getByLabel('Refresh Token TTL (days) *');
+  await field.fill('60');
+  // What was typed stays as typed; the cap is named under the field.
+  await expect(field).toHaveValue('60');
+  await expect(page.getByRole('alert').filter({ hasText: "At most 30 days: the partner's cap." })).toBeVisible();
+  await expect(field).toHaveAttribute('aria-invalid', 'true');
+  await saveEdit(page);
+  expect(clientWrites(api.requests, 'PUT')).toHaveLength(0);
+  await field.fill('30');
+  await expect(page.getByRole('alert').filter({ hasText: "the partner's cap" })).toHaveCount(0);
+  await saveEdit(page);
+  expect((await findClientWrite(api.requests, 'PUT')).body).toMatchObject({ refreshTokenTtl: 30 * 24 * 60 * 60 });
+});

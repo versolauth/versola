@@ -244,7 +244,8 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           registration._1.mtlsAuth == Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_uri, "urn:versola:edge-group:acme")),
           registration._1.allowedScopes == PartnerService.ConsoleScope,
           registration._1.redirectUris == Set(newPartner.consoleRedirectUri),
-          registration._1.consentFlow.isDefined,
+          // the console signs in the partner's own staff, not the operator's users: it is the one client of a partner without consent
+          registration._1.consentFlow.isEmpty,
           // a client with no auth flow is "not configured for sign-in" at auth: until the operator sets one, the platform's default
           registration._1.authFlow == Some(AuthFlow.default),
           // the staff token the console is issued authorises management calls and nothing revokes it: minutes
@@ -261,6 +262,20 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // no key is made or shown for the edge: it makes its own and registers the public half when it enrols
           env.edges.registerEdge.calls.isEmpty,
           created.edge.edge.publicKey.isEmpty,
+        )
+      },
+      // The group of a partner is of kind `partner` because the service makes it so, and for no other reason: no input names a group, and
+      // the partner row is written only after this call created the group (nothing in the database checks the kind any more)
+      test("a partner is written only to a group this call created, of kind partner: one that appeared meanwhile, of any kind, is a conflict") {
+        val env = Env(configured)
+        for
+          _ <- env.empty
+          _ <- env.groups.create.succeedsWith(false)
+          raced <- env.service.create(newPartner).flip
+        yield assertTrue(
+          raced.isInstanceOf[PartnerError.Conflict],
+          env.groups.create.calls == List(EdgeGroupRecord(EdgeGroupId("acme"), EdgeGroupKind.Partner)),
+          env.partners.create.calls.isEmpty,
         )
       },
       test(
@@ -547,15 +562,12 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           plain.isInstanceOf[PartnerError.Invalid],
         )
       },
-      test("an edge the table has no room for is the partner's 400, whatever the cache said") {
+      test("an edge the repository has no room for is the partner's 400, whatever the cache said") {
         val env = Env()
         for
           _ <- env.edges.getAllEdges.succeedsWith(Vector.empty)
           _ <- env.edges.findFresh.succeedsWith(None)
-          _ <- env.edges.registerEdgeWithoutKey.failsWith(java.sql.SQLException(
-            "ERROR: partner_edge_limit: partner acme may run at most 2 edges",
-            "23514",
-          ))
+          _ <- env.edges.registerEdgeWithoutKey.failsWith(PartnerEdgeLimitReached(acme.id, 2))
           full <- env.service.addEdge(acme, EdgeId("edge-acme-2"), "https://login2.acme.example").flip
         yield assertTrue(full.isInstanceOf[PartnerError.Invalid], env.identity.issueEnrollmentToken.calls.isEmpty)
       },

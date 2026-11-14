@@ -428,12 +428,14 @@ object FakeCentral:
         "edgeSigningKey",
         "edgeClientCertificate",
         "estEnrollment",
+        "partnerId",
       )),
       (Method.POST, "/configuration/clients/native") -> (create ++ signInMembers ++ Set(
         "issueEdgeClientCertificate",
         "enrollEdgeClientCertificate",
         "dpopBoundAccessTokens",
         "edgeClientCertificate",
+        "partnerId",
       )),
       (
         Method.POST,

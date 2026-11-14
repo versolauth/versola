@@ -3,7 +3,14 @@ package versola.central.configuration.clients
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, SecurityProfile}
 import versola.central.configuration.edges.EdgeId
-import versola.central.configuration.partners.{PartnerId, PartnerRecord, PartnerRegistry, PartnerStatus}
+import versola.central.configuration.partners.{
+  PartnerClientLimitReached,
+  PartnerClientRequest,
+  PartnerId,
+  PartnerRecord,
+  PartnerRegistry,
+  PartnerStatus,
+}
 import versola.central.configuration.permissions.{Permission, PermissionRepository}
 import versola.central.configuration.scopes.{OAuthScopeRepository, ScopeToken}
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
@@ -297,14 +304,26 @@ object OAuthClientService:
           ))(ZIO.fail(_))
 
     private def register(
-        request: CreateClientRequest,
+        submitted: CreateClientRequest,
         presetSecret: Option[Secret],
         enforceSecurityProfile: Boolean,
         approval: ClientApproval,
         allowOutsideLimits: Boolean,
     ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient] =
       for
-        partner <- partnerOf(request.id, request.partnerId)
+        partner <- partnerOf(submitted.id, submitted.partnerId)
+        // Consent is for a partner's client and always on there (owner decision, 2026-11-13): none on a first-party client, and a
+        // partner's gets the default screen when the request names none. The partner's console is the one client of a partner without
+        // it: it signs in the partner's own staff, not the operator's users.
+        request =
+          if submitted.partnerId.isDefined && submitted.consentFlow.isEmpty && !partner.exists(_.consoleClientId == submitted.id) then
+            submitted.copy(consentFlow = Some(PartnerClientRequest.DefaultConsent))
+          else submitted
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateConsentOnlyForPartner(
+          request.id,
+          request.consentFlow,
+          request.partnerId,
+        ))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(partner): partner =>
           // the console client is the partner's own, registered with it, and is not one of the clients its limit counts
           cache.get.map(_.count(c => c.partnerId.contains(partner.id) && c.id != partner.consoleClientId)).flatMap: existing =>
@@ -436,7 +455,11 @@ object OAuthClientService:
         )
         _ <- validatePartnerClient(request.id, partner, PartnerClientRules.Subject.of(client), allowOutsideLimits)
         _ <- validateSecurityProfile(client).when(enforceSecurityProfile)
-        _ <- clientRepository.createClient(client)
+        _ <- clientRepository.createClient(client).mapError:
+          // made by the repository under the partner's row lock: the same refusal as the count the registration checked against the cache
+          case error: PartnerClientLimitReached =>
+            InvalidRegistrationConfiguration(client.id, s"partner '${error.partnerId}' may register at most ${error.max} clients")
+          case error => error
       yield RegisteredClient(secret, registeredAt, generatedKey.map(_.privateKey))
 
     override def updateClient(
@@ -465,6 +488,13 @@ object OAuthClientService:
           InvalidRegistrationConfiguration.validateAuthMethodUnchanged(request.clientId, request.authMethod, client.authMethod))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(current.flatMap: client =>
           InvalidRegistrationConfiguration.validateConsentFlowKept(request.clientId, request.consentFlow, client.consentFlow))(ZIO.fail(_))
+        _ <- ZIO.foreachDiscard(current.flatMap: client =>
+          InvalidRegistrationConfiguration.validateConsentNotAdded(
+            request.clientId,
+            request.consentFlow,
+            client.consentFlow,
+            client.partnerId,
+          ))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(current.flatMap: client =>
           InvalidRegistrationConfiguration.validateThemeOverridesForPartner(
             request.clientId,

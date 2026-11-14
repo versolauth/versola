@@ -1,0 +1,47 @@
+{
+  "partner": {
+    "id": "e2e-partner-faf53869a4",
+    "displayName": "Partner e2e-partner-faf53869a4",
+    "logoUri": null,
+    "status": "active",
+    "limits": {
+      "scopes": [
+        "openid",
+        "email",
+        "phone"
+      ],
+      "redirectDomains": [
+        "e2e-partner-faf53869a4.example"
+      ],
+      "maxClients": 5,
+      "maxEdges": 2,
+      "accessTokenTtlMax": 600,
+      "refreshTokenTtlMax": 86400,
+      "clientAuthMethods": [
+        "tls_client_auth"
+      ],
+      "rateLimitPolicy": "partner-default"
+    },
+    "reviewAt": null,
+    "operator": {
+      "name": "e2e suite tenant",
+      "issuer": "http://localhost:9003",
+      "mtlsUrl": "",
+      "centralMtlsUrl": ""
+    }
+  },
+  "staff": {
+    "sub": "01a1d028-3d7b-7a44-ba23-5cddafec3ac5",
+    "display": "s•••@partner.example",
+    "level": "admin"
+  },
+  "edge": {
+    "id": "e2e-partner-faf53869a4-edge",
+    "publicUrl": "https://login.e2e-partner-faf53869a4.example",
+    "central": "ok"
+  },
+  "console": {
+    "clientId": "e2e-partner-faf53869a4-console",
+    "presetId": "e2e-partner-faf53869a4-console"
+  }
+}

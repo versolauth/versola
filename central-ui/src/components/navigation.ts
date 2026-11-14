@@ -3,9 +3,10 @@ import { customElement, property, query } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import './versola-logo';
 import './tenant-selector';
+import './versola-wordmark';
 import './theme-switcher';
 
-export type NavItem = 'security' | 'clients' | 'resources' | 'scopes' | 'permissions' | 'roles' | 'otp-templates' | 'authorization-details'
+export type NavItem = 'security' | 'clients' | 'resources' | 'partners' | 'scopes' | 'permissions' | 'roles' | 'otp-templates' | 'authorization-details'
   | 'tenants' | 'edges' | 'users' | 'keys' | 'system-settings' | 'delivery' | 'forms' | 'themes';
 
 @customElement('versola-navigation')
@@ -208,14 +209,6 @@ export class VersolaNavigation extends LitElement {
         line-height: 0;
       }
 
-      /* The website's monoline wordmark (Wordmark.astro), in ink next to the mark. */
-      .brand-wordmark {
-        display: block;
-        height: 20px;
-        width: auto;
-        color: var(--text-primary);
-      }
-
       .tenant-section {
         padding: 0.75rem var(--spacing-lg) var(--spacing-md);
         border-bottom: 1px solid var(--border-default);
@@ -339,6 +332,8 @@ export class VersolaNavigation extends LitElement {
         return p.has('access:read');
       case 'resources':
         return p.has('resources:read');
+      case 'partners':
+        return p.has('partners:read');
       case 'security':
       case 'otp-templates':
       case 'authorization-details':
@@ -376,7 +371,7 @@ export class VersolaNavigation extends LitElement {
             <div class="brand-logo">
               <versola-logo size="36"></versola-logo>
             </div>
-            <svg class="brand-wordmark" role="img" aria-label="Versola" viewBox="-2 0 286 56" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 22 L18 48 L34 22"/><path d="M50 35 H76 A13 13 0 1 0 72.5 44.3"/><path d="M98 22 V48 M98 36 C98 26 104 22 114 22"/><path d="M158.5 27 C156.5 23 152.5 22 148.5 22 C142.5 22 138.5 25 138.5 29 C138.5 33 142.5 34.5 148.5 36 C154.5 37.5 158.5 39 158.5 42.5 C158.5 46.5 154.5 48.5 148.5 48.5 C143.5 48.5 139.5 46.5 138 42.5"/><circle cx="193.5" cy="35" r="13"/><path d="M228.5 6 V48"/><circle cx="263.5" cy="35" r="13"/><path d="M276.5 22 V48"/></svg>
+            <versola-wordmark></versola-wordmark>
             <button
               type="button"
               class="brand-close"
@@ -398,6 +393,7 @@ export class VersolaNavigation extends LitElement {
               ${this.navItem('security', 'Security')}
               ${this.navItem('clients', 'Clients')}
               ${this.navItem('resources', 'Resources')}
+              ${this.navItem('partners', 'Partners')}
               ${this.navItem('scopes', 'Scopes')}
               ${this.navItem('permissions', 'Permissions')}
               ${this.navItem('roles', 'Roles')}

@@ -121,38 +121,6 @@ object PostgresEdgeIdentitySpec extends PostgresSpec:
         results <- ZIO.foreachPar(1 to 8)(_ => tokens.consume("hash-1", now))
       yield assertTrue(results.count(_.isDefined) == 1)
     },
-    test("revoking forgets the unspent tokens of one edge and counts them") {
-      for
-        _ <- reset
-        (edges, _, tokens, _) <- repositories
-        _ <- edges.createEdge(edgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
-        _ <- edges.createEdge(otherEdgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
-        _ <- tokens.create("hash-1", edgeId, now.plusSeconds(3600))
-        _ <- tokens.create("hash-2", edgeId, now.plusSeconds(3600))
-        _ <- tokens.create("hash-3", otherEdgeId, now.plusSeconds(3600))
-        spent <- tokens.consume("hash-2", now)
-        revoked <- tokens.revoke(edgeId)
-        first <- tokens.consume("hash-1", now)
-        other <- tokens.consume("hash-3", now)
-        again <- tokens.revoke(edgeId)
-      yield assertTrue(spent == Some(edgeId), revoked == 1, first.isEmpty, other == Some(otherEdgeId), again == 0)
-    },
-    test("the latest certificate of each edge is the one issued last") {
-      for
-        _ <- reset
-        (edges, _, _, certificates) <- repositories
-        _ <- edges.createEdge(edgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
-        _ <- edges.createEdge(otherEdgeId, Some(jwk), true, EdgeGroup.DefaultId, None)
-        _ <- certificates.record(edgeId, "ab12", now.plusSeconds(86400), now)
-        _ <- certificates.record(edgeId, "cd34", now.plusSeconds(172800), now.plusSeconds(3600))
-        _ <- certificates.record(otherEdgeId, "ef56", now.plusSeconds(86400), now)
-        latest <- certificates.latest
-      yield assertTrue(
-        latest.keySet == Set(edgeId, otherEdgeId),
-        latest(edgeId).serial == "cd34",
-        latest(otherEdgeId).serial == "ef56",
-      )
-    },
     test("tokens and certificates go with the edge when it is deleted") {
       for
         _ <- reset

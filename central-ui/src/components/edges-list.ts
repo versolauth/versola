@@ -2,11 +2,12 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, iconButtonStyles, recordStyles, tagStyles } from '../styles/components';
-import type { AccessLogPolicy, Edge, OverloadPolicy, RateLimitPolicies, Tenant } from '../types';
+import type { AccessLogPolicy, Edge, OverloadPolicy, Partner, RateLimitPolicies, Tenant } from '../types';
 import type { EdgePolicySection } from '../utils/central-api';
-import { deleteEdge, deleteOldEdgeKey, fetchEdges, fetchTenants, isPolicyConflict, patchEdgePolicies, registerEdge, rotateEdgeKey, setEdgeDpopNonce } from '../utils/central-api';
+import { deleteEdge, deleteOldEdgeKey, fetchEdges, fetchPartners, fetchTenants, isPolicyConflict, patchEdgePolicies, registerEdge, rotateEdgeKey, setEdgeDpopNonce } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
-import { copyToClipboard } from '../utils/helpers';
+import { copyToClipboard, formatDate } from '../utils/helpers';
+import { certificateChip, edgeCertificateState } from './partner-chips';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
 import { confirmDiscardDraft } from '../utils/draft-guard';
 import { validateEdgeId } from '../utils/validators';
@@ -42,7 +43,7 @@ import './record-card';
 import './record-header';
 import './side-panel';
 
-type EdgeFilter = 'all' | 'rotation' | 'no-tenants';
+type EdgeFilter = 'all' | 'first-party' | 'partner' | 'rotation' | 'no-tenants';
 
 /** The edge with the revisions central answered a save with; absent revisions leave the ones it had. */
 function withRevisions(edge: Edge, revisions: Record<string, number> | undefined): Edge {
@@ -62,9 +63,12 @@ type GeneratedKey = { edgeId: string; keyId: string; privateKey: string; action:
 export class VersolaEdgesList extends LitElement {
   @property({ type: Boolean }) canManage = false;
   @property({ attribute: false }) route: RecordRoute = EMPTY_RECORD_ROUTE;
+  /** The tenant whose partners name the owner of a partner edge (#549). */
+  @property({ type: String }) tenantId: string | null = null;
 
   @state() private edges: Edge[] = [];
   @state() private tenants: Tenant[] = [];
+  @state() private partners: Partner[] = [];
   @state() private searchQuery = '';
   @state() private filter: EdgeFilter = 'all';
   @state() private isLoading = false;
@@ -259,6 +263,18 @@ export class VersolaEdgesList extends LitElement {
       .record-page .record-card {
         margin-bottom: var(--spacing-md);
       }
+
+      .chip.muted-chip { color: var(--text-secondary); }
+      .link-button {
+        background: none;
+        border: 0;
+        padding: 0;
+        font: inherit;
+        color: var(--accent);
+        text-decoration: underline;
+        cursor: pointer;
+      }
+      .link-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--radius-sm); }
     `,
   ];
 
@@ -296,9 +312,15 @@ export class VersolaEdgesList extends LitElement {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      const [edges, tenants] = await Promise.all([fetchEdges(), fetchTenants().catch(() => [] as Tenant[])]);
+      const [edges, tenants, partners] = await Promise.all([
+        fetchEdges(),
+        fetchTenants().catch(() => [] as Tenant[]),
+        // Partners are per tenant; the partner of an edge in another tenant is shown by id.
+        this.tenantId ? fetchPartners(this.tenantId).catch(() => [] as Partner[]) : Promise.resolve([] as Partner[]),
+      ]);
       this.edges = edges;
       this.tenants = tenants;
+      this.partners = partners;
     } catch (error) {
       this.edges = [];
       this.tenants = [];
@@ -404,7 +426,7 @@ export class VersolaEdgesList extends LitElement {
       if (mode === 'create') {
         const id = `edge-${this.draftId.trim()}`;
         const key = await registerEdge(id);
-        this.edges = [...this.edges, { id, hasOldKey: false, requireDpopNonce: true }].sort((a, b) => a.id.localeCompare(b.id));
+        this.edges = [...this.edges, { id, hasOldKey: false, requireDpopNonce: true, groupId: 'default', groupKind: 'first_party' as const, partnerId: null }].sort((a, b) => a.id.localeCompare(b.id));
         this.generatedKey = { edgeId: id, keyId: key.keyId, privateKey: key.privateKey, action: 'created' };
         this.copyFeedback = '';
         dispatchRecordRoute(this, { id, edit: null, create: false });
@@ -693,8 +715,45 @@ export class VersolaEdgesList extends LitElement {
     return this.tenants.filter(tenant => tenant.edgeId === edge.id);
   }
 
+  private partnerOf(edge: Edge): Partner | null {
+    return edge.partnerId ? this.partners.find(partner => partner.id === edge.partnerId) ?? null : null;
+  }
+
+  /** The partner's name: from the tenant's partners when loaded, else from the edge itself (Edges is global, partners are per tenant). */
+  private partnerName(edge: Edge): string {
+    return this.partnerOf(edge)?.displayName ?? edge.partnerDisplayName ?? edge.partnerId ?? 'its partner';
+  }
+
+  /** Opens the partner's record, switching to its tenant first when it belongs to another one. */
+  private openPartner(edge: Edge) {
+    if (!edge.partnerId) return;
+    const tenantId = edge.partnerTenantId && edge.partnerTenantId !== this.tenantId ? edge.partnerTenantId : undefined;
+    this.dispatchEvent(new CustomEvent('navigate-view', { detail: { view: 'partners', id: edge.partnerId, tenantId }, bubbles: true, composed: true }));
+  }
+
+  private groupCell(edge: Edge) {
+    return html`<div class="cell-lines">
+      <span class="cell-line">${edge.groupId}</span>
+      <div class="cell-flow">
+        <span class="chip">${edge.groupKind === 'partner' ? 'Partner' : 'First-party'}</span>
+        ${edge.groupKind === 'partner' && edge.partnerId ? html`<button type="button" class="tag" aria-label=${`Open partner ${this.partnerName(edge)}`} @click=${() => this.openPartner(edge)}>${this.partnerName(edge)}</button>` : ''}
+      </div>
+    </div>`;
+  }
+
+  private certificateCell(edge: Edge) {
+    const state = edgeCertificateState(edge, this.partnerOf(edge));
+    if (edge.groupKind !== 'partner' && !edge.certificateNotAfter) return html`<span class="muted">—</span>`;
+    return html`<div class="cell-lines">
+      ${edge.certificateNotAfter ? html`<span>to ${formatDate(edge.certificateNotAfter)}</span>` : ''}
+      ${edge.groupKind === 'partner' ? html`<div class="chips">${certificateChip(state)}</div>` : html`<span class="muted">${edge.lastRenewedAt ? `renewed ${formatDate(edge.lastRenewedAt)}` : 'auto'}</span>`}
+    </div>`;
+  }
+
   private matchesFilter(edge: Edge, filter: EdgeFilter = this.filter): boolean {
     switch (filter) {
+      case 'first-party': return edge.groupKind !== 'partner';
+      case 'partner': return edge.groupKind === 'partner';
       case 'rotation': return !!edge.hasOldKey;
       case 'no-tenants': return this.linkedTenants(edge).length === 0;
       default: return true;
@@ -715,6 +774,7 @@ export class VersolaEdgesList extends LitElement {
   private renderToolbar() {
     const options: Array<{ id: EdgeFilter; label: string }> = [
       { id: 'all', label: 'All' },
+      ...(this.edges.some(edge => edge.groupKind === 'partner') ? [{ id: 'first-party' as const, label: 'First-party' }, { id: 'partner' as const, label: 'Partner' }] : []),
       { id: 'rotation', label: 'Key rotation' },
       ...(this.tenants.length ? [{ id: 'no-tenants' as const, label: 'No tenants' }] : []),
     ];
@@ -736,10 +796,13 @@ export class VersolaEdgesList extends LitElement {
         <button type="button" class="row-link" aria-label=${`Open edge ${edge.id}`}>
           <span class="row-title">${edge.id}</span>
         </button>` },
-      ...(this.tenants.length ? [{ id: 'tenants', label: 'Tenants', cell: (edge: Edge) => {
+      { id: 'group', label: 'Group', cell: edge => this.groupCell(edge) },
+      ...(this.tenants.length ? [{ id: 'tenants', label: 'Serves', cell: (edge: Edge) => {
+        if (edge.groupKind === 'partner') return html`<span class="muted">Clients of ${this.partnerName(edge)}</span>`;
         return valueChips(this.linkedTenants(edge).map(tenant => tenant.id), { empty: 'None' });
       } }] : []),
-      { id: 'key', label: 'Key', cell: edge => html`<div class="chips">${this.keyChip(edge)}</div>` },
+      { id: 'key', label: 'Key', cell: edge => edge.groupKind === 'partner' ? html`<span class="muted">Group certificate</span>` : html`<div class="chips">${this.keyChip(edge)}</div>` },
+      { id: 'certificate', label: 'Certificate', cell: edge => this.certificateCell(edge) },
       { id: 'dpop', label: 'DPoP nonce', class: 'muted', cell: edge => edge.requireDpopNonce ? 'Required' : 'Not required' },
     ];
     const menuItems = (edge: Edge): RowMenuItem[] => [
@@ -766,17 +829,36 @@ export class VersolaEdgesList extends LitElement {
     return html`<versola-record-row .label=${label} .fixed=${fixed} .value=${value}></versola-record-row>`;
   }
 
+  private renderGroupCard(edge: Edge) {
+    const partner = this.partnerOf(edge);
+    const state = edgeCertificateState(edge, partner);
+    return html`
+      <versola-record-card heading="Group and certificate" subheading=${edge.groupKind === 'partner'
+        ? 'A partner edge: it reads only its partner\'s clients and resources, authenticates with a 14-day certificate that names the group, and renews it by itself while the partner is active.'
+        : 'A first-party edge of the operator.'} .body=${html`
+        ${this.row('Group', html`<span class="mono">${edge.groupId}</span> · ${edge.groupKind === 'partner' ? 'partner' : 'first-party'}`, 'Set at registration')}
+        ${edge.groupKind === 'partner' ? this.row('Partner', edge.partnerId ? html`<button type="button" class="link-button" @click=${() => this.openPartner(edge)}>${this.partnerName(edge)}</button>${partner?.status === 'suspended' ? html` <span class="muted">· suspended</span>` : ''}` : html`<span class="muted">Unknown</span>`) : ''}
+        ${edge.publicUrl ? this.row('Public URL', html`<span class="mono">${edge.publicUrl}</span>`) : ''}
+        ${edge.certificateNotAfter ? this.row('Certificate', html`valid to ${formatDate(edge.certificateNotAfter)}${edge.lastRenewedAt ? html` · last renewed ${formatDate(edge.lastRenewedAt)}` : ''}`) : this.row('Certificate', html`<span class="muted">Not enrolled yet.</span>`)}
+        ${edge.groupKind === 'partner' ? this.row('Renewal', html`<div class="chips">${certificateChip(state)}</div>${state.tone === 'danger' ? html` <span class="muted">The partner is suspended: central refuses the renewal, and the certificate expires.</span>` : ''}`) : ''}
+      `}></versola-record-card>
+    `;
+  }
+
   private renderGroups(edge: Edge) {
     const linked = this.linkedTenants(edge);
+    const partnerEdge = edge.groupKind === 'partner';
     return html`
-      <versola-record-card heading="Signing key" subheading="Central keeps the public half; the private key was shown once." .body=${html`
+      ${this.renderGroupCard(edge)}
+
+      ${partnerEdge ? '' : html`<versola-record-card heading="Signing key" subheading="Central keeps the public half; the private key was shown once." .body=${html`
         ${this.row('Status', edge.hasOldKey ? 'Rotation open — the old key still verifies' : 'Current')}
         ${this.canManage ? html`
           <versola-record-row .value=${html`<div class="key-actions">
             <button type="button" class="btn btn-secondary btn-sm" ?disabled=${this.isWorking} @click=${() => this.handleRotateKey(edge)}>Rotate key</button>
             ${edge.hasOldKey ? html`<button type="button" class="btn btn-secondary btn-sm" ?disabled=${this.isWorking} @click=${() => this.handleRetireOldKey(edge)}>Retire old key</button>` : ''}
           </div>`}></versola-record-row>` : ''}
-      `}></versola-record-card>
+      `}></versola-record-card>`}
 
       <versola-record-card heading="DPoP nonce" subheading="RFC 9449 section 9 on the calls this edge proxies." ?editable=${this.canManage} .body=${html`
         ${this.row('Proxied calls', edge.requireDpopNonce ? 'Required on every proxied call' : 'Not required')}
@@ -812,10 +894,10 @@ export class VersolaEdgesList extends LitElement {
           </div>`}></versola-record-row>` : ''}
       `} @edit=${() => this.openEditor('rate-limits')}></versola-record-card>
 
-      <versola-record-card heading="Linked tenants" subheading="Bind a tenant to this edge from the tenant." .body=${html`
+      ${partnerEdge ? '' : html`<versola-record-card heading="Linked tenants" subheading="Bind a tenant to this edge from the tenant." .body=${html`
         ${this.row('Tenants', linked.length ? html`<div class="tag-list">${linked.map(tenant => html`<span class="tag">${tenant.id}</span>`)}</div>`
           : html`<span class="muted">No tenants assigned to this edge.</span>`)}
-      `}></versola-record-card>
+      `}></versola-record-card>`}
 
       <versola-record-card heading="Fixed" fixedLabel="Fixed" .body=${html`
         ${this.row('Edge ID', html`<span class="mono">${edge.id}</span>`, 'Set at registration')}
@@ -865,6 +947,7 @@ export class VersolaEdgesList extends LitElement {
   }
 
   private renderMeta(edge: Edge) {
+    if (edge.groupKind === 'partner') return html`<span class="chip">Partner · ${this.partnerName(edge)}</span>${certificateChip(edgeCertificateState(edge, this.partnerOf(edge)))}`;
     return html`${this.keyChip(edge)}`;
   }
 
@@ -971,7 +1054,7 @@ export class VersolaEdgesList extends LitElement {
     }
 
     return html`
-      <content-header title="Edges" description="The authenticating reverse proxies that serve tenants and sync their configuration from central.">
+      <content-header title="Edges" description="Every edge deployment central knows, yours and the partners'. The group says who runs it and what central lets it read.">
         ${this.edges.length > 0 && this.canManage ? html`
           <button slot="actions" class="btn btn-primary" @click=${this.handleCreateClick}>+ Create Edge</button>` : ''}
       </content-header>

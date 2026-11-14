@@ -19,6 +19,7 @@ import './clients-list';
 import './scopes-list';
 import './permissions-list';
 import './resources-list';
+import './partners-list';
 import './roles-list';
 import './tenants-list';
 import './edges-list';
@@ -341,6 +342,8 @@ export class VersolaAdmin extends LitElement {
         return p.has('access:read');
       case 'resources':
         return p.has('resources:read');
+      case 'partners':
+        return p.has('partners:read');
       case 'security':
       case 'otp-templates':
       case 'authorization-details':
@@ -375,6 +378,8 @@ export class VersolaAdmin extends LitElement {
         return p.has('access:manage');
       case 'resources':
         return p.has('resources:manage');
+      case 'partners':
+        return p.has('partners:manage');
       case 'security':
       case 'otp-templates':
       case 'authorization-details':
@@ -476,11 +481,11 @@ export class VersolaAdmin extends LitElement {
     locales: { view: 'system-settings', notice: 'Locales live under System settings.' },
   };
 
-  private static readonly VIEWS: ReadonlySet<NavItem> = new Set<NavItem>(['security', 'clients', 'resources', 'scopes', 'permissions', 'roles', 'otp-templates', 'authorization-details', 'tenants', 'edges', 'users', 'keys', 'system-settings', 'delivery', 'forms', 'themes']);
+  private static readonly VIEWS: ReadonlySet<NavItem> = new Set<NavItem>(['security', 'clients', 'resources', 'partners', 'scopes', 'permissions', 'roles', 'otp-templates', 'authorization-details', 'tenants', 'edges', 'users', 'keys', 'system-settings', 'delivery', 'forms', 'themes']);
 
   /** The views whose records belong to the selected tenant: switching it closes the open record.
     * A global view keeps its record (the selector also fires on load, picking the first tenant). */
-  private static readonly TENANT_SCOPED_VIEWS: ReadonlySet<NavItem> = new Set(['clients', 'scopes', 'permissions', 'resources', 'roles', 'security', 'otp-templates', 'authorization-details', 'themes']);
+  private static readonly TENANT_SCOPED_VIEWS: ReadonlySet<NavItem> = new Set(['clients', 'scopes', 'permissions', 'resources', 'partners', 'roles', 'security', 'otp-templates', 'authorization-details', 'themes']);
 
   private handleTenantChange(e: CustomEvent) {
     if (e.detail.tenantId !== this.currentTenantId && VersolaAdmin.TENANT_SCOPED_VIEWS.has(this.currentView)) {
@@ -582,7 +587,12 @@ export class VersolaAdmin extends LitElement {
 
   /** A section sends the operator to another view (a role's banner to the sign-in settings), to
     * one record of it when `id` is given (a default role, a signing key, a tenant). */
-  private handleNavigateView = (e: CustomEvent<{ view: NavItem; id?: string }>) => {
+  private handleNavigateView = (e: CustomEvent<{ view: NavItem; id?: string; tenantId?: string }>) => {
+    // A record of another tenant (a partner named on the global Edges view) is opened in its own tenant.
+    if (e.detail.tenantId && e.detail.tenantId !== this.currentTenantId) {
+      this.currentTenantId = e.detail.tenantId;
+      localStorage.setItem('selectedTenantId', e.detail.tenantId);
+    }
     this.recordRoute = { ...EMPTY_RECORD_ROUTE, id: e.detail.id ?? null };
     // Clients still opens a record by its expand-on-load id; a client named by another section opens that way.
     if (e.detail.view === 'clients') this.clientToExpandOnLoad = e.detail.id ?? null;
@@ -624,12 +634,14 @@ export class VersolaAdmin extends LitElement {
         return html`<versola-permissions-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('permissions')} .route=${this.recordRoute}></versola-permissions-list>`;
       case 'resources':
         return html`<versola-resources-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('resources')} .route=${this.recordRoute}></versola-resources-list>`;
+      case 'partners':
+        return html`<versola-partners-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('partners')} .route=${this.recordRoute}></versola-partners-list>`;
       case 'roles':
         return html`<versola-roles-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('roles')} .route=${this.recordRoute}></versola-roles-list>`;
       case 'tenants':
         return html`<versola-tenants-list .selectedTenantId=${this.currentTenantId} .canManage=${this.canManage('tenants')} .route=${this.recordRoute} @tenant-change=${this.handleTenantChange}></versola-tenants-list>`;
       case 'edges':
-        return html`<versola-edges-list .canManage=${this.canManage('edges')} .route=${this.recordRoute}></versola-edges-list>`;
+        return html`<versola-edges-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('edges')} .route=${this.recordRoute}></versola-edges-list>`;
       case 'users':
         return html`<versola-users-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('users')} .canRevealPassword=${!this.isProd} .canReadAudit=${this.adminPermissions.has('audit:read')} .route=${this.recordRoute}></versola-users-list>`;
       case 'forms':
