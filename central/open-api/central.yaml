@@ -39,7 +39,14 @@ info:
       (`GET`, `POST` answering `{edge, token, expiresAt}`, `DELETE`, `POST .../enrollment-tokens` answering
       `{token, expiresAt}`, `DELETE .../enrollment-tokens`; a token is shown once and nothing else is, since central holds no
       key for an edge: it is registered without one and is refused everywhere until it has enrolled),
-      `PUT /edge/partner/profile`, `GET`/`PUT /edge/partner/settings` and `GET /edge/partner/audit`. A management
+      `PUT /edge/partner/profile`, `GET`/`PUT /edge/partner/settings` (the `PUT` carries the `version` the `GET` answered: `409` when the
+      settings changed since), `GET`/`PUT /edge/partner/rate-limits` and `GET /edge/partner/rate-limits/recommended` and `GET /edge/partner/audit`.
+      The rate limits are one setting for the partner's group: `GET` answers `{rateLimits, revision}`, `PUT` takes
+      `{rateLimits: <policies> | null, expectedRevision?}` (`null` removes them; the key must be present; `expectedRevision` is the revision of
+      the last read, `409` when the limits changed since), validates them as `PATCH /configuration/edges/policies` does for `rateLimits`,
+      writes them to every edge of the group only if every edge accepts them, and is audited with the staff member as the actor; a new edge
+      of the group starts with the group's limits. It touches `rateLimits` only: `overload` and `access-log` stay the operator's, set per edge
+      with `PATCH /configuration/edges/policies`. A management
       call carries the staff member's access token in `Versola-Principal` besides the edge's bearer token; it is
       verified against auth's keys, the issuer and the partner's console client, and its `sub` is the actor of the
       audit event (`403` `partner_principal_mismatch` otherwise). The token proves that a user of the operator signed in
@@ -58,7 +65,7 @@ info:
     * `POST /edge/enroll`, which an edge reaches before it has a certificate: it trades a one-time
       token (`POST /configuration/edges/enrollment-tokens`, or the one a partner is given) and a certificate request for its
       first certificate. The body is `{token, csr, signingKey}`: `signingKey` is the edge's **public** JWK (RSA of 2048 to 8192
-      bits or EC on P-256, with a `kid`; the edge generated the pair and keeps the private half, which no response of central
+      bits, with a `kid`: what central encrypts the secrets it sends the edge to is an RSA key, so an EC key is `422`; the edge generated the pair and keeps the private half, which no response of central
       carries), required for an edge registered without a key (a partner's) and refused for one that has a key; `edgeId` is
       optional, accepted for first-party edges, and must be the token's edge when given. The token is
       `vtk1.<base64url(address)>.<secret>`, where the address is `public-urls.enroll`: an edge needs nothing else to find
@@ -296,6 +303,7 @@ paths:
     delete:
       tags: [Clients]
       summary: Delete a client
+      description: The client's id also leaves every resource audience and partner limit it was in, in the same transaction.
       operationId: deleteClient
       parameters:
         - $ref: '#/components/parameters/ClientIdQuery'
@@ -724,7 +732,8 @@ paths:
       summary: Register a resource
       description: |
         An internal resource is issued a secret that edge presents when calling it. The
-        plaintext is returned only here. Non-internal resources receive no secret.
+        plaintext is returned only here. Non-internal resources receive no secret. The ids `edge`, `central` and `auth`
+        are reserved (`400`): they name the services that audiences of this server stand for.
       operationId: createResource
       requestBody:
         required: true
@@ -2403,7 +2412,8 @@ paths:
       description: |
         Central generates the key pair, keeps the public half and returns the private half
         once. The edge signs its `/sync` requests with it. The edge joins `groupId` (the
-        `default` group when absent) and never leaves it.
+        `default` group when absent) and never leaves it. Not for a group of kind `partner` (`422`): a partner's edge is
+        registered through the partner, without a key, and makes its own when it enrols.
       operationId: registerEdge
       requestBody:
         required: true
@@ -2421,7 +2431,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '422':
-          description: The group named does not exist.
+          description: The group named does not exist, or is a partner's.
     delete:
       tags: [Edges]
       summary: Delete an edge
@@ -2544,7 +2554,10 @@ paths:
     put:
       tags: [Partners]
       summary: Change a partner's profile
-      description: The operator's side of the record; the partner's own name and logo changes go through an approval.
+      description: |
+        The operator's side of the record; the partner's own name and logo changes go through an approval. The body carries the
+        `version` of the partner as read (`GET /configuration/partners`): a write on a stale copy is `409`. `displayName` is
+        not empty, at most 200 characters, without control characters; `logoUri` is an `https` URL.
       operationId: updatePartner
       requestBody:
         required: true
@@ -2555,10 +2568,14 @@ paths:
       responses:
         '204':
           description: Partner updated.
+        '400':
+          description: The profile is invalid, or `version` is missing. The reason, as `text/plain`.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           description: No partner of that id.
+        '409':
+          description: The partner changed since `version` was read.
 
   /configuration/partners/suspend:
     post:
@@ -2574,8 +2591,7 @@ paths:
         tokens and access tokens that were issued run out on their own (within `limits.accessTokenTtlMax` for an access token).
         An access token of a partner's client is bound to a certificate and auth has to know the client to check it, so
         while the client is unknown to auth `/userinfo` does not serve the token; it is served again after `resume`, if it has not
-        expired. Audited: the log keeps that a `note` came with the call, not what it says
-        (it is not stored).
+        expired. Audited: the `note` is kept in the details of the audit event, with the administrator's name. The partner does not see it.
 
         The status is written, and auth is asked to reload its clients at once rather than at its next interval. When it
         could not be asked the answer is `207` (the partner is suspended all the same, and auth omits its clients at its next
@@ -2605,7 +2621,10 @@ paths:
     post:
       tags: [Partners]
       summary: Resume a suspended partner
-      description: The clients return to the syncs and the edges are served again.
+      description: |
+        The clients return to the syncs and the edges are served again. Enrollment tokens that suspension voided stay void: an
+        edge that had not enrolled needs a new one. Like a suspension, it asks auth to reload its clients at once: when it
+        could not be asked the answer is `207` (the partner is active all the same, and auth learns it at its next reload).
       operationId: resumePartner
       requestBody:
         required: true
@@ -2615,7 +2634,13 @@ paths:
               $ref: '#/components/schemas/ResumePartnerRequest'
       responses:
         '204':
-          description: Partner active again.
+          description: Partner active again and auth asked to reload its clients.
+        '207':
+          description: Partner active again, but auth could not be asked to reload its clients (`authSynced` is `false`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuspendPartnerResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -2936,6 +2961,8 @@ paths:
       tags: [Edges]
       summary: Rotate an edge key
       description: |
+        Refused (`422`) for an edge of a partner group: it makes its own key and replaces it when it renews its certificate.
+
         The previous public key keeps verifying tokens until
         `DELETE /configuration/edges/old-key` retires it, so the edge can be redeployed
         without a gap.
@@ -2951,6 +2978,8 @@ paths:
                 $ref: '#/components/schemas/ServiceKeyResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: The edge is a partner's.
 
   /configuration/edges/old-key:
     delete:
@@ -7153,7 +7182,10 @@ components:
       description: |
         What the operator lets a partner have; the partner client invariant is written against these. Refused (400)
         when `clientAuthMethods` is empty or names anything but `tls_client_auth` and `private_key_jwt`,
-        `redirectDomains` is empty, `maxClients` or `maxEdges` is below 1, or a TTL cap is not positive.
+        `redirectDomains` is empty or names something that is not a domain of at least two labels (an address, a scheme, a path),
+        `maxClients` or `maxEdges` is below 1, or a TTL cap is not positive. A partner client may use `private_key_jwt` where this
+        allows it, but with it its access tokens are bearer tokens, not certificate-bound; the operator console offers the group
+        certificate only.
       properties:
         scopes:
           type: array
@@ -7192,15 +7224,16 @@ components:
           items:
             type: string
             enum: [tls_client_auth, private_key_jwt]
-        rateLimitPolicy:
-          type: string
-          description: The name of the edge rate-limit policy set the operator applies to the partner's group; stored for the consoles.
-      required: [scopes, redirectDomains, maxClients, maxEdges, accessTokenTtlMax, refreshTokenTtlMax, clientAuthMethods, rateLimitPolicy]
+      required: [scopes, redirectDomains, maxClients, maxEdges, accessTokenTtlMax, refreshTokenTtlMax, clientAuthMethods]
     Partner:
       type: object
       properties:
         id:
           $ref: '#/components/schemas/PartnerId'
+        version:
+          type: integer
+          format: int64
+          description: Rises with every change of the partner. A change of the profile is sent with the one read, and refused (`409`) if the partner changed since.
         tenantId:
           $ref: '#/components/schemas/TenantId'
         displayName:
@@ -7229,7 +7262,7 @@ components:
         createdAt:
           type: string
           format: date-time
-      required: [id, tenantId, displayName, contact, status, limits, groupId, consoleClientId, createdAt]
+      required: [id, version, tenantId, displayName, contact, status, limits, groupId, consoleClientId, createdAt]
     GetPartnersResponse:
       type: object
       properties:
@@ -7298,6 +7331,10 @@ components:
       properties:
         id:
           $ref: '#/components/schemas/PartnerId'
+        version:
+          type: integer
+          format: int64
+          description: The `version` of the partner as the caller read it.
         displayName:
           type: string
         logoUri:
@@ -7307,7 +7344,7 @@ components:
         reviewAt:
           type: [string, 'null']
           format: date-time
-      required: [id, displayName, contact]
+      required: [id, version, displayName, contact]
     SuspendPartnerRequest:
       type: object
       properties:
@@ -7315,11 +7352,11 @@ components:
           $ref: '#/components/schemas/PartnerId'
         note:
           type: string
-          description: The operator's reason; not stored in this release.
+          description: The operator's reason; recorded in the details of the audit event, not shown to the partner.
       required: [id]
     SuspendPartnerResponse:
       type: object
-      description: A suspension whose auth could not be asked to reload (`207`).
+      description: A suspension or a resumption whose auth could not be asked to reload (`207`).
       properties:
         authSynced:
           type: boolean

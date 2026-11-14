@@ -38,7 +38,7 @@ import versola.central.configuration.{
 }
 import versola.central.{CentralConfig, PartnerCaller, authorizePartnerEdge}
 import versola.util.audit.{ActorType, AuditContext, AuditDetails, AuditDraft, AuditEvent, AuditEvents, AuditOutcome}
-import versola.util.http.{Controller, Forbidden, Observability, Unauthorized}
+import versola.util.http.{Controller, Forbidden, Observability, RateLimitPolicies, Unauthorized}
 import versola.util.{Base64Url, JsonWebKeySet, SecurityService}
 import zio.http.*
 import zio.json.ast.Json
@@ -87,6 +87,9 @@ object PartnerEdgeController extends Controller:
     deleteEdgeEndpoint,
     createEnrollmentTokenEndpoint,
     revokeEnrollmentTokenEndpoint,
+    getRateLimitsEndpoint,
+    recommendedRateLimitsEndpoint,
+    putRateLimitsEndpoint,
     profileEndpoint,
     getSettingsEndpoint,
     putSettingsEndpoint,
@@ -94,6 +97,11 @@ object PartnerEdgeController extends Controller:
   )
 
   private val Prefix = Method.GET / "edge" / "partner"
+
+  /** What one partner may hold: its resources and the endpoints of each. Not an operator's limit to set, but a bound, so that a partner's
+    * console cannot grow what central caches and syncs without end. */
+  val MaxResources = 100
+  val MaxEndpointsPerResource = 200
 
   // ── what the edge reads ────────────────────────────────────────────────────────────────────────
 
@@ -279,6 +287,10 @@ object PartnerEdgeController extends Controller:
           _ <- Audit.target(body.resourceId)
           _ <- resourceUriAllowed(caller.partner, body.resource)
           _ <- audienceOwned(caller.partner, body.audience)
+          _ <- ownResources(caller.partner).flatMap: own =>
+            ZIO.fail(PartnerError.Invalid(s"a partner may have at most $MaxResources resources")).when(own.size >= MaxResources)
+          _ <- ZIO.fail(PartnerError.Invalid(s"a resource may have at most $MaxEndpointsPerResource endpoints"))
+            .when(body.endpoints.size > MaxEndpointsPerResource)
           result <- ZIO.serviceWithZIO[ResourceService](_.createResource(CreateResourceRequest(
             tenantId = caller.partner.tenantId,
             resourceId = body.resourceId,
@@ -307,6 +319,9 @@ object PartnerEdgeController extends Controller:
           _ <- Audit.target(body.resourceId)
           _ <- Audit.changed(body, "resourceId")
           current <- ownResource(caller.partner, body.resourceId)
+          _ <- ZIO.fail(PartnerError.Invalid(s"a resource may have at most $MaxEndpointsPerResource endpoints")).when(
+            current.endpoints.size - body.deleteEndpoints.size + body.createEndpoints.size > MaxEndpointsPerResource,
+          )
           _ <- ZIO.foreachDiscard(body.resource)(resourceUriAllowed(caller.partner, _))
           _ <- audienceOwned(caller.partner, body.audience.patch(current.audience))
           result <- ZIO.serviceWithZIO[ResourceService](_.updateResource(body)).catchSome {
@@ -403,6 +418,44 @@ object PartnerEdgeController extends Controller:
         yield Response.status(Status.NoContent)
       }
 
+  /** The rate limits the partner's edges apply: one setting for the group. What the partner sets here is what `/edge/partner/sync/rate-limits`
+    * serves each of its edges; `overload` and `access-log` are the operator's, set per edge with `PATCH /configuration/edges/policies`. */
+  val getRateLimitsEndpoint =
+    Method.GET / "edge" / "partner" / "rate-limits" -> managed("partner-edge", None, "/edge/partner/rate-limits") { (caller, _, _) =>
+      ZIO.serviceWithZIO[PartnerService](_.rateLimits(caller.partner)).map(limits => Response.json(GroupRateLimitsResponse.of(limits).toJson))
+    }
+
+  /** The starting set the console offers with one click (every policy in `shadow`): the same as the operator is offered. */
+  val recommendedRateLimitsEndpoint =
+    Method.GET / "edge" / "partner" / "rate-limits" / "recommended" ->
+      managed("partner-edge", None, "/edge/partner/rate-limits/recommended") { (_, _, _) =>
+        ZIO.succeed(Response.json(RateLimitPolicies.recommended.toJson))
+      }
+
+  /** Sets the rate limits of every edge of the group, as `PATCH /configuration/edges/policies` sets `rateLimits` of one edge: the body is
+    * `{rateLimits: <policies> | null, expectedRevision?: n}`, `null` removes them, the key must be there (an empty body is refused, not
+    * read as a removal), and `expectedRevision` is the `revision` of the last read (`409` when the limits changed since). */
+  val putRateLimitsEndpoint =
+    Method.PUT / "edge" / "partner" / "rate-limits" ->
+      managed("partner-edge", Some(Audit.action("rate-limits")), "/edge/partner/rate-limits") { (caller, _, request) =>
+        for
+          body <- request.bodyAs[Json.Obj]
+          _ <- Audit.target(caller.partner.groupId)
+          _ <- ZIO.fail(PartnerError.Invalid("the body must have `rateLimits`: the policies, or null to remove them"))
+            .unless(body.fields.exists(_._1 == "rateLimits"))
+          _ <- ZIO.fail(PartnerError.Invalid("the body names only `rateLimits` and `expectedRevision`"))
+            .when(body.fields.exists(field => field._1 != "rateLimits" && field._1 != "expectedRevision"))
+          policies <- body.get("rateLimits") match
+            case Some(Json.Null) | None => ZIO.none
+            case Some(value) =>
+              ZIO.fromEither(value.as[RateLimitPolicies]).mapBoth(detail => PartnerError.Invalid(s"rateLimits: $detail"), Some(_))
+          expected <- body.get("expectedRevision") match
+            case None | Some(Json.Null) => ZIO.none
+            case Some(value) => ZIO.fromEither(value.as[Int]).mapBoth(detail => PartnerError.Invalid(s"expectedRevision: $detail"), Some(_))
+          limits <- ZIO.serviceWithZIO[PartnerService](_.setRateLimits(caller.partner, policies, expected))
+        yield Response.json(GroupRateLimitsResponse.of(limits).toJson)
+      }
+
   /** The partner's own name and logo: a `profile_change` request for the operator. */
   val profileEndpoint =
     Method.PUT / "edge" / "partner" / "profile" -> managed("partner", Some(Audit.update), "/edge/partner/profile") { (caller, principal, request) =>
@@ -416,7 +469,11 @@ object PartnerEdgeController extends Controller:
 
   val getSettingsEndpoint =
     Method.GET / "edge" / "partner" / "settings" -> managed("partner", None, "/edge/partner/settings") { (caller, _, _) =>
-      ZIO.succeed(Response.json(PartnerSettingsResponse(contact = caller.partner.contact, defaults = caller.partner.settings.defaults).toJson))
+      ZIO.succeed(Response.json(PartnerSettingsResponse(
+        contact = caller.partner.contact,
+        defaults = caller.partner.settings.defaults,
+        version = caller.partner.version,
+      ).toJson))
     }
 
   val putSettingsEndpoint =
@@ -425,7 +482,7 @@ object PartnerEdgeController extends Controller:
         body <- request.bodyAs[PartnerSettingsResponse]
         _ <- Audit.target(caller.partner.id)
         _ <- Audit.changed(body)
-        _ <- ZIO.serviceWithZIO[PartnerService](_.setSettings(caller.partner, body.contact, PartnerSettings(body.defaults)))
+        _ <- ZIO.serviceWithZIO[PartnerService](_.setSettings(caller.partner, body.version, body.contact, PartnerSettings(body.defaults)))
       yield Response.status(Status.NoContent)
     }
 
@@ -704,6 +761,12 @@ case class ResourceIdRequest(resourceId: ResourceId) derives JsonCodec
 
 case class RotatedSecretResponse(secret: String) derives JsonCodec
 
+/** The rate limits of the partner's edges (`null`: none set) and their `revision`, which a change names to say what it read. */
+case class GroupRateLimitsResponse(rateLimits: Option[RateLimitPolicies], revision: Int) derives JsonCodec
+
+object GroupRateLimitsResponse:
+  def of(limits: PartnerService.GroupRateLimits): GroupRateLimitsResponse = GroupRateLimitsResponse(limits.policies, limits.revision)
+
 case class PartnerEdgesResponse(edges: Vector[EdgeResponse]) derives Schema, JsonCodec
 
 case class CreatePartnerEdgeRequest(id: EdgeId, publicUrl: String) derives JsonCodec
@@ -717,6 +780,7 @@ case class PartnerEnrollmentTokenResponse(token: String, expiresAt: Instant) der
 
 case class PartnerProfileRequest(displayName: String, logoUri: Option[String]) derives Schema, JsonCodec
 
-case class PartnerSettingsResponse(contact: PartnerContact, defaults: PartnerDefaults) derives Schema, JsonCodec
+/** The partner's settings, and the `version` of them it read: a `PUT` carries it back, and is `409` when the settings changed since. */
+case class PartnerSettingsResponse(contact: PartnerContact, defaults: PartnerDefaults, version: Long) derives Schema, JsonCodec
 
 case class PartnerAuditResponse(events: List[AuditEvent], next: Option[String]) derives JsonCodec

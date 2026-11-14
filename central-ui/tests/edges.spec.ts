@@ -652,7 +652,7 @@ test.describe('policies are one endpoint, with revisions', () => {
 const partnerOfEdges = {
   id: 'pilot-pay', tenantId: 'tenant-alpha', displayName: 'Pilot Pay', logoUri: null, contact: { email: 'security@pilotpay.example' },
   status: 'active' as const, groupId: 'pilot-pay', consoleClientId: 'pilot-pay-console', reviewAt: null, createdAt: '2026-09-02T10:00:00Z',
-  limits: { scopes: ['openid'], redirectDomains: ['pilotpay.example'], maxClients: 10, maxEdges: 3, accessTokenTtlMax: 600, refreshTokenTtlMax: 30 * 86_400, clientAuthMethods: ['tls_client_auth' as const], rateLimitPolicy: 'partner-default' },
+  limits: { scopes: ['openid'], redirectDomains: ['pilotpay.example'], maxClients: 10, maxEdges: 3, accessTokenTtlMax: 600, refreshTokenTtlMax: 30 * 86_400, clientAuthMethods: ['tls_client_auth' as const] },
 };
 const partnerEdge = { id: 'edge-pilot-eu-1', hasOldKey: false, requireDpopNonce: true, groupId: 'pilot-pay', groupKind: 'partner' as const, partnerId: 'pilot-pay', publicUrl: 'https://login.pilotpay.example', certificateNotAfter: '2026-11-17T00:00:00Z', lastRenewedAt: '2026-11-03T02:00:00Z' };
 const waitingEdge = { id: 'edge-pilot-kz-1', hasOldKey: false, requireDpopNonce: true, groupId: 'pilot-pay', groupKind: 'partner' as const, partnerId: 'pilot-pay', publicUrl: 'https://login-kz.pilotpay.example' };

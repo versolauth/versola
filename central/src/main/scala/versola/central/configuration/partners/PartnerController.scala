@@ -88,11 +88,11 @@ object PartnerController extends AuditedController:
         _ <- Audit.target(body.id)
         _ <- Audit.partner(body.id)
         _ <- Audit.changed(body, "id")
-        _ <- ZIO.serviceWithZIO[PartnerService](_.updateProfile(body.id, body.displayName, body.logoUri, body.contact, body.reviewAt))
+        _ <- ZIO.serviceWithZIO[PartnerService](_.updateProfile(body.id, body.version, body.displayName, body.logoUri, body.contact, body.reviewAt))
       yield Response.status(Status.NoContent)).catchAll(failure)
     }
 
-  /** The kill switch (#962 §5). `note` is the operator's word to the record of the request; it is not stored in P0. */
+  /** The kill switch (#962 §5). `note` is the operator's word, kept in `details.note` of the audit event; the partner does not see it. */
   val suspendEndpoint =
     (Method.POST / "configuration" / "partners" / "suspend").audited(Audit.change("partner", Audit.action("suspend"))) -> handler {
       (request: Request) =>
@@ -101,8 +101,9 @@ object PartnerController extends AuditedController:
           body <- request.bodyAs[SuspendPartnerRequest]
           _ <- Audit.target(body.id)
           _ <- Audit.partner(body.id)
-          // the log keeps the names of the fields, never their values: that a note came with it, not what it says
+          // the operator's own word with the action: kept in the audit log of the operator, not shown to the partner
           _ <- Audit.changedFields("note" -> body.note.exists(_.nonEmpty))
+          _ <- ZIO.foreachDiscard(body.note)(Audit.note)
           outcome <- ZIO.serviceWithZIO[PartnerService](_.suspend(body.id))
         // The partner is suspended either way. `204` when auth was told to reload its clients; `207` when it could not be, so that
         // the operator can call again once auth answers.
@@ -121,8 +122,11 @@ object PartnerController extends AuditedController:
           body <- request.bodyAs[ResumePartnerRequest]
           _ <- Audit.target(body.id)
           _ <- Audit.partner(body.id)
-          _ <- ZIO.serviceWithZIO[PartnerService](_.resume(body.id))
-        yield Response.status(Status.NoContent)).catchAll(failure)
+          outcome <- ZIO.serviceWithZIO[PartnerService](_.resume(body.id))
+        // as for a suspension: `207` when auth could not be told to reload its clients, which it then learns at its next reload
+        yield
+          if outcome.authSynced then Response.status(Status.NoContent)
+          else Response.json(SuspendPartnerResponse(authSynced = false).toJson).status(Status.MultiStatus)).catchAll(failure)
     }
 
   /** New limits; a client of the partner now outside them is named in the answer and left as it is. */
@@ -208,6 +212,8 @@ case class PartnerResponse(
     consoleClientId: ClientId,
     reviewAt: Option[Instant],
     createdAt: Instant,
+    /** What a change of the profile (`PUT /configuration/partners`) names, so that it does not overwrite a change made meanwhile. */
+    version: Long,
 ) derives Schema, JsonCodec
 
 object PartnerResponse:
@@ -224,6 +230,7 @@ object PartnerResponse:
       consoleClientId = record.consoleClientId,
       reviewAt = record.reviewAt,
       createdAt = record.createdAt,
+      version = record.version,
     )
 
 case class GetPartnersResponse(partners: Vector[PartnerResponse]) derives Schema, JsonCodec
@@ -258,8 +265,11 @@ case class CreatedPartnerResponse(
     expiresAt: Instant,
 ) derives Schema, JsonCodec
 
+/** `version` is the version of the partner the caller read (`GET /configuration/partners`): a change that finds the partner changed
+  * since is `409`, and the caller reads it again. */
 case class UpdatePartnerRequest(
     id: PartnerId,
+    version: Long,
     displayName: String,
     logoUri: Option[String],
     contact: PartnerContact,
@@ -268,7 +278,7 @@ case class UpdatePartnerRequest(
 
 case class SuspendPartnerRequest(id: PartnerId, note: Option[String]) derives Schema, JsonCodec
 
-/** The answer of a suspension whose auth could not be told to reload (`207`): the partner is suspended all the same. */
+/** The answer of a suspension or a resumption whose auth could not be told to reload (`207`): the status changed all the same. */
 case class SuspendPartnerResponse(authSynced: Boolean) derives Schema, JsonCodec
 
 case class ResumePartnerRequest(id: PartnerId) derives Schema, JsonCodec

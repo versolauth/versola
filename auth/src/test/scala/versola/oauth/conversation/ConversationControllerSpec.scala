@@ -151,6 +151,7 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- configuration.getPhoneRegions.succeedsWith(List.empty)
         _ <- configuration.getPasswordRegex.succeedsWith(".*")
         _ <- configuration.getIpHeader.succeedsWith(ipHeader)
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
         _ <- router.submit.succeedsWith((conversationResult, record))
 
         response <- client.batched(request)
@@ -195,6 +196,7 @@ object ConversationControllerSpec extends UnitSpecBase:
         )
         _ <- configuration.getPhoneRegions.succeedsWith(List.empty)
         _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
         _ <- router.submit.succeedsWith((result, record))
         response <- client.batched(
           Request.post(
@@ -249,6 +251,7 @@ object ConversationControllerSpec extends UnitSpecBase:
         )
         _ <- configuration.getPasswordRegex.succeedsWith(passwordRegex)
         _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
 
         response <- client.batched(request)
         submitCalls = router.submit.calls
@@ -506,6 +509,7 @@ object ConversationControllerSpec extends UnitSpecBase:
             ),
           ),
         )
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
         _ <- router.getConversation.succeedsWith(Some(record))
         _ <- renderService.renderStep.succeedsWith(Response.text("<html>Step</html>"))
 
@@ -534,6 +538,7 @@ object ConversationControllerSpec extends UnitSpecBase:
             ),
           ),
         )
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
         _ <- router.getConversation.failsWith(Error.ConversationExpired)
         _ <- renderService.renderExpired.succeedsWith(Response.text("<html>Expired</html>"))
 
@@ -555,6 +560,7 @@ object ConversationControllerSpec extends UnitSpecBase:
             ),
           ),
         )
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
         _ <- router.getConversation.failsWith(Error.BadRequest)
 
         response <- client.batched(Request.get(URL.empty / "challenge").addHeader(conversationCookie))
@@ -574,6 +580,7 @@ object ConversationControllerSpec extends UnitSpecBase:
             ),
           ),
         )
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
         _ <- router.getConversation.failsWith(new RuntimeException("boom"))
 
         response <- client.batched(Request.get(URL.empty / "challenge").addHeader(conversationCookie))
@@ -594,6 +601,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           ),
         )
         _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
         _ <- router.submit.failsWith(Error.ConversationExpired)
         _ <- renderService.renderExpired.succeedsWith(Response.text("<html>Expired</html>"))
 
@@ -605,6 +613,43 @@ object ConversationControllerSpec extends UnitSpecBase:
         )
         body <- response.body.asString
       yield assertTrue(response.status == Status.Ok, body == "<html>Expired</html>")
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    // #962 review: a client gone from the sync (a suspended partner's) ends its users' conversations as expired ones, not as a failure
+    test("a client that is gone from the sync ends the conversation as an expired one, on a submit and on the read of the step") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
+        )
+        _ <- configuration.find.succeedsWith(None)
+        _ <- renderService.renderExpired.succeedsWith(Response.text("<html>Expired</html>"))
+
+        submitted <- client.batched(
+          Request.post(
+            url = URL.empty / "challenge" / "email",
+            body = Body.fromURLEncodedForm(Form.fromStrings("email" -> email, "csrf" -> "")),
+          ).addHeader(conversationCookie),
+        )
+        read <- client.batched(Request.get(URL.empty / "challenge").addHeader(conversationCookie))
+        submittedBody <- submitted.body.asString
+        readBody <- read.body.asString
+      yield assertTrue(
+        submitted.status == Status.Ok,
+        read.status == Status.Ok,
+        submittedBody == "<html>Expired</html>",
+        readBody == "<html>Expired</html>",
+        // nothing of the conversation is touched for a client that is not there
+        router.submit.calls.isEmpty,
+        router.getConversation.calls.isEmpty,
+      )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     test("POST /challenge sends an expired submit on to /challenge in the language it was submitted in") {
       for
@@ -621,6 +666,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           ),
         )
         _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
         _ <- router.submit.failsWith(Error.ConversationExpired)
 
         response <- client.batched(
@@ -650,6 +696,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           ),
         )
         _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
         _ <- router.submit.failsWith(new RuntimeException("boom"))
 
         response <- client.batched(
@@ -736,6 +783,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           ),
         )
         _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
         _ <- router.submit.failsWith(Error.ServiceUnavailable)
         _ <- renderService.renderServiceUnavailable.succeedsWith(Response.text("<html>Unavailable</html>"))
 
@@ -766,6 +814,7 @@ object ConversationControllerSpec extends UnitSpecBase:
             ),
           ),
         )
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
         _ <- router.getConversation.succeedsWith(Some(record))
         _ <- renderService.renderStep.succeedsWith(Response.text("<html>Step</html>"))
 
@@ -789,6 +838,7 @@ object ConversationControllerSpec extends UnitSpecBase:
             ),
           ),
         )
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
         _ <- router.getConversation.succeedsWith(None)
         _ <- renderService.renderExpired.succeedsWith(Response.text("<html>Expired</html>"))
 
@@ -814,6 +864,7 @@ object ConversationControllerSpec extends UnitSpecBase:
             ),
           ),
         )
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
         _ <- router.getConversation.succeedsWith(None)
         _ <- renderService.renderExpired.succeedsWith(Response.text("<html>Expired</html>"))
 
@@ -842,6 +893,7 @@ object ConversationControllerSpec extends UnitSpecBase:
             ),
           ),
         )
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
         _ <- router.getConversation.failsWith(Error.ServiceUnavailable)
         _ <- renderService.renderServiceUnavailable.succeedsWith(Response.text("<html>Unavailable</html>"))
 
@@ -935,6 +987,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           ),
         )
         _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
         _ <- configuration.getPasswordRegex.succeedsWith("^[0-9]+$")
 
         response <- client.batched(
@@ -960,6 +1013,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           ),
         )
         _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
         _ <- configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("GB", "+44", 10, "7\\d{9}", true)))
 
         response <- client.batched(
@@ -985,6 +1039,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           ),
         )
         _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
         _ <- configuration.getPasswordRegex.succeedsWith("[") // invalid regex syntax
         _ <- router.submit.succeedsWith((conversationResult, record))
         _ <- renderService.renderSubmit.succeedsWith(Response.seeOther(URL.decode("/challenge").toOption.get))

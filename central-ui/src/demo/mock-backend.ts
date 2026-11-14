@@ -96,10 +96,9 @@ export type PartnerLimitsDto = {
   maxClients: number; maxEdges: number;
   accessTokenTtlMax: number; refreshTokenTtlMax: number;
   clientAuthMethods: Array<'tls_client_auth' | 'private_key_jwt'>;
-  rateLimitPolicy: string;
 };
 export type PartnerDto = {
-  id: string; tenantId: string; displayName: string; logoUri?: string | null;
+  id: string; version: number; tenantId: string; displayName: string; logoUri?: string | null;
   contact: { email: string; phone?: string | null };
   status: PartnerStatusDto; limits: PartnerLimitsDto; groupId: string; consoleClientId: string;
   reviewAt?: string | null; createdAt: string;
@@ -461,6 +460,10 @@ export type MockConfigState = {
   rateLimitRejection?: string;
   /** Holds a patch that names `rateLimits` for this long. */
   rateLimitDelayMs?: number;
+  /** Makes a suspension or resumption of a partner answer `207 {authSynced:false}`: central saved it, auth was not told. */
+  partnerAuthUnreachable?: boolean;
+  /** The clients a `PUT /configuration/partners/limits` names as now outside the limits. */
+  partnerOutsideLimits?: Array<{ clientId: string; fields: string[] }>;
   /** Makes a policies patch that names this section answer 409, as if someone else had changed it after the console read it. */
   policyConflict?: 'overload' | 'accessLog' | 'rateLimits';
   authorizationPresets: Record<string, AuthorizationPresetDto[]>; // keyed by clientId
@@ -625,6 +628,8 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     accessLogDelayMs: overrides.accessLogDelayMs,
     rateLimitRejection: overrides.rateLimitRejection,
     rateLimitDelayMs: overrides.rateLimitDelayMs,
+    partnerAuthUnreachable: overrides.partnerAuthUnreachable,
+    partnerOutsideLimits: overrides.partnerOutsideLimits,
     policyConflict: overrides.policyConflict,
     roles: clone({ ...defaultState.roles, ...overrides.roles }),
     users: clone(overrides.users ?? defaultState.users),
@@ -1654,7 +1659,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         }
         const createdAt = new Date().toISOString();
         const partner: PartnerDto = {
-          id: draft.id, tenantId: draft.tenantId, displayName: draft.displayName, logoUri: draft.logoUri ?? null,
+          id: draft.id, version: 1, tenantId: draft.tenantId, displayName: draft.displayName, logoUri: draft.logoUri ?? null,
           contact: { email: draft.contact.email, phone: draft.contact.phone ?? null },
           status: 'onboarding',
           limits: { ...draft.limits, scopes: [...new Set(['openid', ...(draft.limits.scopes ?? [])])] },
@@ -1676,7 +1681,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         };
         state.edges = [...state.edges, edge];
         const issuer = String((state.serverMetadata as { issuer?: string } | null)?.issuer ?? 'https://id.example');
-        await route.fulfill(json({ partner, edge, enrollmentToken: enrollmentToken(issuer) }, 201));
+        await route.fulfill(json({ partner, edge, enrollmentToken: enrollmentToken(issuer), expiresAt: new Date(Date.now() + 24 * 3_600_000).toISOString() }, 201));
         return;
       }
 
@@ -1687,6 +1692,15 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           await route.fulfill(json({ message: `Partner ${payload.id} was not found` }, 404));
           return;
         }
+        if (typeof payload.version !== 'number') {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: 'version is required: send the version of the partner you read' });
+          return;
+        }
+        if (payload.version !== partner.version) {
+          await route.fulfill({ status: 409, contentType: 'text/plain', body: `${partner.displayName} was changed since you read it. Reload and try again.` });
+          return;
+        }
+        partner.version += 1;
         if (payload.displayName !== undefined) partner.displayName = payload.displayName;
         if (payload.logoUri !== undefined) partner.logoUri = payload.logoUri;
         if (payload.contact !== undefined) partner.contact = { email: payload.contact.email, phone: payload.contact.phone ?? null };
@@ -1708,7 +1722,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         return;
       }
       partner.status = 'suspended';
-      await route.fulfill({ status: 204, body: '' });
+      partner.version += 1;
+      await route.fulfill(state.partnerAuthUnreachable ? json({ authSynced: false }, 207) : { status: 204, body: '' });
       return;
     }
 
@@ -1720,7 +1735,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         return;
       }
       partner.status = 'active';
-      await route.fulfill({ status: 204, body: '' });
+      partner.version += 1;
+      await route.fulfill(state.partnerAuthUnreachable ? json({ authSynced: false }, 207) : { status: 204, body: '' });
       return;
     }
 
@@ -1732,7 +1748,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         return;
       }
       partner.limits = { ...clone(payload.limits), scopes: [...new Set(['openid', ...payload.limits.scopes])] };
-      await route.fulfill({ status: 204, body: '' });
+      partner.version += 1;
+      await route.fulfill(json({ outsideLimits: state.partnerOutsideLimits ?? [] }));
       return;
     }
 

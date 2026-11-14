@@ -5,7 +5,7 @@ import { buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, tagStyl
 import type { CreatedPartner, OAuthScope, PartnerLimits } from '../types';
 import { createPartner } from '../utils/central-api';
 import { validateEdgeId } from '../utils/validators';
-import { RATE_LIMIT_POLICY_OPTIONS, defaultPartnerLimits, redirectUriWithinDomains, ttlCapsLabel, validatePartnerId } from '../utils/partners';
+import { defaultPartnerLimits, redirectUriWithinDomains, ttlCapsLabel, validatePartnerId } from '../utils/partners';
 import { statusIcon } from './status-icon';
 import './nav-toggle';
 
@@ -14,7 +14,6 @@ type Step = 1 | 2 | 3 | 4;
 type Draft = {
   id: string; displayName: string; logoUri: string; email: string; phone: string; reviewAt: string;
   scopes: string[]; redirectDomains: string; maxClients: string; maxEdges: string; accessTokenTtlMinutes: string; refreshTokenTtlDays: string;
-  tlsClientAuth: boolean; privateKeyJwt: boolean; rateLimitPolicy: string;
   consoleUrl: string; edgeId: string; edgePublicUrl: string;
 };
 
@@ -38,7 +37,6 @@ export class VersolaPartnerWizard extends LitElement {
   @state() private draft: Draft = {
     id: '', displayName: '', logoUri: '', email: '', phone: '', reviewAt: '',
     scopes: ['openid'], redirectDomains: '', maxClients: '10', maxEdges: '3', accessTokenTtlMinutes: '10', refreshTokenTtlDays: '30',
-    tlsClientAuth: true, privateKeyJwt: false, rateLimitPolicy: 'partner-default',
     consoleUrl: '', edgeId: '', edgePublicUrl: '',
   };
   @state() private isSaving = false;
@@ -120,7 +118,6 @@ export class VersolaPartnerWizard extends LitElement {
     if (!positive(draft.maxEdges)) errors.maxEdges = 'A whole number above zero.';
     if (!positive(draft.accessTokenTtlMinutes) || Number(draft.accessTokenTtlMinutes) > 24 * 60) errors.accessTokenTtlMinutes = 'Between 1 minute and 24 hours.';
     if (!positive(draft.refreshTokenTtlDays) || Number(draft.refreshTokenTtlDays) > 365) errors.refreshTokenTtlDays = 'Between 1 and 365 days.';
-    if (!draft.tlsClientAuth && !draft.privateKeyJwt) errors.tlsClientAuth = 'At least one method.';
     return errors;
   }
 
@@ -167,8 +164,7 @@ export class VersolaPartnerWizard extends LitElement {
       maxEdges: Number(draft.maxEdges),
       accessTokenTtlMax: Number(draft.accessTokenTtlMinutes) * 60,
       refreshTokenTtlMax: Number(draft.refreshTokenTtlDays) * 86_400,
-      clientAuthMethods: [...(draft.tlsClientAuth ? ['tls_client_auth' as const] : []), ...(draft.privateKeyJwt ? ['private_key_jwt' as const] : [])],
-      rateLimitPolicy: draft.rateLimitPolicy,
+      clientAuthMethods: ['tls_client_auth'],
     };
   }
 
@@ -345,25 +341,7 @@ export class VersolaPartnerWizard extends LitElement {
       </div>
       <div class="editor-box">
         <h3>How the clients authenticate</h3>
-        <div class="form-group">
-          <span class="checkbox-list" role="group" aria-labelledby="partner-auth-label">
-            <label id="partner-auth-label">Client authentication *</label>
-            <label class="checkbox-row"><input type="checkbox" .checked=${draft.tlsClientAuth} aria-describedby="partner-auth-hint"
-              @change=${(e: Event) => this.set({ tlsClientAuth: (e.target as HTMLInputElement).checked })} /><span>Group certificate (<span class="mono">tls_client_auth</span>)</span></label>
-            <label class="checkbox-row"><input type="checkbox" .checked=${draft.privateKeyJwt}
-              @change=${(e: Event) => this.set({ privateKeyJwt: (e.target as HTMLInputElement).checked })} /><span><span class="mono">private_key_jwt</span></span></label>
-          </span>
-          ${errors.tlsClientAuth ? html`<div class="error-message" id="partner-auth-hint" role="alert">${errors.tlsClientAuth}</div>`
-            : html`<div class="hint" id="partner-auth-hint">The group certificate names the group, so every replica of the partner's edges authenticates as any of its clients.</div>`}
-        </div>
-        <div class="form-group">
-          <label for="partner-rateLimitPolicy">Rate-limit policy for the group</label>
-          <select id="partner-rateLimitPolicy" class="compact-input" .value=${draft.rateLimitPolicy} aria-describedby="partner-rateLimitPolicy-hint"
-            @change=${(e: Event) => this.set({ rateLimitPolicy: (e.target as HTMLSelectElement).value })}>
-            ${RATE_LIMIT_POLICY_OPTIONS.map(option => html`<option value=${option.id} ?selected=${option.id === draft.rateLimitPolicy}>${option.label}</option>`)}
-          </select>
-          <div class="hint" id="partner-rateLimitPolicy-hint">Applied to every edge of the group. Read-only for the partner.</div>
-        </div>
+        <div class="hint">With the group certificate (<span class="mono">tls_client_auth</span>). It names the group, so every replica of the partner's edges authenticates as any of its clients. Rate limits are the partner's to set for its own edges.</div>
       </div>
       <div class="form-actions">
         <span class="wizard-actions-note">Step 2 of 4 · every limit can be changed later on the partner's record</span>
@@ -406,7 +384,7 @@ export class VersolaPartnerWizard extends LitElement {
         <p class="editor-sub">The partner adds further edges itself, up to its limit.</p>
         ${this.prefixedEdgeField()}
         ${this.field(3, 'edgePublicUrl', 'Public URL *', 'Where users reach the edge; back-channel logout goes there too.', { type: 'url', placeholder: 'https://login.pilotpay.example' })}
-        <div class="hint">The enrollment token is single-use and valid for 24 hours. It is shown once after this wizard; send it over a channel you trust.</div>
+        <div class="hint">The enrollment token is single-use and short-lived. It is shown once after this wizard, with its expiry; send it over a channel you trust.</div>
       </div>
       <div class="form-actions">
         <span class="wizard-actions-note">Step 3 of 4</span>
@@ -443,8 +421,7 @@ export class VersolaPartnerWizard extends LitElement {
             ['Scopes', tags(limits.scopes)],
             ['Redirect domains', tags(limits.redirectDomains)],
             ['Caps', `${limits.maxClients} clients · ${limits.maxEdges} edges · ${ttlCapsLabel(limits)}`],
-            ['Client authentication', limits.clientAuthMethods.map(method => method === 'tls_client_auth' ? 'group certificate' : 'private_key_jwt').join(' or ')],
-            ['Rate limits', html`<span class="mono">${limits.rateLimitPolicy}</span>`],
+            ['Client authentication', 'group certificate'],
             ['Consent', html`Always shown, names ${draft.displayName} ${statusIcon('lock', '', 12)}`],
           ])}
           ${this.reviewGroup('Edge & console', 3, [

@@ -378,7 +378,6 @@ object Flows:
             "accessTokenTtlMax" -> Json.Num(3600),
             "refreshTokenTtlMax" -> Json.Num(31536000),
             "clientAuthMethods" -> Json.Arr(Json.Str("tls_client_auth")),
-            "rateLimitPolicy" -> Json.Str("partner-default"),
           ),
         ),
         "consoleClient" -> Json.Obj("redirectUri" -> Json.Str(s"https://console.$partnerId.example/callback")),

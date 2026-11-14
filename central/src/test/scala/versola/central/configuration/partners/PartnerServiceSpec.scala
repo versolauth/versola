@@ -21,6 +21,7 @@ import versola.central.configuration.clients.{
   RegisteredClient,
 }
 import versola.central.configuration.edges.{
+  Change,
   EdgeCertificate,
   EdgeEnrollmentTokenRepository,
   EdgeGroupId,
@@ -31,10 +32,14 @@ import versola.central.configuration.edges.{
   EdgeIdentityService,
   EdgeRecord,
   EdgeService,
+  PolicyPatchError,
+  PolicySection,
+  PolicySectionMeta,
 }
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.users.AuthClient
+import versola.util.http.RateLimitPolicies
 import versola.util.{RedirectUri, RsaKeyPair}
 import zio.*
 import zio.http.URL
@@ -61,7 +66,6 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
     accessTokenTtlMax = 600,
     refreshTokenTtlMax = 86400,
     clientAuthMethods = Set(AuthMethod.tls_client_auth),
-    rateLimitPolicy = "partner-default",
     resourceDomains = None,
   )
 
@@ -193,7 +197,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         clients.findClient.succeedsWith(None) *>
         edges.findFresh.succeedsWith(None) *>
         registry.refreshNow.succeedsWith(()) *>
-        clients.checkSecurityProfile.succeedsWith(())
+        clients.checkRegistration.succeedsWith(())
 
   private val configured = TestCentralConfig.config.copy(
     auth = TestCentralConfig.config.auth.copy(mtlsUrl = Some(URL.decode("https://id-mtls.example.com").toOption.get)),
@@ -266,11 +270,11 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           created.edge.edge.publicKey.isEmpty,
         )
       },
-      test("a tenant whose security profile refuses the console client refuses the partner before anything is written") {
+      test("a refusal of the console client (its tenant's security profile, its redirect URI) refuses the partner before anything is written") {
         val env = Env(configured)
         for
           _ <- env.empty
-          _ <- env.clients.checkSecurityProfile.failsWith(
+          _ <- env.clients.checkRegistration.failsWith(
             InvalidRegistrationConfiguration(ClientId("acme-console"), "FAPI 2.0 requires sender-constrained access tokens"),
           )
           refused <- env.service.create(newPartner).flip
@@ -284,8 +288,8 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           env.edges.registerEdgeWithoutKey.calls.isEmpty,
           env.identity.issueEnrollmentToken.calls.isEmpty,
           // and what was asked of the profile is the console client the creation would register
-          env.clients.checkSecurityProfile.calls.map(c => (c.id, c.partnerId, c.consentFlow)) ==
-            List((ClientId("acme-console"), Some(PartnerId("acme")), None)),
+          env.clients.checkRegistration.calls.map(c => (c._1.id, c._1.partnerId, c._1.consentFlow, c._2.map(_.id))) ==
+            List((ClientId("acme-console"), Some(PartnerId("acme")), None, Some(PartnerId("acme")))),
         )
       },
       // The group of a partner is of kind `partner` because the service makes it so, and for no other reason: no input names a group, and
@@ -363,7 +367,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           env.enrollmentTokens.revoke.calls == List(EdgeId("edge-acme-1")),
           // nothing is deleted or revoked: no client is read, no grant touched
           env.clients.getPartnerClients.calls.isEmpty,
-          outcome == PartnerService.SuspendOutcome(authSynced = true),
+          outcome == PartnerService.StatusChangeOutcome(authSynced = true),
         )
       },
       test("a suspension auth could not be told of is still a suspension, and says so") {
@@ -377,7 +381,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           outcome <- env.service.suspend(acme.id)
         yield assertTrue(
           env.partners.setStatus.calls == List((acme.id, PartnerStatus.Suspended)),
-          outcome == PartnerService.SuspendOutcome(authSynced = false),
+          outcome == PartnerService.StatusChangeOutcome(authSynced = false),
         )
       },
       test("resume takes a suspended partner back to active, and refuses one that is not suspended") {
@@ -386,18 +390,35 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.registry.findFresh.succeedsWith(Some(acme.copy(status = PartnerStatus.Suspended)))
           _ <- env.partners.setStatus.succeedsWith(true)
           _ <- env.registry.refreshNow.succeedsWith(())
-          _ <- env.service.resume(acme.id)
+          _ <- env.auth.syncConfiguration().succeedsWith(())
+          resumed <- env.service.resume(acme.id)
           _ <- env.registry.findFresh.succeedsWith(Some(acme))
           refused <- env.service.resume(acme.id).flip
           _ <- env.registry.findFresh.succeedsWith(None)
           missing <- env.service.suspend(acme.id).flip
         yield assertTrue(
           env.partners.setStatus.calls == List((acme.id, PartnerStatus.Active)),
+          // as a suspension does, a resumption asks auth to reload its clients, and says whether it could
+          resumed == PartnerService.StatusChangeOutcome(authSynced = true),
+          env.auth.syncConfiguration().calls.size == 1,
           refused.isInstanceOf[PartnerError.Conflict],
           missing == PartnerError.NotFound("partner 'acme'"),
         )
       },
     ),
+    test("a resumption auth could not be told of is still a resumption, and says so") {
+      val env = Env()
+      for
+        _ <- env.registry.findFresh.succeedsWith(Some(acme.copy(status = PartnerStatus.Suspended)))
+        _ <- env.partners.setStatus.succeedsWith(true)
+        _ <- env.registry.refreshNow.succeedsWith(())
+        _ <- env.auth.syncConfiguration().failsWith(RuntimeException("auth is down"))
+        resumed <- env.service.resume(acme.id)
+      yield assertTrue(
+        resumed == PartnerService.StatusChangeOutcome(authSynced = false),
+        env.partners.setStatus.calls == List((acme.id, PartnerStatus.Active)),
+      )
+    },
     test("new limits are stored and the clients now outside them are named, not changed") {
       val env = Env()
       val shop = client(ClientId("acme-shop"), ClientApproval.Approved).copy(accessTokenTtl = 500.seconds)
@@ -549,6 +570,7 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           _ <- env.approvals.waitingFor.succeedsWith(Vector.empty)
           _ <- env.approvals.create.succeedsWith(())
+          _ <- env.approvals.createIfNoneWaiting.succeedsWith(true)
           approval <- env.service.requestProfileChange(acme, "staff-1", "ACME Ltd", None)
           _ <- env.approvals.waitingFor.succeedsWith(Vector(approval))
           again <- env.service.requestProfileChange(acme, "staff-1", "ACME Inc", None).flip
@@ -601,14 +623,14 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.registry.findFresh.succeedsWith(Some(acme.copy(version = 4L)))
           _ <- env.partners.updateProfile.succeedsWith(false)
           _ <- env.partners.setSettings.succeedsWith(false)
-          profile <- env.service.updateProfile(acme.id, "ACME", None, acme.contact, None).flip
-          settings <- env.service.setSettings(acme, acme.contact, PartnerSettings.empty).flip
+          profile <- env.service.updateProfile(acme.id, 3L, "ACME", None, acme.contact, None).flip
+          settings <- env.service.setSettings(acme, 3L, acme.contact, PartnerSettings.empty).flip
         yield assertTrue(
           profile.isInstanceOf[PartnerError.Conflict],
           settings.isInstanceOf[PartnerError.Conflict],
-          // each names the version it read
-          env.partners.updateProfile.calls.map(_._2) == List(4L),
-          env.partners.setSettings.calls.map(_._2) == List(4L),
+          // each names the version the CALLER read (not one the service reads for itself, which would protect nothing)
+          env.partners.updateProfile.calls.map(_._2) == List(3L),
+          env.partners.setSettings.calls.map(_._2) == List(3L),
           env.registry.refreshNow.calls.isEmpty,
         )
       },
@@ -623,6 +645,138 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           token.token == "TOKEN",
           env.identity.issueEnrollmentToken.calls == List((EdgeId("edge-acme-1"), 24.hours)),
           foreign == PartnerError.NotFound("edge 'other'"),
+        )
+      },
+    ),
+    suite("the rate limits of the group (the partner's to manage, once for the group)")(
+      test("setting them writes every edge of the group, and no edge of another group, and answers the highest revision") {
+        val env = Env()
+        val own = Vector(edge(EdgeId("e-1")), edge(EdgeId("e-2")))
+        val policies = RateLimitPolicies.recommended
+        for
+          _ <- env.edges.getAllEdges.succeedsWith(own :+ edge(EdgeId("other"), EdgeGroupId("globex")))
+          _ <- env.edges.findFresh.returnsZIO(id => ZIO.succeed(own.find(_.id == id)))
+          _ <- env.edges.patchPolicies.returnsZIO((id, _, _) => ZIO.succeed(own.find(_.id == id).map(Right(_))))
+          set <- env.service.setRateLimits(acme, Some(policies), None)
+          calls = env.edges.patchPolicies.calls
+        yield assertTrue(
+          // each edge is asked first (a dry run) and then written, and only the partner's own edges
+          calls.map(_._1).toSet == Set(EdgeId("e-1"), EdgeId("e-2")),
+          calls.count(_._3) == 2,
+          calls.count(!_._3) == 2,
+          calls.forall(_._2.rateLimits == Change.Replace(policies)),
+          // nothing but the rate limits: overload and the access log stay as they are
+          calls.forall(call => call._2.overload == Change.Keep && call._2.accessLog == Change.Keep),
+          set.revision == 0,
+        )
+      },
+      test("nothing is written when an edge refuses the policies, and a limit read earlier than the last change is a conflict") {
+        val env = Env()
+        val withLimits = edge(EdgeId("e-1")).copy(
+          rateLimitPolicies = Some(RateLimitPolicies.recommended),
+          policyMeta = Some(Map("rateLimits" -> PolicySectionMeta(4, now))),
+        )
+        for
+          _ <- env.edges.getAllEdges.succeedsWith(Vector(withLimits, edge(EdgeId("e-2"))))
+          _ <- env.edges.findFresh.returnsZIO(id => ZIO.succeed(Vector(withLimits, edge(EdgeId("e-2"))).find(_.id == id)))
+          stale <- env.service.setRateLimits(acme, None, Some(3)).flip
+          _ <- env.edges.patchPolicies.returnsZIO((id, _, dryRun) =>
+            ZIO.succeed(Some(if id == EdgeId("e-2") && dryRun then Left(PolicyPatchError.Invalid(PolicySection.RateLimits, "too many"))
+            else Right(withLimits))),
+          )
+          refused <- env.service.setRateLimits(acme, Some(RateLimitPolicies.recommended), Some(4)).flip
+          written = env.edges.patchPolicies.calls.filterNot(_._3)
+        yield assertTrue(
+          stale.isInstanceOf[PartnerError.Conflict],
+          refused.isInstanceOf[PartnerError.Invalid],
+          written.isEmpty,
+        )
+      },
+      test("what is read is what the most recently changed edge has, with its revision") {
+        val env = Env()
+        val older = edge(EdgeId("e-1")).copy(rateLimitPolicies = None, policyMeta = Some(Map("rateLimits" -> PolicySectionMeta(1, now))))
+        val newer = edge(EdgeId("e-2")).copy(
+          rateLimitPolicies = Some(RateLimitPolicies.recommended),
+          policyMeta = Some(Map("rateLimits" -> PolicySectionMeta(2, now))),
+        )
+        for
+          _ <- env.edges.getAllEdges.succeedsWith(Vector(older, newer))
+          read <- env.service.rateLimits(acme)
+          _ <- env.edges.getAllEdges.succeedsWith(Vector.empty)
+          none <- env.service.rateLimits(acme)
+        yield assertTrue(
+          read == PartnerService.GroupRateLimits(Some(RateLimitPolicies.recommended), 2),
+          none == PartnerService.GroupRateLimits(None, 0),
+        )
+      },
+      test("an edge that joins the group has the limits the group has") {
+        val env = Env()
+        val existing = edge(EdgeId("edge-acme-1")).copy(
+          rateLimitPolicies = Some(RateLimitPolicies.recommended),
+          policyMeta = Some(Map("rateLimits" -> PolicySectionMeta(1, now))),
+        )
+        for
+          _ <- env.edges.getAllEdges.succeedsWith(Vector(existing))
+          _ <- env.edges.findFresh.returnsZIO(id =>
+            ZIO.succeed(Option.when(id == EdgeId("edge-acme-2") && env.edges.registerEdgeWithoutKey.calls.nonEmpty)(edge(id))),
+          )
+          _ <- env.edges.registerEdgeWithoutKey.succeedsWith(())
+          _ <- env.edges.sync().succeedsWith(())
+          _ <- env.identity.issueEnrollmentToken.succeedsWith(EdgeIdentityService.IssuedToken("TOKEN", now.plusSeconds(86400)))
+          _ <- env.edges.patchPolicies.succeedsWith(None)
+          _ <- env.service.addEdge(acme.copy(limits = acme.limits.copy(maxEdges = 5)), EdgeId("edge-acme-2"), "https://login2.acme.example")
+        yield assertTrue(
+          env.edges.patchPolicies.calls.map(call => (call._1, call._2.rateLimits, call._3)) ==
+            List((EdgeId("edge-acme-2"), Change.Replace(RateLimitPolicies.recommended), false)),
+        )
+      },
+    ),
+    suite("what the operator and the partner may write as text and numbers")(
+      test("domains are names of at least two labels, in any case, and nothing else") {
+        val good = List("acme.example", "Shop.ACME.example", "a-b.c-d.example", "xn--80ak6aa92e.com")
+        val bad = List(
+          "",
+          "acme",
+          "http://acme.example",
+          "acme.example/path",
+          "acme.example:8443",
+          "*.acme.example",
+          "-acme.example",
+          "192.168.0.1",
+          "acme..example",
+          " acme.example",
+        )
+        assertTrue(good.forall(PartnerService.isDomain), !bad.exists(PartnerService.isDomain))
+      },
+      test("limits with a domain that is none are refused, for the redirect and the resource domains alike") {
+        assertTrue(
+          PartnerService.validateLimits(limits.copy(redirectDomains = Set("acme.example", "not a domain"))).isDefined,
+          PartnerService.validateLimits(limits.copy(resourceDomains = Some(Set("http://x.example")))).isDefined,
+          PartnerService.validateLimits(limits.copy(redirectDomains = Set("acme.example"), resourceDomains = Some(Set("api.acme.example")))).isEmpty,
+        )
+      },
+      test("a name and a logo are validated whoever sends them: text of a sensible length, and an https address") {
+        assertTrue(
+          PartnerService.validateProfile("ACME", Some("https://acme.example/logo.png")).isEmpty,
+          PartnerService.validateProfile("ACME", None).isEmpty,
+          PartnerService.validateProfile("  ", None).isDefined,
+          PartnerService.validateProfile("x" * (PartnerService.MaxDisplayNameLength + 1), None).isDefined,
+          PartnerService.validateProfile("bad\u0000name", None).isDefined,
+          PartnerService.validateProfile("ACME", Some("http://acme.example/logo.png")).isDefined,
+          PartnerService.validateProfile("ACME", Some("javascript:alert(1)")).isDefined,
+          PartnerService.validateProfile("ACME", Some("https://" + "a" * PartnerService.MaxLogoUriLength + ".example")).isDefined,
+        )
+      },
+      test("a profile change that is not valid is refused before anything is queued, and so is an operator's change") {
+        val env = Env()
+        for
+          change <- env.service.requestProfileChange(acme, "staff-1", "ACME", Some("http://acme.example/logo.png")).flip
+          update <- env.service.updateProfile(acme.id, 0L, "ACME", Some("ftp://acme.example/logo.png"), acme.contact, None).flip
+        yield assertTrue(
+          change.isInstanceOf[PartnerError.Invalid],
+          update.isInstanceOf[PartnerError.Invalid],
+          env.approvals.createIfNoneWaiting.calls.isEmpty,
+          env.partners.updateProfile.calls.isEmpty,
         )
       },
     ),

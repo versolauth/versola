@@ -46,6 +46,12 @@ object Audit:
     * is read by, so an operator's decision about a partner shows in the partner's feed. */
   def partner(partnerId: PartnerId): UIO[Unit] = partnerOfTarget.set(Some(partnerId.toString))
 
+  /** The operator's own words that came with an action (the note of a suspension): the event carries it in `details.note`, for the
+    * operator's audit log. The partner's feed does not show it (`PartnerEdgeController.forPartner` keeps `partnerId` and `changed`). */
+  def note(text: String): UIO[Unit] = ZIO.when(text.nonEmpty)(noteOfAction.set(Some(text))).unit
+
+  private[audit] val noteOfAction: FiberRef[Option[String]] = Unsafe.unsafe(FiberRef.unsafe.make(Option.empty[String])(using _))
+
   /** The type of a target is the route's declaration, which the hook puts in place of this marker. */
   private[audit] val PendingType = ""
 

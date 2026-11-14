@@ -62,6 +62,13 @@ object EdgeController extends AuditedController:
           group <- ZIO.serviceWithZIO[EdgeGroupService](_.find(groupId))
           response <- group match
             case None => ZIO.succeed(Response.text(s"edge group '$groupId' does not exist").status(Status.UnprocessableEntity))
+            // a partner's edge is registered through the partner (`POST /edge/partner/edges`), without a key: the edge makes its own and
+            // central makes none for it, so the operator's route, which answers a private key, is not for a group of that kind
+            case Some(group) if group.kind == EdgeGroupKind.Partner =>
+              ZIO.succeed(
+                Response.text(s"edge group '$groupId' is a partner's: its edges are registered through the partner, and make their own keys")
+                  .status(Status.UnprocessableEntity),
+              )
             case Some(_) =>
               service.registerEdge(body.id, groupId, body.publicUrl).map: keyPair =>
                 val privateKeyEncoded = Base64Url.encode(keyPair.privateKey.getEncoded)
@@ -122,12 +129,19 @@ object EdgeController extends AuditedController:
         service <- ZIO.service[EdgeService]
         edgeId <- request.url.queryZIO[EdgeId]("edgeId")
         _ <- Audit.target(edgeId)
-        keyPair <- service.rotateEdgeKey(edgeId)
-        response = ServiceKeyResponse(
-          keyId = keyPair.keyId,
-          privateKey = Base64Url.encode(keyPair.privateKey.getEncoded),
-        )
-      yield Response.json(response.toJson)
+        edge <- service.findFresh(edgeId)
+        // a partner's edge replaces its key itself, with the one it makes (`signingKey` of the certificate renewal); central makes no key for it
+        response <-
+          if edge.exists(_.groupKind == EdgeGroupKind.Partner) then
+            ZIO.succeed(
+              Response.text(
+                "a partner's edge makes its own signing key: it replaces it when it renews its certificate",
+              ).status(Status.UnprocessableEntity),
+            )
+          else
+            service.rotateEdgeKey(edgeId).map: keyPair =>
+              Response.json(ServiceKeyResponse(keyId = keyPair.keyId, privateKey = Base64Url.encode(keyPair.privateKey.getEncoded)).toJson)
+      yield response
     }
 
   val deleteOldEdgeKeyEndpoint =

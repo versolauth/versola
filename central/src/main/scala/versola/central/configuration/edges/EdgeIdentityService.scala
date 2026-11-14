@@ -32,7 +32,7 @@ import java.time.Instant
   * expiry within days.
   */
 trait EdgeIdentityService:
-  /** A token for `edgeId` to enrol with, valid for `validity` (an hour by default, at most
+  /** A token for `edgeId` to enrol with (the unused tokens issued before it are void), valid for `validity` (an hour by default, at most
     * [[EdgeIdentityService.MaxTokenValidity]]: a token handed to someone on another continent may need longer than an
     * hour, and no token should wait for days) and for one use. The token is returned here and never again: only its
     * hash is kept. It is `vtk1.<base64url(enrollUrl)>.<secret>` ([[EnrollmentToken]]) where central has a public enrollment
@@ -119,6 +119,9 @@ object EdgeIdentityService:
         token = config.publicUrls.fold(secret.toString)(urls => EnrollmentToken.encode(urls.enroll.encode, secret))
         now <- Clock.instant
         expiresAt = now.plus(validity)
+        // an edge has one live token: the ones issued before and not used are void from here on, so that a token that was copied
+        // somewhere, or printed and forgotten, does not stay good beside the new one
+        _ <- tokens.revoke(edgeId)
         _ <- tokens.create(hash(token), edgeId, expiresAt)
       yield IssuedToken(token, expiresAt)
 

@@ -73,6 +73,7 @@ object OAuthClientSyncClient:
             requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
             applicationType = client.applicationType,
             themeOverrides = client.themeOverrides,
+            partnerName = client.partnerName,
           )
         }
       yield decryptedClients.map(it => it.id -> it).toMap
@@ -125,6 +126,7 @@ object OAuthClientSyncClient:
         requirePushedAuthorizationRequests: Boolean,
         applicationType: ApplicationType,
         themeOverrides: Option[ThemeOverrides],
+        partnerName: Option[String],
     ) derives JsonCodec
 
     private case class OAuthClientsSyncResponse(

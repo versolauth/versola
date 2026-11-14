@@ -44,7 +44,6 @@ object PostgresEdgeRepositorySpec extends PostgresSpec, EdgeRepositorySpec:
                 accessTokenTtlMax = 600,
                 refreshTokenTtlMax = 86400,
                 clientAuthMethods = Set(AuthMethod.tls_client_auth),
-                rateLimitPolicy = "partner-default",
               ),
               groupId = groupId,
               consoleClientId = PartnerRecord.consoleClientId(id),

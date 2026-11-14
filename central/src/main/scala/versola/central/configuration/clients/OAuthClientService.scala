@@ -84,10 +84,16 @@ trait OAuthClientService:
       allowOutsideLimits: Boolean = false,
   ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient]
 
-  /** Whether the tenant's [[SecurityProfile]] would admit the client `request` describes, answered without writing anything: for the
-    * caller that creates other rows around the client (a partner, its group and its edge) and must know before it creates the first
-    * one. The same refusal [[registerClient]] gives for the same request. */
-  def checkSecurityProfile(request: CreateClientRequest): IO[InvalidRegistrationConfiguration | Throwable, Unit]
+  /** The display name of each partner, for the sync to auth: the consent screen names the partner the client belongs to. */
+  def partnerDisplayNames: UIO[Map[PartnerId, String]]
+
+  /** Every check [[registerClient]] makes of `request`, answered without writing anything: for the caller that creates other rows around
+    * the client (a partner, its group and its first edge) and must know that the client will be accepted before it writes the first
+    * one. `partner` is the owner the request names, when it does not exist yet. The same refusals [[registerClient]] gives. */
+  def checkRegistration(
+      request: CreateClientRequest,
+      partner: Option[PartnerRecord] = None,
+  ): IO[InvalidRegistrationConfiguration | Throwable, Unit]
 
   /** @param enforceSecurityProfile holds the client, as the patch leaves it, to its tenant's
     *                               [[SecurityProfile]]. Only bootstrap turns it off, and only
@@ -249,19 +255,26 @@ object OAuthClientService:
           .slice(offset, limit.fold(records.size)(offset + _))
       }
 
-    override def checkSecurityProfile(request: CreateClientRequest): IO[InvalidRegistrationConfiguration | Throwable, Unit] =
-      val native = request.applicationType.contains(ApplicationType.native)
-      val subject = InvalidRegistrationConfiguration.ProfileSubject(
-        authMethod = request.authMethod,
-        // what `OAuthClientRecord.bindsAccessTokens` says of the record this request becomes
-        senderConstrained = request.dpopBoundAccessTokens || request.certificateBoundAccessTokens ||
-          (request.mtlsAuth.nonEmpty && !(native && request.authMethod == AuthMethod.tls_client_auth)),
-        requirePushedAuthorizationRequests = request.requirePushedAuthorizationRequests,
-        redirectUris = request.redirectUris,
-        native = native || request.template.exists(_.kind == ClientKind.device),
-      )
-      challengeSettingsService.getSecurityProfile(request.tenantId).flatMap: profile =>
-        ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateSecurityProfile(request.id, profile, subject, allowHttpLoopback))(ZIO.fail(_))
+    override def partnerDisplayNames: UIO[Map[PartnerId, String]] =
+      partners.getAll.map(_.map(partner => partner.id -> partner.displayName).toMap)
+
+    override def checkRegistration(
+        request: CreateClientRequest,
+        partner: Option[PartnerRecord],
+    ): IO[InvalidRegistrationConfiguration | Throwable, Unit] =
+      register(
+        request,
+        presetSecret = None,
+        enforceSecurityProfile = true,
+        approval = ClientApproval.Approved,
+        allowOutsideLimits = true,
+        dryRun = true,
+        partnerOverride = partner,
+      ).mapError {
+        case error: InvalidRegistrationConfiguration => error
+        case error: ClientAlreadyExists => InvalidRegistrationConfiguration(error.clientId, s"client '${error.clientId}' already exists")
+        case error: Throwable => error
+      }.unit
 
     override def registerClient(
         request: CreateClientRequest,
@@ -328,9 +341,11 @@ object OAuthClientService:
         enforceSecurityProfile: Boolean,
         approval: ClientApproval,
         allowOutsideLimits: Boolean,
+        dryRun: Boolean = false,
+        partnerOverride: Option[PartnerRecord] = None,
     ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient] =
       for
-        partner <- partnerOf(submitted.id, submitted.partnerId)
+        partner <- partnerOverride.fold(partnerOf(submitted.id, submitted.partnerId))(owner => ZIO.succeed(Some(owner)))
         // Consent is for a partner's client and always on there (owner decision, 2026-11-13): none on a first-party client, and a
         // partner's gets the default screen when the request names none. The partner's console is the one client of a partner without
         // it: it signs in the partner's own staff, not the operator's users.
@@ -423,8 +438,9 @@ object OAuthClientService:
           request.tenantId,
           request.mtlsAuth.filterNot(_ => isEdgeFrontedNative(applicationType, request.authMethod) || request.partnerId.isDefined),
         )
+        // a dry run makes no secret: nothing is stored, and a secret nobody keeps is a secret made for nothing
         secret <- request.authMethod match
-          case AuthMethod.client_secret => presetSecret.fold(generateSecret)(ZIO.succeed(_)).asSome
+          case AuthMethod.client_secret if !dryRun => presetSecret.fold(generateSecret)(ZIO.succeed(_)).asSome
           case _ => ZIO.none
         encryptedSecret <- ZIO.foreach(secret)(encryptRawSecret)
         encryptedEdgeSigningKey <- ZIO.foreach(request.edgeSigningKey)(encryptEdgeSigningKey)
@@ -474,11 +490,12 @@ object OAuthClientService:
         )
         _ <- validatePartnerClient(request.id, partner, PartnerClientRules.Subject.of(client), allowOutsideLimits)
         _ <- validateSecurityProfile(client).when(enforceSecurityProfile)
-        _ <- clientRepository.createClient(client).mapError:
-          // made by the repository under the partner's row lock: the same refusal as the count the registration checked against the cache
-          case error: PartnerClientLimitReached =>
-            InvalidRegistrationConfiguration(client.id, s"partner '${error.partnerId}' may register at most ${error.max} clients")
-          case error => error
+        _ <- ZIO.unless(dryRun):
+          clientRepository.createClient(client).mapError:
+            // made by the repository under the partner's row lock: the same refusal as the count the registration checked against the cache
+            case error: PartnerClientLimitReached =>
+              InvalidRegistrationConfiguration(client.id, s"partner '${error.partnerId}' may register at most ${error.max} clients")
+            case error => error
       yield RegisteredClient(secret, registeredAt, generatedKey.map(_.privateKey))
 
     override def updateClient(

@@ -342,13 +342,24 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ),
     ),
     controllerTestCase(
+      description = "rotating the key of a partner's edge is refused: it makes its own, and replaces it when it renews its certificate",
+      request = Request(
+        method = Method.POST,
+        url = (URL.root / "configuration" / "edges" / "rotate-key").addQueryParam("edgeId", edgeId.toString),
+      ),
+      expectedStatus = Status.UnprocessableEntity,
+      setup = service =>
+        service.findFresh.succeedsWith(Some(edgeRecord.copy(groupId = EdgeGroupId("partner-acme"), groupKind = EdgeGroupKind.Partner))),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.rotateEdgeKey.calls.isEmpty)),
+    ),
+    controllerTestCase(
       description = "rotate edge key returns 200 OK with the rotated key pair",
       request = Request(
         method = Method.POST,
         url = (URL.root / "configuration" / "edges" / "rotate-key").addQueryParam("edgeId", edgeId.toString),
       ),
       expectedStatus = Status.Ok,
-      setup = service => service.rotateEdgeKey.succeedsWith(testKeyPair),
+      setup = service => service.findFresh.succeedsWith(Some(edgeRecord)) *> service.rotateEdgeKey.succeedsWith(testKeyPair),
       verify = (response, service) =>
         for body <- response.body.asJson[versola.central.configuration.edges.ServiceKeyResponse]
         yield assertTrue(

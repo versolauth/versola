@@ -16,7 +16,8 @@
     "invalid_consent": "That selection is not allowed. Please review the permissions and try again.",
     "service_unavailable": "Service temporarily unavailable. Please try again later",
     "required": "Required",
-    "signed_in_as": "Signed in as"
+    "signed_in_as": "Signed in as",
+    "partner_line": "This application is run by {partner}, a partner of this service."
   },
   "ru": {
     "page_title": "Авторизация",
@@ -35,6 +36,7 @@
     "invalid_consent": "Такой выбор недопустим. Проверьте разрешения и попробуйте ещё раз.",
     "service_unavailable": "Сервис временно недоступен. Попробуйте позже",
     "required": "Обязательно",
-    "signed_in_as": "Вы вошли как"
+    "signed_in_as": "Вы вошли как",
+    "partner_line": "Это приложение принадлежит {partner}, партнеру этого сервиса."
   }
 }

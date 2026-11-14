@@ -462,6 +462,13 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           page(consentRecord, client = Some(named), formId = "consent").map: body =>
             assertTrue(body.contains(""""clientName":"Shop""""), body.contains(""""clientNames":{"en":"Shop","fr":"Boutique"}"""))
         },
+        test("the consent step names the partner that owns the client, and a first-party client has none") {
+          val owned = clientRecord.copy(partnerName = Some("ACME Ltd"))
+          for
+            partnered <- page(consentRecord, client = Some(owned), formId = "consent")
+            firstParty <- page(consentRecord, client = Some(clientRecord), formId = "consent")
+          yield assertTrue(partnered.contains(""""partnerName":"ACME Ltd""""), !firstParty.contains("partnerName"))
+        },
         test("a client that cannot be found is not announced") {
           page(conversationRecord, client = None).map(body => assertTrue(!body.contains("\"client\":")))
         },
@@ -1410,6 +1417,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           _ <- env.configuration.get.succeedsWith(clientRecord)
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           _ <- env.jwksService.signingKey.succeedsWith(TestEnvConfig.signingKey)
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(expiredForm))
@@ -1629,6 +1637,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configuration.getUserAgentTtl.succeedsWith(180.days)
           _ <- env.configuration.get.succeedsWith(clientRecord)
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           _ <- env.jwksService.signingKey.succeedsWith(TestEnvConfig.signingKey)
           response <- env.service.renderSubmit(result, conversationRecord, None)
         yield assertTrue(response.header(Header.Location).exists(_.url.encode.contains("id_token=")))
@@ -1652,6 +1661,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configuration.getUserAgentTtl.succeedsWith(180.days)
           _ <- env.configuration.get.succeedsWith(clientRecord)
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           _ <- env.jwksService.signingKey.succeedsWith(TestEnvConfig.signingKey)
           response <- env.service.renderSubmit(result, conversationRecord, None)
           location = response.header(Header.Location).map(_.url).get
@@ -1681,6 +1691,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configuration.getUserAgentTtl.succeedsWith(180.days)
           _ <- env.configuration.get.succeedsWith(clientRecord)
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           _ <- env.jwksService.signingKey.succeedsWith(TestEnvConfig.signingKey)
           response <- env.service.renderSubmit(
             result,

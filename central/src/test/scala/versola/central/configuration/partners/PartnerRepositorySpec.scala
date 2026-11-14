@@ -30,7 +30,6 @@ trait PartnerRepositorySpec extends DatabaseSpecBase[PartnerRepositorySpec.Env]:
     accessTokenTtlMax = 600,
     refreshTokenTtlMax = 86400,
     clientAuthMethods = Set(AuthMethod.tls_client_auth),
-    rateLimitPolicy = "partner-default",
     resourceDomains = None,
   )
 

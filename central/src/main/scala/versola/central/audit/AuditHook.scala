@@ -162,16 +162,17 @@ object AuditHook:
           // is not interrupted, and the interruption goes on afterwards.
           response <- Audit.tenantOfTarget.locally(None):
             Audit.partnerOfTarget.locally(None):
-              AuditContext.reset(initial):
-                ZIO.uninterruptibleMask: restore =>
-                  // A call that names no valid actor is answered here and the handler is not run; the answer is recorded (a denial) like any
-                  // other the route gives.
-                  restore(if actor.named then handler(request) else refusal(actor)).exit.flatMap: exit =>
-                    val status = exit match
-                      case Exit.Success(response) => response.status
-                      case Exit.Failure(cause) => cause.failureOption.fold(Status.InternalServerError)(_.status)
-                    val interrupted = exit.causeOption.exists(_.isInterruptedOnly)
-                    AuditContext.current.flatMap(state => record(pattern, status, interrupted, state, actor, change, read)) *> ZIO.done(exit)
+              Audit.noteOfAction.locally(None):
+                AuditContext.reset(initial):
+                  ZIO.uninterruptibleMask: restore =>
+                    // A call that names no valid actor is answered here and the handler is not run; the answer is recorded (a denial) like any
+                    // other the route gives.
+                    restore(if actor.named then handler(request) else refusal(actor)).exit.flatMap: exit =>
+                      val status = exit match
+                        case Exit.Success(response) => response.status
+                        case Exit.Failure(cause) => cause.failureOption.fold(Status.InternalServerError)(_.status)
+                      val interrupted = exit.causeOption.exists(_.isInterruptedOnly)
+                      AuditContext.current.flatMap(state => record(pattern, status, interrupted, state, actor, change, read)) *> ZIO.done(exit)
         yield response
 
   private def record(
@@ -183,8 +184,8 @@ object AuditHook:
       change: Option[Entry.Change],
       read: Option[Entry.Read],
   ): URIO[AuditEvents & CentralConfig, Unit] =
-    Audit.tenantOfTarget.get.zip(Audit.partnerOfTarget.get).flatMap((tenantOfTarget, partnerOfTarget) =>
-      recordWith(pattern, status, interrupted, state, actor, change, read, tenantOfTarget, partnerOfTarget),
+    Audit.tenantOfTarget.get.zip(Audit.partnerOfTarget.get).zip(Audit.noteOfAction.get).flatMap((tenantOfTarget, partnerOfTarget, note) =>
+      recordWith(pattern, status, interrupted, state, actor, change, read, tenantOfTarget, partnerOfTarget, note),
     )
 
   private def recordWith(
@@ -197,6 +198,7 @@ object AuditHook:
       read: Option[Entry.Read],
       tenantOfTarget: Option[String],
       partnerOfTarget: Option[String],
+      note: Option[String],
   ): URIO[AuditEvents & CentralConfig, Unit] =
     val succeeded = status.isSuccess || status.isRedirection
     val targetType = change.map(_.targetType).orElse(read.map(_.targetType))
@@ -209,6 +211,7 @@ object AuditHook:
       changed = Option.when(changedNames.nonEmpty)(changedNames),
       tenantId = tenantOfTarget.map(clipped),
       partnerId = partnerOfTarget.map(clipped),
+      note = note.map(clipped),
     )
     def draft(kind: AuditKind, outcome: AuditOutcome, reason: Option[String]) = AuditDraft(
       kind = kind,
@@ -260,5 +263,6 @@ object AuditHook:
       changed: Option[List[String]],
       tenantId: Option[String],
       partnerId: Option[String],
+      note: Option[String],
   ) extends AuditDetails derives JsonEncoder:
     override def toJson: Json.Obj = AuditDetails.render(this)

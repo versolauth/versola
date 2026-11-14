@@ -56,13 +56,10 @@ case class PartnerContact(
   *                          `redirectDomains` (a partner's API is usually where its applications are)
   * @param maxClients        how many clients the partner may register, pending ones included
   * @param maxEdges          how many edges the partner may enrol in its group
-  * @param accessTokenTtlMax the longest access token a partner client may issue, in seconds; it is also how long a token of a
-  *                          suspended partner keeps working at `/userinfo`
+  * @param accessTokenTtlMax the longest access token a partner client may issue, in seconds
   * @param refreshTokenTtlMax the longest refresh token, in seconds
   * @param clientAuthMethods how a partner client may authenticate: `tls_client_auth` with the group's certificate, or
   *                          `private_key_jwt`; nothing else
-  * @param rateLimitPolicy   the name of the edge rate-limit policy set the operator applies to the partner's group; stored for
-  *                          the consoles, central reads nothing from it yet
   */
 case class PartnerLimits(
     scopes: Set[ScopeToken],
@@ -73,7 +70,6 @@ case class PartnerLimits(
     accessTokenTtlMax: Long,
     refreshTokenTtlMax: Long,
     clientAuthMethods: Set[AuthMethod],
-    rateLimitPolicy: String,
 ) derives Schema, JsonCodec
 
 object PartnerLimits:

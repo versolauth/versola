@@ -236,4 +236,15 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         warnings.forall(!_.contains("triangle-with-secret-marker")),
       )
     },
+    // #962: the consent screen names the partner that owns a client; a central that predates the field sends none.
+    test("carries the display name of the partner that owns a client, and none for a client of a central that predates the field") {
+      val encoded = serviceClient.toJsonAST.toOption.get.asObject.get
+      val named = Json.Obj(encoded.fields.filterNot(_._1 == "id") ++ Chunk("id" -> Json.Str("named"), "partnerName" -> Json.Str("ACME Ltd")))
+      val body = Json.Obj("clients" -> Json.Arr(named, serviceClient.toJsonAST.toOption.get))
+      for
+        _ <- TestClient.addRoutes(Handler.succeed(Response.json(body.toJson)).toRoutes)
+        service <- ZIO.service[OAuthClientSyncClient]
+        result <- service.getAll
+      yield assertTrue(result(ClientId("named")).partnerName.contains("ACME Ltd"), result(ClientId("service")).partnerName.isEmpty)
+    },
   ).provide(TestClient.layer, configLayer, tokenLayer, securityLayer, OAuthClientSyncClient.live)

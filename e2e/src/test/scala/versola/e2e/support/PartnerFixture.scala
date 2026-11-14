@@ -55,7 +55,6 @@ object PartnerFixture:
           "accessTokenTtlMax" -> Json.Num(600),
           "refreshTokenTtlMax" -> Json.Num(86400),
           "clientAuthMethods" -> Json.Arr(Json.Str("tls_client_auth")),
-          "rateLimitPolicy" -> Json.Str("partner-default"),
         ),
       ),
       "consoleClient" -> Json.Obj("redirectUri" -> Json.Str(s"https://console.$id.example/callback")),

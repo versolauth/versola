@@ -450,7 +450,16 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
         return;
       }
       if (method === 'PUT') {
-        state.settings = clone(body as PartnerSettings);
+        const sent = body as PartnerSettings;
+        if (typeof sent.version !== 'number') {
+          await route.fulfill(json({ error: 'invalid_request', message: 'version is required: send the version of the settings you read' }, 400));
+          return;
+        }
+        if (sent.version !== state.settings.version) {
+          await route.fulfill(json({ error: 'central_answered_409', message: 'The settings changed since you read them. Reload and try again.' }, 409));
+          return;
+        }
+        state.settings = { ...clone(sent), version: sent.version + 1 };
         await route.fulfill({ status: 204, body: '' });
         return;
       }

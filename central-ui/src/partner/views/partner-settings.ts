@@ -150,13 +150,15 @@ export class VersolaPartnerSettings extends LitElement {
         this.notice = `Sent to ${this.me.partner.operator.name} for approval. Users keep seeing the current name and logo until it is approved.`;
       } else {
         const settings: PartnerSettings = {
+          version: this.settings!.version,
           contact: this.editTarget === 'contacts' ? { email: draft.email.trim(), phone: draft.phone.trim() || null } : this.settings!.contact,
           defaults: this.editTarget === 'defaults'
             ? { backChannelLogoutUri: draft.backChannelLogoutUri.trim(), accessTokenTtl: Number(draft.accessTokenTtlMinutes) * 60, refreshTokenTtl: Number(draft.refreshTokenTtlDays) * 86_400 }
             : this.settings!.defaults,
         };
         await updateSettings(settings);
-        this.settings = settings;
+        // Every save bumps the version: the next one is sent on the settings central holds now.
+        this.settings = await fetchSettings();
         this.notice = 'Saved.';
       }
       dispatchRecordRoute(this, { edit: null, create: false });
