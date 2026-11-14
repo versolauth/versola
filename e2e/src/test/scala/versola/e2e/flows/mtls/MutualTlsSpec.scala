@@ -509,9 +509,9 @@ object MutualTlsSpec extends E2ESpec:
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
         group <- uid.map(s => s"e2e-rebind-$s")
-        first <- EdgeCertificate.make(commonName = s"$group-edge-1", uri = Some(EdgeFixture.groupName(group)))
-        second <- EdgeCertificate.make(commonName = s"$group-edge-2", uri = Some(EdgeFixture.groupName(group)))
-        stranger <- EdgeCertificate.make(commonName = s"$group-stranger", uri = Some(EdgeFixture.groupName(s"$group-other")))
+        first <- EdgeCertificate.make(commonName = s"$group-edge-1", uris = List(EdgeFixture.groupName(group)))
+        second <- EdgeCertificate.make(commonName = s"$group-edge-2", uris = List(EdgeFixture.groupName(group)))
+        stranger <- EdgeCertificate.make(commonName = s"$group-stranger", uris = List(EdgeFixture.groupName(s"$group-other")))
         (clientId, clientSecret) <- mtlsClient(
           auth,
           "san_uri",
