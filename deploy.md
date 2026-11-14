@@ -1361,13 +1361,19 @@ the certificate relationships are described in
 
 - `step-ca` — the internal CA (state in `versola-step-ca-*`): one root and **three intermediates**, so
   each listener trusts exactly the roles it should (a trust anchor that is the root would accept all
-  of them). **client** ("Versola Client CA", created by the image) is what `step-ca` signs with and
+  of them). **client** ("Versola Client CA", created with the root) is what `step-ca` signs with and
   what edge-fronted clients' certificates come from, through a `central` JWK provisioner (14-day
   maximum lifetime); to get one, register the client with `issueEdgeClientCertificate: true` and any
   `mtlsAuth`. **server** signs the listener certificates of `auth` and `central`, **edge** signs the
   identity of an edge. The two extra intermediates are created once, when missing, and only ever used
-  offline by `mtls-init`. Its first start prints the generated password of an unused `versola`
-  provisioner once to `docker logs versola-step-ca`; keep that log private or remove the provisioner.
+  offline by `mtls-init`. The CA is created at the first start by `step-ca-init.sh` (in the bundle)
+  rather than the image's own init, which prints the password of an unused `versola` provisioner to
+  `docker logs versola-step-ca`; nothing secret reaches that log now, and a CA created this way keeps
+  its password in the volume at `0600` (`secrets/password`). Every start then removes the `versola`
+  provisioner when it is there, once `central`'s is in, so on a CA created before, whose log printed
+  that password, the password no longer opens anything. Such a CA keeps its keys, its password and
+  `central`'s provisioner; the old line stays in its container's log until the container is
+  recreated, which the first `versola up` or `versola rollout` with such a bundle does.
 - `mtls-init` — one-shot (`mtls-init.sh` in the bundle; its header is the contract). It writes into
   `versola-mtls-*`:
 
