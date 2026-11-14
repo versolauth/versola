@@ -313,9 +313,10 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
             )
             rotated = EdgeApi.sessionCookie(raw).filter(_.nonEmpty)
             bound <- cnf(session.cookie)
+            reboundTo <- ZIO.foreach(rotated)(cnf).map(_.flatten)
             back <- call(f, Some(session.copy(cookie = rotated.getOrElse(session.cookie))), Method.GET, "/partner/api/me")
-          yield (onSecond, raw.status, rotated, bound, back)
-        (onSecond, rawStatus, rotated, bound, back) = second
+          yield (onSecond, raw.status, rotated, bound, reboundTo, back)
+        (onSecond, rawStatus, rotated, bound, reboundTo, back) = second
       yield assertTrue(
         added._1 == Status.Created,
         added._2.str("token").exists(_.startsWith("vtk1.")),
@@ -325,9 +326,12 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
         onSecond._1 == Status.Ok,
         onSecond._2.obj("staff").flatMap(_.str("level")).contains("admin"),
         rawStatus == Status.Ok,
-        // a token bound to the first edge's certificate is re-bound on the second (a new cookie); an unbound token (auth's current exemption of
-        // a partner's clients) needs nothing, and the cookie is left as it was
-        bound.isEmpty || rotated.isDefined,
+        // the token is bound to the first edge's certificate, and the second edge re-binds it with the session's refresh token (the console
+        // scope has `offline_access`): a new cookie, whose token is bound to another certificate than the first
+        bound.isDefined,
+        rotated.isDefined,
+        reboundTo.isDefined,
+        reboundTo != bound,
         back._1 == Status.Ok,
       )
     },

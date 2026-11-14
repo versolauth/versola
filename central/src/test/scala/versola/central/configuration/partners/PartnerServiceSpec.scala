@@ -219,9 +219,14 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.groups.create.succeedsWith(true)
           _ <- env.partners.create.succeedsWith(())
           _ <- env.clients.registerClient.returnsZIO((_, _, _, _, _) => ZIO.succeed(RegisteredClient(None, now, None)))
-          // the console client is read back after it was registered, and not before: the pre-check must find none
+          // the console client is read back after it was registered, and not before: the pre-check must find none; it has the scope
+          // it was registered with, which is what its preset is made of
           _ <- env.clients.findClient.returnsZIO(id =>
-            ZIO.succeed(Option.when(id == ClientId("acme-console") && env.clients.registerClient.calls.nonEmpty)(console)),
+            ZIO.succeed(
+              Option.when(id == ClientId("acme-console") && env.clients.registerClient.calls.nonEmpty)(
+                console.copy(scope = env.clients.registerClient.calls.head._1.allowedScopes),
+              ),
+            ),
           )
           _ <- env.clients.refreshNow.succeedsWith(())
           _ <- env.presets.savePresets.succeedsWith(Right(()))
@@ -249,6 +254,11 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           registration._1.authMethod == AuthMethod.tls_client_auth,
           registration._1.mtlsAuth == Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_uri, "urn:versola:edge-group:acme")),
           registration._1.allowedScopes == PartnerService.ConsoleScope,
+          // `offline_access` is what gives the console session a refresh token, which the edge needs to re-bind it to the certificate of
+          // another edge of the group: the client and the preset it signs in with both carry it
+          registration._1.allowedScopes.contains(ScopeToken("offline_access")),
+          env.presets.savePresets.calls.head.presets.map(_.scope) == List(PartnerService.ConsoleScope),
+          env.presets.savePresets.calls.head.presets.forall(_.scope.contains(ScopeToken("offline_access"))),
           registration._1.redirectUris == Set(newPartner.consoleRedirectUri),
           // the console signs in the partner's own staff, not the operator's users: it is the one client of a partner without consent
           registration._1.consentFlow.isEmpty,

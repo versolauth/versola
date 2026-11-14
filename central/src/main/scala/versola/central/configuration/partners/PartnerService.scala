@@ -138,7 +138,11 @@ object PartnerService:
     * its signature, expiry, issuer and client, not a revocation), so it lives minutes. */
   val ConsoleAccessTokenTtlMax: Long = 600
 
-  val ConsoleScope: Set[ScopeToken] = Set(ScopeToken("openid"), ScopeToken("phone"), ScopeToken("email"))
+  /** `offline_access` is what makes auth issue a refresh token: the edge refreshes a console session with it, and re-binds the session to
+    * the certificate of another edge of the group (a token is bound to the certificate of the edge that obtained it). Without it a
+    * console session cannot move between the edges of a group and ends on the second one with a sign-in. */
+  val ConsoleScope: Set[ScopeToken] =
+    Set(ScopeToken("openid"), ScopeToken("phone"), ScopeToken("email"), ScopeToken("offline_access"))
 
   case class NewPartner(
       id: PartnerId,

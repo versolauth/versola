@@ -255,6 +255,13 @@ object PartnerFixture:
       token <- auth.token(code, authorize.verifier, Some(clientId), Some(""), Some(redirectUri), certificate = Some(certificate)).success
     yield token
 
+  private def centralServesLoginPasswordFlow(central: CentralApi, partner: Partner): Task[Unit] =
+    val inlinePassword = central.get("/configuration/clients", "tenantId" -> partner.tenantId).flatMap(_.items("clients")).map(
+      _.find(_.str("id").contains(partner.consoleClientId)).flatMap(_.obj("authFlow")).flatMap(_.obj("primary")).flatMap(_.bool("inlinePassword")),
+    )
+    eventually(inlinePassword)(_.contains(true)).flatMap: served =>
+      ZIO.fail(RuntimeException(s"central still serves the old auth flow of ${partner.consoleClientId} after ten seconds")).unless(served.contains(true)).unit
+
   /** A staff member's access token for the partner's console: the console client is given the login-and-password flow, and a user
     * signs in through it with the certificate of the partner's group. This is what a partner's edge forwards in `Versola-Principal`. */
   def staffToken(central: CentralApi, partner: Partner): Task[(String, User)] =
@@ -263,6 +270,10 @@ object PartnerFixture:
         user <- createUser(auth)
         certificate <- groupCertificate(partner, "console")
         _ <- auth.updateClient(Fixtures.clientUpdate(partner.consoleClientId, "authFlow" -> Flows.loginPasswordAuthFlow))
+        // Auth reloads from central's cache, which a notification refreshes after the commit: asked to reload at once, auth can read the
+        // flow from before the update (the platform's default, a code to a phone, which the staff member has none of: the sign-in ends
+        // in `access_denied`). So the reload is asked for when central serves the new flow, not before.
+        _ <- centralServesLoginPasswordFlow(central, partner)
         _ <- auth.syncConfiguration()
         token <- signIn(auth, partner.consoleClientId, partner.consoleRedirectUri, Set("openid"), certificate.urlEncodedPem, user, consent = false)
       yield (token.accessToken, user)
