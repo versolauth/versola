@@ -37,6 +37,10 @@ trait EdgeSessionRepository:
 
   def delete(accessTokenId: AccessTokenId): Task[Unit]
 
+  /** Every row that has not expired at `now`: what an administrator's revocation by user or refresh family reads, since a row names neither.
+    * Rare and administrative, never on a request's path. */
+  def findLive(now: Instant): Task[List[EdgeSessionRecord]]
+
   /** Every participation row for `sid`, so callers can enumerate the presets that took part
     * in the SSO session. Ignores expiry: a lapsed row still identifies a preset whose cookie
     * must be cleared.

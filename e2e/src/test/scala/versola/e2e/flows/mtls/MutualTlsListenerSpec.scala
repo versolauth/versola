@@ -194,7 +194,7 @@ object MutualTlsListenerSpec extends E2ESpec:
           mtlsAuth = Some(Fixtures.mutualTlsAuth("san_uri", EdgeFixture.groupName(group))),
         ).success
         url = s"${auth.authMutualTlsUrl}/token"
-        trusted <- EdgeCertificate.make(commonName = s"$group-edge", caDirectory = "auth/dev/mtls", uri = Some(EdgeFixture.groupName(group)))
+        trusted <- EdgeCertificate.make(commonName = s"$group-edge", caDirectory = "auth/dev/mtls", uris = List(EdgeFixture.groupName(group)))
         trustedSsl <- trusted.clientSsl(auth.authMutualTlsTrustedCertificates)
         // Awaited: the listener knows the client, which shows as the trusted certificate authenticating it. It is the
         // control too: the name is one that opens the client, so the refusal below is about the issuer alone.
@@ -204,7 +204,7 @@ object MutualTlsListenerSpec extends E2ESpec:
           .repeat(Schedule.spaced(500.millis) *> Schedule.recurUntilEquals(true))
           .timeout(30.seconds)
         stranger <- EdgeCertificate.strangerAuthority
-        forged <- EdgeCertificate.make(commonName = s"$group-edge", caDirectory = stranger, uri = Some(EdgeFixture.groupName(group)))
+        forged <- EdgeCertificate.make(commonName = s"$group-edge", caDirectory = stranger, uris = List(EdgeFixture.groupName(group)))
         forgedSsl <- forged.clientSsl(auth.authMutualTlsTrustedCertificates)
         refused <- tokenOver(forgedSsl, url, clientId).either
       yield assertTrue(known.contains(true))
