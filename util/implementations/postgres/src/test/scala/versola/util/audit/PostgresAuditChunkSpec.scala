@@ -118,6 +118,8 @@ object PostgresAuditChunkSpec extends PostgresSpec:
       perRow: Double,
       longestOpenSeconds: Double,
       transactionsSeen: Int,
+      /** The most rows that became visible between two samples: a transaction of a chunk commits a chunk, one of the whole batch commits it. */
+      largestCommit: Long,
       elapsedSeconds: Double,
       stored: Long,
   )
@@ -130,14 +132,16 @@ object PostgresAuditChunkSpec extends PostgresSpec:
       perRow <- perRowMillis(xa)
       _ <- table.endSessions(xa, marker)
       seen <- Ref.make(Map.empty[Long, Double])
+      commits <- Ref.make((0L, 0L))
       scope <- Scope.make
       events <- scope.extend(writer(xa, chunk))
       calibrated <- stored(xa)
+      _ <- commits.set((calibrated, 0L))
       started <- Clock.nanoTime
       sampler <-
-        (ZIO.sleep(50.millis) *> transactions(xa).flatMap(open =>
-          seen.update(known => open.foldLeft(known)((all, t) => all.updated(t._1, math.max(all.getOrElse(t._1, 0.0), t._2)))),
-        ))
+        (ZIO.sleep(50.millis) *> transactions(xa).zip(stored(xa)).flatMap: (open, now) =>
+          seen.update(known => open.foldLeft(known)((all, t) => all.updated(t._1, math.max(all.getOrElse(t._1, 0.0), t._2)))) *>
+            commits.update((last, largest) => (now, math.max(largest, now - last))))
           .forever.fork
       _ <- events.record(draft).ignore
       _ <- ZIO.foreachDiscard(1 to burst)(_ => events.record(draft).ignore)
@@ -147,11 +151,13 @@ object PostgresAuditChunkSpec extends PostgresSpec:
       finished <- Clock.nanoTime
       _ <- sampler.interrupt
       open <- seen.get
+      largest <- commits.get.map(_._2)
       _ <- scope.close(Exit.unit)
     yield Run(
       perRow = perRow,
       longestOpenSeconds = open.values.maxOption.getOrElse(0.0),
       transactionsSeen = open.size,
+      largestCommit = largest,
       elapsedSeconds = (finished - started) / 1e9,
       stored = total - calibrated,
     )
@@ -174,16 +180,18 @@ object PostgresAuditChunkSpec extends PostgresSpec:
       for
         xa <- ZIO.service[TransactorZIO]
         run <- slowBatch(xa, millis = 10, chunk = 100, burst = 1000)
-        chunkSeconds = run.perRow * 100 / 1000
         batchSeconds = run.perRow * 1000 / 1000
         _ <- Console.printLine(
           f"slow batch: ${run.perRow}%.1f ms a row, longest transaction ${run.longestOpenSeconds}%.2f s of ${batchSeconds}%.2f s for the batch, ${run.transactionsSeen} transactions seen, ${run.elapsedSeconds}%.2f s in all",
         ).orDie
       yield assertTrue(
         run.stored == 1001L,
-        // The batch alone would hold its transaction for `batchSeconds`; a chunk holds it for `chunkSeconds`, and the sampling and the
-        // commit add a little.
-        run.longestOpenSeconds < chunkSeconds * 1.5 + 0.5,
+        // The size of a transaction is told by what it commits, not by how long it was open: a transaction held by a stall of the machine
+        // (one chunk was open for 2.97 s on a CI runner whose rows cost 10.9 ms, with the whole batch taking 1.9 s over its usual time) is
+        // still a chunk. A transaction of the whole batch would commit all of it between two samples; five chunks is the margin for a
+        // sampler that was stopped for as long.
+        run.largestCommit <= 5L * 100L,
+        // And no transaction was open for half the batch, which is what a stall does not reach.
         run.longestOpenSeconds < batchSeconds / 2,
         // The writer was seen at work in many transactions, not in one: ten chunks of the batch, and the first row.
         run.transactionsSeen >= 6,
