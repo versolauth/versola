@@ -15,7 +15,7 @@ type Step = 1 | 2 | 3;
 type Draft = {
   kind: PartnerClientKind | null; id: string; clientName: string; logoUri: string; policyUri: string; tosUri: string;
   redirectUris: string[]; redirectInput: string; scope: string[]; accessTokenTtlMinutes: string; refreshTokenTtlDays: string;
-  backChannelLogoutUri: string; authMethod: 'tls_client_auth' | 'private_key_jwt';
+  backChannelLogoutUri: string;
 };
 
 /** The consent screen as a sketch: the name, the logo letter and the scopes, in the operator's words. Nothing is rendered by central. */
@@ -65,7 +65,7 @@ export class VersolaPartnerClientWizard extends LitElement {
   @state() private submitted = false;
   @state() private draft: Draft = {
     kind: null, id: '', clientName: '', logoUri: '', policyUri: '', tosUri: '', redirectUris: [], redirectInput: '', scope: ['openid'],
-    accessTokenTtlMinutes: '5', refreshTokenTtlDays: '14', backChannelLogoutUri: '', authMethod: 'tls_client_auth',
+    accessTokenTtlMinutes: '5', refreshTokenTtlDays: '14', backChannelLogoutUri: '',
   };
   @state() private redirectError = '';
   @state() private isSaving = false;
@@ -229,7 +229,6 @@ export class VersolaPartnerClientWizard extends LitElement {
         id: draft.id.trim(), kind: draft.kind ?? 'web', clientName: draft.clientName.trim(), logoUri: draft.logoUri.trim() || null,
         policyUri: draft.policyUri.trim() || null, tosUri: draft.tosUri.trim() || null, redirectUris: draft.redirectUris, scope: draft.scope,
         accessTokenTtl: this.accessSeconds, refreshTokenTtl: this.refreshSeconds, backChannelLogoutUri: draft.backChannelLogoutUri.trim() || null,
-        authMethod: draft.authMethod,
       });
       this.dispatchEvent(new CustomEvent<PartnerClient>('created', { detail: client, bubbles: true, composed: true }));
     } catch (error) {
@@ -260,7 +259,7 @@ export class VersolaPartnerClientWizard extends LitElement {
     return html`<div class="plan">
       ${this.lock('Flow: authorization code + PKCE, PAR required', 'Set by the operator for every partner client.')}
       ${this.lock(`Consent: always shown, names ${me.partner.displayName}`, 'Users see who they sign in to.')}
-      ${this.lock(this.draft.authMethod === 'tls_client_auth' ? `Client authentication: tls_client_auth with your group certificate (urn:versola:edge-group:${me.partner.id})` : 'Client authentication: private_key_jwt with the keys your edge holds', 'Your edges authenticate as this client; nothing to copy.')}
+      ${this.lock(`Client authentication: tls_client_auth with your group certificate (urn:versola:edge-group:${me.partner.id})`, 'Your edges authenticate as this client; nothing to copy.')}
       ${this.lock(`Served by the edges of group ${me.partner.id}`, 'Your own edges only.')}
       ${this.draft.kind === 'native' ? this.lock('DPoP-bound access tokens', `The device holds its tokens, so DPoP is their only sender-constraint. They live at least ${ttlLabel(3600)}, as for every client on this server.`) : ''}
     </div>`;
@@ -364,15 +363,6 @@ export class VersolaPartnerClientWizard extends LitElement {
               ${this.field('refreshTokenTtlDays', 'Refresh token, days *', `Cap: ${ttlLabel(limits.refreshTokenTtlMax)}.`, { type: 'number' })}
             </div>
             ${this.field('backChannelLogoutUri', 'Back-channel logout URI', 'Where auth tells your edge that a user signed out everywhere. Defaults to your edge\'s public URL.', { type: 'url' })}
-            ${limits.clientAuthMethods.length > 1 ? html`
-              <div class="form-group">
-                <label id="client-auth-label">Client authentication</label>
-                <div class="seg" role="group" aria-labelledby="client-auth-label">
-                  <button type="button" aria-pressed=${draft.authMethod === 'tls_client_auth'} @click=${() => this.set({ authMethod: 'tls_client_auth' })}>group certificate</button>
-                  <button type="button" aria-pressed=${draft.authMethod === 'private_key_jwt'} @click=${() => this.set({ authMethod: 'private_key_jwt' })}>private_key_jwt</button>
-                </div>
-                <div class="hint">Both are allowed by the operator; your edges present whichever you choose.</div>
-              </div>` : ''}
             ${this.fixedRows()}
           </div>
           <div class="form-actions">
@@ -425,7 +415,7 @@ export class VersolaPartnerClientWizard extends LitElement {
             ['Scopes', html`<div class="tag-list">${draft.scope.map(scope => html`<span class="tag">${scope}</span>`)}</div>`],
             ['Lifetimes', `access ${ttlLabel(this.accessSeconds)} · refresh ${ttlLabel(this.refreshSeconds)}`],
             ['Back-channel logout', draft.backChannelLogoutUri.trim() ? html`<span class="mono">${draft.backChannelLogoutUri.trim()}</span>` : html`<span class="muted">None</span>`],
-            ['Client authentication', draft.authMethod === 'tls_client_auth' ? 'group certificate' : 'private_key_jwt'],
+            ['Client authentication', 'group certificate'],
           ])}
           ${this.submitError ? html`<div class="editor-error" role="alert">${this.submitError}</div>` : ''}
         </div>
