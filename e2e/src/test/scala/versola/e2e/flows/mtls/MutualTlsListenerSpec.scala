@@ -177,4 +177,39 @@ object MutualTlsListenerSpec extends E2ESpec:
       yield assertTrue(result.isLeft)
         .label(s"expected the handshake itself to fail with no certificate presented, got $result")
     },
+    // The grant of a client registered by an edge-group name follows the certificate that authenticated the refresh
+    // (#1008), so what may authenticate it is what protects the grant: a name on a certificate opens nothing unless a
+    // CA this listener trusts signed the certificate. Auth never sees a chain, so the handshake is where that is decided.
+    test("the listener refuses a certificate naming an edge group that a CA it does not trust signed") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        group <- uid.map(s => s"e2e-listener-$s")
+        clientId <- uid.map(s => s"group-mtls-client-$s")
+        _ <- auth.registerClient(
+          clientId,
+          "Edge Group Mutual TLS Test Client",
+          Set(redirectUri),
+          allowedScopes = Set("openid"),
+          authMethod = "tls_client_auth",
+          mtlsAuth = Some(Fixtures.mutualTlsAuth("san_uri", EdgeFixture.groupName(group))),
+        ).success
+        url = s"${auth.authMutualTlsUrl}/token"
+        trusted <- EdgeCertificate.make(commonName = s"$group-edge", caDirectory = "auth/dev/mtls", uri = Some(EdgeFixture.groupName(group)))
+        trustedSsl <- trusted.clientSsl(auth.authMutualTlsTrustedCertificates)
+        // Awaited: the listener knows the client, which shows as the trusted certificate authenticating it. It is the
+        // control too: the name is one that opens the client, so the refusal below is about the issuer alone.
+        known <- (auth.syncConfiguration() *> tokenOver(trustedSsl, url, clientId))
+          .map(_.isInstanceOf[TokenResult.Success])
+          .catchAll(_ => ZIO.succeed(false))
+          .repeat(Schedule.spaced(500.millis) *> Schedule.recurUntilEquals(true))
+          .timeout(30.seconds)
+        stranger <- EdgeCertificate.strangerAuthority
+        forged <- EdgeCertificate.make(commonName = s"$group-edge", caDirectory = stranger, uri = Some(EdgeFixture.groupName(group)))
+        forgedSsl <- forged.clientSsl(auth.authMutualTlsTrustedCertificates)
+        refused <- tokenOver(forgedSsl, url, clientId).either
+      yield assertTrue(known.contains(true))
+        .label("the control: a certificate of a trusted CA carrying the group name authenticates the client") &&
+        assertTrue(refused.fold(_ => true, !_.isInstanceOf[TokenResult.Success]))
+          .label(s"the same name on a certificate of an unknown CA must not get a token, got $refused")
+    },
   ) @@ TestAspect.sequential @@ TestAspect.withLiveClock @@ TestAspect.timeout(60.seconds)

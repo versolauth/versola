@@ -76,6 +76,7 @@ object EdgeResourcesMutualTlsSpec
     nativeApp = false,
     issuedCertificate = false,
     enrolledCertificate = false,
+    groupCertificate = None,
   )
 
   private val bank: ZLayer[OAuthClient & CentralApi & EdgeApi & EdgeFixture & E2EConfig, Throwable, Bank] =

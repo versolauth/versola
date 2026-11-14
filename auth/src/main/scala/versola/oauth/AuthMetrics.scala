@@ -15,6 +15,12 @@ object AuthMetrics:
   private val conversationStartedTotal = Metric.counter("auth_conversation_started_total")
   private val conversationCompletedTotal = Metric.counter("auth_conversation_completed_total")
   private val conversationStepTotal = Metric.counter("auth_conversation_step_total")
+  private val refreshTokenReboundTotal = Metric.counter("auth_refresh_token_rebound_total")
+
+  /** A certificate-bound grant of a client registered by an edge-group name was bound to another certificate of its group
+    * (RFC 8705 §7.1). Its rate is the rate at which sessions move between the edges of a group or meet a renewed certificate. */
+  def refreshTokenRebound: UIO[Unit] =
+    refreshTokenReboundTotal.increment
 
   def authorizeOutcome(response: AuthorizeResponse): UIO[Unit] =
     response match

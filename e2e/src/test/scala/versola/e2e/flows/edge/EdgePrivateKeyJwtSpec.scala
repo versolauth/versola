@@ -37,6 +37,7 @@ object EdgePrivateKeyJwtSpec extends EdgeSpec(
       nativeApp = false,
       issuedCertificate = false,
       enrolledCertificate = false,
+      groupCertificate = None,
     ),
   ):
 
