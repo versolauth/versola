@@ -2145,7 +2145,9 @@ Connection refused on 443 (`--proxy external`: nothing on `2821`) → `versola-p
 They wait up to two minutes for `central` (`/liveness` 200, `/readiness` 503 meanwhile); a failed
 startup exits so `restart: unless-stopped` retries it. If one stays unready, confirm `central` is
 ready, then `docker restart versola-auth` (or `-edge`). Don't restart all three by hand at once —
-`versola up` orders them.
+`versola up` orders them. After a host reboot the Docker daemon starts every container at once and
+ignores `depends_on`, so one restart of `auth` or `edge` (`RestartCount=1`) is expected when `central`
+took longer than they waited; it is not a fault.
 
 ### 6.6 Tag not found on `docker pull` / `configure`
 
