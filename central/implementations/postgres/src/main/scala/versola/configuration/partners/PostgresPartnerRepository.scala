@@ -9,12 +9,14 @@ import versola.central.configuration.partners.{
   PartnerContact,
   PartnerId,
   PartnerLimits,
+  PartnerRateLimitsChanged,
   PartnerRecord,
   PartnerRepository,
   PartnerSettings,
   PartnerStatus,
 }
 import versola.central.configuration.tenants.TenantId
+import versola.util.http.RateLimitPolicies
 import versola.util.postgres.BasicCodecs
 import zio.{IO, Task, ZLayer}
 
@@ -31,11 +33,12 @@ class PostgresPartnerRepository(xa: TransactorZIO) extends PartnerRepository, Ba
   given DbCodec[PartnerContact] = jsonBCodec[PartnerContact]
   given DbCodec[PartnerLimits] = jsonBCodec[PartnerLimits]
   given DbCodec[PartnerSettings] = jsonBCodec[PartnerSettings]
+  given DbCodec[RateLimitPolicies] = jsonBCodec[RateLimitPolicies]
   given DbCodec[Instant] = DbCodec.InstantCodec
   given DbCodec[PartnerRecord] = DbCodec.derived
 
   private val columns = SqlLiteral(
-    "id, tenant_id, display_name, logo_uri, contact, status, limits, group_id, console_client_id, settings, review_at, created_at, version",
+    "id, tenant_id, display_name, logo_uri, contact, status, limits, group_id, console_client_id, settings, review_at, created_at, version, rate_limits, rate_limits_revision",
   )
 
   override def getAll: Task[Vector[PartnerRecord]] =
@@ -55,7 +58,7 @@ class PostgresPartnerRepository(xa: TransactorZIO) extends PartnerRepository, Ba
       sql"""
         INSERT INTO partners ($columns)
         VALUES (${record.id}, ${record.tenantId}, ${record.displayName}, ${record.logoUri}, ${record.contact}, ${record.status},
-                ${record.limits}, ${record.groupId}, ${record.consoleClientId}, ${record.settings}, ${record.reviewAt}, ${record.createdAt}, ${record.version})
+                ${record.limits}, ${record.groupId}, ${record.consoleClientId}, ${record.settings}, ${record.reviewAt}, ${record.createdAt}, ${record.version}, ${record.rateLimits}, ${record.rateLimitsRevision})
       """.update.run()
     .unit
       .mapError {
@@ -93,6 +96,24 @@ class PostgresPartnerRepository(xa: TransactorZIO) extends PartnerRepository, Ba
   override def setLimits(id: PartnerId, limits: PartnerLimits): Task[Boolean] =
     xa.connectMeasured("set-partner-limits"):
       sql"UPDATE partners SET limits = $limits, version = version + 1 WHERE id = $id".update.run() > 0
+
+  override def setRateLimits(
+      id: PartnerId,
+      policies: Option[RateLimitPolicies],
+      expectedRevision: Option[Int],
+  ): IO[PartnerRateLimitsChanged | Throwable, Option[PartnerRecord]] =
+    xa.transactMeasured("set-partner-rate-limits"):
+      // the row is locked, so two writers run one after the other and the second reads the revision the first left; the decision is made here
+      sql"SELECT $columns FROM partners WHERE id = $id FOR NO KEY UPDATE".query[PartnerRecord].run().headOption.map: current =>
+        if expectedRevision.exists(_ != current.rateLimitsRevision) then throw PartnerRateLimitsChanged(id, current.rateLimitsRevision)
+        else if current.rateLimits == policies then current
+        else
+          val revision = current.rateLimitsRevision + 1
+          sql"UPDATE partners SET rate_limits = $policies, rate_limits_revision = $revision WHERE id = $id".update.run()
+          current.copy(rateLimits = policies, rateLimitsRevision = revision)
+    .mapError:
+      case e: PartnerRateLimitsChanged => e
+      case e: Throwable => e
 
   override def setSettings(id: PartnerId, expectedVersion: Long, contact: PartnerContact, settings: PartnerSettings): Task[Boolean] =
     xa.connectMeasured("set-partner-settings"):

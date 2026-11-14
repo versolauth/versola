@@ -142,6 +142,8 @@ export type StaffMember = {
 export type StaffInvite = { identifier: string; level: StaffLevel; expiresInDays: number };
 
 export type PartnerSettings = {
+  /** Of the settings as read. A save sends it back, and central refuses it when the settings changed since. */
+  version: number;
   contact: { email: string; phone?: string | null };
   /** What the console offers for a new client; every part may be absent (a fresh partner has none). Seconds for the lifetimes. */
   defaults: { backChannelLogoutUri?: string | null; accessTokenTtl?: number | null; refreshTokenTtl?: number | null };

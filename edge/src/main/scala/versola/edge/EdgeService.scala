@@ -1363,8 +1363,13 @@ object EdgeService:
         for
           preset <- clientService.findPreset(record.presetId)
             .someOrElseZIO(failWithReauthenticate(cookiePresetId, None, None))
+          // No refresh token: the grant had no `offline_access` (a partner's console, by decision), so the session is not renewable, whether
+          // its token expired or is bound to another edge's certificate. Nothing is asked of auth.
           encryptedRefreshToken <- ZIO.succeed(record.encryptedRefreshToken)
-            .someOrElseZIO(failWithReauthenticate(record.presetId, preset.cookieDomain, preset.cookiePath))
+            .someOrElseZIO(
+              Observability.setError("refresh_token_missing") *>
+                failWithReauthenticate(record.presetId, preset.cookieDomain, preset.cookiePath),
+            )
           decryptedRefreshToken <- decryptRefreshToken(encryptedRefreshToken).catchSome:
             // GCM authenticates as it decrypts, so a token sealed under another EDGE_TOKEN_ENC_KEY
             // (lost or replaced key) or altered in the store fails the tag check; a value shorter

@@ -90,7 +90,9 @@ object ResourceService:
   ) extends ResourceService:
     export resourceRepository.deleteResource
 
-    private val edgeResourceId = ResourceId("edge")
+    /** The ids the platform's own resources have: `central` and `auth` are the resources that guard central and auth themselves, `edge` is
+      * the edge's. Nobody registers a resource of these names, whether or not a row of that name happens to exist. */
+    private val reservedResourceIds = Set(ResourceId("edge"), ResourceId("central"), ResourceId("auth"))
 
     override def getTenantResources(
         tenantId: TenantId,
@@ -123,7 +125,7 @@ object ResourceService:
 
     override def createResource(request: CreateResourceRequest): Task[Either[ResourceValidationError, (ResourceId, Option[Secret])]] =
       if !ResourceId.isValid(request.resourceId) then ZIO.left(ResourceValidationError.InvalidResourceId)
-      else if request.resourceId == edgeResourceId then ZIO.left(ResourceValidationError.ReservedResourceId)
+      else if reservedResourceIds.contains(request.resourceId) then ZIO.left(ResourceValidationError.ReservedResourceId)
       else
         validateEndpoints(request.endpoints).flatMap:
           case Some(error) => ZIO.left(error)

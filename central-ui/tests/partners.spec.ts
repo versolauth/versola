@@ -94,7 +94,7 @@ test('opens a partner: organisation, limits, edges, clients, waiting approvals, 
 test('a suspended partner shows the banner, refused renewals and Resume; an onboarding one the sign-in hint', async ({ page }) => {
   const api = await loadAdminApp(page, { path: `${partnersPath}&id=nomad-travel`, state: partnerState });
   const panel = sidePanel(page, 'Nomad Travel');
-  await expect(panel.getByText('Suspended: every call of this partner is refused')).toBeVisible();
+  await expect(panel.getByText('Suspended: its edges are refused')).toBeVisible();
   await expect(panel.getByRole('region', { name: 'Edge group nomad-travel' })).toContainText('Renewal refused');
   await expect(panel.getByRole('region', { name: 'Suspend partner' })).toHaveCount(0);
   await panel.getByRole('button', { name: 'Resume partner' }).click();
@@ -112,16 +112,16 @@ test('suspends a partner with a note from the danger card', async ({ page }) => 
   await sidePanel(page, 'Pilot Pay').getByRole('button', { name: 'Suspend partner pilot-pay' }).click();
   const editor = sidePanel(page, 'Suspend partner');
   await expect(page).toHaveURL(/edit=suspend/);
-  await expect(editor).toContainText('its edges cannot renew their certificates');
+  await expect(editor).toContainText('cannot renew their certificates');
   expect(await scan(page)).toEqual([]);
 
   await editor.getByRole('button', { name: 'Suspend partner', exact: true }).click();
-  await expect(editor.getByText('A note is required: the partner sees it.')).toBeVisible();
+  await expect(editor.getByText('A note is required: it is kept in the audit log.')).toBeVisible();
   expect(api.requests.some(request => request.pathname === '/configuration/partners/suspend')).toBe(false);
   await editor.getByLabel('Note *').fill('Unpaid invoices since October.');
   await editor.getByRole('button', { name: 'Suspend partner', exact: true }).click();
   expect((await findRequest(api.requests, 'POST', '/configuration/partners/suspend')).body).toEqual({ id: 'pilot-pay', note: 'Unpaid invoices since October.' });
-  await expect(sidePanel(page, 'Pilot Pay').getByText('Suspended: every call of this partner is refused')).toBeVisible();
+  await expect(sidePanel(page, 'Pilot Pay').getByText('Suspended: its edges are refused')).toBeVisible();
 });
 
 test('edits the limits in the panel: openid stays, domains are validated, caps are sent in seconds', async ({ page }) => {
@@ -148,7 +148,7 @@ test('edits the limits in the panel: openid stays, domains are validated, caps a
       scopes: ['openid', 'profile', 'email', 'offline_access'],
       redirectDomains: ['pilotpay.example', 'pilotpay.app', 'pilot.kz'],
       maxClients: 10, maxEdges: 3, accessTokenTtlMax: 900, refreshTokenTtlMax: 30 * 86_400,
-      clientAuthMethods: ['tls_client_auth', 'private_key_jwt'], rateLimitPolicy: 'partner-default',
+      clientAuthMethods: ['tls_client_auth'],
     },
   });
   const limits = sidePanel(page, 'Pilot Pay').getByRole('region', { name: 'Limits' });
@@ -166,8 +166,61 @@ test('edits the organisation and sends the review date as an instant', async ({ 
   await editor.getByLabel('Review date').fill('2027-03-14');
   await editor.getByRole('button', { name: 'Save organisation' }).click();
   const request = await findRequest(api.requests, 'PUT', '/configuration/partners');
-  expect(request.body).toMatchObject({ id: 'pilot-pay', displayName: 'Pilot Pay Ltd', reviewAt: '2027-03-14T00:00:00.000Z' });
+  // The version of the partner as read goes back with the save, so central can refuse a write made on a stale copy.
+  expect(request.body).toMatchObject({ id: 'pilot-pay', version: 1, displayName: 'Pilot Pay Ltd', reviewAt: '2027-03-14T00:00:00.000Z' });
   await expect(sidePanel(page, 'Pilot Pay Ltd').getByRole('region', { name: 'Organisation' })).toContainText('Mar 14, 2027');
+  // A second save is sent on the new version, not the one this page first read.
+  await sidePanel(page, 'Pilot Pay Ltd').getByRole('button', { name: 'Edit organisation' }).click();
+  await editor.getByLabel('Display name *').fill('Pilot Pay Group');
+  await editor.getByRole('button', { name: 'Save organisation' }).click();
+  await expect(sidePanel(page, 'Pilot Pay Group').getByRole('region', { name: 'Organisation' })).toBeVisible();
+  expect(api.requests.filter(r => r.method === 'PUT' && r.pathname === '/configuration/partners').map(r => (r.body as { version: number }).version)).toEqual([1, 2]);
+});
+
+test('a suspension central saved but auth was not told about says so, and nothing claims a revocation', async ({ page }) => {
+  await loadAdminApp(page, { path: `${partnersPath}&id=pilot-pay`, state: { ...partnerState, partnerAuthUnreachable: true } });
+  const record = sidePanel(page, 'Pilot Pay');
+  await record.getByRole('button', { name: 'Suspend partner pilot-pay' }).click();
+  const editor = sidePanel(page, 'Suspend partner');
+  await expect(editor).not.toContainText('refresh tokens are revoked');
+  await expect(editor).toContainText('nothing already issued is revoked');
+  await editor.getByLabel('Note *').fill('Unpaid invoices since October.');
+  await editor.getByRole('button', { name: 'Suspend partner', exact: true }).click();
+  const notice = sidePanel(page, 'Pilot Pay').getByText('Pilot Pay is suspended, but auth was not told');
+  await expect(notice).toBeVisible();
+  await expect(sidePanel(page, 'Pilot Pay').getByText('Auth could not be asked to reload its clients')).toBeVisible();
+  await expect(sidePanel(page, 'Pilot Pay').getByText('Suspended: its edges are refused')).toBeVisible();
+  await expect(sidePanel(page, 'Pilot Pay')).not.toContainText('refresh tokens revoked');
+});
+
+test('a resumption auth was not told about says so', async ({ page }) => {
+  await loadAdminApp(page, { path: `${partnersPath}&id=nomad-travel`, state: { ...partnerState, partnerAuthUnreachable: true } });
+  const panel = sidePanel(page, 'Nomad Travel');
+  await panel.getByRole('button', { name: 'Resume partner' }).click();
+  await page.getByRole('dialog', { name: 'Resume partner' }).getByRole('button', { name: 'Resume' }).click();
+  await expect(panel.getByText('Nomad Travel is active again, but auth was not told')).toBeVisible();
+  await expect(panel.locator('.chip', { hasText: 'Active' }).first()).toBeVisible();
+});
+
+test('narrowing the limits names the clients now outside them and leaves them as they are', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: `${partnersPath}&id=pilot-pay&edit=limits`,
+    state: { ...partnerState, partnerOutsideLimits: [{ clientId: 'pilot-pay-checkout', fields: ['scope', 'refreshTokenTtl'] }] },
+  });
+  const editor = sidePanel(page, 'Edit limits');
+  await editor.getByLabel('Refresh token, days *').fill('7');
+  await editor.getByRole('button', { name: 'Save limits' }).click();
+  const record = sidePanel(page, 'Pilot Pay');
+  await expect(record.getByText('1 client is outside the new limits')).toBeVisible();
+  await expect(record.getByText('pilot-pay-checkout (scope, refreshTokenTtl)')).toBeVisible();
+});
+
+test('the limits editor and the record offer no private_key_jwt and no rate-limit policy', async ({ page }) => {
+  await loadAdminApp(page, { path: `${partnersPath}&id=pilot-pay&edit=limits`, state: partnerState });
+  const editor = sidePanel(page, 'Edit limits');
+  await expect(editor.getByLabel('Redirect domains *')).toBeVisible();
+  await expect(editor.getByText('private_key_jwt')).toHaveCount(0);
+  await expect(editor.getByLabel('Rate-limit policy')).toHaveCount(0);
 });
 
 test('the Add partner wizard creates everything in one request and lands on the one-time token', async ({ page }) => {
@@ -198,8 +251,9 @@ test('the Add partner wizard creates everything in one request and lands on the 
   await page.getByLabel('Redirect domains *').fill('nomadair.example');
   await page.getByLabel('Clients *').fill('4');
   await page.getByLabel('Refresh token, days *').fill('14');
-  await page.getByRole('group', { name: 'Client authentication *' }).getByRole('checkbox', { name: /private_key_jwt/ }).check();
-  await page.getByLabel('Rate-limit policy for the group').selectOption('partner-high');
+  // Only the group certificate, and no rate-limit policy to pick: the partner sets the rate limits of its own edges.
+  await expect(page.getByText('private_key_jwt')).toHaveCount(0);
+  await expect(page.getByLabel('Rate-limit policy for the group')).toHaveCount(0);
   expect(await scan(page)).toEqual([]);
   await page.getByRole('button', { name: 'Continue to edge & console' }).click();
 
@@ -228,7 +282,7 @@ test('the Add partner wizard creates everything in one request and lands on the 
     partner: {
       id: 'nomad-air', tenantId: 'tenant-alpha', displayName: 'Nomad Air', logoUri: null,
       contact: { email: 'dev@nomadair.example', phone: null },
-      limits: { scopes: ['openid', 'profile'], redirectDomains: ['nomadair.example'], maxClients: 4, maxEdges: 3, accessTokenTtlMax: 600, refreshTokenTtlMax: 14 * 86_400, clientAuthMethods: ['tls_client_auth', 'private_key_jwt'], rateLimitPolicy: 'partner-high' },
+      limits: { scopes: ['openid', 'profile'], redirectDomains: ['nomadair.example'], maxClients: 4, maxEdges: 3, accessTokenTtlMax: 600, refreshTokenTtlMax: 14 * 86_400, clientAuthMethods: ['tls_client_auth'] },
       reviewAt: '2027-05-01T00:00:00.000Z',
     },
     consoleClient: { redirectUri: 'https://login.nomadair.example/complete' },
@@ -242,6 +296,8 @@ test('the Add partner wizard creates everything in one request and lands on the 
   await expect(record.locator('.secret-value')).toHaveCount(1);
   await expect(record.getByRole('region', { name: 'Enrollment token' })).toHaveText(/^vtk1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/);
   await expect(record.getByText('put it in a secret and start the edge edge-eu-1 with it', { exact: false })).toBeVisible();
+  // The expiry is central's own (the mock's token lives a day from the frozen clock), not a number written in the console.
+  await expect(record.getByText(/expires \w{3} \d{1,2}, \d{4}/)).toBeVisible();
   await expect(record.getByRole('button', { name: 'Copy token' })).toBeVisible();
   await expect(record.getByText('Onboarding: no edge has enrolled yet')).toBeVisible();
   await expect(page.locator('versola-data-table')).toContainText('Nomad Air');

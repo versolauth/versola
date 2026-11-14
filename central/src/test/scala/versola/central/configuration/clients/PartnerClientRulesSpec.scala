@@ -32,7 +32,6 @@ object PartnerClientRulesSpec extends ZIOSpecDefault:
       accessTokenTtlMax = 600,
       refreshTokenTtlMax = 86400,
       clientAuthMethods = Set(AuthMethod.tls_client_auth, AuthMethod.private_key_jwt),
-      rateLimitPolicy = "partner-default",
       resourceDomains = None,
     ),
     groupId = group,
@@ -94,6 +93,14 @@ object PartnerClientRulesSpec extends ZIOSpecDefault:
           invariant(conforming.copy(mtlsAuth = Some(otherGroup))).exists(_.contains("urn:versola:edge-group:acme")),
           invariant(conforming.copy(mtlsAuth = Some(byDn))).exists(_.contains("san_uri")),
           invariant(conforming.copy(mtlsAuth = None)).exists(_.contains("san_uri")),
+        )
+      },
+      test("a lifetime of nothing or less is refused, however low the caps are: they bound a lifetime from above only") {
+        assertTrue(
+          invariant(conforming.copy(accessTokenTtl = zio.Duration.Zero)).exists(_.contains("above zero")),
+          invariant(conforming.copy(accessTokenTtl = zio.Duration.fromSeconds(-5))).exists(_.contains("above zero")),
+          invariant(conforming.copy(refreshTokenTtl = zio.Duration.Zero)).exists(_.contains("above zero")),
+          invariant(conforming).isEmpty,
         )
       },
       test("private_key_jwt needs no mtlsAuth") {

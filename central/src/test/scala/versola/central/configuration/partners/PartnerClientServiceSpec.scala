@@ -52,7 +52,6 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       accessTokenTtlMax = 600,
       refreshTokenTtlMax = 86400,
       clientAuthMethods = Set(AuthMethod.tls_client_auth),
-      rateLimitPolicy = "partner-default",
       resourceDomains = None,
     ),
     groupId = group,
@@ -160,6 +159,7 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- registered(env)
         _ <- env.clients.findClientFresh.succeedsWith(Some(client(request.id, ClientApproval.Pending).copy(scope = wide.scope)))
         _ <- env.approvals.create.succeedsWith(())
+        _ <- env.approvals.createIfNoneWaiting.succeedsWith(true)
         (created, approval) <- env.service.create(acme, wide, requestedBy = "staff-1")
         registration = env.clients.registerClient.calls.head
       yield assertTrue(
@@ -221,6 +221,7 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.clients.findClientFresh.succeedsWith(Some(stored))
         _ <- env.approvals.waitingFor.succeedsWith(Vector.empty)
         _ <- env.approvals.create.succeedsWith(())
+        _ <- env.approvals.createIfNoneWaiting.succeedsWith(true)
         renamed <- env.service.update(acme, PartnerClientUpdate.of(request.id).copy(clientName = Some(Map("en" -> "ACME Pay"))), "staff-1")
         widened <- env.service.update(acme, PartnerClientUpdate.of(request.id).copy(accessTokenTtl = Some(3600L)), "staff-1")
       yield assertTrue(
@@ -228,8 +229,37 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         renamed.left.toOption.exists(_.current == Some(Json.Obj("clientName" -> Json.Obj("en" -> Json.Str("ACME Shop"))))),
         widened.left.toOption.exists(_.outsideLimits == List("accessTokenTtl")),
         env.clients.updateClient.calls.isEmpty,
-        env.approvals.create.calls.size == 2,
+        env.approvals.create.calls.size + env.approvals.createIfNoneWaiting.calls.size == 2,
       )
+    },
+    test("a change of scope or of the refresh token's life outside the limits waits for the operator and names the field") {
+      val env = Env()
+      val stored = client(request.id, ClientApproval.Approved)
+      for
+        _ <- env.clients.findClientFresh.succeedsWith(Some(stored))
+        _ <- env.approvals.waitingFor.succeedsWith(Vector.empty)
+        _ <- env.approvals.createIfNoneWaiting.succeedsWith(true)
+        scoped <- env.service.update(
+          acme,
+          PartnerClientUpdate.of(request.id).copy(scope = Some(Set(ScopeToken("openid"), ScopeToken("payments")))),
+          "staff-1",
+        )
+        longer <- env.service.update(acme, PartnerClientUpdate.of(request.id).copy(refreshTokenTtl = Some(Int.MaxValue.toLong)), "staff-1")
+      yield assertTrue(
+        scoped.left.toOption.exists(_.outsideLimits == List("scope")),
+        longer.left.toOption.exists(_.outsideLimits == List("refreshTokenTtl")),
+        env.clients.updateClient.calls.isEmpty,
+      )
+    },
+    test("a change that two requests make at once is queued once: the one that loses is told there is a change waiting") {
+      val env = Env()
+      for
+        _ <- env.clients.findClientFresh.succeedsWith(Some(client(request.id, ClientApproval.Approved)))
+        // the check against what is waiting found none, and the insert under the partner's lock found one
+        _ <- env.approvals.waitingFor.succeedsWith(Vector.empty)
+        _ <- env.approvals.createIfNoneWaiting.succeedsWith(false)
+        lost <- env.service.update(acme, PartnerClientUpdate.of(request.id).copy(clientName = Some(Map("en" -> "Other"))), "staff-1").flip
+      yield assertTrue(lost.isInstanceOf[PartnerError.Conflict], env.clients.updateClient.calls.isEmpty)
     },
     test("a client that is not the partner's, or still pending, or already waiting for a change, cannot be changed") {
       val env = Env()
@@ -272,6 +302,7 @@ object PartnerClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.clients.findClientFresh.succeedsWith(Some(stored))
         _ <- env.approvals.waitingFor.succeedsWith(Vector.empty)
         _ <- env.approvals.create.succeedsWith(())
+        _ <- env.approvals.createIfNoneWaiting.succeedsWith(true)
         policy <- env.service.update(
           acme,
           PartnerClientUpdate.of(request.id).copy(policyUri = Some(versola.util.Patch.Modified("https://acme.example/privacy"))),

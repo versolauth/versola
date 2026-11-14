@@ -22,7 +22,6 @@ export function partnerSeed(now = Date.now()): MockPartnerState {
     accessTokenTtlMax: 86_400,
     refreshTokenTtlMax: 30 * 86_400,
     clientAuthMethods: ['tls_client_auth' as const, 'private_key_jwt' as const],
-    rateLimitPolicy: 'partner-default',
   };
   const fixed = { consent: true as const, flow: 'code+pkce+par' as const, authMethod: 'tls_client_auth' as const, group: 'pilot-pay' };
   const policies = {
@@ -120,6 +119,7 @@ export function partnerSeed(now = Date.now()): MockPartnerState {
       { id: 'inv-1', identifier: { kind: 'email', masked: 'ops@pilotpay.example' }, level: 'admin', state: 'invited', addedBy: 'u_7f3a9c2e', addedAt: at(-1, 9), expiresAt: at(6, 9) },
     ],
     settings: {
+      version: 1,
       contact: { email: 'security@pilotpay.example', phone: '+7 727 300 1100' },
       defaults: { backChannelLogoutUri: 'https://login.pilotpay.example/logout/backchannel', accessTokenTtl: 300, refreshTokenTtl: 14 * 86_400 },
     },

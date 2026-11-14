@@ -2,6 +2,7 @@ package versola.central.configuration.edges
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.util.DatabaseSpecBase
+import zio.Task
 import zio.json.ast.Json
 import zio.test.*
 
@@ -19,6 +20,23 @@ trait EdgeIdentityRepositorySpec extends DatabaseSpecBase[EdgeIdentityRepository
 
   override def testCases(env: EdgeIdentityRepositorySpec.Env) =
     List(
+      // the table has no CHECK on `kind`: the enum is what says which values exist, and a value it does not know is read as a failure, not
+      // as one of the kinds
+      test("a group stored with a kind that is none of the kinds fails to read, loudly, and the kinds there are read as they are") {
+        val odd = EdgeGroupId("odd-group")
+        val partner = EdgeGroupId("partner-group")
+        for
+          _ <- env.groups.create(EdgeGroupRecord(partner, EdgeGroupKind.Partner))
+          _ <- env.raw.insert(odd, "reseller")
+          known <- env.groups.find(partner)
+          unknownOne <- env.groups.find(odd).either
+          unknownAll <- env.groups.getAll.either
+        yield assertTrue(
+          known == Some(EdgeGroupRecord(partner, EdgeGroupKind.Partner)),
+          unknownOne.left.exists(_.getMessage.contains("reseller")),
+          unknownAll.left.exists(_.getMessage.contains("reseller")),
+        )
+      },
       test("revoking forgets the unspent tokens of one edge and counts them") {
         for
           _ <- env.edges.createEdge(edgeId, Some(sampleJwk), true, EdgeGroup.DefaultId, None)
@@ -50,4 +68,15 @@ trait EdgeIdentityRepositorySpec extends DatabaseSpecBase[EdgeIdentityRepository
     )
 
 object EdgeIdentityRepositorySpec:
-  case class Env(edges: EdgeRepository, tokens: EdgeEnrollmentTokenRepository, certificates: EdgeCertificateRepository)
+  /** A group as a store may hold it that [[EdgeGroupRepository]] cannot create: with a kind that is no kind. Nothing in the table
+    * limits what is written (the values are the Scala enum's), so a test needs a way to put one there. */
+  trait RawGroups:
+    def insert(id: EdgeGroupId, kind: String): Task[Unit]
+
+  case class Env(
+      edges: EdgeRepository,
+      tokens: EdgeEnrollmentTokenRepository,
+      certificates: EdgeCertificateRepository,
+      groups: EdgeGroupRepository,
+      raw: RawGroups,
+  )

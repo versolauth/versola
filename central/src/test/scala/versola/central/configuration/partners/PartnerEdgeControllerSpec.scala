@@ -41,6 +41,7 @@ import versola.central.configuration.{GetAuthorizationPresetsSyncResponse, GetOA
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.audit.{ActorType, AuditEvent, AuditEvents, AuditKind, AuditOutcome, AuditSeverity}
 import versola.util.http.Observability
+import versola.util.http.RateLimitPolicies
 import versola.util.{JWT, RedirectUri, RsaKeyPair, Secret, SecureRandom, SecurityService, TestCertificates}
 import zio.*
 import zio.http.*
@@ -114,7 +115,6 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       accessTokenTtlMax = 600,
       refreshTokenTtlMax = 86400,
       clientAuthMethods = Set(AuthMethod.tls_client_auth),
-      rateLimitPolicy = "partner-default",
       resourceDomains = None,
     ),
     groupId = EdgeGroupId(id),
@@ -517,11 +517,11 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         "PUT /edge/partner/settings",
         Method.PUT,
         partnerPath("settings"),
-        """{"contact":{"email":"ops@acme.example"},"defaults":{"backChannelLogoutUri":null,"accessTokenTtl":null,"refreshTokenTtl":null}}""",
+        """{"contact":{"email":"ops@acme.example"},"defaults":{"backChannelLogoutUri":null,"accessTokenTtl":null,"refreshTokenTtl":null},"version":0}""",
         Status.NoContent,
         Status.NoContent,
         services => services.partners.setSettings.succeedsWith(()),
-        services => assertTrue(services.partners.setSettings.calls.map(_._1.id) == List(acme.id)),
+        services => assertTrue(services.partners.setSettings.calls.map(call => (call._1.id, call._2)) == List((acme.id, 0L))),
       ),
     )
 
@@ -759,6 +759,23 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             body.events.forall(_.traceId.isEmpty),
           ),
       ),
+      testCase(
+        description = "the note an operator gave a suspension is in the operator's audit log and not in the partner's feed",
+        request = Request.get(partnerPath("audit")),
+        principal = Some(staffToken()),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.auditRepository.partnerEvents.succeedsWith(
+            List(operatorEvent.copy(details = Json.Obj("partnerId" -> Json.Str("acme"), "note" -> Json.Str("Unpaid invoices since October.")))),
+          ),
+        verify = (response, _) =>
+          for body <- decodeBody[PartnerAuditResponse](response)
+          yield assertTrue(
+            body.events.size == 1,
+            !body.events.head.details.fields.exists(_._1 == "note"),
+            body.events.head.details == Json.Obj("partnerId" -> Json.Str("acme")),
+          ),
+      ),
     ),
     suite("what a partner may register")(
       testCase(
@@ -817,6 +834,177 @@ object PartnerEdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     // sent its valid body, which is accepted, and the same body with every field a partner must not be able to set; the second is
     // refused (400) or the extra fields are ignored, and what the service is given is the caller's own partner and group.
     suite("a partner cannot choose first-party")(crossingRows.flatMap(row => row.cases)*),
+    // #962 review: what the partner's edge may write is its partner's own, and nothing of another partner's or the operator's
+    suite("a partner's edge writes only what is its partner's")(
+      testCase(
+        description = "changing another partner's resource, or the operator's, is 404 and changes nothing",
+        request = Request.put(
+          partnerPath("resources"),
+          jsonBody("""{"resourceId":"globex-api","audience":{"add":[],"remove":[]},"deleteEndpoints":[],"createEndpoints":[]}"""),
+        ).addHeader(Header.ContentType(MediaType.application.json)),
+        principal = Some(staffToken()),
+        expectedStatus = Status.NotFound,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.resources.updateResource.calls.isEmpty)),
+      ),
+      testCase(
+        description = "changing a resource that is the operator's own is 404 as well",
+        request = Request.put(
+          partnerPath("resources"),
+          jsonBody("""{"resourceId":"own","audience":{"add":[],"remove":[]},"deleteEndpoints":[],"createEndpoints":[]}"""),
+        ).addHeader(Header.ContentType(MediaType.application.json)),
+        principal = Some(staffToken()),
+        expectedStatus = Status.NotFound,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.resources.updateResource.calls.isEmpty)),
+      ),
+      testCase(
+        description = "deleting another partner's resource is 404 and deletes nothing",
+        request = Request.delete(partnerPath("resources").addQueryParam("resourceId", "globex-api")),
+        principal = Some(staffToken()),
+        expectedStatus = Status.NotFound,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.resources.deleteResource.calls.isEmpty)),
+      ),
+      testCase(
+        description = "deleting the operator's resource is 404 and deletes nothing",
+        request = Request.delete(partnerPath("resources").addQueryParam("resourceId", "own")),
+        principal = Some(staffToken()),
+        expectedStatus = Status.NotFound,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.resources.deleteResource.calls.isEmpty)),
+      ),
+      testCase(
+        description = "rotating the secret of another partner's resource is 404 and rotates nothing",
+        request = Request.post(partnerPath("resources", "rotate-secret"), jsonBody("""{"resourceId":"globex-api"}"""))
+          .addHeader(Header.ContentType(MediaType.application.json)),
+        principal = Some(staffToken()),
+        expectedStatus = Status.NotFound,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.resources.rotateSecret.calls.isEmpty)),
+      ),
+      testCase(
+        description = "deleting an edge of another group is 404 and deletes nothing",
+        request = Request.delete(partnerPath("edges").addQueryParam("id", "edge-globex-1")),
+        principal = Some(staffToken()),
+        expectedStatus = Status.NotFound,
+        setup = services => services.partners.edges.succeedsWith(Vector(partnerEdge)),
+        verify = (_, services) => ZIO.succeed(assertTrue(services.edges.deleteEdge.calls.isEmpty)),
+      ),
+      testCase(
+        description = "voiding the enrollment tokens of another group's edge is 404 and voids nothing",
+        request = Request.delete(partnerPath(
+          "edges",
+          "enrollment-tokens",
+        )).withBody(jsonBody("""{"id":"edge-globex-1"}""")).addHeader(Header.ContentType(MediaType.application.json)),
+        principal = Some(staffToken()),
+        expectedStatus = Status.NotFound,
+        setup = services => services.partners.edges.succeedsWith(Vector(partnerEdge)),
+        verify = (_, services) => ZIO.succeed(assertTrue(services.tokens.revoke.calls.isEmpty)),
+      ),
+      testCase(
+        description = "a partner's 101st resource is refused, whatever else is right about it",
+        request = Request.post(
+          partnerPath("resources"),
+          jsonBody("""{"resourceId":"acme-more","resource":"https://more.acme.example","audience":[],"endpoints":[],"audienceRateLimits":[]}"""),
+        ).addHeader(Header.ContentType(MediaType.application.json)),
+        principal = Some(staffToken()),
+        expectedStatus = Status.BadRequest,
+        setup = services =>
+          services.resources.getResourcesForSync.succeedsWith(
+            Vector.tabulate(PartnerEdgeController.MaxResources)(n => resource(s"acme-$n", Some(acme.id))),
+          ),
+        verify = (_, services) => ZIO.succeed(assertTrue(services.resources.createResource.calls.isEmpty)),
+      ),
+    ),
+    // The rate limits are one setting for the group, set by the partner (owner decision, 2026-11-14)
+    suite("the rate limits of the partner's edges")(
+      testCase(
+        description = "GET answers the policies the edges apply and their revision",
+        request = Request.get(partnerPath("rate-limits")),
+        principal = Some(staffToken()),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.partners.rateLimits.succeedsWith(PartnerService.GroupRateLimits(Some(RateLimitPolicies.recommended), 3)),
+        verify = (response, _) =>
+          for body <- decodeBody[GroupRateLimitsResponse](response)
+          yield assertTrue(body.revision == 3, body.rateLimits.contains(RateLimitPolicies.recommended)),
+      ),
+      testCase(
+        description = "GET /recommended answers the starting set",
+        request = Request.get(partnerPath("rate-limits", "recommended")),
+        principal = Some(staffToken()),
+        expectedStatus = Status.Ok,
+        verify = (response, _) =>
+          for body <- decodeBody[RateLimitPolicies](response) yield assertTrue(body == RateLimitPolicies.recommended),
+      ),
+      testCase(
+        description = "PUT sets the policies of the group, naming the revision it read, and answers what is now set; the staff member is the actor",
+        request = Request.put(
+          partnerPath("rate-limits"),
+          jsonBody(s"""{"rateLimits":${RateLimitPolicies.recommended.toJson},"expectedRevision":3}"""),
+        ).addHeader(Header.ContentType(MediaType.application.json)),
+        principal = Some(staffToken()),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.partners.setRateLimits.succeedsWith(PartnerService.GroupRateLimits(Some(RateLimitPolicies.recommended), 4)),
+        verify = (response, services) =>
+          for
+            body <- decodeBody[GroupRateLimitsResponse](response)
+            drafts <- services.audit.drafts
+          yield assertTrue(
+            body.revision == 4,
+            services.partners.setRateLimits.calls.map(call => (call._1.id, call._2, call._3)) ==
+              List((acme.id, Some(RateLimitPolicies.recommended), Some(3))),
+            drafts.map(_.kind) == Vector(CentralAudit.admin("partner-edge", "action:rate-limits")),
+            drafts.head.actor == Some((CentralAudit.Actors.PartnerStaff, Some("staff-1"))),
+          ),
+      ),
+      testCase(
+        description = "PUT null removes them",
+        request = Request.put(partnerPath("rate-limits"), jsonBody("""{"rateLimits":null}"""))
+          .addHeader(Header.ContentType(MediaType.application.json)),
+        principal = Some(staffToken()),
+        expectedStatus = Status.Ok,
+        setup = services => services.partners.setRateLimits.succeedsWith(PartnerService.GroupRateLimits(None, 5)),
+        verify = (_, services) => ZIO.succeed(assertTrue(services.partners.setRateLimits.calls.map(call => (call._2, call._3)) == List((None, None)))),
+      ),
+      testCase(
+        description = "PUT without `rateLimits` is refused, not read as a removal; so is a body that names anything else",
+        request = Request.put(partnerPath("rate-limits"), jsonBody("""{}""")).addHeader(Header.ContentType(MediaType.application.json)),
+        principal = Some(staffToken()),
+        expectedStatus = Status.BadRequest,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.partners.setRateLimits.calls.isEmpty)),
+      ),
+      testCase(
+        description = "PUT that names overload, or the policies of another section, is refused: only rateLimits is the partner's",
+        request = Request.put(partnerPath("rate-limits"), jsonBody("""{"rateLimits":null,"overload":null}"""))
+          .addHeader(Header.ContentType(MediaType.application.json)),
+        principal = Some(staffToken()),
+        expectedStatus = Status.BadRequest,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.partners.setRateLimits.calls.isEmpty)),
+      ),
+      testCase(
+        description = "PUT of the limits that changed since they were read is 409",
+        request = Request.put(partnerPath("rate-limits"), jsonBody("""{"rateLimits":null,"expectedRevision":1}"""))
+          .addHeader(Header.ContentType(MediaType.application.json)),
+        principal = Some(staffToken()),
+        expectedStatus = Status.Conflict,
+        setup = services => services.partners.setRateLimits.failsWith(PartnerError.Conflict("the rate limits changed since they were read")),
+      ),
+      testCase(
+        description = "PUT of policies an edge refuses is 400, from the service",
+        request = Request.put(partnerPath("rate-limits"), jsonBody("""{"rateLimits":{"policies":[]}}"""))
+          .addHeader(Header.ContentType(MediaType.application.json)),
+        principal = Some(staffToken()),
+        expectedStatus = Status.BadRequest,
+        setup = services => services.partners.setRateLimits.failsWith(PartnerError.Invalid("rateLimits: invalid")),
+      ),
+      testCase(
+        description = "a suspended partner's edge cannot read or set them: 403",
+        request =
+          Request.put(partnerPath("rate-limits"), jsonBody("""{"rateLimits":null}""")).addHeader(Header.ContentType(MediaType.application.json)),
+        principal = Some(staffToken()),
+        expectedStatus = Status.Forbidden,
+        setup = services => services.registry.findByGroup.succeedsWith(Some(acme.copy(status = PartnerStatus.Suspended))),
+        verify = (_, services) => ZIO.succeed(assertTrue(services.partners.setRateLimits.calls.isEmpty)),
+      ),
+    ),
   ) @@ TestAspect.sequential
 
   private def auditEvent(actorType: ActorType, actorId: Option[String], ip: Option[String]) = AuditEvent(

@@ -2,7 +2,7 @@ package versola.central.configuration.edges
 
 import versola.central.audit.{Audit, AuditedController, audited}
 import versola.central.configuration.clients.ClientId
-import versola.central.configuration.partners.{PartnerId, PartnerRegistry}
+import versola.central.configuration.partners.{PartnerId, PartnerRecord, PartnerRegistry}
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
@@ -45,7 +45,7 @@ object EdgeController extends AuditedController:
         partners <- ZIO.serviceWithZIO[PartnerRegistry](_.getAll)
         certificates <- ZIO.serviceWithZIO[EdgeCertificateRepository](_.latest)
         response = GetAllEdgesResponse(
-          edges = edges.map(edge => EdgeResponse.of(edge, partners.find(_.groupId == edge.groupId).map(_.id), certificates.get(edge.id))).toList,
+          edges = edges.map(edge => EdgeResponse.of(edge, partners.find(_.groupId == edge.groupId), certificates.get(edge.id))).toList,
         )
       yield Response.json(response.toJson)
     }
@@ -62,6 +62,13 @@ object EdgeController extends AuditedController:
           group <- ZIO.serviceWithZIO[EdgeGroupService](_.find(groupId))
           response <- group match
             case None => ZIO.succeed(Response.text(s"edge group '$groupId' does not exist").status(Status.UnprocessableEntity))
+            // a partner's edge is registered through the partner (`POST /edge/partner/edges`), without a key: the edge makes its own and
+            // central makes none for it, so the operator's route, which answers a private key, is not for a group of that kind
+            case Some(group) if group.kind == EdgeGroupKind.Partner =>
+              ZIO.succeed(
+                Response.text(s"edge group '$groupId' is a partner's: its edges are registered through the partner, and make their own keys")
+                  .status(Status.UnprocessableEntity),
+              )
             case Some(_) =>
               service.registerEdge(body.id, groupId, body.publicUrl).map: keyPair =>
                 val privateKeyEncoded = Base64Url.encode(keyPair.privateKey.getEncoded)
@@ -122,12 +129,19 @@ object EdgeController extends AuditedController:
         service <- ZIO.service[EdgeService]
         edgeId <- request.url.queryZIO[EdgeId]("edgeId")
         _ <- Audit.target(edgeId)
-        keyPair <- service.rotateEdgeKey(edgeId)
-        response = ServiceKeyResponse(
-          keyId = keyPair.keyId,
-          privateKey = Base64Url.encode(keyPair.privateKey.getEncoded),
-        )
-      yield Response.json(response.toJson)
+        edge <- service.findFresh(edgeId)
+        // a partner's edge replaces its key itself, with the one it makes (`signingKey` of the certificate renewal); central makes no key for it
+        response <-
+          if edge.exists(_.groupKind == EdgeGroupKind.Partner) then
+            ZIO.succeed(
+              Response.text(
+                "a partner's edge makes its own signing key: it replaces it when it renews its certificate",
+              ).status(Status.UnprocessableEntity),
+            )
+          else
+            service.rotateEdgeKey(edgeId).map: keyPair =>
+              Response.json(ServiceKeyResponse(keyId = keyPair.keyId, privateKey = Base64Url.encode(keyPair.privateKey.getEncoded)).toJson)
+      yield response
     }
 
   val deleteOldEdgeKeyEndpoint =
@@ -182,7 +196,8 @@ object EdgeController extends AuditedController:
         service <- ZIO.service[EdgeService]
         edgeId <- request.url.queryZIO[EdgeId]("edgeId")
         edge <- service.findFresh(edgeId)
-      yield edge.fold(Response.status(Status.NotFound))(record => Response.json(EdgePoliciesResponse.of(record).toJson))
+        owner <- ZIO.foreach(edge)(record => ZIO.serviceWithZIO[PartnerRegistry](_.findByGroup(record.groupId))).map(_.flatten)
+      yield edge.fold(Response.status(Status.NotFound))(record => Response.json(EdgePoliciesResponse.of(record, owner).toJson))
     }
 
   /** Changes the policy sections of one edge ([[EdgePoliciesPatch]]): the sections named in the body are changed, the others are
@@ -212,10 +227,22 @@ object EdgeController extends AuditedController:
               "overload" -> (patch.overload != Change.Keep),
               "accessLog" -> (patch.accessLog != Change.Keep),
               "rateLimits" -> (patch.rateLimits != Change.Keep),
-            ) *> service.patchPolicies(edgeId, patch, dryRun).flatMap:
-              case None => ZIO.succeed(Response.status(Status.NotFound))
-              case Some(Left(error)) => policyError(error)
-              case Some(Right(record)) => ZIO.succeed(Response.json(EdgePoliciesResponse.of(record).toJson))
+            ) *> service.findFresh(edgeId).flatMap:
+              // the rate limits of a partner's edges are the partner's, one setting for the group, written once with `PUT /edge/partner/rate-limits`: two
+              // writers of it would leave the edges with different limits. `overload` and `accessLog` stay the operator's, set per edge.
+              case Some(edge) if edge.groupKind == EdgeGroupKind.Partner && patch.rateLimits != Change.Keep =>
+                ZIO.succeed(
+                  Response.text(
+                    s"rateLimits of edge '$edgeId' are its partner's setting, one for the whole group '${edge.groupId}': the partner sets them. overload and accessLog stay yours, per edge",
+                  ).status(Status.UnprocessableEntity),
+                )
+              case _ =>
+                service.patchPolicies(edgeId, patch, dryRun).flatMap:
+                  case None => ZIO.succeed(Response.status(Status.NotFound))
+                  case Some(Left(error)) => policyError(error)
+                  case Some(Right(record)) =>
+                    ZIO.serviceWithZIO[PartnerRegistry](_.findByGroup(record.groupId)).map: owner =>
+                      Response.json(EdgePoliciesResponse.of(record, owner).toJson)
       yield response
     }
 
@@ -306,18 +333,24 @@ case class EdgeResponse(
 ) derives Schema, JsonCodec
 
 object EdgeResponse:
-  def of(edge: EdgeRecord, partnerId: Option[PartnerId], certificate: Option[EdgeCertificateRepository.Issued]): EdgeResponse =
+  /** `partner` is the owner of the edge's group, if any: the rate limits of a partner's edge are the partner's, one setting for the group, so they
+    * and their revision are the partner's and not the edge's own. */
+  def of(edge: EdgeRecord, partner: Option[PartnerRecord], certificate: Option[EdgeCertificateRepository.Issued]): EdgeResponse =
+    val revisions = edge.policyMeta.fold(Map.empty[String, Int])(_.view.mapValues(_.revision).toMap)
     EdgeResponse(
       id = edge.id,
       hasOldKey = edge.oldPublicKey.isDefined,
       requireDpopNonce = edge.requireDpopNonce,
       overloadPolicy = edge.overloadPolicy,
       accessLogPolicy = edge.accessLogPolicy,
-      rateLimitPolicies = edge.rateLimitPolicies,
-      policyRevisions = edge.policyMeta.fold(Map.empty[String, Int])(_.view.mapValues(_.revision).toMap),
+      rateLimitPolicies = partner.fold(edge.rateLimitPolicies)(_.rateLimits),
+      policyRevisions = partner.fold(revisions): owner =>
+        val key = PolicySection.RateLimits.key
+        if owner.rateLimitsRevision > 0 then revisions.updated(key, owner.rateLimitsRevision) else revisions - key
+      ,
       groupId = edge.groupId,
       groupKind = edge.groupKind,
-      partnerId = partnerId,
+      partnerId = partner.map(_.id),
       publicUrl = edge.publicUrl,
       certificateNotAfter = certificate.map(_.notAfter),
       lastRenewedAt = certificate.map(_.issuedAt),
@@ -354,15 +387,21 @@ case class EdgePoliciesResponse(
 ) derives Schema, JsonCodec
 
 object EdgePoliciesResponse:
-  def of(record: EdgeRecord): EdgePoliciesResponse =
+  /** `partner` is the owner of the edge's group, if any: its `rateLimits` and their revision are the partner's (one setting for the group),
+    * and they carry no `updatedAt`. */
+  def of(record: EdgeRecord, partner: Option[PartnerRecord] = None): EdgePoliciesResponse =
     val meta = record.policyMeta.getOrElse(Map.empty)
+    val key = PolicySection.RateLimits.key
+    val revisions = meta.view.mapValues(_.revision).toMap
+    val updatedAt = meta.view.mapValues(_.updatedAt).toMap
     EdgePoliciesResponse(
       edgeId = record.id,
       overload = record.overloadPolicy,
       accessLog = record.accessLogPolicy,
-      rateLimits = record.rateLimitPolicies,
-      revisions = meta.view.mapValues(_.revision).toMap,
-      updatedAt = meta.view.mapValues(_.updatedAt).toMap,
+      rateLimits = partner.fold(record.rateLimitPolicies)(_.rateLimits),
+      revisions = partner.fold(revisions): owner =>
+        if owner.rateLimitsRevision > 0 then revisions.updated(key, owner.rateLimitsRevision) else revisions - key,
+      updatedAt = partner.fold(updatedAt)(_ => updatedAt - key),
     )
 
 case class GetAllEdgesResponse(
