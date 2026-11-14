@@ -351,6 +351,9 @@ carries both zones in its `title`; a flag emoji is always followed by the countr
 `versola-side-panel` with `overlay` (the panel covers the page instead of making room for it, because the table is wide). A scrollable table
 wrapper that has nothing focusable inside is `tabindex="0"` with a role and a name, so a keyboard user can scroll it.
 Reference: `user-activity.ts`; tests `tests/user-activity.spec.ts`.
+The other times of the user page (devices, sessions, passkeys; `when()` in `user-record.ts`) are read in the browser's own zone through the same
+`utils/date-format.ts`, in the same English text in every browser, each with the offset in force at that time (`Nov 4, 14:50 (UTC+5)`,
+`Nov 4, 09:50 UTC`); a date alone has none. Tests `tests/local-times.spec.ts`.
 
 **Record that is its own editor (Forms, Themes).** A record whose whole content is an editor keeps the
 record header (ID as the title, kind, status chips) and skips the view-then-edit step: the page is the
