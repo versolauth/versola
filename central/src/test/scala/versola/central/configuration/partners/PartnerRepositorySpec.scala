@@ -6,6 +6,7 @@ import versola.central.configuration.edges.{EdgeGroupId, EdgeGroupKind}
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.util.DatabaseSpecBase
+import versola.util.http.RateLimitPolicies
 import zio.*
 import zio.test.*
 
@@ -30,7 +31,6 @@ trait PartnerRepositorySpec extends DatabaseSpecBase[PartnerRepositorySpec.Env]:
     accessTokenTtlMax = 600,
     refreshTokenTtlMax = 86400,
     clientAuthMethods = Set(AuthMethod.tls_client_auth),
-    rateLimitPolicy = "partner-default",
     resourceDomains = None,
   )
 
@@ -159,11 +159,76 @@ trait PartnerRepositorySpec extends DatabaseSpecBase[PartnerRepositorySpec.Env]:
           nobody <- env.repository.activate(PartnerId("nobody"))
         yield assertTrue(first, !late, !nobody, found.exists(_.status == PartnerStatus.Suspended))
       },
+      test(
+        "the rate limits are stored once on the partner with a revision of their own: a change raises it, the same value and a failed write do not, the version is left alone",
+      ) {
+        val acme = partner("acme", groupA)
+        val policies = RateLimitPolicies.recommended
+        for
+          _ <- env.fixtures.group(groupA, EdgeGroupKind.Partner)
+          _ <- env.repository.create(acme)
+          none <- env.repository.find(acme.id)
+          first <- env.repository.setRateLimits(acme.id, Some(policies), Some(0))
+          same <- env.repository.setRateLimits(acme.id, Some(policies), Some(1))
+          stale <- env.repository.setRateLimits(acme.id, None, Some(0)).flip
+          unchecked <- env.repository.setRateLimits(acme.id, None, None)
+          read <- env.repository.find(acme.id)
+          nobody <- env.repository.setRateLimits(PartnerId("nobody"), Some(policies), None)
+        yield assertTrue(
+          none.exists(p => p.rateLimits.isEmpty && p.rateLimitsRevision == 0),
+          first.exists(p => p.rateLimits.contains(policies) && p.rateLimitsRevision == 1),
+          same.exists(p => p.rateLimits.contains(policies) && p.rateLimitsRevision == 1),
+          stale == PartnerRateLimitsChanged(acme.id, 1),
+          unchecked.exists(p => p.rateLimits.isEmpty && p.rateLimitsRevision == 2),
+          read.exists(p => p.rateLimits.isEmpty && p.rateLimitsRevision == 2 && p.version == acme.version),
+          nobody.isEmpty,
+        )
+      },
+      test("two writes of the limits at the same revision: one wins and the other gets the conflict, and what is stored is the winner's") {
+        val acme = partner("acme", groupA)
+        val one = RateLimitPolicies.recommended
+        val other = RateLimitPolicies(one.policies.take(1), 2)
+        for
+          _ <- env.fixtures.group(groupA, EdgeGroupKind.Partner)
+          _ <- env.repository.create(acme)
+          results <- ZIO.foreachPar(List(one, other, one, other, one, other))(set => env.repository.setRateLimits(acme.id, Some(set), Some(0)).either)
+          read <- env.repository.find(acme.id)
+          winner = results.collect { case Right(Some(stored)) => stored.rateLimits }
+        yield assertTrue(
+          winner.size == 1,
+          results.count(_.isLeft) == 5,
+          results.forall(_.left.forall(_.isInstanceOf[PartnerRateLimitsChanged])),
+          read.exists(p => p.rateLimits == winner.head && p.rateLimitsRevision == 1),
+        )
+      },
+      test("the limits are the partner's, not an edge's: an edge added later changes nothing of them, and deleting the last edge keeps them") {
+        val acme = partner("acme", groupA)
+        val policies = RateLimitPolicies.recommended
+        for
+          _ <- env.fixtures.group(groupA, EdgeGroupKind.Partner)
+          _ <- env.repository.create(acme)
+          _ <- env.fixtures.edge("edge-acme-1", groupA)
+          _ <- env.repository.setRateLimits(acme.id, Some(policies), None)
+          _ <- env.fixtures.edge("edge-acme-2", groupA)
+          withTwo <- env.repository.findByGroup(groupA)
+          _ <- env.fixtures.deleteEdge("edge-acme-1")
+          _ <- env.fixtures.deleteEdge("edge-acme-2")
+          withNone <- env.repository.findByGroup(groupA)
+          again <- env.repository.setRateLimits(acme.id, Some(policies.copy(replicas = 3)), Some(1))
+        yield assertTrue(
+          withTwo.exists(p => p.rateLimits.contains(policies) && p.rateLimitsRevision == 1),
+          withNone.exists(p => p.rateLimits.contains(policies) && p.rateLimitsRevision == 1),
+          // a partner with no edge can set them
+          again.exists(p => p.rateLimits.exists(_.replicas == 3) && p.rateLimitsRevision == 2),
+        )
+      },
     )
 
 object PartnerRepositorySpec:
   /** The rows the repository under test does not write: the edge groups partners point at. */
   trait Fixtures:
     def group(id: EdgeGroupId, kind: EdgeGroupKind): Task[Unit]
+    def edge(id: String, group: EdgeGroupId): Task[Unit]
+    def deleteEdge(id: String): Task[Unit]
 
   case class Env(repository: PartnerRepository, fixtures: Fixtures)

@@ -652,7 +652,7 @@ test.describe('policies are one endpoint, with revisions', () => {
 const partnerOfEdges = {
   id: 'pilot-pay', tenantId: 'tenant-alpha', displayName: 'Pilot Pay', logoUri: null, contact: { email: 'security@pilotpay.example' },
   status: 'active' as const, groupId: 'pilot-pay', consoleClientId: 'pilot-pay-console', reviewAt: null, createdAt: '2026-09-02T10:00:00Z',
-  limits: { scopes: ['openid'], redirectDomains: ['pilotpay.example'], maxClients: 10, maxEdges: 3, accessTokenTtlMax: 600, refreshTokenTtlMax: 30 * 86_400, clientAuthMethods: ['tls_client_auth' as const], rateLimitPolicy: 'partner-default' },
+  limits: { scopes: ['openid'], redirectDomains: ['pilotpay.example'], maxClients: 10, maxEdges: 3, accessTokenTtlMax: 600, refreshTokenTtlMax: 30 * 86_400, clientAuthMethods: ['tls_client_auth' as const] },
 };
 const partnerEdge = { id: 'edge-pilot-eu-1', hasOldKey: false, requireDpopNonce: true, groupId: 'pilot-pay', groupKind: 'partner' as const, partnerId: 'pilot-pay', publicUrl: 'https://login.pilotpay.example', certificateNotAfter: '2026-11-17T00:00:00Z', lastRenewedAt: '2026-11-03T02:00:00Z' };
 const waitingEdge = { id: 'edge-pilot-kz-1', hasOldKey: false, requireDpopNonce: true, groupId: 'pilot-pay', groupKind: 'partner' as const, partnerId: 'pilot-pay', publicUrl: 'https://login-kz.pilotpay.example' };
@@ -695,6 +695,12 @@ test('a partner edge has a group card with its partner and certificate, no signi
   await expect(dialog.getByRole('region', { name: 'Signing key' })).toHaveCount(0);
   await expect(dialog.getByRole('region', { name: 'Linked tenants' })).toHaveCount(0);
   await expect(dialog.getByRole('region', { name: 'Overload protection' })).toBeVisible();
+  // The rate limits are the partner's, one setting for the group: shown here, not editable (the operator's PATCH is refused for them).
+  const limits = dialog.getByRole('region', { name: 'Rate limits' });
+  await expect(limits).toContainText('Set by the partner');
+  await expect(limits.getByRole('button', { name: 'Edit rate limits' })).toHaveCount(0);
+  await expect(limits.getByRole('button', { name: 'Remove all policies' })).toHaveCount(0);
+  await expect(dialog.getByRole('region', { name: 'Overload protection' }).getByRole('button', { name: /Edit/ })).toBeVisible();
   await group.getByRole('button', { name: 'Pilot Pay' }).click();
   await expect(page).toHaveURL(/view=partners/);
   await expect(page).toHaveURL(/id=pilot-pay/);

@@ -68,6 +68,9 @@ object PartnerClientRules:
       invalid("is the partner's console, which signs in the partner's own staff and asks for no consent")
     else if clientId != partner.consoleClientId && !subject.consentFlow then
       invalid("needs a consentFlow - the operator's users are told which partner they sign in to")
+    // the limits cap a lifetime from above; a lifetime of nothing or less is no lifetime, whatever the caps say
+    else if subject.accessTokenTtl.toMillis <= 0L || subject.refreshTokenTtl.toMillis <= 0L then
+      invalid("needs token lifetimes above zero")
     else if !PartnerLimits.AllowedAuthMethods.contains(subject.authMethod) then
       invalid(s"authenticates with tls_client_auth (the group's certificate) or private_key_jwt, not ${subject.authMethod}")
     else if !partner.limits.clientAuthMethods.contains(subject.authMethod) then

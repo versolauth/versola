@@ -17,12 +17,17 @@ object PostgresPartnerRepositorySpec extends PostgresSpec, PartnerRepositorySpec
         PostgresPartnerRepository(xa),
         new PartnerRepositorySpec.Fixtures:
           def group(id: EdgeGroupId, kind: EdgeGroupKind): Task[Unit] =
-            xa.connect(sql"INSERT INTO edge_groups (id, kind) VALUES ($id, ${kind.code})".update.run()).unit,
+            xa.connect(sql"INSERT INTO edge_groups (id, kind) VALUES ($id, ${kind.code})".update.run()).unit
+          def edge(id: String, group: EdgeGroupId): Task[Unit] =
+            xa.connect(sql"INSERT INTO edges (id, require_dpop_nonce, group_id) VALUES ($id, true, $group)".update.run()).unit
+          def deleteEdge(id: String): Task[Unit] =
+            xa.connect(sql"DELETE FROM edges WHERE id = $id".update.run()).unit,
       )
 
   override def beforeEach(env: PartnerRepositorySpec.Env) =
     ZIO.serviceWithZIO[TransactorZIO] { xa =>
       xa.connect(sql"TRUNCATE TABLE partners CASCADE".update.run()) *>
+        xa.connect(sql"DELETE FROM edges WHERE group_id <> 'default'".update.run()) *>
         xa.connect(sql"DELETE FROM edge_groups WHERE id <> 'default'".update.run()) *>
         xa.connect(sql"INSERT INTO tenants (id, description) VALUES ('tenant-a', 'Tenant A') ON CONFLICT (id) DO NOTHING".update.run())
     }.unit

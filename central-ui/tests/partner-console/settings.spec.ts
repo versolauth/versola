@@ -93,6 +93,7 @@ test('contacts save at once; the defaults are capped by the operator', async ({ 
   await page.getByLabel('Phone').fill('');
   await page.getByRole('button', { name: 'Save contacts' }).click();
   expect((await findRequest(api.requests, 'PUT', '/settings')).body).toEqual({
+    version: 1,
     contact: { email: 'incident@pilotpay.example', phone: null },
     defaults: { backChannelLogoutUri: 'https://login.pilotpay.example/logout/backchannel', accessTokenTtl: 300, refreshTokenTtl: 14 * 86_400 },
   });
@@ -110,7 +111,8 @@ test('contacts save at once; the defaults are capped by the operator', async ({ 
   await page.getByLabel('Refresh token, days *').fill('30');
   await page.getByRole('button', { name: 'Save defaults' }).click();
   const saved = await findRequest(api.requests, 'PUT', '/settings');
-  expect(saved.body).toMatchObject({ defaults: { accessTokenTtl: 600, refreshTokenTtl: 30 * 86_400 } });
+  // The second save goes out on the version the first one produced.
+  expect(saved.body).toMatchObject({ version: 2, defaults: { accessTokenTtl: 600, refreshTokenTtl: 30 * 86_400 } });
   await expect(page.getByRole('region', { name: 'Defaults for new clients' })).toContainText('access 10 min · refresh 30 days');
 });
 
