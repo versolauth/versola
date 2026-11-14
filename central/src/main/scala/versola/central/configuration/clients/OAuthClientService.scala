@@ -3,7 +3,7 @@ package versola.central.configuration.clients
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, SecurityProfile}
 import versola.central.configuration.edges.EdgeId
-import versola.central.configuration.partners.{PartnerId, PartnerRecord, PartnerRegistry, PartnerStatus}
+import versola.central.configuration.partners.{PartnerClientRequest, PartnerId, PartnerRecord, PartnerRegistry, PartnerStatus}
 import versola.central.configuration.permissions.{Permission, PermissionRepository}
 import versola.central.configuration.scopes.{OAuthScopeRepository, ScopeToken}
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
@@ -297,13 +297,24 @@ object OAuthClientService:
           ))(ZIO.fail(_))
 
     private def register(
-        request: CreateClientRequest,
+        submitted: CreateClientRequest,
         presetSecret: Option[Secret],
         enforceSecurityProfile: Boolean,
         approval: ClientApproval,
         allowOutsideLimits: Boolean,
     ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient] =
+      // Consent is for a partner's client and always on there (owner decision, 2026-11-13): none on a first-party client, and a
+      // partner's gets the default screen when the request names none.
+      val request =
+        if submitted.partnerId.isDefined && submitted.consentFlow.isEmpty then
+          submitted.copy(consentFlow = Some(PartnerClientRequest.DefaultConsent))
+        else submitted
       for
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateConsentOnlyForPartner(
+          request.id,
+          request.consentFlow,
+          request.partnerId,
+        ))(ZIO.fail(_))
         partner <- partnerOf(request.id, request.partnerId)
         _ <- ZIO.foreachDiscard(partner): partner =>
           // the console client is the partner's own, registered with it, and is not one of the clients its limit counts
@@ -465,6 +476,13 @@ object OAuthClientService:
           InvalidRegistrationConfiguration.validateAuthMethodUnchanged(request.clientId, request.authMethod, client.authMethod))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(current.flatMap: client =>
           InvalidRegistrationConfiguration.validateConsentFlowKept(request.clientId, request.consentFlow, client.consentFlow))(ZIO.fail(_))
+        _ <- ZIO.foreachDiscard(current.flatMap: client =>
+          InvalidRegistrationConfiguration.validateConsentNotAdded(
+            request.clientId,
+            request.consentFlow,
+            client.consentFlow,
+            client.partnerId,
+          ))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(current.flatMap: client =>
           InvalidRegistrationConfiguration.validateThemeOverridesForPartner(
             request.clientId,

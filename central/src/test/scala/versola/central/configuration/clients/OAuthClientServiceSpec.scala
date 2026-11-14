@@ -590,8 +590,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val secretBytes = Array.fill(32)(11.toByte)
       val encryptedBytes = Array.fill(48)(17.toByte)
       val storedSecret = Secret(encryptedBytes)
-      val consentFlow =
-        ConsentFlowDto(allowPartial = true, rememberDuration = Some(14.days.toSeconds), requiredScopes = Set.empty, offlineAccessOptional = false)
       val expectedClient = OAuthClientRecord(
         id = clientId,
         tenantId = tenantId,
@@ -612,8 +610,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         logoUri = None,
         policyUri = None,
         tosUri = None,
-        consentFlow =
-          Some(ConsentFlow(allowPartial = true, rememberDuration = Some(14.days), requiredScopes = Set.empty, offlineAccessOptional = false)),
+        // a first-party client asks for no consent
+        consentFlow = None,
         dpopBoundAccessTokens = false,
         dpopSigningAlgs = Set.empty,
         dpopMinRsaKeySize = None,
@@ -637,7 +635,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.secureRandom.nextBytes.succeedsWith(secretBytes)
         _ <- env.securityService.encryptAes256.succeedsWith(encryptedBytes)
         _ <- env.repository.createClient.succeedsWith(())
-        result <- env.service.registerClient(createRequest.copy(consentFlow = Some(consentFlow)))
+        result <- env.service.registerClient(createRequest)
         created = env.repository.createClient.calls.head
         encryptCall = env.securityService.encryptAes256.calls.head
       yield assertTrue(
@@ -668,14 +666,12 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("registerClient stores the theme overrides it was given, and none for an empty value") {
       val env = new Env()
       val overrides = ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = None, surface = None, mode = None, background = None)
-      val partnerRequest = createRequest.copy(consentFlow =
-        Some(ConsentFlowDto(allowPartial = true, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
-      )
 
       for
         _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
         _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
         _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.partners.findFresh.succeedsWith(Some(acme))
         _ <- env.service.registerClient(partnerRequest.copy(themeOverrides = Some(overrides)))
         _ <- env.service.registerClient(partnerRequest.copy(themeOverrides =
           Some(ThemeOverrides(brand = None, shape = None, surface = None, mode = None, background = None)),
@@ -687,7 +683,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         stored = env.repository.createClient.calls.map(_.themeOverrides)
       yield assertTrue(stored == List(Some(overrides), None, None, None))
     },
-    test("registerClient refuses theme overrides on a client that does not ask for consent, and stores nothing") {
+    test("registerClient refuses theme overrides on a client that is not owned by a partner, and stores nothing") {
       val env = new Env()
 
       for
@@ -697,7 +693,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         createCalls = env.repository.createClient.times
       yield assertTrue(
         result.left.toOption.exists:
-          case error: InvalidRegistrationConfiguration => error.reason.startsWith("themeOverrides can only be set on a client that asks for consent")
+          case error: InvalidRegistrationConfiguration => error.reason.startsWith("themeOverrides can only be set on a client owned by a partner")
           case _ => false,
         createCalls == 0,
       )
@@ -723,7 +719,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         None,
       ))
     },
-    test("updateClient refuses theme overrides for a client without a consent flow, unless the patch gives it one") {
+    test("updateClient refuses theme overrides for a client without a consent flow, and refuses giving it one: consent is for a partner") {
       val overrides = ThemeOverrides(mode = Some(Mode.dark), brand = None, shape = None, surface = None, background = None)
       val firstParty = new Env(Vector(cachedClient.copy(consentFlow = None)))
       val partner = new Env(Vector(cachedClient.copy(consentFlow =
@@ -731,14 +727,18 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )))
       val refused = (result: Either[Any, Unit]) =>
         result.left.toOption.exists:
-          case error: InvalidRegistrationConfiguration => error.reason.startsWith("themeOverrides can only be set on a client that asks for consent")
+          case error: InvalidRegistrationConfiguration => error.reason.startsWith("themeOverrides can only be set on a client owned by a partner")
+          case _ => false
+      val refusedConsent = (result: Either[Any, Unit]) =>
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason == InvalidRegistrationConfiguration.ConsentOnlyForPartnerReason
           case _ => false
 
       for
         _ <- firstParty.repository.updateClient.succeedsWith(())
         _ <- partner.repository.updateClient.succeedsWith(())
         withoutConsent <- firstParty.service.updateClient(noopUpdate.copy(themeOverrides = Some(overrides))).either
-        // the same patch that gives the consent flow is a partner's from the start
+        // giving the consent flow is refused (consent is only for a partner's client), and with it the overrides
         giving <- firstParty.service.updateClient(noopUpdate.copy(
           themeOverrides = Some(overrides),
           consentFlow = Some(Patch.Modified(ConsentFlowDto(
@@ -756,10 +756,10 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         updateCalls = firstParty.repository.updateClient.times
       yield assertTrue(
         refused(withoutConsent),
-        giving.isRight,
+        refusedConsent(giving),
         clearing.isRight,
         keeping.isRight,
-        updateCalls == 2,
+        updateCalls == 1,
       )
     },
     test("registerClient leaves the template unset for a registration that names none") {
@@ -2416,16 +2416,72 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
           yield assertTrue(result.isRight)
         },
       ),
-      test("registerClient holds it to the invariant: a client without consent is refused, and nothing is stored") {
+      test("registerClient never stores a partner's client without consent: none sent is the default screen") {
         val env = new Env()
         for
           _ <- env.partners.findFresh.succeedsWith(Some(acme))
-          refused <- env.service.registerClient(partnerRequest.copy(consentFlow = None)).either
+          _ <- env.repository.createClient.succeedsWith(())
+          _ <- env.service.registerClient(partnerRequest.copy(consentFlow = None))
+          stored = env.repository.createClient.calls.head
         yield assertTrue(
-          refused.left.toOption.exists:
-            case error: InvalidRegistrationConfiguration => error.reason.contains("consentFlow")
-            case _ => false,
+          stored.consentFlow.contains(PartnerClientRequest.DefaultConsent.toDomain),
+          stored.partnerId == Some(acme.id),
+        )
+      },
+      test("registerClient refuses a client with a consent flow and no partner, whichever kind, and stores nothing") {
+        val env = new Env()
+        val consent = Some(PartnerClientRequest.DefaultConsent)
+        for
+          web <- env.service.registerClient(createRequest.copy(consentFlow = consent)).either
+          native <- env.service.registerClient(createRequest.copy(consentFlow = consent, template = Some(ClientTemplate(ClientKind.device)))).either
+          fapi2Style <- env.service.registerClient(fapi2Request.copy(consentFlow = consent)).either
+        yield assertTrue(
+          List(web, native, fapi2Style).forall(
+            _.left.toOption.exists:
+              case error: InvalidRegistrationConfiguration => error.reason == InvalidRegistrationConfiguration.ConsentOnlyForPartnerReason
+              case _ => false,
+          ),
           env.repository.createClient.calls.isEmpty,
+        )
+      },
+      test("registerClient keeps the consent a partner's client was sent, as sent") {
+        val env = new Env()
+        val own = ConsentFlowDto(allowPartial = true, rememberDuration = Some(3600), requiredScopes = Set.empty, offlineAccessOptional = true)
+        for
+          _ <- env.partners.findFresh.succeedsWith(Some(acme))
+          _ <- env.repository.createClient.succeedsWith(())
+          _ <- env.service.registerClient(partnerRequest.copy(consentFlow = Some(own)))
+        yield assertTrue(env.repository.createClient.calls.head.consentFlow.contains(own.toDomain))
+      },
+      test("updateClient: a first-party client without consent cannot be given one; one that has some (from before) stays editable") {
+        val withConsent = cachedClient.copy(consentFlow =
+          Some(ConsentFlow(allowPartial = false, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)),
+        )
+        val without = new Env(Vector(cachedClient.copy(consentFlow = None)))
+        val before = new Env(Vector(withConsent))
+        val owned = new Env(Vector(partnerClient("web-app", ClientApproval.Approved)))
+        val own = ConsentFlowDto(allowPartial = true, rememberDuration = None, requiredScopes = Set.empty, offlineAccessOptional = false)
+        for
+          _ <- before.repository.updateClient.succeedsWith(())
+          _ <- owned.repository.updateClient.succeedsWith(())
+          _ <- owned.partners.findFresh.succeedsWith(Some(acme))
+          adding <- without.service.updateClient(noopUpdate.copy(consentFlow = Some(Patch.Modified(own)))).either
+          modifying <- before.service.updateClient(noopUpdate.copy(consentFlow = Some(Patch.Modified(own)))).either
+          keeping <- before.service.updateClient(noopUpdate).either
+          removing <- before.service.updateClient(noopUpdate.copy(consentFlow = Some(Patch.Deleted))).either
+          ownedModifying <- owned.service.updateClient(noopUpdate.copy(consentFlow = Some(Patch.Modified(own)))).either
+        yield assertTrue(
+          adding.left.toOption.exists:
+            case error: InvalidRegistrationConfiguration => error.reason == InvalidRegistrationConfiguration.ConsentOnlyForPartnerReason
+            case _ => false,
+          without.repository.updateClient.calls.isEmpty,
+          modifying.isRight,
+          keeping.isRight,
+          // the existing rule stays as it was: consent is not taken away
+          removing.left.toOption.exists:
+            case error: InvalidRegistrationConfiguration => error.reason.startsWith("consentFlow cannot be removed")
+            case _ => false,
+          ownedModifying.isRight,
         )
       },
       test(

@@ -4229,6 +4229,7 @@ components:
         tosUri:
           type: [string, 'null']
         consentFlow:
+          description: Present only on a client owned by a partner; a first-party client has none.
           oneOf:
             - $ref: '#/components/schemas/ConsentFlowDto'
             - type: 'null'
@@ -4414,6 +4415,10 @@ components:
         tosUri:
           type: [string, 'null']
         consentFlow:
+          description: |
+            Consent exists only on a client owned by a partner (`partnerId`): a first-party client asks its users for none, and it
+            is not an option. A `consentFlow` without a `partnerId` is refused (400); a partner-owned client always has one, and
+            central applies the default screen (every requested scope shown, none deselectable) when none is sent.
           oneOf:
             - $ref: '#/components/schemas/ConsentFlowDto'
             - type: 'null'
@@ -4528,8 +4533,8 @@ components:
             sign-in pages: a partner app with its own brand colour, corners, page or colour scheme.
             Each value left out is the theme's own. An empty object, or leaving it out, changes
             nothing. Over a theme stored with CSS only, the overrides apply on top of it.
-            Only a client that asks for consent (a `consentFlow`, a partner app) has them: a
-            non-empty value on a client without one is refused with 400.
+            Only a client owned by a partner (one that asks for consent) has them: a
+            non-empty value on a first-party client is refused with 400.
         estEnrollment:
           type: boolean
           description: |
@@ -4609,6 +4614,10 @@ components:
         tosUri:
           type: [string, 'null']
         consentFlow:
+          description: |
+            Consent exists only on a client owned by a partner (`partnerId`): a first-party client asks its users for none, and it
+            is not an option. A `consentFlow` without a `partnerId` is refused (400); a partner-owned client always has one, and
+            central applies the default screen (every requested scope shown, none deselectable) when none is sent.
           oneOf:
             - $ref: '#/components/schemas/ConsentFlowDto'
             - type: 'null'
@@ -4674,8 +4683,8 @@ components:
             sign-in pages: a partner app with its own brand colour, corners, page or colour scheme.
             Each value left out is the theme's own. An empty object, or leaving it out, changes
             nothing. Over a theme stored with CSS only, the overrides apply on top of it.
-            Only a client that asks for consent (a `consentFlow`, a partner app) has them: a
-            non-empty value on a client without one is refused with 400.
+            Only a client owned by a partner (one that asks for consent) has them: a
+            non-empty value on a first-party client is refused with 400.
         partnerId:
           $ref: '#/components/schemas/PartnerId'
           description: |
@@ -4800,8 +4809,8 @@ components:
         `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
         leaves the value unchanged, `null` clears it, a value sets it. Every other member is a
         plain optional overwrite: absent or `null` leaves the value, a value sets it.
-        A client that has a `consentFlow` is a partner client: `null` is refused for it (400) -- the
-        flow can be changed, not removed.
+        A client that has a `consentFlow` is owned by a partner: `null` is refused for it (400) -- the
+        flow can be changed, not removed -- and a flow cannot be added to a client that has none and no owner.
 
         A client's method and kind are fixed when it is registered. `requireSignedRequestObject` cannot
         be turned on for a client fronted by edge, which holds no key to sign one with. No patch may
@@ -4847,6 +4856,10 @@ components:
         tosUri:
           type: [string, 'null']
         consentFlow:
+          description: |
+            Merge-patch. Consent is only for a client owned by a partner: giving a consent flow to a stored client that has none and
+            no `partnerId` is refused (400). A change to a consent flow the client already has is accepted, with or without a
+            `partnerId` (a client registered before this rule stays editable); `null` is refused for a client that has one.
           oneOf:
             - $ref: '#/components/schemas/ConsentFlowDto'
             - type: 'null'
@@ -4914,8 +4927,8 @@ components:
             Replaces the client's theme overrides: absent leaves them unchanged, an empty object
             `{}` clears them, any other value replaces them as a whole (a value left out of it is
             the theme's own again). A non-empty value is refused with 400 unless the client asks
-            for consent after the update (it has a `consentFlow`, or this request gives it one);
-            an empty object is always accepted.
+            for consent after the update (it has a `consentFlow`; this request cannot give one to a first-party
+            client); an empty object is always accepted.
       required: [clientId, redirectUris, scope]
     UpdateNativeClientRequest:
       type: object
@@ -4926,8 +4939,8 @@ components:
         `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
         leaves the value unchanged, `null` clears it, a value sets it. Every other member is a
         plain optional overwrite: absent or `null` leaves the value, a value sets it.
-        A client that has a `consentFlow` is a partner client: `null` is refused for it (400) -- the
-        flow can be changed, not removed.
+        A client that has a `consentFlow` is owned by a partner: `null` is refused for it (400) -- the
+        flow can be changed, not removed -- and a flow cannot be added to a client that has none and no owner.
 
         What the kind fixes is not a member, and central
         writes it onto the client whatever it was stored as: no certificate binding or signed request
@@ -4975,6 +4988,10 @@ components:
         tosUri:
           type: [string, 'null']
         consentFlow:
+          description: |
+            Merge-patch. Consent is only for a client owned by a partner: giving a consent flow to a stored client that has none and
+            no `partnerId` is refused (400). A change to a consent flow the client already has is accepted, with or without a
+            `partnerId` (a client registered before this rule stays editable); `null` is refused for a client that has one.
           oneOf:
             - $ref: '#/components/schemas/ConsentFlowDto'
             - type: 'null'
@@ -5005,8 +5022,8 @@ components:
             Replaces the client's theme overrides: absent leaves them unchanged, an empty object
             `{}` clears them, any other value replaces them as a whole (a value left out of it is
             the theme's own again). A non-empty value is refused with 400 unless the client asks
-            for consent after the update (it has a `consentFlow`, or this request gives it one);
-            an empty object is always accepted.
+            for consent after the update (it has a `consentFlow`; this request cannot give one to a first-party
+            client); an empty object is always accepted.
       required: [clientId, redirectUris, scope]
     UpdateServiceClientRequest:
       type: object
@@ -5017,8 +5034,8 @@ components:
         `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
         leaves the value unchanged, `null` clears it, a value sets it. Every other member is a
         plain optional overwrite: absent or `null` leaves the value, a value sets it.
-        A client that has a `consentFlow` is a partner client: `null` is refused for it (400) -- the
-        flow can be changed, not removed.
+        A client that has a `consentFlow` is owned by a partner: `null` is refused for it (400) -- the
+        flow can be changed, not removed -- and a flow cannot be added to a client that has none and no owner.
 
         Limited to what a service client has: no redirect URIs, flows, consent, logout, branding or
         refresh token.
