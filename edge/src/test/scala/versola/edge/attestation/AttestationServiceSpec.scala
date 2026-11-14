@@ -49,7 +49,7 @@ object AttestationServiceSpec extends ZIOSpecDefault:
       chain = apple()
       android = google()
       keys = Keys(state, asked, fails)
-    yield Env(AttestationService.Impl(AttestationTrust.fixed(chain.roots, android.roots), keys), keys, chain, android)
+    yield Env(AttestationService.Impl(AttestationTrust.fixed(chain.roots, android.roots), keys, PlayIntegrity.unconfigured), keys, chain, android)
 
   private def b64(bytes: Array[Byte]): String = Base64.getEncoder.encodeToString(bytes)
 

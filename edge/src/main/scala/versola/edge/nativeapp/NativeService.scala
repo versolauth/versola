@@ -83,6 +83,10 @@ object NativeService:
       * commas. */
     val Chain = "attestation_chain"
 
+    /** Android, when the client's policy asks for Play Integrity of the build: the token the Play Integrity API returned for the
+      * nonce `SHA-256("versola-attest-v1\n" + clientId + "\n" + jkt + "\n" + jti)`, URL-safe base64 without padding. */
+    val IntegrityToken = "attestation_integrity_token"
+
   /** `/native/start`'s answer. `authorization_endpoint` plus `client_id` and `request_uri` is
     * the whole of what the system browser is opened on; `token_endpoint` and
     * `revocation_endpoint` are the `htu` values the device must sign its later proofs for --
@@ -267,6 +271,7 @@ object NativeService:
           keyId = firstOf(form, AttestationFields.KeyId)
           attestationObject = firstOf(form, AttestationFields.Object)
           assertion = firstOf(form, AttestationFields.Assertion)
+          integrityToken = firstOf(form, AttestationFields.IntegrityToken)
           // zio-http reads a field that repeats as one value with the occurrences joined by commas. Base64 has no comma, so a
           // certificate chain is the one list this can carry without ambiguity: sent repeated or comma-separated, it is the same.
           chain <- values(form, AttestationFields.Chain).map(_.flatMap(_.split(',')).map(_.trim).filter(_.nonEmpty))
@@ -275,7 +280,7 @@ object NativeService:
             policy = client.attestation,
             jkt = proof.jkt,
             jti = proof.jti,
-            evidence = AttestationEvidence(platform, keyId, attestationObject, assertion, chain),
+            evidence = AttestationEvidence(platform, keyId, attestationObject, assertion, chain, integrityToken),
           ).tapError(failure => Observability.setError("invalid_client_attestation", Some(failure.kind.toString)))
             .mapError(failure => NativeError.InvalidClientAttestation(failure.detail))
         yield ()

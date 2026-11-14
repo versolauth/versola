@@ -6957,6 +6957,13 @@ components:
           maxItems: 10
           items:
             type: string
+        playIntegrity:
+          type: boolean
+          default: false
+          description: |
+            Also require a Play Integrity verdict for this build: the Play Store's statement that the install is the
+            genuine, Play-recognised app on a device that meets Android's integrity bar. Needs an edge set up for it
+            (`native.attestation.play-integrity`); an edge that is not refuses the request as unsupported.
       required: [packageName, certificateDigests]
     EstEnrollmentTokenResponse:
       type: object

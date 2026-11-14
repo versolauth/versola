@@ -498,7 +498,27 @@ object EdgeConfig:
       androidRevocationUrl: URL = Attestation.DefaultRevocationUrl,
       androidRevocationEnabled: Boolean = true,
       revocationRefreshInterval: Duration = Duration.fromSeconds(6 * 3600),
+      playIntegrity: Option[PlayIntegritySettings] = None,
   )
+
+  /** Where edge decodes a Play Integrity token, for an Android build whose policy asks for one. Absent, edge cannot, and a policy that
+    * asks for Play Integrity is refused as unsupported (under `report`, counted).
+    *
+    * The credential is a Google service account of the Google Cloud project the app's Play Integrity API is linked to, with the
+    * Play Integrity API enabled. Its key is a file the operator mounts, as the roots are, and is never put in the configuration.
+    *
+    * @param serviceAccountFile the service account's JSON key file.
+    * @param decodeUrl the Play Integrity API, `{package}` standing for the package of the build.
+    * @param maxTokenAge how old a verdict may be: Google issues them for ten minutes, and a request is made within seconds of one.
+    */
+  case class PlayIntegritySettings(
+      serviceAccountFile: String,
+      decodeUrl: String = PlayIntegritySettings.DefaultDecodeUrl,
+      maxTokenAge: Duration = Duration.fromSeconds(300),
+  )
+
+  object PlayIntegritySettings:
+    val DefaultDecodeUrl: String = "https://playintegrity.googleapis.com/v1/{package}:decodeIntegrityToken"
 
   object Attestation:
     val DefaultRevocationUrl: URL = URL.decode("https://android.googleapis.com/attestation/status").toOption.get

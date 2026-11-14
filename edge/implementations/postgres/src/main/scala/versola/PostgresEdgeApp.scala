@@ -3,7 +3,7 @@ package versola
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.typesafe.config.ConfigFactory
 import versola.cleanup.PostgresCleanupManager
-import versola.edge.attestation.{AttestationService, AttestationTrust}
+import versola.edge.attestation.{AttestationService, AttestationTrust, PlayIntegrity}
 import versola.edge.dpop.{DpopPolicyService, DpopProofRepository, DpopReplayGuard, DpopVerifier}
 import versola.edge.login.LoginRepository
 import versola.edge.nativeapp.{NativeAuthClient, NativeController, NativeService}
@@ -200,6 +200,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       EdgeService.live >++>
       NativeAuthClient.live >++>
       AttestationTrust.live >++>
+      PlayIntegrity.live >++>
       AttestationService.live >++>
       NativeService.live >++>
       SSOClientWarmUp.live

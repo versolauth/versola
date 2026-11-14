@@ -15,6 +15,8 @@ final case class AttestationEvidence(
     attestationObject: Option[String],
     assertion: Option[String],
     chain: List[String],
+    /** Android, when the policy of the app asks for it: the Play Integrity token, as the Play Integrity API returned it. */
+    integrityToken: Option[String] = None,
 )
 
 /** App attestation of `/native/start` (#423): what the policy of the client asks, what the app sent, and the outcome.
@@ -64,10 +66,17 @@ object AttestationService:
   private def count(platform: String, mode: AttestationMode, result: String): UIO[Unit] =
     requests.tagged(Set(MetricLabel("platform", platform), MetricLabel("mode", mode.toString), MetricLabel("result", result))).increment
 
-  val live: URLayer[AttestationTrust & AttestedKeyRepository, AttestationService] =
-    ZLayer.fromFunction(Impl(_, _))
+  /** What an Android app hands Play Integrity as its nonce, so that a verdict is for one request of one client by one DPoP key: the
+    * client data hash, in the URL-safe base64 without padding that Play Integrity requires of a nonce. */
+  def integrityNonce(clientId: String, jkt: String, jti: String): String =
+    Base64.getUrlEncoder.withoutPadding.encodeToString(clientDataHash(clientId, jkt, jti))
 
-  class Impl(trust: AttestationTrust, keys: AttestedKeyRepository) extends AttestationService:
+  private val MaxIntegrityTokenLength = 24 * 1024
+
+  val live: URLayer[AttestationTrust & AttestedKeyRepository & PlayIntegrity, AttestationService] =
+    ZLayer.fromFunction(Impl(_, _, _))
+
+  class Impl(trust: AttestationTrust, keys: AttestedKeyRepository, integrity: PlayIntegrity) extends AttestationService:
 
     override def verify(
         clientId: String,
@@ -102,7 +111,7 @@ object AttestationService:
       evidence.platform match
         case None => ZIO.fail(AttestationFailure(Kind.Absent, "the app sent no attestation"))
         case Some("ios") => ios(clientId, policy, jkt, jti, evidence)
-        case Some("android") => android(clientId, policy, jkt, evidence)
+        case Some("android") => android(clientId, policy, jkt, jti, evidence)
         case Some(_) => ZIO.fail(malformed("attestation_platform is ios or android"))
 
     private def ios(
@@ -150,6 +159,7 @@ object AttestationService:
         clientId: String,
         policy: AttestationPolicy,
         jkt: String,
+        jti: String,
         evidence: AttestationEvidence,
     ): IO[AttestationFailure, Unit] =
       for
@@ -163,7 +173,15 @@ object AttestationService:
         ))
         now <- Clock.instant
         revoked <- trust.androidRevocation
-        _ <- ZIO.fromEither(AndroidKeyAttestation.verify(chain, androidChallenge(clientId), policy.android, jkt, trust.androidRoots, revoked, now))
+        verified <- ZIO.fromEither(AndroidKeyAttestation.verify(chain, androidChallenge(clientId), policy.android, jkt, trust.androidRoots, revoked, now))
+        // The key attestation says which build this is; whether that build also needs the Play Store's word is the policy's, per build.
+        _ <- ZIO.when(verified.app.playIntegrity):
+          for
+            token <- ZIO.fromOption(evidence.integrityToken)
+              .orElseFail(AttestationFailure(Kind.Absent, "attestation_integrity_token is required"))
+            _ <- ZIO.fail(malformed("a value is larger than an integrity token is")).when(token.length > MaxIntegrityTokenLength)
+            _ <- integrity.verify(verified.app, token, integrityNonce(clientId, jkt, jti), now)
+          yield ()
       yield ()
 
     /** Standard or URL-safe base64, with or without padding: what a platform's own encoder produced. */

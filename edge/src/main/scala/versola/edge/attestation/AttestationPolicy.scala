@@ -25,10 +25,14 @@ case class IosApps(
     environment: IosEnvironment,
 ) derives JsonCodec
 
-/** An Android build accepted: its package and the SHA-256 (lower-case hex) of the certificates it may be signed with. */
+/** An Android build accepted: its package and the SHA-256 (lower-case hex) of the certificates it may be signed with.
+  *
+  * @param playIntegrity whether a Play Integrity verdict is required besides the key attestation: the Play Store's own statement that
+  *   the install is the genuine, Play-recognised build on a genuine device. A policy written before this existed decodes as false. */
 case class AndroidApp(
     packageName: String,
     certificateDigests: Set[String],
+    playIntegrity: Boolean = false,
 ) derives JsonCodec
 
 case class AttestationPolicy(

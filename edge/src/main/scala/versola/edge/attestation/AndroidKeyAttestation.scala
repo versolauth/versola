@@ -46,7 +46,7 @@ private[attestation] object AndroidKeyAttestation:
   private val Generated = 0
 
   /** What an accepted attestation says about the key, for the caller to count. */
-  final case class Verified(strongBox: Boolean)
+  final case class Verified(strongBox: Boolean, app: AndroidApp)
 
   /** @param challenge what the app handed the Keystore as the attestation challenge: bound to the client, see
     *   [[AttestationService.androidChallenge]]. */
@@ -99,8 +99,8 @@ private[attestation] object AndroidKeyAttestation:
         case Some(_) => Left(AttestationFailure(Kind.DeviceNotAccepted, "the device is unlocked or did not boot verified"))
         case None => Left(AttestationFailure(Kind.DeviceNotAccepted, "the attestation carries no root of trust"))
       application <- applicationId(software).orElse(applicationId(hardware)).toRight(malformed("the attestation names no app"))
-      _ <- accepted(application, apps)
-    yield Verified(strongBox = enumerated(description, AttestationSecurityLevel).contains(2))
+      app <- accepted(application, apps)
+    yield Verified(strongBox = enumerated(description, AttestationSecurityLevel).contains(2), app = app)
 
   private def list(description: ASN1Sequence, index: Int): Either[AttestationFailure, ASN1Sequence] =
     Try(ASN1Sequence.getInstance(description.getObjectAt(index))).toEither.left.map(_ => malformed("the key description has no authorization list"))
@@ -138,12 +138,9 @@ private[attestation] object AndroidKeyAttestation:
 
   /** The app is one the client accepts when it is installed as a package the client names, and every certificate it is signed by is
     * one of that package's. Several are possible, when a signing key has been rotated. */
-  private def accepted(application: Application, apps: List[AndroidApp]): Either[AttestationFailure, Unit] =
+  private def accepted(application: Application, apps: List[AndroidApp]): Either[AttestationFailure, AndroidApp] =
     val matching = apps.filter(app => application.packages.contains(app.packageName))
-    Either.cond(
-      application.digests.nonEmpty && matching.exists(app => application.digests.subsetOf(app.certificateDigests)),
-      (),
-      AttestationFailure(Kind.AppNotAccepted, "the attestation is for an app this client does not accept"),
-    )
+    matching.find(app => application.digests.nonEmpty && application.digests.subsetOf(app.certificateDigests))
+      .toRight(AttestationFailure(Kind.AppNotAccepted, "the attestation is for an app this client does not accept"))
 
   private def hex(bytes: Array[Byte]): String = bytes.map(byte => f"${byte & 0xff}%02x").mkString

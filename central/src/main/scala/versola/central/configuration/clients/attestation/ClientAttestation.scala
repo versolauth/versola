@@ -29,11 +29,16 @@ case class IosAttestation(
 ) derives JsonCodec, Schema
 
 /** An Android build a client accepts: the package, and the SHA-256 of the certificate the build is signed with. Several
-  * digests so a signing-key rotation, or a Play-managed signing key beside the upload key, can overlap. */
+  * digests so a signing-key rotation, or a Play-managed signing key beside the upload key, can overlap.
+  *
+  * With `playIntegrity`, edge also requires a Play Integrity verdict for the build (the Play Store's statement that the install is
+  * the genuine, Play-recognised app on a device that meets Android's integrity bar), and an edge not set up for it refuses the
+  * request as unsupported. Off, a policy is as it was before the verdict existed. */
 @jsonNoExtraFields
 case class AndroidApp(
     packageName: String,
     certificateDigests: Set[String],
+    playIntegrity: Boolean = false,
 ) derives JsonCodec, Schema
 
 /** A native client's attestation policy. The identities are kept while the mode is `off`, so an operator can prepare them
