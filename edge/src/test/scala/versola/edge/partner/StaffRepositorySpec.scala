@@ -178,7 +178,29 @@ trait StaffRepositorySpec extends DatabaseSpecBase[StaffRepositorySpec.Env]:
           removedMemberAgain <- env.repository.removeMember("sub-1")
         yield assertTrue(removedInvite, !removedAgain, removedMember == Change.Done, removedMemberAgain == Change.Missing)
       },
+      test("every level and every kind of identifier is stored and read back as it was") {
+        for
+          _ <- ZIO.foreachDiscard(StaffLevel.values.toList)(level => env.repository.invite(invite(s"level-$level", level)))
+          _ <- ZIO.foreachDiscard(IdentifierKind.values.toList)(kind => env.repository.invite(invite(s"kind-$kind", kind = kind)))
+          invites <- env.repository.invites(at)
+        yield assertTrue(
+          StaffLevel.values.toSet.subsetOf(invites.map(_.level).toSet),
+          IdentifierKind.values.toSet.subsetOf(invites.map(_.kind).toSet),
+        )
+      },
+      test("a stored level or kind that is not one of the enum's fails to read, loudly, and does not become a default") {
+        for
+          _ <- env.storeRaw("sub-x", "owner", "fax", at)
+          member <- env.repository.findMember("sub-x").exit
+          invites <- env.repository.invites(at).exit
+        yield assertTrue(member.isFailure, invites.isFailure)
+      },
     )
 
 object StaffRepositorySpec:
-  case class Env(repository: StaffRepository)
+  /** `storeRaw` stores a member whose level is `rawLevel` and an invite whose kind is `rawKind`, as text, whatever the enums say: what a storage
+    * must refuse to read back, loudly, when it is not one of them. The runner implements it for its storage. */
+  case class Env(
+      repository: StaffRepository,
+      storeRaw: (subject: String, rawLevel: String, rawKind: String, at: Instant) => Task[Unit],
+  )
