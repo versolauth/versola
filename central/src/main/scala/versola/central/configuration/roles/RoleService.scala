@@ -20,6 +20,12 @@ trait RoleService:
 
   def getPermissionsForRoles(tenantId: TenantId, roleIds: Set[RoleId]): Task[Set[Permission]]
 
+  /** What the roles grant at the edge, which ignores an inactive role: the permissions of the active ones among `roleIds`. */
+  def getActivePermissionsForRoles(tenantId: TenantId, roleIds: Set[RoleId]): Task[Set[Permission]]
+
+  /** The role as stored now, not as the cache last read it: a decision about changing a role is made on its current permissions. */
+  def findRole(tenantId: TenantId, id: RoleId): Task[Option[RoleRecord]]
+
   def getRolesForSync(edgeId: Option[EdgeId]): Task[Vector[RoleRecord]]
 
   def createRole(
@@ -81,6 +87,16 @@ object RoleService:
           .flatMap(_.permissions)
           .toSet,
       )
+
+    override def getActivePermissionsForRoles(tenantId: TenantId, roleIds: Set[RoleId]): Task[Set[Permission]] =
+      cache.get.map(
+        _.filter(r => r.active && r.tenantId == tenantId && roleIds.contains(r.id))
+          .flatMap(_.permissions)
+          .toSet,
+      )
+
+    override def findRole(tenantId: TenantId, id: RoleId): Task[Option[RoleRecord]] =
+      roleRepository.findRole(tenantId, id)
 
     override def getRolesForSync(edgeId: Option[EdgeId]): Task[Vector[RoleRecord]] =
       edgeId match
