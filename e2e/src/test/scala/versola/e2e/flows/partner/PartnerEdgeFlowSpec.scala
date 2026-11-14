@@ -307,7 +307,13 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
             api <- PartnerEdgeFixture.startAnotherEdge(f, s"${f.partnerId}-edge-2")
             other = f.copy(baseUrl = s"http://localhost:${PartnerEdgeFixture.SecondPort}", api = api)
             // the console session has no refresh token: the token is bound to the first edge's certificate, and there is nothing to re-bind it with
-            refused <- call(other, Some(session), Method.GET, "/partner/api/me")
+            // asked as a browser would, to read the Set-Cookie of the answer as well as its body
+            rawRefused <- ZIO.fromEither(URL.decode(s"${other.baseUrl}/partner/api/me")).mapError(RuntimeException(_)).flatMap(url =>
+              Client.batched(Request.get(url).addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request(EdgeApi.sessionCookieName, session.cookie))))),
+            )
+            refusedText <- rawRefused.body.asString
+            refused = rawRefused.status -> refusedText.fromJson[Json.Obj].getOrElse(Json.Obj())
+            clearing = rawRefused.headers.getAll(Header.SetCookie).map(_.value).find(_.name == EdgeApi.sessionCookieName)
             // the same person signs in on the second edge, and is served there
             own <- ZIO.serviceWithZIO[OAuthClient](auth =>
               api.browserLogin(auth, f.consoleClientId, f.admin.login, f.admin.password, consent = Some(Set("openid", "phone", "email")), emailOtp = true),
@@ -315,10 +321,12 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
             onSecond <- call(other, Some(own), Method.GET, "/partner/api/me")
             firstBound <- cnf(session.cookie)
             secondBound <- cnf(own.cookie)
-            // the first edge still serves the cookie it issued
+            // the first edge still serves the original cookie when it is presented: a fact of the server (its row and its token were not touched
+            // by the refusal). It does not say that a browser still holds that cookie: the clearing cookie above removes it where the two edges
+            // share a host name.
             back <- call(f, Some(session), Method.GET, "/partner/api/me")
-          yield (refused, onSecond, firstBound, secondBound, back)
-        (refused, onSecond, firstBound, secondBound, back) = second
+          yield (refused, clearing, onSecond, firstBound, secondBound, back)
+        (refused, clearing, onSecond, firstBound, secondBound, back) = second
       yield assertTrue(
         added._1 == Status.Created,
         added._2.str("token").exists(_.startsWith("vtk1.")),
@@ -328,6 +336,8 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
         refused._1 == Status.Unauthorized,
         error(refused).contains("unauthenticated"),
         refused._2.str("loginPath").contains("/partner/login"),
+        // the refusal clears `EDGE_SESSION` (an empty value, expiring at once): not merely no cookie set
+        clearing.exists(cookie => cookie.content.isEmpty && cookie.maxAge.contains(Duration.Zero)),
         onSecond._1 == Status.Ok,
         onSecond._2.obj("staff").flatMap(_.str("level")).contains("admin"),
         // each token is bound to the certificate of the edge that obtained it

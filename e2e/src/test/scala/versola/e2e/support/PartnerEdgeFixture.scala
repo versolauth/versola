@@ -232,6 +232,10 @@ object PartnerEdgeFixture:
              |""".stripMargin,
         ports = Map("PORT" -> SecondPort, "DPORT" -> "9132", "MPORT" -> "9133"),
       )
+      // with `E2E_PARTNER_EDGE_LOG=<file>`, what the second edge logged is kept beside the first's, in `<file>.second`
+      _ <- ZIO.foreachDiscard(sys.env.get("E2E_PARTNER_EDGE_LOG"))(file =>
+        ZIO.addFinalizer(running.output.flatMap(out => ZIO.attemptBlocking(Files.writeString(Path.of(s"$file.second"), out))).ignore),
+      )
       _ <- ExtraService.awaitReady(running).provide(ZLayer.succeed(client))
     yield EdgeApi(client, config.copy(edgeUrl = baseUrl))
 
