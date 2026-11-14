@@ -49,8 +49,7 @@ await page.getByRole('button', { name: 'Continue' }).click();
 await page.getByText('Enter Code').waitFor();
 await page.locator('input:not([type=hidden])').first().click();
 await page.keyboard.type(code);
-// A console client that asks for consent (the staged partner's does) shows the Allow screen before it redirects.
-await page.getByRole('button', { name: 'Allow' }).click({ timeout: 8000 }).catch(() => undefined);
+// The partner's console client is exempt from consent (its staff are the partner's own), so the code redirect follows at once.
 const failed = await redirected;
 await page.goto(`${edge}/complete${new URL(failed.url()).search}`).catch(() => undefined);
 await page.waitForTimeout(500);

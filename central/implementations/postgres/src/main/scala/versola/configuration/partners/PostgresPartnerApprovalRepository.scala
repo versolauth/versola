@@ -38,6 +38,30 @@ class PostgresPartnerApprovalRepository(xa: TransactorZIO) extends PartnerApprov
       """.update.run()
     .unit
 
+  private def kindsOf(kinds: Set[ApprovalKind]): SqlLiteral = SqlLiteral(kinds.toList.map(kind => s"'${kind.code}'").sorted.mkString(", "))
+
+  override def createIfNoneWaiting(record: PartnerApprovalRecord, kinds: Set[ApprovalKind]): Task[Boolean] =
+    xa.transactMeasured("create-partner-approval-if-none-waiting"):
+      // The partner's row is locked (`FOR NO KEY UPDATE`, which the foreign keys that point at it do not wait on) so that two requests of
+      // one partner run one after the other and the second sees the first. The decision is made here, not in the database.
+      sql"SELECT id FROM partners WHERE id = ${record.partnerId} FOR NO KEY UPDATE".query[PartnerId].run()
+      val kindList = kindsOf(kinds)
+      val waiting =
+        sql"""
+          SELECT COUNT(*) FROM partner_approvals a
+          WHERE a.partner_id = ${record.partnerId} AND a.target_id = ${record.targetId} AND a.status = 'waiting' AND a.kind IN ($kindList)
+        """.query[Long].run().head
+      if waiting > 0 then false
+      else
+        sql"""
+          INSERT INTO partner_approvals (id, partner_id, kind, target_id, requested, current, applied, outside_limits, requested_by,
+                                         requested_at, status, decided_by, decided_at, note)
+          VALUES (${record.id}, ${record.partnerId}, ${record.kind}, ${record.targetId}, ${record.requested}, ${record.current},
+                  ${record.applied}, ${record.outsideLimits}, ${record.requestedBy}, ${record.requestedAt}, ${record.status},
+                  ${record.decidedBy}, ${record.decidedAt}, ${record.note})
+        """.update.run()
+        true
+
   override def find(id: ApprovalId): Task[Option[PartnerApprovalRecord]] =
     xa.connectMeasured("find-partner-approval"):
       sql"SELECT $columns FROM partner_approvals a WHERE a.id = $id".query[PartnerApprovalRecord].run().headOption
@@ -61,20 +85,27 @@ class PostgresPartnerApprovalRepository(xa: TransactorZIO) extends PartnerApprov
         LIMIT $limit
       """.query[PartnerApprovalRecord].run()
 
-  override def forTarget(partnerId: PartnerId, targetId: String, limit: Int): Task[Vector[PartnerApprovalRecord]] =
+  override def forTarget(
+      partnerId: PartnerId,
+      kinds: Set[ApprovalKind],
+      targetId: String,
+      limit: Int,
+  ): Task[Vector[PartnerApprovalRecord]] =
     xa.connectMeasured("partner-approvals-for-target"):
+      val kindList = kindsOf(kinds)
       sql"""
         SELECT $columns FROM partner_approvals a
-        WHERE a.partner_id = $partnerId AND a.target_id = $targetId
+        WHERE a.partner_id = $partnerId AND a.target_id = $targetId AND a.kind IN ($kindList)
         ORDER BY a.requested_at DESC, a.id DESC
         LIMIT $limit
       """.query[PartnerApprovalRecord].run()
 
-  override def waitingFor(partnerId: PartnerId, targetId: String): Task[Vector[PartnerApprovalRecord]] =
+  override def waitingFor(partnerId: PartnerId, kinds: Set[ApprovalKind], targetId: String): Task[Vector[PartnerApprovalRecord]] =
     xa.connectMeasured("waiting-partner-approvals-for"):
+      val kindList = kindsOf(kinds)
       sql"""
         SELECT $columns FROM partner_approvals a
-        WHERE a.partner_id = $partnerId AND a.target_id = $targetId AND a.status = 'waiting'
+        WHERE a.partner_id = $partnerId AND a.target_id = $targetId AND a.status = 'waiting' AND a.kind IN ($kindList)
         ORDER BY a.requested_at DESC, a.id DESC
       """.query[PartnerApprovalRecord].run()
 

@@ -363,7 +363,6 @@ export class VersolaPartnerResources extends LitElement {
       `} @edit=${() => dispatchRecordRoute(this, { edit: 'endpoints', create: false })}></versola-record-card>
 
       <versola-record-card heading="Limits from the operator" .body=${html`
-        ${this.row('Edge rate policy', html`<span class="mono">${me.partner.limits.rateLimitPolicy}</span>: checked at your edge together with your own endpoint limits; the smaller wins`, 'Operator')}
         ${this.row('Step-up ACR', html`<span class="mono">sensitive</span> available`, 'Operator')}
       `}></versola-record-card>
 

@@ -274,6 +274,54 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
           field("jwks").isEmpty,
         )
       },
+      test("the settings carry the version central answered to the console, and a save sends it back as a number and nothing else is added") {
+        for
+          h <- harness(
+            Some(StaffLevel.admin),
+            answer = (method, _) =>
+              if method == Method.GET then
+                reply(Status.Ok, """{"contact":{"email":"ops@acme.example","phone":null},"defaults":{"accessTokenTtl":300},"version":4}""")
+              else reply(Status.NoContent, ""),
+          )
+          read <- send(h, get("/settings"))
+          readBody <- read.body.asString.map(_.fromJson[Json.Obj].toOption.get)
+          saved <- send(
+            h,
+            write(
+              Method.PUT,
+              "/settings",
+              """{"version":4,"contact":{"email":"incident@acme.example","phone":null,"extra":1},"defaults":{"accessTokenTtl":600},"groupId":"operator"}""",
+            ),
+          )
+          stringVersion <- send(h, write(Method.PUT, "/settings", """{"version":"4","contact":{"email":"a@acme.example"}}"""))
+          calls <- h.central.calls.get
+          sent = calls.filter(_._1 == Method.PUT).map(_._4)
+        yield assertTrue(
+          readBody.fields.collectFirst { case ("version", Json.Num(number)) => number.intValue } == Some(4),
+          saved.status == Status.NoContent,
+          sent.head.exists(_.toJson.contains("\"version\":4")),
+          // only the allow-listed keys go on: nothing the console should not set reaches central
+          sent.head.exists(body => !body.toJson.contains("groupId") && !body.toJson.contains("extra")),
+          // a version that is not a number is not passed on: central refuses the save for the missing one
+          sent(1).exists(!_.toJson.contains("version")),
+        )
+      },
+      test("central's 409 on a settings save reaches the console as a conflict with the reason, and a 400 for a missing version as invalid_request") {
+        for
+          stale <- harness(Some(StaffLevel.admin), answer = (_, _) => reply(Status.Conflict, "the settings changed since you read them"))
+          missing <- harness(Some(StaffLevel.admin), answer = (_, _) => reply(Status.BadRequest, "version is required"))
+          conflict <- send(stale, write(Method.PUT, "/settings", """{"version":1,"contact":{"email":"a@acme.example"}}"""))
+          (conflictCode, conflictBody) <- errorOf(conflict)
+          invalid <- send(missing, write(Method.PUT, "/settings", """{"contact":{"email":"a@acme.example"}}"""))
+          (invalidCode, _) <- errorOf(invalid)
+        yield assertTrue(
+          conflict.status == Status.Conflict,
+          conflictCode == "conflict",
+          conflictBody.toJson.contains("the settings changed since you read them"),
+          invalid.status == Status.BadRequest,
+          invalidCode == "invalid_request",
+        )
+      },
       test("central unavailable is 503 central_unavailable on a write, and /me still answers, saying so") {
         for
           h <- harness(Some(StaffLevel.admin), reachable = false, answer = (_, _) => ZIO.fail(Failure.Unavailable))

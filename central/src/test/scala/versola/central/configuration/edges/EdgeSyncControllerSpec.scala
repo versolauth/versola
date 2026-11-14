@@ -405,7 +405,6 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
       accessTokenTtlMax = 600,
       refreshTokenTtlMax = 86400,
       clientAuthMethods = Set(AuthMethod.tls_client_auth),
-      rateLimitPolicy = "partner-default",
       resourceDomains = None,
     ),
     groupId = EdgeGroupId("partner-acme"),

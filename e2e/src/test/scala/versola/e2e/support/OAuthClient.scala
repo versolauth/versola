@@ -1063,8 +1063,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
     yield AuthorizeResult(response, pushed.verifier, pushed.state, OAuthClient.extractConversationCookie(response))
 
   /** POST /users — registers a new user via the Central API, returns the generated user ID. */
-  /** POST /configuration/partners -- the operator creates a partner (its group, console client and first edge), the owner a consent
-    * client needs. Answers the status and the body. */
+  /** POST /configuration/partners -- the operator creates a partner (its group, console client and first edge). Answers the
+    * status and the body. */
   def createPartner(body: Json.Obj): Task[(Status, String)] =
     val req = Request.post(s"${config.centralUrl}/configuration/partners", Body.fromString(body.toJson))
       .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))

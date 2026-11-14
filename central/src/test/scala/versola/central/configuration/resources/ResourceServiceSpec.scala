@@ -343,13 +343,12 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.repository.updateResource.calls.isEmpty,
       )
     },
-    test("createResource rejects the reserved edge resource id") {
+    test("createResource rejects the ids the platform's own resources have: edge, central and auth, whether or not a row of that name exists") {
       val env = new Env
-      val badRequest = createRequest.copy(resourceId = ResourceId("edge"))
 
-      for result <- env.service.createResource(badRequest)
+      for results <- ZIO.foreach(List("edge", "central", "auth"))(id => env.service.createResource(createRequest.copy(resourceId = ResourceId(id))))
       yield assertTrue(
-        result == Left(ResourceValidationError.ReservedResourceId),
+        results.forall(_ == Left(ResourceValidationError.ReservedResourceId)),
         env.repository.createResource.calls.isEmpty,
       )
     },

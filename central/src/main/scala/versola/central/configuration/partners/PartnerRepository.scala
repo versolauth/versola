@@ -2,6 +2,7 @@ package versola.central.configuration.partners
 
 import versola.central.configuration.edges.EdgeGroupId
 import versola.util.CacheSource
+import versola.util.http.RateLimitPolicies
 import zio.{IO, Task}
 
 import java.time.Instant
@@ -37,6 +38,16 @@ trait PartnerRepository extends CacheSource[Vector[PartnerRecord]]:
   def activate(id: PartnerId): Task[Boolean]
 
   def setLimits(id: PartnerId, limits: PartnerLimits): Task[Boolean]
+
+  /** Sets the partner's rate limits (`None` removes them), once for the group. Under the partner's row lock the stored revision is read and, when
+    * `expectedRevision` is given and differs, the write is refused as [[PartnerRateLimitsChanged]]; else the policies are written and the revision
+    * rises by one when they changed (a write of what is already there changes nothing). Answers the partner as stored, `None` when there is none.
+    * Does not touch `version`. */
+  def setRateLimits(
+      id: PartnerId,
+      policies: Option[RateLimitPolicies],
+      expectedRevision: Option[Int],
+  ): IO[PartnerRateLimitsChanged | Throwable, Option[PartnerRecord]]
 
   /** The partner's own side: who to reach and what its console offers by default. `false` when there is no such partner, or its
     * row is no longer at `expectedVersion`. */

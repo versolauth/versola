@@ -151,7 +151,7 @@ const acmePartner = {
   status: 'active' as const, groupId: 'acme', consoleClientId: 'acme-console', reviewAt: null, createdAt: '2026-09-02T10:00:00Z',
   limits: {
     scopes: ['openid', 'profile', 'email', 'phone'], redirectDomains: ['example.com'], maxClients: 10, maxEdges: 3, accessTokenTtlMax: 86_400,
-    refreshTokenTtlMax: 30 * 86_400, clientAuthMethods: ['tls_client_auth' as const, 'private_key_jwt' as const], rateLimitPolicy: 'partner-default',
+    refreshTokenTtlMax: 30 * 86_400, clientAuthMethods: ['tls_client_auth' as const, 'private_key_jwt' as const]
   },
 };
 

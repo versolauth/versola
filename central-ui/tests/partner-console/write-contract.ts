@@ -30,7 +30,7 @@ export const WRITE_CONTRACT: Array<{ method: 'POST' | 'PUT' | 'DELETE'; path: Re
   { method: 'POST', path: /^\/staff$/, fields: ['identifier', 'level', 'expiresInDays'] },
   { method: 'PUT', path: /^\/staff\/[^/]+$/, fields: ['level'] },
   { method: 'DELETE', path: /^\/staff\/[^/]+$/, fields: null },
-  { method: 'PUT', path: /^\/settings$/, fields: ['contact', 'defaults'] },
+  { method: 'PUT', path: /^\/settings$/, fields: ['version', 'contact', 'defaults'] },
   { method: 'PUT', path: /^\/profile$/, fields: ['displayName', 'logoUri'] },
 ];
 

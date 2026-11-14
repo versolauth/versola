@@ -2417,9 +2417,9 @@ test('the wizard select shows a grant duration outside its presets as its own op
 const ownerState = {
   clients: { 'tenant-alpha': [alphaClient] },
   partners: [{
-    id: 'pilot-pay', tenantId: 'tenant-alpha', displayName: 'Pilot Pay', logoUri: null, contact: { email: 'security@pilotpay.example' },
+    id: 'pilot-pay', version: 1, tenantId: 'tenant-alpha', displayName: 'Pilot Pay', logoUri: null, contact: { email: 'security@pilotpay.example' },
     status: 'active' as const, groupId: 'pilot-pay', consoleClientId: 'pilot-pay-console', reviewAt: null, createdAt: '2026-09-02T10:00:00Z',
-    limits: { scopes: ['openid', 'profile', 'email'], redirectDomains: ['pilotpay.example'], maxClients: 10, maxEdges: 3, accessTokenTtlMax: 600, refreshTokenTtlMax: 30 * 86_400, clientAuthMethods: ['tls_client_auth' as const, 'private_key_jwt' as const], rateLimitPolicy: 'partner-default' },
+    limits: { scopes: ['openid', 'profile', 'email'], redirectDomains: ['pilotpay.example'], maxClients: 10, maxEdges: 3, accessTokenTtlMax: 600, refreshTokenTtlMax: 30 * 86_400, clientAuthMethods: ['tls_client_auth' as const, 'private_key_jwt' as const] },
   }],
   scopes: { 'tenant-alpha': [
     { scope: 'openid', description: { en: 'OpenID' }, claims: [] }, { scope: 'profile', description: { en: 'Profile' }, claims: [] },
@@ -2462,8 +2462,9 @@ test('the Owner step fixes the rows a partner sets and recomputes the kind plan 
   await expect(plan.locator('.plan-line.on').filter({ hasText: 'Certificate-bound access tokens' })).toHaveCount(1);
   await expect(plan.locator('.plan-line.off')).toHaveCount(0);
   await expect(plan).not.toContainText('mTLS by edge');
-  // The partner may also use a key: said once, on the credential line.
-  await expect(plan).toContainText('The partner may also use private_key_jwt; choose on the next step.');
+  // Even where the partner's limits still allow a key, this console offers the group certificate only.
+  await expect(plan).not.toContainText('private_key_jwt');
+  await expect(plan).not.toContainText('choose on the next step');
   // One fact appears once on the step.
   const step = page.locator('versola-client-form');
   for (const fact of ['Served by the edges of group pilot-pay', 'Consent required', 'access token at most', 'Group certificate: tls_client_auth']) {
@@ -2539,8 +2540,9 @@ test('a partner-owned client is held to the partner\'s domains, scopes and caps,
   await expect(page.getByText("Outside the partner's redirect domains: https, under pilotpay.example.")).toBeVisible();
   await addRedirectUri(page, 'https://shop.pilotpay.example/complete');
   await expect(page.locator('versola-client-form')).toContainText('https://shop.pilotpay.example/complete');
-  // The credential is the group certificate or a key, as the partner's limits allow; never edge's own.
-  await expect(page.getByRole('group', { name: 'Client authentication' }).getByRole('button', { name: 'group certificate' })).toHaveAttribute('aria-pressed', 'true');
+  // The credential is the group certificate, with no switch to a key (the partner's limits allow one, the console does not offer it); never edge's own.
+  await expect(page.getByRole('group', { name: 'Client authentication' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'key', exact: true })).toHaveCount(0);
   await expect(page.getByText('tls_client_auth · san_uri = urn:versola:edge-group:pilot-pay')).toBeVisible();
   await continueToThirdStep(page);
 

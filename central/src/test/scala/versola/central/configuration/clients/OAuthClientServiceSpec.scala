@@ -237,7 +237,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       accessTokenTtlMax = 600,
       refreshTokenTtlMax = 86400,
       clientAuthMethods = Set(AuthMethod.tls_client_auth),
-      rateLimitPolicy = "partner-default",
       resourceDomains = None,
     ),
     groupId = EdgeGroupId("acme"),
@@ -2378,19 +2377,21 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             result <- env.service.registerClient(console, allowOutsideLimits = true).either
           yield assertTrue(result.isRight, env.repository.createClient.calls.headOption.exists(_.bindsAccessTokens))
         },
-        test("checkSecurityProfile answers what registerClient would, and writes nothing") {
+        test("checkRegistration answers what registerClient would (the profile, the redirect URI, the partner's rules), and writes nothing") {
           val env = new Env()
           val console = partnerEdgeRequest(PartnerClientKind.web).toCreateClientRequest(acme).copy(id = ClientId("acme-console"), consentFlow = None)
-          // what a profile refuses: a client that authenticates with a secret and binds nothing
+          // what the partner's rules refuse: a client that authenticates with a secret
           val unbound = console.copy(authMethod = AuthMethod.client_secret, mtlsAuth = None)
           for
             _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
-            fine <- env.service.checkSecurityProfile(console).either
-            refused <- env.service.checkSecurityProfile(unbound).either
+            fine <- env.service.checkRegistration(console, Some(acme)).either
+            refused <- env.service.checkRegistration(unbound, Some(acme)).either
+            badRedirect <- env.service.checkRegistration(console.copy(redirectUris = Set(RedirectUri("http://example.com/cb"))), Some(acme)).either
           yield assertTrue(
             fine.isRight,
+            badRedirect.isLeft,
             refused.left.toOption.exists:
-              case error: InvalidRegistrationConfiguration => error.reason.contains("sender-constrained")
+              case error: InvalidRegistrationConfiguration => error.reason.contains("not client_secret")
               case _ => false,
             env.repository.createClient.calls.isEmpty,
           )

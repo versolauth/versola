@@ -30,6 +30,12 @@ enum ApprovalKind(val code: String):
   case ProfileChange extends ApprovalKind("profile_change")
 
 object ApprovalKind:
+  /** The requests about a client of the partner. A request about the partner itself (`ProfileChange`) names the partner's id as its
+    * target, which is another namespace than the clients': a client may be called as the partner is. */
+  val aboutClients: Set[ApprovalKind] = Set(ClientCreate, ClientChange)
+
+  val aboutPartner: Set[ApprovalKind] = Set(ProfileChange)
+
   def from(code: String): Either[String, ApprovalKind] =
     values.find(_.code == code).toRight(s"unknown approval kind '$code', expected one of ${values.map(_.code).mkString(", ")}")
 

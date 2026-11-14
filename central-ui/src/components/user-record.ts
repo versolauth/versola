@@ -6,6 +6,7 @@ import { bannerStyles, buttonStyles, cardStyles, chipStyles, formStyles, recordS
 import type { OAuthClient, PasskeyInfo, Role, User, UserDevice, UserRefreshToken, UserSession } from '../types';
 import { fetchAllClients, getRoles } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
+import { formatDate, formatDateTime, formatShortDateTime, localZone, offsetLabel, wallClock } from '../utils/date-format';
 import { copyToClipboard, getLocalizedDescription } from '../utils/helpers';
 import { dispatchRecordRoute } from '../utils/record-route';
 import {
@@ -76,17 +77,18 @@ function failed<T>(data: T, error: unknown, fallback: string): Part<T> {
   return { status: 'error', data, error: error instanceof Error ? error.message : fallback };
 }
 
+/** An instant in the browser's own time zone, in the same English text in every browser, and with the offset it was read under
+ *  (`Nov 4, 14:50 (UTC+5)`, `Nov 4, 04:50 (UTC-5)`, `Nov 4, 09:50 UTC`), so a time is never ambiguous. A date alone (`withTime` off) has no offset. */
 function when(value: string | undefined | null, withTime = true): string {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  const sameYear = date.getFullYear() === new Date().getFullYear();
-  return date.toLocaleString(undefined, {
-    day: 'numeric',
-    month: 'short',
-    ...(sameYear && withTime ? {} : { year: 'numeric' }),
-    ...(withTime ? { hour: '2-digit', minute: '2-digit' } : {}),
-  });
+  const zone = localZone();
+  if (!withTime) return formatDate(date, zone);
+  const sameYear = wallClock(date, zone).year === wallClock(new Date(), zone).year;
+  const text = sameYear ? formatShortDateTime(date, zone, { seconds: false }) : formatDateTime(date, zone, { seconds: false });
+  const label = offsetLabel(date, zone);
+  return label === 'UTC' ? `${text} UTC` : `${text} (${label})`;
 }
 
 /**

@@ -22,10 +22,10 @@ object EdgeSigningKeySpec extends ZIOSpecDefault:
   private val ec = ECKeyGenerator(Curve.P_256).keyID("ec-key").generate()
 
   def spec = suite("EdgeSigningKey")(
-    test("a public RSA key of 2048 bits and a public P-256 key are accepted as they are") {
+    test("a public RSA key of 2048 bits is accepted as it is, and a P-256 key is not: the secrets sent to the edge are RSA-encrypted to it") {
       assertTrue(
         EdgeSigningKey.validate(json(rsa.toPublicJWK)) == Right(json(rsa.toPublicJWK)),
-        EdgeSigningKey.validate(json(ec.toPublicJWK)) == Right(json(ec.toPublicJWK)),
+        EdgeSigningKey.validate(json(ec.toPublicJWK)).left.exists(_.contains("RSA")),
       )
     },
     test("a key with a private member is refused, whatever else is right about it") {
@@ -46,7 +46,7 @@ object EdgeSigningKeySpec extends ZIOSpecDefault:
       val p384 = ECKeyGenerator(Curve.P_384).keyID("p384").generate()
       assertTrue(
         EdgeSigningKey.validate(json(small.toPublicJWK)).left.exists(_.contains("1024")),
-        EdgeSigningKey.validate(json(p384.toPublicJWK)).left.exists(_.contains("P-256")),
+        EdgeSigningKey.validate(json(p384.toPublicJWK)).left.exists(_.contains("RSA")),
         EdgeSigningKey.validate(Json.Obj("kty" -> Json.Str("oct"), "kid" -> Json.Str("k"), "k" -> Json.Str("AAAA"))).isLeft,
       )
     },

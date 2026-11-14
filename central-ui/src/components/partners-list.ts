@@ -10,7 +10,7 @@ import { copyToClipboard, formatDate, getLocalizedDescription } from '../utils/h
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
 import { confirmDiscardDraft } from '../utils/draft-guard';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
-import { RATE_LIMIT_POLICY_OPTIONS, partnerActivity, reviewState, ttlCapsLabel } from '../utils/partners';
+import { partnerActivity, reviewState, ttlCapsLabel } from '../utils/partners';
 import { certificateChip, edgeCertificateState, partnerStatusChip } from './partner-chips';
 import { statusIcon } from './status-icon';
 import { valueChips } from './value-chips';
@@ -36,7 +36,7 @@ type EditTarget = 'organisation' | 'limits' | 'suspend';
 type OrganisationDraft = { displayName: string; logoUri: string; email: string; phone: string; reviewAt: string };
 type LimitsDraft = {
   scopes: string[]; redirectDomains: string; maxClients: string; maxEdges: string;
-  accessTokenTtlMinutes: string; refreshTokenTtlDays: string; tlsClientAuth: boolean; privateKeyJwt: boolean; rateLimitPolicy: string;
+  accessTokenTtlMinutes: string; refreshTokenTtlDays: string;
 };
 
 /**
@@ -61,9 +61,11 @@ export class VersolaPartnersList extends LitElement {
   @state() private errorMessage = '';
   @state() private searchQuery = '';
   @state() private filter: PartnerFilter = 'all';
-  /** What the wizard created: the one-time token and bundle page, shown until the operator leaves it. */
+  /** What the wizard created: the enrollment token, shown once until the operator leaves it. */
   @state() private created: CreatedPartner | null = null;
   @state() private copyFeedback = '';
+  /** What the last suspend, resume or limits change answered beyond success: auth not told, clients now outside the limits. */
+  @state() private notice: { partnerId: string; tone: 'warn' | 'info'; title: string; body: string } | null = null;
   @state() private organisationDraft: OrganisationDraft = { displayName: '', logoUri: '', email: '', phone: '', reviewAt: '' };
   @state() private limitsDraft: LimitsDraft = VersolaPartnersList.emptyLimitsDraft();
   @state() private suspendNote = '';
@@ -231,7 +233,7 @@ export class VersolaPartnersList extends LitElement {
   ];
 
   private static emptyLimitsDraft(): LimitsDraft {
-    return { scopes: ['openid'], redirectDomains: '', maxClients: '10', maxEdges: '3', accessTokenTtlMinutes: '10', refreshTokenTtlDays: '30', tlsClientAuth: true, privateKeyJwt: false, rateLimitPolicy: 'partner-default' };
+    return { scopes: ['openid'], redirectDomains: '', maxClients: '10', maxEdges: '3', accessTokenTtlMinutes: '10', refreshTokenTtlDays: '30' };
   }
 
   connectedCallback() {
@@ -379,9 +381,6 @@ export class VersolaPartnersList extends LitElement {
       maxEdges: String(limits.maxEdges),
       accessTokenTtlMinutes: String(Math.round(limits.accessTokenTtlMax / 60)),
       refreshTokenTtlDays: String(Math.round(limits.refreshTokenTtlMax / 86_400)),
-      tlsClientAuth: limits.clientAuthMethods.includes('tls_client_auth'),
-      privateKeyJwt: limits.clientAuthMethods.includes('private_key_jwt'),
-      rateLimitPolicy: limits.rateLimitPolicy,
     } : VersolaPartnersList.emptyLimitsDraft();
     this.suspendNote = '';
     this.formError = '';
@@ -410,7 +409,6 @@ export class VersolaPartnersList extends LitElement {
     if (!positive(draft.maxEdges)) errors.maxEdges = 'A whole number above zero.';
     if (!positive(draft.accessTokenTtlMinutes) || Number(draft.accessTokenTtlMinutes) > 24 * 60) errors.accessTokenTtlMinutes = 'Between 1 minute and 24 hours.';
     if (!positive(draft.refreshTokenTtlDays) || Number(draft.refreshTokenTtlDays) > 365) errors.refreshTokenTtlDays = 'Between 1 and 365 days.';
-    if (!draft.tlsClientAuth && !draft.privateKeyJwt) errors.tlsClientAuth = 'At least one method: the partner\'s clients must authenticate somehow.';
     return errors;
   }
 
@@ -423,8 +421,8 @@ export class VersolaPartnersList extends LitElement {
       maxEdges: Number(draft.maxEdges),
       accessTokenTtlMax: Number(draft.accessTokenTtlMinutes) * 60,
       refreshTokenTtlMax: Number(draft.refreshTokenTtlDays) * 86_400,
-      clientAuthMethods: [...(draft.tlsClientAuth ? ['tls_client_auth' as const] : []), ...(draft.privateKeyJwt ? ['private_key_jwt' as const] : [])],
-      rateLimitPolicy: draft.rateLimitPolicy,
+      // Not editable here: the console offers the group certificate only. What the partner already has stays as it is.
+      clientAuthMethods: this.openPartner?.limits.clientAuthMethods ?? ['tls_client_auth'],
     };
   }
 
@@ -451,15 +449,21 @@ export class VersolaPartnersList extends LitElement {
           contact: { email: draft.email.trim(), phone: draft.phone.trim() || null },
           reviewAt: draft.reviewAt ? new Date(`${draft.reviewAt}T00:00:00Z`).toISOString() : null,
         };
-        await updatePartner(update);
-        this.partners = this.partners.map(candidate => candidate.id === partner.id ? { ...candidate, ...update } : candidate);
+        await updatePartner({ ...update, version: partner.version });
+        await this.reloadPartners();
       } else if (target === 'limits') {
         const limits = this.limitsFromDraft();
-        await updatePartnerLimits(partner.id, limits);
-        this.partners = this.partners.map(candidate => candidate.id === partner.id ? { ...candidate, limits } : candidate);
+        const { outsideLimits } = await updatePartnerLimits(partner.id, limits);
+        this.notice = outsideLimits.length === 0 ? null : {
+          partnerId: partner.id, tone: 'info',
+          title: `${outsideLimits.length === 1 ? '1 client is' : `${outsideLimits.length} clients are`} outside the new limits`,
+          body: `${outsideLimits.map(client => `${client.clientId} (${client.fields.join(', ')})`).join('; ')}. Nothing was changed on them: they keep working as registered until the partner edits one, and that edit then waits for you.`,
+        };
+        await this.reloadPartners();
       } else {
-        await suspendPartner(partner.id, this.suspendNote.trim());
-        this.partners = this.partners.map(candidate => candidate.id === partner.id ? { ...candidate, status: 'suspended' } : candidate);
+        const { authSynced } = await suspendPartner(partner.id, this.suspendNote.trim());
+        this.notice = authSynced ? null : this.authNotSyncedNotice(partner, 'suspended');
+        await this.reloadPartners();
       }
       dispatchRecordRoute(this, { edit: null, create: false });
     } catch (error) {
@@ -469,19 +473,35 @@ export class VersolaPartnersList extends LitElement {
     }
   }
 
+  /** A suspension or resumption central made but could not tell auth about (`207`): auth takes it up at its next reload of the clients. */
+  private authNotSyncedNotice(partner: Partner, now: 'suspended' | 'active') {
+    return {
+      partnerId: partner.id, tone: 'warn' as const,
+      title: `${partner.displayName} is ${now === 'suspended' ? 'suspended' : 'active again'}, but auth was not told`,
+      body: `Central saved the change, and its own calls to the partner's edges follow it at once. Auth could not be asked to reload its clients, so it keeps ${now === 'suspended' ? 'serving' : 'refusing'} them until it reloads on its own schedule. Check that auth is reachable from central.`,
+    };
+  }
+
+  /** Every write bumps the partner's version, so the next one needs the copy central holds now. */
+  private async reloadPartners() {
+    if (!this.tenantId) return;
+    this.partners = await fetchPartners(this.tenantId);
+  }
+
   private async handleResume(partner: Partner) {
     const confirmed = await confirmDestructiveAction({
       title: 'Resume partner',
       messagePrefix: 'Resume ',
       messageSubject: partner.displayName,
-      messageSuffix: '? Its clients are enabled again in auth, its edges may renew their certificates and call central, and its staff can sign in to the partner console. Users sign in again.',
+      messageSuffix: '? Auth is asked to load its clients again, and its edges may renew their certificates and call central. Unused enrollment tokens that suspension voided stay void: issue a new one for an edge that has not enrolled.',
       confirmLabel: 'Resume',
     });
     if (!confirmed) return;
     this.errorMessage = '';
     try {
-      await resumePartner(partner.id);
-      this.partners = this.partners.map(candidate => candidate.id === partner.id ? { ...candidate, status: 'active' } : candidate);
+      const { authSynced } = await resumePartner(partner.id);
+      this.notice = authSynced ? null : this.authNotSyncedNotice(partner, 'active');
+      await this.reloadPartners();
     } catch (error) {
       this.errorMessage = error instanceof Error ? error.message : 'Failed to resume the partner';
     }
@@ -621,8 +641,15 @@ export class VersolaPartnersList extends LitElement {
       ${partner.status === 'suspended' ? html`
         <div class="banner warn" role="status">
           <div class="banner-text">
-            <div class="banner-title">${statusIcon('alert')}Suspended: every call of this partner is refused</div>
-            <div>Its clients are disabled in auth, their refresh tokens revoked, and its edges cannot renew their certificates or reach central. Resume from the card at the bottom.</div>
+            <div class="banner-title">${statusIcon('alert')}Suspended: its edges are refused</div>
+            <div>Every call of its edges to central is refused, certificate renewal included, and auth no longer knows its clients, so it issues them nothing new. Tokens already issued are not revoked: they run out on their own. Resume from the card at the bottom.</div>
+          </div>
+        </div>` : ''}
+      ${this.notice?.partnerId === partner.id ? html`
+        <div class="banner ${this.notice.tone}" role="status">
+          <div class="banner-text">
+            <div class="banner-title">${statusIcon(this.notice.tone === 'warn' ? 'alert' : 'info')}${this.notice.title}</div>
+            <div>${this.notice.body}</div>
           </div>
         </div>` : ''}
       ${partner.status === 'onboarding' ? html`
@@ -648,7 +675,7 @@ export class VersolaPartnersList extends LitElement {
       <div class="banner ok key-banner" role="status">
         <div class="banner-text">
           <div class="banner-title">${statusIcon('check')}Partner created. Save the enrollment token now.</div>
-          <div>It is not shown again. It is single-use and expires in 24 hours: put it in a secret and start the edge <span class="mono">${created.edge.id}</span> with it.</div>
+          <div>It is not shown again. It is single-use and expires ${new Date(created.expiresAt).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}: put it in a secret and start the edge <span class="mono">${created.edge.id}</span> with it.</div>
           <div class="secret-rows">
             <div><div class="secret-label">Enrollment token</div><pre class="secret-value" tabindex="0" role="region" aria-label="Enrollment token">${created.enrollmentToken}</pre></div>
           </div>
@@ -685,7 +712,6 @@ export class VersolaPartnersList extends LitElement {
         ${this.row('Edges in group', `Up to ${limits.maxEdges}`)}
         ${this.row('Token lifetimes', ttlCapsLabel(limits))}
         ${this.row('Client authentication', limits.clientAuthMethods.map(method => method === 'tls_client_auth' ? 'Group certificate (tls_client_auth)' : 'private_key_jwt').join(' or '))}
-        ${this.row('Rate limits', html`<span class="mono">${limits.rateLimitPolicy}</span>`)}
         ${this.row('Consent', 'Always shown, names the partner', 'Every partner client')}
       `} @edit=${() => this.openEditor('limits')}></versola-record-card>
 
@@ -696,7 +722,7 @@ export class VersolaPartnersList extends LitElement {
             <span class="muted small">${edge.publicUrl ? html`${edge.publicUrl} · ` : ''}${edge.certificateNotAfter ? `certificate to ${formatDate(edge.certificateNotAfter)}` : 'token issued, not enrolled'}${edge.lastRenewedAt ? ` · renewed ${formatDate(edge.lastRenewedAt)}` : ''}</span>
             ${certificateChip(edgeCertificateState(edge, partner))}
           </div>`)}</div>` : this.row('Edges', html`<span class="muted">No edge enrolled yet.</span>`)}
-        ${this.row('Policies', html`Rate limits <span class="mono">${limits.rateLimitPolicy}</span>; overload and access log are set per edge under Edges.`)}
+        ${this.row('Policies', 'The partner sets the rate limits of its edges. Overload and access log are set per edge under Edges.')}
       `}></versola-record-card>
 
       <versola-record-card heading="Clients" subheading="Owned by the partner, inside this tenant. Open one to see every setting." .body=${html`
@@ -731,11 +757,11 @@ export class VersolaPartnersList extends LitElement {
       `}></versola-record-card>
 
       ${this.canManage ? (partner.status === 'suspended' ? html`
-        <versola-record-card heading="Resume partner" subheading="Enables its clients in auth again, lets its edges renew and call central, and lets its staff sign in to the partner console." .body=${html`
+        <versola-record-card heading="Resume partner" subheading="Gives auth its clients again, and lets its edges renew their certificates and call central." .body=${html`
           <versola-record-row .value=${html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.handleResume(partner)}>Resume partner</button>`}></versola-record-row>
         `}></versola-record-card>` : html`
         <versola-danger-card heading="Suspend partner"
-          text="Immediately: its clients are disabled in auth (no tokens), their refresh tokens revoked and back-channel logout sent, every call of its edges refused, certificate renewal included. Reversible."
+          text="Immediately: every call of its edges is refused, certificate renewal included, unused enrollment tokens are void, and auth stops knowing its clients, so it issues them nothing new. Tokens already issued are not revoked. Reversible."
           actionLabel="Suspend partner" .actionAriaLabel=${`Suspend partner ${partner.id}`}
           @action=${() => this.openEditor('suspend')}></versola-danger-card>`) : ''}
     `;
@@ -839,41 +865,24 @@ export class VersolaPartnersList extends LitElement {
         </div>
       </div>
       <div class="editor-box">
-        <h3>How the clients authenticate and how much they may send</h3>
-        <div class="form-group">
-          <span class="checkbox-list" role="group" aria-labelledby="limit-auth-label">
-            <label id="limit-auth-label">Client authentication *</label>
-            <label class="checkbox-row"><input type="checkbox" .checked=${draft.tlsClientAuth} aria-describedby="limit-auth-hint"
-              @change=${(e: Event) => this.limitsDraft = { ...draft, tlsClientAuth: (e.target as HTMLInputElement).checked }} /><span>Group certificate (<span class="mono">tls_client_auth</span>)</span></label>
-            <label class="checkbox-row"><input type="checkbox" .checked=${draft.privateKeyJwt}
-              @change=${(e: Event) => this.limitsDraft = { ...draft, privateKeyJwt: (e.target as HTMLInputElement).checked }} /><span><span class="mono">private_key_jwt</span></span></label>
-          </span>
-          ${errors.tlsClientAuth ? html`<div class="error-message" id="limit-auth-hint" role="alert">${errors.tlsClientAuth}</div>`
-            : html`<div class="hint" id="limit-auth-hint">The group certificate names the group (<span class="mono">urn:versola:edge-group:${this.openPartner?.groupId ?? '…'}</span>), so every replica of the partner's edges authenticates as any of its clients.</div>`}
-        </div>
-        <div class="form-group">
-          <label for="limit-rateLimitPolicy">Rate-limit policy</label>
-          <select id="limit-rateLimitPolicy" class="compact-input" .value=${draft.rateLimitPolicy} aria-describedby="limit-rateLimitPolicy-hint"
-            @change=${(e: Event) => this.limitsDraft = { ...draft, rateLimitPolicy: (e.target as HTMLSelectElement).value }}>
-            ${RATE_LIMIT_POLICY_OPTIONS.map(option => html`<option value=${option.id} ?selected=${option.id === draft.rateLimitPolicy}>${option.label}</option>`)}
-          </select>
-          <div class="hint" id="limit-rateLimitPolicy-hint">Applied to every edge of the group. The partner sees it and cannot change it.</div>
-        </div>
+        <h3>How the clients authenticate</h3>
+        <div class="hint">With the group certificate (<span class="mono">tls_client_auth</span>), which names the group (<span class="mono">urn:versola:edge-group:${this.openPartner?.groupId ?? '…'}</span>), so every replica of the partner's edges authenticates as any of its clients. The partner sets the rate limits of its own edges.</div>
+      </div>
       </div>
     `;
   }
 
   private renderSuspendEditor(partner: Partner) {
-    const error = this.submitted && !this.suspendNote.trim() ? 'A note is required: the partner sees it.' : '';
+    const error = this.submitted && !this.suspendNote.trim() ? 'A note is required: it is kept in the audit log.' : '';
     return html`
       <div class="editor-box">
         <h3>Suspend ${partner.displayName}</h3>
         <p class="editor-sub">Immediately, and until you resume it:</p>
         <ul class="stops">
-          <li>auth refuses tokens for every client of the partner, and their refresh tokens are revoked with a back-channel logout;</li>
-          <li>its edges cannot renew their certificates, which expire within 14 days;</li>
-          <li>every management call from the partner console is refused;</li>
-          <li>its staff see "suspended" in the partner console.</li>
+          <li>every call of its edges to central is refused, so they cannot renew their certificates, which expire within 14 days;</li>
+          <li>auth stops knowing its clients: it issues them no new tokens, and a token it already issued is refused at the user-info endpoint;</li>
+          <li>enrollment tokens not yet used are void;</li>
+          <li>nothing already issued is revoked: sessions, access tokens and refresh tokens run out on their own.</li>
         </ul>
         <div class="form-group">
           <label for="suspend-note">Note *</label>
@@ -881,7 +890,7 @@ export class VersolaPartnersList extends LitElement {
             aria-invalid=${error ? 'true' : nothing} aria-describedby="suspend-note-hint" placeholder="Why, and what the partner should do"
             @input=${(e: Event) => this.suspendNote = (e.target as HTMLTextAreaElement).value}></textarea>
           ${error ? html`<div class="error-message" id="suspend-note-hint" role="alert">${error}</div>`
-            : html`<div class="hint" id="suspend-note-hint">Shown to the partner's staff in their console and kept in the audit log.</div>`}
+            : html`<div class="hint" id="suspend-note-hint">Kept in the audit log with your name. The partner does not see it: tell them yourself.</div>`}
         </div>
       </div>
     `;

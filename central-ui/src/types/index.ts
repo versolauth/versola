@@ -478,12 +478,12 @@ export interface PartnerLimits {
   accessTokenTtlMax: number;
   refreshTokenTtlMax: number;
   clientAuthMethods: PartnerAuthMethod[];
-  /** The edge rate-limit policy set applied to the group. */
-  rateLimitPolicy: string;
 }
 
 export interface Partner {
   id: string;
+  /** Sent back on every update: central refuses a write made on a stale copy. */
+  version: number;
   tenantId: string;
   displayName: string;
   logoUri?: string | null;
@@ -523,7 +523,7 @@ export interface PartnerApproval {
 
 /** What `POST /configuration/partners` creates in one go. */
 export interface CreatePartnerRequest {
-  partner: Omit<Partner, 'tenantId' | 'status' | 'groupId' | 'consoleClientId' | 'createdAt'> & { tenantId: string };
+  partner: Omit<Partner, 'version' | 'tenantId' | 'status' | 'groupId' | 'consoleClientId' | 'createdAt'> & { tenantId: string };
   consoleClient: { redirectUri: string };
   firstEdge: { id: string; publicUrl: string };
 }
@@ -533,6 +533,8 @@ export interface CreatedPartner {
   edge: Edge;
   /** `vtk1.<enroll address>.<secret>`: the one thing the operator copies, shown once. */
   enrollmentToken: string;
+  /** When the token stops working, as central answered it. */
+  expiresAt: string;
 }
 
 export interface ServiceKey {

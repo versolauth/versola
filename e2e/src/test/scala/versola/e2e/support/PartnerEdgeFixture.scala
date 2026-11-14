@@ -51,7 +51,6 @@ object PartnerEdgeFixture:
       "accessTokenTtlMax" -> Json.Num(600),
       "refreshTokenTtlMax" -> Json.Num(86400),
       "clientAuthMethods" -> Json.Arr(Json.Str("tls_client_auth")),
-      "rateLimitPolicy" -> Json.Str("partner-default"),
     )
 
   /** A partner and its first edge, created through the operator API: the response of `POST /configuration/partners`. */
@@ -232,6 +231,10 @@ object PartnerEdgeFixture:
              |partner { console-directory = "$stub" }
              |""".stripMargin,
         ports = Map("PORT" -> SecondPort, "DPORT" -> "9132", "MPORT" -> "9133"),
+      )
+      // with `E2E_PARTNER_EDGE_LOG=<file>`, what the second edge logged is kept beside the first's, in `<file>.second`
+      _ <- ZIO.foreachDiscard(sys.env.get("E2E_PARTNER_EDGE_LOG"))(file =>
+        ZIO.addFinalizer(running.output.flatMap(out => ZIO.attemptBlocking(Files.writeString(Path.of(s"$file.second"), out))).ignore),
       )
       _ <- ExtraService.awaitReady(running).provide(ZLayer.succeed(client))
     yield EdgeApi(client, config.copy(edgeUrl = baseUrl))

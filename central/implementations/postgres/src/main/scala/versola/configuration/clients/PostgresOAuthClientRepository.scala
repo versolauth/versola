@@ -26,6 +26,8 @@ import versola.util.postgres.BasicCodecs
 import versola.util.theme.ThemeOverrides
 import versola.util.{Dpop, JsonWebKeySet, Patch, RedirectUri, Secret}
 import zio.http.URL
+import zio.json.EncoderOps
+import zio.json.ast.Json
 import zio.{Duration, IO, Task, ZIO, ZLayer}
 
 import java.sql.SQLException
@@ -59,6 +61,7 @@ class PostgresOAuthClientRepository(
   given DbCodec[Instant] = DbCodec.InstantCodec
   given DbCodec[PartnerId] = DbCodec.StringCodec.biMap(PartnerId(_), identity[String])
   given DbCodec[PartnerLimits] = jsonBCodec[PartnerLimits]
+  given DbCodec[Json.Arr] = jsonBCodec[Json.Arr]
   given DbCodec[ClientApproval] = DbCodec.StringCodec.biMap(decodeApproval, _.code)
   given DbCodec[OAuthClientRecord] = DbCodec.derived
 
@@ -224,7 +227,17 @@ class PostgresOAuthClientRepository(
       sql"""UPDATE oauth_clients SET approval = $approval WHERE id = $clientId""".update.run() > 0
 
   override def deleteClient(clientId: ClientId): Task[Unit] =
-    xa.connectMeasured("delete-client"):
+    xa.transactMeasured("delete-client"):
+      // A client id is global: one registered later under the same id (first-party or another partner's) would be in the audience of a
+      // resource the deleted client was in, and have the limits that were set for it. The id leaves them in the same transaction.
+      val resources = sql"SELECT resource_id FROM resources WHERE $clientId = ANY(audience)".query[String].run()
+      resources.foreach: resourceId =>
+        val limits = sql"SELECT audience_rate_limits FROM resources WHERE resource_id = $resourceId".query[Json.Arr].run().head
+        val kept = Json.Arr(limits.elements.filterNot(entry => entry.asObject.flatMap(_.get("clientId")).contains(Json.Str(clientId: String))))
+        sql"""
+          UPDATE resources SET audience = array_remove(audience, $clientId), audience_rate_limits = ${kept.toJson}::jsonb
+          WHERE resource_id = $resourceId
+        """.update.run()
       sql"""DELETE FROM oauth_clients WHERE id = $clientId""".update.run()
     .unit
 

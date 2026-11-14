@@ -66,26 +66,21 @@ export const CONSENT_SCREEN_FIELDS = ['clientName', 'logoUri', 'displayName'];
 
 /**
  * What a kind sets when a partner owns the client (#549): the plan the kind step shows instead of the first-party one.
- * The credential is the group certificate the partner's own edges present (central provisions nothing). With it, access tokens
+ * The credential is the group certificate the partner's own edges present (central provisions nothing). Access tokens
  * are certificate-bound like any tls_client_auth client's: bound to the certificate of the edge that asked, and re-bound when a
- * refresh comes through another edge of the group. With a key they are bearer tokens. DPoP is off for a web client. The access
- * token is the partner's cap.
+ * refresh comes through another edge of the group. DPoP is off for a web client. The access token is the partner's cap.
+ * The central API also accepts private_key_jwt for a partner client; this console does not offer it.
  */
-export function partnerKindPlan(kind: ClientKind, partner: Pick<Partner, 'displayName' | 'groupId' | 'limits'>, credential: 'mtls' | 'private-key-jwt'): PlanLine[] {
+export function partnerKindPlan(kind: ClientKind, partner: Pick<Partner, 'displayName' | 'groupId' | 'limits'>): PlanLine[] {
   const limits = partner.limits;
-  const both = limits.clientAuthMethods.includes('tls_client_auth') && limits.clientAuthMethods.includes('private_key_jwt');
   const plan: PlanLine[] = [
     { state: 'fixed', text: 'PKCE, S256 only', why: 'Every client on this server. Not a setting.' },
-    credential === 'mtls'
-      ? { state: 'fixed', text: `Group certificate: tls_client_auth, san_uri = urn:versola:edge-group:${partner.groupId}`, why: `The certificate every edge of ${partner.displayName} presents. Central provisions nothing; the partner's edges renew it themselves.${both ? ' The partner may also use private_key_jwt; choose on the next step.' : ''}` }
-      : { state: 'fixed', text: 'private_key_jwt', why: `${partner.displayName} registers the public keys its edge signs assertions with.${both ? ' The partner may also use the group certificate; choose on the next step.' : ''}` },
+    { state: 'fixed', text: `Group certificate: tls_client_auth, san_uri = urn:versola:edge-group:${partner.groupId}`, why: `The certificate every edge of ${partner.displayName} presents. Central provisions nothing; the partner's edges renew it themselves.` },
     { state: 'on', text: `Served by the edges of group ${partner.groupId}`, why: kind === 'device'
       ? `The app signs in through ${partner.displayName}'s edge; the tokens are issued to the device.`
       : `The browser holds ${partner.displayName}'s edge session cookie (HttpOnly), which carries the access token; the token is bound to the certificate of the edge that issued it.` },
     { state: 'on', text: 'Pushed authorization requests', why: 'RFC 9126. Every partner client.' },
-    credential === 'mtls'
-      ? { state: 'on', text: 'Certificate-bound access tokens', why: 'Bound to the certificate of the edge that asked. Another edge of the group re-binds the session when it refreshes it, so every edge can serve it.' }
-      : { state: 'off', text: 'Certificate-bound access tokens', why: 'The partner authenticates with a key, not a certificate: its access tokens are bearer tokens.' },
+    { state: 'on', text: 'Certificate-bound access tokens', why: 'Bound to the certificate of the edge that asked. Another edge of the group re-binds the session when it refreshes it, so every edge can serve it.' },
   ];
   if (kind === 'device') {
     const belowFloor = limits.accessTokenTtlMax < MIN_DPOP_BOUND_ACCESS_TOKEN_TTL_SECONDS;
@@ -215,13 +210,5 @@ export function defaultPartnerLimits(): PartnerLimits {
     accessTokenTtlMax: 10 * 60,
     refreshTokenTtlMax: 30 * 86_400,
     clientAuthMethods: ['tls_client_auth'],
-    rateLimitPolicy: 'partner-default',
   };
 }
-
-/** The edge rate-limit policy sets a group may be put on. */
-export const RATE_LIMIT_POLICY_OPTIONS: Array<{ id: string; label: string }> = [
-  { id: 'partner-default', label: 'partner-default · 500 req/s per edge, 50 per user' },
-  { id: 'partner-high', label: 'partner-high · 2000 req/s per edge, 200 per user' },
-  { id: 'none', label: 'none · no rate limit' },
-];
