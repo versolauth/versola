@@ -3,6 +3,7 @@ package versola.central.configuration.tenants
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.TestCentralConfig
 import versola.central.configuration.challenges.{
+  AuditSettings,
   ChallengeSettingsRecord,
   ChallengeSettingsService,
   EmailRegistration,
@@ -58,6 +59,7 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
     securityProfile = profile,
     logoLight = None,
     logoDark = None,
+    auditSettings = AuditSettings.default,
   )
 
   class Env(initial: Vector[TenantRecord] = Vector.empty):
@@ -112,6 +114,8 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
             securityProfile = SecurityProfile.fapi2,
             logoLight = None,
             logoDark = None,
+            // a new tenant keeps an audit log, without the refreshes
+            auditSettings = AuditSettings(log = true, tokenRefresh = false),
           )),
       )
     },

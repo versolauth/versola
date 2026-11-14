@@ -142,7 +142,18 @@ case class ChallengeSettingsRecord(
       * [[versola.oauth.client.OAuthConfigurationService.getTenantLogo]]. */
     logoLight: Option[String],
     logoDark: Option[String],
+    /** Whether the tenant keeps an audit log, and whether a `refresh_token` grant is an event of it: mirrors central's
+      * `auditSettings`, see [[versola.oauth.client.OAuthConfigurationService.auditLog]]. Optional because a central of the previous
+      * release does not send it: absent reads as [[AuditSettings.default]], so that an auth that is upgraded first still decodes the sync. */
+    auditSettings: Option[AuditSettings],
 ) derives JsonCodec
+
+/** Mirrors central's `AuditSettings`: the two switches of a tenant's audit log. */
+case class AuditSettings(log: Boolean, tokenRefresh: Boolean) derives JsonCodec
+
+object AuditSettings:
+  /** Mirrors central's default, and applies where a tenant has no settings row at all: the log is on, refreshes are not events. */
+  val default: AuditSettings = AuditSettings(log = true, tokenRefresh = false)
 
 object ChallengeSettingsRecord:
   /** Mirrors central's default, and applies where a tenant has no settings row at all. */

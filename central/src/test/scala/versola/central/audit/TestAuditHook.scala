@@ -1,6 +1,5 @@
 package versola.central.audit
 
-import versola.central.CentralConfig
 import versola.central.antifraud.*
 import versola.central.configuration.challenges.OtpChallengeController
 import versola.central.configuration.clients.est.ClientEstController
@@ -20,7 +19,7 @@ import versola.central.configuration.system.SystemSettingsController
 import versola.central.configuration.tenants.TenantController
 import versola.central.configuration.themes.ThemeController
 import versola.central.users.{ServiceController, UserController}
-import versola.util.audit.AuditEvents
+import versola.util.audit.{AuditEvents, AuditTenants}
 import zio.http.*
 
 /** For a spec of the hook that serves its own handlers on the paths of real routes: each route is given the declaration the controller
@@ -54,8 +53,8 @@ object TestAuditHook:
       ServiceController.endpoints,
     ).flatten.map(e => (e.route.routePattern.method, e.route.routePattern.pathCodec.render) -> e.entry).toMap
 
-  val middleware: Middleware[AuditEvents & CentralConfig] = new Middleware[AuditEvents & CentralConfig]:
-    def apply[Env1 <: AuditEvents & CentralConfig, Err](routes: Routes[Env1, Err]): Routes[Env1, Err] =
+  val middleware: Middleware[AuditEvents & AuditTenants] = new Middleware[AuditEvents & AuditTenants]:
+    def apply[Env1 <: AuditEvents & AuditTenants, Err](routes: Routes[Env1, Err]): Routes[Env1, Err] =
       Routes.fromIterable(
         routes.routes.map: route =>
           val key = (route.routePattern.method, route.routePattern.pathCodec.render)

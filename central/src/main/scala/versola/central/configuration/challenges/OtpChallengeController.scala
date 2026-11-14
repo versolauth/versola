@@ -150,6 +150,7 @@ object OtpChallengeController extends AuditedController:
           securityProfile = securityProfile,
           logoLight = logoLight,
           logoDark = logoDark,
+          auditSettings = body.auditSettings.orElse(existing.map(_.auditSettings)).getOrElse(AuditSettings.default),
         )
         validated <- ZIO.fromEither(ChallengeSettingsRecord.validate(record)).mapError(BadRequest(_))
         // Roles are only looked up while some credential can register, see `registrationPossible`.

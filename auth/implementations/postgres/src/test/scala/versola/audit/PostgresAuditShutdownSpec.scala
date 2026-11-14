@@ -44,7 +44,7 @@ object PostgresAuditShutdownSpec extends PostgresSpec:
       ZLayer.fromFunction: (xa: TransactorZIO) =>
         val real: AuditEventRepository = PostgresAuditEventRepository(xa, PostgresAuditEventRepository.partitions)
         delay.fold(real)(d => Delayed(real, d))
-    val layers = repository ++ ZLayer.succeed(settings) ++ NoopTracing.layer ++ SecureRandom.live
+    val layers = repository ++ ZLayer.succeed(settings) ++ ZLayer.succeed[AuditTenants](AuditTenants.none) ++ NoopTracing.layer ++ SecureRandom.live
     ZIO.scoped:
       (layers >>> AuditEvents.liveWith(sizing)(AuthAudit.source, node, AuthAudit.catalog, PostgresAuditEventRepository.Table)).build.flatMap: env =>
         ZIO.foreachDiscard(1 to n)(_ => env.get[AuditEvents].record(draft).catchAll(_ => ZIO.dieMessage("the queue refused an event")))

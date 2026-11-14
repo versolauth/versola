@@ -67,7 +67,13 @@ object PostgresAuditChunkSpec extends PostgresSpec:
       .liveWith(sizing(chunk))(AuditSource("svc"), "node-1", AuditCatalog.of(Set(kind)), Table)
       .build
       .map(_.get[AuditEvents])
-      .provideSome[Scope](ZLayer.succeed[AuditEventRepository](CopyRepository(xa)), ZLayer.succeed(settings), tracingLayer, SecureRandom.live)
+      .provideSome[Scope](
+        ZLayer.succeed[AuditEventRepository](CopyRepository(xa)),
+        ZLayer.succeed(settings),
+        ZLayer.succeed[AuditTenants](AuditTenants.none),
+        tracingLayer,
+        SecureRandom.live,
+      )
 
   private def draft =
     AuditDraft(kind = kind, outcome = AuditOutcome.success, reason = None, actor = None, userId = None, target = None, details = AuditDetails.empty)

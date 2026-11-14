@@ -3,7 +3,6 @@ package versola.central.audit
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.tenants.TenantId
 import versola.central.users.UserId
-import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.audit.*
 import versola.util.http.Observability
 import zio.*
@@ -40,8 +39,11 @@ object AuditHookSpec extends ZIOSpecDefault:
         _ <- seen.update(_ :+ Recorded(draft, state, auth.flatMap(_.clientId), auth.flatMap(_.sessionId), auth.flatMap(_.ip)))
       yield ()
 
-  private def settings(adminUserViewed: Boolean = true) =
-    TestCentralConfig.config.copy(audit = CentralConfig.AuditConfig(events = CentralConfig.AuditConfig.Events(adminUserViewed = adminUserViewed)))
+  /** The tenants whose switch is off. */
+  private def switchedOff(tenants: String*): AuditTenants = new AuditTenants:
+    override def tenantOf(event: AuditEvent): UIO[Option[String]] = ZIO.none
+
+    override def recording(tenantId: String): UIO[Boolean] = ZIO.succeed(!tenants.contains(tenantId))
 
   private def asAdmin(request: Request, tenant: String = "default", client: String = "central-admin"): Request =
     request.updateURL(
@@ -53,16 +55,16 @@ object AuditHookSpec extends ZIOSpecDefault:
   private def serve(
       routes: Routes[Any, Response],
       request: Request,
-      tiers: CentralConfig = settings(),
+      tenants: AuditTenants = AuditTenants.none,
   ): ZIO[Client & TestClient, Nothing, (Response, List[Recorded])] =
     // `Observability.middleware` gives each request a log context of its own; this is that, so that an error code one request set
     // is not the next one's
     logContext.locallyWith(identity)(for
       seen <- Ref.make(List.empty[Recorded])
       client <- ZIO.service[Client]
-      _ <- TestClient.addRoutes((routes @@ TestAuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig](
+      _ <- TestClient.addRoutes((routes @@ TestAuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, AuditTenants](
         Capture(seen),
-        tiers,
+        tenants,
       )))
       response <- client.batched(request).orDie
       recorded <- seen.get
@@ -279,25 +281,58 @@ object AuditHookSpec extends ZIOSpecDefault:
         recorded.head.draft.outcome == AuditOutcome.failure,
       )
     },
-    test("a look at a user is recorded with the user as target and as the row's user, only when it succeeded and the deployment records it") {
+    test("a look at a user is recorded with the user as target and as the row's user, only when it succeeded") {
       val found = Request.get(URL(Path.decode("/users")).addQueryParam("id", targetUser))
       def knowing(status: Status) =
         handler((_: Request) => Audit.target(UserId(UUID.fromString(targetUser))) *> ZIO.succeed(Response.status(status)))
-      def get(status: Status, tiers: CentralConfig) =
-        serve(Routes(findUsers -> knowing(status)), asAdmin(found), tiers).map(_._2)
+      def get(status: Status) = serve(Routes(findUsers -> knowing(status)), asAdmin(found)).map(_._2)
       for
-        viewed <- get(Status.Ok, settings())
-        missing <- get(Status.NotFound, settings())
-        off <- get(Status.Ok, settings(adminUserViewed = false))
+        viewed <- get(Status.Ok)
+        missing <- get(Status.NotFound)
       yield assertTrue(
         viewed.map(_.kind) == List("admin.user.viewed"),
         viewed.head.draft.target.contains(("user", targetUser)),
         viewed.head.draft.userId.contains(UUID.fromString(targetUser)),
         viewed.head.draft.outcome == AuditOutcome.success,
         missing.isEmpty,
-        off.isEmpty,
       )
     },
+    suite("the tenant's audit switch")(
+      test("a change in a tenant that has switched its log off is not recorded, and the handler still runs") {
+        for
+          (counter, run) <- ran
+          (response, recorded) <- serve(Routes(createClient -> run), asAdmin(bare, tenant = "acme"), switchedOff("acme"))
+          runs <- counter.get
+        yield assertTrue(response.status == Status.Ok, runs == 1, recorded.isEmpty)
+      },
+      test("a change in a tenant that keeps its log is recorded, whichever tenants have switched off") {
+        for
+          (_, recorded) <- serve(Routes(createClient -> ok()), asAdmin(bare, tenant = "acme"), switchedOff("other"))
+        yield assertTrue(recorded.map(_.kind).contains("admin.client.create"))
+      },
+      test("the tenant a change is made to decides, not the tenant of the administrator who made it") {
+        val onAcme = named("c", tenant = Some("acme"))
+        for
+          (_, offTarget) <- serve(Routes(createClient -> onAcme), asAdmin(bare, tenant = "default"), switchedOff("acme"))
+          (_, offActor) <- serve(Routes(createClient -> onAcme), asAdmin(bare, tenant = "default"), switchedOff("default"))
+        yield assertTrue(offTarget.isEmpty, offActor.map(_.kind).contains("admin.client.create"))
+      },
+      test("a read that is an event of its own, and a secret handed back, follow the switch too") {
+        val found = Request.get(URL(Path.decode("/users")).addQueryParam("id", targetUser))
+        for
+          (_, viewed) <- serve(Routes(findUsers -> ok()), asAdmin(found, tenant = "acme"), switchedOff("acme"))
+          (_, revealed) <- serve(
+            Routes(rotateSecret -> ok()),
+            asAdmin(post("/configuration/clients/rotate-secret", """{"id":"c"}"""), tenant = "acme"),
+            switchedOff("acme"),
+          )
+        yield assertTrue(viewed.isEmpty, revealed.isEmpty)
+      },
+      test("a call that names no actor belongs to no tenant, so it is recorded whichever tenants have switched off") {
+        for (response, recorded) <- serve(Routes(createClient -> ok()), bare, switchedOff("acme"))
+        yield assertTrue(response.status == Status.Unauthorized, recorded.map(_.kind) == List("admin.client.create"))
+      },
+    ),
     test("a change auth makes is recorded by central with its outcome as well, success included") {
       val sessions = Method.DELETE / "users" / "sessions"
       val password = Method.POST / "users" / "password" / "set"
@@ -398,9 +433,9 @@ object AuditHookSpec extends ZIOSpecDefault:
         client <- ZIO.service[Client]
         // the change has happened; the handler then waits, as a response that is still being written would
         routes = Routes(createClient -> handler((_: Request) => started.succeed(()) *> ZIO.never))
-        _ <- TestClient.addRoutes((routes @@ TestAuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig](
+        _ <- TestClient.addRoutes((routes @@ TestAuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, AuditTenants](
           Capture(seen),
-          settings(),
+          AuditTenants.none,
         )))
         fiber <- client.batched(asAdmin(post("/configuration/clients/web", """{"id":"c"}"""))).fork
         _ <- started.await

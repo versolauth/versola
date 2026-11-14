@@ -1783,6 +1783,7 @@ export async function upsertChallengeSettings(settings: ChallengeSettingsRecord)
       defaultRoles: settings.defaultRoles?.length ? settings.defaultRoles : ['user'],
       logoLight: settings.logoLight ?? null,
       logoDark: settings.logoDark ?? null,
+      auditSettings: settings.auditSettings ?? { log: true, tokenRefresh: false },
     },
   });
 }

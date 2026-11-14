@@ -28,19 +28,39 @@ trait AuditEvents:
     * `block` it waits as `record` does and then drops the event, counted. */
   def recordBestEffort(draft: AuditDraft): UIO[Unit]
 
+/** What the services say of the tenants whose events they record: which tenant an event belongs to when its request did not say, and
+  * whether the tenant keeps a log at all (the tenant's switch in its Security settings). */
+trait AuditTenants:
+  /** The tenant of an event that came with none, for instance from the client it names; `None` where there is no way to tell. */
+  def tenantOf(event: AuditEvent): UIO[Option[String]]
+
+  /** `false` only for a tenant that has switched its audit log off. A tenant the service does not know keeps a log. */
+  def recording(tenantId: String): UIO[Boolean]
+
+object AuditTenants:
+  /** Every event belongs to the tenant it says, if any, and every tenant keeps a log. */
+  object none extends AuditTenants:
+    override def tenantOf(event: AuditEvent): UIO[Option[String]] = ZIO.succeed(None)
+
+    override def recording(tenantId: String): UIO[Boolean] = ZIO.succeed(true)
+
 /** The audit log could not take the event in time. */
 case object AuditUnavailable
 
 object AuditEvents:
 
-  /** What a deployment sets for the log (the service's `audit` block of its config; the kinds a deployment may leave out are the
-    * service's own keys next to these).
+  /** How long the log is kept and what a full queue does: the same for every deployment ([[Settings.standard]]), no key of the
+    * config sets them.
     *
     * @param retention    how long the log is kept: a day's partition is dropped once the whole day is older than this
     * @param overflow     what a full queue does to the request: holds it ([[Overflow.block]]) or drops the event ([[Overflow.drop]])
     * @param blockTimeout how long a request waits for room in the queue under `block` before it fails
     */
   case class Settings(retention: Duration, overflow: Overflow, blockTimeout: Duration)
+
+  object Settings:
+    /** 7 days, a full queue drops the event, and `blockTimeout` is what a `block` queue waits (only a test builds one). */
+    val standard: Settings = Settings(retention = 7.days, overflow = Overflow.drop, blockTimeout = 2.seconds)
 
   enum Overflow:
     case block, drop
@@ -88,7 +108,7 @@ object AuditEvents:
       nodeId: String,
       catalog: AuditCatalog,
       table: String,
-  ): ZLayer[AuditEventRepository & Settings & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
+  ): ZLayer[AuditEventRepository & Settings & AuditTenants & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
     liveWith(Sizing.standard)(source, nodeId, catalog, table)
 
   def liveWith(
@@ -98,11 +118,12 @@ object AuditEvents:
       nodeId: String,
       catalog: AuditCatalog,
       table: String,
-  ): ZLayer[AuditEventRepository & Settings & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
+  ): ZLayer[AuditEventRepository & Settings & AuditTenants & Tracing & SecureRandom & Scope, Nothing, AuditEvents] =
     ZLayer.fromZIO:
       for
         repository <- ZIO.service[AuditEventRepository]
         settings <- ZIO.service[Settings]
+        tenants <- ZIO.service[AuditTenants]
         tracing <- ZIO.service[Tracing]
         random <- ZIO.service[SecureRandom]
         // A back-pressure queue under `block`, so that an offer waits for room; a dropping one under `drop`, so that it does not.
@@ -125,6 +146,7 @@ object AuditEvents:
         report = report,
         queue = queue,
         settings = settings,
+        tenants = tenants,
         sizing = sizing,
         source = source,
         nodeId = nodeId,
@@ -143,6 +165,7 @@ object AuditEvents:
       report: EventReport,
       queue: Queue[AuditEvent],
       settings: Settings,
+      tenants: AuditTenants,
       sizing: Sizing,
       source: AuditSource,
       nodeId: String,
@@ -152,10 +175,15 @@ object AuditEvents:
   ) extends AuditEvents:
 
     override def record(draft: AuditDraft): IO[AuditUnavailable.type, Unit] =
-      fill(draft).flatMap(admitted(_, bestEffort = false))
+      fill(draft).flatMap(wanted(_)(admitted(_, bestEffort = false)))
 
     override def recordBestEffort(draft: AuditDraft): UIO[Unit] =
-      fill(draft).flatMap(admitted(_, bestEffort = true)).catchAll(_ => ZIO.unit)
+      fill(draft).flatMap(wanted(_)(admitted(_, bestEffort = true))).catchAll(_ => ZIO.unit)
+
+    /** An event of a tenant that has switched its log off is not recorded, and is not counted: it never was an event of the log. An
+      * event that belongs to no tenant is always recorded. */
+    private def wanted[E](event: AuditEvent)(record: AuditEvent => IO[E, Unit]): IO[E, Unit] =
+      event.tenantId.fold(ZIO.succeed(true))(tenants.recording).flatMap(if _ then record(event) else ZIO.unit)
 
     /** An event is offered to the queue while the service is running; once it has begun to stop, nothing is accepted: under `block`
       * the request fails as for a queue that stayed full, otherwise the event is dropped and counted. */
@@ -198,8 +226,13 @@ object AuditEvents:
         ).forkDaemon.flatMap(fiber => restore(fiber.join).onInterrupt(fiber.interrupt))
 
     /** The event of a draft: ids and time, then the request's context, from [[AuditContext]] first and the `auth` log context
-      * second, for what the draft does not say. */
-    private def fill(draft: AuditDraft): UIO[AuditEvent] = assemble(draft).flatMap(sanitize)
+      * second, for what the draft does not say; then its tenant, from the service, when the context names none. */
+    private def fill(draft: AuditDraft): UIO[AuditEvent] =
+      assemble(draft).flatMap(event => withTenant(event)).flatMap(sanitize)
+
+    private def withTenant(event: AuditEvent): UIO[AuditEvent] =
+      if event.tenantId.isDefined then ZIO.succeed(event)
+      else tenants.tenantOf(event).map(tenant => event.copy(tenantId = tenant))
 
     /** The event is made storable and bounded where it is made ([[AuditSanitizer]]); what that changed is counted by field and listed
       * in the event's details under `sanitized`, so that a cleaned or cut value is not a silent edit. */

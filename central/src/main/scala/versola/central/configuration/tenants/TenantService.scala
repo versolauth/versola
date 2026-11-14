@@ -2,6 +2,7 @@ package versola.central.configuration.tenants
 
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.{
+  AuditSettings,
   ChallengeSettingsRecord,
   ChallengeSettingsService,
   EmailRegistration,
@@ -171,4 +172,5 @@ object TenantService:
         securityProfile = ChallengeSettingsRecord.DefaultSecurityProfile,
         logoLight = None,
         logoDark = None,
+        auditSettings = AuditSettings.default,
       )

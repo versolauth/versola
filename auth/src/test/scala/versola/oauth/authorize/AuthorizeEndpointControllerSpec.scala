@@ -66,7 +66,6 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
       setup: Services => UIO[Unit] = _ => ZIO.unit,
       verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
       verifyAudit: List[AuditDraft] => TestResult = _ => assertCompletes,
-      tiers: AuthAudit.Tiers = CapturingAuditEvents.tiers,
       audit: CapturingAuditEvents = CapturingAuditEvents.shared(),
   ) =
     test(description) {
@@ -88,7 +87,6 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
                   ZEnvironment[AuthorizationResponseService](responseService) ++
                   ZEnvironment(config) ++
                   ZEnvironment[AuditEvents](audit) ++
-                  ZEnvironment(tiers) ++
                   ZEnvironment[ClientAuthFailures](ImmediateClientAuthFailures(audit)) ++
                   tracing,
               ),
@@ -248,23 +246,9 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
         verifyAudit = drafts => assertTrue(drafts.map(_.details).collect { case d: AuthAuditDetails.AuthorizeRequest => d.par } == List(true)),
       ),
       controllerTestCase(
-        description = "a success is left out when the deployment turned audit.events.authorize-success off",
-        request = Request.get(URL.root / "authorize"),
-        expectedStatus = Status.SeeOther,
-        tiers = CapturingAuditEvents.tiers.copy(authorizeSuccess = false),
-        setup = services =>
-          for
-            _ <- services.parser.parse.succeedsWith(baseRequest)
-            _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
-            _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
-          yield (),
-        verifyAudit = drafts => assertTrue(drafts.isEmpty),
-      ),
-      controllerTestCase(
-        description = "a request that does not parse records authorize.request failure invalid_request, even with successes left out",
+        description = "a request that does not parse records authorize.request failure invalid_request",
         request = Request.get(URL.root / "authorize"),
         expectedStatus = Status.BadRequest,
-        tiers = CapturingAuditEvents.tiers.copy(authorizeSuccess = false),
         setup = _.parser.parse.failsWith(Error.BadRequest),
         verifyAudit = drafts =>
           assertTrue(drafts.map(d => (d.kind, d.outcome, d.reason)) == List((

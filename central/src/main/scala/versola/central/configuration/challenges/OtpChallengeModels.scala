@@ -76,11 +76,13 @@ case class UpsertChallengeSettingsRequest(
       * No default, for the same reason as `signingKeyId`. */
     logoLight: Option[Patch[String]],
     logoDark: Option[Patch[String]],
+    /** The audit log's two switches, see [[AuditSettings]]; absent keeps the stored value. */
+    auditSettings: Option[AuditSettings],
 ) derives Schema, JsonCodec
 
 /** A JSON merge patch (RFC 7396) of a tenant's [[ChallengeSettingsRecord]], at the level of the record's own members: the
   * ones this body names are replaced, the others keep their stored value. A member's value is replaced whole, never
-  * merged into -- `submissionLimits`, `passkeySettings`, `emailRegistration` and `acrVocabulary` are sent in full.
+  * merged into -- `submissionLimits`, `passkeySettings`, `emailRegistration`, `acrVocabulary` and `auditSettings` are sent in full.
   *
   * Absent keeps, a value replaces, `null` clears: only the optional members can be cleared (`sessionIdleTtlSeconds`,
   * `acrVocabulary`, `mtlsCertificateHeader`, `mtlsCertificateEncoding`, `signingKeyId`, `logoLight`, `logoDark`), and a
@@ -115,6 +117,7 @@ case class PatchChallengeSettingsRequest(
     securityProfile: Option[Patch[SecurityProfile]],
     logoLight: Option[Patch[String]],
     logoDark: Option[Patch[String]],
+    auditSettings: Option[Patch[AuditSettings]],
 ) derives Schema, JsonCodec:
 
   /** `current` with this patch applied, validated as the record to be stored (the same rules as `PUT`, see
@@ -142,6 +145,7 @@ case class PatchChallengeSettingsRequest(
         patch = this.clientAssertionMaxLifetimeSeconds,
         current = current.clientAssertionMaxLifetimeSeconds,
       )
+      auditSettings <- required(name = "auditSettings", patch = this.auditSettings, current = current.auditSettings)
       securityProfile <- required(name = "securityProfile", patch = this.securityProfile, current = current.securityProfile)
       _ <- Either.cond(
         securityProfile == current.securityProfile,
@@ -172,6 +176,7 @@ case class PatchChallengeSettingsRequest(
         securityProfile = securityProfile,
         logoLight = this.logoLight.applyTo(current.logoLight),
         logoDark = this.logoDark.applyTo(current.logoDark),
+        auditSettings = auditSettings,
       )
       validated <- ChallengeSettingsRecord.validate(record)
     yield validated

@@ -1,9 +1,8 @@
 package versola.oauth.est
 
 import versola.audit.AuditSupport.*
-import versola.audit.AuthAuditDetails
 import versola.audit.{AuthActors, AuthAuditKinds}
-import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
+import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome, CertAuditDetails, CertOperation}
 import versola.util.{CertificateSubject, CoreConfig}
 import zio.*
 import zio.metrics.{Metric, MetricLabel}
@@ -74,28 +73,38 @@ object EstService:
       ZIO.fromOption(ca).orElseFail(EstError.Disabled)
 
     override def enroll(credentials: Credentials, body: String): IO[EstError | Throwable, Issued] =
-      counted("enroll", credentials.clientId):
-        for
-          _ <- caCertificates
-          admitted <- limiter.admit(credentials.clientId.getOrElse(""))
-          _ <- ZIO.fail(EstError.TooManyRequests).unless(admitted)
-          csr <- request(body)
-          issued <- central.enroll(credentials.token, credentials.clientId, csr)
-          result <- respond(issued)
-        yield result
+      Ref.make(Option.empty[String]).flatMap: reached =>
+        counted("enroll", credentials.clientId, reached):
+          for
+            _ <- caCertificates
+            admitted <- limiter.admit(credentials.clientId.getOrElse(""))
+            _ <- ZIO.fail(EstError.TooManyRequests).unless(admitted)
+            csr <- request(body)
+            issued <- sentToCentral(reached, csr)(central.enroll(credentials.token, credentials.clientId, csr))
+            result <- respond(issued)
+          yield result
 
     override def reenroll(presented: X509Certificate, body: String): IO[EstError | Throwable, Issued] =
-      counted("reenroll", CertificateSubject.commonNameOf(presented.getSubjectX500Principal)):
-        for
-          _ <- caCertificates
-          now <- Clock.instant
-          // The handshake validated the chain; one that has expired, or is not valid yet, is not renewed with itself (an
-          // operator enrols the client again).
-          _ <- ZIO.fail(EstError.Unauthorized).when(now.isBefore(presented.getNotBefore.toInstant) || !now.isBefore(presented.getNotAfter.toInstant))
-          csr <- request(body)
-          issued <- central.renew(CertificateSubject.pem("CERTIFICATE", presented.getEncoded), csr)
-          result <- respond(issued)
-        yield result
+      Ref.make(Option.empty[String]).flatMap: reached =>
+        counted("reenroll", CertificateSubject.commonNameOf(presented.getSubjectX500Principal), reached):
+          for
+            _ <- caCertificates
+            now <- Clock.instant
+            // The handshake validated the chain; one that has expired, or is not valid yet, is not renewed with itself (an
+            // operator enrols the client again).
+            _ <-
+              ZIO.fail(EstError.Unauthorized).when(now.isBefore(presented.getNotBefore.toInstant) || !now.isBefore(presented.getNotAfter.toInstant))
+            csr <- request(body)
+            issued <- sentToCentral(reached, csr)(central.renew(CertificateSubject.pem("CERTIFICATE", presented.getEncoded), csr))
+            result <- respond(issued)
+          yield result
+
+    /** Notes the request that central is asked about, for the audit log if central refuses it: the subject it asked for is read from
+      * it then, and only then. A request that did not get that far (throttled, unreadable, a weak key, a certificate that has
+      * expired) was refused by what auth itself checks, which any caller can cause as often as it likes, and it is not parsed again
+      * for the log. Central's answer costs more than the parse of what is a readable request of at most `MaxBody` bytes. */
+    private def sentToCentral[A](reached: Ref[Option[String]], csr: String)(call: IO[EstError | Throwable, A]): IO[EstError | Throwable, A] =
+      reached.set(Some(csr)) *> call
 
     /** A PKCS#10 asking for a key worth issuing for, before central is asked: what an unauthenticated caller sends costs
       * auth a parse, not central a request. */
@@ -110,7 +119,7 @@ object EstService:
 
     /** What a refused request is called and how it counts in the audit log: a caller that could not prove who it is, or may not, is
       * `denied`; a request that was throttled or malformed is `failure`. A refusal that is the server's own (central down) is not an event. */
-    private def auditRefused(operation: String, clientId: Option[String], error: EstError): IO[Throwable, Unit] =
+    private def auditRefused(operation: String, clientId: Option[String], error: EstError, reached: Ref[Option[String]]): IO[Throwable, Unit] =
       val classified = error match
         case EstError.Unauthorized => Some((AuditOutcome.denied, "est_unauthorized"))
         case _: EstError.Forbidden => Some((AuditOutcome.denied, "est_forbidden"))
@@ -118,26 +127,35 @@ object EstService:
         case _: EstError.BadRequest => Some((AuditOutcome.failure, "est_bad_request"))
         case _ => None
       ZIO.foreachDiscard(classified): (outcome, reason) =>
-        audit.log(
-          AuditDraft(
-            kind = if operation == "enroll" then AuthAuditKinds.CertEnrolled else AuthAuditKinds.CertRenewed,
-            outcome = outcome,
-            reason = Some(reason),
-            actor = Some((AuthActors.client, clientId)),
-            userId = None,
-            target = None,
-            details = AuthAuditDetails.Cert(operation = operation, clientId = clientId, serial = None, notAfter = None, csrCn = None),
-          ),
-        )
+        // Nothing was issued, so there is no serial or validity; the subject is what the request asked for, where it reached central.
+        reached.get.flatMap: csr =>
+          audit.log(
+            AuditDraft(
+              kind = if operation == "enroll" then AuthAuditKinds.CertEnrolled else AuthAuditKinds.CertRenewed,
+              outcome = outcome,
+              reason = Some(reason),
+              actor = Some((AuthActors.client, clientId)),
+              userId = None,
+              target = None,
+              details = CertAuditDetails.refused(
+                // the re-enrolment is the renewal central records as `cert.renewed`: one name for the flow in both logs
+                operation = if operation == "enroll" then CertOperation.Enroll else CertOperation.Renew,
+                clientId = clientId,
+                subject = csr.flatMap(CertificateSubject.requestSubject),
+              ),
+            ),
+          )
 
-    private def counted[A](operation: String, clientId: Option[String])(effect: IO[EstError | Throwable, A]): IO[EstError | Throwable, A] =
+    private def counted[A](operation: String, clientId: Option[String], reached: Ref[Option[String]])(
+        effect: IO[EstError | Throwable, A],
+    ): IO[EstError | Throwable, A] =
       effect.tapBoth(
         {
           case EstError.Disabled => ZIO.unit
-          case EstError.Unauthorized => count(operation, "unauthorized") *> auditRefused(operation, clientId, EstError.Unauthorized)
-          case EstError.TooManyRequests => count(operation, "rate_limited") *> auditRefused(operation, clientId, EstError.TooManyRequests)
-          case error: EstError.BadRequest => count(operation, "bad_request") *> auditRefused(operation, clientId, error)
-          case error: EstError.Forbidden => count(operation, "forbidden") *> auditRefused(operation, clientId, error)
+          case EstError.Unauthorized => count(operation, "unauthorized") *> auditRefused(operation, clientId, EstError.Unauthorized, reached)
+          case EstError.TooManyRequests => count(operation, "rate_limited") *> auditRefused(operation, clientId, EstError.TooManyRequests, reached)
+          case error: EstError.BadRequest => count(operation, "bad_request") *> auditRefused(operation, clientId, error, reached)
+          case error: EstError.Forbidden => count(operation, "forbidden") *> auditRefused(operation, clientId, error, reached)
           case _ => count(operation, "error")
         },
         _ => count(operation, "issued"),

@@ -1,7 +1,7 @@
 package versola.oauth.authorize
 
 import versola.audit.AuditSupport.*
-import versola.audit.{AuditSupport, AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, ClientAuthFailures}
+import versola.audit.{AuditSupport, AuthActors, AuthAuditDetails, AuthAuditKinds, ClientAuthFailures}
 import versola.oauth.authorize.model.{PushedAuthorizationError, PushedAuthorizationErrorResponse}
 import versola.oauth.clientauth.{CertificateRelevance, ClientAuthentication}
 import versola.util.CoreConfig
@@ -20,7 +20,7 @@ object PushedAuthorizationController extends Controller:
   private val DpopHeader = "DPoP"
   private val DpopNonceHeader = "DPoP-Nonce"
 
-  type Env = Tracing & PushedAuthorizationService & ClientAuthentication & CoreConfig & AuditEvents & AuthAudit.Tiers & ClientAuthFailures
+  type Env = Tracing & PushedAuthorizationService & ClientAuthentication & CoreConfig & AuditEvents & ClientAuthFailures
 
   def routes: Routes[Env, Throwable] = Routes(
     parEndpoint,
@@ -65,15 +65,13 @@ object PushedAuthorizationController extends Controller:
         }
     }
 
-  /** `par.request`: a successful push may be left out (`audit.events.par-success`); a refusal is counted per client, address and reason and
-    * written once a minute with `count` (see `ClientAuthFailures`). */
+  /** `par.request`: a refusal is counted per client, address and reason and written once a minute with `count` (see `ClientAuthFailures`). */
   private def audit(
       outcome: AuditOutcome,
       reason: Option[String],
       params: Map[String, Chunk[String]],
-  ): ZIO[AuditEvents & AuthAudit.Tiers & ClientAuthFailures, Throwable, Unit] =
+  ): ZIO[AuditEvents & ClientAuthFailures, Throwable, Unit] =
     for
-      tiers <- ZIO.service[AuthAudit.Tiers]
       auth <- AuditSupport.currentAuth
       _ <- ZIO.serviceWithZIO[ClientAuthFailures](
         _.refused(
@@ -100,7 +98,7 @@ object PushedAuthorizationController extends Controller:
             ),
           ),
         ),
-      ).when(outcome == AuditOutcome.success && tiers.parSuccess)
+      ).when(outcome == AuditOutcome.success)
     yield ()
 
   /** RFC 9126 §2.3: anything but POST is answered with 405 rather than the router's 404. */

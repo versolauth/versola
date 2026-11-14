@@ -1,10 +1,9 @@
 package versola.central.audit
 
-import versola.central.CentralConfig
 import versola.central.audit.AuditReportService.*
 import versola.central.users.{AuthClient, UserId}
 import versola.util.PageLimit
-import versola.util.audit.AuditEvent
+import versola.util.audit.{AuditEvent, AuditEvents}
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -49,11 +48,11 @@ object AuditReportService:
   /** How long a report waits for one of the places before it is refused as busy. */
   val WaitForPlace: Duration = 5.seconds
 
-  val live: ZLayer[CentralAuditRepository & AuthClient & CentralConfig, Nothing, AuditReportService] =
-    ZLayer.fromZIO(Semaphore.make(MaxConcurrentReports)) ++ ZLayer.environment[CentralAuditRepository & AuthClient & CentralConfig] >>>
-      ZLayer.fromFunction(Impl(_, _, _, _))
+  val live: ZLayer[CentralAuditRepository & AuthClient, Nothing, AuditReportService] =
+    ZLayer.fromZIO(Semaphore.make(MaxConcurrentReports)) ++ ZLayer.environment[CentralAuditRepository & AuthClient] >>>
+      ZLayer.fromFunction(Impl(_, _, _))
 
-  private[audit] class Impl(repository: CentralAuditRepository, authClient: AuthClient, config: CentralConfig, places: Semaphore)
+  private[audit] class Impl(repository: CentralAuditRepository, authClient: AuthClient, places: Semaphore)
     extends AuditReportService:
 
     override def userReport(
@@ -78,7 +77,7 @@ object AuditReportService:
       for
         now <- Clock.instant
         pageSize = limit.getOrElse(PageLimit.Default)
-        retentionFrom = now.minusMillis(config.audit.retention.toMillis).truncatedTo(ChronoUnit.MICROS)
+        retentionFrom = now.minusMillis(AuditEvents.Settings.standard.retention.toMillis).truncatedTo(ChronoUnit.MICROS)
         upper = to.fold(now)(t => if t.isAfter(now) then now else t)
         lower = from.fold(retentionFrom)(f => if f.isBefore(retentionFrom) then retentionFrom else f)
         _ <- ZIO.fail(AuditReportError.Invalid("to is before from")).when(upper.isBefore(lower))

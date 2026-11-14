@@ -360,6 +360,7 @@ type ChallengeSettingsDto = {
   clientAssertionMaxLifetimeSeconds?: number | null;
   logoLight?: string | null;
   logoDark?: string | null;
+  auditSettings?: { log: boolean; tokenRefresh: boolean };
 };
 type JwksKeyDto = { kid: string; kty: string; alg?: string; use?: string };
 type JwksKeySummaryDto = {
@@ -393,6 +394,7 @@ export const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto
   mtlsCertificateHeader: null,
   logoLight: null,
   logoDark: null,
+  auditSettings: { log: true, tokenRefresh: false },
 });
 
 /** A tenant's profile is seeded on the tenant (or on its challenge settings) and defaults to FAPI 2.0. */
@@ -2076,6 +2078,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           mtlsCertificateHeader: payload.mtlsCertificateHeader ?? null,
           logoLight: payload.logoLight ?? null,
           logoDark: payload.logoDark ?? null,
+          // Absent keeps what is stored, and on a first save the defaults: the log on, without the refreshes.
+          auditSettings: payload.auditSettings ?? state.challengeSettings[payload.tenantId]?.auditSettings ?? { log: true, tokenRefresh: false },
         };
         await route.fulfill({ status: 204, body: '' });
         return;
@@ -2091,7 +2095,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           'tenantId', 'phoneRegions', 'emailRegistration', 'defaultRoles', 'submissionLimits', 'otpLength', 'otpResendAfter', 'passkeySettings',
           'authConversationTtlSeconds', 'sessionTtlSeconds', 'sessionIdleTtlSeconds', 'userAgentTtlSeconds', 'ipHeader', 'acrVocabulary',
           'postLogoutRedirectUris', 'requireDpopNonce', 'mtlsCertificateHeader', 'mtlsCertificateEncoding', 'signingKeyId',
-          'clientAssertionMaxLifetimeSeconds', 'securityProfile', 'logoLight', 'logoDark',
+          'clientAssertionMaxLifetimeSeconds', 'securityProfile', 'logoLight', 'logoDark', 'auditSettings',
         ]);
         const stored = payload.tenantId ? state.challengeSettings[payload.tenantId] : undefined;
         if (!stored) {

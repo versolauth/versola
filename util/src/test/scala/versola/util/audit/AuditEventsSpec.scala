@@ -46,6 +46,13 @@ object AuditEventsSpec extends UnitSpecBase:
       ZLayer.succeed(api.OpenTelemetry.noop().getTracer("test")),
     )
 
+  /** `off` keeps no log; a client id `client-of-<tenant>` belongs to that tenant. */
+  private def tenants(off: Set[String]): AuditTenants = new AuditTenants:
+    override def tenantOf(event: AuditEvent): UIO[Option[String]] =
+      ZIO.succeed(event.clientId.filter(_.startsWith("client-of-")).map(_.stripPrefix("client-of-")))
+
+    override def recording(tenantId: String): UIO[Boolean] = ZIO.succeed(!off.contains(tenantId))
+
   private def draft(kind: AuditKind = Issued, outcome: AuditOutcome = AuditOutcome.success) =
     AuditDraft(kind = kind, outcome = outcome, reason = None, actor = None, userId = None, target = None, details = AuditDetails.empty)
 
@@ -179,7 +186,8 @@ object AuditEventsSpec extends UnitSpecBase:
       settings: AuditEvents.Settings,
       source: AuditSource = svcA,
       sizing: AuditEvents.Sizing = sizing,
-  ): ZIO[Scope, Nothing, AuditEvents] = buildOn(f.repository, settings, source, sizing)
+      tenants: AuditTenants = AuditTenants.none,
+  ): ZIO[Scope, Nothing, AuditEvents] = buildOn(f.repository, settings, source, sizing, tenants = tenants)
 
   private def buildOn(
       repository: AuditEventRepository,
@@ -187,10 +195,12 @@ object AuditEventsSpec extends UnitSpecBase:
       source: AuditSource = svcA,
       sizing: AuditEvents.Sizing = sizing,
       table: String = "thing_audit_event",
+      tenants: AuditTenants = AuditTenants.none,
   ): ZIO[Scope, Nothing, AuditEvents] =
     AuditEvents.liveWith(sizing)(source, nodeId, catalog, table).build.map(_.get[AuditEvents]).provideSome[Scope](
       ZLayer.succeed[AuditEventRepository](repository),
       ZLayer.succeed(settings),
+      ZLayer.succeed[AuditTenants](tenants),
       tracingLayer,
       SecureRandom.live,
     )
@@ -1260,6 +1270,62 @@ object AuditEventsSpec extends UnitSpecBase:
         yield assertTrue(warned.size == 1, warned.head.message().contains("08006"), !everything.contains(secret))
           .label(entries.map(_.message()).mkString(" | "))
       }.provideLayer(ZTestLogger.default),
+    ),
+    suite("the tenant's switch")(
+      test("an event of a tenant that has switched its log off is not recorded, and is not counted") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false)
+            events <- build(f, block, source = edge, tenants = tenants(off = Set("tenant-a")))
+            recordedBefore <- counter("audit_events_total", edge)
+            _ <- AuditContext.setTenant("tenant-a")
+            _ <- events.record(draft())
+            _ <- events.recordBestEffort(draft())
+            written <- f.written.get
+            recordedAfter <- counter("audit_events_total", edge)
+          yield assertTrue(written.isEmpty, recordedAfter == recordedBefore)
+      },
+      test("an event of a tenant that keeps its log is recorded") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false)
+            events <- build(f, block, tenants = tenants(off = Set("tenant-a")))
+            _ <- AuditContext.setTenant("tenant-b")
+            _ <- events.record(draft())
+            written <- until(f, 1)
+          yield assertTrue(written.flatten.map(_.tenantId) == List(Some("tenant-b")))
+      },
+      test("an event with no tenant is recorded, whichever tenants have switched off") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false)
+            events <- build(f, block, tenants = tenants(off = Set("tenant-a", "tenant-b")))
+            _ <- events.record(draft())
+            written <- until(f, 1)
+          yield assertTrue(written.flatten.map(_.tenantId) == List(None))
+      },
+      test("the tenant the service finds from the client is the one whose switch applies, and the row carries it") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false)
+            events <- build(f, block, tenants = tenants(off = Set("tenant-a")))
+            _ <- Observability.setClientId("client-of-tenant-a")
+            _ <- events.record(draft())
+            _ <- Observability.setClientId("client-of-tenant-b")
+            _ <- events.record(draft())
+            written <- until(f, 1)
+          yield assertTrue(written.flatten.map(_.tenantId) == List(Some("tenant-b")))
+      },
+      test("the tenant the request named wins over the one found from the client") {
+        ZIO.scoped:
+          for
+            f <- fixture(gated = false)
+            events <- build(f, block, tenants = tenants(off = Set("tenant-a")))
+            _ <- Observability.setClientId("client-of-tenant-a") *> AuditContext.setTenant("tenant-b")
+            _ <- events.record(draft())
+            written <- until(f, 1)
+          yield assertTrue(written.flatten.map(_.tenantId) == List(Some("tenant-b")))
+      },
     ),
     suite("overflow = drop")(
       test("an event that finds the queue full is dropped and counted, and the request is not held up or failed") {
