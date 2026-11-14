@@ -2520,8 +2520,7 @@ paths:
       description: |
         One request creates everything a partner starts with: the partner (`onboarding` until its first edge calls
         central), its edge group (`id` = partner id, kind `partner`), its console client `<id>-console` (web, scope
-        `openid phone email offline_access` (the last gives the console session a refresh token, with which an edge of the group re-binds it to
-        its own certificate), no consent, `tls_client_auth` by the group's `san_uri`, the one redirect URI given, with
+        `openid phone email`, no consent, `tls_client_auth` by the group's `san_uri`, the one redirect URI given, with
         its preset `<id>-console`, so the console signs in at `/login/<id>-console`), the first edge in the group with
         its `publicUrl` (registered without a signing key: the edge makes its own and registers the public half when it enrols),
         and one enrollment token valid 24 hours. `openid` is always added to

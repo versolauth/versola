@@ -462,13 +462,6 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           page(consentRecord, client = Some(named), formId = "consent").map: body =>
             assertTrue(body.contains(""""clientName":"Shop""""), body.contains(""""clientNames":{"en":"Shop","fr":"Boutique"}"""))
         },
-        test("the consent step names the partner that owns the client, and a first-party client has none") {
-          val owned = clientRecord.copy(partnerName = Some("ACME Ltd"))
-          for
-            partnered <- page(consentRecord, client = Some(owned), formId = "consent")
-            firstParty <- page(consentRecord, client = Some(clientRecord), formId = "consent")
-          yield assertTrue(partnered.contains(""""partnerName":"ACME Ltd""""), !firstParty.contains("partnerName"))
-        },
         test("a client that cannot be found is not announced") {
           page(conversationRecord, client = None).map(body => assertTrue(!body.contains("\"client\":")))
         },

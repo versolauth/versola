@@ -125,10 +125,6 @@ object ClientController extends AuditedController:
             securityService.encryptAes256(secret, centralConfig.secretKey).map(Base64Url.encode)
       certificateService <- ZIO.service[ClientCertificateService]
       clients <- clientService.getClientsForSync(edgeId)
-      // only auth is told who owns a partner's client (its consent screen names them), and only when there is one to name
-      partnerNames <-
-        if edgeId.isEmpty && clients.exists(_.partnerId.isDefined) then clientService.partnerDisplayNames
-        else ZIO.succeed(Map.empty[versola.central.configuration.partners.PartnerId, String])
       // Only an edge enrols (#463), so only an edge is told what its certificates must say.
       enrollmentSubjects <- certificateService.enrollmentSubjects(clients).when(edgeId.isDefined).map(_.getOrElse(Map.empty))
       encryptedClients <- ZIO.foreach(clients) { client =>
@@ -149,7 +145,6 @@ object ClientController extends AuditedController:
           edgeSigningKey = edgeSigningKey,
           edgeClientCertificate = edgeClientCertificate,
           edgeCertificateSubject = enrollmentSubjects.get(client.id),
-          partnerName = client.partnerId.flatMap(partnerNames.get),
         )
       }
     yield GetOAuthClientsSyncResponse(clients = encryptedClients)
@@ -179,7 +174,6 @@ object ClientController extends AuditedController:
       edgeSigningKey: Option[String],
       edgeClientCertificate: Option[String],
       edgeCertificateSubject: Option[CertificateSubject],
-      partnerName: Option[String] = None,
   ): SyncOAuthClientRecord =
     SyncOAuthClientRecord(
       id = client.id,
@@ -216,7 +210,6 @@ object ClientController extends AuditedController:
       applicationType = client.applicationType,
       edgeCertificateSubject = edgeCertificateSubject,
       themeOverrides = client.themeOverrides,
-      partnerName = partnerName,
     )
 
   // ── One registration and one update per kind of client ─────────────────────────────────────

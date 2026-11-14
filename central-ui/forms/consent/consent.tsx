@@ -27,8 +27,6 @@ type ConsentStep = {
   scopes: ConsentScope[];
   allowPartial: boolean;
   denyUri: string;
-  /** The partner that owns the application, named so that the user sees whose application they are giving access to. */
-  partnerName?: string;
 };
 
 interface FormConfig extends BaseFormConfig {
@@ -119,9 +117,6 @@ function ConsentForm(props: { config: FormConfig }) {
       <p class="consent-description">
         {descriptionParts().map((part, index) => index % 2 === 1 ? <strong class="consent-client">{part}</strong> : part)}
       </p>
-      <Show when={step.partnerName}>
-        {(partner) => <p class="consent-partner">{(t().partner_line ?? 'This application is run by {partner}, a partner of this service.').replace('{partner}', partner())}</p>}
-      </Show>
       <Show when={step.user && (step.user.name || step.user.identifier)}>
         <UserBadge user={step.user!} label={t().signed_in_as ?? 'Signed in as'} />
       </Show>

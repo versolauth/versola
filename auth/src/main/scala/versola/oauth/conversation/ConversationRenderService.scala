@@ -159,8 +159,6 @@ object ConversationRenderService:
         allowPartial: Boolean,
         denyUri: String,
         user: Option[ConsentUser],
-        /** The partner that owns the client: its name, so that the screen says whose application this is. Absent for a first-party client. */
-        partnerName: Option[String] = None,
     ) extends StepView
 
     /** One active session of the user, as rendered on the account page. `id` is the
@@ -827,7 +825,6 @@ object ConversationRenderService:
             allowPartial = s.allowPartial,
             denyUri = denyUri.getOrElse(redirectUri.encode),
             user = consentUser,
-            partnerName = client.flatMap(_.partnerName),
           )
 
         case ConversationStep.AccessDenied =>

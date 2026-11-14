@@ -286,7 +286,7 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
         denied._1 == Status.Unauthorized,
       )
     },
-    test("a second edge of the partner's group, with a certificate of its own, continues the session of the first: the console works on both") {
+    test("a console session belongs to the edge it was signed in on: the second edge of the group sends the first's cookie to sign in, the same person signs in there, and the first edge still serves its own") {
       def cnf(cookie: String): Task[Option[String]] =
         ZIO.attempt(String(java.util.Base64.getUrlDecoder.decode(cookie.dropWhile(_ != ':').drop(1).split('.')(1)), "UTF-8")).flatMap(payload =>
           ZIO.fromEither(payload.fromJson[Json.Obj]).mapError(RuntimeException(_)),
@@ -306,32 +306,34 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
           for
             api <- PartnerEdgeFixture.startAnotherEdge(f, s"${f.partnerId}-edge-2")
             other = f.copy(baseUrl = s"http://localhost:${PartnerEdgeFixture.SecondPort}", api = api)
-            onSecond <- call(other, Some(session), Method.GET, "/partner/api/me")
-            // asked as a browser would: the cookie the second edge answers with, if it rotated the session, is the one the browser holds next
-            raw <- ZIO.fromEither(URL.decode(s"${other.baseUrl}/partner/api/me")).mapError(RuntimeException(_)).flatMap(url =>
-              Client.batched(Request.get(url).addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request(EdgeApi.sessionCookieName, session.cookie))))),
+            // the console session has no refresh token: the token is bound to the first edge's certificate, and there is nothing to re-bind it with
+            refused <- call(other, Some(session), Method.GET, "/partner/api/me")
+            // the same person signs in on the second edge, and is served there
+            own <- ZIO.serviceWithZIO[OAuthClient](auth =>
+              api.browserLogin(auth, f.consoleClientId, f.admin.login, f.admin.password, consent = Some(Set("openid", "phone", "email")), emailOtp = true),
             )
-            rotated = EdgeApi.sessionCookie(raw).filter(_.nonEmpty)
-            bound <- cnf(session.cookie)
-            reboundTo <- ZIO.foreach(rotated)(cnf).map(_.flatten)
-            back <- call(f, Some(session.copy(cookie = rotated.getOrElse(session.cookie))), Method.GET, "/partner/api/me")
-          yield (onSecond, raw.status, rotated, bound, reboundTo, back)
-        (onSecond, rawStatus, rotated, bound, reboundTo, back) = second
+            onSecond <- call(other, Some(own), Method.GET, "/partner/api/me")
+            firstBound <- cnf(session.cookie)
+            secondBound <- cnf(own.cookie)
+            // the first edge still serves the cookie it issued
+            back <- call(f, Some(session), Method.GET, "/partner/api/me")
+          yield (refused, onSecond, firstBound, secondBound, back)
+        (refused, onSecond, firstBound, secondBound, back) = second
       yield assertTrue(
         added._1 == Status.Created,
         added._2.str("token").exists(_.startsWith("vtk1.")),
         added._2.obj("edge").flatMap(_.str("id")).contains(s"${f.partnerId}-edge-2"),
         // no bundle, no key: the token is what the console shows
         !added._2.fields.exists(field => Set("bundle", "bundleComplete", "signingKey").contains(field._1)),
+        refused._1 == Status.Unauthorized,
+        error(refused).contains("unauthenticated"),
+        refused._2.str("loginPath").contains("/partner/login"),
         onSecond._1 == Status.Ok,
         onSecond._2.obj("staff").flatMap(_.str("level")).contains("admin"),
-        rawStatus == Status.Ok,
-        // the token is bound to the first edge's certificate, and the second edge re-binds it with the session's refresh token (the console
-        // scope has `offline_access`): a new cookie, whose token is bound to another certificate than the first
-        bound.isDefined,
-        rotated.isDefined,
-        reboundTo.isDefined,
-        reboundTo != bound,
+        // each token is bound to the certificate of the edge that obtained it
+        firstBound.isDefined,
+        secondBound.isDefined,
+        secondBound != firstBound,
         back._1 == Status.Ok,
       )
     },

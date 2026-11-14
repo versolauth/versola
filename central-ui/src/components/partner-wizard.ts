@@ -370,7 +370,7 @@ export class VersolaPartnerWizard extends LitElement {
         <div class="form-group">
           <label for="partner-consoleClientId">Client ID</label>
           <input type="text" id="partner-consoleClientId" class="compact-input mono" .value=${`${id}-console`} readonly aria-describedby="partner-consoleClientId-hint" />
-          <div class="hint" id="partner-consoleClientId-hint">Scopes <span class="mono">openid phone email offline_access</span>, consent off: staff of the partner, not its customers.</div>
+          <div class="hint" id="partner-consoleClientId-hint">Scopes <span class="mono">openid phone email</span>, consent off: staff of the partner, not its customers.</div>
         </div>
         ${this.field(3, 'consoleUrl', 'Partner console URL *', `Redirect URI becomes ${this.draft.consoleUrl.trim() ? this.consoleRedirectUri : '<URL>/complete'}. Under one of the redirect domains.`, { type: 'url', placeholder: 'https://login.pilotpay.example' })}
         <div class="plan">

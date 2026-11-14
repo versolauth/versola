@@ -832,9 +832,6 @@ case class SyncOAuthClientRecord(
     edgeCertificateSubject: Option[CertificateSubject],
     /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
     themeOverrides: Option[ThemeOverrides],
-    /** The display name of the partner that owns the client (#962), for auth's consent screen to name who the user is giving access to.
-      * Absent for a first-party client, and from a central that predates it. */
-    partnerName: Option[String] = None,
 ) derives JsonCodec, Schema
 
 /** An edge's request for a certificate for a client it holds the key of (#463). */

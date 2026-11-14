@@ -632,22 +632,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         yield assertTrue(payload.clients.map(_.themeOverrides) == Vector(Some(partnerTheme), None)),
     ),
     controllerTestCase(
-      description = "the sync to auth names the partner that owns a client, so that the consent screen can; a first-party client has none",
-      request = Request.get(
-        (URL.empty / "configuration" / "clients" / "sync")
-          .addQueryParam("tenantId", tenantId.toString),
-      ).addHeader(Header.Authorization.Bearer(syncToken)),
-      expectedStatus = Status.Ok,
-      setup = service =>
-        service.getClientsForSync.succeedsWith(Vector(
-          clients.head.copy(partnerId = Some(versola.central.configuration.partners.PartnerId("acme"))),
-          clients(1),
-        )) *> service.partnerDisplayNames.succeedsWith(Map(versola.central.configuration.partners.PartnerId("acme") -> "ACME Ltd")),
-      verify = (response, _, _) =>
-        for payload <- response.body.asJson[GetOAuthClientsSyncResponse]
-        yield assertTrue(payload.clients.map(_.partnerName) == Vector(Some("ACME Ltd"), None)),
-    ),
-    controllerTestCase(
       description = "list a client's theme overrides",
       request = Request.get((URL.empty / "configuration" / "clients").addQueryParam("tenantId", tenantId.toString)),
       expectedStatus = Status.Ok,

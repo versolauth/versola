@@ -84,9 +84,6 @@ trait OAuthClientService:
       allowOutsideLimits: Boolean = false,
   ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient]
 
-  /** The display name of each partner, for the sync to auth: the consent screen names the partner the client belongs to. */
-  def partnerDisplayNames: UIO[Map[PartnerId, String]]
-
   /** Every check [[registerClient]] makes of `request`, answered without writing anything: for the caller that creates other rows around
     * the client (a partner, its group and its first edge) and must know that the client will be accepted before it writes the first
     * one. `partner` is the owner the request names, when it does not exist yet. The same refusals [[registerClient]] gives. */
@@ -254,9 +251,6 @@ object OAuthClientService:
           .filter(_.tenantId == tenantId)
           .slice(offset, limit.fold(records.size)(offset + _))
       }
-
-    override def partnerDisplayNames: UIO[Map[PartnerId, String]] =
-      partners.getAll.map(_.map(partner => partner.id -> partner.displayName).toMap)
 
     override def checkRegistration(
         request: CreateClientRequest,

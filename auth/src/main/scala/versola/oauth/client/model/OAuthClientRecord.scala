@@ -85,9 +85,6 @@ case class OAuthClientRecord(
     applicationType: ApplicationType,
     /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
     themeOverrides: Option[ThemeOverrides],
-    /** The display name of the partner that owns the client, as central names it; `None` for a first-party client. The consent screen
-      * names it, so that the user sees whose application they are giving access to. */
-    partnerName: Option[String] = None,
 ) derives CanEqual, Equal:
 
   /** Whether this client's credential card can lead to account creation: it asks for an email or
