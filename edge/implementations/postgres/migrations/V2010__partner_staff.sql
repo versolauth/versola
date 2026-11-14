@@ -8,7 +8,7 @@
 -- `partner.admins`.
 CREATE TABLE partner_staff (
     subject  TEXT PRIMARY KEY,
-    level    TEXT NOT NULL CHECK (level IN ('admin', 'developer', 'viewer')),
+    level    TEXT NOT NULL,
     display  TEXT NOT NULL,
     added_by TEXT NOT NULL,
     added_at TIMESTAMP WITH TIME ZONE NOT NULL
@@ -23,10 +23,10 @@ CREATE TABLE partner_staff (
 -- the Team page shows (`+7 7•• ••• 11`). One invite per identifier. An invite past `expires_at` admits nobody.
 CREATE TABLE partner_staff_invites (
     id                UUID PRIMARY KEY,
-    identifier_kind   TEXT NOT NULL CHECK (identifier_kind IN ('phone', 'email')),
+    identifier_kind   TEXT NOT NULL,
     identifier_hash   TEXT NOT NULL,
     identifier_masked TEXT NOT NULL,
-    level             TEXT NOT NULL CHECK (level IN ('admin', 'developer', 'viewer')),
+    level             TEXT NOT NULL,
     invited_by        TEXT NOT NULL,
     created_at        TIMESTAMP WITH TIME ZONE NOT NULL,
     expires_at        TIMESTAMP WITH TIME ZONE NOT NULL,
@@ -37,7 +37,7 @@ CREATE TABLE partner_staff_invites (
 -- made an invite at every start until the person has signed in once (`admitted_at`); after that it is not made again, so removing such a
 -- person from the team stays removed across restarts and only an administrator's own invite brings them back.
 CREATE TABLE partner_staff_config_admins (
-    identifier_kind TEXT NOT NULL CHECK (identifier_kind IN ('phone', 'email')),
+    identifier_kind TEXT NOT NULL,
     identifier_hash TEXT NOT NULL,
     applied_at      TIMESTAMP WITH TIME ZONE NOT NULL,
     admitted_at     TIMESTAMP WITH TIME ZONE,
@@ -51,7 +51,7 @@ CREATE TABLE partner_staff_events (
     id     UUID PRIMARY KEY,
     at     TIMESTAMP WITH TIME ZONE NOT NULL,
     actor  TEXT NOT NULL,
-    action TEXT NOT NULL CHECK (action IN ('invite', 'level', 'remove', 'admit', 'revoke')),
+    action TEXT NOT NULL,
     target TEXT NOT NULL,
     detail TEXT
 );
