@@ -33,11 +33,11 @@ object SecretConfig:
       if bytes.length == newType.length then Right(newType(bytes))
       else Left(invalid(s"expected ${newType.length} bytes after base64url decoding, got ${bytes.length}"))
 
-  /** A base64-encoded (standard alphabet) PKCS#8 RSA private key. */
+  /** A base64-encoded PKCS#8 RSA private key, in the standard alphabet or the URL-safe one (what `central` shows for the keys it generates). */
   def rsaPrivateKey(raw: String): Either[Config.Error.InvalidData, PrivateKey] =
     PrivateKeyUtil.parse(raw, "RSA").left.map(_ => invalid("not a base64-encoded PKCS#8 RSA private key"))
 
-  /** A base64-encoded (standard alphabet) PKCS#8 private key that auth signs tokens with: RSA (a deployment
+  /** A base64-encoded PKCS#8 private key (either alphabet, see [[rsaPrivateKey]]) that auth signs tokens with: RSA (a deployment
     * generated before ES256 became the default) or EC (what `gen-env` generates now). The key factory is
     * chosen by trying RSA, then EC, the way `JwksSyncClient` reads the keys central supplies. The curve is
     * not checked here; a key that is not P-256 never matches an `ES256` JWKS entry, so it is not used.

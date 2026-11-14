@@ -756,8 +756,8 @@ public name, so install the main chart's `exposure` first (section 9a).
    `env.conf`: `include file("/app/remote-edge/central.conf")`. With `--remote-edge` the file names no certificate: it
    comes from enrollment, and the chart's `central.conf` carries the `central` block (url, pins, `identity`). Two of the
    generated values are not the edge's: `EDGE_KEY_ID` and `EDGE_PRIVATE_KEY` must be the key central showed in step 1
-   (the console and the admin API show the private key as base64url; the edge reads standard base64, so replace `-` by
-   `+` and `_` by `/`: `printf '%s' "$KEY" | tr '_-' '/+'`). Set `central.group` when the edge is not in the `default` group.
+   (the console and the admin API show it as base64url; the edge reads either alphabet). Set `central.group` when the edge is not in the
+   `default` group.
    `gen-env` also writes a `native` block, which needs auth's mutual-TLS address and pin: set `auth.mtlsUrl` and `auth.pins` (the chart's
    `central.conf` then carries the matching `native` block).
 
