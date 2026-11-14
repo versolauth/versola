@@ -463,6 +463,39 @@ object PartnerEnrollmentSpec extends ZIOSpecDefault:
             kept <- Enrolled.read(dir)
           yield assertTrue(chosen.keyId == "old", chosen.pending.isEmpty, kept.exists(_.keyId == "old"), kept.exists(_.pending.isEmpty))
         },
+        test("what central's answer to the read says of the key: 2xx and 403 take it, 401 refuses it, anything else says nothing") {
+          assertTrue(
+            (Status.Ok :: Status.NoContent :: Status.Forbidden :: Nil).forall(PartnerEnrollment.verdict(_).contains(true)),
+            PartnerEnrollment.verdict(Status.Unauthorized).contains(false),
+            (Status.InternalServerError :: Status.BadGateway :: Status.ServiceUnavailable :: Status.GatewayTimeout :: Status.NotFound :: Status.TooManyRequests ::
+              Status.BadRequest :: Nil).forall(PartnerEnrollment.verdict(_).isEmpty),
+          )
+        },
+        test("a read central's terminator answers with 502, 503 or 404 keeps both keys, and the key in use") {
+          ZIO.foreach(List(Status.BadGateway, Status.ServiceUnavailable, Status.NotFound, Status.InternalServerError)): status =>
+            for
+              dir <- directory
+              enrolled <- interrupted(dir)
+              _ <- TestClient.addRoutes(Routes(Method.GET / "edge" / "partner" / "me" -> handler(Response.status(status))))
+              client <- ZIO.service[Client]
+              url <- ZIO.fromEither(URL.decode("https://central-mtls.example")).orDie
+              chosen <- PartnerEnrollment.chooseKey(enrolled, dir, PartnerEnrollment.askCentral(client, url, enrolled.edgeId, _))
+              kept <- Enrolled.read(dir)
+            yield chosen == enrolled && kept.contains(enrolled)
+          .map(results => assertTrue(results.forall(identity)))
+        },
+        test("a read central answers with 401 drops the pending key, and with 200 or 403 promotes it") {
+          ZIO.foreach(List(Status.Unauthorized -> "old", Status.Ok -> "fresh", Status.Forbidden -> "fresh")): (status, expected) =>
+            for
+              dir <- directory
+              enrolled <- interrupted(dir)
+              _ <- TestClient.addRoutes(Routes(Method.GET / "edge" / "partner" / "me" -> handler(Response.status(status))))
+              client <- ZIO.service[Client]
+              url <- ZIO.fromEither(URL.decode("https://central-mtls.example")).orDie
+              chosen <- PartnerEnrollment.chooseKey(enrolled, dir, PartnerEnrollment.askCentral(client, url, enrolled.edgeId, _))
+            yield chosen.keyId == expected && chosen.pending.isEmpty
+          .map(results => assertTrue(results.forall(identity)))
+        },
         test("central not answering leaves both in the file and the key in use stays") {
           for
             dir <- directory

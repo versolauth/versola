@@ -94,9 +94,14 @@ trait StaffRepositorySpec extends DatabaseSpecBase[StaffRepositorySpec.Env]:
           // a second invite, for a higher level, of the person who is on the team already
           _ <- env.repository.invite(made.copy(id = UUID.randomUUID(), level = StaffLevel.admin))
           again <- env.repository.invites(at)
-          _ <- env.repository.admit(again.head.id, member("sub-1", StaffLevel.admin))
+          admitted <- env.repository.admit(again.head.id, member("sub-1", StaffLevel.admin))
           found <- env.repository.findMember("sub-1")
-        yield assertTrue(found.map(_.level) == Some(StaffLevel.viewer))
+        yield assertTrue(
+          found.map(_.level) == Some(StaffLevel.viewer),
+          // what the request runs as is what is stored, not the level of the invite that was spent
+          admitted == found,
+          admitted.map(_.level) == Some(StaffLevel.viewer),
+        )
       },
       test("a level is set on a member and on an invite, and a row that is not there says so") {
         val made = invite("hash-1", StaffLevel.viewer)

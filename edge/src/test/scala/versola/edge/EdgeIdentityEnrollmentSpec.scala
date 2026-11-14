@@ -146,6 +146,35 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
       Files.writeString(file, content + "\n")
       file
 
+  private def lost(meAnswers: Status) =
+    for
+      directory <- tempDirectory
+      _ <- central(lifetime = 14.days, status = Status.Unauthorized)
+      _ <- TestClient.addRoutes(Routes(Method.GET / "edge" / "partner" / "me" -> handler(Response.status(meAnswers))))
+      client <- ZIO.service[Client]
+      security <- ZIO.service[SecurityService]
+      holder <- openHolder(ZLayer.succeed(config(directory, None)))
+      generated <- CertificateSubject.generate(subject)
+      _ <- holder.install(
+        sign(generated.csrPem, subject.uris, Instant.now.minusSeconds(25 * 86400), Instant.now.plusSeconds(5 * 86400)),
+        generated.privateKeyPem,
+      )
+      old <- security.generateRsaKeyPair
+      held <- security.generateRsaKeyPair
+      _ <- Enrolled.write(
+        directory,
+        enrolled(old).copy(pending = Some(Enrolled.Key(held.keyId, Base64.getEncoder.encodeToString(held.privateKey.getEncoded)))),
+      )
+      switched <- Ref.make(List.empty[String])
+      recording = new CentralSyncTokenService:
+        override def getToken: UIO[String] = ZIO.succeed("BEARER")
+        override def switchKey(keyId: String, privateKey: java.security.PrivateKey): UIO[Unit] = switched.update(_ :+ keyId)
+      partner = config(directory, None).copy(mode = EdgeMode.Partner)
+      failure <- EdgeIdentityEnrollment.Impl(partner, client, holder, recording, security).renewIfDue.flip
+      kept <- Enrolled.read(directory)
+      now <- switched.get
+    yield (old.keyId, held.keyId, failure, kept, now)
+
   def spec = suite("edge identity")(
     suite("EdgeCertificateHolder")(
       test("a pair is kept in an owner-only directory and is what is presented") {
@@ -443,6 +472,29 @@ object EdgeIdentityEnrollmentSpec extends ZIOSpecDefault:
             kept.flatMap(_.pending).isDefined,
           )
         },
+        suite("a renewal central answers with 401 while a pending key is in the file")(
+          test("the pending key central takes is adopted, and what the renewal had written as pending is dropped") {
+            lost(Status.Ok).map: (_, held, failure, kept, switched) =>
+              assertTrue(
+                switched == List(held),
+                kept.exists(_.keyId == held),
+                kept.exists(_.pending.isEmpty),
+                failure.getMessage.contains("renews at the next check"),
+              )
+          },
+          test("a suspended partner's 403 is central taking the key too") {
+            lost(Status.Forbidden).map: (_, held, _, kept, switched) =>
+              assertTrue(switched == List(held), kept.exists(_.keyId == held))
+          },
+          test("the pending key central refuses is not adopted") {
+            lost(Status.Unauthorized).map: (old, _, failure, kept, switched) =>
+              assertTrue(switched.isEmpty, kept.exists(_.keyId == old), failure.getMessage.contains("Unauthorized"))
+          },
+          test("a central that cannot be asked (502) adopts nothing") {
+            lost(Status.BadGateway).map: (old, _, _, kept, switched) =>
+              assertTrue(switched.isEmpty, kept.exists(_.keyId == old))
+          },
+        ),
       ),
     ).provideSomeLayer(TestClient.layer ++ (SecureRandom.live >>> SecurityService.live)),
   ) @@ TestAspect.silentLogging @@ TestAspect.sequential @@ TestAspect.withLiveClock

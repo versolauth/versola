@@ -201,24 +201,39 @@ object PartnerEnrollment:
       case Some((certificate, certificateKey)) =>
         for
           pins <- base.load(Config.listOf(Config.string("trustedCertificates")).nested("mutualTls").nested("central")).orElseSucceed(Nil)
-          privateKey <- ZIO.attempt(
-            java.security.KeyFactory.getInstance("RSA").generatePrivate(
-              java.security.spec.PKCS8EncodedKeySpec(Base64.getDecoder.decode(key.privateKey)),
-            ),
-          )
-          token <- JWT.serialize(
-            claims = JWT.Claims(issuer = "edge", subject = "edge", audience = List("central"), custom = Json.Obj()),
-            ttl = 1.minute,
-            signature = JWT.Signature.Asymmetric(algorithm = JWT.Algorithm.RS256, keyId = key.keyId, privateKey = privateKey),
-            headers = Map("edge_id" -> enrolled.edgeId),
-          )
           ssl = ClientSSLConfig.FromClientAndServerCert(
             EdgeConfig.pinnedTrust(pins.toSet),
             ClientSSLCertConfig.FromClientCertFile(certificate, certificateKey),
           )
           url <- ZIO.fromEither(URL.decode(enrolled.central.mtlsUrl)).mapError(_ => RuntimeException("central.url is not a URL"))
-          response <- ZIO.scoped(client.ssl(ssl).request(Request.get(url / "edge" / "partner" / "me").addHeader(Header.Authorization.Bearer(token))))
-        yield Some(response.status != Status.Unauthorized)
+          answer <- askCentral(client.ssl(ssl), url, enrolled.edgeId, key)
+        yield answer
+
+  /** Asks central, over `over` (a client that presents this edge's certificate), whether it takes a token signed with `key`: a signed
+    * `GET /edge/partner/me`, which needs nothing but an authenticated edge. See [[verdict]]. */
+  private[edge] def askCentral(over: Client, central: URL, edgeId: String, key: Enrolled.Key): Task[Option[Boolean]] =
+    for
+      privateKey <- ZIO.attempt(
+        java.security.KeyFactory.getInstance("RSA").generatePrivate(
+          java.security.spec.PKCS8EncodedKeySpec(Base64.getDecoder.decode(key.privateKey)),
+        ),
+      )
+      token <- JWT.serialize(
+        claims = JWT.Claims(issuer = "edge", subject = "edge", audience = List("central"), custom = Json.Obj()),
+        ttl = 1.minute,
+        signature = JWT.Signature.Asymmetric(algorithm = JWT.Algorithm.RS256, keyId = key.keyId, privateKey = privateKey),
+        headers = Map("edge_id" -> edgeId),
+      )
+      response <- ZIO.scoped(over.request(Request.get(central / "edge" / "partner" / "me").addHeader(Header.Authorization.Bearer(token))))
+    yield verdict(response.status)
+
+  /** What central's answer to `GET /edge/partner/me` says of the key that signed the request. Central verifies the token before it looks
+    * at the partner, so a 2xx and a 403 (an edge of a suspended partner) both mean the key is accepted, and only a 401 means it is not.
+    * Any other answer (a 502 or 503 from the terminator in front of central, a 500, a 404) says nothing of the key: `None`. */
+  private[partner] def verdict(status: Status): Option[Boolean] =
+    if status.isSuccess || status == Status.Forbidden then Some(true)
+    else if status == Status.Unauthorized then Some(false)
+    else None
 
   private def refuseDerived(base: ConfigProvider): Task[Unit] =
     ZIO.foreachDiscard(Derived): (name, config) =>

@@ -86,7 +86,9 @@ class PostgresStaffRepository(xa: TransactorZIO) extends StaffRepository, BasicC
           UPDATE partner_staff_config_admins SET admitted_at = ${admitted.addedAt}
           WHERE identifier_kind = $kind AND identifier_hash = $identifierHash AND admitted_at IS NULL
         """.update.run()
-        admitted
+        // a member who was there already (two invites for one person, taken at once) stays as they are: what is returned is the stored row
+        sql"SELECT subject, level, display, added_by, added_at FROM partner_staff WHERE subject = ${admitted.subject}"
+          .query[StaffMember].run().headOption.getOrElse(admitted)
 
   override def removeInvite(id: UUID): Task[Boolean] =
     xa.connectMeasured("remove-partner-staff-invite")(sql"DELETE FROM partner_staff_invites WHERE id = $id".update.run()).map(_ > 0)
