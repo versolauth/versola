@@ -4430,6 +4430,33 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         session.rotatedCookie.exists(cookie => cookie.name == EdgeSessionCookie.name && cookie.content == s"${presetId}:${newToken}"),
       )
     },
+    // A partner's console client has no `offline_access`, so its sessions have no refresh token (by decision): a console session belongs to
+    // the edge it was signed in on, and another edge of the group sends the person to sign in, at once and without asking auth.
+    test("a console session bound to another certificate whose row has no refresh token is no session, with the clearing cookie, and auth is not asked") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withPresets(certificatePreset)
+        _ <- env.withClients(certificateClient)
+        staleToken <- env.signToken(jti = "old-jti", clientId = certificateClient.id.toString, cnfX5t = Some(otherCertificateThumbprint))
+        record <- sessionRow(env = env, security = security, jti = "old-jti")
+        _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record.copy(encryptedRefreshToken = None)))
+        service = env.buildService(client, security)
+        refused <- service.consoleSession(Request.get(URL.empty / "partner").addCookie(sessionCookie(staleToken))).flip
+        error <- logContext.get.map(_.get(Observability.error))
+      yield assertTrue(
+        refused == EdgeService.NoSession(Some(EdgeSessionCookie.clear(certificatePreset.cookieDomain, certificatePreset.cookiePath))),
+        refused.asInstanceOf[EdgeService.NoSession].clear.exists(cookie => cookie.name == EdgeSessionCookie.name && cookie.content.isEmpty),
+        error.map(_.code).contains("refresh_token_missing"),
+        env.sessionRepository.claimRefresh.calls.map(_._1) == List(AccessTokenId("old-jti")),
+        env.ssoClient.exchangeRefreshToken.calls.isEmpty,
+        env.ssoClient.userInfo.calls.isEmpty,
+        // the lease is handed back at once, not left to run out
+        env.sessionRepository.releaseRefresh.calls == List(AccessTokenId("old-jti")),
+      )
+    },
     test("a console session whose refresh is another edge's rotation (bound elsewhere too) is 401 with that cookie, and is not refreshed twice") {
       val env = new Env
       for

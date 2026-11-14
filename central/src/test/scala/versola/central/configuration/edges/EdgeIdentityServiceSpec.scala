@@ -137,7 +137,6 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
       accessTokenTtlMax = 600,
       refreshTokenTtlMax = 86400,
       clientAuthMethods = Set(AuthMethod.tls_client_auth),
-      rateLimitPolicy = "partner-default",
     ),
     groupId = group,
     consoleClientId = ClientId(s"$group-console"),
@@ -239,6 +238,24 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         issued <- service.issueEnrollmentToken(edgeId)
         hashes <- env.tokens.hashes
       yield assertTrue(hashes.size == 1, !hashes.contains(issued.token), issued.token.nonEmpty)
+    },
+    test("a new token voids the unused ones issued before it: an edge has one live token") {
+      val edge = edgeRecord(edgeId)
+      val env = Env(List(edge))
+      for
+        service <- env.service
+        first <- service.issueEnrollmentToken(edgeId)
+        csr <- csrFor(edge)
+        second <- service.issueEnrollmentToken(edgeId)
+        voided <- service.enroll(Some(edgeId), first.token, csr).flip
+        hashes <- env.tokens.hashes
+        enrolled <- service.enroll(Some(edgeId), second.token, csr)
+      yield assertTrue(
+        voided == EdgeIdentityService.InvalidToken,
+        // the first is forgotten, not kept beside the second
+        hashes.size == 1,
+        enrolled.chain.contains("BEGIN CERTIFICATE"),
+      )
     },
     test("a token cannot be created for an edge that is not registered") {
       val env = Env(Nil)

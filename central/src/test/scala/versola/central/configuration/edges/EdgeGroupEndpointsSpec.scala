@@ -124,11 +124,20 @@ object EdgeGroupEndpointsSpec extends ZIOSpecDefault, ZIOStubs:
         for body <- response.body.asJson[GetEdgeGroupsResponse] yield assertTrue(body.groups == Vector(partnerGroup)),
     ),
     testCase(
-      description = "an edge is registered in the group it names",
+      description = "an edge is not registered in a partner's group by the operator's route: the partner's edges make their own keys",
       request = json(Method.POST, URL.root / "configuration" / "edges", s"""{"id":"edge-1","groupId":"partner-acme"}"""),
+      expectedStatus = Status.UnprocessableEntity,
+      setup = stubs => stubs.groups.find.succeedsWith(Some(partnerGroup)),
+      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.edges.registerEdge.calls.isEmpty)),
+    ),
+    testCase(
+      description = "an edge is registered in the operator's own group it names",
+      request = json(Method.POST, URL.root / "configuration" / "edges", s"""{"id":"edge-1","groupId":"ops"}"""),
       expectedStatus = Status.Created,
-      setup = stubs => stubs.groups.find.succeedsWith(Some(partnerGroup)) *> stubs.edges.registerEdge.succeedsWith(testKeyPair),
-      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.edges.registerEdge.calls == List((edgeId, partnerGroup.id, None)))),
+      setup = stubs =>
+        stubs.groups.find.succeedsWith(Some(EdgeGroupRecord(EdgeGroupId("ops"), EdgeGroupKind.FirstParty))) *>
+          stubs.edges.registerEdge.succeedsWith(testKeyPair),
+      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.edges.registerEdge.calls == List((edgeId, EdgeGroupId("ops"), None)))),
     ),
     testCase(
       description = "an edge that names a group that does not exist is not registered",

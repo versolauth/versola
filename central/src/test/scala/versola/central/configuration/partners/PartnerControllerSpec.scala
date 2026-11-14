@@ -37,7 +37,6 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
     accessTokenTtlMax = 600,
     refreshTokenTtlMax = 86400,
     clientAuthMethods = Set(AuthMethod.tls_client_auth),
-    rateLimitPolicy = "partner-default",
     resourceDomains = None,
   )
 
@@ -144,7 +143,7 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val createBody =
     """{"partner":{"id":"acme","tenantId":"tenant-a","displayName":"ACME","contact":{"email":"ops@acme.example"},""" +
       """"limits":{"scopes":["openid"],"redirectDomains":["acme.example"],"maxClients":3,"maxEdges":1,"accessTokenTtlMax":600,""" +
-      """"refreshTokenTtlMax":86400,"clientAuthMethods":["tls_client_auth"],"rateLimitPolicy":"partner-default"}},""" +
+      """"refreshTokenTtlMax":86400,"clientAuthMethods":["tls_client_auth"]}},""" +
       """"consoleClient":{"redirectUri":"https://console.acme.example/complete"},"firstEdge":{"id":"edge-acme-1","publicUrl":"https://login.acme.example"}}"""
 
   def spec = suite("PartnerController")(
@@ -193,7 +192,7 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "PUT /configuration/partners changes the profile; an unknown partner is 404",
       request = Request.put(
         URL.root / "configuration" / "partners",
-        json("""{"id":"nobody","displayName":"X","contact":{"email":"x@example.com"}}"""),
+        json("""{"id":"nobody","version":0,"displayName":"X","contact":{"email":"x@example.com"}}"""),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NotFound,
       setup = stubs => stubs.service.updateProfile.failsWith(PartnerError.NotFound("partner 'nobody'")),
@@ -205,7 +204,7 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
         json("""{"id":"acme","note":"fraud"}"""),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
-      setup = stubs => stubs.service.suspend.succeedsWith(PartnerService.SuspendOutcome(authSynced = true)),
+      setup = stubs => stubs.service.suspend.succeedsWith(PartnerService.StatusChangeOutcome(authSynced = true)),
       verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.service.suspend.calls == List(acme.id))),
     ),
     testCase(
@@ -215,7 +214,7 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
         json("""{"id":"acme"}"""),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.MultiStatus,
-      setup = stubs => stubs.service.suspend.succeedsWith(PartnerService.SuspendOutcome(authSynced = false)),
+      setup = stubs => stubs.service.suspend.succeedsWith(PartnerService.StatusChangeOutcome(authSynced = false)),
     ),
     testCase(
       description = "resuming a partner that is not suspended is 409",
@@ -227,12 +226,26 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = stubs => stubs.service.resume.failsWith(PartnerError.Conflict("partner 'acme' is not suspended")),
     ),
     testCase(
+      description = "a resumption is 204, or 207 when auth could not be told, as a suspension is",
+      request = Request.post(URL.root / "configuration" / "partners" / "resume", json("""{"id":"acme"}"""))
+        .addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.MultiStatus,
+      setup = stubs => stubs.service.resume.succeedsWith(PartnerService.StatusChangeOutcome(authSynced = false)),
+    ),
+    testCase(
+      description = "a resumption auth was told of is 204",
+      request = Request.post(URL.root / "configuration" / "partners" / "resume", json("""{"id":"acme"}"""))
+        .addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = stubs => stubs.service.resume.succeedsWith(PartnerService.StatusChangeOutcome(authSynced = true)),
+    ),
+    testCase(
       description = "PUT /configuration/partners/limits answers the clients now outside the limits",
       request = Request.put(
         URL.root / "configuration" / "partners" / "limits",
         json(
           """{"id":"acme","limits":{"scopes":["openid"],"redirectDomains":["acme.example"],"maxClients":3,"maxEdges":1,"accessTokenTtlMax":300,""" +
-            """"refreshTokenTtlMax":86400,"clientAuthMethods":["tls_client_auth"],"rateLimitPolicy":"partner-default"}}""",
+            """"refreshTokenTtlMax":86400,"clientAuthMethods":["tls_client_auth"]}}""",
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Ok,
@@ -250,7 +263,7 @@ object PartnerControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request.put(
         URL.root / "configuration" / "partners" / "limits",
         json(
-          """{"id":"acme","limits":{"scopes":[],"redirectDomains":[],"maxClients":0,"maxEdges":0,"accessTokenTtlMax":1,"refreshTokenTtlMax":1,"clientAuthMethods":[],"rateLimitPolicy":"x"}}""",
+          """{"id":"acme","limits":{"scopes":[],"redirectDomains":[],"maxClients":0,"maxEdges":0,"accessTokenTtlMax":1,"refreshTokenTtlMax":1,"clientAuthMethods":[]}}""",
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,

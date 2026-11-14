@@ -182,7 +182,7 @@ object PartnerClientService:
       for
         client <- owned(partner, request.id)
         _ <- ZIO.fail(PartnerError.Conflict(s"client '${request.id}' is waiting for the operator")).when(client.approval == ClientApproval.Pending)
-        waiting <- approvals.waitingFor(partner.id, request.id)
+        waiting <- approvals.waitingFor(partner.id, ApprovalKind.aboutClients, request.id)
         _ <- ZIO.fail(PartnerError.Conflict(s"client '${request.id}' already has a change waiting for the operator")).when(waiting.nonEmpty)
         patched = patchedSubject(request, client)
         // what makes it no partner's client at all (a back-channel address outside the partner's domains) is refused, not queued
@@ -212,7 +212,9 @@ object PartnerClientService:
                 decidedAt = None,
                 note = None,
               )
-              _ <- approvals.create(approval)
+              // under the partner's lock: two changes of one client made at once cannot both find none waiting
+              queued <- approvals.createIfNoneWaiting(approval, ApprovalKind.aboutClients)
+              _ <- ZIO.fail(PartnerError.Conflict(s"client '${request.id}' already has a change waiting for the operator")).unless(queued)
             yield Left(approval)
       yield result
 
@@ -251,6 +253,7 @@ object PartnerClientService:
         _ <- owned(partner, clientId)
         waiting <- approvals.waitingFor(
           partner.id,
+          ApprovalKind.aboutClients,
           clientId,
         ).map(_.headOption).someOrFail(PartnerError.NotFound(s"a waiting request about client '$clientId'"))
         now <- Clock.instant
@@ -264,7 +267,7 @@ object PartnerClientService:
     override def delete(partner: PartnerRecord, clientId: ClientId): IO[PartnerError | Throwable, Unit] =
       for
         _ <- owned(partner, clientId)
-        waiting <- approvals.waitingFor(partner.id, clientId)
+        waiting <- approvals.waitingFor(partner.id, ApprovalKind.aboutClients, clientId)
         now <- Clock.instant
         _ <- ZIO.foreachDiscard(waiting)(request => approvals.decide(request.id, ApprovalStatus.Withdrawn, None, now, None, None))
         _ <- clients.deleteClient(clientId)
@@ -280,12 +283,14 @@ object PartnerClientService:
       for
         own <- clients.getPartnerClients(partner.id).map(_.filter(_.id != partner.consoleClientId).sortBy(_.id))
         requests <- approvals.list(None, None, Some(partner.id), PartnerClientService.HistoryLimit)
-      yield own.map(client => View(client, stateOf(client, requests.filter(_.targetId == client.id))))
+      yield own.map(client =>
+        View(client, stateOf(client, requests.filter(request => request.targetId == client.id && ApprovalKind.aboutClients.contains(request.kind)))),
+      )
 
     override def find(partner: PartnerRecord, clientId: ClientId): Task[Option[View]] =
       for
         own <- clients.findClientFresh(clientId).map(_.filter(c => c.partnerId.contains(partner.id) && c.id != partner.consoleClientId))
-        requests <- approvals.forTarget(partner.id, clientId, PartnerClientService.HistoryLimit)
+        requests <- approvals.forTarget(partner.id, ApprovalKind.aboutClients, clientId, PartnerClientService.HistoryLimit)
       yield own.map(client => View(client, stateOf(client, requests)))
 
     /** Where a client stands, from its approval and the requests about it (newest first). */

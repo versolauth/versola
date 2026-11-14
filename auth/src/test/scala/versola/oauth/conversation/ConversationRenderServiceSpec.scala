@@ -1410,6 +1410,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           _ <- env.configuration.get.succeedsWith(clientRecord)
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           _ <- env.jwksService.signingKey.succeedsWith(TestEnvConfig.signingKey)
           _ <- env.configuration.getTheme.succeedsWith(Some(theme))
           _ <- env.configuration.getForm.succeedsWith(Some(expiredForm))
@@ -1629,6 +1630,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configuration.getUserAgentTtl.succeedsWith(180.days)
           _ <- env.configuration.get.succeedsWith(clientRecord)
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           _ <- env.jwksService.signingKey.succeedsWith(TestEnvConfig.signingKey)
           response <- env.service.renderSubmit(result, conversationRecord, None)
         yield assertTrue(response.header(Header.Location).exists(_.url.encode.contains("id_token=")))
@@ -1652,6 +1654,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configuration.getUserAgentTtl.succeedsWith(180.days)
           _ <- env.configuration.get.succeedsWith(clientRecord)
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           _ <- env.jwksService.signingKey.succeedsWith(TestEnvConfig.signingKey)
           response <- env.service.renderSubmit(result, conversationRecord, None)
           location = response.header(Header.Location).map(_.url).get
@@ -1681,6 +1684,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configuration.getUserAgentTtl.succeedsWith(180.days)
           _ <- env.configuration.get.succeedsWith(clientRecord)
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           _ <- env.jwksService.signingKey.succeedsWith(TestEnvConfig.signingKey)
           response <- env.service.renderSubmit(
             result,

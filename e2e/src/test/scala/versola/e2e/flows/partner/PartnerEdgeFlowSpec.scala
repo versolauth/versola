@@ -286,7 +286,7 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
         denied._1 == Status.Unauthorized,
       )
     },
-    test("a second edge of the partner's group, with a certificate of its own, continues the session of the first: the console works on both") {
+    test("a console session belongs to the edge it was signed in on: the second edge of the group sends the first's cookie to sign in, the same person signs in there, and the first edge still serves its own") {
       def cnf(cookie: String): Task[Option[String]] =
         ZIO.attempt(String(java.util.Base64.getUrlDecoder.decode(cookie.dropWhile(_ != ':').drop(1).split('.')(1)), "UTF-8")).flatMap(payload =>
           ZIO.fromEither(payload.fromJson[Json.Obj]).mapError(RuntimeException(_)),
@@ -306,29 +306,80 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
           for
             api <- PartnerEdgeFixture.startAnotherEdge(f, s"${f.partnerId}-edge-2")
             other = f.copy(baseUrl = s"http://localhost:${PartnerEdgeFixture.SecondPort}", api = api)
-            onSecond <- call(other, Some(session), Method.GET, "/partner/api/me")
-            // asked as a browser would: the cookie the second edge answers with, if it rotated the session, is the one the browser holds next
-            raw <- ZIO.fromEither(URL.decode(s"${other.baseUrl}/partner/api/me")).mapError(RuntimeException(_)).flatMap(url =>
+            // the console session has no refresh token: the token is bound to the first edge's certificate, and there is nothing to re-bind it with
+            // asked as a browser would, to read the Set-Cookie of the answer as well as its body
+            rawRefused <- ZIO.fromEither(URL.decode(s"${other.baseUrl}/partner/api/me")).mapError(RuntimeException(_)).flatMap(url =>
               Client.batched(Request.get(url).addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request(EdgeApi.sessionCookieName, session.cookie))))),
             )
-            rotated = EdgeApi.sessionCookie(raw).filter(_.nonEmpty)
-            bound <- cnf(session.cookie)
-            back <- call(f, Some(session.copy(cookie = rotated.getOrElse(session.cookie))), Method.GET, "/partner/api/me")
-          yield (onSecond, raw.status, rotated, bound, back)
-        (onSecond, rawStatus, rotated, bound, back) = second
+            refusedText <- rawRefused.body.asString
+            refused = rawRefused.status -> refusedText.fromJson[Json.Obj].getOrElse(Json.Obj())
+            clearing = rawRefused.headers.getAll(Header.SetCookie).map(_.value).find(_.name == EdgeApi.sessionCookieName)
+            // the same person signs in on the second edge, and is served there
+            own <- ZIO.serviceWithZIO[OAuthClient](auth =>
+              api.browserLogin(auth, f.consoleClientId, f.admin.login, f.admin.password, consent = Some(Set("openid", "phone", "email")), emailOtp = true),
+            )
+            onSecond <- call(other, Some(own), Method.GET, "/partner/api/me")
+            firstBound <- cnf(session.cookie)
+            secondBound <- cnf(own.cookie)
+            // the first edge still serves the original cookie when it is presented: a fact of the server (its row and its token were not touched
+            // by the refusal). It does not say that a browser still holds that cookie: the clearing cookie above removes it where the two edges
+            // share a host name.
+            back <- call(f, Some(session), Method.GET, "/partner/api/me")
+          yield (refused, clearing, onSecond, firstBound, secondBound, back)
+        (refused, clearing, onSecond, firstBound, secondBound, back) = second
       yield assertTrue(
         added._1 == Status.Created,
         added._2.str("token").exists(_.startsWith("vtk1.")),
         added._2.obj("edge").flatMap(_.str("id")).contains(s"${f.partnerId}-edge-2"),
         // no bundle, no key: the token is what the console shows
         !added._2.fields.exists(field => Set("bundle", "bundleComplete", "signingKey").contains(field._1)),
+        refused._1 == Status.Unauthorized,
+        error(refused).contains("unauthenticated"),
+        refused._2.str("loginPath").contains("/partner/login"),
+        // the refusal clears `EDGE_SESSION` (an empty value, expiring at once): not merely no cookie set
+        clearing.exists(cookie => cookie.content.isEmpty && cookie.maxAge.contains(Duration.Zero)),
         onSecond._1 == Status.Ok,
         onSecond._2.obj("staff").flatMap(_.str("level")).contains("admin"),
-        rawStatus == Status.Ok,
-        // a token bound to the first edge's certificate is re-bound on the second (a new cookie); an unbound token (auth's current exemption of
-        // a partner's clients) needs nothing, and the cookie is left as it was
-        bound.isEmpty || rotated.isDefined,
+        // each token is bound to the certificate of the edge that obtained it
+        firstBound.isDefined,
+        secondBound.isDefined,
+        secondBound != firstBound,
         back._1 == Status.Ok,
+      )
+    },
+    test("an administrator saves the settings through the partner edge and reads them back; a save on settings that changed since is a conflict") {
+      def versionOf(result: (Status, Json.Obj)): Option[Long] =
+        result._2.fields.collectFirst { case ("version", Json.Num(number)) => number.longValue }
+      def settings(version: Option[Long], email: String) =
+        Json.Obj(
+          (version.map(v => "version" -> Json.Num(v)).toList ++ List(
+            "contact" -> Json.Obj("email" -> Json.Str(email), "phone" -> Json.Null),
+            "defaults" -> Json.Obj("accessTokenTtl" -> Json.Num(300), "refreshTokenTtl" -> Json.Num(7200)),
+          ))*,
+        )
+      for
+        f <- fixture
+        admin <- signIn(f, f.admin)
+        before <- call(f, Some(admin), Method.GET, "/partner/api/settings")
+        saved <- call(f, Some(admin), Method.PUT, "/partner/api/settings", Some(settings(versionOf(before), "incident@e2e.example")))
+        after <- call(f, Some(admin), Method.GET, "/partner/api/settings")
+        // the same version again is stale: the save above moved it on
+        stale <- call(f, Some(admin), Method.PUT, "/partner/api/settings", Some(settings(versionOf(before), "other@e2e.example")))
+        unversioned <- call(f, Some(admin), Method.PUT, "/partner/api/settings", Some(settings(None, "other@e2e.example")))
+        reread <- call(f, Some(admin), Method.GET, "/partner/api/settings")
+      yield assertTrue(
+        before._1 == Status.Ok,
+        versionOf(before).isDefined,
+        saved._1 == Status.NoContent,
+        after._2.obj("contact").flatMap(_.str("email")).contains("incident@e2e.example"),
+        after._2.obj("defaults").exists(_.toJson.contains("7200")),
+        versionOf(after).exists(v => versionOf(before).exists(_ < v)),
+        stale._1 == Status.Conflict,
+        error(stale).contains("conflict"),
+        unversioned._1 == Status.BadRequest,
+        // neither refused save changed anything
+        reread._2.obj("contact").flatMap(_.str("email")).contains("incident@e2e.example"),
+        versionOf(reread) == versionOf(after),
       )
     },
     test("a suspended partner is 403 partner_suspended on a management call, and its edge serves again once it is resumed") {

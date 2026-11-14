@@ -8,6 +8,7 @@ import versola.central.configuration.partners.{PartnerContact, PartnerId, Partne
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.configuration.partners.PostgresPartnerRepository
+import versola.configuration.resources.PostgresResourceRepository
 import versola.util.postgres.PostgresSpec
 import zio.*
 import zio.test.*
@@ -33,7 +34,6 @@ object PostgresOAuthClientRepositorySpec extends PostgresSpec, OAuthClientReposi
               accessTokenTtlMax = 600,
               refreshTokenTtlMax = 86400,
               clientAuthMethods = Set(AuthMethod.tls_client_auth),
-              rateLimitPolicy = "partner-default",
             )
             val record = PartnerRecord(
               id = id,
@@ -53,7 +53,9 @@ object PostgresOAuthClientRepositorySpec extends PostgresSpec, OAuthClientReposi
             // the tenants were truncated, and with them the partners: what is left is the group a previous run made
             xa.connect(sql"DELETE FROM edge_groups WHERE id = $group".update.run()) *>
               xa.connect(sql"INSERT INTO edge_groups (id, kind) VALUES ($group, 'partner')".update.run()) *>
-              PostgresPartnerRepository(xa).create(record).as(record.consoleClientId),
+              PostgresPartnerRepository(xa).create(record).as(record.consoleClientId)
+        ,
+        PostgresResourceRepository(xa),
       )
 
   override def beforeEach(env: OAuthClientRepositorySpec.Env) =

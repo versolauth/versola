@@ -33,6 +33,7 @@ import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{AuthorizationPresetInput, CreateClientRequest, SaveAuthorizationPresetsRequest}
 import versola.central.users.AuthClient
+import versola.util.http.RateLimitPolicies
 import versola.util.{Base64Url, RedirectUri, RsaKeyPair}
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps, JsonCodec}
@@ -53,6 +54,7 @@ trait PartnerService:
 
   def updateProfile(
       id: PartnerId,
+      expectedVersion: Long,
       displayName: String,
       logoUri: Option[String],
       contact: PartnerContact,
@@ -62,9 +64,10 @@ trait PartnerService:
   /** The kill switch (#962 §5), which disables the partner's edge and revokes nothing: the partner's clients leave the sync to
     * auth and every edge's, the partner's edges are refused everything from here on, and unused enrollment tokens are void.
     * Sessions, refresh tokens and access tokens already issued run out on their own. */
-  def suspend(id: PartnerId): IO[PartnerError | Throwable, PartnerService.SuspendOutcome]
+  def suspend(id: PartnerId): IO[PartnerError | Throwable, PartnerService.StatusChangeOutcome]
 
-  def resume(id: PartnerId): IO[PartnerError | Throwable, Unit]
+  /** Reverses [[suspend]]: the status is `active` again and auth is asked to reload its clients, so that it knows the partner's again. */
+  def resume(id: PartnerId): IO[PartnerError | Throwable, PartnerService.StatusChangeOutcome]
 
   /** New limits; the partner's clients now outside them are answered, not changed. */
   def setLimits(id: PartnerId, limits: PartnerLimits): IO[PartnerError | Throwable, Vector[PartnerService.ClientOutsideLimits]]
@@ -88,7 +91,13 @@ trait PartnerService:
   /** `onboarding` becomes `active`: the partner's first edge has called central. Nothing for any other status. */
   def activate(partner: PartnerRecord): Task[Unit]
 
-  def setSettings(partner: PartnerRecord, contact: PartnerContact, settings: PartnerSettings): IO[PartnerError | Throwable, Unit]
+  /** `expectedVersion` is the version of the settings the caller read: a write that finds the partner changed since is `409`. */
+  def setSettings(
+      partner: PartnerRecord,
+      expectedVersion: Long,
+      contact: PartnerContact,
+      settings: PartnerSettings,
+  ): IO[PartnerError | Throwable, Unit]
 
   /** The partner asks to change its own name or logo: a `profile_change` request, applied by [[approve]]. */
   def requestProfileChange(
@@ -107,6 +116,20 @@ trait PartnerService:
   /** The edges of the partner's group. */
   def edges(partner: PartnerRecord): UIO[Vector[EdgeRecord]]
 
+  /** The rate limits of the partner's edges: one setting for the group, stored once on the partner, as stored now. */
+  def rateLimits(partner: PartnerRecord): IO[PartnerError | Throwable, PartnerService.GroupRateLimits]
+
+  /** Sets the partner's rate limits (`None` removes them), once for the group: every edge of the group is served what is stored here, and an
+    * edge that joins later is served it too. The policies are validated as `PATCH /configuration/edges/policies` validates `rateLimits`;
+    * that validation does not depend on the edge, so it is done once. `expectedRevision`, when given, is the revision the caller read: the
+    * comparison and the write are one transaction under the partner's lock, and a change that finds the limits moved on is a conflict.
+    * `overload` and `accessLog` are not touched: they stay the operator's, set per edge with `PATCH /configuration/edges/policies`. */
+  def setRateLimits(
+      partner: PartnerRecord,
+      policies: Option[RateLimitPolicies],
+      expectedRevision: Option[Int],
+  ): IO[PartnerError | Throwable, PartnerService.GroupRateLimits]
+
 object PartnerService:
   /** Enrollment tokens of partner edges live a day: a token travels to another organisation. */
   val TokenValidity: Duration = 24.hours
@@ -115,6 +138,9 @@ object PartnerService:
     * its signature, expiry, issuer and client, not a revocation), so it lives minutes. */
   val ConsoleAccessTokenTtlMax: Long = 600
 
+  /** No `offline_access`, by decision: the console session has no refresh token, so it lasts as long as its access token and is tied to the
+    * edge that obtained it (the token is bound to that edge's certificate, and there is nothing to re-bind it with on another edge of the
+    * group: the person signs in again there). */
   val ConsoleScope: Set[ScopeToken] = Set(ScopeToken("openid"), ScopeToken("phone"), ScopeToken("email"))
 
   case class NewPartner(
@@ -138,10 +164,14 @@ object PartnerService:
 
   case class Created(partner: PartnerRecord, edge: EnrolledEdge)
 
-  /** What a suspension did besides recording the status, which it always does: whether auth was told to reload its clients
+  /** What a suspension or a resumption did besides recording the status, which it always does: whether auth was told to reload its clients
     * (`authSynced`: until it has, auth still knows the partner's clients, and so a certificate of the group still authenticates
     * them there). */
-  case class SuspendOutcome(authSynced: Boolean)
+  case class StatusChangeOutcome(authSynced: Boolean)
+
+  /** The rate limits of a partner's group: the policies its edges apply (`None`: none set) and their revision, the highest of the
+    * edges' for the section, which is what a change names to say what it read. */
+  case class GroupRateLimits(policies: Option[RateLimitPolicies], revision: Int)
 
   case class ClientOutsideLimits(clientId: ClientId, fields: List[String])
 
@@ -151,15 +181,41 @@ object PartnerService:
     PartnerService,
   ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _))
 
+  val MaxDisplayNameLength = 120
+  val MaxLogoUriLength = 2048
+
+  /** The name and logo of a partner, however they come (the operator's creation or change, the partner's own request): a name that is
+    * text of a sensible length, and a logo that is an `https` address. */
+  def validateProfile(displayName: String, logoUri: Option[String]): Option[PartnerError] =
+    if displayName.trim.isEmpty then Some(PartnerError.Invalid("displayName must not be empty"))
+    else if displayName.length > MaxDisplayNameLength then Some(PartnerError.Invalid(s"displayName must be at most $MaxDisplayNameLength characters"))
+    else if displayName.exists(_.isControl) then Some(PartnerError.Invalid("displayName must not contain control characters"))
+    else
+      logoUri.collectFirst:
+        case uri if uri.length > MaxLogoUriLength || !isHttpsUrl(uri) =>
+          PartnerError.Invalid(s"logoUri must be an https URL of at most $MaxLogoUriLength characters")
+
+  private def isHttpsUrl(text: String): Boolean =
+    scala.util.Try(java.net.URI(text)).toOption.exists(uri => uri.getScheme == "https" && uri.getHost != null && uri.getUserInfo == null)
+
+  private val DomainLabel = "[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
+  private val DomainPattern = s"$DomainLabel(\\.$DomainLabel)+".r
+
+  /** A domain a partner's addresses may be under: a name of at least two labels (letters, digits and hyphens, in any case), not an
+    * address, a scheme, a path or a port. */
+  def isDomain(text: String): Boolean =
+    val lower = text.toLowerCase(java.util.Locale.ROOT)
+    lower.length <= 253 && DomainPattern.matches(lower) && !lower.split('.').forall(_.forall(_.isDigit))
+
   /** What the operator may set as limits. */
   def validateLimits(limits: PartnerLimits): Option[PartnerError] =
     val methods = limits.clientAuthMethods
     if methods.isEmpty || !methods.subsetOf(PartnerLimits.AllowedAuthMethods) then
       Some(PartnerError.Invalid(s"limits.clientAuthMethods must be a non-empty subset of ${PartnerLimits.AllowedAuthMethods.mkString(", ")}"))
-    else if limits.redirectDomains.isEmpty || limits.redirectDomains.exists(_.trim.isEmpty) then
-      Some(PartnerError.Invalid("limits.redirectDomains must name at least one domain"))
-    else if limits.resourceDomains.exists(domains => domains.isEmpty || domains.exists(_.trim.isEmpty)) then
-      Some(PartnerError.Invalid("limits.resourceDomains, when given, must name at least one domain"))
+    else if limits.redirectDomains.isEmpty || !limits.redirectDomains.forall(isDomain) then
+      Some(PartnerError.Invalid("limits.redirectDomains must name at least one domain, each a name of at least two labels such as example.com"))
+    else if limits.resourceDomains.exists(domains => domains.isEmpty || !domains.forall(isDomain)) then
+      Some(PartnerError.Invalid("limits.resourceDomains, when given, must name at least one domain, each a name of at least two labels"))
     else if limits.maxClients < 1 || limits.maxEdges < 1 then Some(PartnerError.Invalid("limits.maxClients and limits.maxEdges must be at least 1"))
     else if limits.accessTokenTtlMax < 1 || limits.refreshTokenTtlMax < 1 then
       Some(PartnerError.Invalid("limits.accessTokenTtlMax and limits.refreshTokenTtlMax must be positive"))
@@ -197,6 +253,7 @@ object PartnerService:
       val consoleId = PartnerRecord.consoleClientId(request.id)
       for
         _ <- requireEnrollmentAddress
+        _ <- ZIO.foreachDiscard(validateProfile(request.displayName, request.logoUri))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(validateLimits(request.limits))(ZIO.fail(_))
         _ <- tenants.getAll.map(
           _.exists(_.id == request.tenantId),
@@ -231,9 +288,9 @@ object PartnerService:
           createdAt = now,
           version = 0L,
         )
-        // The tenant's security profile admits the console client or it does not (a `fapi2` tenant holds it to its rules), and that is
-        // known before anything is written: a refusal here leaves no group, no partner and no edge behind.
-        _ <- registration(clients.checkSecurityProfile(consoleClient(record, request.consoleRedirectUri)))
+        // Every check the registration of the console client makes (the redirect URI, the tenant's security profile, the rules of a
+        // partner's client) is made before anything is written: a refusal here leaves no group, no partner and no edge behind.
+        _ <- registration(clients.checkRegistration(consoleClient(record, request.consoleRedirectUri), Some(record)))
         created <- groups.create(EdgeGroupRecord(groupId, EdgeGroupKind.Partner))
         _ <- ZIO.fail(PartnerError.Conflict(s"edge group '$groupId' already exists")).unless(created)
         _ <- partners.create(record).catchAll:
@@ -352,19 +409,21 @@ object PartnerService:
 
     override def updateProfile(
         id: PartnerId,
+        expectedVersion: Long,
         displayName: String,
         logoUri: Option[String],
         contact: PartnerContact,
         reviewAt: Option[Instant],
     ): IO[PartnerError | Throwable, Unit] =
       for
-        record <- partner(id)
-        updated <- partners.updateProfile(id, record.version, displayName, logoUri, contact, reviewAt)
+        _ <- ZIO.foreachDiscard(validateProfile(displayName, logoUri))(ZIO.fail(_))
+        _ <- partner(id)
+        updated <- partners.updateProfile(id, expectedVersion, displayName, logoUri, contact, reviewAt)
         _ <- ZIO.fail(PartnerError.Conflict(s"partner '$id' was changed meanwhile; read it again")).unless(updated)
         _ <- registry.refreshNow
       yield ()
 
-    override def suspend(id: PartnerId): IO[PartnerError | Throwable, SuspendOutcome] =
+    override def suspend(id: PartnerId): IO[PartnerError | Throwable, StatusChangeOutcome] =
       for
         record <- partner(id)
         _ <- partners.setStatus(id, PartnerStatus.Suspended)
@@ -378,15 +437,18 @@ object PartnerService:
         // an enrollment token that was printed and not used must not turn into a certificate later
         edgesOfPartner <- edges(record)
         _ <- ZIO.foreachDiscard(edgesOfPartner)(edge => enrollmentTokens.revoke(edge.id))
-      yield SuspendOutcome(synced)
+      yield StatusChangeOutcome(synced)
 
-    override def resume(id: PartnerId): IO[PartnerError | Throwable, Unit] =
+    override def resume(id: PartnerId): IO[PartnerError | Throwable, StatusChangeOutcome] =
       for
         record <- partner(id)
         _ <- ZIO.fail(PartnerError.Conflict(s"partner '$id' is not suspended")).unless(record.status == PartnerStatus.Suspended)
         _ <- partners.setStatus(id, PartnerStatus.Active)
         _ <- registry.refreshNow
-      yield ()
+        // as for a suspension: auth is asked to reload its clients now, rather than at its next interval, so that it knows the partner's again
+        synced <- auth.syncConfiguration().as(true).catchAll: error =>
+          ZIO.logWarning(s"partner '$id' is active again and auth could not be told to reload its clients: $error").as(false)
+      yield StatusChangeOutcome(synced)
 
     override def setLimits(id: PartnerId, limits: PartnerLimits): IO[PartnerError | Throwable, Vector[ClientOutsideLimits]] =
       for
@@ -466,10 +528,14 @@ object PartnerService:
         registry.refreshNow.when(activated),
       )).unit
 
-    override def setSettings(partner: PartnerRecord, contact: PartnerContact, settings: PartnerSettings): IO[PartnerError | Throwable, Unit] =
+    override def setSettings(
+        partner: PartnerRecord,
+        expectedVersion: Long,
+        contact: PartnerContact,
+        settings: PartnerSettings,
+    ): IO[PartnerError | Throwable, Unit] =
       for
-        record <- this.partner(partner.id)
-        updated <- partners.setSettings(partner.id, record.version, contact, settings)
+        updated <- partners.setSettings(partner.id, expectedVersion, contact, settings)
         _ <- ZIO.fail(PartnerError.Conflict(s"partner '${partner.id}' was changed meanwhile; read the settings again")).unless(updated)
         _ <- registry.refreshNow
       yield ()
@@ -481,8 +547,8 @@ object PartnerService:
         logoUri: Option[String],
     ): IO[PartnerError | Throwable, PartnerApprovalRecord] =
       for
-        _ <- ZIO.fail(PartnerError.Invalid("displayName must not be empty")).when(displayName.trim.isEmpty)
-        open <- approvals.waitingFor(partner.id, partner.id)
+        _ <- ZIO.foreachDiscard(validateProfile(displayName, logoUri))(ZIO.fail(_))
+        open <- approvals.waitingFor(partner.id, ApprovalKind.aboutPartner, partner.id)
         _ <- ZIO.fail(PartnerError.Conflict(s"partner '${partner.id}' already has a profile change waiting for the operator")).when(open.nonEmpty)
         now <- Clock.instant
         id <- nextId
@@ -503,7 +569,9 @@ object PartnerService:
           decidedAt = None,
           note = None,
         )
-        _ <- approvals.create(approval)
+        // under the partner's lock: two profile changes made at once cannot both find none waiting
+        queued <- approvals.createIfNoneWaiting(approval, ApprovalKind.aboutPartner)
+        _ <- ZIO.fail(PartnerError.Conflict(s"partner '${partner.id}' already has a profile change waiting for the operator")).unless(queued)
       yield approval
 
     override def addEdge(partner: PartnerRecord, id: EdgeId, publicUrl: String): IO[PartnerError | Throwable, EnrolledEdge] =
@@ -514,6 +582,7 @@ object PartnerService:
         ).when(own.size >= partner.limits.maxEdges)
         _ <- ZIO.fail(PartnerError.Invalid("publicUrl must be an https URL")).unless(publicUrl.startsWith("https://"))
         _ <- edgeService.findFresh(id).flatMap(found => ZIO.fail(PartnerError.Conflict(s"edge '$id' already exists")).when(found.isDefined))
+        // the rate limits are stored once on the partner and served to every edge of the group: there is nothing to copy to an edge that joins
         enrolled <- enrol(partner, id, publicUrl)
       yield enrolled
 
@@ -527,6 +596,26 @@ object PartnerService:
 
     override def edges(partner: PartnerRecord): UIO[Vector[EdgeRecord]] =
       edgeService.getAllEdges.map(_.filter(_.groupId == partner.groupId))
+
+    override def rateLimits(partner: PartnerRecord): IO[PartnerError | Throwable, GroupRateLimits] =
+      this.partner(partner.id).map(stored => GroupRateLimits(stored.rateLimits, stored.rateLimitsRevision))
+
+    override def setRateLimits(
+        partner: PartnerRecord,
+        policies: Option[RateLimitPolicies],
+        expectedRevision: Option[Int],
+    ): IO[PartnerError | Throwable, GroupRateLimits] =
+      for
+        // an empty set is the same as none, as for an edge's own
+        valid <- ZIO.foreach(policies)(set => ZIO.fromEither(set.validate).mapError(detail => PartnerError.Invalid(detail)))
+          .map(_.filter(_.policies.nonEmpty))
+        stored <- partners.setRateLimits(partner.id, valid, expectedRevision)
+          .catchSome:
+            case _: PartnerRateLimitsChanged => ZIO.fail(PartnerError.Conflict("the rate limits changed since they were read; read them again"))
+          .someOrFail(PartnerError.NotFound(s"partner '${partner.id}'"))
+        // the partners are cached and the cache hears of a write through a notification: this one is seen by the next sync of an edge at once
+        _ <- registry.refreshNow
+      yield GroupRateLimits(stored.rateLimits, stored.rateLimitsRevision)
 
   /** The partner's own name and logo, as asked (`requested`) and as registered (`current`). */
   case class ProfileChange(displayName: String, logoUri: Option[String]) derives JsonCodec

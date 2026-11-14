@@ -562,15 +562,17 @@ final class PartnerApi(
   private def putSettings(session: Session, request: Request): IO[Fail | Throwable, Response] =
     for
       body <- jsonBody(request)
-      // only what the console edits is sent on, key by key: nothing else the request carries reaches central
+      // only what the console edits is sent on, key by key: nothing else the request carries reaches central. `version` is the version of
+      // the settings the console read: central refuses a save made on settings that changed since, so it goes on as the number it is.
       only = (value: Option[Json], names: List[String]) =>
         value.flatMap(_.asObject).map(obj => Json.Obj(obj.fields.filter((name, _) => names.contains(name)))).getOrElse(Json.Obj())
       payload = Json.Obj(
         List(
           "contact" -> only(field(body, "contact"), List("email", "phone")),
           "defaults" -> only(field(body, "defaults"), List("backChannelLogoutUri", "accessTokenTtl", "refreshTokenTtl")),
+          "version" -> field(body, "version").collect { case number: Json.Num => number }.getOrElse(Json.Null),
         )
-          .filter((name, _) => field(body, name).isDefined)*,
+          .filter((name, value) => field(body, name).isDefined && (name != "version" || value != Json.Null))*,
       )
       _ <- forward(session, Method.PUT, List("settings"), body = Some(payload))
     yield Response.status(Status.NoContent)

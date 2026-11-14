@@ -2487,18 +2487,15 @@ export class VersolaClientForm extends LitElement {
     this.themeBrandInvalid = false;
   }
 
-  /** The credential a partner client authenticates with: the group certificate when the partner may use it, else private_key_jwt. */
+  /** A partner client authenticates with the group certificate. The central API still accepts private_key_jwt for one, but this console does not offer it. */
   private get partnerCredentialMode(): ClientCredentialMode {
-    const methods = this.partner?.limits.clientAuthMethods ?? [];
-    if (this.clientCredentialMode === 'private-key-jwt' && methods.includes('private_key_jwt')) return 'private-key-jwt';
-    if (this.clientCredentialMode === 'mtls' && methods.includes('tls_client_auth')) return 'mtls';
-    return methods.includes('tls_client_auth') ? 'mtls' : 'private-key-jwt';
+    return 'mtls';
   }
 
   /**
    * What the owner fixes (#549): consent is required, the flow is code + PKCE + PAR, the credential is the group
-   * certificate (`san_uri = urn:versola:edge-group:<group>`) or private_key_jwt, tokens follow the credential (certificate-bound with
-   * the group certificate, re-bound through the group's other edges on refresh; bearer with a key), scopes stay within the partner's list and the lifetimes under its caps.
+   * certificate (`san_uri = urn:versola:edge-group:<group>`), tokens are certificate-bound to it and re-bound through the group's
+   * other edges on refresh, scopes stay within the partner's list and the lifetimes under its caps.
    */
   private applyPartnerRules() {
     const partner = this.partner;
@@ -2977,7 +2974,7 @@ export class VersolaClientForm extends LitElement {
         .profile=${this.securityProfile}
         .disabledKinds=${this.owner === 'partner' ? ['service' as const] : []}
         disabledReason="Not available to partner-owned clients: a partner owns apps that sign users in."
-        .plan=${this.partner && this.kind && this.kind !== 'service' ? partnerKindPlan(this.kind, this.partner, this.partnerCredentialMode === 'mtls' ? 'mtls' : 'private-key-jwt') : null}
+        .plan=${this.partner && this.kind && this.kind !== 'service' ? partnerKindPlan(this.kind, this.partner) : null}
         .planOwner=${this.partner?.displayName ?? ''}
         @kind-change=${(e: CustomEvent<{ kind: ClientKind }>) => this.selectKind(e.detail.kind)}
       ></versola-client-kind-step>
@@ -3040,23 +3037,11 @@ export class VersolaClientForm extends LitElement {
   private renderWizardCredentialBlock() {
     const partner = this.partner;
     if (partner) {
-      const methods = partner.limits.clientAuthMethods;
-      const mtls = this.clientCredentialMode === 'mtls';
       return html`
-        ${methods.length > 1 ? html`
-          <div class="seg" role="group" aria-label="Client authentication" style="margin-bottom:var(--spacing-md)">
-            <button type="button" aria-pressed=${mtls} @click=${() => { this.clientCredentialMode = 'mtls'; this.applyPartnerRules(); }}>group certificate</button>
-            <button type="button" aria-pressed=${!mtls} @click=${() => { this.clientCredentialMode = 'private-key-jwt'; this.applyPartnerRules(); }}>key</button>
-          </div>` : ''}
         <div class="plan">
-          ${mtls
-            ? this.renderPlanLine('fixed', `tls_client_auth · san_uri = urn:versola:edge-group:${partner.groupId}`, 'The group certificate every edge of the partner presents. Nothing to register here.')
-            : this.renderPlanLine('fixed', 'private_key_jwt', 'The partner registers the public keys its edge signs assertions with.')}
-          ${mtls
-            ? this.renderPlanLine('fixed', 'Tokens bound to the edge\'s certificate', 'Bound to the certificate of the edge that asked. Another edge of the group re-binds the session on refresh, so every edge can serve it.')
-            : this.renderPlanLine('fixed', 'Bearer tokens', 'The partner authenticates with a key, not a certificate, so its access tokens are not certificate-bound.')}
+          ${this.renderPlanLine('fixed', `tls_client_auth · san_uri = urn:versola:edge-group:${partner.groupId}`, 'The group certificate every edge of the partner presents. Nothing to register here.')}
+          ${this.renderPlanLine('fixed', 'Tokens bound to the edge\'s certificate', 'Bound to the certificate of the edge that asked. Another edge of the group re-binds the session on refresh, so every edge can serve it.')}
         </div>
-        ${mtls ? '' : this.renderWizardJwksField('Key set', 'The public keys the partner\'s edge signs its assertions with.')}
       `;
     }
     if (this.clientCredentialMode === 'edge') {

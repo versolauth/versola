@@ -27,6 +27,7 @@ export const partnerScopes = [
 
 export const pilotPay = {
   id: 'pilot-pay',
+  version: 1,
   tenantId: partnerTenant,
   displayName: 'Pilot Pay',
   logoUri: 'https://pay.pilotpay.example/brand/pilot-pay.svg',
@@ -39,8 +40,7 @@ export const pilotPay = {
     maxEdges: 3,
     accessTokenTtlMax: 86_400,
     refreshTokenTtlMax: 30 * 86_400,
-    clientAuthMethods: ['tls_client_auth' as const, 'private_key_jwt' as const],
-    rateLimitPolicy: 'partner-default',
+    clientAuthMethods: ['tls_client_auth' as const],
   },
   groupId: 'pilot-pay',
   consoleClientId: 'pilot-pay-console',
@@ -50,12 +50,13 @@ export const pilotPay = {
 
 export const nomadTravel = {
   id: 'nomad-travel',
+  version: 1,
   tenantId: partnerTenant,
   displayName: 'Nomad Travel',
   logoUri: null,
   contact: { email: 'it@nomad.example' },
   status: 'suspended' as const,
-  limits: { ...pilotPay.limits, scopes: ['openid', 'profile'], redirectDomains: ['nomad.example'], maxClients: 3, maxEdges: 1, clientAuthMethods: ['tls_client_auth' as const], rateLimitPolicy: 'partner-default' },
+  limits: { ...pilotPay.limits, scopes: ['openid', 'profile'], redirectDomains: ['nomad.example'], maxClients: 3, maxEdges: 1, clientAuthMethods: ['tls_client_auth' as const] },
   groupId: 'nomad-travel',
   consoleClientId: 'nomad-travel-console',
   reviewAt: at(-3),
@@ -64,12 +65,13 @@ export const nomadTravel = {
 
 export const beeMarket = {
   id: 'bee-market',
+  version: 1,
   tenantId: partnerTenant,
   displayName: 'Bee Market',
   logoUri: null,
   contact: { email: 'dev@beemarket.example' },
   status: 'onboarding' as const,
-  limits: { ...pilotPay.limits, scopes: ['openid', 'email'], redirectDomains: ['beemarket.example'], clientAuthMethods: ['private_key_jwt' as const], rateLimitPolicy: 'partner-high' },
+  limits: { ...pilotPay.limits, scopes: ['openid', 'email'], redirectDomains: ['beemarket.example'], clientAuthMethods: ['tls_client_auth' as const] },
   groupId: 'bee-market',
   consoleClientId: 'bee-market-console',
   reviewAt: null,
