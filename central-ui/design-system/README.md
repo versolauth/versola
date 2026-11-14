@@ -393,10 +393,19 @@ right above the action row (`First-party` or `Partner` with a typeahead of partn
 listed as "suspended"); the plan under the cards follows the owner chosen below it ("Web app, owned by
 <partner>, sets:"). The review lists Owner after Type. Choosing a partner does not hide fields, it fixes them:
 the service kind is disabled with its reason, and the plan under the cards lists the rules as locked rows
-(lock icon, text, reason): the group certificate or private_key_jwt the partner uses, served by the edges of
+(lock icon, text, reason): the group certificate or private_key_jwt the partner uses (with a note that it may
+also use the other, when its limits allow both), served by the edges of
 its group, PAR, certificate-bound tokens off, and for a device client DPoP on (the device holds its tokens, so
 DPoP is their only sender-constraint; DPoP-bound tokens live at least an hour, so a partner whose access token
-cap is lower is told to raise it first) and App Link redirects, and the token lifetime cap. A partner is held to the same limits as the operator's own clients: central's rule (an access token lives at most 24 hours, at least 1 hour when DPoP-bound) applies in the wizard, the record's editor, the defaults in Settings and the partner API, and the operator's cap can only narrow it (`partnerAccessTtlError`). Scopes and redirect URIs are filtered to the partner's limits; a URI outside its
+cap is lower is told to raise it first) and App Link redirects, and the token lifetime cap. **One fact appears once on the step:** the
+type panel keeps the protocol facts, and the Owner section keeps only what the type panel does not say (consent
+required and names the partner, scopes within the partner's list, redirect URIs under its domains, a suspended
+partner). **Consent follows from the owner and from nothing else:** a first-party client has no consent at all (the
+owner hint says users are not asked), so step 3 shows no consent section and the wizard has no switch for one; a
+partner's client always has one, and step 3 shows its Consent section (settings and branding). Switching the owner back
+to First-party drops the consent flow and the theme set for the partner. The client record shows the owner as read-only
+text (`Owner` row of the Ownership card, which has no Edit for a client without consent); a client that has a consent
+flow keeps its consent settings editable under the same card, with the owner above them as text. A partner is held to the same limits as the operator's own clients: central's rule (an access token lives at most 24 hours, at least 1 hour when DPoP-bound) applies in the wizard, the record's editor, the defaults in Settings and the partner API, and the operator's cap can only narrow it (`partnerAccessTtlError`). Scopes and redirect URIs are filtered to the partner's limits; a URI outside its
 domains and a refresh lifetime above its cap are refused inline (the typed value stays as typed), not clamped and not found out after submit. The same locked-row
 treatment is how the partner console shows what the operator set (`Operator` / `Your group` marks on record
 rows, `plan-line` in the editors). Reference: `client-form.ts` (`renderOwnerSection`, `applyPartnerRules`),

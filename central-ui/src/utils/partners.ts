@@ -72,11 +72,12 @@ export const CONSENT_SCREEN_FIELDS = ['clientName', 'logoUri', 'displayName'];
  */
 export function partnerKindPlan(kind: ClientKind, partner: Pick<Partner, 'displayName' | 'groupId' | 'limits'>, credential: 'mtls' | 'private-key-jwt'): PlanLine[] {
   const limits = partner.limits;
+  const both = limits.clientAuthMethods.includes('tls_client_auth') && limits.clientAuthMethods.includes('private_key_jwt');
   const plan: PlanLine[] = [
     { state: 'fixed', text: 'PKCE, S256 only', why: 'Every client on this server. Not a setting.' },
     credential === 'mtls'
-      ? { state: 'fixed', text: `Group certificate: tls_client_auth, san_uri = urn:versola:edge-group:${partner.groupId}`, why: `The certificate every edge of ${partner.displayName} presents. Central provisions nothing; the partner's edges renew it themselves.` }
-      : { state: 'fixed', text: 'private_key_jwt', why: `${partner.displayName} registers the public keys its edge signs assertions with.` },
+      ? { state: 'fixed', text: `Group certificate: tls_client_auth, san_uri = urn:versola:edge-group:${partner.groupId}`, why: `The certificate every edge of ${partner.displayName} presents. Central provisions nothing; the partner's edges renew it themselves.${both ? ' The partner may also use private_key_jwt; choose on the next step.' : ''}` }
+      : { state: 'fixed', text: 'private_key_jwt', why: `${partner.displayName} registers the public keys its edge signs assertions with.${both ? ' The partner may also use the group certificate; choose on the next step.' : ''}` },
     { state: 'on', text: `Served by the edges of group ${partner.groupId}`, why: kind === 'device'
       ? `The app signs in through ${partner.displayName}'s edge; the tokens are issued to the device.`
       : `Tokens stay inside ${partner.displayName}'s edge behind a session cookie and never reach the browser.` },
