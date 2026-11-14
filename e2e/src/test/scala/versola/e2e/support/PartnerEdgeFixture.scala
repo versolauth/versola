@@ -51,7 +51,6 @@ object PartnerEdgeFixture:
       "accessTokenTtlMax" -> Json.Num(600),
       "refreshTokenTtlMax" -> Json.Num(86400),
       "clientAuthMethods" -> Json.Arr(Json.Str("tls_client_auth")),
-      "rateLimitPolicy" -> Json.Str("partner-default"),
     )
 
   /** A partner and its first edge, created through the operator API: the response of `POST /configuration/partners`. */

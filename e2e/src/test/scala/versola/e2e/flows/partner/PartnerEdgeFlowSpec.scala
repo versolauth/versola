@@ -331,6 +331,41 @@ object PartnerEdgeFlowSpec extends ZIOSpec[PartnerEdgeFixture & OAuthClient & Ce
         back._1 == Status.Ok,
       )
     },
+    test("an administrator saves the settings through the partner edge and reads them back; a save on settings that changed since is a conflict") {
+      def versionOf(result: (Status, Json.Obj)): Option[Long] =
+        result._2.fields.collectFirst { case ("version", Json.Num(number)) => number.longValue }
+      def settings(version: Option[Long], email: String) =
+        Json.Obj(
+          (version.map(v => "version" -> Json.Num(v)).toList ++ List(
+            "contact" -> Json.Obj("email" -> Json.Str(email), "phone" -> Json.Null),
+            "defaults" -> Json.Obj("accessTokenTtl" -> Json.Num(300), "refreshTokenTtl" -> Json.Num(7200)),
+          ))*,
+        )
+      for
+        f <- fixture
+        admin <- signIn(f, f.admin)
+        before <- call(f, Some(admin), Method.GET, "/partner/api/settings")
+        saved <- call(f, Some(admin), Method.PUT, "/partner/api/settings", Some(settings(versionOf(before), "incident@e2e.example")))
+        after <- call(f, Some(admin), Method.GET, "/partner/api/settings")
+        // the same version again is stale: the save above moved it on
+        stale <- call(f, Some(admin), Method.PUT, "/partner/api/settings", Some(settings(versionOf(before), "other@e2e.example")))
+        unversioned <- call(f, Some(admin), Method.PUT, "/partner/api/settings", Some(settings(None, "other@e2e.example")))
+        reread <- call(f, Some(admin), Method.GET, "/partner/api/settings")
+      yield assertTrue(
+        before._1 == Status.Ok,
+        versionOf(before).isDefined,
+        saved._1 == Status.NoContent,
+        after._2.obj("contact").flatMap(_.str("email")).contains("incident@e2e.example"),
+        after._2.obj("defaults").exists(_.toJson.contains("7200")),
+        versionOf(after).exists(v => versionOf(before).exists(_ < v)),
+        stale._1 == Status.Conflict,
+        error(stale).contains("conflict"),
+        unversioned._1 == Status.BadRequest,
+        // neither refused save changed anything
+        reread._2.obj("contact").flatMap(_.str("email")).contains("incident@e2e.example"),
+        versionOf(reread) == versionOf(after),
+      )
+    },
     test("a suspended partner is 403 partner_suspended on a management call, and its edge serves again once it is resumed") {
       for
         f <- fixture
