@@ -395,7 +395,7 @@ listed as "suspended"); the plan under the cards follows the owner chosen below 
 the service kind is disabled with its reason, and the plan under the cards lists the rules as locked rows
 (lock icon, text, reason): the group certificate or private_key_jwt the partner uses (with a note that it may
 also use the other, when its limits allow both), served by the edges of
-its group, PAR, certificate-bound tokens off, and for a device client DPoP on (the device holds its tokens, so
+its group, PAR, certificate-bound tokens (with the group certificate; bearer with a key), and for a device client DPoP on (the device holds its tokens, so
 DPoP is their only sender-constraint; DPoP-bound tokens live at least an hour, so a partner whose access token
 cap is lower is told to raise it first) and App Link redirects, and the token lifetime cap. **One fact appears once on the step:** the
 type panel keeps the protocol facts, and the Owner section keeps only what the type panel does not say (consent

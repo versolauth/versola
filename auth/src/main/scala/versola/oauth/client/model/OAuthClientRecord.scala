@@ -85,9 +85,6 @@ case class OAuthClientRecord(
     applicationType: ApplicationType,
     /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
     themeOverrides: Option[ThemeOverrides],
-    /** The partner that owns the client (#549, #962), as central names it; `None` for a first-party client. Only what
-      * [[bindsAccessTokens]] needs: auth knows nothing else of partners. */
-    partnerId: Option[String],
 ) derives CanEqual, Equal:
 
   /** Whether this client's credential card can lead to account creation: it asks for an email or
@@ -132,12 +129,12 @@ case class OAuthClientRecord(
     * it would be replayable by anyone who can reach edge. Its `cnf` carries only the device's
     * `jkt`, which `dpopBoundAccessTokens` -- enforced for it at registration -- guarantees.
     *
-    * A partner's client is the other (#549, #962): it authenticates with the certificate of its edge group, and every edge of
-    * the group holds a certificate of its own, so a token bound to the one that asked for it would be refused through every
-    * other replica. Central keeps `certificateBoundAccessTokens` off for it; this is the same rule, read from the sync.
+    * A client named by a group of edges ([[authenticatesByEdgeGroup]], which a partner's client is) is bound like any other
+    * `tls_client_auth` client: to the certificate of the edge that asked for the token. It stays usable through the other edges
+    * of the group because a refresh with another edge's certificate re-binds it (`OAuthTokenService`), not because it is unbound.
     */
   def bindsAccessTokens: Boolean =
-    (mtlsAuth.nonEmpty && !isEdgeFrontedNative && partnerId.isEmpty) || certificateBoundAccessTokens
+    (mtlsAuth.nonEmpty && !isEdgeFrontedNative) || certificateBoundAccessTokens
 
   /** Whether this client is registered by the name of a group of edges (`tls_client_auth`, `san_uri`
     * `urn:versola:edge-group:<group>`), so that every edge of the group authenticates it, each with a

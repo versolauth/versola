@@ -119,9 +119,9 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
 
     const refuse = (status: number, error: string, extra: Record<string, unknown> = {}) => route.fulfill(json({ error, ...extra }, status));
     const write = method !== 'GET';
-    // What the edge answers itself: who is asking, the team, the pending profile change, and the one operation a partner does not have.
+    // What the edge answers itself, without central: who is asking, the team, the profile read (always null: central gives none), the one operation a partner does not have, and revocation.
     const edgeServed = pathname === '/me' || pathname === '/staff' || pathname.startsWith('/staff/') || (pathname === '/profile' && method === 'GET') || /^\/clients\/[^/]+\/rotate-secret$/.test(pathname)
-      // Revocation here ends sessions on the partner's own edges (the owner's decision), so it does not go through central; the edge's contract has it central-served.
+      // Revocation is edge-local (the owner's decision): it ends sessions on the partner's own edge and does not go through central.
       || pathname === '/revocations';
     const level: StaffLevel = state.me?.staff.level ?? 'viewer';
     const rank: Record<StaffLevel, number> = { viewer: 0, developer: 1, admin: 2 };
@@ -457,7 +457,8 @@ export async function setupPartnerApiMocks(page: MockPage, overrides: Partial<Mo
     }
     if (pathname === '/profile') {
       if (method === 'GET') {
-        await route.fulfill(json({ approval: state.profileApproval }));
+        // Like the real edge: central gives no read of a waiting change, so the answer is always null and the console remembers the 202.
+        await route.fulfill(json({ approval: null }));
         return;
       }
       if (method === 'PUT') {

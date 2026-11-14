@@ -25,7 +25,7 @@ object RateLimitPolicySyncClient:
       config: EdgeConfig,
       centralSyncTokenService: CentralSyncTokenService,
   ) extends RateLimitPolicySyncClient:
-    private val RateLimitPolicyURL = config.central.url / "edge" / "sync" / "rate-limits"
+    private val RateLimitPolicyURL = config.syncUrl("rate-limits")
 
     override def getAll: Task[EdgeRateLimitPolicies] =
       for

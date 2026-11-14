@@ -208,6 +208,8 @@ final class EdgeApi(client: Client, config: E2EConfig):
       login: String,
       password: String,
       returnTo: Option[String] = None,
+      consent: Option[Set[String]] = None,
+      emailOtp: Boolean = false,
   ): Task[EdgeCallback] =
     for
       started <- this.login(presetId, returnTo.map("return_to" -> _).toList*)
@@ -217,12 +219,29 @@ final class EdgeApi(client: Client, config: E2EConfig):
       conversation <- ZIO.fromOption(OAuthClient.extractConversationCookie(authorized))
         .orElseFail(RuntimeException(s"the OP started no conversation (status=${authorized.status})"))
       challenge <- auth.getChallenge(conversation)
-      submitted <- auth.submitLoginPassword(conversation, login, password, challenge.csrf)
-      back <- ZIO.fromOption(submitted.response.header(Header.Location).map(_.url.encode))
-        .orElseFail(RuntimeException(s"the OP did not redirect back (status=${submitted.response.status})"))
+      // `emailOtp`: the client's flow is an email and a code (the fixed one of the test stack), after which the operator holds the email as verified
+      submitted <-
+        if emailOtp then
+          auth.submitEmail(conversation, login, challenge.csrf) *>
+            auth.getChallenge(conversation).flatMap(step => auth.submitOtp(conversation, "123456", step.csrf))
+        else auth.submitLoginPassword(conversation, login, password, challenge.csrf)
+      // a client with a consent flow (a partner's) stops the conversation on the consent screen, which the user grants
+      afterConsent <- (submitted.response.header(Header.Location).map(_.url.encode), consent) match
+        case (Some("/challenge"), Some(scope)) =>
+          auth.getChallenge(conversation).flatMap(step => auth.submitConsent(conversation, scope, step.csrf))
+        case _ => ZIO.succeed(submitted)
+      back <- ZIO.fromOption(afterConsent.response.header(Header.Location).map(_.url.encode))
+        .orElseFail(RuntimeException(s"the OP did not redirect back (status=${afterConsent.response.status})"))
       backUrl <- ZIO.fromEither(URL.decode(back)).mapError(RuntimeException(_))
       code <- ZIO.fromOption(backUrl.queryParams.getAll("code").headOption)
-        .orElseFail(RuntimeException(s"the OP returned no authorization code: $back"))
+        .orElse(
+          // where the conversation stands says why it did not end: the step it asks for next
+          auth.getChallenge(conversation).either.flatMap(step =>
+            ZIO.fail(RuntimeException(
+              s"the OP returned no authorization code: $back (the conversation is at: ${step.fold(_.getMessage, ok => ok.step.toString.take(800))})",
+            )),
+          ),
+        )
       state <- ZIO.fromOption(backUrl.queryParams.getAll("state").headOption)
         .orElseFail(RuntimeException(s"the OP returned no state: $back"))
     yield EdgeCallback(code, state, EdgeApi.loginCookie(started))
@@ -259,9 +278,16 @@ final class EdgeApi(client: Client, config: E2EConfig):
     yield NativeCallback(back, code, state, iss)
 
   /** Signs a user in the way a browser does, all the way to the `EDGE_SESSION` cookie. */
-  def browserLogin(auth: OAuthClient, presetId: String, login: String, password: String): Task[EdgeSession] =
+  def browserLogin(
+      auth: OAuthClient,
+      presetId: String,
+      login: String,
+      password: String,
+      consent: Option[Set[String]] = None,
+      emailOtp: Boolean = false,
+  ): Task[EdgeSession] =
     for
-      callback <- authorize(auth, presetId, login, password)
+      callback <- authorize(auth, presetId, login, password, consent = consent, emailOtp = emailOtp)
       completed <- complete(callback)
       cookie <- ZIO.fromOption(EdgeApi.sessionCookie(completed))
         .orElseFail(RuntimeException(s"/complete set no EDGE_SESSION cookie (status=${completed.status})"))

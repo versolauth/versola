@@ -1,13 +1,16 @@
 package versola.edge
 
+import versola.edge.partner.{Enrolled, PartnerEnrollment}
 import versola.util.http.Observability
-import versola.util.{CertificateSubject, EdgeIdentityNames}
+import versola.util.{CertificateSubject, EdgeIdentityNames, SecurityService}
 import zio.*
-import zio.http.{Body, Client, Header, MediaType, Request, URL}
+import zio.http.{Body, Client, Header, MediaType, Request, Status, URL}
 import zio.json.*
+import zio.json.ast.Json
 
 import java.nio.file.{Files, Path}
 import java.time.{Duration as JavaDuration, Instant}
+import java.util.Base64
 
 /** Gets this edge its certificate from central, and keeps it renewed, where `central.identity` says central issues it.
   *
@@ -27,21 +30,25 @@ object EdgeIdentityEnrollment:
   /** How often the certificate is looked at. Short against the days a certificate lives, long against the cost. */
   val CheckInterval: Duration = 10.minutes
 
-  val live: ZLayer[Scope & Client & EdgeConfig & EdgeCertificateHolder & CentralSyncTokenService, Throwable, EdgeIdentityEnrollment] =
+  val live
+      : ZLayer[Scope & Client & EdgeConfig & EdgeCertificateHolder & CentralSyncTokenService & SecurityService, Throwable, EdgeIdentityEnrollment] =
     ZLayer.fromZIO:
       for
         config <- ZIO.service[EdgeConfig]
         client <- ZIO.service[Client]
         holder <- ZIO.service[EdgeCertificateHolder]
         tokens <- ZIO.service[CentralSyncTokenService]
+        security <- ZIO.service[SecurityService]
         scope <- ZIO.service[Scope]
-        enrollment = Impl(config, client, holder, tokens)
+        enrollment = Impl(config, client, holder, tokens, security)
         _ <- ZIO.foreachDiscard(config.central.identity): _ =>
           enrollment.ensureCertificate *> enrollment.renewing.forkIn(scope)
       yield new EdgeIdentityEnrollment {}
 
   private case class EnrollRequest(edgeId: String, token: String, csr: String) derives JsonCodec
-  private case class RenewRequest(csr: String) derives JsonCodec
+
+  /** `signingKey` is the public key a partner edge has generated to replace the one central holds; absent for the other edges. */
+  private case class RenewRequest(csr: String, signingKey: Option[Json.Obj] = None) derives JsonCodec
 
   /** Central's answer: the chain, leaf first. Renewal is always on (#549 decision 8), so nothing else travels with it; a
     * partner's edge is stopped by suspending the partner, which refuses it everything. */
@@ -51,7 +58,17 @@ object EdgeIdentityEnrollment:
   private[edge] def due(notBefore: Instant, notAfter: Instant, now: Instant): Boolean =
     JavaDuration.between(now, notAfter).compareTo(JavaDuration.between(notBefore, notAfter).dividedBy(3)) <= 0
 
-  private[edge] class Impl(config: EdgeConfig, client: Client, holder: EdgeCertificateHolder, tokens: CentralSyncTokenService):
+  /** Central answered a request of the enrollment or renewal with `status`. */
+  private[edge] class CentralRefused(what: String, val status: Status, text: String)
+    extends RuntimeException(s"central refused the $what with $status${if text.isEmpty then "" else s": $text"}")
+
+  private[edge] class Impl(
+      config: EdgeConfig,
+      client: Client,
+      holder: EdgeCertificateHolder,
+      tokens: CentralSyncTokenService,
+      security: SecurityService,
+  ):
     private val subject: CertificateSubject =
       EdgeIdentityNames.subject(
         edgeId = config.id,
@@ -70,19 +87,29 @@ object EdgeIdentityEnrollment:
           case None => enroll
       yield ()
 
+    /** Where the first certificate is asked and the token it is paid with: `central.identity.enrollment`. A partner edge never gets here
+      * (it enrolled before its configuration was read, see `PartnerEnrollment`). */
+    private def enrollmentSource: Task[(URL, String)] =
+      config.central.identity.flatMap(_.enrollment) match
+        case Some(EdgeConfig.CentralEnrollment(Some(url), Some(tokenFile), _)) =>
+          ZIO.attemptBlocking(Files.readString(Path.of(tokenFile)).trim)
+            .mapError(error => RuntimeException(s"cannot read the enrollment token at $tokenFile: ${error.getMessage}"))
+            .map(url -> _)
+        case _ =>
+          ZIO.fail(
+            RuntimeException(
+              "this edge has no valid certificate and no enrollment configured: create a token with `POST /configuration/edges/enrollment-tokens` " +
+                "and set central.identity.enrollment (url and token-file), or restore the identity directory",
+            ),
+          )
+
     private def enroll: Task[Unit] =
       for
-        enrollment <- ZIO.fromOption(config.central.identity.flatMap(_.enrollment)).orElseFail(
-          RuntimeException(
-            "this edge has no valid certificate and no enrollment configured: create a token with `POST /configuration/edges/enrollment-tokens` " +
-              "and set central.identity.enrollment, or restore the identity directory",
-          ),
-        )
-        token <- ZIO.attemptBlocking(Files.readString(Path.of(enrollment.tokenFile)).trim)
-          .mapError(error => RuntimeException(s"cannot read the enrollment token at ${enrollment.tokenFile}: ${error.getMessage}"))
+        source <- enrollmentSource
+        (url, token) = source
         generated <- CertificateSubject.generate(subject)
         body = EnrollRequest(edgeId = config.id, token = token, csr = generated.csrPem).toJson
-        request = Request.post(enrollment.url / "edge" / "enroll", Body.fromString(body))
+        request = Request.post(url / "edge" / "enroll", Body.fromString(body))
           .addHeader(Header.ContentType(MediaType.application.json))
         issued <- send(request, client, "enrollment")
         _ <- holder.install(issued.certificate, generated.privateKeyPem)
@@ -101,24 +128,95 @@ object EdgeIdentityEnrollment:
           ZIO.when(due(material.leaf.getNotBefore.toInstant, material.leaf.getNotAfter.toInstant, now))(renew)
       yield ()
 
+    /** A partner edge sends a new public signing key with the request for the certificate and switches to it when central has answered:
+      * central replaced the key in the same step, so what the edge signs from then on is with the new one.
+      *
+      * The new key is written to `enrolled.json` as pending before central is asked, and a failure to write it ends the renewal there (nothing
+      * has been asked yet). After the answer it is promoted to the key in use. An interruption in between leaves the pending key in the file,
+      * and the next start asks central which of the two it holds (`PartnerEnrollment.chooseKey`); central keeps the key it replaced valid until
+      * the next replacement, so the key in use works meanwhile either way.
+      *
+      * A renewal whose answer is lost while central processed it leaves this process on a key central has since replaced; it works as the key
+      * central keeps before the current one. If that happens twice in a row, the second renewal's key is the one central holds, the one in
+      * use is no longer accepted, and central answers the third renewal with 401. The key the file held as pending before this renewal
+      * wrote its own is then put to central (`PartnerEnrollment.askCentral`) and, if central takes it, adopted; the renewal itself is not
+      * repeated, and is done at the next check ([[CheckInterval]]). Until then calls to central fail with 401: that window is the cost
+      * of not asking central on every 401 of every call. */
     private def renew: Task[Unit] =
       for
         generated <- CertificateSubject.generate(subject)
+        fresh <- ZIO.when(config.mode == EdgeMode.Partner)(security.generateRsaKeyPair)
+        held <- ZIO.foreach(fresh)(_ => pendingKey).map(_.flatten)
+        _ <- ZIO.foreachDiscard(fresh)(keepPending)
         token <- tokens.getToken
-        request = Request.post(config.central.url / "edge" / "certificate" / "renew", Body.fromString(RenewRequest(generated.csrPem).toJson))
+        body = RenewRequest(generated.csrPem, fresh.map(_.toPublicJwk)).toJson
+        request = Request.post(config.central.url / "edge" / "certificate" / "renew", Body.fromString(body))
           .addHeader(Header.Authorization.Bearer(token))
           .addHeader(Header.ContentType(MediaType.application.json))
-        issued <- send(request, tokens.connection(client), "renewal")
+        issued <- send(request, tokens.connection(client), "renewal").catchSome:
+          case refused: CentralRefused if refused.status == Status.Unauthorized && held.isDefined =>
+            adopt(held.get).flatMap:
+              case true =>
+                ZIO.fail(
+                  RuntimeException("central holds the signing key an earlier renewal sent: this edge now signs with it, and renews at the next check"),
+                )
+              case false => ZIO.fail(refused)
+        _ <- ZIO.foreachDiscard(fresh)(switchKey)
         _ <- holder.install(issued.certificate, generated.privateKeyPem)
-        _ <- ZIO.logInfo(s"renewed the certificate of edge '${config.id}'")
+        _ <- ZIO.logInfo(s"renewed the certificate of edge '${config.id}'${if fresh.isDefined then " and its signing key" else ""}")
       yield ()
+
+    private val directory: Option[Path] = config.central.identity.map(identity => Path.of(identity.directory))
+
+    private def encoded(key: versola.util.RsaKeyPair): Enrolled.Key =
+      Enrolled.Key(key.keyId, Base64.getEncoder.encodeToString(key.privateKey.getEncoded))
+
+    /** The pending key of the file, as it was before this renewal. */
+    private def pendingKey: UIO[Option[Enrolled.Key]] =
+      ZIO.foreach(directory)(Enrolled.read(_)).map(_.flatten.flatMap(_.pending)).orElseSucceed(None)
+
+    /** Whether central takes `key`; if it does, this edge signs with it from now on and the file says so (no key is pending then). */
+    private def adopt(key: Enrolled.Key): UIO[Boolean] =
+      (for
+        asked <- PartnerEnrollment.askCentral(tokens.connection(client), config.central.url, config.id, key)
+        adopted <- ZIO.foreach(Option.when(asked.contains(true))(directory).flatten): directory =>
+          for
+            privateKey <- ZIO.attempt(
+              java.security.KeyFactory.getInstance("RSA").generatePrivate(
+                java.security.spec.PKCS8EncodedKeySpec(Base64.getDecoder.decode(key.privateKey)),
+              ),
+            )
+            known <- Enrolled.read(directory)
+            _ <- ZIO.foreachDiscard(known)(k => Enrolled.write(directory, k.copy(keyId = key.keyId, privateKey = key.privateKey, pending = None)))
+            _ <- tokens.switchKey(key.keyId, privateKey)
+            _ <- ZIO.logWarning(
+              s"central held the signing key '${key.keyId}' that an earlier renewal of this edge sent, and had replaced the one in use: adopted it",
+            )
+          yield true
+      yield adopted.getOrElse(false)).catchAll(_ => ZIO.succeed(false))
+
+    /** Before central is asked: fails the renewal when it cannot be written. */
+    private def keepPending(fresh: versola.util.RsaKeyPair): Task[Unit] =
+      ZIO.foreachDiscard(directory): directory =>
+        Enrolled.read(directory).flatMap(ZIO.foreachDiscard(_)(known => Enrolled.write(directory, known.copy(pending = Some(encoded(fresh))))))
+
+    /** After central's answer: the key in use is the new one in this process whatever the file says. */
+    private def switchKey(fresh: versola.util.RsaKeyPair): UIO[Unit] =
+      ZIO.foreachDiscard(directory): directory =>
+        Enrolled.read(directory).flatMap(ZIO.foreachDiscard(_)(known =>
+          Enrolled.write(directory, known.copy(keyId = fresh.keyId, privateKey = encoded(fresh).privateKey, pending = None)),
+        )).catchAll(error =>
+          ZIO.logError(
+            s"the new signing key of this edge could not be promoted in $directory: ${error.getMessage}; it stays pending there and a restart asks central which key it holds",
+          ),
+        )
+      *> tokens.switchKey(fresh.keyId, fresh.privateKey)
 
     private def send(request: Request, over: Client, what: String): Task[Issued] =
       for
         response <- ZIO.scoped(over.request(request).flatMap(r => r.body.asString.map(r.status -> _)))
         (status, text) = response
-        _ <- ZIO.fail(RuntimeException(s"central refused the $what with $status${if text.isEmpty then "" else s": $text"}"))
-          .unless(status.isSuccess)
+        _ <- ZIO.fail(CentralRefused(what, status, text)).unless(status.isSuccess)
         issued <-
           ZIO.fromEither(text.fromJson[Issued]).mapError(error => RuntimeException(s"central's answer to the $what is not a certificate: $error"))
       yield issued

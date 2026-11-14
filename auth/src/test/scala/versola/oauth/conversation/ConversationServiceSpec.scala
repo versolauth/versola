@@ -182,7 +182,6 @@ object ConversationServiceSpec extends UnitSpecBase:
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
-    partnerId = None,
   )
 
   private val consentingClient = registrationClient.copy(

@@ -82,7 +82,6 @@ object LogoutServiceSpec extends UnitSpecBase:
     requirePushedAuthorizationRequests = false,
     themeOverrides = None,
     applicationType = ApplicationType.web,
-    partnerId = None,
   )
 
   private val clientNoLogoutUri = baseClient

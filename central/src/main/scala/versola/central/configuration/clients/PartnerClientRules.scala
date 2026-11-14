@@ -12,8 +12,8 @@ import java.util.Locale
 /** What a client a partner owns is held to (#549, #962), on top of every rule a client of its kind is held to anyway.
   *
   * Two kinds of rule. The ones that make the client *a partner's client at all* are refused outright, on every surface: a
-  * partner client signs users in with consent and authenticates with the group's certificate or a key the partner holds,
-  * and its tokens are never bound to one replica's certificate. The ones about the operator's *limits* are what an
+  * partner client signs users in with consent (the console, which signs in the partner's own staff, with none) and
+  * authenticates with the group's certificate or a key the partner holds. The ones about the operator's *limits* are what an
   * operator may change their mind about: a client outside them is refused when the operator registers it, and recorded as
   * waiting for approval when the partner does, with the fields named ([[outsideLimits]]). */
 object PartnerClientRules:
@@ -78,8 +78,10 @@ object PartnerClientRules:
       invalid(
         s"with tls_client_auth is recognised by its group's certificate: mtlsAuth must be san_uri ${EdgeCertificate.groupUriFor(partner.groupId)}",
       )
-    else if subject.certificateBoundAccessTokens then
-      invalid("cannot set certificateBoundAccessTokens - every edge of the partner's group presents a certificate of its own")
+    // a tls_client_auth client's tokens are bound already (to the certificate of the edge that asked, re-bound through the group's
+    // other edges on refresh); a private_key_jwt client has no group certificate to re-bind through
+    else if subject.certificateBoundAccessTokens && subject.authMethod != AuthMethod.tls_client_auth then
+      invalid("cannot set certificateBoundAccessTokens with private_key_jwt - its tokens would be bound to one edge's certificate")
     else if subject.backChannelLogoutUri.exists(uri => !underDomains(uri, partner.limits.redirectDomains)) then
       // Auth POSTs a signed logout token to this address from inside the operator's network: an address of the partner's own
       // domains only (https, a name, never an IP or localhost), or the partner could point auth at the operator's internal hosts.

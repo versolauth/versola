@@ -17,7 +17,7 @@ import zio.schema.*
 
 /** A client as a partner registers it through its edge (`POST /edge/partner/clients`, #962): what the partner chooses. What
   * a partner client has fixed is not a field, so it cannot be sent wrong -- consent is on, PAR is on, the certificate is the
-  * group's, tokens are not certificate-bound, a native client's tokens are DPoP-bound. This is also the shape stored as
+  * group's (so its tokens are bound to the certificate of the edge that asked), a native client's tokens are DPoP-bound. This is also the shape stored as
   * `requested` of a `client_create` approval, and what the operator's `overrides` are read as. */
 @jsonNoExtraFields
 case class PartnerClientRequest(

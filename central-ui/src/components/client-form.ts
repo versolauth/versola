@@ -2497,8 +2497,8 @@ export class VersolaClientForm extends LitElement {
 
   /**
    * What the owner fixes (#549): consent is required, the flow is code + PKCE + PAR, the credential is the group
-   * certificate (`san_uri = urn:versola:edge-group:<group>`) or private_key_jwt, tokens are not certificate-bound (every
-   * replica presents the group certificate), scopes stay within the partner's list and the lifetimes under its caps.
+   * certificate (`san_uri = urn:versola:edge-group:<group>`) or private_key_jwt, tokens follow the credential (certificate-bound with
+   * the group certificate, re-bound through the group's other edges on refresh; bearer with a key), scopes stay within the partner's list and the lifetimes under its caps.
    */
   private applyPartnerRules() {
     const partner = this.partner;
@@ -3052,7 +3052,9 @@ export class VersolaClientForm extends LitElement {
           ${mtls
             ? this.renderPlanLine('fixed', `tls_client_auth · san_uri = urn:versola:edge-group:${partner.groupId}`, 'The group certificate every edge of the partner presents. Nothing to register here.')
             : this.renderPlanLine('fixed', 'private_key_jwt', 'The partner registers the public keys its edge signs assertions with.')}
-          ${this.renderPlanLine('fixed', 'Tokens not bound to a certificate', 'Every replica of the partner\'s edges presents the same group certificate, so binding would say nothing.')}
+          ${mtls
+            ? this.renderPlanLine('fixed', 'Tokens bound to the edge\'s certificate', 'Bound to the certificate of the edge that asked. Another edge of the group re-binds the session on refresh, so every edge can serve it.')
+            : this.renderPlanLine('fixed', 'Bearer tokens', 'The partner authenticates with a key, not a certificate, so its access tokens are not certificate-bound.')}
         </div>
         ${mtls ? '' : this.renderWizardJwksField('Key set', 'The public keys the partner\'s edge signs its assertions with.')}
       `;

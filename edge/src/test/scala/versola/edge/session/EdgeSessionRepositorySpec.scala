@@ -221,6 +221,20 @@ trait EdgeSessionRepositorySpec extends DatabaseSpecBase[EdgeSessionRepositorySp
           found <- env.repository.findBySessionId(sid1)
         yield assertTrue(found.map(summarize).toSet == Set(summarize(live), summarize(expired)))
       },
+      test("findLive returns every row that has not expired, of every session and preset") {
+        for
+          now <- Clock.instant
+          live = record(sid1, preset1, AccessTokenId("at-live"), None, now.plusSeconds(3600))
+          other = record(sid2, preset2, AccessTokenId("at-other"), None, now.plusSeconds(3600))
+          expired = record(sid2, preset1, AccessTokenId("at-expired"), None, now.plusSeconds(60))
+          _ <- env.repository.create(live)
+          _ <- env.repository.create(other)
+          _ <- env.repository.create(expired)
+          _ <- TestClock.adjust(2.minutes)
+          at <- Clock.instant
+          found <- env.repository.findLive(at)
+        yield assertTrue(found.map(summarize).toSet == Set(summarize(live), summarize(other)))
+      },
       test("delete removes the session by access token id") {
         for
           now <- Clock.instant

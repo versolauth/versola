@@ -66,9 +66,10 @@ export const CONSENT_SCREEN_FIELDS = ['clientName', 'logoUri', 'displayName'];
 
 /**
  * What a kind sets when a partner owns the client (#549): the plan the kind step shows instead of the first-party one.
- * The credential is the group certificate the partner's own edges present (central provisions nothing), tokens are not
- * certificate-bound (every replica presents the same certificate), DPoP is off (tokens never leave the edge session) and
- * the access token is the partner's cap.
+ * The credential is the group certificate the partner's own edges present (central provisions nothing). With it, access tokens
+ * are certificate-bound like any tls_client_auth client's: bound to the certificate of the edge that asked, and re-bound when a
+ * refresh comes through another edge of the group. With a key they are bearer tokens. DPoP is off for a web client. The access
+ * token is the partner's cap.
  */
 export function partnerKindPlan(kind: ClientKind, partner: Pick<Partner, 'displayName' | 'groupId' | 'limits'>, credential: 'mtls' | 'private-key-jwt'): PlanLine[] {
   const limits = partner.limits;
@@ -80,9 +81,11 @@ export function partnerKindPlan(kind: ClientKind, partner: Pick<Partner, 'displa
       : { state: 'fixed', text: 'private_key_jwt', why: `${partner.displayName} registers the public keys its edge signs assertions with.${both ? ' The partner may also use the group certificate; choose on the next step.' : ''}` },
     { state: 'on', text: `Served by the edges of group ${partner.groupId}`, why: kind === 'device'
       ? `The app signs in through ${partner.displayName}'s edge; the tokens are issued to the device.`
-      : `Tokens stay inside ${partner.displayName}'s edge behind a session cookie and never reach the browser.` },
+      : `The browser holds ${partner.displayName}'s edge session cookie (HttpOnly), which carries the access token; the token is bound to the certificate of the edge that issued it.` },
     { state: 'on', text: 'Pushed authorization requests', why: 'RFC 9126. Every partner client.' },
-    { state: 'off', text: 'Certificate-bound access tokens', why: 'Every replica of the partner\'s edges presents the same group certificate, so binding would say nothing.' },
+    credential === 'mtls'
+      ? { state: 'on', text: 'Certificate-bound access tokens', why: 'Bound to the certificate of the edge that asked. Another edge of the group re-binds the session when it refreshes it, so every edge can serve it.' }
+      : { state: 'off', text: 'Certificate-bound access tokens', why: 'The partner authenticates with a key, not a certificate: its access tokens are bearer tokens.' },
   ];
   if (kind === 'device') {
     const belowFloor = limits.accessTokenTtlMax < MIN_DPOP_BOUND_ACCESS_TOKEN_TTL_SECONDS;
