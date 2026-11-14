@@ -1185,8 +1185,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   **What is recorded, and how often.** Refusals reachable without signing in (`client.auth_failed`, `token.refused`, a
   failed `authorize.request`, a refused `par.request`) are counted in memory per (kind, client, address, reason) and written
   as one row a minute with `details.count`; the table of keys holds at most 10 000, past which new keys are counted
-  together in one more row. The `token.issued` of a refresh-token grant is off by default (`events.token-refresh = false`); `token.refused` and
-  `token.reuse_detected` are always recorded. `PUT /users` records `account.updated` (actor `service`, `details.changed`
+  together in one more row. The `token.issued` of a refresh-token grant is off by default (`events.token-refresh = false`); `token.refused`,
+  `token.reuse_detected` and `token.rebound` (a grant of a client registered by an edge-group name bound to another certificate of
+  the group) are always recorded. `PUT /users` records `account.updated` (actor `service`, `details.changed`
   names `email`, `phone` or `login` and never a value, only when one changed); `DELETE /users` ends the user's sessions with
   `session.ended` and the cause `user_deleted`.
 

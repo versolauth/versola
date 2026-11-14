@@ -52,6 +52,12 @@ final class EdgeCertificate private (
 
   val edgeClientCertificate: String = s"$certificatePem\n$privateKeyPem\n"
 
+  /** RFC 8705 §3.1 `x5t#S256`: the base64url SHA-256 of the certificate's DER encoding, which is what auth binds a
+    * token issued over this certificate to. */
+  val thumbprint: String =
+    val der = Base64.getMimeDecoder.decode(certificatePem.linesIterator.filterNot(_.startsWith("-----")).mkString)
+    Base64.getUrlEncoder.withoutPadding.encodeToString(java.security.MessageDigest.getInstance("SHA-256").digest(der))
+
   /** The certificate alone, as the header nginx forwards it (`ngx_escape_uri`: everything
     * outside the unreserved set percent-encoded) -- what a spec presents straight to auth to
     * be issued a token bound to this certificate, the way edge's own handshake gets one. */
@@ -152,6 +158,39 @@ object EdgeCertificate:
         )
       finally
         deleteRecursively(directory)
+
+  /** A certificate authority nothing in the stack trusts, as the directory [[make]] signs from (`caDirectory`): for the
+    * cases that show a certificate is refused for its issuer, whatever names it carries. */
+  def strangerAuthority: Task[String] =
+    ZIO.attempt:
+      val directory = Files.createTempDirectory("e2e-stranger-ca").nn
+      directory.toFile.nn.deleteOnExit()
+      val key = directory.resolve("ca.key").nn
+      val certificate = directory.resolve("ca.crt").nn
+      val command = Seq(
+        "openssl",
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-days",
+        "2",
+        "-keyout",
+        key.toString,
+        "-out",
+        certificate.toString,
+        "-subj",
+        "/CN=e2e-stranger-ca",
+        // A certificate authority, as the trusted ones are: what makes it a stranger is that nothing lists it.
+        "-addext",
+        "basicConstraints=critical,CA:TRUE",
+      )
+      val exit = Process(command).!
+      if exit != 0 then throw RuntimeException(s"openssl failed (exit $exit): ${command.mkString(" ")}")
+      key.toFile.nn.deleteOnExit()
+      certificate.toFile.nn.deleteOnExit()
+      directory.toString
 
   /** A `tls_client_auth` certificate for auth's own mutual-TLS listener (#417/#420): issued by
     * the CA in auth's `mutual-tls.trusted-certificates`, since the listener validates the chain

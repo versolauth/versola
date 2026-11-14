@@ -114,6 +114,12 @@ object EdgeFixture:
         * neither -- the same registration by subject as [[issuedCertificate]], with the certificate
         * made by the edge instead of by central. Mutually exclusive with it. */
       enrolledCertificate: Boolean,
+      /** Register the client `tls_client_auth` by the name of this edge group (`san_uri`
+        * `urn:versola:edge-group:<id>`), with a certificate that carries the name, signed by the terminator's CA
+        * and handed to the edge as `edgeClientCertificate` ([[EdgeFixture.certificate]]). It stands for the
+        * certificate of an edge of that group: the client auth lets a refresh grant follow from one certificate of
+        * the group to another (#1008). Mutually exclusive with every other credential above. */
+      groupCertificate: Option[String],
   )
 
   def layer(config: Config): ZLayer[OAuthClient & CentralApi & EdgeApi, Throwable, EdgeFixture] =
@@ -138,7 +144,9 @@ object EdgeFixture:
       _ <- central.delete("/configuration/resources", "resourceId" -> config.resourceId)
 
       signer <- ZIO.when(config.privateKeyJwt)(AssertionSigner.make)
-      certificate <- ZIO.when(config.mutualTls)(EdgeCertificate.make())
+      selfSigned <- ZIO.when(config.mutualTls)(EdgeCertificate.make())
+      groupCertificate <- ZIO.foreach(config.groupCertificate)(group => EdgeCertificate.make(uri = Some(groupName(group))))
+      certificate = selfSigned.orElse(groupCertificate)
       nativeCommonName = s"e2e-native-${clientId.takeRight(12)}"
       nativeCertificate <- ZIO.when(config.nativeApp && !config.issuedCertificate && !config.enrolledCertificate)(
         EdgeCertificate.forAuthListener(nativeCommonName),
@@ -150,7 +158,10 @@ object EdgeFixture:
       // the exact one `Flows.layer` uses, not this fixture's own choice: this call
       // overwrites every field, and a spec run after `Flows.layer` has already configured
       // the tenant must not clear it out from under specs that share this same backend.
-      _ <- ZIO.when(config.mutualTls || ((config.issuedCertificate || config.enrolledCertificate) && !config.nativeApp))(
+      _ <- ZIO.when(
+        config.mutualTls || config.groupCertificate.isDefined ||
+          ((config.issuedCertificate || config.enrolledCertificate) && !config.nativeApp),
+      )(
         auth.upsertChallengeSettings(
           acrVocabulary = Map(
             Acr.OtpLevel -> List("otp"),
@@ -173,14 +184,16 @@ object EdgeFixture:
         authMethod =
           if config.privateKeyJwt then "private_key_jwt"
           else if config.mutualTls then "self_signed_tls_client_auth"
-          else if config.nativeApp || config.issuedCertificate || config.enrolledCertificate then "tls_client_auth"
+          else if config.nativeApp || config.issuedCertificate || config.enrolledCertificate || config.groupCertificate.isDefined then
+            "tls_client_auth"
           else "client_secret",
         mtlsAuth =
           if config.mutualTls then Some(Fixtures.selfSignedTlsClientAuth)
+          else if config.groupCertificate.isDefined then config.groupCertificate.map(group => Fixtures.mutualTlsAuth("san_uri", groupName(group)))
           else if config.issuedCertificate || config.enrolledCertificate then None
           else if config.nativeApp then Some(Fixtures.mutualTlsAuth("subject_dn", s"CN=$nativeCommonName"))
           else None,
-        jwks = signer.map(_.jwks).orElse(certificate.map(_.jwks)),
+        jwks = signer.map(_.jwks).orElse(selfSigned.map(_.jwks)),
         edgeSigningKey = signer.map(_.privateJwk),
         edgeClientCertificate = certificate.orElse(nativeCertificate).map(_.edgeClientCertificate),
         requireSignedRequestObject = config.requireSignedRequestObject,
@@ -272,6 +285,9 @@ object EdgeFixture:
       signer = signer,
       certificate = certificate.orElse(nativeCertificate),
     )
+
+  /** The name central puts in the certificate of every edge of a group (`EdgeIdentityNames.groupUri`). */
+  def groupName(groupId: String): String = s"urn:versola:edge-group:$groupId"
 
   /** Where a completed edge login sends the browser. Any absolute URI the client is allowed to
     * be redirected to works; this one is the app origin the rest of the e2e setup uses.

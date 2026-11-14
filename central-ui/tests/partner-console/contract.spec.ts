@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
 import { findRequest } from '../fixtures';
-import { loadPartnerApp, sidePanel } from './fixtures';
+import { loadPartnerApp, sidePanel, test } from './fixtures';
 import { PARTNER_NOW, partnerSeedState } from './partner-fixtures';
 
 /**

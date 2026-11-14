@@ -141,6 +141,7 @@ object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
     nativeApp = false,
     issuedCertificate = false,
     enrolledCertificate = false,
+    groupCertificate = None,
   )
 
   override val bootstrap
