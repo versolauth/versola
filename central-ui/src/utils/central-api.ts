@@ -21,6 +21,7 @@ import type {
   ClientEstState,
   CreatePartnerRequest,
   CreatedPartner,
+  EdgeGroup,
   EdgeGroupKind,
   Partner,
   PartnerApproval,
@@ -136,7 +137,7 @@ type EdgesResponse = { edges: EdgeResponseDto[] };
 type ServiceKeyResponseDto = { keyId: string; privateKey: string };
 
 type TenantsResponse = {
-  tenants: Array<{ id: string; description: string; edgeId?: string | null; securityProfile: SecurityProfile; signingKeyId?: string | null }>;
+  tenants: Array<{ id: string; description: string; edgeGroupId?: string | null; securityProfile: SecurityProfile; signingKeyId?: string | null }>;
 };
 type PermissionsResponse = { permissions: Array<{ permission: string; description: LocalizedDescription; endpointIds: ResourceEndpointId[] }> };
 type ScopesResponse = { scopes: Array<{ scope: string; description: LocalizedDescription; claims: Array<{ claim: string; description: LocalizedDescription }> }> };
@@ -702,7 +703,7 @@ export async function fetchTenants(): Promise<Tenant[]> {
     id: tenant.id,
     name: tenant.description || tenant.id,
     description: tenant.description,
-    edgeId: tenant.edgeId ?? null,
+    edgeGroupId: tenant.edgeGroupId ?? null,
     securityProfile: tenant.securityProfile,
     signingKeyId: tenant.signingKeyId ?? null,
   })));
@@ -711,19 +712,19 @@ export async function fetchTenants(): Promise<Tenant[]> {
 export async function createTenant(
   id: string,
   description: string,
-  edgeId: string | null = null,
+  edgeGroupId: string | null = null,
   securityProfile: SecurityProfile = 'fapi2',
 ): Promise<void> {
   await requestVoid('/configuration/tenants', {
     method: 'POST',
-    body: { id, description, edgeId, securityProfile },
+    body: { id, description, edgeGroupId, securityProfile },
   });
 }
 
-export async function updateTenant(id: string, description: string, edgeId: string | null = null): Promise<void> {
+export async function updateTenant(id: string, description: string, edgeGroupId: string | null = null): Promise<void> {
   await requestVoid('/configuration/tenants', {
     method: 'PUT',
-    body: { id, description, edgeId },
+    body: { id, description, edgeGroupId },
   });
 }
 
@@ -1415,6 +1416,12 @@ export async function upsertServerMetadata(metadata: Record<string, unknown>): P
   await requestVoid('/configuration/server-metadata', { method: 'POST', body: metadata });
 }
 
+
+/** Every group of edges, the operator's own and the partners'. A tenant is served by one of the operator's own. */
+export async function fetchEdgeGroups(): Promise<EdgeGroup[]> {
+  const response = await request<{ groups: EdgeGroup[] }>('/configuration/edge-groups');
+  return sortById(response.groups);
+}
 
 export async function fetchEdges(): Promise<Edge[]> {
   const response = await request<EdgesResponse>('/configuration/edges');

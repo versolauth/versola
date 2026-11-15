@@ -3,7 +3,8 @@ export interface Tenant {
   id: string;
   name: string;
   description?: string;
-  edgeId?: string | null;
+  /** The group of edges that serves the tenant: every edge of it syncs the tenant's configuration. */
+  edgeGroupId?: string | null;
   /** Fixed when the tenant is created; `GET /configuration/tenants` reads it from the challenge settings. */
   securityProfile: SecurityProfile;
   /** The `kid` the tenant's tokens are signed with; `null` when it falls back to auth's configured key. */
@@ -461,6 +462,12 @@ export interface Edge {
 }
 
 export type EdgeGroupKind = 'first_party' | 'partner';
+
+/** A group of edges, as `GET /configuration/edge-groups` lists it. */
+export interface EdgeGroup {
+  id: string;
+  kind: EdgeGroupKind;
+}
 
 // Partners (#549): an organisation that runs its own edge and owns clients inside the operator's tenant.
 export type PartnerStatus = 'onboarding' | 'active' | 'suspended';

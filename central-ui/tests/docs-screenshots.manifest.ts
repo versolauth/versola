@@ -56,8 +56,8 @@ export type DocsShot = FrameShot | CropShot | LoginShot;
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
 const tenant = 'tenant-alpha';
 const standardTenants = [
-  { id: tenant, description: 'Alpha Workspace', edgeId: null, securityProfile: 'standard' as const },
-  { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null },
+  { id: tenant, description: 'Alpha Workspace', edgeGroupId: null, securityProfile: 'standard' as const },
+  { id: 'tenant-bravo', description: 'Bravo Workspace', edgeGroupId: null },
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -450,9 +450,9 @@ export const realThemeCss: Act = async page => {
 // Global data
 
 const edgeTenants = [
-  { id: 'acme', description: 'Acme', edgeId: 'edge-default' },
-  { id: 'acme-fapi', description: 'Acme FAPI', edgeId: 'edge-default', securityProfile: 'fapi2' as const },
-  { id: 'default', description: 'Default', edgeId: 'edge-default' },
+  { id: 'acme', description: 'Acme', edgeGroupId: 'default' },
+  { id: 'acme-fapi', description: 'Acme FAPI', edgeGroupId: 'default', securityProfile: 'fapi2' as const },
+  { id: 'default', description: 'Default', edgeGroupId: 'default' },
 ];
 const edges = [{ id: 'edge-default', hasOldKey: false, requireDpopNonce: true, tenants: ['acme', 'acme-fapi', 'default'], clients: [] }];
 const edgesState: MockState = { tenants: edgeTenants, edges };
@@ -486,7 +486,7 @@ const jwksState: MockState = {
 // The keys screen also shows who signs with a key, from the tenants' own settings.
 const keysState: MockState = {
   ...jwksState,
-  tenants: [{ id: tenant, description: 'Alpha Workspace', edgeId: null, securityProfile: 'fapi2' as const, signingKeyId: 'central-es256' }],
+  tenants: [{ id: tenant, description: 'Alpha Workspace', edgeGroupId: null, securityProfile: 'fapi2' as const, signingKeyId: 'central-es256' }],
 };
 
 const serverMetadata = {
@@ -1363,7 +1363,7 @@ const consoleShots: DocsShot[] = [
   // Tenants
   {
     name: 'entities/tenants-list', kind: 'frame', path: `/?view=tenants&tenant=${tenant}`,
-    state: { ...alpha, tenants: [{ id: tenant, description: 'Alpha Workspace', edgeId: null }, { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null }, { id: 'acme-prod', description: 'Acme production', edgeId: null, securityProfile: 'standard' }] },
+    state: { ...alpha, tenants: [{ id: tenant, description: 'Alpha Workspace', edgeGroupId: null }, { id: 'tenant-bravo', description: 'Bravo Workspace', edgeGroupId: null }, { id: 'acme-prod', description: 'Acme production', edgeGroupId: null, securityProfile: 'standard' }] },
     before: async page => {
       await expect(page.locator('versola-data-table').getByRole('button', { name: /^Open tenant/ })).toHaveCount(3);
     },

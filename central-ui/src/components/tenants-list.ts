@@ -2,8 +2,8 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, iconButtonStyles, recordStyles, tagStyles } from '../styles/components';
-import type { Edge, SecurityProfile, Tenant } from '../types';
-import { createTenant, deleteTenant, fetchEdges, fetchTenants, updateTenant } from '../utils/central-api';
+import type { Edge, EdgeGroup, SecurityProfile, Tenant } from '../types';
+import { createTenant, deleteTenant, fetchEdgeGroups, fetchEdges, fetchTenants, updateTenant } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard } from '../utils/helpers';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../utils/record-route';
@@ -35,7 +35,7 @@ const PROFILES: Array<{ id: SecurityProfile; title: string; text: string }> = [
 
 /**
  * Tenants: the table of every tenant (with its security profile) and, for the one selected, the
- * side panel with its description, its edge, its signing key with a link to the security settings,
+ * side panel with its description, its edge group, its signing key with a link to the security settings,
  * the Fixed group (the ID and the security profile) and the danger card. Everything shown comes
  * from `GET /configuration/tenants`. Editing a group and creating a tenant happen in the same
  * panel; creating one selects it.
@@ -48,13 +48,15 @@ export class VersolaTenantsList extends LitElement {
 
   @state() private tenants: Tenant[] = [];
   @state() private edges: Edge[] = [];
+  /** The operator's own groups: the ones a tenant can be served by. */
+  @state() private groups: EdgeGroup[] = [];
   @state() private searchQuery = '';
   @state() private filter: TenantFilter = 'all';
   @state() private isLoading = false;
   @state() private errorMessage = '';
   @state() private draftId = '';
   @state() private draftDescription = '';
-  @state() private draftEdgeId = '';
+  @state() private draftEdgeGroupId = '';
   @state() private draftProfile: SecurityProfile = 'fapi2';
   @state() private formError = '';
   @state() private isSaving = false;
@@ -128,13 +130,19 @@ export class VersolaTenantsList extends LitElement {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      const [tenants, edges] = await Promise.all([fetchTenants(), fetchEdges().catch(() => [] as Edge[])]);
+      const [tenants, edges, groups] = await Promise.all([
+        fetchTenants(),
+        fetchEdges().catch(() => [] as Edge[]),
+        fetchEdgeGroups().catch(() => [] as EdgeGroup[]),
+      ]);
       this.tenants = tenants;
       this.edges = edges;
+      this.groups = groups.filter(group => group.kind === 'first_party');
     } catch (error) {
       this.errorMessage = error instanceof Error ? error.message : 'Failed to load tenants';
       this.tenants = [];
       this.edges = [];
+      this.groups = [];
     } finally {
       this.isLoading = false;
     }
@@ -183,7 +191,7 @@ export class VersolaTenantsList extends LitElement {
   private draftBaseline = '';
 
   private get draftSnapshot(): string {
-    return JSON.stringify([this.draftId, this.draftDescription, this.draftEdgeId, this.draftProfile]);
+    return JSON.stringify([this.draftId, this.draftDescription, this.draftEdgeGroupId, this.draftProfile]);
   }
 
   /** Closing an editor with unsaved changes asks first; the draft is dropped only on a yes. */
@@ -202,7 +210,7 @@ export class VersolaTenantsList extends LitElement {
     const tenant = this.editorMode === 'edit' ? this.openTenant : null;
     this.draftId = tenant?.id ?? '';
     this.draftDescription = tenant?.description ?? '';
-    this.draftEdgeId = tenant?.edgeId ?? '';
+    this.draftEdgeGroupId = tenant?.edgeGroupId ?? '';
     this.draftProfile = 'fapi2';
     this.formError = '';
     this.submitted = false;
@@ -233,23 +241,23 @@ export class VersolaTenantsList extends LitElement {
 
     const existing = this.openTenant;
     const description = mode === 'create' || group === 'general' ? this.draftDescription.trim() : existing!.description ?? '';
-    const edgeId = mode === 'create' || group === 'edge' ? this.draftEdgeId || null : existing!.edgeId ?? null;
+    const edgeGroupId = mode === 'create' || group === 'edge' ? this.draftEdgeGroupId || null : existing!.edgeGroupId ?? null;
     const id = mode === 'create' ? this.draftId.trim() : existing!.id;
     const next: Tenant = mode === 'create'
-      ? { id, name: description || id, description, edgeId, securityProfile: this.draftProfile, signingKeyId: null }
-      : { ...existing!, name: description || id, description, edgeId };
+      ? { id, name: description || id, description, edgeGroupId, securityProfile: this.draftProfile, signingKeyId: null }
+      : { ...existing!, name: description || id, description, edgeGroupId };
 
     this.isSaving = true;
     this.formError = '';
     try {
       if (mode === 'create') {
-        await createTenant(id, description, edgeId, this.draftProfile);
+        await createTenant(id, description, edgeGroupId, this.draftProfile);
         this.tenants = [...this.tenants, next].sort((a, b) => a.id.localeCompare(b.id));
         this.selectTenant(id);
         this.notifyTenantsUpdated();
         dispatchRecordRoute(this, { id, edit: null, create: false });
       } else {
-        await updateTenant(id, description, edgeId);
+        await updateTenant(id, description, edgeGroupId);
         this.tenants = this.tenants.map(tenant => tenant.id === id ? next : tenant);
         this.notifyTenantsUpdated();
         dispatchRecordRoute(this, { edit: null, create: false });
@@ -285,8 +293,8 @@ export class VersolaTenantsList extends LitElement {
 
   private matchesFilter(tenant: Tenant, filter: TenantFilter = this.filter): boolean {
     switch (filter) {
-      case 'edge': return !!tenant.edgeId;
-      case 'unassigned': return !tenant.edgeId;
+      case 'edge': return !!tenant.edgeGroupId;
+      case 'unassigned': return !tenant.edgeGroupId;
       default: return true;
     }
   }
@@ -300,17 +308,22 @@ export class VersolaTenantsList extends LitElement {
       .sort((a, b) => (a.id === this.selectedTenantId ? -1 : b.id === this.selectedTenantId ? 1 : a.id.localeCompare(b.id)));
   }
 
-  /** The edge as a chip (the table renders cells with its own styles, which carry chips, not tags). */
-  private edgeValue(tenant: Tenant) {
-    if (!tenant.edgeId) return html`<span class="chip warn">Not assigned</span>`;
-    const known = this.edges.some(edge => edge.id === tenant.edgeId);
-    return html`<span class="chip">${tenant.edgeId}</span>${this.edges.length && !known ? html` <span class="chip warn">Missing</span>` : ''}`;
+  /** The edges of a group, which are the edges that serve a tenant of that group. */
+  private edgesOf(groupId: string): Edge[] {
+    return this.edges.filter(edge => edge.groupId === groupId && edge.groupKind !== 'partner');
+  }
+
+  /** The edge group as a chip (the table renders cells with its own styles, which carry chips, not tags). */
+  private edgeGroupValue(tenant: Tenant) {
+    if (!tenant.edgeGroupId) return html`<span class="chip warn">Not assigned</span>`;
+    const known = this.groups.some(group => group.id === tenant.edgeGroupId);
+    return html`<span class="chip">${tenant.edgeGroupId}</span>${this.groups.length && !known ? html` <span class="chip warn">Missing</span>` : ''}`;
   }
 
   private renderToolbar() {
     const options: Array<{ id: TenantFilter; label: string }> = [
       { id: 'all', label: 'All' },
-      { id: 'edge', label: 'On an edge' },
+      { id: 'edge', label: 'On an edge group' },
       { id: 'unassigned', label: 'Not assigned' },
     ];
     return html`
@@ -333,7 +346,7 @@ export class VersolaTenantsList extends LitElement {
           <span class="row-id">${tenant.id}</span>
         </button>
         ${tenant.id === this.selectedTenantId ? html`<div class="row-flags"><span class="chip ok">${statusIcon('check', 'icon', 14)}Selected</span></div>` : nothing}` },
-      { id: 'edge', label: 'Edge', cell: tenant => html`<div class="chips">${this.edgeValue(tenant)}</div>` },
+      { id: 'edge', label: 'Edge group', cell: tenant => html`<div class="chips">${this.edgeGroupValue(tenant)}</div>` },
       { id: 'profile', label: 'Security profile', cell: tenant => html`<div class="chips">${this.profileChip(tenant)}</div>` },
     ];
     const menuItems = (tenant: Tenant): RowMenuItem[] => [
@@ -389,8 +402,11 @@ export class VersolaTenantsList extends LitElement {
         ${this.row('Description', tenant.description || html`<span class="muted">—</span>`)}
       `} @edit=${() => this.openEditor('general')}></versola-record-card>
 
-      <versola-record-card heading="Edge" subheading="The edge that serves this tenant's clients and syncs its configuration." ?editable=${this.canManage} .body=${html`
-        ${this.row('Edge', tenant.edgeId ? html`<div class="chips">${this.edgeValue(tenant)}</div>` : html`<span class="muted">None (Central only)</span>`)}
+      <versola-record-card heading="Edge group" subheading="Every edge of the group serves this tenant's clients and syncs its configuration." ?editable=${this.canManage} .body=${html`
+        ${this.row('Edge group', tenant.edgeGroupId ? html`<div class="chips">${this.edgeGroupValue(tenant)}</div>` : html`<span class="muted">None (Central only)</span>`)}
+        ${tenant.edgeGroupId ? this.row('Edges', this.edgesOf(tenant.edgeGroupId).length
+          ? html`<div class="tag-list">${this.edgesOf(tenant.edgeGroupId).map(edge => html`<span class="tag">${edge.id}</span>`)}</div>`
+          : html`<span class="muted">No edge is registered in this group yet.</span>`) : ''}
       `} @edit=${() => this.openEditor('edge')}></versola-record-card>
 
       <versola-record-card heading="Security settings" subheading="Sign-in methods, sessions, tokens and limits live under Security." .body=${html`
@@ -411,14 +427,14 @@ export class VersolaTenantsList extends LitElement {
   }
 
   private renderBanner(tenant: Tenant) {
-    if (tenant.edgeId) return '';
+    if (tenant.edgeGroupId) return '';
     return html`
       <div class="banner warn" role="status">
         <div class="banner-text">
-          <div class="banner-title">${statusIcon('alert')}Not assigned to an edge</div>
-          <div>Sync is edge-scoped, so no edge serves this tenant.</div>
+          <div class="banner-title">${statusIcon('alert')}Not assigned to an edge group</div>
+          <div>An edge syncs the tenants of its group, so no edge serves this tenant.</div>
         </div>
-        ${this.canManage ? html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.openEditor('edge')}>Assign an edge</button>` : ''}
+        ${this.canManage ? html`<button type="button" class="btn btn-secondary btn-sm" @click=${() => this.openEditor('edge')}>Assign an edge group</button>` : ''}
       </div>
     `;
   }
@@ -427,7 +443,7 @@ export class VersolaTenantsList extends LitElement {
     return html`
       ${tenant.id === this.selectedTenantId ? html`<span class="chip ok">${statusIcon('check', 'icon', 14)}Selected</span>` : ''}
       ${this.profileChip(tenant)}
-      ${tenant.edgeId ? '' : html`<span class="chip warn">Not served</span>`}
+      ${tenant.edgeGroupId ? '' : html`<span class="chip warn">Not served</span>`}
     `;
   }
 
@@ -459,16 +475,21 @@ export class VersolaTenantsList extends LitElement {
     `;
   }
 
+  private edgeCount(groupId: string): string {
+    const count = this.edgesOf(groupId).length;
+    return count === 1 ? '1 edge' : `${count} edges`;
+  }
+
   private renderEdgeField() {
     return html`
       <div class="form-group">
-        <label for="tenant-edge">Edge (Optional)</label>
-        <select id="tenant-edge" class="compact-input" .value=${this.draftEdgeId}
-          @change=${(e: Event) => this.draftEdgeId = (e.target as HTMLSelectElement).value}>
+        <label for="tenant-edge">Edge group (Optional)</label>
+        <select id="tenant-edge" class="compact-input" .value=${this.draftEdgeGroupId}
+          @change=${(e: Event) => this.draftEdgeGroupId = (e.target as HTMLSelectElement).value}>
           <option value="">None (Central only)</option>
-          ${this.edges.map(edge => html`<option value=${edge.id} ?selected=${edge.id === this.draftEdgeId}>${edge.id}</option>`)}
+          ${this.groups.map(group => html`<option value=${group.id} ?selected=${group.id === this.draftEdgeGroupId}>${group.id} (${this.edgeCount(group.id)})</option>`)}
         </select>
-        <div class="hint">${this.edges.length ? 'The edge that serves this tenant; sync is edge-scoped.' : 'No edges registered yet; the tenant stays on central only.'}</div>
+        <div class="hint">${this.groups.length ? 'Every edge of the group serves this tenant; an edge added to the group later serves it too.' : 'No edge groups yet; the tenant stays on central only.'}</div>
       </div>
     `;
   }
@@ -506,7 +527,7 @@ export class VersolaTenantsList extends LitElement {
             </div>
           </div>
           <div class="editor-box">
-            <h3>Edge</h3>
+            <h3>Edge group</h3>
             <p class="editor-sub">Can be changed later.</p>
             ${this.renderEdgeField()}
           </div>
@@ -518,8 +539,8 @@ export class VersolaTenantsList extends LitElement {
           </div>
         ` : html`
           <div class="editor-box">
-            <h3>Edge</h3>
-            <p class="editor-sub">The edge that serves this tenant. Its clients are reachable through no edge until one is set.</p>
+            <h3>Edge group</h3>
+            <p class="editor-sub">The group of edges that serves this tenant. Its clients are reachable through no edge until one is set.</p>
             ${this.renderEdgeField()}
           </div>
         `}
@@ -531,8 +552,8 @@ export class VersolaTenantsList extends LitElement {
     const mode = this.editorMode;
     if (mode === 'view' && !tenant) return '';
     const title = tenant ? tenant.description || tenant.id : '';
-    const heading = mode === 'create' ? 'Create tenant' : mode === 'edit' ? `Edit ${this.editGroup}` : title;
-    const submitLabel = mode === 'create' ? 'Create tenant' : this.editGroup === 'general' ? 'Save general' : 'Save edge';
+    const heading = mode === 'create' ? 'Create tenant' : mode === 'edit' ? (this.editGroup === 'general' ? 'Edit general' : 'Edit edge group') : title;
+    const submitLabel = mode === 'create' ? 'Create tenant' : this.editGroup === 'general' ? 'Save general' : 'Save edge group';
     return html`
       <versola-side-panel kind="Tenant" .heading=${heading} .recordId=${tenant?.id ?? ''} idLabel="tenant ID" .mode=${mode}
         .parentLabel=${title} .subtitle=${mode === 'create' ? 'The ID and the security profile are fixed once created.' : ''}

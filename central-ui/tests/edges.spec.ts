@@ -10,8 +10,9 @@ import { findRequest, loadAdminApp, sidePanel, sidePanelDialog, expectSheetWidth
  */
 const edgesPath = '/?view=edges';
 const alphaEdge = { id: 'edge-alpha', hasOldKey: false, requireDpopNonce: true };
-const bravoEdge = { id: 'edge-bravo', hasOldKey: true, requireDpopNonce: false };
-const tenants = [{ id: 'tenant-alpha', description: 'Alpha Workspace', edgeId: 'edge-alpha' }, { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null }];
+// In a group of its own, which no tenant names: an edge serves the tenants of its group.
+const bravoEdge = { id: 'edge-bravo', hasOldKey: true, requireDpopNonce: false, groupId: 'astana', groupKind: 'first_party' as const };
+const tenants = [{ id: 'tenant-alpha', description: 'Alpha Workspace', edgeGroupId: 'default' }, { id: 'tenant-bravo', description: 'Bravo Workspace', edgeGroupId: null }];
 const readOnly = { resources: { central: { permissions: ['edges:read', 'tenants:read'] } }, isProd: false };
 
 const panel = sidePanel;
@@ -55,7 +56,7 @@ test('opens an edge and shows its key, DPoP nonce, linked tenants and Fixed', as
   await expect(dialog.getByRole('region', { name: 'Signing key' })).toContainText('Rotation open');
   await expect(dialog.getByRole('button', { name: 'Retire old key' })).toBeVisible();
   await expect(dialog.getByRole('region', { name: 'DPoP nonce' })).toContainText('Not required');
-  await expect(dialog.getByRole('region', { name: 'Linked tenants' })).toContainText('No tenants assigned to this edge.');
+  await expect(dialog.getByRole('region', { name: 'Linked tenants' })).toContainText("No tenant is assigned to this edge's group.");
   await expect(dialog.getByRole('region', { name: 'Fixed' })).toContainText('Set at registration');
 
   await page.keyboard.press('Escape');

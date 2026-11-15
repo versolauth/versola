@@ -712,7 +712,7 @@ export class VersolaEdgesList extends LitElement {
   // ── list ──
 
   private linkedTenants(edge: Edge): Tenant[] {
-    return this.tenants.filter(tenant => tenant.edgeId === edge.id);
+    return edge.groupKind === 'partner' ? [] : this.tenants.filter(tenant => tenant.edgeGroupId === edge.groupId);
   }
 
   private partnerOf(edge: Edge): Partner | null {
@@ -894,9 +894,9 @@ export class VersolaEdgesList extends LitElement {
           </div>`}></versola-record-row>` : ''}
       `} @edit=${() => this.openEditor('rate-limits')}></versola-record-card>
 
-      ${partnerEdge ? '' : html`<versola-record-card heading="Linked tenants" subheading="Bind a tenant to this edge from the tenant." .body=${html`
+      ${partnerEdge ? '' : html`<versola-record-card heading="Linked tenants" subheading="The tenants of this edge's group; a tenant picks its group on the Tenants page." .body=${html`
         ${this.row('Tenants', linked.length ? html`<div class="tag-list">${linked.map(tenant => html`<span class="tag">${tenant.id}</span>`)}</div>`
-          : html`<span class="muted">No tenants assigned to this edge.</span>`)}
+          : html`<span class="muted">No tenant is assigned to this edge's group.</span>`)}
       `}></versola-record-card>`}
 
       <versola-record-card heading="Fixed" fixedLabel="Fixed" .body=${html`

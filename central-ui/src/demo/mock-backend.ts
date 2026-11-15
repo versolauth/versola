@@ -48,7 +48,7 @@ function backendPath(pathname: string): string {
 }
 
 type SecurityProfileDto = 'standard' | 'fapi2';
-type TenantDto = { id: string; description: string; edgeId?: string | null; securityProfile?: SecurityProfileDto; signingKeyId?: string | null };
+type TenantDto = { id: string; description: string; edgeGroupId?: string | null; securityProfile?: SecurityProfileDto; signingKeyId?: string | null };
 type BackendAuthFactor = { type: string; required: boolean };
 type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] }; passkey?: { factors: BackendAuthFactor[] } | null; otpType: 'sms' | 'email' };
 type BackendConsentFlow = { allowPartial: boolean; rememberDuration: number | null };
@@ -413,7 +413,7 @@ const signingKeyOf = (state: MockConfigState, tenantId: string): string | null =
 const tenantResponse = (state: MockConfigState, tenant: TenantDto) => ({
   id: tenant.id,
   description: tenant.description,
-  edgeId: tenant.edgeId ?? null,
+  edgeGroupId: tenant.edgeGroupId ?? null,
   securityProfile: profileOf(state, tenant.id),
   signingKeyId: signingKeyOf(state, tenant.id),
 });
@@ -556,8 +556,8 @@ export const defaultMyPermissions: MyPermissionsDto = {
 
 const defaultState: MockConfigState = {
   tenants: [
-    { id: 'tenant-alpha', description: 'Alpha Workspace', edgeId: null },
-    { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null },
+    { id: 'tenant-alpha', description: 'Alpha Workspace', edgeGroupId: null },
+    { id: 'tenant-bravo', description: 'Bravo Workspace', edgeGroupId: null },
   ],
   myPermissions: defaultMyPermissions,
   clients: {
@@ -917,7 +917,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         }
 
         tenant.description = payload.description;
-        tenant.edgeId = payload.edgeId ?? null;
+        tenant.edgeGroupId = payload.edgeGroupId ?? null;
         await route.fulfill({ status: 204, body: '' });
         return;
       }
@@ -1482,6 +1482,14 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         await route.fulfill({ status: 204, body: '' });
         return;
       }
+    }
+
+    // The groups central knows: `default`, which every deployment has, and whichever groups the edges are in.
+    if (pathname === '/configuration/edge-groups' && method === 'GET') {
+      const groups = new Map<string, 'first_party' | 'partner'>([['default', 'first_party']]);
+      for (const edge of state.edges) groups.set(edge.groupId ?? 'default', edge.groupKind ?? 'first_party');
+      await route.fulfill(json({ groups: [...groups].map(([id, kind]) => ({ id, kind })) }));
+      return;
     }
 
     if (pathname === '/configuration/edges') {

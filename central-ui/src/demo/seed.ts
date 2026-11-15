@@ -360,8 +360,8 @@ const challenge = (tenantId: string) => ({
 
 export const demoSeed: Partial<MockConfigState> = {
   tenants: [
-    { id: tenant, description: 'Acme Retail: production', edgeId: 'edge-main', securityProfile: 'fapi2' },
-    { id: staging, description: 'Acme Retail: staging', edgeId: null, securityProfile: 'fapi2' },
+    { id: tenant, description: 'Acme Retail: production', edgeGroupId: 'default', securityProfile: 'fapi2' },
+    { id: staging, description: 'Acme Retail: staging', edgeGroupId: null, securityProfile: 'fapi2' },
   ],
   scopes: { [tenant]: scopes, [staging]: scopes.slice(0, 3) },
   permissions: { [tenant]: permissions, [staging]: permissions.slice(0, 2) },
