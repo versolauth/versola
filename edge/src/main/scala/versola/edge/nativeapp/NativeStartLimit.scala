@@ -81,8 +81,7 @@ object NativeStartLimit:
                 s"native start rate limit applied: ${policy.fold("none")(p =>
                     s"${p.name}=${p.mode.toString.toLowerCase} ${p.limits.head.limit}/${p.limits.head.windowSeconds}s burst ${p.burst}",
                   )}, replicas $pods",
-              )
-          )
+              ))
       _ <- refresh
       scope <- ZIO.service[Scope]
       _ <- refresh.repeat(Schedule.fixed(1.second)).forever.forkIn(scope)

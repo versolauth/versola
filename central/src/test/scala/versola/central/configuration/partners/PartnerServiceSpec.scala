@@ -689,7 +689,8 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
       test("a set that only overrides the limit on /native/start is stored: it is the partner's answer to the default") {
         val env = Env()
-        val only = RateLimitPolicies(Nil, 1, nativeStart = Some(NativeStartRateLimit(limit = 600, windowSeconds = 60, burst = 100, mode = GuardMode.Enforce)))
+        val only =
+          RateLimitPolicies(Nil, 1, nativeStart = Some(NativeStartRateLimit(limit = 600, windowSeconds = 60, burst = 100, mode = GuardMode.Enforce)))
         val invalid = only.copy(nativeStart = Some(NativeStartRateLimit(limit = 5, windowSeconds = 60, burst = 50, mode = GuardMode.Enforce)))
         for
           _ <- env.partners.setRateLimits.succeedsWith(Some(acme))

@@ -1,8 +1,8 @@
 package versola.util.http
 
+import RateLimitPolicy.given
 import zio.json.JsonCodec
 import zio.schema.{Schema, derived}
-import RateLimitPolicy.given
 
 /** What a rate limit is keyed on. Every value but `Ip` and `Certificate` comes from a verified token or a matched route; the edge never keys on
   * an unverified claim.

@@ -1,7 +1,7 @@
 package versola.edge.nativeapp
 
-import versola.edge.{EdgeConfig, EdgeMode}
 import versola.edge.model.EdgeId
+import versola.edge.{EdgeConfig, EdgeMode}
 import versola.util.Secret
 import versola.util.http.{ClientIpSource, GuardMode, NativeStartRateLimit}
 import zio.*

@@ -596,7 +596,12 @@ final class PartnerApi(
     for
       body <- jsonBody(request)
       limits <- ZIO.fromOption(field(body, "rateLimits").filter(value => value == Json.Null || value.asObject.isDefined))
-        .orElseFail(Fail(Status.BadRequest, "invalid_request", fields = List("rateLimits"), message = Some("rateLimits is required: the limits, or null to remove them")))
+        .orElseFail(Fail(
+          Status.BadRequest,
+          "invalid_request",
+          fields = List("rateLimits"),
+          message = Some("rateLimits is required: the limits, or null to remove them"),
+        ))
       payload = Json.Obj(
         (List("rateLimits" -> limits) ++ field(body, "expectedRevision").collect { case number: Json.Num => "expectedRevision" -> (number: Json) })*,
       )
