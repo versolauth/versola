@@ -124,6 +124,7 @@ COPY docker/versola-tools/proxy_params.conf.template .
 COPY docker/versola-tools/openbao.hcl.template .
 COPY docker/versola-tools/openbao.hcl.vps.template .
 COPY docker/versola-tools/mtls-init.sh .
+COPY docker/versola-tools/step-ca-init.sh .
 COPY docker/versola-tools/step-ca-intermediates.sh .
 COPY docker/versola-tools/postgres-init-schemas.sh .
 COPY docker/versola-tools/release.json .

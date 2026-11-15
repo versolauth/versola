@@ -421,6 +421,10 @@ the short gap described in [deploy.md](deploy.md#mutual-tls-certificates); `iden
 `edge-client`, which nobody pins; `report` changes nothing and prints one line per certificate,
 `mtls-init: cert <file> notBefore=<UTC> notAfter=<UTC> subject=<CN or URN>`, for `doctor` and `status`.
 `docker/versola-tools/test/mtls-init.test.sh` runs every phase against a throwaway step-ca in Docker.
+`docker/versola-tools/test/step-ca-init.test.sh` checks that creating the CA (`step-ca-init.sh`, which both compose
+fragments run instead of the image's own init) and starting it print nothing secret, that a CA the image made
+is left as it is, and that the fragments' own lines removing the unused `versola` provisioner do so once and keep
+`central`'s.
 
 **(3a) Client certificates the edge enrols for (#463) -- preferred.** Register an edge-fronted client with
 `"enrollEdgeClientCertificate": true` (and `mtlsAuth`, or none for `CN=<client>,OU=<tenant>,O=Versola`).
