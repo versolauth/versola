@@ -353,7 +353,7 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           .replace("tenant-id = loadgen-standard", "tenant-id = loadgen-fapi2")
           .replace(
             "payment-amount-threshold = 1000000",
-            "payment-amount-threshold = 1000000\n  namespace = fapi\n  edge-id = edge-1\n  mtls-certificate-header = x-client-cert",
+            "payment-amount-threshold = 1000000\n  namespace = fapi\n  edge-group-id = edge-1\n  mtls-certificate-header = x-client-cert",
           )
           .replace("shard-count      = 8", "shard-count      = 8\n  namespace         = fapi")
           .replace(
@@ -366,7 +366,7 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
         yield assertTrue(
           config.campaign.securityProfile == Some(SecurityProfile.Fapi2),
           config.provision.flatMap(_.namespace) == Some("fapi"),
-          config.provision.flatMap(_.edgeId) == Some("edge-1"),
+          config.provision.flatMap(_.edgeGroupId) == Some("edge-1"),
           config.provision.map(_.mtlsCertificateHeader) == Some("x-client-cert"),
           config.provision.map(_.mtlsCertificateEncoding) == Some("urlEncodedPem"),
           config.seed.flatMap(_.namespace) == Some("fapi"),

@@ -264,12 +264,16 @@ paths:
       responses:
         '201':
           description: Tenant created.
+        '400':
+          description: >-
+            `edgeGroupId` names a partner's group or a group that does not exist, or the
+            tenant already exists with another `securityProfile`.
         '401':
           $ref: '#/components/responses/Unauthorized'
     put:
       tags: [Tenants]
       summary: Update a tenant
-      description: Replaces the description and edge binding of an existing tenant.
+      description: Replaces the description and the edge group of an existing tenant.
       operationId: updateTenant
       requestBody:
         required: true
@@ -280,6 +284,9 @@ paths:
       responses:
         '204':
           description: Tenant updated.
+        '400':
+          description: >-
+            `edgeGroupId` names a partner's group or a group that does not exist.
         '401':
           $ref: '#/components/responses/Unauthorized'
     delete:
@@ -3782,6 +3789,10 @@ components:
       type: string
       pattern: '^[a-z][a-z0-9-]*$'
       examples: [eu-central]
+    EdgeGroupId:
+      type: string
+      pattern: '^[a-z][a-z0-9-]*$'
+      examples: [default]
     ScopeToken:
       type: string
       pattern: '^[a-z][a-z0-9_]*$'
@@ -4024,13 +4035,14 @@ components:
           $ref: '#/components/schemas/TenantId'
         description:
           type: string
-        edgeId:
+        edgeGroupId:
           description: |
-            The edge this tenant is bound to. Sync is edge-scoped: an edge only receives
-            tenants whose `edgeId` matches its own, so `null` means the tenant is not
-            assigned to any edge yet and no edge will serve it.
+            The group of edges that serves this tenant. Sync is scoped by it: an edge only
+            receives the tenants whose `edgeGroupId` is the group the edge belongs to, and every
+            edge of that group receives them, which is what lets one tenant have several edge
+            sites. `null` means no edge serves the tenant.
           oneOf:
-            - $ref: '#/components/schemas/EdgeId'
+            - $ref: '#/components/schemas/EdgeGroupId'
             - type: 'null'
         securityProfile:
           allOf:
@@ -4063,9 +4075,12 @@ components:
           $ref: '#/components/schemas/TenantId'
         description:
           type: string
-        edgeId:
+        edgeGroupId:
+          description: >-
+            One of the operator's own groups (`first_party`). A partner's group, or one that
+            does not exist, is refused with `400`.
           oneOf:
-            - $ref: '#/components/schemas/EdgeId'
+            - $ref: '#/components/schemas/EdgeGroupId'
             - type: 'null'
         securityProfile:
           oneOf:
@@ -4087,9 +4102,12 @@ components:
           $ref: '#/components/schemas/TenantId'
         description:
           type: string
-        edgeId:
+        edgeGroupId:
+          description: >-
+            One of the operator's own groups (`first_party`). A partner's group, or one that
+            does not exist, is refused with `400`.
           oneOf:
-            - $ref: '#/components/schemas/EdgeId'
+            - $ref: '#/components/schemas/EdgeGroupId'
             - type: 'null'
       required: [id, description]
 

@@ -88,8 +88,7 @@ object RoleService:
         case Some(id) =>
           for
             roles <- cache.get
-            tenants <- tenantRepository.getAll
-            allowedTenantIds = tenants.filter(_.edgeId.contains(id)).map(_.id).toSet
+            allowedTenantIds <- tenantRepository.getServedBy(id).map(_.toSet)
           yield roles.filter(r => allowedTenantIds.contains(r.tenantId))
 
     override def createRole(

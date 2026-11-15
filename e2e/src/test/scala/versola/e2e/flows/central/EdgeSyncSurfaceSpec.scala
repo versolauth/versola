@@ -18,10 +18,11 @@ import zio.test.*
   */
 object EdgeSyncSurfaceSpec extends CentralApiSpec:
 
-  /** A second edge with a tenant bound to it, and one of each configuration kind in that
-    * tenant next to one in the suite tenant, which this edge does not serve. */
+  /** A second edge in a group of its own with a tenant that group serves (#557), and one of each configuration kind
+    * in that tenant next to one in the suite tenant, which this edge's group does not serve. */
   private case class SecondEdge(
       edgeId: String,
+      groupId: String,
       token: String,
       /** What its handshake presents: a certificate carrying `urn:versola:edge:<edgeId>`, issued by
         * the CA central's listener trusts. */
@@ -57,9 +58,21 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
     ).flatMap(_.items("clients")))(_.exists(_.str("id").contains(clientId))).flatMap: listed =>
       ZIO.fail(RuntimeException(s"central never listed client '$clientId'")).unless(listed.exists(_.str("id").contains(clientId))).unit
 
+  /** Registers `edgeId` in `groupId` and answers what it calls central with: its token and its certificate. */
+  private def registerEdge(central: CentralApi, edgeId: String, groupId: String): Task[(String, ClientSSLConfig)] =
+    for
+      registered <- central.post("/configuration/edges", Json.Obj("id" -> Json.Str(edgeId), "groupId" -> Json.Str(groupId)))
+      keyId <- registered.stringAt("keyId")
+      privateKey <- registered.stringAt("privateKey")
+      token <- edgeToken(edgeId, keyId, privateKey)
+      certificate <- EdgeCertificate.forCentralListener(Some(edgeId))
+      ssl <- certificate.clientSsl(central.config.centralMutualTlsServerCertificate)
+    yield (token, ssl)
+
   private def register(central: CentralApi): Task[SecondEdge] =
     for
       edgeId <- CentralApi.id("e2e-edge")
+      groupId <- CentralApi.id("e2e-group")
       tenantId <- CentralApi.id("e2e-tenant")
       ownClient <- CentralApi.id("e2e-client")
       otherClient <- CentralApi.id("e2e-client")
@@ -71,12 +84,8 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
       otherPermission <- CentralApi.permission("other")
       ownPreset <- CentralApi.id("e2e-preset")
       otherPreset <- CentralApi.id("e2e-preset")
-      registered <- central.post("/configuration/edges", Json.Obj("id" -> Json.Str(edgeId)))
-      keyId <- registered.stringAt("keyId")
-      privateKey <- registered.stringAt("privateKey")
-      token <- edgeToken(edgeId, keyId, privateKey)
-      certificate <- EdgeCertificate.forCentralListener(Some(edgeId))
-      ssl <- certificate.clientSsl(central.config.centralMutualTlsServerCertificate)
+      _ <- write(central, "/configuration/edge-groups", Json.Obj("id" -> Json.Str(groupId), "kind" -> Json.Str("first_party")))
+      (token, ssl) <- registerEdge(central, edgeId, groupId)
       // Central authenticates an edge against a cache a Postgres notification refreshes after
       // the registration lands; what is awaited is the new edge being known at all.
       known <- eventually(central.onEdgeSurface(Some(token), Some(ssl)).get("/edge/sync/dpop"))(_.status == Status.Ok)
@@ -84,7 +93,7 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
         .unless(known.status == Status.Ok)
       // On `standard`, like the suite tenant: a new tenant defaults to `fapi2`, which refuses
       // the plain `client_secret` fixture client, and there would be nothing to sync.
-      _ <- write(central, "/configuration/tenants", Fixtures.tenant(tenantId, edgeId = Some(edgeId), securityProfile = Some("standard")))
+      _ <- write(central, "/configuration/tenants", Fixtures.tenant(tenantId, edgeGroupId = Some(groupId), securityProfile = Some("standard")))
       _ <- SecurityProfiles.awaitProfile(central, tenantId, "standard")
       _ <- write(central, "/configuration/clients", Fixtures.client(ownClient, tenantId = tenantId))
       _ <- write(central, "/configuration/clients", Fixtures.client(otherClient))
@@ -110,6 +119,7 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
       )
     yield SecondEdge(
       edgeId = edgeId,
+      groupId = groupId,
       token = token,
       ssl = ssl,
       tenantId = tenantId,
@@ -156,7 +166,7 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
     eventually(read)(_.contains(own))
 
   def spec = suite("Central API: the edge-facing surface")(
-    test("a second edge reads only the tenant bound to it, on every sync resource") {
+    test("a second edge reads only the tenant its group serves, on every sync resource") {
       for
         central <- api
         result <- withSecondEdge(central): edge =>
@@ -167,13 +177,39 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
             permissions <- syncIds(central, edge, "permissions", "permissions", "id")(edge.ownPermission)
             presets <- syncIds(central, edge, "auth-request-presets", "presets", "id")(edge.ownPreset)
           yield assertTrue(clients.contains(edge.ownClient), !clients.contains(edge.otherClient))
-            .label("clients: the suite tenant is not bound to this edge, so its client must not appear") &&
+            .label("clients: the suite tenant is not served by this edge's group, so its client must not appear") &&
             assertTrue(resources.contains(edge.ownResource), !resources.contains(edge.otherResource))
               .label("resources: a resource secret handed to the wrong edge lets it impersonate that resource") &&
             assertTrue(roles.contains(edge.ownRole), !roles.contains(edge.otherRole)).label("roles") &&
             assertTrue(permissions.contains(edge.ownPermission), !permissions.contains(edge.otherPermission)).label("permissions") &&
             assertTrue(presets.contains(edge.ownPreset), !presets.contains(edge.otherPreset))
               .label("presets: scoped through the client they belong to")
+      yield result
+    },
+    // #557: several edge sites of one tenant. The tenant names the group, so a site added to the group later is
+    // served the same configuration as the first, with nothing changed on the tenant.
+    test("another edge of the same group reads the tenant too, on every sync resource") {
+      for
+        central <- api
+        result <- withSecondEdge(central): edge =>
+          for
+            siteId <- CentralApi.id("e2e-edge")
+            (token, ssl) <- registerEdge(central, siteId, edge.groupId)
+            site = edge.copy(edgeId = siteId, token = token, ssl = ssl)
+            // The registration reaches the cache central authenticates edges against by a notification.
+            _ <- eventually(onSurface(central, site).get("/edge/sync/dpop"))(_.status == Status.Ok)
+            clients <- syncIds(central, site, "clients", "clients", "id")(edge.ownClient)
+            resources <- syncIds(central, site, "resources", "resources", "resourceId")(edge.ownResource)
+            roles <- syncIds(central, site, "roles", "roles", "id")(edge.ownRole)
+            permissions <- syncIds(central, site, "permissions", "permissions", "id")(edge.ownPermission)
+            presets <- syncIds(central, site, "auth-request-presets", "presets", "id")(edge.ownPreset)
+            _ <- central.delete("/configuration/edges", "edgeId" -> siteId).ignore
+          yield assertTrue(clients.contains(edge.ownClient), !clients.contains(edge.otherClient))
+            .label("clients: the second site serves the group's tenant and no other") &&
+            assertTrue(resources.contains(edge.ownResource), !resources.contains(edge.otherResource)).label("resources") &&
+            assertTrue(roles.contains(edge.ownRole), !roles.contains(edge.otherRole)).label("roles") &&
+            assertTrue(permissions.contains(edge.ownPermission), !permissions.contains(edge.otherPermission)).label("permissions") &&
+            assertTrue(presets.contains(edge.ownPreset), !presets.contains(edge.otherPreset)).label("presets")
       yield result
     },
     test("an edge is served its own DPoP policy, the public JWKS, and the DPoP algorithms alone of the server metadata") {

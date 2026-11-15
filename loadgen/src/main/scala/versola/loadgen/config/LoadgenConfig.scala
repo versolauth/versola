@@ -569,11 +569,11 @@ case class ProvisionConfig(
       * Absent: the bare ids, as before.
       */
     namespace: Option[String] = None,
-    /** The edge the campaign's tenant is bound to. Absent: the `default` tenant's edge, which is
+    /** The group of edges that serves the campaign's tenant. Absent: the `default` tenant's group, which is
       * what lets edge receive the tenant's clients and presets at all (an edge only receives the
-      * tenants assigned to it).
+      * tenants its group serves).
       */
-    edgeId: Option[String] = None,
+    edgeGroupId: Option[String] = None,
     /** Where auth reads a client certificate from, for a tenant whose clients authenticate with
       * `tls_client_auth` (RFC 8705 §6.5): a new tenant is not told, and refuses them. Written to
       * the tenant's challenge settings when [[fapi2]] is on, to what the TLS terminator in front

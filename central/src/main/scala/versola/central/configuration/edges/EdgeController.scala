@@ -287,7 +287,7 @@ object EdgeController extends AuditedController:
           edges = edges.filter(_.groupKind == EdgeGroupKind.FirstParty).map(edge =>
             EdgeRegistryEntry(
               id = edge.id,
-              tenantIds = tenants.filter(_.edgeId.contains(edge.id)).map(_.id).toList,
+              tenantIds = tenants.filter(_.edgeGroupId.contains(edge.groupId)).map(_.id).toList,
             ),
           ).toList,
         )

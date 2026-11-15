@@ -27,14 +27,14 @@ object TenantControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val createRequest = CreateTenantRequest(
     id = tenantId1,
     description = "Tenant A",
-    edgeId = None,
+    edgeGroupId = None,
     securityProfile = None,
   )
 
   private val updateRequest = UpdateTenantRequest(
     id = tenantId1,
     description = "Updated Tenant A",
-    edgeId = None,
+    edgeGroupId = None,
   )
 
   private val tracingLayer: ULayer[Tracing] =

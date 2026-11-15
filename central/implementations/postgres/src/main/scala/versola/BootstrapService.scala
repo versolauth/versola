@@ -1770,16 +1770,16 @@ object BootstrapService:
               publicUrl = None,
             )
 
-    /** Links the default tenant to the first seeded edge so the central-admin
-      * client (and its presets) are synced to that edge. Only applied when the
-      * tenant has no edge yet, to preserve manual assignments on re-runs.
+    /** Links the default tenant to the group the seeded edges are created in, so the central-admin
+      * client (and its presets) are synced to them. Only applied when the
+      * tenant has no group yet, to preserve manual assignments on re-runs.
       */
     private def linkTenantEdge(tenantId: TenantId, config: CentralConfig.BootstrapConfig): Task[Unit] =
-      ZIO.foreachDiscard(config.edges.getOrElse(Nil).headOption): edge =>
+      ZIO.foreachDiscard(config.edges.getOrElse(Nil).headOption): _ =>
         tenantRepo.getAll.flatMap: tenants =>
           tenants.find(_.id == tenantId) match
-            case Some(tenant) if tenant.edgeId.isEmpty =>
-              tenantRepo.updateTenant(tenant.id, tenant.description, Some(edge.id))
+            case Some(tenant) if tenant.edgeGroupId.isEmpty =>
+              tenantRepo.updateTenant(tenant.id, tenant.description, Some(EdgeGroup.DefaultId))
             case _ => ZIO.unit
 
     /** Seeds the edge-facing resource that proxies the admin API back to central.

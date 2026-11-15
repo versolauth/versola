@@ -80,30 +80,45 @@ object TenantApiSpec extends CentralApiSpec:
         assertTrue(listed.exists(t => t.str("id").contains(id) && t.str("description").contains("after")))
           .label("the listing must show the new description, not the old one")
     },
-    test("an update binds the tenant to an edge") {
+    // #557: a tenant is served by a group of edges, so that it can have several edge sites.
+    test("an update binds the tenant to a group of edges") {
       for
         central <- api
         tenantId <- CentralApi.id("e2e-tenant")
-        edgeId <- CentralApi.id("e2e-edge")
-        _ <- central.post("/configuration/edges", Json.Obj("id" -> Json.Str(edgeId)))
+        groupId <- CentralApi.id("e2e-group")
+        _ <- central.post("/configuration/edge-groups", Json.Obj("id" -> Json.Str(groupId), "kind" -> Json.Str("first_party")))
         _ <- central.post(path, Fixtures.tenant(tenantId))
-        updated <- central.put(path, Fixtures.tenant(tenantId, edgeId = Some(edgeId)))
-        listed <- listed(central)(_.exists(t => t.str("id").contains(tenantId) && t.str("edgeId").contains(edgeId)))
+        updated <- central.put(path, Fixtures.tenant(tenantId, edgeGroupId = Some(groupId)))
+        listed <- listed(central)(_.exists(t => t.str("id").contains(tenantId) && t.str("edgeGroupId").contains(groupId)))
         _ <- central.delete(path, "tenantId" -> tenantId)
-        _ <- central.delete("/configuration/edges", "edgeId" -> edgeId)
       yield assertTrue(updated.status == Status.NoContent) &&
-        assertTrue(listed.exists(t => t.str("id").contains(tenantId) && t.str("edgeId").contains(edgeId)))
-          .label("sync is edge-scoped, so the binding must be readable back")
+        assertTrue(listed.exists(t => t.str("id").contains(tenantId) && t.str("edgeGroupId").contains(groupId)))
+          .label("sync is scoped by the group, so the binding must be readable back")
     },
-    test("an unbound tenant reports a null edge") {
+    test("a tenant is refused a partner's group and a group that does not exist") {
+      for
+        central <- api
+        tenantId <- CentralApi.id("e2e-tenant")
+        partnerGroup <- CentralApi.id("e2e-group")
+        missingGroup <- CentralApi.id("e2e-group")
+        _ <- central.post("/configuration/edge-groups", Json.Obj("id" -> Json.Str(partnerGroup), "kind" -> Json.Str("partner")))
+        ofPartner <- central.post(path, Fixtures.tenant(tenantId, edgeGroupId = Some(partnerGroup)))
+        missing <- central.post(path, Fixtures.tenant(tenantId, edgeGroupId = Some(missingGroup)))
+        tenants <- central.get(path).flatMap(_.items("tenants"))
+      yield assertTrue(ofPartner.status == Status.BadRequest)
+        .label("a partner's edges read nothing of a tenant from central: the tenant would be served by no edge") &&
+        assertTrue(missing.status == Status.BadRequest).label("a group nobody created") &&
+        assertTrue(!tenants.exists(_.str("id").contains(tenantId))).label("a refused tenant is not created")
+    },
+    test("an unbound tenant reports no group") {
       for
         central <- api
         id <- CentralApi.id("e2e-tenant")
         _ <- central.post(path, Fixtures.tenant(id))
         listed <- listed(central)(_.exists(_.str("id").contains(id)))
         _ <- central.delete(path, "tenantId" -> id)
-      yield assertTrue(listed.find(_.str("id").contains(id)).exists(t => t.str("edgeId").isEmpty))
-        .label("a tenant no edge serves must not name one")
+      yield assertTrue(listed.find(_.str("id").contains(id)).exists(t => t.str("edgeGroupId").isEmpty))
+        .label("a tenant no edge serves must not name a group")
     },
     test("a deleted tenant stops being listed") {
       for

@@ -234,8 +234,7 @@ object OAuthClientService:
         case Some(id) =>
           for
             clients <- cache.get
-            tenants <- tenantRepository.getAll
-            allowedTenantIds = tenants.filter(_.edgeId.contains(id)).map(_.id).toSet
+            allowedTenantIds <- tenantRepository.getServedBy(id).map(_.toSet)
           yield clients.filter(c => allowedTenantIds.contains(c.tenantId) && c.partnerId.isEmpty)
 
     override def getPartnerClients(partnerId: PartnerId): Task[Vector[OAuthClientRecord]] =

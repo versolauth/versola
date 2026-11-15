@@ -42,21 +42,21 @@ final class HttpAdminClient(
   override def ensureTenant(spec: TenantSpec): Task[Unit] =
     for
       tenants <- listTenants
-      edge = spec.edgeId.orElse(tenants.get(DefaultTenantId).flatMap(_.edgeId))
+      group = spec.edgeGroupId.orElse(tenants.get(DefaultTenantId).flatMap(_.edgeGroupId))
       _ <- tenants.get(spec.tenantId) match
         case None =>
           val body = CreateTenantBody(
             id = spec.tenantId,
             description = spec.description,
-            edgeId = edge,
+            edgeGroupId = group,
             securityProfile = spec.securityProfile,
           )
           send(Method.POST, central("configuration", "tenants"), Some(body.toJson))
             .flatMap(expectSuccess("createTenant", _))
         case Some(existing) =>
-          // Only moved when the campaign names the edge: a tenant someone else bound is theirs.
-          ZIO.when(spec.edgeId.exists(wanted => !existing.edgeId.contains(wanted))):
-            val body = UpdateTenantBody(id = spec.tenantId, description = existing.description, edgeId = spec.edgeId)
+          // Only moved when the campaign names the group: a tenant someone else bound is theirs.
+          ZIO.when(spec.edgeGroupId.exists(wanted => !existing.edgeGroupId.contains(wanted))):
+            val body = UpdateTenantBody(id = spec.tenantId, description = existing.description, edgeGroupId = spec.edgeGroupId)
             send(Method.PUT, central("configuration", "tenants"), Some(body.toJson))
               .flatMap(expectSuccess("updateTenant", _))
       _ <- awaitProfile(spec)
@@ -66,7 +66,7 @@ final class HttpAdminClient(
     send(Method.GET, central("configuration", "tenants"), None).flatMap: response =>
       expectSuccess("listTenants", response)
         *> decode[TenantListBody]("listTenants", response)
-          .map(_.tenants.map(entry => entry.id -> TenantState(entry.description, entry.edgeId)).toMap)
+          .map(_.tenants.map(entry => entry.id -> TenantState(entry.description, entry.edgeGroupId)).toMap)
 
   /** The profile central reports for the tenant, which is read from the settings a Postgres
     * notification refreshes and so is absent for a moment after a tenant is created. Waited for,
@@ -1010,16 +1010,16 @@ object HttpAdminClient:
       mtlsCertificateEncoding: Option[String],
   ) derives JsonEncoder
 
-  private case class CreateTenantBody(id: String, description: String, edgeId: Option[String], securityProfile: String)
+  private case class CreateTenantBody(id: String, description: String, edgeGroupId: Option[String], securityProfile: String)
     derives JsonEncoder
 
-  private case class UpdateTenantBody(id: String, description: String, edgeId: Option[String]) derives JsonEncoder
+  private case class UpdateTenantBody(id: String, description: String, edgeGroupId: Option[String]) derives JsonEncoder
 
-  private case class TenantListEntry(id: String, description: String, edgeId: Option[String]) derives JsonDecoder
+  private case class TenantListEntry(id: String, description: String, edgeGroupId: Option[String]) derives JsonDecoder
 
   private case class TenantListBody(tenants: List[TenantListEntry]) derives JsonDecoder
 
-  private case class TenantState(description: String, edgeId: Option[String])
+  private case class TenantState(description: String, edgeGroupId: Option[String])
 
 /** The tenant already exists on another security profile, which cannot be changed. */
 final case class TenantProfileMismatch(tenantId: String, actual: String, wanted: String)
