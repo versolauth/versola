@@ -1089,7 +1089,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   val jwtKey = genJwtSigningKey(rng, today)
   // Edge key: central encrypts each edge's client secrets with the public half and
   // verifies the edge's sync tokens against it; the edge signs/decrypts with the private half.
-  val edgeKey = genRsaKey(rng, s"edge-$today")
+  val generatedEdgeKey = genRsaKey(rng, s"edge-$today")
   val jwks = jwtJwks(jwtKey)
 
   // ── Admin user ID ─────────────────────────────────────────────────────────────
@@ -1233,6 +1233,44 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   if isDockerLocal then println("  docker-local env — using bridge-network defaults, skipping prompts")
   if isVps then println("  vps env — using host-network defaults, skipping prompts")
   if isKubernetes then println("  k8s env — interactive, every secret placeholdered out")
+  // An edge outside the cluster has no certificate of its own to name in its `central` block: it enrolls with a one-time token and
+  // `central` issues it (`central.identity`), and an edge names its certificate one way or the other, never both. The `versola-edge`
+  // chart's `central.conf`, which `edge.conf` includes last (the include is written below), supplies the identity, the pins and the
+  // addresses. Its signing key is the one `central` showed when the edge was registered, not one generated here: the operator gives the
+  // key id and the key file, and a run without them stops.
+  val remoteEdge = isKubernetes && promptYN(
+    "  Does this edge run outside the cluster, enrolling with a token (the versola-edge chart)?",
+    flag = "remote-edge",
+  )
+  // The id the edge was registered under in `central` (its own, not `edge-default`, which the installation seeds for its in-cluster edge).
+  val edgeConfigId =
+    if remoteEdge then prompt("  Edge ID, as registered in central [edge-default]: ", "edge-default", flag = "edge-id") else "edge-default"
+  val edgeKey: RsaKey =
+    if !remoteEdge then generatedEdgeKey
+    else
+      val keyId = prompt("  Edge key id, as central showed it when the edge was registered: ", flag = "edge-key-id").trim
+      val keyFile = prompt("  File with the edge's private key, as central showed it: ", flag = "edge-private-key-file").trim
+      if keyId.isEmpty || keyFile.isEmpty then
+        throw RuntimeException(
+          "--remote-edge needs --edge-key-id and --edge-private-key-file: the key of a remote edge is the one central showed when the edge was registered (a key generated here would not match what central holds)",
+        )
+      val raw = scala.util.Try(java.nio.file.Files.readString(java.nio.file.Path.of(keyFile))).fold(
+        e => throw RuntimeException(s"cannot read --edge-private-key-file $keyFile: ${e.getMessage}"),
+        identity,
+      )
+      // central shows base64url; the stored form is the standard alphabet, which every edge release reads
+      val standard = raw.filterNot(_.isWhitespace).replace('-', '+').replace('_', '/')
+      val padded = standard + "=" * ((4 - standard.length % 4) % 4)
+      scala.util.Try(
+        java.security.KeyFactory.getInstance("RSA").generatePrivate(
+          java.security.spec.PKCS8EncodedKeySpec(java.util.Base64.getDecoder.decode(padded)),
+        ),
+      ).fold(
+        _ => throw RuntimeException(s"$keyFile does not hold a base64 PKCS#8 RSA private key"),
+        _ => (),
+      )
+      // the public half is central's to hold: nothing of this run's central configuration uses it
+      RsaKey(padded, "", keyId)
 
   // central refuses to seed itself an admin API nobody can call: both blocks below are
   // always emitted (bootstrap.resource-secret and bootstrap.utility-client), never left
@@ -1354,7 +1392,8 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   // decides what terminates TLS in front of their own auth.
   val edgeInternalTlsDir = File("edge/dev/internal-tls")
   val edgeInternalTlsPort = 9443
-  val edgeInternalUrl = if isLocal then s"https://localhost:$edgeInternalTlsPort" else authInternalUrl
+  // An edge outside the cluster cannot reach auth by the cluster's Service name: it uses auth's public address.
+  val edgeInternalUrl = if isLocal then s"https://localhost:$edgeInternalTlsPort" else if remoteEdge then authUrl else authInternalUrl
   val edgeInternalTrustPath: Option[String] =
     if isLocal then Some(File(edgeInternalTlsDir, "server.crt").getAbsolutePath) else None
   // #353: `central-admin` is authenticated by edge with `tls_client_auth`, which is the only
@@ -1654,16 +1693,21 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
           Seq(File(centralMutualTlsDir, "server.crt").getAbsolutePath),
         )
       else (edgeCentralCertificate, edgeCentralKey, edgeCentralPins)
-    s"""central {
-       |  url = "$centralMutualTlsUrl"
-       |  # The certificate this edge presents -- it must carry urn:versola:edge:$edgeId -- and the
-       |  # pin for central's own leaf (a list, so it can be rotated with an overlap window).
-       |  mutual-tls {
-       |    certificate          = "$certificate"
-       |    private-key          = "$key"
-       |    trusted-certificates = [${pins.map(pin => s"\"$pin\"").mkString(", ")}]
-       |  }
-       |}""".stripMargin
+    if remoteEdge then
+      s"""central {
+         |  url = "$centralMutualTlsUrl"
+         |}""".stripMargin
+    else
+      s"""central {
+         |  url = "$centralMutualTlsUrl"
+         |  # The certificate this edge presents -- it must carry urn:versola:edge:$edgeId -- and the
+         |  # pin for central's own leaf (a list, so it can be rotated with an overlap window).
+         |  mutual-tls {
+         |    certificate          = "$certificate"
+         |    private-key          = "$key"
+         |    trusted-certificates = [${pins.map(pin => s"\"$pin\"").mkString(", ")}]
+         |  }
+         |}""".stripMargin
 
   // centralUrl IS a real network call from both auth and edge, so it needs
   // the same treatment.
@@ -1784,6 +1828,9 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   val edgePgUrlDefault = if isDockerLocal then pgUrl("postgres:5432", Some("edge"))
   else if isVps then pgUrl(pgHostDefault, Some("edge")) else pgUrl("localhost:5432", None)
   val edgePgUrl = prompt(s"  Postgres URL [$edgePgUrlDefault]: ", edgePgUrlDefault, flag = "edge-postgres-url")
+  // The default names a database on the machine the script runs on, which is no database of an edge outside the cluster.
+  if remoteEdge && !cliArgs.contains("edge-postgres-url") && edgePgUrl == edgePgUrlDefault then
+    throw RuntimeException("--remote-edge needs --edge-postgres-url: the JDBC URL of the database the remote edge reaches (the default is a local one)")
   val edgePgUser = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "edge-postgres-user")
   val edgePgPass = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "edge-postgres-password")
   // The schema says vps has one POSTGRES_PASSWORD for all three services, and versola-cli stores
@@ -2271,6 +2318,13 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |}
        |""".stripMargin
 
+  // `/service/*` is the in-cluster internal surface; an edge outside the cluster has none to protect, so it gets no internal secret.
+  val edgeInternalSecretBlock =
+    if remoteEdge then ""
+    else
+      s"""  # Authorizes POST /service/configuration/sync (non-prod only) -- see
+         |  # EdgeConfig.Security.internalSecret.
+         |  internal-secret = ${secretField(useOpenBao, edgeInternalSecretValue, "EDGE_INTERNAL_SECRET")}""".stripMargin
   val edgeConf =
     s"""env = $env
        |
@@ -2278,7 +2332,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |
        |# otel-exporter = "http://localhost:4317"
        |
-       |id = "edge-default"
+       |id = "$edgeConfigId"
        |
        |# What this edge is to the installation (EdgeConfig.mode, #555): "first-party" -- the
        |# operator's own edge, configuration synced from central, EdgeAssertion to auth, the
@@ -2309,9 +2363,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
        |    ttl = 30 days
        |  }
        |
-       |  # Authorizes POST /service/configuration/sync (non-prod only) -- see
-       |  # EdgeConfig.Security.internalSecret.
-       |  internal-secret = ${secretField(useOpenBao, edgeInternalSecretValue, "EDGE_INTERNAL_SECRET")}
+       |$edgeInternalSecretBlock
        |}
        |
        |postgres {
@@ -2448,9 +2500,16 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
     // know what env value this run happened to resolve to (ENV_NAME,
     // for vps, isn't necessarily "prod" -- see env's own comment above).
     val dir = File(s".local/env/$target")
-    writeFile(dir, "auth.conf", authConf)
-    writeFile(dir, "central.conf", centralConf)
-    writeFile(dir, "edge.conf", edgeConf)
+    // A `--remote-edge` run is for one file, the edge's: it holds no key generated for auth or central and no public half of the edge's
+    // key, so the auth and central outputs of such a run would be wrong if applied (an empty `public-key-jwk` for the edge among them).
+    // They are not written.
+    if !remoteEdge then
+      writeFile(dir, "auth.conf", authConf)
+      writeFile(dir, "central.conf", centralConf)
+    // A remote edge's `central` block (url, pins, identity, group) comes from the chart's `central.conf`; including it last lets it
+    // win, and means the operator adds nothing by hand.
+    val remoteInclude = if remoteEdge then "\n# Rendered by the versola-edge chart: central's address, its pin, the enrollment and the group.\ninclude file(\"/app/remote-edge/central.conf\")\n" else ""
+    writeFile(dir, "edge.conf", edgeConf + remoteInclude)
 
     // versola-cli resolves each of these against OpenBao (existing value
     // wins; a first-time value gets stored there) before starting any
@@ -2479,7 +2538,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
       SecretSchema.problems(SecretSchema.specs) match
         case Nil => ()
         case found => throw RuntimeException("secret schema is inconsistent: " + found.mkString("; "))
-      writeGeneratedSecrets(
+      if !remoteEdge then writeGeneratedSecrets(
         dir,
         secretTarget,
         "auth",
@@ -2502,7 +2561,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
       )
 
       val centralExtras = if isVps || isKubernetes then Seq("POSTGRES_PASSWORD" -> centralPgPass) else Seq.empty
-      writeGeneratedSecrets(
+      if !remoteEdge then writeGeneratedSecrets(
         dir,
         secretTarget,
         "central",
@@ -2552,30 +2611,29 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
       )
 
       // What the keys above are, for versola-cli: see SecretSchema. Values are never in it.
-      writeFile(dir, "secrets.schema.json", SecretSchema.toJson(secretTarget))
+      if !remoteEdge then writeFile(dir, "secrets.schema.json", SecretSchema.toJson(secretTarget))
 
-    // The private half of the `utils` pair, for whoever authenticates as that client (loadgen provision today) -- see bootstrapUtilityClientLines. A bare JWK file,
-    // owner-readable only, written outside every *.generated-secrets.env on purpose. Written
-    // whether or not secrets are placeholdered: an interactive prod run registers the public half
-    // in central.conf as a literal, and nothing else keeps the private half.
-    writeFile(dir, "utils.private-key.jwk", utilityPrivateJwk + "\n")
-    // Windows has no POSIX file attributes: the call throws there, and the file is left to the
-    // user's profile ACLs.
-    val utilsKeyPath = File(dir, "utils.private-key.jwk").toPath
-    if java.nio.file.FileSystems.getDefault.supportedFileAttributeViews.contains("posix") then
-      java.nio.file.Files.setPosixFilePermissions(
-        utilsKeyPath,
-        java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
+    if !remoteEdge then
+      // The private half of the `utils` pair, for whoever authenticates as that client (loadgen provision today) -- see bootstrapUtilityClientLines. A bare JWK file,
+      // owner-readable only, written outside every *.generated-secrets.env on purpose. Written
+      // whether or not secrets are placeholdered: an interactive prod run registers the public half
+      // in central.conf as a literal, and nothing else keeps the private half.
+      writeFile(dir, "utils.private-key.jwk", utilityPrivateJwk + "\n")
+      // Windows has no POSIX file attributes: the call throws there, and the file is left to the
+      // user's profile ACLs.
+      val utilsKeyPath = File(dir, "utils.private-key.jwk").toPath
+      if java.nio.file.FileSystems.getDefault.supportedFileAttributeViews.contains("posix") then
+        java.nio.file.Files.setPosixFilePermissions(
+          utilsKeyPath,
+          java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
+        )
+      println(
+        "  Keep utils.private-key.jwk: it is the private key of the `utils` client (loadgen's provision.provisioner-private-key), and is in no generated-secrets file.",
       )
-    println(
-      "  Keep utils.private-key.jwk: it is the private key of the `utils` client (loadgen's provision.provisioner-private-key), and is in no generated-secrets file.",
-    )
 
     println(
       s"""
          |Done! Files written to .local/env/$target/
-         |  - auth.conf     (auth service)
-         |  - central.conf  (central service)
-         |  - edge.conf     (edge service)
+         |${if remoteEdge then "  - edge.conf, edge.generated-secrets.env (this remote edge only: no auth or central file is written, since a key\n    generated here is not the edge's and central's public half of it is unknown)" else "  - auth.conf     (auth service)\n  - central.conf  (central service)\n  - edge.conf     (edge service)"}
          |""".stripMargin,
     )

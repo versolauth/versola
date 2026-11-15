@@ -10,6 +10,7 @@
       "required": ["mtlsUrl", "pins", "enrollment"],
       "properties": {
         "mtlsUrl": {"type": "string", "pattern": "^https://[^/ ]+$", "description": "https://<central-mtls host>, no path."},
+        "group": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$", "description": "The edge group the edge is registered in."},
         "pins": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "BEGIN CERTIFICATE"}},
         "enrollment": {
           "type": "object",
