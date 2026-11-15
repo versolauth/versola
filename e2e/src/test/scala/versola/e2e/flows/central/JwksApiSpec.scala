@@ -130,7 +130,8 @@ object JwksApiSpec extends CentralApiSpec:
         privateKid = s"import-prv-$suffix"
         privateRefused <- central.post(jwksPath, jwk(full, privateKid))
         publicAccepted <- central.post(jwksPath, jwk(full.toPublicJWK.nn, publicKid).add("alg", Json.Str("PS256")))
-        listed <- central.get(jwksPath).flatMap(_.items("keys"))
+        // the list is read from central's cache, which an import does not reload itself (a generation does): the key is awaited
+        listed <- eventually(central.get(jwksPath).flatMap(_.items("keys")))(_.exists(_.str("kid").contains(publicKid)))
         _ <- central.delete(jwksPath, "kid" -> publicKid)
         imported = listed.filter(_.str("kid").contains(publicKid))
         leaked = imported.flatMap(_.fields.collect { case (name, _) if privateKeyMembers(name) => name })

@@ -12,8 +12,8 @@ import java.util.UUID
 /** What every [[AntifraudListRepository]] promises: entries stored with their audit, refreshed on a repeat and kept apart by scope,
   * filtered and paged, expired and pruned in batches, counted for the cache's version, and previewed against the event log and
   * its rollup. A preview reads the events the real [[AntifraudEventRepository]] wrote and the statistics a case gets from
-  * [[AntifraudListRepositorySpec.Fixtures]], which the storage's runner implements; the storage adds in `implementationCases`
-  * what it alone promises (a statement timeout, a row of a kind it stores and a version does not know). */
+  * [[AntifraudListRepositorySpec.Fixtures]], which the storage's runner implements, as it does an entry of a kind this version
+  * does not know; the storage adds in `implementationCases` what it alone promises (a statement timeout). */
 trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListRepositorySpec.Env]:
   self: ZIOSpec[TransactorZIO] =>
 
@@ -488,6 +488,15 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
           latest <- resets.latest
         yield assertTrue(left == List(3L), newest == List(3L), latest == 3L)
       },
+      test("a row of a kind this version does not know is stored, and skipped when the cache loads") {
+        for
+          now <- Clock.instant
+          _ <- env.fixtures.entryOfKind(listType = "ban", valueType = "ip", value = "x")
+          _ <- env.fixtures.entryOfKind(listType = "deny", valueType = "fingerprint", value = "y")
+          _ <- env.fixtures.entryOfKind(listType = "deny", valueType = "ip", value = "203.0.113.7")
+          loaded <- repository.loadActive(now)
+        yield assertTrue(loaded.map(_.value) == List("203.0.113.7"))
+      },
     )
 
 object AntifraudListRepositorySpec:
@@ -498,12 +507,17 @@ object AntifraudListRepositorySpec:
       fixtures: Fixtures,
   )
 
-  /** What a case writes that the repository under test does not: the rollup's statistics, for the preview of a prefix. */
+  /** What a case writes that the repository under test does not: the rollup's statistics, for the preview of a prefix, and an entry
+    * of a kind only a later version writes. */
   trait Fixtures:
     /** One row of the rollup, `requests` in the minute. */
     def stats(tenant: String, prefix: String, minute: Instant, requests: Int): Task[Unit]
 
     def clearStats: Task[Unit]
+
+    /** An entry as a later version would store it, with no expiry: its type and the type of its value by the names they are stored
+      * under, which this version does not have to know. */
+    def entryOfKind(listType: String, valueType: String, value: String): Task[Unit]
 
   val at: Instant = Instant.parse("2026-10-23T10:00:00Z")
 

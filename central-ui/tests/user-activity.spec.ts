@@ -25,11 +25,16 @@ const reportRequests = (api: MockConfigHarness): RequestLog[] => api.requests.fi
 /** The query of the latest report request. */
 const lastQuery = (api: MockConfigHarness) => reportRequests(api).at(-1)!.searchParams;
 
+/**
+ * `Date` stands still at the fixtures' "now" and the timers run as usual. `clock.install` starts a clock that goes on in real time, so a
+ * period chosen a second after the page opened asked for a window one second later (seen on CI, on a slow runner). `clock.pauseAt` would
+ * stop it too, but with it no timer fires, and the page waits on timers: the mock's delayed report, the "copied" notices. A first load
+ * that takes a second is covered as well: "Updated 14:50:00" and the period's end read the same pinned `new Date()`.
+ */
+const pinClock = (page: Page) => page.clock.setFixedTime(new Date(ACTIVITY_NOW));
+
 async function openActivity(page: Page, audit: UserAuditMock = activityAudit(), path = base, more: Partial<MockConfigState> = {}) {
-  await page.clock.install({ time: new Date(ACTIVITY_NOW) });
-  // `install` starts the clock at that time and lets it run, so a first load that takes a second reads 14:50:01: the page's `new Date()` is
-  // pinned instead, which is what "Updated 14:50:00" and the period's end depend on.
-  await page.clock.setFixedTime(new Date(ACTIVITY_NOW));
+  await pinClock(page);
   const api = await loadAdminApp(page, { path, state: stateWith(audit, more) });
   await expect(page.getByRole('heading', { level: 1, name: 'Dana Reyes' })).toBeVisible();
   return api;
@@ -132,7 +137,7 @@ test.describe('first load', () => {
 
 test.describe('the Activity tab', () => {
   test('is the last tab of the record, asks for nothing until it is opened, and puts its view in the URL', async ({ page }) => {
-    await page.clock.install({ time: new Date(ACTIVITY_NOW) });
+    await pinClock(page);
     const api = await loadAdminApp(page, { path: `/?view=users&tenant=tenant-alpha&id=${danaId}`, state: stateWith(activityAudit()) });
     await expect(page.getByRole('heading', { level: 1, name: 'Dana Reyes' })).toBeVisible();
     await expect(page.getByRole('tablist', { name: 'User sections' }).getByRole('tab')).toHaveText(['Profile', 'Roles', 'Devices', 'Activity']);
@@ -152,7 +157,7 @@ test.describe('the Activity tab', () => {
   });
 
   test('can be reached with the keyboard, and is only selected by Enter or Space (moving along the bar asks for nothing)', async ({ page }) => {
-    await page.clock.install({ time: new Date(ACTIVITY_NOW) });
+    await pinClock(page);
     const api = await loadAdminApp(page, { path: `/?view=users&tenant=tenant-alpha&id=${danaId}&tab=devices`, state: stateWith(activityAudit()) });
     await expect(page.getByRole('region', { name: 'Signed-in devices' })).toBeVisible();
     await page.getByRole('tab', { name: 'Devices' }).focus();
@@ -178,7 +183,7 @@ test.describe('the Activity tab', () => {
 
   test('is not in the bar for an admin without audit:read, a direct link opens Profile, and no report is asked for', async ({ page }) => {
     const readOnly = { resources: { central: { permissions: ['users:read'] } }, isProd: false };
-    await page.clock.install({ time: new Date(ACTIVITY_NOW) });
+    await pinClock(page);
     const api = await loadAdminApp(page, { path: base, state: stateWith(activityAudit(), { myPermissions: readOnly }) });
     await expect(page.getByRole('heading', { level: 1, name: 'Dana Reyes' })).toBeVisible();
     await expect(page.getByRole('tablist', { name: 'User sections' }).getByRole('tab')).toHaveText(['Profile', 'Roles', 'Devices']);

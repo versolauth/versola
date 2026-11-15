@@ -36,13 +36,15 @@ be run against another storage, and the next storage would have to copy it.
   insert nothing the case does not ask for). It has no test bodies of its own beyond the two kinds
   below.
 - A case that needs rows the repository under test does not write (the rollup's statistics, an
-  earlier proposal, a list entry) asks for them through a `Fixtures` trait in `Env`, which the
-  runner implements with SQL (see `AntifraudProposalRepositorySpec.Fixtures`). The case never
-  holds a transactor and never writes SQL.
+  earlier proposal, a list entry), or a state its methods cannot produce (a row of a kind this
+  version does not know, a value another build stored, the stored form of a value no method reads
+  back), asks for them through a `Fixtures` trait in `Env`, which the runner implements with SQL
+  (see `AntifraudProposalRepositorySpec.Fixtures`, `AntifraudSettingsRepositorySpec.Fixtures`). The
+  case never holds a transactor and never writes SQL.
 - What only one storage promises (a `statement_timeout`, giving way to an advisory lock, a
-  partition kept ahead, a row of an unknown kind skipped) goes in the runner's
-  `implementationCases(env)`, which may use the transactor. Everything else is behaviour and goes
-  in the trait.
+  partition kept ahead, an unlogged table, a trigger, the payload of a notification) goes in the
+  runner's `implementationCases(env)`, which may use the transactor. Everything else is behaviour
+  and goes in the trait.
 - New repository behaviour is added to the trait, so every storage is held to it; a new storage
   is a new runner of a few lines, not a new spec.
 - `PostgresSpec` connects to `POSTGRES_HOST` (default `localhost:5432`) and runs migrations; each
