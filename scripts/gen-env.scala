@@ -2519,8 +2519,12 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
     // know what env value this run happened to resolve to (ENV_NAME,
     // for vps, isn't necessarily "prod" -- see env's own comment above).
     val dir = File(s".local/env/$target")
-    writeFile(dir, "auth.conf", authConf)
-    writeFile(dir, "central.conf", centralConf)
+    // A `--remote-edge` run is for one file, the edge's: it holds no key generated for auth or central and no public half of the edge's
+    // key, so the auth and central outputs of such a run would be wrong if applied (an empty `public-key-jwk` for the edge among them).
+    // They are not written.
+    if !remoteEdge then
+      writeFile(dir, "auth.conf", authConf)
+      writeFile(dir, "central.conf", centralConf)
     // A remote edge's `central` block (url, pins, identity, group) comes from the chart's `central.conf`; including it last lets it
     // win, and means the operator adds nothing by hand.
     val remoteInclude = if remoteEdge then "\n# Rendered by the versola-edge chart: central's address, its pin, the enrollment and the group.\ninclude file(\"/app/remote-edge/central.conf\")\n" else ""
@@ -2553,7 +2557,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
       SecretSchema.problems(SecretSchema.specs) match
         case Nil => ()
         case found => throw RuntimeException("secret schema is inconsistent: " + found.mkString("; "))
-      writeGeneratedSecrets(
+      if !remoteEdge then writeGeneratedSecrets(
         dir,
         secretTarget,
         "auth",
@@ -2576,7 +2580,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
       )
 
       val centralExtras = if isVps || isKubernetes then Seq("POSTGRES_PASSWORD" -> centralPgPass) else Seq.empty
-      writeGeneratedSecrets(
+      if !remoteEdge then writeGeneratedSecrets(
         dir,
         secretTarget,
         "central",
@@ -2626,30 +2630,29 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
       )
 
       // What the keys above are, for versola-cli: see SecretSchema. Values are never in it.
-      writeFile(dir, "secrets.schema.json", SecretSchema.toJson(secretTarget))
+      if !remoteEdge then writeFile(dir, "secrets.schema.json", SecretSchema.toJson(secretTarget))
 
-    // The private half of the `utils` pair, for whoever authenticates as that client (loadgen provision today) -- see bootstrapUtilityClientLines. A bare JWK file,
-    // owner-readable only, written outside every *.generated-secrets.env on purpose. Written
-    // whether or not secrets are placeholdered: an interactive prod run registers the public half
-    // in central.conf as a literal, and nothing else keeps the private half.
-    writeFile(dir, "utils.private-key.jwk", utilityPrivateJwk + "\n")
-    // Windows has no POSIX file attributes: the call throws there, and the file is left to the
-    // user's profile ACLs.
-    val utilsKeyPath = File(dir, "utils.private-key.jwk").toPath
-    if java.nio.file.FileSystems.getDefault.supportedFileAttributeViews.contains("posix") then
-      java.nio.file.Files.setPosixFilePermissions(
-        utilsKeyPath,
-        java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
+    if !remoteEdge then
+      // The private half of the `utils` pair, for whoever authenticates as that client (loadgen provision today) -- see bootstrapUtilityClientLines. A bare JWK file,
+      // owner-readable only, written outside every *.generated-secrets.env on purpose. Written
+      // whether or not secrets are placeholdered: an interactive prod run registers the public half
+      // in central.conf as a literal, and nothing else keeps the private half.
+      writeFile(dir, "utils.private-key.jwk", utilityPrivateJwk + "\n")
+      // Windows has no POSIX file attributes: the call throws there, and the file is left to the
+      // user's profile ACLs.
+      val utilsKeyPath = File(dir, "utils.private-key.jwk").toPath
+      if java.nio.file.FileSystems.getDefault.supportedFileAttributeViews.contains("posix") then
+        java.nio.file.Files.setPosixFilePermissions(
+          utilsKeyPath,
+          java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
+        )
+      println(
+        "  Keep utils.private-key.jwk: it is the private key of the `utils` client (loadgen's provision.provisioner-private-key), and is in no generated-secrets file.",
       )
-    println(
-      "  Keep utils.private-key.jwk: it is the private key of the `utils` client (loadgen's provision.provisioner-private-key), and is in no generated-secrets file.",
-    )
 
     println(
       s"""
          |Done! Files written to .local/env/$target/
-         |  - auth.conf     (auth service)
-         |  - central.conf  (central service)
-         |  - edge.conf     (edge service)
+         |${if remoteEdge then "  - edge.conf, edge.generated-secrets.env (this remote edge only: no auth or central file is written, since a key\n    generated here is not the edge's and central's public half of it is unknown)" else "  - auth.conf     (auth service)\n  - central.conf  (central service)\n  - edge.conf     (edge service)"}
          |""".stripMargin,
     )

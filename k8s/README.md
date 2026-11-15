@@ -766,6 +766,10 @@ public name, so install the main chart's `exposure` first (section 9a).
    on `local` and `vps`; this script does not consult it, and with `--remote-edge` the two values come from the flags on every run, so a
    second run writes the same key again and replaces nothing (a run without the flags stops).
 
+   A `--remote-edge` run writes only `edge.conf` and `edge.generated-secrets.env`: no `auth.conf`, `central.conf`, `secrets.schema.json` or
+   `utils.private-key.jwk`, because the key is not one this run generated and central's public half of it is unknown, so those files would be
+   wrong if applied.
+
    A remote edge gets no `security.internal-secret`: the `/service/*` surface it protects is the in-cluster one. Set `central.group` when
    the edge is not in the `default` group. `gen-env` also writes a `native` block, which needs auth's mutual-TLS address and pin: set
    `auth.mtlsUrl` and `auth.pins` (the chart's `central.conf` then carries the matching `native` block).
