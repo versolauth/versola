@@ -39,7 +39,7 @@ import versola.central.configuration.clients.{
   PrimaryCredential,
   ResponseType,
 }
-import versola.central.configuration.edges.{EdgeGroup, EdgeId, EdgeRecord, EdgeRepository}
+import versola.central.configuration.edges.{EdgeGroup, EdgeGroupId, EdgeId, EdgeRecord, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
 import versola.central.configuration.jwks.{JwksKeyGeneration, JwksRecord, JwksRepository}
 import versola.central.configuration.locales.{LocaleRecord, LocaleRepository}
@@ -83,6 +83,14 @@ trait BootstrapService:
 object BootstrapService:
 
   private val NonProdAdminPhone = Phone("+12025551234")
+
+  /** The edge group bootstrap links the default tenant to, if any (#557). The edges a deployment seeds are created in
+    * the `default` group, and a tenant is served by a group: linking the tenant to that group is what has the seeded
+    * edges sync the central-admin client and its presets. A tenant that already names a group keeps it, so that an
+    * operator's own assignment survives every later start; a deployment that seeds no edge links nothing.
+    */
+  private[versola] def groupToLink(current: Option[EdgeGroupId], seedsEdges: Boolean): Option[EdgeGroupId] =
+    Option.when(seedsEdges && current.isEmpty)(EdgeGroup.DefaultId)
 
   private[versola] def adminPhone(envName: EnvName): Option[Phone] =
     Option.when(envName.isTest)(NonProdAdminPhone)
@@ -1775,12 +1783,10 @@ object BootstrapService:
       * tenant has no group yet, to preserve manual assignments on re-runs.
       */
     private def linkTenantEdge(tenantId: TenantId, config: CentralConfig.BootstrapConfig): Task[Unit] =
-      ZIO.foreachDiscard(config.edges.getOrElse(Nil).headOption): _ =>
-        tenantRepo.getAll.flatMap: tenants =>
-          tenants.find(_.id == tenantId) match
-            case Some(tenant) if tenant.edgeGroupId.isEmpty =>
-              tenantRepo.updateTenant(tenant.id, tenant.description, Some(EdgeGroup.DefaultId))
-            case _ => ZIO.unit
+      tenantRepo.getAll.flatMap: tenants =>
+        ZIO.foreachDiscard(tenants.find(_.id == tenantId)): tenant =>
+          ZIO.foreachDiscard(BootstrapService.groupToLink(current = tenant.edgeGroupId, seedsEdges = config.edges.exists(_.nonEmpty))): group =>
+            tenantRepo.updateTenant(tenant.id, tenant.description, Some(group))
 
     /** Seeds the edge-facing resource that proxies the admin API back to central.
       * Created for the default tenant (linked to the bootstrap edge) so it syncs

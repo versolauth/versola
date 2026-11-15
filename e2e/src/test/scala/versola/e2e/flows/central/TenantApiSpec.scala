@@ -80,6 +80,18 @@ object TenantApiSpec extends CentralApiSpec:
         assertTrue(listed.exists(t => t.str("id").contains(id) && t.str("description").contains("after")))
           .label("the listing must show the new description, not the old one")
     },
+    // What every other spec stands on: bootstrap creates the staged edge in the `default` group and links the `default`
+    // tenant to that group, which is what has the edge sync the console's own client.
+    test("bootstrap links the default tenant to the group of the edge it seeds") {
+      for
+        central <- api
+        tenants <- central.get(path).flatMap(_.items("tenants"))
+        edges <- central.get("/configuration/edges").flatMap(_.items("edges"))
+        group = tenants.find(_.str("id").contains(Fixtures.defaultTenant)).flatMap(_.str("edgeGroupId"))
+      yield assertTrue(group.contains("default")).label("the default tenant names the default group") &&
+        assertTrue(edges.exists(edge => edge.str("id").contains("edge-default") && edge.str("groupId") == group))
+          .label("and the seeded edge is in that group")
+    },
     // #557: a tenant is served by a group of edges, so that it can have several edge sites.
     test("an update binds the tenant to a group of edges") {
       for

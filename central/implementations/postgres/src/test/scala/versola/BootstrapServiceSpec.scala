@@ -18,6 +18,7 @@ import versola.central.configuration.clients.{
   OAuthClientRecord,
   OAuthClientService,
 }
+import versola.central.configuration.edges.{EdgeGroup, EdgeGroupId}
 import versola.central.configuration.forms.FormPreviews
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
@@ -96,6 +97,19 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
     CentralConfig.BootstrapConfig.UtilityClientSeed(ClientId("utils"), secret, publicKeyJwk)
 
   def spec = suite("BootstrapService")(
+    // #557: a tenant is served by a group of edges, and the edges a deployment seeds are created in `default`.
+    test("links the default tenant to the default group on a fresh installation that seeds edges, so that they sync central-admin") {
+      assertTrue(BootstrapService.groupToLink(current = None, seedsEdges = true) == Some(EdgeGroup.DefaultId))
+    },
+    test("leaves the group a tenant already names alone on every later start, the default one and an operator's own alike") {
+      assertTrue(
+        BootstrapService.groupToLink(current = Some(EdgeGroup.DefaultId), seedsEdges = true).isEmpty,
+        BootstrapService.groupToLink(current = Some(EdgeGroupId("almaty")), seedsEdges = true).isEmpty,
+      )
+    },
+    test("links nothing in a deployment that seeds no edge: no edge would serve the tenant through the group") {
+      assertTrue(BootstrapService.groupToLink(current = None, seedsEdges = false).isEmpty)
+    },
     test("starts a tenant with an otp class that asks for a one-time code and a passkey class that asks for a passkey") {
       val settings = BootstrapService.defaultChallengeSettings(
         versola.central.configuration.tenants.TenantId("default"),
