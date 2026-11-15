@@ -5,9 +5,10 @@ import versola.central.audit.CentralAudit.{CertFailure, CertReasons}
 import versola.central.audit.{CentralAudit, DenialThrottle}
 import versola.central.configuration.clients.certificates.{ClientCertificateIssuer, ClientCertificateRequests}
 import versola.central.configuration.partners.{PartnerRegistry, PartnerStatus}
+import versola.util.CertificateMetrics.Kind
 import versola.util.audit.{AuditEvents, AuditKind, AuditOutcome, CertAuditDetails, CertOperation}
 import versola.util.http.Observability
-import versola.util.{Base64Url, CertificateSubject, EdgeIdentityNames, EnrollmentToken, SecureRandom}
+import versola.util.{Base64Url, CertificateMetrics, CertificateSubject, EdgeIdentityNames, EnrollmentToken, SecureRandom}
 import zio.*
 import zio.json.ast.Json
 
@@ -274,6 +275,12 @@ object EdgeIdentityService:
         signingKey: Option[Json.Obj],
     ): IO[Refused | Throwable, Identity] =
       renewing(edgeId, csrPem, presentedSerial, signingKey)
+        // Counted as the audit log classifies it, for every renewal that reaches central. One that never gets here (the edge cannot reach
+        // central) is seen only in the expiry gauges, when the certificate has gone on to be past the middle of its renewal window.
+        .tapBoth(
+          failure => CertificateMetrics.renewal(Kind.Edge, failure.outcome),
+          _ => CertificateMetrics.renewal(Kind.Edge, AuditOutcome.success),
+        )
         .tapError(failure => failed(CentralAudit.CertRenewed, CertOperation.Renew, edgeId, failure))
         .mapError(_.error)
 
