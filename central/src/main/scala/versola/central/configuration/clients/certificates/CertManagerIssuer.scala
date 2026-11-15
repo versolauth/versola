@@ -33,7 +33,10 @@ object CertManagerIssuer:
         ZIO.scoped:
           for
             name <- create(base, request)
-            certificate <- await(base, name).timeoutFail(RuntimeException(s"cert-manager did not sign request $name within $Timeout"))(Timeout)
+            certificate <- await(
+              base,
+              name,
+            ).timeoutFail(ClientCertificateIssuer.IssuerFailed.timedOut(s"cert-manager did not sign request $name within $Timeout"))(Timeout)
               .ensuring(call(Request.delete(_), s"$base/$name").ignore)
           yield certificate
 
@@ -47,6 +50,7 @@ object CertManagerIssuer:
           base = build(target).addHeader(Header.Authorization.Bearer(bearer))
           withBody = body.fold(base)(text => base.withBody(Body.fromString(text)).addHeader(Header.ContentType(MediaType.application.json)))
           result <- ZIO.scoped(client.ssl(ssl).request(withBody).flatMap(r => r.body.asString.map(r.status -> _)))
+            .mapError(ClientCertificateIssuer.IssuerFailed.unreachable)
         yield result
 
       private def create(base: String, request: CertificateSigningRequest): Task[String] =
@@ -67,19 +71,19 @@ object CertManagerIssuer:
           ),
         ).toJson
         call(Request.post(_, Body.empty), base, Some(body)).flatMap: (status, text) =>
-          if !status.isSuccess then ZIO.fail(RuntimeException(s"cert-manager refused the request with $status: $text"))
+          if !status.isSuccess then ZIO.fail(ClientCertificateIssuer.IssuerFailed.refused(s"cert-manager refused the request with $status: $text"))
           else
-            ZIO.fromEither(text.fromJson[Json.Obj].left.map(RuntimeException(_)))
+            ZIO.fromEither(text.fromJson[Json.Obj].left.map(ClientCertificateIssuer.IssuerFailed.invalidAnswer(_)))
               .flatMap(obj =>
                 ZIO.fromOption(obj.get("metadata").flatMap(_.asObject).flatMap(_.get("name")).flatMap(_.asString))
-                  .orElseFail(RuntimeException("cert-manager's answer names no request")),
+                  .orElseFail(ClientCertificateIssuer.IssuerFailed.invalidAnswer("cert-manager's answer names no request")),
               )
 
       private def await(base: String, name: String): Task[String] =
         call(Request.get(_), s"$base/$name").flatMap: (status, text) =>
-          if !status.isSuccess then ZIO.fail(RuntimeException(s"reading request $name failed with $status: $text"))
+          if !status.isSuccess then ZIO.fail(ClientCertificateIssuer.IssuerFailed.refused(s"reading request $name failed with $status: $text"))
           else
-            ZIO.fromEither(text.fromJson[Json.Obj].left.map(RuntimeException(_))).flatMap: obj =>
+            ZIO.fromEither(text.fromJson[Json.Obj].left.map(ClientCertificateIssuer.IssuerFailed.invalidAnswer(_))).flatMap: obj =>
               val conditions = obj.get("status").flatMap(_.asObject).flatMap(_.get("conditions")).flatMap(_.asArray).map(_.toList).getOrElse(Nil)
                 .flatMap(_.asObject)
               def condition(kind: String) =
@@ -87,14 +91,15 @@ object CertManagerIssuer:
               def isTrue(c: Json.Obj) = c.get("status").flatMap(_.asString).contains("True")
               def reason(c: Json.Obj) = c.get("message").flatMap(_.asString).getOrElse("no reason given")
               condition("Denied").filter(isTrue) match
-                case Some(denied) => ZIO.fail(RuntimeException(s"cert-manager denied request $name: ${reason(denied)}"))
+                case Some(denied) => ZIO.fail(ClientCertificateIssuer.IssuerFailed.refused(s"cert-manager denied request $name: ${reason(denied)}"))
                 case None =>
                   condition("Ready").filter(isTrue) match
                     case Some(_) =>
                       ZIO.fromOption(obj.get("status").flatMap(_.asObject).flatMap(_.get("certificate")).flatMap(_.asString))
-                        .orElseFail(RuntimeException(s"request $name is Ready but carries no certificate"))
+                        .orElseFail(ClientCertificateIssuer.IssuerFailed.invalidAnswer(s"request $name is Ready but carries no certificate"))
                         .map(encoded => String(Base64.getDecoder.decode(encoded), StandardCharsets.UTF_8))
                     case None =>
                       condition("Ready").filter(c => c.get("reason").flatMap(_.asString).contains("Failed")) match
-                        case Some(failed) => ZIO.fail(RuntimeException(s"cert-manager failed request $name: ${reason(failed)}"))
+                        case Some(failed) =>
+                          ZIO.fail(ClientCertificateIssuer.IssuerFailed.refused(s"cert-manager failed request $name: ${reason(failed)}"))
                         case None => ZIO.sleep(PollInterval) *> await(base, name)

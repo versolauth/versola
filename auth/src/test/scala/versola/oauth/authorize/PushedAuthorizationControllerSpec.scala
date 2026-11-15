@@ -64,7 +64,6 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
       verifyService: Stub[PushedAuthorizationService] => UIO[TestResult] =
         (_: Stub[PushedAuthorizationService]) => ZIO.succeed(assertTrue(true)),
       verifyAudit: List[AuditDraft] => TestResult = _ => assertCompletes,
-      tiers: AuthAudit.Tiers = CapturingAuditEvents.tiers,
       audit: CapturingAuditEvents = CapturingAuditEvents.shared(),
   ) =
     test(description) {
@@ -82,7 +81,7 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
             PushedAuthorizationController.routes
               .provideEnvironment(
                 ZEnvironment(service) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(config) ++ ZEnvironment[AuditEvents](audit) ++
-                  ZEnvironment(tiers) ++ ZEnvironment[ClientAuthFailures](ImmediateClientAuthFailures(audit)) ++ tracing,
+                  ZEnvironment[ClientAuthFailures](ImmediateClientAuthFailures(audit)) ++ tracing,
               ),
           ),
         )
@@ -293,18 +292,9 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
         verifyAudit = drafts => assertTrue(drafts.map(_.details).collect { case d: AuthAuditDetails.ParRequest => d.requestObject } == List(true)),
       ),
       controllerTestCase(
-        description = "a success is left out when the deployment turned audit.events.par-success off",
-        request = parRequest(validForm()),
-        expectedStatus = Status.Created,
-        tiers = CapturingAuditEvents.tiers.copy(parSuccess = false),
-        setup = _.push.succeedsWith(pushedResponse),
-        verifyAudit = drafts => assertTrue(drafts.isEmpty),
-      ),
-      controllerTestCase(
         description = "a refused push is always recorded, with the OAuth error as the reason",
         request = parRequest(validForm()),
         expectedStatus = Status.BadRequest,
-        tiers = CapturingAuditEvents.tiers.copy(parSuccess = false),
         setup = _.push.failsWith(PushedAuthorizationError.RequestUriNotAllowed),
         verifyAudit = drafts =>
           assertTrue(drafts.map(d => (d.kind, d.outcome, d.reason)) == List((

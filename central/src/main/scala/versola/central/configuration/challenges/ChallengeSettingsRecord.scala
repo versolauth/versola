@@ -203,9 +203,27 @@ case class ChallengeSettingsRecord(
       * above the sign-in card. Both or neither: a single file reused for both schemes would vanish on one of them. */
     logoLight: Option[String],
     logoDark: Option[String],
+    /** What the tenant's audit log records, see [[AuditSettings]]. */
+    auditSettings: AuditSettings,
 ) derives Schema, JsonCodec
 
+/** The two switches of a tenant's audit log, stored as one JSON object. */
+case class AuditSettings(
+    /** Whether the tenant keeps an audit log at all: off, none of its events is recorded. Events that belong to no tenant are
+      * recorded whatever a tenant chose. */
+    log: Boolean,
+    /** Whether a `refresh_token` grant is an event of the log (`token.issued`), the most frequent one: refusals and the reuse of a
+      * refresh token are recorded whatever this says. Has no effect while [[log]] is off. */
+    tokenRefresh: Boolean,
+) derives Schema, JsonCodec
+
+object AuditSettings:
+  /** What a tenant that has not chosen has, and what every tenant had before the switches existed: the log on, the refreshes not
+    * events. */
+  val default: AuditSettings = AuditSettings(log = true, tokenRefresh = false)
+
 object ChallengeSettingsRecord:
+
   /** Why this logo pair cannot be stored, if it cannot: both files or none, each an absolute HTTP(S) URL. */
   def validateLogo(light: Option[String], dark: Option[String]): Option[String] =
     if light.isDefined != dark.isDefined then Some("logoLight and logoDark must be set or cleared together")

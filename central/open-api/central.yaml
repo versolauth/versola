@@ -107,9 +107,10 @@ info:
     ## Audit
 
     Every change an administrator makes through this API is written to central's audit log
-    (`central_audit_event`, kept for the `audit.retention` of the configuration, from 1 to 14 days, 7 by default), as is a
-    look at a user (`GET /users`, unless `audit.events.admin-user-viewed` is off), a query of the audit
-    report and every response that hands a secret back. A row says who did what to what, when, and how it
+    (`central_audit_event`, kept for 7 days), as is a look at a user (`GET /users`), a query of the audit
+    report and every response that hands a secret back. A tenant can switch its audit log off (`auditSettings.log` of its
+    challenge settings): nothing is recorded for the tenant then, whether the change was made to its settings,
+    its clients or anything else of it. A row says who did what to what, when, and how it
     ended: `admin.<resource>.<operation>` (`admin.client.create`, `admin.client-secret.action:rotate-secret`),
     a success, a failure with the request's error code, or a denial. The log holds the names of the fields an
     update carried, never their values. The event is handed to the audit queue after the handler has answered.
@@ -117,7 +118,16 @@ info:
     lists, settings and counters) is recorded here with its outcome too, and auth records its effect: the two rows carry
     the same trace id.
     Certificates central issues are recorded as `cert.enrolled`, `cert.renewed` and `cert.revoked`, by the client,
-    the edge or the system.
+    the edge or the system. Their `details` say which certificate it is: `operation`, the `serial` (hex), `notAfter`
+    (an ISO-8601 instant) and the `subject` (RFC 4514), and `clientId` for a client's. `operation` is one of `enroll`
+    (the first certificate), `renew` (a new one for the one in hand, also for the EST re-enrolment `auth` records),
+    `sign` (an edge obtained a certificate for a client whose key it generated), `issue` (central issued it when the
+    client was registered) and `revoke_renewal` (the `cert.revoked` of a chain closed as forked: the right to renew
+    ended, and the `serial` is that of the certificate presented, which keeps authenticating until it expires). A certificate issued when a
+    client is registered with `issueEdgeClientCertificate` is a `cert.enrolled` by the administrator. No key, PEM or
+    request is ever in them. An attempt that gave no certificate is recorded with `denied` (a rule refused it) or `failure`
+    (the issuer or central could not do it), a `reason` that is a code and no `serial`; an automatic renewal that keeps
+    failing is recorded when it starts to fail and not on every pass, and the `cert.renewed` that succeeds ends it.
 
     The administrator is the one edge has authenticated. Edge adds query parameters to every call and removes
     any a client sent under the same names: `actorId` (the `sub` of the access token), `actorTenantId` (its tenant),
@@ -1762,7 +1772,7 @@ paths:
         neither overwrites the other, which a `PUT` of the whole record cannot promise.
 
         A named member is replaced whole, never merged into: `submissionLimits`, `passkeySettings`,
-        `emailRegistration` and `acrVocabulary` are sent in full, and so are `phoneRegions` and the
+        `emailRegistration`, `acrVocabulary` and `auditSettings` are sent in full, and so are `phoneRegions` and the
         other lists. `null` clears a member, but only the optional ones --
         `sessionIdleTtlSeconds`, `acrVocabulary`, `mtlsCertificateHeader`, `mtlsCertificateEncoding`,
         `signingKeyId`, `logoLight` and `logoDark`. `null` for any other member is refused with
@@ -6394,6 +6404,8 @@ components:
         logoDark:
           type: [string, 'null']
           description: The same for the dark colour scheme (light artwork). See `logoLight`.
+        auditSettings:
+          $ref: '#/components/schemas/AuditSettings'
       required:
         - tenantId
         - phoneRegions
@@ -6410,6 +6422,25 @@ components:
         - postLogoutRedirectUris
         - requireDpopNonce
         - clientAssertionMaxLifetimeSeconds
+        - auditSettings
+    AuditSettings:
+      type: object
+      description: >-
+        What a tenant's audit log records, stored as one JSON object. A change reaches `auth` within
+        its configuration cache refresh interval (`configuration-cache-refresh-interval`).
+      properties:
+        log:
+          type: boolean
+          description: >-
+            Whether the tenant keeps an audit log. Off, none of the events of the tenant is recorded;
+            events that belong to no tenant are recorded whatever a tenant chose. Rows already written
+            stay until the retention drops them.
+        tokenRefresh:
+          type: boolean
+          description: >-
+            Whether a `refresh_token` grant is an event (`token.issued`). Refusals and the reuse of
+            a refresh token are recorded either way. No effect while `log` is off.
+      required: [log, tokenRefresh]
     MtlsCertificateEncoding:
       type: [string, 'null']
       description: How the certificate in mtlsCertificateHeader is encoded. Null iff mtlsCertificateHeader is null.
@@ -6516,6 +6547,11 @@ components:
         logoDark:
           type: [string, 'null']
           description: The same for the dark colour scheme (light artwork). See `logoLight`.
+        auditSettings:
+          $ref: '#/components/schemas/AuditSettings'
+          description: >-
+            Keeps the stored value when omitted (the log on and the refreshes off for a tenant that
+            has none). Both switches are sent.
       required:
         - tenantId
         - phoneRegions
@@ -6611,6 +6647,9 @@ components:
         logoDark:
           type: [string, 'null']
           description: The same for the dark colour scheme.
+        auditSettings:
+          $ref: '#/components/schemas/AuditSettings'
+          description: Replaced whole, with both switches; not nullable.
       required:
         - tenantId
 

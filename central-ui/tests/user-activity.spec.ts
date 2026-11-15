@@ -27,6 +27,9 @@ const lastQuery = (api: MockConfigHarness) => reportRequests(api).at(-1)!.search
 
 async function openActivity(page: Page, audit: UserAuditMock = activityAudit(), path = base, more: Partial<MockConfigState> = {}) {
   await page.clock.install({ time: new Date(ACTIVITY_NOW) });
+  // `install` starts the clock at that time and lets it run, so a first load that takes a second reads 14:50:01: the page's `new Date()` is
+  // pinned instead, which is what "Updated 14:50:00" and the period's end depend on.
+  await page.clock.setFixedTime(new Date(ACTIVITY_NOW));
   const api = await loadAdminApp(page, { path, state: stateWith(audit, more) });
   await expect(page.getByRole('heading', { level: 1, name: 'Dana Reyes' })).toBeVisible();
   return api;

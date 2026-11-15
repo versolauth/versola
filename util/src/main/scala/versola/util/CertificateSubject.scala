@@ -22,6 +22,7 @@ import java.security.{AlgorithmParameters, KeyPairGenerator, PublicKey}
 import java.util.Base64
 import javax.security.auth.x500.X500Principal
 import scala.jdk.CollectionConverters.*
+import scala.util.{Try, Using}
 
 /** What an edge-fronted client's certificate must say: the subject and the alternative names
   * auth later compares a presented certificate against (RFC 8705 §2.1.2).
@@ -93,15 +94,21 @@ object CertificateSubject:
       val signer = JcaContentSignerBuilder("SHA256withECDSA").build(pair.getPrivate)
       Generated(pem("PRIVATE KEY", pair.getPrivate.getEncoded), pem("CERTIFICATE REQUEST", builder.build(signer).getEncoded))
 
+  /** The PKCS#10 `csrPem` holds, or why it holds none: no PEM object at all, one of another type, or text that does not parse. The one
+    * place a request is read, and the reader is closed whatever came of it. */
+  private def readRequest(csrPem: String): Try[JcaPKCS10CertificationRequest] =
+    Using(PEMParser(StringReader(csrPem))): parser =>
+      parser.readObject() match
+        case request: PKCS10CertificationRequest => JcaPKCS10CertificationRequest(request)
+        case null => throw IllegalArgumentException("there is no PEM object in it")
+        case other => throw IllegalArgumentException(s"it holds a ${other.getClass.getSimpleName}, not a PKCS#10 request")
+
   /** Whether `csrPem` is a request signed by the key it names, for exactly `subject` -- no other
     * subject, no name added or missing. What an issuer must check before signing a request made by
     * someone other than itself: a CA signs what the request says, so what it says is what the
     * client is recognised by. */
   def matches(csrPem: String, subject: CertificateSubject): Either[String, Unit] =
-    scala.util.Try:
-      val csr = JcaPKCS10CertificationRequest(
-        PEMParser(StringReader(csrPem)).readObject().asInstanceOf[PKCS10CertificationRequest],
-      )
+    readRequest(csrPem).map: csr =>
       val signedByItsKey = csr.isSignatureValid(JcaContentVerifierProviderBuilder().build(csr.getPublicKey))
       val sameSubject = X500Principal(csr.getSubject.getEncoded) == subject.principal
       val requested = Option(csr.getRequestedExtensions).flatMap(e => Option(e.getExtension(Extension.subjectAlternativeName)))
@@ -147,14 +154,17 @@ object CertificateSubject:
     * 2048 bits. Anything else (a weak RSA key, another curve, a key type this does not know) is refused with the reason,
     * so a client cannot be handed a certificate no policy of ours would have admitted. */
   def requestedKey(csrPem: String): Either[String, PublicKey] =
-    scala.util.Try(
-      JcaPKCS10CertificationRequest(PEMParser(StringReader(csrPem)).readObject().asInstanceOf[PKCS10CertificationRequest]).getPublicKey,
-    ).toEither.left.map(error => s"the request is not a readable PKCS#10: ${error.getMessage}").flatMap:
+    readRequest(csrPem).map(_.getPublicKey).toEither.left.map(error => s"the request is not a readable PKCS#10: ${error.getMessage}").flatMap:
       case key: ECPublicKey if isP256(key) => Right(key)
       case _: ECPublicKey => Left("the request's key is an EC key on a curve other than P-256")
       case key: RSAPublicKey if key.getModulus.bitLength >= MinRsaBits => Right(key)
       case _: RSAPublicKey => Left(s"the request's RSA key is shorter than $MinRsaBits bits")
       case other => Left(s"the request's key is ${other.getAlgorithm}, which is neither EC P-256 nor RSA")
+
+  /** The subject a request names, `None` when `csrPem` is not a readable PKCS#10. Not checked against anything: for the log of a
+    * request that was refused. */
+  def requestSubject(csrPem: String): Option[X500Principal] =
+    readRequest(csrPem).map(request => X500Principal(request.getSubject.getEncoded)).toOption
 
   /** Whether two public keys are the same key, by their key material and not their encoding: the same EC point on the
     * same curve, or the same RSA modulus and exponent, however each was written down. */

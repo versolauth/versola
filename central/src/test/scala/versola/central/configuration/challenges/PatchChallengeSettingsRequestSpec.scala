@@ -33,6 +33,7 @@ object PatchChallengeSettingsRequestSpec extends UnitSpecBase:
     securityProfile = SecurityProfile.fapi2,
     logoLight = Some("https://cdn.example/light.svg"),
     logoDark = Some("https://cdn.example/dark.svg"),
+    auditSettings = AuditSettings.default,
   )
 
   private def patch(members: String): Either[String, PatchChallengeSettingsRequest] =
@@ -64,6 +65,22 @@ object PatchChallengeSettingsRequestSpec extends UnitSpecBase:
       test("null clears the logo pair together") {
         val result = applied(""""logoLight":null,"logoDark":null""")
         assertTrue(result == Right(stored.copy(logoLight = None, logoDark = None)))
+      },
+      test("replaces the audit settings whole, both switches") {
+        assertTrue(
+          applied(""""auditSettings":{"log":false,"tokenRefresh":true}""") == Right(stored.copy(auditSettings =
+            AuditSettings(log = false, tokenRefresh = true),
+          )),
+          applied(""""auditSettings":{"log":true,"tokenRefresh":false}""") == Right(stored),
+        )
+      },
+      test("refuses audit settings that leave a switch out, name another or are cleared") {
+        assertTrue(
+          patch(""""auditSettings":{"log":false}""").isLeft,
+          patch(""""auditSettings":{"log":false,"tokenRefresh":true,"other":true}""").isRight,
+          applied(""""auditSettings":null""") == Left("auditSettings cannot be cleared: it is not optional"),
+          patch(""""auditSettings":{"log":"off","tokenRefresh":false}""").isLeft,
+        )
       },
       test("refuses null for a member that is not optional") {
         val result = applied(""""otpLength":null""")
