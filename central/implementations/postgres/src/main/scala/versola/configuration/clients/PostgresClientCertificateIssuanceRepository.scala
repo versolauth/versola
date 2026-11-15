@@ -4,8 +4,9 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.clients.certificates.{ClientCertificateIssuance, ClientCertificateIssuanceRepository}
+import versola.util.CertificateMetrics.Expiry
 import versola.util.postgres.BasicCodecs
-import zio.{Task, ZLayer}
+import zio.{Duration, Task, ZLayer}
 
 import java.time.Instant
 
@@ -57,6 +58,18 @@ class PostgresClientCertificateIssuanceRepository(
         WHERE not_after < $deadline
         ORDER BY not_after
       """.query[ClientCertificateIssuance].run()
+
+  override def expiry(now: Instant, renewBefore: Duration): Task[Expiry] =
+    val window = now.plus(renewBefore)
+    val midpoint = now.plus(renewBefore.dividedBy(2))
+    xa.connectMeasured("client-certificate-expiry"):
+      sql"""
+        SELECT count(*), min(not_after),
+               count(*) FILTER (WHERE not_after < $window),
+               count(*) FILTER (WHERE not_after < $midpoint)
+        FROM client_certificate_issuance
+      """.query[(Long, Option[Instant], Long, Long)].run().head
+    .map((tracked, earliest, inWindow, pastMidpoint) => Expiry(tracked, earliest, inWindow, pastMidpoint))
 
 object PostgresClientCertificateIssuanceRepository:
   def live: ZLayer[TransactorZIO, Throwable, ClientCertificateIssuanceRepository] =

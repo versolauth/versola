@@ -17,9 +17,10 @@ import versola.central.configuration.clients.certificates.{CertificateSigningReq
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.audit.{ActorType, AuditOutcome, CertOperation}
-import versola.util.{CertificateSubject, SecureRandom, TestCertificates}
+import versola.util.{CertificateMetrics, CertificateSubject, SecureRandom, TestCertificates}
 import zio.*
 import zio.json.*
+import zio.metrics.{Metric, MetricLabel}
 import zio.test.*
 
 import java.io.{ByteArrayInputStream, StringReader}
@@ -139,6 +140,7 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
     def extendChain(clientId: ClientId, at: Instant) = ZIO.succeed { chains += clientId -> at }
     def chainStartedAt(clientId: ClientId) = ZIO.succeed(chains.get(clientId))
     def findCertificate(thumbprint: String) = ZIO.succeed(certificates.get(thumbprint))
+    def expiry(now: Instant, renewWindow: Double) = ZIO.succeed(CertificateMetrics.Expiry.Empty)
 
     private def add(certificate: NewEstCertificate, generation: Int): Unit =
       certificates += certificate.thumbprint -> EstCertificate(
@@ -243,6 +245,18 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
       issued <- service.issueEnrollmentToken(clientId)
       identity <- service.enroll(issued.token, Some(clientId), request)
     yield identity
+
+  /** `certificate_renewals_total` is process-wide: the spec runs one test at a time, and each reads what it adds. */
+  private def renewals(outcome: String): UIO[Double] =
+    Metric.counter("certificate_renewals_total").tagged(Set(MetricLabel("kind", "est"), MetricLabel("outcome", outcome))).value.map(_.count)
+
+  private def counted[E, A](effect: IO[E, A]): IO[E, (A, Map[String, Double])] =
+    val outcomes = List("success", "denied", "failure")
+    for
+      before <- ZIO.foreach(outcomes)(outcome => renewals(outcome).map(outcome -> _)).map(_.toMap)
+      result <- effect
+      after <- ZIO.foreach(outcomes)(outcome => renewals(outcome).map(outcome -> _)).map(_.toMap)
+    yield (result, after.map((outcome, n) => outcome -> (n - before(outcome))))
 
   def spec = suite("ClientEstService")(
     suite("issueEnrollmentToken")(
@@ -868,6 +882,51 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           edge.isInstanceOf[InvalidRegistrationConfiguration],
           env.clientService.registerClient.calls.isEmpty,
         )
+      },
+    ),
+    suite("renewals are counted, `certificate_renewals_total{kind=est}` (#1001)")(
+      test("a renewal that gives a certificate is a success, and the enrolment before it is not a renewal") {
+        val env = Env()
+        for
+          _ <- realTime
+          service <- env.service
+          enrolled <- counted(enrol(env, service))
+          renewed <- counted(service.renew(enrolled._1.chain, csr()).exit)
+        yield assertTrue(
+          enrolled._2 == Map("success" -> 0.0, "denied" -> 0.0, "failure" -> 0.0),
+          renewed._1.isSuccess,
+          renewed._2 == Map("success" -> 1.0, "denied" -> 0.0, "failure" -> 0.0),
+        )
+      },
+      test("a refusal is denied, whether or not it is for a client the request could be tied to") {
+        val env = Env(renewWindow = 1.0 / 3)
+        for
+          _ <- realTime
+          service <- env.service
+          first <- enrol(env, service)
+          // too early: the client is known and is refused
+          early <- counted(service.renew(first.chain, csr()).flip)
+          // a certificate central never issued: nobody to tie it to, and still counted
+          stranger <- counted(service.renew(TestCertificates.generate(subject = defaultSubject).certificatePem, csr()).flip)
+        yield assertTrue(
+          early._2 == Map("success" -> 0.0, "denied" -> 1.0, "failure" -> 0.0),
+          stranger._2 == Map("success" -> 0.0, "denied" -> 1.0, "failure" -> 0.0),
+        )
+      },
+      test("a CA that does not answer is a failure, every time the client asks again") {
+        val ca = FakeCa()
+        var down = false
+        val issuer = new ClientCertificateIssuer:
+          def sign(request: CertificateSigningRequest) =
+            if down then ZIO.fail(ClientCertificateIssuer.IssuerFailed.unreachable(java.net.ConnectException("refused"))) else ca.sign(request)
+        val env = Env(issuer = issuer)
+        for
+          _ <- realTime
+          service <- env.service
+          first <- enrol(env, service)
+          _ = down = true
+          counts <- counted(ZIO.foreach(1 to 3)(_ => service.renew(first.chain, csr()).exit))
+        yield assertTrue(counts._1.forall(_.isFailure), counts._2 == Map("success" -> 0.0, "denied" -> 0.0, "failure" -> 3.0))
       },
     ),
   ).provide(SecureRandom.live) @@ TestAspect.sequential

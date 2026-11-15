@@ -1,6 +1,7 @@
 package versola.central.configuration.clients.est
 
 import versola.central.configuration.clients.ClientId
+import versola.util.CertificateMetrics
 import zio.{Duration, Task}
 
 import java.time.Instant
@@ -101,3 +102,7 @@ trait ClientEstRepository:
   def chainStartedAt(clientId: ClientId): Task[Option[Instant]]
 
   def findCertificate(thumbprint: String): Task[Option[EstCertificate]]
+
+  /** What the certificate each client holds now (the latest of its current generation) has left at `now`, as one aggregate. A client may
+    * renew in the last `renewWindow` of the life of its certificate, so that is its renewal window and its middle is half of it. */
+  def expiry(now: Instant, renewWindow: Double): Task[CertificateMetrics.Expiry]

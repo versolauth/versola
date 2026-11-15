@@ -14,6 +14,10 @@ object EdgeIdentityNames:
   val EdgePrefix: String = "urn:versola:edge:"
   val GroupPrefix: String = "urn:versola:edge-group:"
 
+  /** An edge renews its certificate when a `1 / RenewalDivisor` of its lifetime or less is left. Central reads the same number to say
+    * which certificates are in their renewal window (`CertificateMetrics`), so the two cannot drift apart. */
+  val RenewalDivisor: Long = 3
+
   def edgeUri(edgeId: String): String = s"$EdgePrefix$edgeId"
 
   def groupUri(groupId: String): String = s"$GroupPrefix$groupId"

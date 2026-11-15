@@ -1,6 +1,7 @@
 package versola.central.configuration.clients.certificates
 
 import versola.central.configuration.clients.ClientId
+import versola.util.CertificateMetrics
 import zio.*
 
 import java.time.Instant
@@ -34,3 +35,8 @@ trait ClientCertificateIssuanceRepository:
 
   /** Issuances whose certificate expires before `deadline`. */
   def expiringBefore(deadline: Instant): Task[Vector[ClientCertificateIssuance]]
+
+  /** What the managed certificates have left at `now`, as one aggregate (the number of clients is not bounded, so no row is read out): the
+    * certificates in their renewal window are those `expiringBefore(now + renewBefore)` returns, the ones past its middle those with
+    * less than half of `renewBefore` left. */
+  def expiry(now: Instant, renewBefore: Duration): Task[CertificateMetrics.Expiry]

@@ -134,21 +134,22 @@ object PostgresEdgeApp extends VersolaApp("edge"):
     * optional certificate the peer did not present). A caller with no certificate has nothing to prove here
     * that the plain listener would not serve, and is refused in the handshake. */
   override def mutualTlsServerConfig: ZIO[Dependencies, Throwable, Option[Server.Config]] =
-    ZIO.serviceWith[EdgeConfig](
-      _.mutualTls.map(mtls =>
-        Server.Config.default.binding(mutualTlsBindHost, mutualTlsPort).ssl(
-          SSLConfig.fromFile(
-            behaviour = SSLConfig.HttpBehaviour.Fail,
-            certPath = mtls.certificate,
-            keyPath = mtls.privateKey,
-            clientAuth = Some(ClientAuth.Required),
-            trustCertCollectionPath = Some(mtls.trustedCertificates),
-            // Without this the handshake still validates the certificate and the handler cannot see which one.
-            includeClientCert = true,
+    ZIO.serviceWithZIO[EdgeConfig]: config =>
+      ZIO.foreach(config.mutualTls): mtls =>
+        // what the listener serves is what is read here, once, at start (#1001)
+        CertificateMetrics.listenerFromFile("edge", CertificateMetrics.MutualTlsListener, mtls.certificate).as(
+          Server.Config.default.binding(mutualTlsBindHost, mutualTlsPort).ssl(
+            SSLConfig.fromFile(
+              behaviour = SSLConfig.HttpBehaviour.Fail,
+              certPath = mtls.certificate,
+              keyPath = mtls.privateKey,
+              clientAuth = Some(ClientAuth.Required),
+              trustCertCollectionPath = Some(mtls.trustedCertificates),
+              // Without this the handshake still validates the certificate and the handler cannot see which one.
+              includeClientCert = true,
+            ),
           ),
-        ),
-      ),
-    )
+        )
 
   override def mountedRoutes: ZIO[Dependencies, Throwable, Routes[Dependencies & Tracing & EnvName, Throwable]] =
     for

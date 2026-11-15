@@ -259,23 +259,24 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     * in the handshake is a clearer answer than a 401 several layers later.
     */
   override def mutualTlsServerConfig: ZIO[Dependencies, Throwable, Option[Server.Config]] =
-    ZIO.serviceWith[CoreConfig](
-      _.mutualTls.map(mtls =>
-        Server.Config.default.binding(mutualTlsBindHost, mutualTlsPort).ssl(
-          SSLConfig.fromFile(
-            behaviour = SSLConfig.HttpBehaviour.Fail,
-            certPath = mtls.certificate,
-            keyPath = mtls.privateKey,
-            clientAuth = Some(ClientAuth.Required),
-            trustCertCollectionPath = Some(mtls.trustedCertificates),
-            // Without this the handshake still demands a certificate and validates it, and
-            // the handler simply cannot see which one -- which would authenticate every
-            // client as none of them.
-            includeClientCert = true,
+    ZIO.serviceWithZIO[CoreConfig]: config =>
+      ZIO.foreach(config.mutualTls): mtls =>
+        // what the listener serves is what is read here, once, at start (#1001)
+        CertificateMetrics.listenerFromFile("auth", CertificateMetrics.MutualTlsListener, mtls.certificate).as(
+          Server.Config.default.binding(mutualTlsBindHost, mutualTlsPort).ssl(
+            SSLConfig.fromFile(
+              behaviour = SSLConfig.HttpBehaviour.Fail,
+              certPath = mtls.certificate,
+              keyPath = mtls.privateKey,
+              clientAuth = Some(ClientAuth.Required),
+              trustCertCollectionPath = Some(mtls.trustedCertificates),
+              // Without this the handshake still demands a certificate and validates it, and
+              // the handler simply cannot see which one -- which would authenticate every
+              // client as none of them.
+              includeClientCert = true,
+            ),
           ),
-        ),
-      ),
-    )
+        )
 
   val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = runMigrations) >++> (
     PostgresWalMetrics.live() >++>

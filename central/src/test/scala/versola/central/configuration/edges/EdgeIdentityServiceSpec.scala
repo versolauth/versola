@@ -20,10 +20,11 @@ import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.audit.{AuditOutcome, CertOperation}
-import versola.util.{CertificateSubject, EnrollmentToken, RsaKeyPair, SecureRandom, TestCertificates}
+import versola.util.{CertificateMetrics, CertificateSubject, EnrollmentToken, RsaKeyPair, SecureRandom, TestCertificates}
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
+import zio.metrics.{Metric, MetricLabel}
 import zio.test.*
 
 import java.security.KeyPairGenerator
@@ -76,6 +77,8 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
       state.update(_ :+ (edgeId -> serial))
 
     override def latest: Task[Map[EdgeId, EdgeCertificateRepository.Issued]] = ZIO.succeed(Map.empty)
+
+    override def expiry(now: Instant, renewalShare: Double): Task[CertificateMetrics.Expiry] = ZIO.succeed(CertificateMetrics.Expiry.Empty)
 
     def all: UIO[Vector[(EdgeId, String)]] = state.get
 
@@ -189,6 +192,18 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def csrFor(edge: EdgeRecord): UIO[String] =
     CertificateSubject.generate(EdgeIdentityService.subjectFor(edge)).orDie.map(_.csrPem)
+
+  /** `certificate_renewals_total` is process-wide: the tests that read it run one at a time, and read what they add. */
+  private def renewals(outcome: String): UIO[Double] =
+    Metric.counter("certificate_renewals_total").tagged(Set(MetricLabel("kind", "edge"), MetricLabel("outcome", outcome))).value.map(_.count)
+
+  private def counted[E, A](effect: IO[E, A]): IO[E, (A, Map[String, Double])] =
+    val outcomes = List("success", "denied", "failure")
+    for
+      before <- ZIO.foreach(outcomes)(outcome => renewals(outcome).map(outcome -> _)).map(_.toMap)
+      result <- effect
+      after <- ZIO.foreach(outcomes)(outcome => renewals(outcome).map(outcome -> _)).map(_.toMap)
+    yield (result, after.map((outcome, n) => outcome -> (n - before(outcome))))
 
   def spec = suite("EdgeIdentityService")(
     test("enrolling an edge records cert.enrolled by that edge, after a refused enrolment that was recorded as denied") {
@@ -951,4 +966,48 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
         refused <- service.renew(edgeId, foreign).flip
       yield assertTrue(chain.chain.contains("BEGIN CERTIFICATE"), refused.isInstanceOf[EdgeIdentityService.Refused])
     },
-  ).provide(SecureRandom.live) @@ TestAspect.silentLogging
+    suite("renewals are counted, `certificate_renewals_total{kind=edge}` (#1001)")(
+      test("a renewal that gives a certificate is a success, and the enrolment before it is not a renewal") {
+        val edge = edgeRecord(edgeId)
+        val env = Env(List(edge))
+        for
+          service <- env.service
+          enrolled <- counted:
+            for
+              issued <- service.issueEnrollmentToken(edgeId)
+              csr <- csrFor(edge)
+              _ <- service.enroll(Some(edgeId), issued.token, csr)
+            yield ()
+          renewed <- counted(csrFor(edge).flatMap(service.renew(edgeId, _)))
+        yield assertTrue(
+          enrolled._2 == Map("success" -> 0.0, "denied" -> 0.0, "failure" -> 0.0),
+          renewed._2 == Map("success" -> 1.0, "denied" -> 0.0, "failure" -> 0.0),
+        )
+      },
+      test("a request that names another edge, and an edge that is not registered, are denied, as the audit log records them") {
+        val edge = edgeRecord(edgeId)
+        val env = Env(List(edge, edgeRecord(otherEdgeId)))
+        for
+          service <- env.service
+          csr <- csrFor(edge)
+          counts <- counted:
+            csrFor(edgeRecord(otherEdgeId)).flatMap(service.renew(edgeId, _)).flip *> service.renew(EdgeId("nobody"), csr).flip
+          recorded <- env.audit.drafts
+        yield assertTrue(
+          counts._2 == Map("success" -> 0.0, "denied" -> 2.0, "failure" -> 0.0),
+          recorded.map(_.outcome) == Vector(AuditOutcome.denied, AuditOutcome.denied),
+        )
+      },
+      test("an issuer that fails a renewal is a failure, every time the edge asks again") {
+        val edge = edgeRecord(edgeId)
+        val failing: ClientCertificateIssuer =
+          (_: CertificateSigningRequest) => ZIO.fail(ClientCertificateIssuer.IssuerFailed.unreachable(java.net.ConnectException("refused")))
+        val env = Env(List(edge), failing)
+        for
+          service <- env.service
+          csr <- csrFor(edge)
+          counts <- counted(ZIO.foreach(1 to 3)(_ => service.renew(edgeId, csr).exit))
+        yield assertTrue(counts._1.forall(_.isFailure), counts._2 == Map("success" -> 0.0, "denied" -> 0.0, "failure" -> 3.0))
+      },
+    ),
+  ).provide(SecureRandom.live) @@ TestAspect.silentLogging @@ TestAspect.sequential

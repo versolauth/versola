@@ -1,0 +1,58 @@
+# Alert rules for the certificates Versola holds and renews (#1001). Prometheus rule-group format: loaded as it is by Prometheus
+# (`rule_files`) and by VictoriaMetrics' vmalert (`-rule`). See dashboards/alerts/README.md.
+#
+# The thresholds are not days: they are parts of the renewal window of each certificate, which the services work out from the
+# lifetimes in deploy.md and from their own settings (a certificate is renewed in the last third of its life, or in the last
+# `client-certificates.renew-before` of the ones central issues). `certificates_past_renewal_midpoint` counts the certificates that are
+# past the middle of that window and still not renewed. A listener's certificate is judged against its own length the same way.
+#
+# `kind` is `client` (the certificates central issues and renews for edge-fronted clients), `edge` (the identity of an edge) or `est`
+# (a client's, obtained through EST). Nothing is labelled by client or edge: the certificate that is behind an alert is found in the
+# audit log (`cert.renewed` with outcome `denied` or `failure`, and its reason) and in the console. Every rule aggregates by namespace.
+groups:
+  - name: versola-certificates
+    rules:
+      - alert: CertificateRenewalOverdue
+        expr: max by (namespace, kind) (certificates_past_renewal_midpoint) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} {{ $labels.kind }} certificate(s) past the middle of their renewal window and not renewed in {{ $labels.namespace }}"
+          description: "Certificates of kind {{ $labels.kind }} are past the middle of the window in which they should have been renewed, and have not been: half of the time they had to be renewed in is gone. kind=client: central renews them itself on a pass (see CertificateRenewalsFailing and the log of central); kind=edge: the edge asks central for a new identity at a third of its life left, so it cannot reach central, or central refuses it; kind=est: the client has not renewed (it may be down, or refused: see its cert.renewed events). The edge of a suspended partner is not counted. Find the certificates by their cert.renewed events in the audit log and in the console."
+
+      - alert: CertificateExpired
+        expr: min by (namespace, kind) (certificate_earliest_not_after_timestamp_seconds > 0) < time()
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A {{ $labels.kind }} certificate has expired without being renewed in {{ $labels.namespace }}"
+          description: "The earliest end among the {{ $labels.kind }} certificates central holds is in the past: what presents that certificate is refused. An edge that is retired, or a client that is no more, keeps its record until it is deleted (an EST client: until it is enrolled again), and is counted until then. A zero value of the metric is a kind with no certificate and does not fire."
+
+      - alert: CertificateRenewalsFailing
+        expr: sum by (namespace, kind) (increase(certificate_renewals_total{outcome="failure"}[3h]) or increase(certificate_renewals_total{kind="client",outcome="denied"}[3h])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Renewals of {{ $labels.kind }} certificates keep failing in {{ $labels.namespace }}"
+          description: "More than one renewal attempt of kind {{ $labels.kind }} ended without a certificate in the last 3 hours, which a pass of central every checkInterval (an hour by default) repeats while the cause stays: the CA does not answer, refuses, or answers what is not usable, or central cannot read what is due (outcome=failure; the audit log's reason says which). For kind=client a refusal of a rule (outcome=denied: a client whose mtlsAuth no certificate can be issued for) counts as well, as central runs those itself; for kind=edge and kind=est a refusal is the caller's and is not counted here. The window is long enough for two passes: one failure that passes by itself does not fire."
+
+      - alert: ListenerCertificateExpiring
+        expr: min by (namespace, service, listener) (listener_certificate_not_after_timestamp_seconds - time()) < max by (namespace, service, listener) (listener_certificate_lifetime_seconds) / 6
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "The certificate of the {{ $labels.listener }} listener of {{ $labels.service }} is past the middle of its renewal window in {{ $labels.namespace }}"
+          description: "A service reads the certificate of its mutual-TLS listener once, at start, so this is the end of the certificate it serves now, and a file that was renewed on disk changes nothing until the service is restarted. Less than a sixth of the certificate's life is left, which is the middle of the last third in which it is renewed (deploy.md: `versola certs renew`, or cert-manager). Renew the file and restart the service."
+
+      - alert: ListenerCertificateExpiringSoon
+        expr: min by (namespace, service, listener) (listener_certificate_not_after_timestamp_seconds - time()) < max by (namespace, service, listener) (listener_certificate_lifetime_seconds) / 18
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The certificate of the {{ $labels.listener }} listener of {{ $labels.service }} is about to end, or has ended, in {{ $labels.namespace }}"
+          description: "Less than an eighteenth of the certificate's life is left (a third of the renewal window), or none: callers that verify it will refuse the listener. Renew the file and restart the service: the end it reports is of the certificate it read at start."

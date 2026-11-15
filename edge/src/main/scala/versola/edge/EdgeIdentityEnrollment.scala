@@ -56,7 +56,7 @@ object EdgeIdentityEnrollment:
 
   /** Due when a third of the lifetime or less is left. */
   private[edge] def due(notBefore: Instant, notAfter: Instant, now: Instant): Boolean =
-    JavaDuration.between(now, notAfter).compareTo(JavaDuration.between(notBefore, notAfter).dividedBy(3)) <= 0
+    JavaDuration.between(now, notAfter).compareTo(JavaDuration.between(notBefore, notAfter).dividedBy(EdgeIdentityNames.RenewalDivisor)) <= 0
 
   /** Central answered a request of the enrollment or renewal with `status`. */
   private[edge] class CentralRefused(what: String, val status: Status, text: String)

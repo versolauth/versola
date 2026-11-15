@@ -4,6 +4,7 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.clients.est.{ClientEstRepository, EstCertificate, EstEnrollmentRow, NewEstCertificate, RenewalRecorded}
+import versola.util.CertificateMetrics.Expiry
 import versola.util.postgres.BasicCodecs
 import zio.{Duration, Task, ZLayer}
 
@@ -156,6 +157,22 @@ class PostgresClientEstRepository(xa: TransactorZIO) extends ClientEstRepository
       ON CONFLICT (thumbprint) DO NOTHING
     """.update.run()
     ()
+
+  override def expiry(now: Instant, renewWindow: Double): Task[Expiry] =
+    val midWindow = renewWindow / 2
+    xa.connectMeasured("client-est-certificate-expiry"):
+      sql"""
+        SELECT count(*), min(not_after),
+               count(*) FILTER (WHERE not_after - $now::timestamptz < (not_after - issued_at) * $renewWindow::float8),
+               count(*) FILTER (WHERE not_after - $now::timestamptz < (not_after - issued_at) * $midWindow::float8)
+        FROM (
+          SELECT DISTINCT ON (c.client_id) c.not_after, c.issued_at
+          FROM client_est_certificates c
+          JOIN client_est_enrollments e ON e.client_id = c.client_id AND e.generation = c.generation
+          ORDER BY c.client_id, c.not_after DESC
+        ) latest
+      """.query[(Long, Option[Instant], Long, Long)].run().head
+    .map((tracked, earliest, inWindow, pastMidpoint) => Expiry(tracked, earliest, inWindow, pastMidpoint))
 
 object PostgresClientEstRepository:
   def live: ZLayer[TransactorZIO, Nothing, ClientEstRepository] =
