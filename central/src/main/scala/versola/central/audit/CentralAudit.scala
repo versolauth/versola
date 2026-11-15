@@ -55,7 +55,6 @@ object CentralAudit:
     val TokenInvalid = "token_invalid"
     val EdgeUnknown = "edge_unknown"
     val RequestMismatch = "request_mismatch"
-    val ChainLimit = "chain_limit"
     val NotEnrolled = "not_enrolled"
     val NotServed = "not_served"
     val NoMtlsAuth = "no_mtls_auth"
@@ -82,7 +81,6 @@ object CentralAudit:
       TokenInvalid,
       EdgeUnknown,
       RequestMismatch,
-      ChainLimit,
       NotEnrolled,
       NotServed,
       NoMtlsAuth,
