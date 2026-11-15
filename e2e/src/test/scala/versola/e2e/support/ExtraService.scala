@@ -62,17 +62,37 @@ object ExtraService:
 
   /** Waits until it answers readiness, or fails with what it logged if it stops or never gets there. */
   def awaitReady(running: Running): ZIO[Client, Throwable, Unit] =
-    val ready = ZIO.serviceWithZIO[Client](client =>
-      ZIO.scoped(client.request(Request.get(URL.decode(running.readinessUrl).toOption.get)).map(_.status.isSuccess)),
-    ).catchAll(_ => ZIO.succeed(false))
-    (ready <*> running.isAlive.map(!_))
-      .repeat(Schedule.spaced(2.seconds) *> Schedule.recurUntil[(Boolean, Boolean)]((r, stopped) => r || stopped))
-      .timeout(StartTimeout)
-      .timed
-      .flatMap:
+    for
+      began <- Clock.ClockLive.nanoTime
+      // What each ask of readiness got and when, printed if the start was slow: whether the service was late or the asking was.
+      polls <- Ref.make(Chunk.empty[String])
+      note = (outcome: String) =>
+        Clock.ClockLive.nanoTime.flatMap(now => polls.update(_ :+ f"${(now - began) / 1e9}%.1f s: $outcome"))
+      ready = ZIO.serviceWithZIO[Client](client =>
+        ZIO.scoped(client.request(Request.get(URL.decode(running.readinessUrl).toOption.get)).map(_.status)),
+      ).foldZIO(
+        error => note(s"${error.getClass.getSimpleName}: ${error.getMessage}").as(false),
+        status => note(status.code.toString).as(status.isSuccess),
+      )
+      result <- (ready <*> running.isAlive.map(!_))
+        .repeat(Schedule.spaced(2.seconds) *> Schedule.recurUntil[(Boolean, Boolean)]((r, stopped) => r || stopped))
+        .timeout(StartTimeout)
+        .timed
+      _ <- result match
         case (took, Some((true, _))) =>
           Console.printLine(f"[e2e] ${running.name} ready after ${took.toMillis / 1000.0}%.1f s").ignore *>
-            // What it did with the time, when it took long: the log is deleted with the scope.
-            running.output.flatMap(out => Console.printLine(s"[e2e] ${running.name} was slow to start; its log so far:\n${out.take(12000)}"))
-              .ignore.when(took > SlowStart).unit
+            slowStartReport(running, polls).when(took > SlowStart).unit
         case _ => running.output.flatMap(out => ZIO.fail(RuntimeException(s"did not become ready:\n${out.takeRight(4000)}")))
+    yield ()
+
+  /** The asks of readiness and the service's own log without its per-request lines, each cut to a screen's width: the log
+    * is deleted with the scope. */
+  private def slowStartReport(running: Running, polls: Ref[Chunk[String]]): UIO[Unit] =
+    (for
+      asked <- polls.get
+      out <- running.output
+      lines = out.linesIterator.filterNot(line => line.contains("send-http") || line.contains("receive-http")).map(_.take(400)).toList
+      _ <- Console.printLine(
+        s"[e2e] ${running.name} was slow to start. Readiness asked:\n${asked.mkString("\n")}\n[e2e] its log (${lines.size} lines):\n${lines.take(200).mkString("\n")}",
+      )
+    yield ()).ignore
