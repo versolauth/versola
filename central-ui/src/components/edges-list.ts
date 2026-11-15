@@ -894,6 +894,10 @@ export class VersolaEdgesList extends LitElement {
           </div>`}></versola-record-row>` : ''}
       `} @edit=${() => this.openEditor('rate-limits')}></versola-record-card>
 
+      ${partnerEdge ? '' : html`<versola-record-card heading="Region" subheading="Where this edge site is. An edge looks for an open cell in its own region first; set it on the Cells page." .body=${html`
+        ${this.row('Region', edge.regionId ? html`<span class="mono">${edge.regionId}</span>` : html`<span class="muted">None</span>`)}
+      `}></versola-record-card>`}
+
       ${partnerEdge ? '' : html`<versola-record-card heading="Linked tenants" subheading="The tenants of this edge's group; a tenant picks its group on the Tenants page." .body=${html`
         ${this.row('Tenants', linked.length ? html`<div class="tag-list">${linked.map(tenant => html`<span class="tag">${tenant.id}</span>`)}</div>`
           : html`<span class="muted">No tenant is assigned to this edge's group.</span>`)}

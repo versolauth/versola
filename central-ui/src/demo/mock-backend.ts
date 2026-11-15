@@ -47,6 +47,7 @@ function backendPath(pathname: string): string {
   return pathname.replace(/^\/central(?=\/|$)/, '');
 }
 
+type CellDto = { id: string; regionId: string; internalUrl: string; mtlsUrl?: string | null; trustedCertificates: string[]; state: 'open' | 'closed' | 'draining'; weight: number };
 type SecurityProfileDto = 'standard' | 'fapi2';
 type TenantDto = { id: string; description: string; edgeGroupId?: string | null; securityProfile?: SecurityProfileDto; signingKeyId?: string | null };
 type BackendAuthFactor = { type: string; required: boolean };
@@ -85,6 +86,7 @@ export type EdgeDto = {
   id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: Record<string, unknown>; accessLogPolicy?: Record<string, unknown>;
   rateLimitPolicies?: Record<string, unknown>; policyRevisions?: Record<string, number>; tenants?: string[]; clients?: EdgeClientLinkDto[];
   // #549: the edge group and, for a partner edge, its partner and certificate. An edge seeded without a group is a first-party one of group `default`.
+  regionId?: string | null;
   groupId?: string; groupKind?: 'first_party' | 'partner'; partnerId?: string | null; partnerDisplayName?: string | null; partnerTenantId?: string | null; publicUrl?: string; certificateNotAfter?: string; lastRenewedAt?: string;
 };
 
@@ -447,6 +449,10 @@ export type MockConfigState = {
   resources: Record<string, ResourceDto[]>;
   roles: Record<string, RoleDto[]>;
   edges: EdgeDto[];
+  /** Partitions, regions and cells (#557); the region of an edge is on the edge. */
+  partitions: Array<{ id: string }>;
+  regions: Array<{ id: string; partitionId: string }>;
+  cells: CellDto[];
   /** The partners of every tenant (#549) and their approval requests. */
   partners: PartnerDto[];
   partnerApprovals: PartnerApprovalDto[];
@@ -581,6 +587,9 @@ const defaultState: MockConfigState = {
     'tenant-bravo': [{ id: 'bravo-admin', description: { en: 'Bravo admin' }, permissions: ['bravo:read'], active: true }],
   },
   edges: [],
+  partitions: [],
+  regions: [],
+  cells: [],
   partners: [],
   partnerApprovals: [],
   authorizationPresets: {},
@@ -622,6 +631,9 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     permissions: clone({ ...defaultState.permissions, ...overrides.permissions }),
     resources: clone({ ...defaultState.resources, ...overrides.resources }),
     edges: clone(overrides.edges ?? defaultState.edges),
+    partitions: clone(overrides.partitions ?? defaultState.partitions),
+    regions: clone(overrides.regions ?? defaultState.regions),
+    cells: clone(overrides.cells ?? defaultState.cells),
     partners: clone(overrides.partners ?? defaultState.partners),
     partnerApprovals: clone(overrides.partnerApprovals ?? defaultState.partnerApprovals),
     overloadRejection: overrides.overloadRejection,
@@ -1536,6 +1548,98 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         await route.fulfill({ status: 204, body: '' });
         return;
       }
+    }
+
+    // The topology (#557), with the rules central applies: a region needs its partition and is deleted only when empty, a cell
+    // needs its region and is deleted only when closed.
+    if (pathname === '/configuration/topology' && method === 'GET') {
+      await route.fulfill(json({ partitions: state.partitions, regions: state.regions, cells: state.cells }));
+      return;
+    }
+
+    if (pathname === '/configuration/partitions' && method === 'POST') {
+      const payload = body as { id: string };
+      if (state.partitions.some(partition => partition.id === payload.id)) {
+        await route.fulfill({ status: 409, contentType: 'text/plain', body: `partition '${payload.id}' already exists` });
+        return;
+      }
+      state.partitions = [...state.partitions, { id: payload.id }];
+      await route.fulfill({ status: 201, body: '' });
+      return;
+    }
+
+    if (pathname === '/configuration/regions') {
+      if (method === 'POST') {
+        const payload = body as { id: string; partitionId: string };
+        if (!state.partitions.some(partition => partition.id === payload.partitionId)) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: `partition '${payload.partitionId}' does not exist` });
+          return;
+        }
+        if (state.regions.some(region => region.id === payload.id)) {
+          await route.fulfill({ status: 409, contentType: 'text/plain', body: `region '${payload.id}' already exists` });
+          return;
+        }
+        state.regions = [...state.regions, { id: payload.id, partitionId: payload.partitionId }];
+        await route.fulfill({ status: 201, body: '' });
+        return;
+      }
+      if (method === 'DELETE') {
+        const regionId = url.searchParams.get('regionId');
+        const cells = state.cells.filter(cell => cell.regionId === regionId).map(cell => cell.id);
+        const edges = state.edges.filter(edge => edge.regionId === regionId).map(edge => edge.id);
+        if (cells.length || edges.length) {
+          const what = cells.length ? `cells in it: ${cells.join(', ')}` : `edges in it: ${edges.join(', ')}`;
+          await route.fulfill({ status: 409, contentType: 'text/plain', body: `region '${regionId}' still has ${what}` });
+          return;
+        }
+        state.regions = state.regions.filter(region => region.id !== regionId);
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/cells') {
+      if (method === 'POST' || method === 'PUT') {
+        const payload = body as CellDto;
+        const existing = state.cells.find(cell => cell.id === payload.id);
+        if (payload.weight < 0) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: 'weight must not be negative' });
+          return;
+        }
+        if (method === 'POST' && existing) {
+          await route.fulfill({ status: 409, contentType: 'text/plain', body: `cell '${payload.id}' already exists` });
+          return;
+        }
+        if (method === 'PUT' && !existing) {
+          await route.fulfill({ status: 404, contentType: 'text/plain', body: `cell '${payload.id}' does not exist` });
+          return;
+        }
+        state.cells = method === 'POST' ? [...state.cells, payload] : state.cells.map(cell => cell.id === payload.id ? { ...payload, regionId: cell.regionId } : cell);
+        await route.fulfill({ status: method === 'POST' ? 201 : 204, body: '' });
+        return;
+      }
+      if (method === 'DELETE') {
+        const cellId = url.searchParams.get('cellId');
+        const cell = state.cells.find(candidate => candidate.id === cellId);
+        if (cell && cell.state !== 'closed') {
+          await route.fulfill({ status: 409, contentType: 'text/plain', body: `cell '${cellId}' is ${cell.state}: only a closed cell is deleted` });
+          return;
+        }
+        state.cells = state.cells.filter(candidate => candidate.id !== cellId);
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/edges/region' && method === 'PUT') {
+      const edge = state.edges.find(candidate => candidate.id === url.searchParams.get('edgeId'));
+      if (!edge) {
+        await route.fulfill({ status: 404, contentType: 'text/plain', body: 'No edge is registered under that id' });
+        return;
+      }
+      edge.regionId = (body as { regionId?: string | null }).regionId ?? null;
+      await route.fulfill({ status: 204, body: '' });
+      return;
     }
 
     if (pathname === '/configuration/edges/dpop' && method === 'PUT') {

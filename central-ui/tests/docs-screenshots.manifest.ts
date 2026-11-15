@@ -456,6 +456,20 @@ const edgeTenants = [
 ];
 const edges = [{ id: 'edge-default', hasOldKey: false, requireDpopNonce: true, tenants: ['acme', 'acme-fapi', 'default'], clients: [] }];
 const edgesState: MockState = { tenants: edgeTenants, edges };
+const cellsState: MockState = {
+  tenants: edgeTenants,
+  partitions: [{ id: 'kz' }],
+  regions: [{ id: 'almaty', partitionId: 'kz' }, { id: 'astana', partitionId: 'kz' }],
+  cells: [
+    { id: 'kz-1', regionId: 'almaty', internalUrl: 'http://auth-kz-1.internal.example.com:9003', mtlsUrl: 'https://auth-kz-1.internal.example.com:9008', trustedCertificates: [], state: 'open', weight: 100 },
+    { id: 'kz-2', regionId: 'almaty', internalUrl: 'http://auth-kz-2.internal.example.com:9003', mtlsUrl: null, trustedCertificates: [], state: 'closed', weight: 100 },
+    { id: 'kz-3', regionId: 'astana', internalUrl: 'http://auth-kz-3.internal.example.com:9003', mtlsUrl: null, trustedCertificates: [], state: 'open', weight: 100 },
+  ],
+  edges: [
+    { id: 'edge-almaty', hasOldKey: false, requireDpopNonce: true, tenants: ['acme', 'acme-fapi', 'default'], clients: [], regionId: 'almaty' },
+    { id: 'edge-astana', hasOldKey: false, requireDpopNonce: true, tenants: ['acme', 'acme-fapi', 'default'], clients: [], regionId: 'astana' },
+  ],
+};
 
 const deliverySettingsState: MockState = {
   deliverySettings: {
@@ -846,6 +860,30 @@ const consoleShots: DocsShot[] = [
   { name: 'console/client-wizard-service-2-basics', kind: 'frame', fullPage: true, path: clientsPath, state: { ...alpha, tenants: standardTenants }, before: serviceBasics },
   { name: 'console/client-wizard-service-3-signin', kind: 'frame', fullPage: true, path: clientsPath, state: { ...alpha, tenants: standardTenants }, before: servicePermissions },
   { name: 'console/client-wizard-service-4-review', kind: 'frame', fullPage: true, path: clientsPath, state: { ...alpha, tenants: standardTenants }, before: serviceReview },
+
+  // Cells
+  {
+    name: 'console/cells-list', kind: 'frame', path: '/?view=cells&tenant=default', state: cellsState,
+    before: async page => {
+      await expect(page.getByRole('columnheader')).toHaveText(['Cell', 'Region', 'State', 'Weight', 'Address', 'Actions']);
+      await expect(page.getByRole('region', { name: 'Region almaty' })).toContainText('edge-almaty');
+    },
+  },
+  {
+    name: 'console/cell-record', kind: 'frame', path: '/?view=cells&tenant=default', state: cellsState,
+    before: async page => {
+      await page.getByRole('button', { name: 'Open cell kz-1' }).click();
+      await expect(sidePanel(page, 'kz-1').getByRole('region', { name: 'Placement' })).toContainText('New users are placed here');
+    },
+  },
+  {
+    name: 'console/cell-form', kind: 'frame', path: '/?view=cells&tenant=default', state: cellsState,
+    before: async page => {
+      await page.getByRole('button', { name: '+ Register Cell' }).click();
+      await expect(sidePanelDialog(page, 'Register cell')).toBeVisible();
+      await expect(sidePanel(page, 'Register cell').getByLabel('Cell ID *')).toBeVisible();
+    },
+  },
 
   // Edges
   {

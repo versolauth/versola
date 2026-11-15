@@ -345,7 +345,7 @@ test('the nav item is in the Tenant section after Resources and hidden without p
   await loadAdminApp(page, { path: '/?view=clients&tenant=tenant-alpha', state: partnerState });
   const nav = page.getByRole('navigation', { name: 'Sections' });
   await expect(nav.getByRole('button')).toHaveText(['Security', 'Clients', 'Resources', 'Partners', 'Scopes', 'Permissions', 'Roles', 'OTP templates', 'Authorization details',
-    'Tenants', 'Edges', 'Users', 'Keys & metadata', 'System settings', 'Delivery', 'Forms', 'Themes']);
+    'Tenants', 'Edges', 'Cells', 'Users', 'Keys & metadata', 'System settings', 'Delivery', 'Forms', 'Themes']);
   await loadAdminApp(page, { path: '/?view=partners&tenant=tenant-alpha', state: { ...partnerState, myPermissions: { resources: { central: { permissions: ['oauth:read'] } }, isProd: false } } });
   await expect(page.getByRole('navigation', { name: 'Sections' }).getByRole('button', { name: 'Partners' })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Access Denied' })).toBeVisible();
