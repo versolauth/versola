@@ -1159,6 +1159,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
     * from one issued before it and is refused too. A test that signs the user in right after would see its
     * own token refused at `/userinfo` about half the time; the call therefore returns once that second is
     * over. This is a clock boundary, not a propagation delay.
+    *
+    * Inside [[OAuthClient.waitingOnceForPasswordChanges]] the call returns at once and the block waits a
+    * single time at its end, for the last change made in it.
     */
   def setUserPassword(userId: java.util.UUID, password: String): Task[Unit] =
     val body = Body.fromString(
@@ -1168,10 +1171,27 @@ final class OAuthClient(client: Client, config: E2EConfig):
       .addHeader(centralAuthorization).updateURL(_.addQueryParams(E2EActor.query))
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
-      if resp.status.isSuccess then ZIO.sleep(1.second).withClock(Clock.ClockLive)
+      if resp.status.isSuccess then passwordChanged
       else
         resp.body.asString.flatMap: bodyStr =>
           ZIO.fail(RuntimeException(s"setUserPassword failed: status=${resp.status} body=$bodyStr"))
+
+  /** When this client last changed a user's password, in `System.nanoTime`; zero before the first change. */
+  private val lastPasswordChange = java.util.concurrent.atomic.AtomicLong(0L)
+
+  /** Notes a password change, and waits out its second unless the caller has asked to wait once for
+    * several (see [[OAuthClient.waitingOnceForPasswordChanges]]). */
+  private def passwordChanged: UIO[Unit] =
+    ZIO.succeed(lastPasswordChange.set(java.lang.System.nanoTime())) *>
+      OAuthClient.passwordChangeWaitDeferred.get.flatMap(deferred => awaitPasswordChangeSecond.unless(deferred).unit)
+
+  /** Returns once a second has passed since this client's last password change: at once when it already
+    * has, or when there was none. */
+  def awaitPasswordChangeSecond: UIO[Unit] =
+    ZIO.suspendSucceed:
+      val last = lastPasswordChange.get
+      val remaining = if last == 0L then 0L else 1.second.toNanos - (java.lang.System.nanoTime() - last)
+      ZIO.sleep(Duration.fromNanos(remaining)).withClock(Clock.ClockLive).when(remaining > 0).unit
 
   /** POST /users/password/reset on the `show` channel (non-prod only) — issues a temporary password and
     * returns it. Refuses the user's earlier access tokens like [[setUserPassword]], and the caller waits
@@ -1190,7 +1210,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
             .flatMap(obj =>
               ZIO.fromOption(obj.fields.collectFirst { case ("password", Json.Str(value)) => value })
                 .orElseFail(RuntimeException(s"no password in the reset response: $bodyStr")),
-            ) <* ZIO.sleep(1.second).withClock(Clock.ClockLive)
+            ) <* passwordChanged
 
   /** PATCH /users/roles — grants tenant roles to a user. The update travels through the
     * Central user outbox, so call [[flushUserOutbox]] before signing the user in.
@@ -2039,6 +2059,21 @@ final class OAuthClient(client: Client, config: E2EConfig):
     java.net.URLEncoder.encode(s, "UTF-8")
 
 object OAuthClient:
+
+  /** Set while a block changes several passwords and waits out the clock second once, at its end. */
+  private val passwordChangeWaitDeferred: FiberRef[Boolean] =
+    Unsafe.unsafe(unsafe ?=> FiberRef.unsafe.make(false))
+
+  /** Runs `setup` with [[OAuthClient.setUserPassword]] and [[OAuthClient.resetUserPassword]] returning at
+    * once, then waits a single time until a second has passed since the last change made in it.
+    *
+    * For a setup that changes the passwords of several users before any of them signs in: every change but
+    * the last is already older than the last one, so one wait covers them all. The e2e bootstrap sets seven
+    * passwords in each spec's JVM; waiting after each cost seven seconds a spec, some eleven minutes a run.
+    * Not for a block in which a user signs in between two changes -- that sign-in needs the wait before it.
+    */
+  def waitingOnceForPasswordChanges[R, E, A](setup: ZIO[R & OAuthClient, E, A]): ZIO[R & OAuthClient, E, A] =
+    passwordChangeWaitDeferred.locally(true)(setup) <* ZIO.serviceWithZIO[OAuthClient](_.awaitPasswordChangeSecond)
 
   /** Whether, and how, a call to an internal endpoint authenticates. */
   enum Authenticated:
