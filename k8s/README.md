@@ -762,9 +762,18 @@ public name, so install the main chart's `exposure` first (section 9a).
    | `--edge-postgres-url` (and `--edge-postgres-user`, `--edge-postgres-password`) | The database the remote edge reaches. The run stops without the URL: the default is a local one |
    | `--auth-url` | Auth's public address. For a remote edge `versola-internal-url` is the same address, since the cluster's Service name is not reachable from outside; a first-party edge calls auth's mutual-TLS address (`native`) with its own certificate |
 
+   `OnMissing.GenerateOnFirstInstallOnly` on `EDGE_KEY_ID` and `EDGE_PRIVATE_KEY` is schema metadata for `versola-cli`'s OpenBao resolution
+   on `local` and `vps`; this script does not consult it, and with `--remote-edge` the two values come from the flags on every run, so a
+   second run writes the same key again and replaces nothing (a run without the flags stops).
+
    A remote edge gets no `security.internal-secret`: the `/service/*` surface it protects is the in-cluster one. Set `central.group` when
    the edge is not in the `default` group. `gen-env` also writes a `native` block, which needs auth's mutual-TLS address and pin: set
    `auth.mtlsUrl` and `auth.pins` (the chart's `central.conf` then carries the matching `native` block).
+
+> **Verified how:** this procedure was verified by rendering the chart (`helm template`) and by loading the generated `edge.conf`, with the
+> rendered `central.conf`, through the edge's own configuration parser. It has **not** been run end to end against a live `central`: no
+> cluster install, no edge start, no enrollment. What an edge outside the cluster needs beyond what the flags above set (its own network
+> path to `central`'s and `auth`'s public names, TLS in front of it, the Postgres reachable from its network) is not checked by any of that.
 
 ```bash
 helm upgrade --install edge-eu k8s/versola-edge --namespace versola-edge --create-namespace \
