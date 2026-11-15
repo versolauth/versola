@@ -73,6 +73,7 @@ import versola.central.configuration.sync.{CacheSyncRepository, CacheSyncService
 import versola.central.configuration.system.{SystemSettingsController, SystemSettingsRepository, SystemSettingsService}
 import versola.central.configuration.tenants.{TenantController, TenantRepository, TenantService}
 import versola.central.configuration.themes.{ThemeController, ThemeRepository, ThemeService}
+import versola.central.configuration.topology.{TopologyController, TopologyRepository, TopologyService}
 import versola.central.users.{AuthClient, ServiceController, UserController, UserOutboxProcessor, UserRepository, UserService}
 import versola.central.{CentralConfig, refuseEdgeCallers}
 import versola.configuration.challenges.{PostgresChallengeSettingsRepository, PostgresOtpChallengeRepository}
@@ -104,6 +105,7 @@ import versola.configuration.sync.PostgresCacheSyncRepository
 import versola.configuration.system.PostgresSystemSettingsRepository
 import versola.configuration.tenants.PostgresTenantRepository
 import versola.configuration.themes.PostgresThemeRepository
+import versola.configuration.topology.PostgresTopologyRepository
 import versola.users.PostgresUserRepository
 import versola.util.*
 import versola.util.SequentialLayers.*
@@ -149,6 +151,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       RoleService &
       EdgeRepository &
       EdgeGroupRepository &
+      TopologyRepository &
       EdgeEnrollmentTokenRepository &
       EdgeCertificateRepository &
       PartnerRepository &
@@ -158,6 +161,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       PartnerService &
       EdgeService &
       EdgeGroupService &
+      TopologyService &
       EdgeCertificateIssuer &
       EdgeIdentityService &
       FormRepository &
@@ -225,6 +229,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       AuthorizationDetailTypeController.endpoints,
       RoleController.endpoints,
       EdgeController.endpoints,
+      TopologyController.endpoints,
       PartnerController.endpoints,
       FormController.endpoints,
       LocaleController.endpoints,
@@ -294,6 +299,7 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresRoleRepository.live >++>
           PostgresEdgeRepository.live >++>
           PostgresEdgeGroupRepository.live >++>
+          PostgresTopologyRepository.live >++>
           PostgresEdgeEnrollmentTokenRepository.live >++>
           PostgresEdgeCertificateRepository.live >++>
           PostgresPartnerRepository.live >++>
@@ -364,6 +370,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       RoleService.live >++>
       EdgeService.live >++>
       EdgeGroupService.live >++>
+      TopologyService.live >++>
       EdgeIdentityService.live >++>
       LocaleCompletenessValidator.live >++> LocaleService.live >++>
       JwksService.live >++>

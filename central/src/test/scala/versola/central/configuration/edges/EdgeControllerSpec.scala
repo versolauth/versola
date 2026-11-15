@@ -15,6 +15,7 @@ import versola.central.configuration.partners.{
 }
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
+import versola.central.configuration.topology.{RegionId, TopologyRepository}
 import versola.central.{TestAdminAuth, TestCentralConfig}
 import versola.util.http.RateLimitScope
 import versola.util.http.{
@@ -82,6 +83,9 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- partners.getAll.succeedsWith(owner.toVector)
         _ <- partners.findByGroup.succeedsWith(owner)
         _ <- certificates.latest.succeedsWith(Map.empty)
+        topology = stub[TopologyRepository]
+        // The first edge is a site in a region, the others are in none.
+        _ <- topology.getEdgeRegions.succeedsWith(Map(edgeId -> RegionId("almaty")))
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
@@ -93,6 +97,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[PartnerRegistry](partners) ++
                 ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[TenantRepository](tenantRepository) ++
+                ZEnvironment[TopologyRepository](topology) ++
                 ZEnvironment(TestCentralConfig.config) ++
                 tracing,
             ),
@@ -130,6 +135,9 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         certificates = stub[EdgeCertificateRepository]
         _ <- partners.getAll.succeedsWith(Vector.empty)
         _ <- certificates.latest.succeedsWith(Map.empty)
+        topology = stub[TopologyRepository]
+        // The first edge is a site in a region, the others are in none.
+        _ <- topology.getEdgeRegions.succeedsWith(Map(edgeId -> RegionId("almaty")))
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
@@ -141,6 +149,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[PartnerRegistry](partners) ++
                 ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[TenantRepository](tenantRepository) ++
+                ZEnvironment[TopologyRepository](topology) ++
                 ZEnvironment(TestCentralConfig.config) ++
                 tracing,
             ),
@@ -321,6 +330,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               groupKind = EdgeGroupKind.FirstParty,
               partnerId = None,
               publicUrl = None,
+              regionId = Some(RegionId("almaty")),
               certificateNotAfter = None,
               lastRenewedAt = None,
             ),
@@ -336,6 +346,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               groupKind = EdgeGroupKind.FirstParty,
               partnerId = None,
               publicUrl = None,
+              regionId = None,
               certificateNotAfter = None,
               lastRenewedAt = None,
             ),

@@ -5,6 +5,7 @@ import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.partners.PartnerRegistry
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantRepository
+import versola.central.configuration.topology.TopologyRepository
 import versola.central.{TestAdminAuth, TestCentralConfig}
 import versola.util.RsaKeyPair
 import versola.util.http.Observability
@@ -72,6 +73,7 @@ object EdgeGroupEndpointsSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[PartnerRegistry](stub[PartnerRegistry]) ++
                 ZEnvironment[ResourceService](stubs.resources) ++
                 ZEnvironment[TenantRepository](stub[TenantRepository]) ++
+                ZEnvironment[TopologyRepository](stub[TopologyRepository]) ++
                 ZEnvironment(TestCentralConfig.config) ++
                 tracing,
             ),
