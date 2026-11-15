@@ -50,13 +50,15 @@ object StepCaIssuer:
             "ott" -> Json.Str(token),
             "notAfter" -> Json.Str(s"${request.validity.toSeconds}s"),
           ).toJson
-          response <- ZIO.scoped:
+          response <- ZIO.scoped(
             client.ssl(ssl).request(
               Request.post(url, Body.fromString(body)).addHeader(Header.ContentType(MediaType.application.json)),
-            ).flatMap(r => r.body.asString.map(r.status -> _))
+            ).flatMap(r => r.body.asString.map(r.status -> _)),
+          ).mapError(ClientCertificateIssuer.IssuerFailed.unreachable)
           (status, text) = response
-          _ <- ZIO.fail(RuntimeException(s"step-ca refused the signing request with $status: $text")).unless(status.isSuccess)
-          chain <- ZIO.fromEither(chainOf(text)).mapError(RuntimeException(_))
+          _ <- ZIO.fail(ClientCertificateIssuer.IssuerFailed.refused(s"step-ca refused the signing request with $status: $text"))
+            .unless(status.isSuccess)
+          chain <- ZIO.fromEither(chainOf(text)).mapError(ClientCertificateIssuer.IssuerFailed.invalidAnswer(_))
         yield chain
 
   private def oneTimeToken(

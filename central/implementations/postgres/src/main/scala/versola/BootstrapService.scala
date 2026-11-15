@@ -3,6 +3,7 @@ package versola
 import versola.central.CentralConfig
 import versola.central.audit.{AuditHook, CentralAudit}
 import versola.central.configuration.challenges.{
+  AuditSettings,
   ChallengeSettingsRecord,
   ChallengeSettingsRepository,
   ChallengeSettingsService,
@@ -931,6 +932,7 @@ object BootstrapService:
       securityProfile = ChallengeSettingsRecord.DefaultSecurityProfile,
       logoLight = None,
       logoDark = None,
+      auditSettings = AuditSettings.default,
     )
 
   /** Default theme seeded from the shared CSS resource. */

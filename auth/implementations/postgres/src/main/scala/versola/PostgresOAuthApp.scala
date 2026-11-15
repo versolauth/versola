@@ -30,7 +30,7 @@ import versola.antifraud.{
   VelocityRepository,
   VelocityRules,
 }
-import versola.audit.{AuditReadRepository, AuditReportService, AuthAudit, ClientAuthFailures, PostgresAuditEventRepository}
+import versola.audit.{AuditReadRepository, AuditReportService, AuthAudit, AuthAuditTenants, ClientAuthFailures, PostgresAuditEventRepository}
 import versola.cleanup.PostgresCleanupManager
 import versola.oauth.account.{AccountSettingsController, AccountSettingsService}
 import versola.oauth.authorize.{
@@ -84,7 +84,7 @@ import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresPushedAuthori
 import versola.user.{PostgresUserRepository, UserController, UserRegistrationSyncClient, UserRepository, UserService}
 import versola.util.*
 import versola.util.SequentialLayers.*
-import versola.util.audit.{AuditEventRepository, AuditEvents}
+import versola.util.audit.{AuditEventRepository, AuditEvents, AuditTenants}
 import versola.util.http.VersolaApp
 import versola.util.net.{AsnResolver, AsnSettings, GeoResolver, GeoSettings}
 import versola.util.postgres.{PostgresConfig, PostgresConfigSnapshotRepository, PostgresHikariDataSource, PostgresWalMetrics}
@@ -179,7 +179,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       EstService &
       AuditEvents &
       AuditEvents.Settings &
-      AuthAudit.Tiers &
+      AuditTenants &
       AuditReadRepository &
       AuditReportService &
       ClientAuthFailures
@@ -311,50 +311,6 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   /** One per process: what tells the rows of one instance from another's in the audit log, as the velocity counters' instance id does. */
   private val auditNodeId: String = UUID.randomUUID().toString
 
-  /** The keys of the `audit` block of the config, every one required (`scripts/gen-env.scala` writes them). `adminUserViewed` is central's
-    * and auth has no such event, so it is off here. */
-  private case class AuditConfig(
-      retention: Duration,
-      overflow: String,
-      blockTimeout: Duration,
-      events: AuditConfig.Events,
-  )
-
-  private object AuditConfig:
-    case class Events(tokenRefresh: Boolean, authorizeSuccess: Boolean, parSuccess: Boolean)
-
-    /** A retention the partitions cannot keep or an overflow that is neither word stops the start, naming the key. */
-    def settings(config: AuditConfig): Either[Config.Error, (AuditEvents.Settings, AuthAudit.Tiers)] =
-      for
-        overflow <- AuditEvents.Overflow.values.find(_.toString == config.overflow)
-          .toRight(Config.Error.InvalidData(message = s"audit.overflow must be one of block, drop, not '${config.overflow}'"))
-        _ <- Either.cond(
-          config.retention.toDays >= 1 && config.retention.toDays <= 14,
-          (),
-          Config.Error.InvalidData(message = "audit.retention must be between 1 and 14 days"),
-        )
-        _ <- Either.cond(
-          config.blockTimeout.toMillis > 0,
-          (),
-          Config.Error.InvalidData(message = "audit.block-timeout must be positive"),
-        )
-      yield (
-        AuditEvents.Settings(retention = config.retention, overflow = overflow, blockTimeout = config.blockTimeout),
-        AuthAudit.Tiers(
-          tokenRefresh = config.events.tokenRefresh,
-          authorizeSuccess = config.events.authorizeSuccess,
-          parSuccess = config.events.parSuccess,
-        ),
-      )
-
-  /** The `audit` block of the config: every key is required, so a config written before it existed makes auth refuse to start
-    * naming the missing key. */
-  private[versola] val auditSettings: ZLayer[ConfigProvider, Config.Error, AuditEvents.Settings & AuthAudit.Tiers] =
-    ZLayer.fromZIOEnvironment:
-      ZIO.serviceWithZIO[ConfigProvider](_.load(Config.Nested("audit", deriveConfig[AuditConfig])))
-        .flatMap(config => ZIO.fromEither(AuditConfig.settings(config)))
-        .map((settings, tiers) => ZEnvironment[AuditEvents.Settings, AuthAudit.Tiers](settings, tiers))
-
   /** The `antifraud` block of the config; every key has its value in `versola-defaults.conf`. */
   private val antifraudSettings: ZLayer[ConfigProvider, Config.Error, AntifraudEvents.Settings] =
     ZLayer.fromZIO:
@@ -414,8 +370,13 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       configSnapshot >++>
       SecureRandom.live >++>
       securityService >++>
-      // The audit writer and its partition maintenance: before everything that records into it.
-      auditSettings >++>
+      // The tenants' settings, which say whose events the audit log records: before the writer, which asks them.
+      JsonSchemaValidator.live >++>
+      OAuthConfigurationService.live >++>
+      AuthAuditTenants.live >++>
+      // The audit writer and its partition maintenance: before everything that records into it. Its settings are the same for every
+      // deployment; a tenant's switches are in its Security settings.
+      ZLayer.succeed(AuditEvents.Settings.standard) >++>
       AuditEvents.live(AuthAudit.source, auditNodeId, AuthAudit.catalog, PostgresAuditEventRepository.Table) >++>
       // The country of an address in the per-user report is read from the same database as antifraud's, from `antifraud.geo.file`.
       antifraudGeoSettings >++>
@@ -428,8 +389,6 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       DpopNonceService.live >++>
       // The issuer of edges' certificates, read once: `/userinfo` takes a call over one as an edge's.
       EdgeCertificateTrust.live >++>
-      JsonSchemaValidator.live >++>
-      OAuthConfigurationService.live >++>
       DpopService.live >++>
       // Reads the algorithms an assertion may be signed with off the same document.
       ClientAssertionService.live >++>

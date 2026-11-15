@@ -1,8 +1,10 @@
 package versola.central.audit
 
-import versola.util.audit.{ActorType, AuditCatalog, AuditDetails, AuditDraft, AuditEvents, AuditKind, AuditOutcome, AuditSource}
+import versola.util.audit.{ActorType, AuditCatalog, AuditDraft, AuditEvents, AuditKind, AuditOutcome, AuditSource, CertAuditDetails}
 import zio.metrics.{Metric, MetricLabel}
 import zio.{UIO, ZIO}
+
+import javax.security.auth.x500.X500Principal
 
 /** What central says about its own audit events (#469): the source it records as, the actors that act through it, the kinds it
   * emits and how serious each is. The core (`versola.util.audit`) takes this as the service's [[AuditCatalog]] and rates and
@@ -45,18 +47,95 @@ object CentralAudit:
   val CertRenewed: AuditKind = AuditKind("cert.renewed")
   val CertRevoked: AuditKind = AuditKind("cert.revoked")
 
+  /** Why a certificate was not issued, as the `reason` of a `denied` or `failure` event: a closed set of codes, never the text of an
+    * error, a token, a request or what the CA answered. A refusal (`denied`) is a rule saying no, which retrying does not change; a
+    * failure is something that did not work, which may. */
+  object CertReasons:
+    // denied
+    val TokenInvalid = "token_invalid"
+    val EdgeUnknown = "edge_unknown"
+    val RequestMismatch = "request_mismatch"
+    val ChainLimit = "chain_limit"
+    val NotEnrolled = "not_enrolled"
+    val NotServed = "not_served"
+    val NoMtlsAuth = "no_mtls_auth"
+    val InvalidSubject = "invalid_subject"
+    val InvalidCredentials = "invalid_credentials"
+    val BadRequest = "bad_request"
+    val Forbidden = "forbidden"
+    val ChainFork = "chain_fork"
+
+    // failure
+    val CaNotConfigured = "ca_not_configured"
+    val CaExpired = "ca_expired"
+    val IssuerUnreachable = "issuer_unreachable"
+    val IssuerRefused = "issuer_refused"
+    val IssuerTimeout = "issuer_timeout"
+    val IssuerInvalidAnswer = "issuer_invalid_answer"
+    val IssuerError = "issuer_error"
+    val CertificateRejected = "certificate_rejected"
+    val ClientMissing = "client_missing"
+    val ClientWithoutMtlsAuth = "client_without_mtls_auth"
+    val Unexpected = "unexpected"
+
+    val all: Set[String] = Set(
+      TokenInvalid,
+      EdgeUnknown,
+      RequestMismatch,
+      ChainLimit,
+      NotEnrolled,
+      NotServed,
+      NoMtlsAuth,
+      InvalidSubject,
+      InvalidCredentials,
+      BadRequest,
+      Forbidden,
+      ChainFork,
+      CaNotConfigured,
+      CaExpired,
+      IssuerUnreachable,
+      IssuerRefused,
+      IssuerTimeout,
+      IssuerInvalidAnswer,
+      IssuerError,
+      CertificateRejected,
+      ClientMissing,
+      ClientWithoutMtlsAuth,
+      Unexpected,
+    )
+
+  /** Why a certificate was not issued: `outcome` is `denied` for a rule that said no and `failure` for something that did not work,
+    * `reason` one of [[CertReasons]], `error` what the caller is answered with (which is not the audit reason) and `subject` the one
+    * the attempt was for, where it got that far. */
+  case class CertFailure[+E](outcome: AuditOutcome, reason: String, error: E, subject: Option[X500Principal])
+
+  object CertFailure:
+    /** A failure nothing classified: the caller is answered with the error itself. */
+    def unexpected[E](error: E): CertFailure[E] = CertFailure(AuditOutcome.failure, CertReasons.Unexpected, error, None)
+
   /** An event of a certificate flow: no administrator's request starts it, its actor is the holder of the certificate (a client, an
-    * edge) or the system, and its target is the client or the edge the certificate is of. */
-  def certificate(events: AuditEvents, kind: AuditKind, actor: ActorType, actorId: Option[String], target: (String, String)): UIO[Unit] =
+    * edge) or the system, and its target is the client or the edge the certificate is of. `details` says which certificate it is: the
+    * serial, the end of the validity and the subject (see [[CertAuditDetails]]); for an attempt that issued nothing, `outcome` is
+    * `denied` or `failure` and `reason` one of [[CertReasons]]. */
+  def certificate(
+      events: AuditEvents,
+      kind: AuditKind,
+      actor: ActorType,
+      actorId: Option[String],
+      target: (String, String),
+      outcome: AuditOutcome,
+      reason: Option[String],
+      details: CertAuditDetails,
+  ): UIO[Unit] =
     events.recordBestEffort(
       AuditDraft(
         kind = kind,
-        outcome = AuditOutcome.success,
-        reason = None,
+        outcome = outcome,
+        reason = reason,
         actor = Some((actor, actorId)),
         userId = None,
         target = Some(target),
-        details = AuditDetails.empty,
+        details = details,
       ),
     )
 

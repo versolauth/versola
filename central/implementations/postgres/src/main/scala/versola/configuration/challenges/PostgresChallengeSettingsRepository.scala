@@ -4,6 +4,7 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.PgCodec
 import versola.central.configuration.challenges.{
+  AuditSettings,
   ChallengeSettingsPatchResult,
   ChallengeSettingsRecord,
   ChallengeSettingsRepository,
@@ -29,6 +30,7 @@ class PostgresChallengeSettingsRepository(xa: TransactorZIO) extends ChallengeSe
   given DbCodec[Set[RoleId]] = jsonBCodec[Set[RoleId]]
   given DbCodec[SubmissionLimits] = jsonBCodec[SubmissionLimits]
   given DbCodec[PasskeySettings] = jsonBCodec[PasskeySettings]
+  given DbCodec[AuditSettings] = jsonBCodec[AuditSettings]
   given DbCodec[MtlsCertificateEncoding] =
     DbCodec.StringCodec.biMap(value => MtlsCertificateEncoding.values.find(_.toString == value).get, _.toString)
   given DbCodec[SecurityProfile] =
@@ -37,20 +39,20 @@ class PostgresChallengeSettingsRepository(xa: TransactorZIO) extends ChallengeSe
 
   override def getAll: Task[Vector[ChallengeSettingsRecord]] =
     xa.connectMeasured("get-all-challenge-settings"):
-      sql"""SELECT tenant_id, phone_regions, email_registration, default_roles, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, require_dpop_nonce, mtls_certificate_header, mtls_certificate_encoding, signing_key_id, client_assertion_max_lifetime_seconds, security_profile, logo_light, logo_dark FROM challenge_settings ORDER BY tenant_id"""
+      sql"""SELECT tenant_id, phone_regions, email_registration, default_roles, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, require_dpop_nonce, mtls_certificate_header, mtls_certificate_encoding, signing_key_id, client_assertion_max_lifetime_seconds, security_profile, logo_light, logo_dark, audit_settings FROM challenge_settings ORDER BY tenant_id"""
         .query[ChallengeSettingsRecord].run()
 
   override def findByTenant(tenantId: TenantId): Task[Option[ChallengeSettingsRecord]] =
     xa.connectMeasured("find-challenge-settings-by-tenant"):
-      sql"""SELECT tenant_id, phone_regions, email_registration, default_roles, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, require_dpop_nonce, mtls_certificate_header, mtls_certificate_encoding, signing_key_id, client_assertion_max_lifetime_seconds, security_profile, logo_light, logo_dark FROM challenge_settings WHERE tenant_id = $tenantId"""
+      sql"""SELECT tenant_id, phone_regions, email_registration, default_roles, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, require_dpop_nonce, mtls_certificate_header, mtls_certificate_encoding, signing_key_id, client_assertion_max_lifetime_seconds, security_profile, logo_light, logo_dark, audit_settings FROM challenge_settings WHERE tenant_id = $tenantId"""
         .query[ChallengeSettingsRecord].run()
         .headOption
 
   override def upsert(record: ChallengeSettingsRecord): Task[Boolean] =
     xa.connectMeasured("upsert-challenge-settings"):
       sql"""
-        INSERT INTO challenge_settings (tenant_id, phone_regions, email_registration, default_roles, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, require_dpop_nonce, mtls_certificate_header, mtls_certificate_encoding, signing_key_id, client_assertion_max_lifetime_seconds, security_profile, logo_light, logo_dark)
-        VALUES (${record.tenantId}, ${record.phoneRegions}, ${record.emailRegistration}, ${record.defaultRoles}, ${record.submissionLimits}, ${record.otpLength}, ${record.otpResendAfter}, ${record.passkeySettings}, ${record.authConversationTtlSeconds}, ${record.sessionTtlSeconds}, ${record.sessionIdleTtlSeconds}, ${record.userAgentTtlSeconds}, ${record.ipHeader}, ${record.acrVocabulary}, ${record.postLogoutRedirectUris}, ${record.requireDpopNonce}, ${record.mtlsCertificateHeader}, ${record.mtlsCertificateEncoding}, ${record.signingKeyId}, ${record.clientAssertionMaxLifetimeSeconds}, ${record.securityProfile}, ${record.logoLight}, ${record.logoDark})
+        INSERT INTO challenge_settings (tenant_id, phone_regions, email_registration, default_roles, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, require_dpop_nonce, mtls_certificate_header, mtls_certificate_encoding, signing_key_id, client_assertion_max_lifetime_seconds, security_profile, logo_light, logo_dark, audit_settings)
+        VALUES (${record.tenantId}, ${record.phoneRegions}, ${record.emailRegistration}, ${record.defaultRoles}, ${record.submissionLimits}, ${record.otpLength}, ${record.otpResendAfter}, ${record.passkeySettings}, ${record.authConversationTtlSeconds}, ${record.sessionTtlSeconds}, ${record.sessionIdleTtlSeconds}, ${record.userAgentTtlSeconds}, ${record.ipHeader}, ${record.acrVocabulary}, ${record.postLogoutRedirectUris}, ${record.requireDpopNonce}, ${record.mtlsCertificateHeader}, ${record.mtlsCertificateEncoding}, ${record.signingKeyId}, ${record.clientAssertionMaxLifetimeSeconds}, ${record.securityProfile}, ${record.logoLight}, ${record.logoDark}, ${record.auditSettings})
         ON CONFLICT (tenant_id) DO UPDATE SET
           phone_regions = EXCLUDED.phone_regions,
           email_registration = EXCLUDED.email_registration,
@@ -72,7 +74,8 @@ class PostgresChallengeSettingsRepository(xa: TransactorZIO) extends ChallengeSe
           signing_key_id = EXCLUDED.signing_key_id,
           client_assertion_max_lifetime_seconds = EXCLUDED.client_assertion_max_lifetime_seconds,
           logo_light = EXCLUDED.logo_light,
-          logo_dark = EXCLUDED.logo_dark
+          logo_dark = EXCLUDED.logo_dark,
+          audit_settings = EXCLUDED.audit_settings
         WHERE challenge_settings.security_profile = EXCLUDED.security_profile
       """.update.run() > 0
 
@@ -85,7 +88,7 @@ class PostgresChallengeSettingsRepository(xa: TransactorZIO) extends ChallengeSe
   ): Task[ChallengeSettingsPatchResult] =
     xa.transactMeasured("patch-challenge-settings"):
       val locked =
-        sql"""SELECT tenant_id, phone_regions, email_registration, default_roles, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, require_dpop_nonce, mtls_certificate_header, mtls_certificate_encoding, signing_key_id, client_assertion_max_lifetime_seconds, security_profile, logo_light, logo_dark FROM challenge_settings WHERE tenant_id = $tenantId FOR UPDATE"""
+        sql"""SELECT tenant_id, phone_regions, email_registration, default_roles, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, require_dpop_nonce, mtls_certificate_header, mtls_certificate_encoding, signing_key_id, client_assertion_max_lifetime_seconds, security_profile, logo_light, logo_dark, audit_settings FROM challenge_settings WHERE tenant_id = $tenantId FOR UPDATE"""
           .query[ChallengeSettingsRecord].run()
           .headOption
       locked match
@@ -116,7 +119,8 @@ class PostgresChallengeSettingsRepository(xa: TransactorZIO) extends ChallengeSe
                   signing_key_id = ${record.signingKeyId},
                   client_assertion_max_lifetime_seconds = ${record.clientAssertionMaxLifetimeSeconds},
                   logo_light = ${record.logoLight},
-                  logo_dark = ${record.logoDark}
+                  logo_dark = ${record.logoDark},
+                  audit_settings = ${record.auditSettings}
                 WHERE tenant_id = ${record.tenantId}
               """.update.run()
               ChallengeSettingsPatchResult.Patched(record)

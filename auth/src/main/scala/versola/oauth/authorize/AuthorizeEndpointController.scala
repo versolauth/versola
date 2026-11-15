@@ -1,7 +1,7 @@
 package versola.oauth.authorize
 
 import versola.audit.AuditSupport.*
-import versola.audit.{AuditSupport, AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, ClientAuthFailures}
+import versola.audit.{AuditSupport, AuthActors, AuthAuditDetails, AuthAuditKinds, ClientAuthFailures}
 import versola.oauth.AuthMetrics
 import versola.oauth.authorize.model.{AuthorizeErrorResponse, AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
@@ -17,7 +17,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 
 object AuthorizeEndpointController extends Controller:
   type Env = Tracing & AuthorizeRequestParser & AuthorizeEndpointService & AuthorizationResponseService &
-    OAuthConfigurationService & CoreConfig & AuditEvents & AuthAudit.Tiers & ClientAuthFailures
+    OAuthConfigurationService & CoreConfig & AuditEvents & ClientAuthFailures
 
   def routes: Routes[Env, Throwable] = Routes(
     getAuthorizeRoute,
@@ -97,31 +97,29 @@ object AuthorizeEndpointController extends Controller:
         ),
       )
 
-  /** `authorize.request`, succeeded: a conversation was started or a code issued silently. A deployment may leave it out
-    * (`audit.events.authorize-success`): it is every sign-in's first line. */
-  private def auditSuccess(request: AuthorizeRequest, par: Boolean): ZIO[AuditEvents & AuthAudit.Tiers, AuditUnavailableException.type, Unit] =
-    ZIO.serviceWithZIO[AuthAudit.Tiers]: tiers =>
-      ZIO.serviceWithZIO[AuditEvents](
-        _.log(
-          AuditDraft(
-            kind = AuthAuditKinds.AuthorizeRequest,
-            outcome = AuditOutcome.success,
-            reason = None,
-            actor = Some((AuthActors.client, Some(request.clientId))),
-            userId = None,
-            target = None,
-            details = AuthAuditDetails.AuthorizeRequest(
-              responseType = request.responseType.toList.map(_.toString).sorted,
-              scope = request.scope.toList.map(_.toString).sorted,
-              resource = request.resources.map(_.toString),
-              prompt = request.prompt.toList.map(_.toString).sorted,
-              acrValues = request.acrValues.toList.flatMap(_.toList).map(_.toString),
-              par = par,
-              count = None,
-            ),
+  /** `authorize.request`, succeeded: a conversation was started or a code issued silently. It is every sign-in's first line. */
+  private def auditSuccess(request: AuthorizeRequest, par: Boolean): ZIO[AuditEvents, AuditUnavailableException.type, Unit] =
+    ZIO.serviceWithZIO[AuditEvents](
+      _.log(
+        AuditDraft(
+          kind = AuthAuditKinds.AuthorizeRequest,
+          outcome = AuditOutcome.success,
+          reason = None,
+          actor = Some((AuthActors.client, Some(request.clientId))),
+          userId = None,
+          target = None,
+          details = AuthAuditDetails.AuthorizeRequest(
+            responseType = request.responseType.toList.map(_.toString).sorted,
+            scope = request.scope.toList.map(_.toString).sorted,
+            resource = request.resources.map(_.toString),
+            prompt = request.prompt.toList.map(_.toString).sorted,
+            acrValues = request.acrValues.toList.flatMap(_.toList).map(_.toString),
+            par = par,
+            count = None,
           ),
         ),
-      ).when(tiers.authorizeSuccess).unit
+      ),
+    ).unit
 
   private def authorizeAndRedirect(request: AuthorizeRequest, par: Boolean) =
     for

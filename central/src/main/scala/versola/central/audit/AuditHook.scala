@@ -1,6 +1,5 @@
 package versola.central.audit
 
-import versola.central.CentralConfig
 import versola.central.audit.AuditRoutes.Entry
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.tenants.TenantId
@@ -23,7 +22,9 @@ import zio.logging.logContext
   * names of the fields an update set, are what the handler told the log with [[Audit]] once it had decoded its request; the type of
   * the target is the route's. A request that fails before that is recorded without a target. The event is handed to the audit
   * queue after the handler has answered, in the request's own fiber, and a log that does not take it costs a counter and a log
-  * line, not the response.
+  * line, not the response. Nothing is recorded for a tenant that has switched its audit log off (Security settings): the tenant of
+  * the change is the one the route names with [[Audit.tenant]] (the tenant a client, a role or the settings belong to), else the
+  * administrator's own; a call that names none is recorded.
   *
   * ==Who is the administrator==
   * Edge says so: it adds the query parameters `actorId` (the `sub` of the verified token), `actorTenantId`, `actorClientId` and
@@ -63,11 +64,11 @@ object AuditHook:
   private val MaxLength = 256
 
   /** The route with its record: what the route's own declaration says is written after it ran. */
-  def wrap[Env](route: AuditedRoute[Env]): Route[Env & AuditEvents & CentralConfig, Throwable] =
+  def wrap[Env](route: AuditedRoute[Env]): Route[Env & AuditEvents & AuditTenants, Throwable] =
     val pattern = route.route.routePattern.pathCodec.render
-    route.route.transform[Env & AuditEvents & CentralConfig](handler => audited(route.entry, pattern)(handler))
+    route.route.transform[Env & AuditEvents & AuditTenants](handler => audited(route.entry, pattern)(handler))
 
-  private def audited[Env1 <: AuditEvents & CentralConfig](entry: Entry, pattern: String)(
+  private def audited[Env1 <: AuditEvents & AuditTenants](entry: Entry, pattern: String)(
       handler: Handler[Env1, Response, Request, Response],
   ): Handler[Env1, Response, Request, Response] =
     entry match
@@ -135,7 +136,7 @@ object AuditHook:
       Handler.fromFunctionZIO[Request]: request =>
         actorOf(request).flatMap(actor => if actor.named then handler(request) else refusal(actor))
 
-  private def recording[Env1 <: AuditEvents & CentralConfig](
+  private def recording[Env1 <: AuditEvents & AuditTenants](
       handler: Handler[Env1, Response, Request, Response],
       pattern: String,
       change: Option[Entry.Change],
@@ -183,7 +184,7 @@ object AuditHook:
       actor: Actor,
       change: Option[Entry.Change],
       read: Option[Entry.Read],
-  ): URIO[AuditEvents & CentralConfig, Unit] =
+  ): URIO[AuditEvents & AuditTenants, Unit] =
     Audit.tenantOfTarget.get.zip(Audit.partnerOfTarget.get).zip(Audit.noteOfAction.get).flatMap((tenantOfTarget, partnerOfTarget, note) =>
       recordWith(pattern, status, interrupted, state, actor, change, read, tenantOfTarget, partnerOfTarget, note),
     )
@@ -199,7 +200,7 @@ object AuditHook:
       tenantOfTarget: Option[String],
       partnerOfTarget: Option[String],
       note: Option[String],
-  ): URIO[AuditEvents & CentralConfig, Unit] =
+  ): URIO[AuditEvents & AuditTenants, Unit] =
     val succeeded = status.isSuccess || status.isRedirection
     val targetType = change.map(_.targetType).orElse(read.map(_.targetType))
     // The handler names the target (`Audit.target`) and what an update changes (`Audit.changed`); the type of the target is the route's.
@@ -213,6 +214,22 @@ object AuditHook:
       partnerId = partnerOfTarget.map(clipped),
       note = note.map(clipped),
     )
+    // What the tenant keeps no log of is not recorded, and is not counted as an event that lacked a target either.
+    ZIO.serviceWithZIO[AuditTenants](tenants => tenantOfTarget.orElse(state.tenantId).fold(ZIO.succeed(true))(tenants.recording))
+      .flatMap(ZIO.when(_)(recordWanted(status, interrupted, state, actor, change, read, details, resolvedTarget, succeeded)))
+      .unit
+
+  private def recordWanted(
+      status: Status,
+      interrupted: Boolean,
+      state: AuditContext.State,
+      actor: Actor,
+      change: Option[Entry.Change],
+      read: Option[Entry.Read],
+      details: AdminDetails,
+      resolvedTarget: Option[(String, String)],
+      succeeded: Boolean,
+  ): URIO[AuditEvents, Unit] =
     def draft(kind: AuditKind, outcome: AuditOutcome, reason: Option[String]) = AuditDraft(
       kind = kind,
       outcome = outcome,
@@ -236,11 +253,7 @@ object AuditHook:
             _ <-
               ZIO.when(succeeded && entry.revealsSecret)(events.recordBestEffort(draft(CentralAudit.AdminSecretRevealed, AuditOutcome.success, None)))
           yield ()
-        case (_, Some(entry)) =>
-          // A look at a user can be left out of the log by the deployment (`events.admin-user-viewed`): it is the one read that is many.
-          ZIO.serviceWith[CentralConfig](config => entry.kind != AuditRoutes.AdminUserViewed || config.audit.events.adminUserViewed).flatMap:
-            wanted =>
-              ZIO.when(succeeded && wanted)(events.recordBestEffort(draft(entry.kind, AuditOutcome.success, None))).unit
+        case (_, Some(entry)) => ZIO.when(succeeded)(events.recordBestEffort(draft(entry.kind, AuditOutcome.success, None))).unit
         case _ => ZIO.unit
 
   /** The outcome of a status, and the reason of one that is not a success: the error code the request set, else its status. */

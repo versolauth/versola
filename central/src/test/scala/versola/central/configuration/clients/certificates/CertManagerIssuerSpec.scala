@@ -1,6 +1,7 @@
 package versola.central.configuration.clients.certificates
 
 import versola.central.CentralConfig.CertManagerConfig
+import versola.central.audit.CentralAudit.CertReasons
 import versola.util.TestCertificates
 import zio.*
 import zio.http.*
@@ -117,7 +118,12 @@ object CertManagerIssuerSpec extends ZIOSpecDefault:
           issuer <- issuer(server.port)
           exit <- issuer.sign(request).exit
           deleted <- server.deleted.get
-        yield assertTrue(exit.isFailure, exit.toString.contains("not allowed by policy"), deleted.nonEmpty)
+        yield assertTrue(
+          exit.isFailure,
+          exit.toString.contains("not allowed by policy"),
+          deleted.nonEmpty,
+          exit.causeOption.flatMap(_.failureOption).map(ClientCertificateIssuer.reasonOf).contains(CertReasons.IssuerRefused),
+        )
     },
     test("fails when the issuer reports the request Failed") {
       ZIO.scoped:
@@ -134,6 +140,34 @@ object CertManagerIssuerSpec extends ZIOSpecDefault:
           )
           issuer <- issuer(server.port)
           exit <- issuer.sign(request).exit
-        yield assertTrue(exit.isFailure, exit.toString.contains("issuer unavailable"))
+        yield assertTrue(
+          exit.isFailure,
+          exit.toString.contains("issuer unavailable"),
+          exit.causeOption.flatMap(_.failureOption).map(ClientCertificateIssuer.reasonOf).contains(CertReasons.IssuerRefused),
+        )
+    },
+    test("an answer that is not what the API sends is an invalid answer, and an error status is a refusal") {
+      ZIO.scoped:
+        for
+          // Ready, but with no certificate in it
+          server <-
+            api(_ => Json.Obj("status" -> Json.Obj("conditions" -> Json.Arr(Json.Obj("type" -> Json.Str("Ready"), "status" -> Json.Str("True"))))))
+          issuer <- issuer(server.port)
+          noCertificate <- issuer.sign(request).exit
+        yield assertTrue(
+          noCertificate.causeOption.flatMap(_.failureOption).map(ClientCertificateIssuer.reasonOf).contains(CertReasons.IssuerInvalidAnswer),
+        )
+    },
+    test("an API that cannot be reached is unreachable, with the cause kept for the log and not for the audit log") {
+      ZIO.scoped:
+        for
+          // nothing listens on port 1
+          issuer <- issuer(1)
+          exit <- issuer.sign(request).exit
+          failure = exit.causeOption.flatMap(_.failureOption)
+        yield assertTrue(
+          failure.map(ClientCertificateIssuer.reasonOf).contains(CertReasons.IssuerUnreachable),
+          failure.exists(_.getCause != null),
+        )
     },
   ).provide(Client.default) @@ TestAspect.sequential @@ TestAspect.withLiveClock @@ TestAspect.silentLogging

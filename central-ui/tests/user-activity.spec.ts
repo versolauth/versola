@@ -28,7 +28,8 @@ const lastQuery = (api: MockConfigHarness) => reportRequests(api).at(-1)!.search
 /**
  * `Date` stands still at the fixtures' "now" and the timers run as usual. `clock.install` starts a clock that goes on in real time, so a
  * period chosen a second after the page opened asked for a window one second later (seen on CI, on a slow runner). `clock.pauseAt` would
- * stop it too, but with it no timer fires, and the page waits on timers: the mock's delayed report, the "copied" notices.
+ * stop it too, but with it no timer fires, and the page waits on timers: the mock's delayed report, the "copied" notices. A first load
+ * that takes a second is covered as well: "Updated 14:50:00" and the period's end read the same pinned `new Date()`.
  */
 const pinClock = (page: Page) => page.clock.setFixedTime(new Date(ACTIVITY_NOW));
 
