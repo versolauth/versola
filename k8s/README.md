@@ -751,15 +751,20 @@ public name, so install the main chart's `exposure` first (section 9a).
 2. Copy the leaf certificate of central's listener (the Secret `<release>-versola-central-mtls`, `tls.crt`)
    to `central.pins`; do the same for auth's if the edge calls it (`auth.pins`). Pins are a *set*: put the
    next leaf beside the current one before the listener switches, so a rotation does not cut the edge off.
-3. Generate the edge's `env.conf` (`scripts/gen-env.scala`, answer `k8s`, and `--remote-edge=true --edge-id=<the id from step 1>`)
-   into a Secret and its secret vars into `secrets.existingSecret`, as for the main chart, and add one line to the
-   `env.conf`: `include file("/app/remote-edge/central.conf")`. With `--remote-edge` the file names no certificate: it
-   comes from enrollment, and the chart's `central.conf` carries the `central` block (url, pins, `identity`). Two of the
-   generated values are not the edge's: `EDGE_KEY_ID` and `EDGE_PRIVATE_KEY` must be the key central showed in step 1
-   (the console and the admin API show it as base64url; the edge reads either alphabet). Set `central.group` when the edge is not in the
-   `default` group.
-   `gen-env` also writes a `native` block, which needs auth's mutual-TLS address and pin: set `auth.mtlsUrl` and `auth.pins` (the chart's
-   `central.conf` then carries the matching `native` block).
+3. Generate the edge's `env.conf` with `scripts/gen-env.scala` (answer `k8s`) and put it into a Secret, and its secret vars into
+   `secrets.existingSecret`, as for the main chart. For a remote edge give, besides the usual flags:
+
+   | Flag | What |
+   |---|---|
+   | `--remote-edge=true` | The edge's `central` block carries no certificate (it comes from enrollment); the run ends `edge.conf` with `include file("/app/remote-edge/central.conf")`, the chart's file, so nothing is added by hand |
+   | `--edge-id` | The id from step 1 |
+   | `--edge-key-id`, `--edge-private-key-file` | The key central showed at registration (the file holds it as central showed it, base64url is fine). The run stops without them: a key generated here would not match what central holds |
+   | `--edge-postgres-url` (and `--edge-postgres-user`, `--edge-postgres-password`) | The database the remote edge reaches. The run stops without the URL: the default is a local one |
+   | `--auth-url` | Auth's public address. For a remote edge `versola-internal-url` is the same address, since the cluster's Service name is not reachable from outside; a first-party edge calls auth's mutual-TLS address (`native`) with its own certificate |
+
+   A remote edge gets no `security.internal-secret`: the `/service/*` surface it protects is the in-cluster one. Set `central.group` when
+   the edge is not in the `default` group. `gen-env` also writes a `native` block, which needs auth's mutual-TLS address and pin: set
+   `auth.mtlsUrl` and `auth.pins` (the chart's `central.conf` then carries the matching `native` block).
 
 ```bash
 helm upgrade --install edge-eu k8s/versola-edge --namespace versola-edge --create-namespace \
