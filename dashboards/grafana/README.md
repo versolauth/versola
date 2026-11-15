@@ -67,11 +67,15 @@ Namespace variables and no tail quantile. Rows, top to bottom: Decisions (rate b
 was acted on next to what was decided, evaluation failures), Rules (the most frequent, those that count and those that only record),
 Challenges (by kind and outcome, proof-of-work pass rate, pause paid share), SMS budget (refused by reason and mode, ranges not tracked or
 evicted), Event pipeline (enqueued, written, dropped by reason, queue size, backlog growth), Velocity, Lists (hits with the shadow split,
-refresh failures, snapshot and tuning age), Detectors and resets, Storage (partition days ahead with a line at 2, maintenance and rollup
+refresh failures, snapshot and tuning age), Network signals (per database, ASN and country: the share of pods that hold it, the share of
+client addresses it could place, its age; then the share of decisions each network rule fires on, why a request carried no signal, age and
+ranges by pod, failed refreshes), Detectors and resets, Storage (partition days ahead with a line at 2, maintenance and rollup
 failures, database latency and failures of the antifraud operations, `operation=~".*antifraud.*"`).
 
 Read it in shadow mode as: the would-be share in Decisions is what enforcing would stop, and "let through, would be stopped" is the part of
-it that was only recorded. Every failure panel is empty when healthy. Alert rules for the same signals are in
+it that was only recorded. Every failure panel is empty when healthy. The Network signals row is read left to right as three questions:
+is the database on every pod (a percentage in red means pods disagree), does `auth` see client addresses (a low share is a proxy that does not
+pass them, not a poor database), and how much traffic a network rule would touch if it counted. Alert rules for the same signals are in
 [`../alerts/`](../alerts/README.md). The board uses metrics that are only on `main` once the antifraud shadow and store changes
 are (`antifraud_decisions_total{would_action}`, `antifraud_rules_fired_total`, `antifraud_evaluation_failed_total`, the refresh timestamps,
 `antifraud_partition_days_ahead` and others); a panel on a metric that is not there yet stays empty.

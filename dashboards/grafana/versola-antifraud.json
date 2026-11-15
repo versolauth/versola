@@ -1,7 +1,7 @@
 {
   "uid": "versola-antifraud",
   "title": "Versola — Antifraud",
-  "description": "The antifraud module of auth: decisions and what enforcing would have changed, rules, challenges, the SMS budget, the event pipeline, velocity counters, lists, detectors and storage. Written for a shadow-mode rollout: read Decisions first. Alert rules for the same signals: dashboards/alerts/versola-antifraud.rules.yaml.",
+  "description": "The antifraud module of auth: decisions and what enforcing would have changed, rules, challenges, the SMS budget, the event pipeline, velocity counters, lists, the network signals (ASN, country), detectors and storage. Written for a shadow-mode rollout: read Decisions first. Alert rules for the same signals: dashboards/alerts/versola-antifraud.rules.yaml.",
   "tags": [
     "versola",
     "versola-service"
@@ -2006,7 +2006,7 @@
     {
       "id": 40,
       "type": "row",
-      "title": "auth — Detectors and resets",
+      "title": "auth — Network signals (ASN, country)",
       "collapsed": false,
       "panels": [],
       "gridPos": {
@@ -2014,6 +2014,873 @@
         "w": 24,
         "x": 0,
         "y": 117
+      }
+    },
+    {
+      "type": "text",
+      "title": "",
+      "options": {
+        "mode": "markdown",
+        "content": "Per database, left to right: is it on every pod, does `auth` see client addresses, is it being refreshed. A tile that is not green is something to fix before trusting a rule that reads the network. The graphs below say how much traffic each such rule touches, and why a request carried no signal."
+      },
+      "transparent": true,
+      "id": 41,
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 118
+      }
+    },
+    {
+      "type": "stat",
+      "title": "ASN database: on every pod?",
+      "description": "Share of the running auth pods that hold the ASN database. `all` is healthy. `off`: no pod has one, the signal is switched off (`antifraud.asn.file` is empty) or the file is missing everywhere. **A percentage in red is the case to act on:** some pods have the database and some do not, so the same request is judged with the signal on one pod and without it on another. The auth log of the pod without it says why (`could not read the ... file`, or the file is not on that pod's volume); fix it and restart that pod.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "off",
+                  "color": "text",
+                  "index": 0
+                },
+                "1": {
+                  "text": "all",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 0.0001,
+                "to": 0.9999,
+                "result": {
+                  "color": "red",
+                  "index": 2
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(count(antifraud_asn_database_ranges{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"} > 0) or vector(0)) / clamp_min(count(up{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"} == 1), 1)",
+          "instant": false
+        }
+      ],
+      "id": 42,
+      "gridPos": {
+        "h": 3,
+        "w": 8,
+        "x": 0,
+        "y": 120
+      }
+    },
+    {
+      "type": "stat",
+      "title": "ASN: client addresses recognised",
+      "description": "Of the client addresses looked up, the share the database could place. Public addresses are nearly all placed, so healthy is close to 100%. **Low means auth is not seeing the client's address**, not that the database is poor: the proxy in front does not set the header the tenant's `ipHeader` names, or it carries an internal hop (a private address is in no range). Fix the proxy before trusting any rule that reads the network, the per-address velocity limits included. Test traffic from private addresses reads low for the same reason. `no lookups`: nothing was looked up in the window (no request asked for a code, the decision engine is off, or no database is loaded).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "#EAB839",
+                "value": 0.5
+              },
+              {
+                "color": "green",
+                "value": 0.9
+              }
+            ]
+          },
+          "decimals": 1,
+          "noValue": "no lookups"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(antifraud_asn_lookups_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", result=~\"hit\"}[$__rate_interval])) or vector(0)) / (sum(rate(antifraud_asn_lookups_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", result=~\"hit|miss\"}[$__rate_interval])) > 0)",
+          "instant": false
+        }
+      ],
+      "id": 43,
+      "gridPos": {
+        "h": 3,
+        "w": 8,
+        "x": 8,
+        "y": 120
+      }
+    },
+    {
+      "type": "stat",
+      "title": "ASN database: age",
+      "description": "Time since the file in use was written (the oldest among the pods): since the last download that succeeded, or since an operator replaced the file. Yellow from 3 days, three default `refresh-interval`s, which is where the alert fires: the refresh is not working. The previous database stays in use, so nothing breaks at once, but networks change hands and the signal drifts. Look at Failed refreshes below and at the auth log for the reason.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: days",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "#EAB839",
+                "value": 3
+              }
+            ]
+          },
+          "decimals": 1,
+          "noValue": "no database"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(time() - min (antifraud_asn_database_loaded_timestamp_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})) / 86400",
+          "instant": false
+        }
+      ],
+      "id": 44,
+      "gridPos": {
+        "h": 3,
+        "w": 8,
+        "x": 16,
+        "y": 120
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Country database: on every pod?",
+      "description": "Share of the running auth pods that hold the Country database. `all` is healthy. `off`: no pod has one, the signal is switched off (`antifraud.geo.file` is empty) or the file is missing everywhere. **A percentage in red is the case to act on:** some pods have the database and some do not, so the same request is judged with the signal on one pod and without it on another. The auth log of the pod without it says why (`could not read the ... file`, or the file is not on that pod's volume); fix it and restart that pod.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "off",
+                  "color": "text",
+                  "index": 0
+                },
+                "1": {
+                  "text": "all",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 0.0001,
+                "to": 0.9999,
+                "result": {
+                  "color": "red",
+                  "index": 2
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(count(antifraud_geo_database_ranges{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"} > 0) or vector(0)) / clamp_min(count(up{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"} == 1), 1)",
+          "instant": false
+        }
+      ],
+      "id": 45,
+      "gridPos": {
+        "h": 3,
+        "w": 8,
+        "x": 0,
+        "y": 123
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Country: client addresses recognised",
+      "description": "Of the client addresses looked up, the share the database could place. Public addresses are nearly all placed, so healthy is close to 100%. **Low means auth is not seeing the client's address**, not that the database is poor: the proxy in front does not set the header the tenant's `ipHeader` names, or it carries an internal hop (a private address is in no range). Fix the proxy before trusting any rule that reads the network, the per-address velocity limits included. Test traffic from private addresses reads low for the same reason. `no lookups`: nothing was looked up in the window (no request asked for a code, the decision engine is off, or no database is loaded).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "#EAB839",
+                "value": 0.5
+              },
+              {
+                "color": "green",
+                "value": 0.9
+              }
+            ]
+          },
+          "decimals": 1,
+          "noValue": "no lookups"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(antifraud_geo_lookups_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", result=~\"hit\"}[$__rate_interval])) or vector(0)) / (sum(rate(antifraud_geo_lookups_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", result=~\"hit|miss\"}[$__rate_interval])) > 0)",
+          "instant": false
+        }
+      ],
+      "id": 46,
+      "gridPos": {
+        "h": 3,
+        "w": 8,
+        "x": 8,
+        "y": 123
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Country database: age",
+      "description": "Time since the file in use was written (the oldest among the pods): since the last download that succeeded, or since an operator replaced the file. Yellow from 21 days, three default `refresh-interval`s, which is where the alert fires: the refresh is not working. The previous database stays in use, so nothing breaks at once, but networks change hands and the signal drifts. Look at Failed refreshes below and at the auth log for the reason.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: days",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "#EAB839",
+                "value": 21
+              }
+            ]
+          },
+          "decimals": 1,
+          "noValue": "no database"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(time() - min (antifraud_geo_database_loaded_timestamp_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})) / 86400",
+          "instant": false
+        }
+      ],
+      "id": 47,
+      "gridPos": {
+        "h": 3,
+        "w": 8,
+        "x": 16,
+        "y": 123
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Network rules — share of decisions",
+      "description": "How much of the judged traffic each rule on the network fires on. **Read it before taking a rule out of `shadowRules` or raising its weight**: the line is the share of requests that would gain the rule's weight. `asn_hosting` at a small steady share is the honest population behind VPNs and relays; at most of the traffic it means auth sees a proxy's or a cloud NAT's address (see Addresses recognised). `country_mismatch` and `country_outside_regions` are people signing in from abroad (roaming, travellers) as well as attacks: a steady floor is your honest share, a step above it is a campaign. `velocity_asn_*` is a per-AS limit being reached, `*_list:asn` and `*_list:country` are list entries matching. `shadow=true` only records.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (rule, shadow) (rate(antifraud_rules_fired_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", rule=~\"asn_hosting|country_mismatch|country_outside_regions|velocity_asn_.+|.+_list:(asn|country)\"}[$__rate_interval])) / scalar(clamp_min(sum(rate(antifraud_decisions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])), 0.001))",
+          "legendFormat": "{{rule}} (shadow={{shadow}})"
+        }
+      ],
+      "id": 48,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 126
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Addresses not placed — share of lookups",
+      "description": "Why a request carried no network signal. `in no range`: the address was looked up and the database has nothing for it, a private or reserved address or text that is no address, so the proxy header is the place to look. `no database`: the pod that took the request had nothing to look in, the signal is off or its file did not load there. Both near 0 is healthy. A signal that is switched off draws `no database` at 100%; a line between 0 and 100% is pods that disagree.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(antifraud_asn_lookups_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", result=\"miss\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(antifraud_asn_lookups_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "ASN: in no range"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(antifraud_asn_lookups_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", result=\"unavailable\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(antifraud_asn_lookups_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "ASN: no database"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(antifraud_geo_lookups_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", result=\"miss\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(antifraud_geo_lookups_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "Country: in no range"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(antifraud_geo_lookups_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", result=\"unavailable\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(antifraud_geo_lookups_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "Country: no database"
+        }
+      ],
+      "id": 49,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 126
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "ASN database age by pod",
+      "description": "A sawtooth is healthy: the age grows and drops to 0 at each refresh. A line that only climbs is a refresh that does not work on that pod; the dashed line is where the alert fires. Pods refresh on their own, so their teeth are not in step.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: days",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(time() - min by (pod) (antifraud_asn_database_loaded_timestamp_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})) / 86400",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "id": 50,
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 134
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Country database age by pod",
+      "description": "A sawtooth is healthy: the age grows and drops to 0 at each refresh. A line that only climbs is a refresh that does not work on that pod; the dashed line is where the alert fires. Pods refresh on their own, so their teeth are not in step.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: days",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 21
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(time() - min by (pod) (antifraud_geo_database_loaded_timestamp_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})) / 86400",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "id": 51,
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 134
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Ranges held across pods",
+      "description": "How many address ranges the databases hold: for each, the pod with the fewest and the pod with the most. The two lines of a database lie on each other when the pods hold the same file, and step a little at a refresh. **A drop of `smallest` to a fraction of the usual size is a wrong file on some pod** (a truncated download, another format): the loader refuses a file that is mostly unreadable, not one that is merely short. Lines that stay apart are pods on different files.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "min(antifraud_asn_database_ranges{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "legendFormat": "ASN: smallest"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(antifraud_asn_database_ranges{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "legendFormat": "ASN: largest"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "min(antifraud_geo_database_ranges{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "legendFormat": "Country: smallest"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(antifraud_geo_database_ranges{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "legendFormat": "Country: largest"
+        }
+      ],
+      "id": 52,
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 134
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Failed refreshes",
+      "description": "Downloads or reads of a fresher database that did not produce one; the database in use stays. Empty is healthy. One is a mirror that was down for a try; a failure at every interval is a wrong `url`, a directory auth cannot write to, or a file that is not a database. The auth log names the host and the reason: `could not download the ASN database from <host>`, `could not read the country database file`.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(antifraud_asn_database_refresh_failed_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "ASN"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(antifraud_geo_database_refresh_failed_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "Country"
+        }
+      ],
+      "id": 53,
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 134
+      }
+    },
+    {
+      "id": 54,
+      "type": "row",
+      "title": "auth — Detectors and resets",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 142
       }
     },
     {
@@ -2060,12 +2927,12 @@
           "legendFormat": "{{kind}}"
         }
       ],
-      "id": 41,
+      "id": 55,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 118
+        "y": 143
       }
     },
     {
@@ -2137,12 +3004,12 @@
           "legendFormat": "housekeeping failed"
         }
       ],
-      "id": 42,
+      "id": 56,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 118
+        "y": 143
       }
     },
     {
@@ -2189,12 +3056,12 @@
           "legendFormat": "{{scope}}"
         }
       ],
-      "id": 43,
+      "id": 57,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 126
+        "y": 151
       }
     },
     {
@@ -2257,16 +3124,16 @@
           "legendFormat": "{{what}}"
         }
       ],
-      "id": 44,
+      "id": 58,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 126
+        "y": 151
       }
     },
     {
-      "id": 45,
+      "id": 59,
       "type": "row",
       "title": "auth — Storage",
       "collapsed": false,
@@ -2275,7 +3142,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 134
+        "y": 159
       }
     },
     {
@@ -2338,12 +3205,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 46,
+      "id": 60,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 135
+        "y": 160
       }
     },
     {
@@ -2415,12 +3282,12 @@
           "legendFormat": "statistics rollup"
         }
       ],
-      "id": 47,
+      "id": 61,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 135
+        "y": 160
       }
     },
     {
@@ -2485,12 +3352,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 48,
+      "id": 62,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 143
+        "y": 168
       }
     },
     {
@@ -2537,12 +3404,12 @@
           "legendFormat": "{{operation}}"
         }
       ],
-      "id": 49,
+      "id": 63,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 143
+        "y": 168
       }
     },
     {
@@ -2605,12 +3472,12 @@
           "legendFormat": "{{operation}}"
         }
       ],
-      "id": 50,
+      "id": 64,
       "gridPos": {
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 151
+        "y": 176
       }
     }
   ]
