@@ -7,13 +7,12 @@ import zio.metrics.{Metric, MetricLabel}
 import java.io.ByteArrayInputStream
 import java.nio.file.{Files, Path}
 import java.security.cert.{CertificateFactory, X509Certificate}
-import java.time.Instant
 
 /** Whether the certificates Versola holds are being renewed, and how long they have left (#1001).
   *
   * Every label is a closed set: `kind` is one of [[Kind]], `outcome` one of the audit log's outcomes. Nothing here is labelled by
-  * client, edge or serial -- the number of clients is not bounded, so what is exported about the certificates of a kind is an aggregate
-  * (see [[Expiry]]), and the certificate that is about to expire is found in the audit log and in the console.
+  * client, edge or serial -- the number of clients is not bounded, so what is exported about the certificates of a kind is one count, and
+  * the certificate behind it is found in the audit log and in the console.
   *
   * The counter and the gauges of the certificates central holds are published by `central` alone. The gauges of a listener's own
   * certificate are published by each service for itself ([[listener]]), told apart by the `service` label.
@@ -28,19 +27,8 @@ object CertificateMetrics:
     case Edge extends Kind("edge")
     case Est extends Kind("est")
 
-  /** What is known of the certificates of one kind at an instant. `inRenewalWindow` counts those whose renewal is due -- the ones the
-    * holder should already be renewing -- and `pastRenewalMidpoint` those that are past the middle of that window and still not
-    * renewed, which a renewal that works does not leave for long. A certificate that has expired and was not renewed is in both. */
-  case class Expiry(tracked: Long, earliestNotAfter: Option[Instant], inRenewalWindow: Long, pastRenewalMidpoint: Long)
-
-  object Expiry:
-    val Empty: Expiry = Expiry(tracked = 0, earliestNotAfter = None, inRenewalWindow = 0, pastRenewalMidpoint = 0)
-
   private val renewals = Metric.counter("certificate_renewals_total")
-  private val tracked = Metric.gauge("certificates_tracked")
-  private val inWindow = Metric.gauge("certificates_in_renewal_window")
   private val pastMidpoint = Metric.gauge("certificates_past_renewal_midpoint")
-  private val earliest = Metric.gauge("certificate_earliest_not_after_timestamp_seconds")
   private val listenerNotAfter = Metric.gauge("listener_certificate_not_after_timestamp_seconds")
   private val listenerLifetime = Metric.gauge("listener_certificate_lifetime_seconds")
 
@@ -53,14 +41,10 @@ object CertificateMetrics:
   def renewal(kind: Kind, outcome: AuditOutcome): UIO[Unit] =
     renewals.tagged(Set(MetricLabel("kind", kind.label), MetricLabel("outcome", outcome.toString))).increment
 
-  /** Sets the gauges of `kind`. With nothing tracked the count gauges are 0 and the timestamp is 0, which is no end of any certificate:
-    * a rule reads it only where `certificates_tracked` is above 0. */
-  def expiry(kind: Kind, expiry: Expiry): UIO[Unit] =
-    val labels = Set(MetricLabel("kind", kind.label))
-    tracked.tagged(labels).set(expiry.tracked.toDouble) *>
-      inWindow.tagged(labels).set(expiry.inRenewalWindow.toDouble) *>
-      pastMidpoint.tagged(labels).set(expiry.pastRenewalMidpoint.toDouble) *>
-      earliest.tagged(labels).set(expiry.earliestNotAfter.fold(0.0)(_.getEpochSecond.toDouble))
+  /** How many certificates of `kind` are past the middle of the window in which their holder renews them and are still not renewed (an
+    * expired one among them): what a renewal that works does not leave for long, and so the sign that it does not work. */
+  def pastRenewalMidpoint(kind: Kind, count: Long): UIO[Unit] =
+    pastMidpoint.tagged(Set(MetricLabel("kind", kind.label))).set(count.toDouble)
 
   /** The end and the length of the validity of the certificate `service` serves on `listener`. */
   def listener(service: String, listener: String, leaf: X509Certificate): UIO[Unit] =

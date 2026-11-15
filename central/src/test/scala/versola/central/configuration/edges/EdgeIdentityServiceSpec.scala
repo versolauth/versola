@@ -20,7 +20,7 @@ import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.audit.{AuditOutcome, CertOperation}
-import versola.util.{CertificateMetrics, CertificateSubject, EnrollmentToken, RsaKeyPair, SecureRandom, TestCertificates}
+import versola.util.{CertificateSubject, EnrollmentToken, RsaKeyPair, SecureRandom, TestCertificates}
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -78,7 +78,7 @@ object EdgeIdentityServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
     override def latest: Task[Map[EdgeId, EdgeCertificateRepository.Issued]] = ZIO.succeed(Map.empty)
 
-    override def expiry(now: Instant, renewalShare: Double): Task[CertificateMetrics.Expiry] = ZIO.succeed(CertificateMetrics.Expiry.Empty)
+    override def pastRenewalMidpoint(now: Instant, renewalShare: Double): Task[Long] = ZIO.succeed(0L)
 
     def all: UIO[Vector[(EdgeId, String)]] = state.get
 

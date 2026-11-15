@@ -15,8 +15,8 @@ import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
 import versola.central.{CentralConfig, TestCentralConfig}
+import versola.util.CertificateSubject
 import versola.util.audit.{ActorType, AuditContext, AuditDraft, AuditEvents, AuditOutcome}
-import versola.util.{CertificateMetrics, CertificateSubject}
 import versola.util.{Patch, PrivateClientCertificate, TestCertificates}
 import zio.*
 import zio.json.*
@@ -94,7 +94,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     def delete(clientId: ClientId) = ZIO.succeed { rows -= clientId }
     def expiringBefore(deadline: Instant) =
       ZIO.succeed(rows.values.filter(_.notAfter.isBefore(deadline)).toVector.sortBy(_.notAfter))
-    def expiry(now: Instant, renewBefore: Duration) = ZIO.succeed(CertificateMetrics.Expiry.Empty)
+    def pastRenewalMidpoint(now: Instant, renewBefore: Duration) = ZIO.succeed(0L)
 
   private class Enrollments extends EdgeCertificateEnrollmentRepository:
     var enrolled: Set[ClientId] = Set.empty

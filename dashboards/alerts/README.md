@@ -104,19 +104,20 @@ audit log.
 | Alert | Fires when | For | Severity |
 | --- | --- | --- | --- |
 | `CertificateRenewalOverdue` | `certificates_past_renewal_midpoint` is above 0: a certificate is past the middle of its renewal window and still not renewed | 15m | warning |
-| `CertificateExpired` | the earliest end of the certificates of a kind (`certificate_earliest_not_after_timestamp_seconds`, ignoring a kind with none) is in the past | 5m | critical |
 | `CertificateRenewalsFailing` | more than one renewal of a kind ended without a certificate in 3 hours (`certificate_renewals_total`: `outcome=failure`, and for `kind=client` also `denied`) | 5m | warning |
 | `ListenerCertificateExpiring` | less than a sixth of the life of a service's mutual-TLS listener certificate is left (the middle of the last third) | 1h | warning |
 | `ListenerCertificateExpiringSoon` | less than an eighteenth of it is left, or none | 15m | critical |
 
-The file passes `promtool check rules` (5 rules), and the expressions were run against synthetic series with `promtool test rules` (a kind with nothing
-tracked is silent, one failure does not fire `CertificateRenewalsFailing`, two do, a refusal of an edge or EST caller does not, a listener certificate at 50 of 365
+The file passes `promtool check rules` (4 rules), and the expressions were run against synthetic series with `promtool test rules` (a kind with nothing
+past the middle is silent, one failure does not fire `CertificateRenewalsFailing`, two do, a refusal of an edge or EST caller does not, a listener certificate at 50 of 365
 days fires the warning only); the tests are not kept in the repository.
 
-The gauges are read by `central` every five minutes from its own tables (`client_certificate_issuance`, `edge_certificates`, `client_est_certificates`) with one
-aggregate query for each kind, so what is exported does not grow with the number of clients; every replica publishes the same numbers. Where a kind has nothing
-to count, the gauges are 0, which the rules read as "no certificate" and not as an end in 1970. The edges of a suspended partner are not counted: they are refused renewal on purpose and
-their certificates are meant to run out. A certificate that expired is counted until its edge or client is deleted (an EST client: until it is enrolled again).
+`central` reads the count from its own tables (`client_certificate_issuance`, `edge_certificates`, `client_est_certificates`) every five minutes, with one
+aggregate query for each kind, so what is exported does not grow with the number of clients; every replica publishes the same number. The edges of a
+suspended partner are not counted: they are refused renewal on purpose and their certificates are meant to run out. A certificate that expired is counted
+until its edge or client is deleted (an EST client: until it is enrolled again). The scope is the failure of the automatic renewal: for `client` and `edge`
+the count is the sign that it broke, and for `est` it is the only sign that a client, which renews itself, fell behind. No gauge of the earliest end of a
+kind is exported: with renewal working it is always far away, and a renewal that does not work is caught by the count.
 
 A renewal that never reaches `central` (an edge that cannot connect to it) is not counted in `certificate_renewals_total`; the edge's warning in its log and
 `CertificateRenewalOverdue` are what show it. The listener gauges are set once, when a service starts: they are the end of the certificate it serves now, so a

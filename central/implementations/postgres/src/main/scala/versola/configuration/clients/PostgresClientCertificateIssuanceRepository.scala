@@ -4,7 +4,6 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.clients.certificates.{ClientCertificateIssuance, ClientCertificateIssuanceRepository}
-import versola.util.CertificateMetrics.Expiry
 import versola.util.postgres.BasicCodecs
 import zio.{Duration, Task, ZLayer}
 
@@ -59,17 +58,10 @@ class PostgresClientCertificateIssuanceRepository(
         ORDER BY not_after
       """.query[ClientCertificateIssuance].run()
 
-  override def expiry(now: Instant, renewBefore: Duration): Task[Expiry] =
-    val window = now.plus(renewBefore)
+  override def pastRenewalMidpoint(now: Instant, renewBefore: Duration): Task[Long] =
     val midpoint = now.plus(renewBefore.dividedBy(2))
-    xa.connectMeasured("client-certificate-expiry"):
-      sql"""
-        SELECT count(*), min(not_after),
-               count(*) FILTER (WHERE not_after < $window),
-               count(*) FILTER (WHERE not_after < $midpoint)
-        FROM client_certificate_issuance
-      """.query[(Long, Option[Instant], Long, Long)].run().head
-    .map((tracked, earliest, inWindow, pastMidpoint) => Expiry(tracked, earliest, inWindow, pastMidpoint))
+    xa.connectMeasured("client-certificates-past-renewal-midpoint"):
+      sql"SELECT count(*) FROM client_certificate_issuance WHERE not_after < $midpoint".query[Long].run().head
 
 object PostgresClientCertificateIssuanceRepository:
   def live: ZLayer[TransactorZIO, Throwable, ClientCertificateIssuanceRepository] =

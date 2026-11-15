@@ -17,7 +17,7 @@ import versola.central.configuration.clients.certificates.{CertificateSigningReq
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.audit.{ActorType, AuditOutcome, CertOperation}
-import versola.util.{CertificateMetrics, CertificateSubject, SecureRandom, TestCertificates}
+import versola.util.{CertificateSubject, SecureRandom, TestCertificates}
 import zio.*
 import zio.json.*
 import zio.metrics.{Metric, MetricLabel}
@@ -140,7 +140,7 @@ object ClientEstServiceSpec extends ZIOSpecDefault, ZIOStubs:
     def extendChain(clientId: ClientId, at: Instant) = ZIO.succeed { chains += clientId -> at }
     def chainStartedAt(clientId: ClientId) = ZIO.succeed(chains.get(clientId))
     def findCertificate(thumbprint: String) = ZIO.succeed(certificates.get(thumbprint))
-    def expiry(now: Instant, renewWindow: Double) = ZIO.succeed(CertificateMetrics.Expiry.Empty)
+    def pastRenewalMidpoint(now: Instant, renewWindow: Double) = ZIO.succeed(0L)
 
     private def add(certificate: NewEstCertificate, generation: Int): Unit =
       certificates += certificate.thumbprint -> EstCertificate(

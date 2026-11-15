@@ -7,19 +7,18 @@ import versola.central.configuration.edges.{EdgeCertificateRepository, EdgeGroup
 import versola.central.configuration.partners.*
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
-import versola.util.CertificateMetrics.Expiry
 import versola.util.{DatabaseSpecBase, RedirectUri}
 import zio.*
 import zio.test.*
 
 import java.time.Instant
 
-/** What `CertificateExpiryReporter` reads, for any storage: one aggregate for each of the three stores of certificates (the ones central
+/** What `CertificateExpiryReporter` reads, for any storage: one count for each of the three stores of certificates (the ones central
   * issued to clients, the identities of edges, the ones clients obtained through EST), from rows whose end and length are fixed here.
   * See `PostgresCertificateExpiryRepositorySpec` in `central-postgres-impl` for the one binding.
   *
-  * A certificate is in its renewal window when its remaining life is below the window (strictly, as `expiringBefore` is) and past the middle
-  * of it when below half of it; an expired one is in both. */
+  * A certificate is past the middle of its renewal window when its remaining life is below half of the window (strictly, as `expiringBefore`
+  * is); an expired one is. */
 trait CertificateExpiryRepositorySpec extends DatabaseSpecBase[CertificateExpiryRepositorySpec.Env]:
   self: ZIOSpec[TransactorZIO] =>
 
@@ -100,17 +99,17 @@ trait CertificateExpiryRepositorySpec extends DatabaseSpecBase[CertificateExpiry
   override def testCases(env: CertificateExpiryRepositorySpec.Env) =
     List(
       suite("certificates central issued to clients")(
-        test("an empty table is no certificates and no end") {
-          for expiry <- env.issuances.expiry(now, 4.days)
-          yield assertTrue(expiry == Expiry.Empty)
+        test("an empty table has none past the middle") {
+          for count <- env.issuances.pastRenewalMidpoint(now, 4.days)
+          yield assertTrue(count == 0L)
         },
-        test("counts the certificates in the renewal window and past its middle, by the window given, with the earliest end") {
+        test("counts the certificates past the middle of the renewal window, by the window given") {
           val rows = Vector(
-            ("expired", at(-1)),        // in both: expired and not renewed is the worst of them
-            ("a-day-left", at(1)),      // in both: less than half of 4 days left
-            ("two-days-left", at(2)),   // in the window; the middle is not past: exactly half is left
-            ("three-days-left", at(3)), // in the window
-            ("window-edge", at(4)),     // not in: strictly inside, as `expiringBefore` is
+            ("expired", at(-1)),        // past: expired and not renewed is the worst of them
+            ("a-day-left", at(1)),      // past: less than half of 4 days left
+            ("two-days-left", at(2)),   // not past: exactly half is left
+            ("three-days-left", at(3)), // in the window, not past its middle
+            ("window-edge", at(4)),
             ("ten-days-left", at(10)),
           )
           for
@@ -123,15 +122,15 @@ trait CertificateExpiryRepositorySpec extends DatabaseSpecBase[CertificateExpiry
                 now.minusSeconds(day),
               )),
             )
-            expiry <- env.issuances.expiry(now, 4.days)
-            wider <- env.issuances.expiry(now, 20.days)
-            due <- env.issuances.expiringBefore(now.plus(4.days))
+            count <- env.issuances.pastRenewalMidpoint(now, 4.days)
+            wider <- env.issuances.pastRenewalMidpoint(now, 20.days)
+            due <- env.issuances.expiringBefore(now.plus(2.days))
           yield assertTrue(
-            expiry == Expiry(tracked = 6, earliestNotAfter = Some(at(-1)), inRenewalWindow = 4, pastRenewalMidpoint = 2),
+            count == 2L,
             // the window is the argument and not a constant of the store
-            wider == Expiry(tracked = 6, earliestNotAfter = Some(at(-1)), inRenewalWindow = 6, pastRenewalMidpoint = 5),
-            // and it is the set a renewal pass renews
-            due.size == expiry.inRenewalWindow,
+            wider == 5L,
+            // and the middle of the window is the half of what a renewal pass renews
+            due.size == count,
           )
         },
         test("a client that is deleted leaves nothing to count") {
@@ -140,14 +139,14 @@ trait CertificateExpiryRepositorySpec extends DatabaseSpecBase[CertificateExpiry
             _ <- env.clients.createClient(client("gone"))
             _ <- env.issuances.upsert(ClientCertificateIssuance(ClientId("gone"), "01", at(1), now))
             _ <- env.clients.deleteClient(ClientId("gone"))
-            expiry <- env.issuances.expiry(now, 4.days)
-          yield assertTrue(expiry == Expiry.Empty)
+            count <- env.issuances.pastRenewalMidpoint(now, 4.days)
+          yield assertTrue(count == 0L)
         },
       ),
       suite("identities of edges")(
-        test("an empty table is no certificates and no end") {
-          for expiry <- env.edgeCertificates.expiry(now, third)
-          yield assertTrue(expiry == Expiry.Empty)
+        test("an empty table has none past the middle") {
+          for count <- env.edgeCertificates.pastRenewalMidpoint(now, third)
+          yield assertTrue(count == 0L)
         },
         test("the window of each is a third of its own life, and only the certificate issued last of an edge counts") {
           def issue(edge: String, serial: String, lifetimeDays: Int, remainingDays: Double) =
@@ -155,8 +154,8 @@ trait CertificateExpiryRepositorySpec extends DatabaseSpecBase[CertificateExpiry
           for
             _ <-
               ZIO.foreachDiscard(List("expired", "late", "nearly", "fresh", "renewed", "short"))(id => env.fixtures.edge(id, EdgeGroupId("default")))
-            _ <- issue("expired", "01", 30, -1) // in both
-            _ <- issue("late", "02", 30, 4)     // 4 < 10 and 4 < 5: in both
+            _ <- issue("expired", "01", 30, -1) // past the middle
+            _ <- issue("late", "02", 30, 4)     // 4 < 10 and 4 < 5: past the middle
             _ <- issue("nearly", "03", 30, 8)   // in the window, not past its middle
             _ <- issue("fresh", "04", 30, 20)
             // an edge that renewed: the certificate it was given before it is of no interest, the one given last is
@@ -164,8 +163,8 @@ trait CertificateExpiryRepositorySpec extends DatabaseSpecBase[CertificateExpiry
             _ <- issue("renewed", "06", 30, 25)
             // a certificate of 14 days (a partner's): six days left is more than a third of it, though less than a third of 30 days
             _ <- issue("short", "07", 14, 6)
-            expiry <- env.edgeCertificates.expiry(now, third)
-          yield assertTrue(expiry == Expiry(tracked = 6, earliestNotAfter = Some(at(-1)), inRenewalWindow = 3, pastRenewalMidpoint = 2))
+            count <- env.edgeCertificates.pastRenewalMidpoint(now, third)
+          yield assertTrue(count == 2L)
         },
         test("the edges of a suspended partner are left out, those of an active or an onboarding one are not") {
           val suspended = EdgeGroupId("partner-suspended")
@@ -181,17 +180,17 @@ trait CertificateExpiryRepositorySpec extends DatabaseSpecBase[CertificateExpiry
             _ <- env.partners.setStatus(PartnerId("suspended"), PartnerStatus.Suspended)
             _ <- ZIO.foreachDiscard(List("edge-suspended" -> suspended, "edge-active" -> active, "edge-onboarding" -> onboarding)): (edge, group) =>
               env.fixtures.edge(edge, group) *> issue(edge)
-            expiry <- env.edgeCertificates.expiry(now, third)
+            suspended <- env.edgeCertificates.pastRenewalMidpoint(now, third)
             // resumed, the edge is counted again
             _ <- env.partners.setStatus(PartnerId("suspended"), PartnerStatus.Active)
-            resumed <- env.edgeCertificates.expiry(now, third)
-          yield assertTrue(expiry.tracked == 2, expiry.inRenewalWindow == 2, resumed.tracked == 3)
+            resumed <- env.edgeCertificates.pastRenewalMidpoint(now, third)
+          yield assertTrue(suspended == 2L, resumed == 3L)
         },
       ),
       suite("certificates clients obtained through EST")(
-        test("an empty table is no certificates and no end") {
-          for expiry <- env.est.expiry(now, third)
-          yield assertTrue(expiry == Expiry.Empty)
+        test("an empty table has none past the middle") {
+          for count <- env.est.pastRenewalMidpoint(now, third)
+          yield assertTrue(count == 0L)
         },
         test("the window of each is the share of its own life, and the certificate of the current generation that ends last is the one") {
           def enrol(id: String, lifetimeDays: Int, remainingDays: Double) =
@@ -202,8 +201,8 @@ trait CertificateExpiryRepositorySpec extends DatabaseSpecBase[CertificateExpiry
               )
           for
             _ <- env.fixtures.tenant
-            _ <- enrol("expired", 14, -1) // in both
-            _ <- enrol("late", 14, 2)     // 2 < 4.67 and 2 < 2.33: in both
+            _ <- enrol("expired", 14, -1) // past the middle
+            _ <- enrol("late", 14, 2)     // 2 < 4.67 and 2 < 2.33: past the middle
             _ <- enrol("nearly", 14, 4)   // in the window, not past its middle
             _ <- enrol("fresh", 14, 12)
             // renewed: the certificate before is superseded and is no longer the one that counts
@@ -219,12 +218,12 @@ trait CertificateExpiryRepositorySpec extends DatabaseSpecBase[CertificateExpiry
             // the right to renew was revoked: a certificate of an earlier generation is not what the client renews with
             _ <- enrol("revoked", 14, -1)
             _ <- env.est.revoke(ClientId("revoked"))
-            expiry <- env.est.expiry(now, third)
-            narrower <- env.est.expiry(now, 0.1)
+            count <- env.est.pastRenewalMidpoint(now, third)
+            narrower <- env.est.pastRenewalMidpoint(now, 0.1)
           yield assertTrue(
-            expiry == Expiry(tracked = 5, earliestNotAfter = Some(at(-1)), inRenewalWindow = 3, pastRenewalMidpoint = 2),
-            // the share is the argument: a tenth of 14 days is 1.4, which only the expired one is inside
-            narrower == Expiry(tracked = 5, earliestNotAfter = Some(at(-1)), inRenewalWindow = 1, pastRenewalMidpoint = 1),
+            count == 2L,
+            // the share is the argument: half of a tenth of 14 days is 0.7, which only the expired one is inside
+            narrower == 1L,
           )
         },
       ),

@@ -3,18 +3,16 @@ package versola.central.configuration.clients.certificates
 import versola.central.CentralConfig
 import versola.central.configuration.clients.est.ClientEstRepository
 import versola.central.configuration.edges.EdgeCertificateRepository
-import versola.util.CertificateMetrics.{Expiry, Kind}
+import versola.util.CertificateMetrics.Kind
 import versola.util.{CertificateMetrics, EdgeIdentityNames}
 import zio.*
 
-import java.time.Instant
-
-/** Publishes how long the certificates central holds have left (#1001), once for each kind, from the stores that record them: the
-  * certificates central issued to clients, the identities of the edges, and the certificates clients obtained through EST.
+/** Publishes how many of the certificates central holds are past the middle of their renewal window and not renewed (#1001), once for each
+  * kind, from the stores that record them: the certificates central issued to clients, the identities of the edges, and the certificates
+  * clients obtained through EST. A renewal that works does not leave one there for long, so a count above zero is the sign that it does not.
   *
-  * Each kind is read with one aggregate query and set as four gauges (see [[CertificateMetrics.Expiry]]), so what is exported does not grow
-  * with the number of clients. A kind that cannot be read keeps the values it had and is logged; the other kinds are still published.
-  * Every replica of central publishes the same numbers, which a rule takes the largest of.
+  * Each kind is read with one aggregate query and set as one gauge, so what is exported does not grow with the number of clients. A kind
+  * that cannot be read keeps the value it had and is logged; the other kinds are still published. Every replica of central publishes the same numbers, which a rule takes the largest of.
   */
 trait CertificateExpiryReporter:
   /** Reads the three stores and sets the gauges, now. */
@@ -44,14 +42,14 @@ object CertificateExpiryReporter:
 
     override def report: UIO[Unit] =
       Clock.instant.flatMap: now =>
-        publish(Kind.Client, issuances.expiry(now, renewBefore)) *>
-          publish(Kind.Edge, edges.expiry(now, edgeShare)) *>
-          publish(Kind.Est, est.expiry(now, estShare))
+        publish(Kind.Client, issuances.pastRenewalMidpoint(now, renewBefore)) *>
+          publish(Kind.Edge, edges.pastRenewalMidpoint(now, edgeShare)) *>
+          publish(Kind.Est, est.pastRenewalMidpoint(now, estShare))
 
-    private def publish(kind: Kind, read: Task[Expiry]): UIO[Unit] =
-      read.flatMap(CertificateMetrics.expiry(kind, _))
+    private def publish(kind: Kind, read: Task[Long]): UIO[Unit] =
+      read.flatMap(CertificateMetrics.pastRenewalMidpoint(kind, _))
         .catchAll(error =>
-          ZIO.logWarning(s"the expiry of the ${kind.label} certificates could not be read, their gauges keep the last values: $error"),
+          ZIO.logWarning(s"the expiry of the ${kind.label} certificates could not be read, its gauge keeps the last value: $error"),
         )
 
   /** Publishes for as long as the application runs, and once at once so that a restart does not leave the gauges at nothing for a minute. */

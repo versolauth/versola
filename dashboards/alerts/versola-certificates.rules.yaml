@@ -1,4 +1,5 @@
-# Alert rules for the certificates Versola holds and renews (#1001). Prometheus rule-group format: loaded as it is by Prometheus
+# Alert rules for the certificates Versola holds and renews (#1001): an automatic renewal that breaks, an EST client that falls behind, and a
+# listener certificate that runs out. Prometheus rule-group format: loaded as it is by Prometheus
 # (`rule_files`) and by VictoriaMetrics' vmalert (`-rule`). See dashboards/alerts/README.md.
 #
 # The thresholds are not days: they are parts of the renewal window of each certificate, which the services work out from the
@@ -20,15 +21,6 @@ groups:
         annotations:
           summary: "{{ $value }} {{ $labels.kind }} certificate(s) past the middle of their renewal window and not renewed in {{ $labels.namespace }}"
           description: "Certificates of kind {{ $labels.kind }} are past the middle of the window in which they should have been renewed, and have not been: half of the time they had to be renewed in is gone. kind=client: central renews them itself on a pass (see CertificateRenewalsFailing and the log of central); kind=edge: the edge asks central for a new identity at a third of its life left, so it cannot reach central, or central refuses it; kind=est: the client has not renewed (it may be down, or refused: see its cert.renewed events). The edge of a suspended partner is not counted. Find the certificates by their cert.renewed events in the audit log and in the console."
-
-      - alert: CertificateExpired
-        expr: min by (namespace, kind) (certificate_earliest_not_after_timestamp_seconds > 0) < time()
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "A {{ $labels.kind }} certificate has expired without being renewed in {{ $labels.namespace }}"
-          description: "The earliest end among the {{ $labels.kind }} certificates central holds is in the past: what presents that certificate is refused. An edge that is retired, or a client that is no more, keeps its record until it is deleted (an EST client: until it is enrolled again), and is counted until then. A zero value of the metric is a kind with no certificate and does not fire."
 
       - alert: CertificateRenewalsFailing
         expr: sum by (namespace, kind) (increase(certificate_renewals_total{outcome="failure"}[3h]) or increase(certificate_renewals_total{kind="client",outcome="denied"}[3h])) > 1
