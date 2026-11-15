@@ -75,14 +75,16 @@ object TopologyApiSpec extends CentralApiSpec:
         yield assertTrue(listed.exists(c => c.str("id").contains(ids.cell) && c.str("state").contains("open")))
           .label("the cell is listed as it was registered") &&
           assertTrue(again.status == Status.Conflict).label("a second cell of the same id is refused") &&
-          assertTrue(updated.status == Status.NoContent, afterUpdate.exists(c => c.str("id").contains(ids.cell) && c.str("state").contains("draining")))
+          assertTrue(
+            updated.status == Status.NoContent,
+            afterUpdate.exists(c => c.str("id").contains(ids.cell) && c.str("state").contains("draining")),
+          )
             .label("an update changes the state") &&
           assertTrue(regionInUse.status == Status.Conflict).label("a region with a cell in it is not deleted") &&
           assertTrue(deletedWhileDraining.status == Status.Conflict).label("a draining cell still holds users") &&
           assertTrue(closed.status == Status.NoContent, deleted.status == Status.NoContent).label("a closed cell is deleted") &&
           assertTrue(regionDeleted.status == Status.NoContent).label("and then its region") &&
-          assertTrue(!afterDelete.exists(_.str("id").contains(ids.cell)))
-        ).ensuring(cleanup(central, ids))
+          assertTrue(!afterDelete.exists(_.str("id").contains(ids.cell)))).ensuring(cleanup(central, ids))
       yield result
     },
     test("a cell is refused in a region that does not exist, with a negative weight, and with a mutual-TLS address without TLS") {
@@ -101,8 +103,7 @@ object TopologyApiSpec extends CentralApiSpec:
           assertTrue(negative.status == Status.BadRequest).label("a negative weight") &&
           assertTrue(plainMtls.status == Status.BadRequest).label("a mutual-TLS listener is https") &&
           assertTrue(noPartition.status == Status.BadRequest).label("a region needs its partition") &&
-          assertTrue(!listed.exists(_.str("id").contains(ids.cell))).label("nothing refused is stored")
-        ).ensuring(cleanup(central, ids))
+          assertTrue(!listed.exists(_.str("id").contains(ids.cell))).label("nothing refused is stored")).ensuring(cleanup(central, ids))
       yield result
     },
     test("an edge of the operator is put in a region and syncs the cells with its own region; a partner's edge is refused them") {
@@ -126,15 +127,17 @@ object TopologyApiSpec extends CentralApiSpec:
           refused <- onSurface(central, partner).get("/edge/sync/cells")
           onMainListener <- central.withBearer(own.token).get("/configuration/cells/sync")
           _ <- central.put("/configuration/edges/region", Json.Obj(), "edgeId" -> own.edgeId)
-        yield assertTrue(placed.status == Status.NoContent, edges.exists(e => e.str("id").contains(own.edgeId) && e.str("regionId").contains(ids.region)))
+        yield assertTrue(
+          placed.status == Status.NoContent,
+          edges.exists(e => e.str("id").contains(own.edgeId) && e.str("regionId").contains(ids.region)),
+        )
           .label("the edge is listed with its region") &&
           assertTrue(partnerPlaced.status == Status.BadRequest).label("a partner's edge is in no region") &&
           assertTrue(synced.status == Status.Ok, document.str("region").contains(ids.region)).label("the edge is told its own region") &&
           assertTrue(syncedCells.exists(c => c.str("id").contains(ids.cell) && c.str("partitionId").contains(ids.partition)))
             .label("and every cell with the partition of its region") &&
           assertTrue(refused.status == Status.Unauthorized).label("a partner's edge keeps one address and is not told the cells") &&
-          assertTrue(onMainListener.status == Status.Forbidden).label("the list auth syncs is not an edge's to read")
-        ).ensuring(cleanup(central, ids))
+          assertTrue(onMainListener.status == Status.Forbidden).label("the list auth syncs is not an edge's to read")).ensuring(cleanup(central, ids))
       yield result
     },
   )

@@ -128,8 +128,9 @@ object TopologyService:
         _ <- ZIO.foreachDiscard(problems(record))(reason => ZIO.fail(TopologyError.Invalid(reason)))
         cells <- repository.getCells
         current <- ZIO.fromOption(cells.find(_.id == record.id)).orElseFail(TopologyError.Missing(s"cell '${record.id}' does not exist"))
-        _ <- ZIO.fail(TopologyError.Invalid(s"cell '${record.id}' is in region '${current.regionId}' and stays there: a cell is where its database is"))
-          .when(current.regionId != record.regionId)
+        _ <-
+          ZIO.fail(TopologyError.Invalid(s"cell '${record.id}' is in region '${current.regionId}' and stays there: a cell is where its database is"))
+            .when(current.regionId != record.regionId)
         updated <- repository.updateCell(record)
         _ <- ZIO.fail(TopologyError.Missing(s"cell '${record.id}' does not exist")).unless(updated)
       yield ()
