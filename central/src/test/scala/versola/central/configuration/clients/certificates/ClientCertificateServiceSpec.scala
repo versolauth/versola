@@ -809,7 +809,6 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
           CertReasons.TokenInvalid,
           CertReasons.EdgeUnknown,
           CertReasons.RequestMismatch,
-          CertReasons.ChainLimit,
           CertReasons.NotEnrolled,
           CertReasons.NotServed,
           CertReasons.NoMtlsAuth,
