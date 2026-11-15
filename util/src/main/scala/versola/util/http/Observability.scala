@@ -249,7 +249,12 @@ object Observability:
       case i => s"${value.substring(0, i)} ***"
 
   def handleErrors[Env](routes: Routes[Env, Throwable]): Routes[Env, Nothing] =
-    routes.handleErrorZIO {
+    routes.handleErrorZIO(errorResponse)
+
+  /** What a failure of a route is answered with, and recorded as: the mapping [[handleErrors]] applies. For a handler that has to
+    * answer a failure itself because the response carries something of its own (edge's proxy and a rotated session cookie). */
+  def errorResponse(error: Throwable): UIO[Response] =
+    error match
       case Unauthorized => ZIO.succeed(Response.unauthorized)
       case Forbidden => ZIO.succeed(Response.forbidden)
       case ex: BadRequest => ZIO.succeed(Response.text(ex.message).status(Status.BadRequest))
@@ -258,12 +263,11 @@ object Observability:
       case ex: OutboundOverloaded =>
         ZIO.succeed(Response.status(Status.ServiceUnavailable).addHeader(Header.Custom("Retry-After", "1")))
       case ex: OutboundTimedOut => ZIO.succeed(Response.status(Status.GatewayTimeout))
-      // The audit log is the gate: an event it could not take in time is a request that does not happen (`audit.overflow = block`).
+      // The audit log is the gate: an event it could not take in time is a request that does not happen (a writer that blocks on a full queue, see `AuditEvents.Overflow`).
       case AuditUnavailableException =>
         setError("audit_unavailable") *>
           ZIO.succeed(Response.status(Status.ServiceUnavailable).addHeader(Header.Custom("Retry-After", "1")))
       case ex: Throwable => Observability.cause.set(Some(Cause.fail(ex))).as(Response.internalServerError)
-    }
 
   private def toLog(request: Request, masking: HttpObservabilityConfig.Server): UIO[HttpRequestLog] = {
     val query = request.url.queryParams.map

@@ -7,7 +7,8 @@ import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.{CheckPassword, PasswordChangeEffect, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ClientId
-import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
+import versola.oauth.client.model.TenantId
+import versola.oauth.conversation.limit.{Acquisition, ChallengeThrottleRecord, ChallengeType, LimitStatus, Reservation, SubmissionLimiter}
 import versola.oauth.logout.LogoutService
 import versola.oauth.revocation.{RevocationCause, RevocationTerms}
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionRecord, UserAgentId}
@@ -38,6 +39,47 @@ object AccountSettingsServiceSpec extends UnitSpecBase:
     expiresAt = Instant.EPOCH,
   )
 
+  // What `SubmissionLimiter.acquireAll` hands back for an attempt it has charged: the service gives it back on a right answer.
+  private val charges = List(
+    Reservation.Granted(
+      tenantId = TenantId("default"),
+      subject = userId.toString,
+      challengeType = ChallengeType.PasswordSubmit,
+      after = LimitStatus.Allowed,
+      reservedAt = Instant.EPOCH,
+      previous = None,
+      applied = ChallengeThrottleRecord(
+        tenantId = TenantId("default"),
+        subject = userId.toString,
+        challengeType = ChallengeType.PasswordSubmit,
+        attempts = List(0L),
+        bannedUntil = None,
+        expiresAt = Instant.EPOCH.plusSeconds(900),
+      ),
+    ),
+  )
+
+  /** A limiter that counts like the real one: claiming an attempt is one atomic step, and past `maxAttempts` claims it denies. It
+    * also answers the old read-then-record calls, from the same counter, so a service that still checks first and records
+    * afterwards runs against it (and is let through by the read).
+    */
+  private final class CountingLimiter(maxAttempts: Int, used: Ref[Int], refunded: Ref[Int]) extends SubmissionLimiter:
+    private def unused = ZIO.dieMessage("not used by the account service")
+    override def isBanned(clientId: ClientId, subject: String, challengeType: ChallengeType) =
+      used.get.map(n => if n >= maxAttempts then LimitStatus.Banned else LimitStatus.Allowed)
+    override def recordLimit(clientId: ClientId, subject: String, challengeType: ChallengeType) =
+      used.updateAndGet(_ + 1).map(n => if n >= maxAttempts then LimitStatus.Banned else LimitStatus.Allowed)
+    override def acquireAll(clientId: ClientId, subjects: List[String], challengeType: ChallengeType) =
+      used.modify: n =>
+        if n >= maxAttempts then Acquisition.Denied(LimitStatus.Banned) -> n
+        else Acquisition.Granted(LimitStatus.Allowed, charges) -> (n + 1)
+    override def refund(granted: List[Reservation.Granted]) = used.update(_ - 1) *> refunded.update(_ + 1)
+    override def statusFor(clientId: ClientId, subject: String, challengeTypes: List[ChallengeType]) = unused
+    override def statusForSubjects(clientId: ClientId, subjects: List[String], challengeType: ChallengeType) = unused
+    override def tryAcquire(clientId: ClientId, subject: String, challengeType: ChallengeType) = unused
+    override def recordLimitAll(clientId: ClientId, subjects: List[String], challengeType: ChallengeType) = unused
+    override def reset(clientId: ClientId, subject: String, challengeType: ChallengeType) = unused
+
   private type Stubs = (Stub[PasswordService], Stub[SubmissionLimiter])
   private type Failure = Throwable | ChangePasswordError
 
@@ -61,8 +103,8 @@ object AccountSettingsServiceSpec extends UnitSpecBase:
         stubs = (passwordService, submissionLimiter)
         _ <- logout.announceEnded.succeedsWith(())
         _ <- configuration.accessTokenTtls.succeedsWith(ttls)
-        _ <- submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
-        _ <- submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+        _ <- submissionLimiter.acquireAll.succeedsWith(Acquisition.Granted(LimitStatus.Allowed, charges))
+        _ <- submissionLimiter.refund.succeedsWith(())
         _ <- configuration.getPasswordRegex.succeedsWith(regex)
         _ <- setup(stubs)
         audit = CapturingAuditEvents.shared()
@@ -79,10 +121,13 @@ object AccountSettingsServiceSpec extends UnitSpecBase:
         setup = (passwordService, _) =>
           passwordService.verifyPassword.succeedsWith(CheckPassword.Success) *>
             passwordService.setPassword.succeedsWith(Nil),
-        verify = (passwordService, _) =>
+        verify = (passwordService, submissionLimiter) =>
           assertTrue(
             passwordService.verifyPassword.calls == List((userId, Password("OldPass1"))),
             passwordService.setPassword.calls == List((userId, Password("NewPass1"), PasswordChangeEffect.Untouched)),
+            // claimed on the user's own subject, the one the login form's password step charges, and given back: a right password spends none
+            submissionLimiter.acquireAll.calls == List((clientId, List(userId.toString), ChallengeType.PasswordSubmit)),
+            submissionLimiter.refund.calls == List(charges),
           ),
         // account.password_changed: the user is the subject (and, with no actor given, the actor), and neither password is in it
         verifyAudit = drafts =>
@@ -100,6 +145,7 @@ object AccountSettingsServiceSpec extends UnitSpecBase:
         setup = (passwordService, _) =>
           passwordService.verifyPassword.succeedsWith(CheckPassword.Temporary) *>
             passwordService.setPassword.succeedsWith(Nil),
+        verify = (_, submissionLimiter) => assertTrue(submissionLimiter.refund.calls == List(charges)),
       ),
       suite("a wrong current password")(
         List(
@@ -114,7 +160,9 @@ object AccountSettingsServiceSpec extends UnitSpecBase:
             verify = (passwordService, submissionLimiter) =>
               assertTrue(
                 passwordService.setPassword.calls.isEmpty,
-                submissionLimiter.recordLimit.calls == List((clientId, userId.toString, ChallengeType.PasswordSubmit)),
+                submissionLimiter.acquireAll.calls == List((clientId, List(userId.toString), ChallengeType.PasswordSubmit)),
+                // the claimed attempt stays charged
+                submissionLimiter.refund.calls.isEmpty,
               ),
             // a wrong current password on a change is what a person who has taken over a session would produce: it is on record
             verifyAudit = drafts =>
@@ -128,14 +176,15 @@ object AccountSettingsServiceSpec extends UnitSpecBase:
       ),
       serviceTestCase(
         description = "is refused with the wait while the attempt limit is in force",
-        setup = (_, submissionLimiter) => submissionLimiter.isBanned.succeedsWith(LimitStatus.RateLimited(30)),
+        setup = (_, submissionLimiter) => submissionLimiter.acquireAll.succeedsWith(Acquisition.Denied(LimitStatus.RateLimited(30))),
         expectedError = Some(ChangePasswordError.TooManyAttempts(Some(30))),
-        verify = (passwordService, _) => assertTrue(passwordService.verifyPassword.calls.isEmpty),
+        verify = (passwordService, submissionLimiter) =>
+          assertTrue(passwordService.verifyPassword.calls.isEmpty, submissionLimiter.refund.calls.isEmpty),
         verifyAudit = drafts => assertTrue(drafts.map(d => (d.outcome, d.reason)) == List((AuditOutcome.denied, Some("too_many_attempts")))),
       ),
       serviceTestCase(
         description = "is refused without a wait when the user is banned",
-        setup = (_, submissionLimiter) => submissionLimiter.isBanned.succeedsWith(LimitStatus.Banned),
+        setup = (_, submissionLimiter) => submissionLimiter.acquireAll.succeedsWith(Acquisition.Denied(LimitStatus.Banned)),
         expectedError = Some(ChangePasswordError.TooManyAttempts(None)),
         verify = (passwordService, _) => assertTrue(passwordService.verifyPassword.calls.isEmpty),
       ),
@@ -145,7 +194,7 @@ object AccountSettingsServiceSpec extends UnitSpecBase:
         setup = (passwordService, _) => passwordService.verifyPassword.succeedsWith(CheckPassword.Success),
         expectedError = Some(ChangePasswordError.NewPasswordNotAllowed),
         verify = (passwordService, submissionLimiter) =>
-          assertTrue(passwordService.setPassword.calls.isEmpty, submissionLimiter.recordLimit.calls.isEmpty),
+          assertTrue(passwordService.setPassword.calls.isEmpty, submissionLimiter.refund.calls == List(charges)),
         // a form validation, not an event about the account
         verifyAudit = drafts => assertTrue(drafts.isEmpty),
       ),
@@ -214,13 +263,72 @@ object AccountSettingsServiceSpec extends UnitSpecBase:
         expectedError = Some(ChangePasswordError.PasswordReused),
         verifyAudit = drafts => assertTrue(drafts.isEmpty),
       ),
+      test("cuts parallel guesses of the current password off at the configured number of attempts") {
+        val maxAttempts = 3
+        val requests = 10
+        for
+          used <- Ref.make(0)
+          refunded <- Ref.make(0)
+          verified <- Ref.make(0)
+          passwordService <- ZIO.succeed(stub[PasswordService])
+          configuration <- ZIO.succeed(stub[OAuthConfigurationService])
+          logout <- ZIO.succeed(stub[LogoutService])
+          _ <- configuration.getPasswordRegex.succeedsWith(passwordRegex)
+          // The guess is checked only after the other requests had their turn: what is claimed before the check, and not after
+          // it, is what stops them.
+          _ = passwordService.verifyPassword.returnsWith(
+            ZIO.yieldNow.repeatN(20) *> verified.update(_ + 1).as(CheckPassword.Failure),
+          )
+          service = AccountSettingsService.Impl(
+            passwordService,
+            CountingLimiter(maxAttempts, used, refunded),
+            configuration,
+            CapturingAuditEvents.shared(),
+            logout,
+          )
+          results <- ZIO.foreachPar(List.fill(requests)(()))(_ =>
+            service.changePassword(userId, clientId, "wrong", "NewPass1", OtherSessions.Keep).either,
+          )
+          checked <- verified.get
+        yield assertTrue(
+          checked == maxAttempts,
+          results.count(_ == Left(ChangePasswordError.IncorrectCurrentPassword)) == maxAttempts,
+          results.count(_ == Left(ChangePasswordError.TooManyAttempts(None))) == requests - maxAttempts,
+          passwordService.setPassword.calls.isEmpty,
+        )
+      },
+      test("a right password spends none of the budget, so a wrong guess after it still has all of it") {
+        val maxAttempts = 2
+        for
+          used <- Ref.make(0)
+          refunded <- Ref.make(0)
+          passwordService <- ZIO.succeed(stub[PasswordService])
+          configuration <- ZIO.succeed(stub[OAuthConfigurationService])
+          logout <- ZIO.succeed(stub[LogoutService])
+          _ <- logout.announceEnded.succeedsWith(())
+          _ <- configuration.getPasswordRegex.succeedsWith(passwordRegex)
+          _ <- passwordService.verifyPassword.succeedsWith(CheckPassword.Success)
+          _ <- passwordService.setPassword.succeedsWith(Nil)
+          service = AccountSettingsService.Impl(
+            passwordService,
+            CountingLimiter(maxAttempts, used, refunded),
+            configuration,
+            CapturingAuditEvents.shared(),
+            logout,
+          )
+          _ <- ZIO.foreachDiscard(1 to 5)(_ => service.changePassword(userId, clientId, "OldPass1", "NewPass1", OtherSessions.Keep))
+          spent <- used.get
+          givenBack <- refunded.get
+        yield assertTrue(spent == 0, givenBack == 5)
+      },
       test("passes an infrastructure failure through as it is") {
         val failure = IllegalStateException("db down")
         for
           passwordService <- ZIO.succeed(stub[PasswordService])
           submissionLimiter <- ZIO.succeed(stub[SubmissionLimiter])
           configuration <- ZIO.succeed(stub[OAuthConfigurationService])
-          _ <- submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- submissionLimiter.acquireAll.succeedsWith(Acquisition.Granted(LimitStatus.Allowed, charges))
+          _ <- submissionLimiter.refund.succeedsWith(())
           _ <- configuration.getPasswordRegex.succeedsWith(passwordRegex)
           _ <- passwordService.verifyPassword.succeedsWith(CheckPassword.Success)
           _ <- passwordService.setPassword.failsWith(failure)

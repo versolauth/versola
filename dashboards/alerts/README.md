@@ -88,6 +88,6 @@ alerts are in `versola-audit.rules.yaml`.
 
 | Alert | Fires when | For | Severity |
 | --- | --- | --- | --- |
-| `AuditActorMissing` | `audit_actor_missing_total` grows: a call to the admin API had no actor, or one that is no user and no client | 1h | warning |
+| `AuditActorMissing` | `audit_actor_missing_total` grows: a call to the admin API had no actor, or one that is no user and no client (refused with `401`) (`reason`: `absent`, `invalid`), or an address that is none (`invalid_ip`) | 1h | warning |
 | `AuditReportWithoutAuth` | `audit_report_partial_total` grows: the per-user report was served without auth's part (`reason`: `endpoint_missing`, `unavailable`, `unreadable`) | 1h | warning |
 | `AuditEventWithoutTarget` | `audit_event_without_target_total{kind}` grows: a change succeeded and its row has no target (or no user on a user's route) | 1h | warning |

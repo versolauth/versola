@@ -48,7 +48,9 @@ object AuditQueueFullSpec extends ZIOSpecDefault:
   private def writer(overflow: AuditEvents.Overflow, gate: Promise[Nothing, Unit]): ZIO[Scope, Nothing, AuditEvents] =
     val settings = AuditEvents.Settings(retention = 7.days, overflow = overflow, blockTimeout = 100.millis)
     val composed =
-      ZLayer.succeed[AuditEventRepository](Stuck(gate)) ++ ZLayer.succeed(settings) ++ tracing ++ SecureRandom.live ++ ZLayer.service[Scope]
+      ZLayer.succeed[AuditEventRepository](Stuck(gate)) ++ ZLayer.succeed(settings) ++ ZLayer.succeed[AuditTenants](
+        AuditTenants.none,
+      ) ++ tracing ++ SecureRandom.live ++ ZLayer.service[Scope]
     (composed >>> AuditEvents.liveWith(sizing)(CentralAudit.Source, "test", CentralAudit.catalog, CentralAudit.Table)).build.map(_.get[AuditEvents])
 
   private val admin = "00000000-0000-0000-0000-0000000000f1"
@@ -68,9 +70,9 @@ object AuditQueueFullSpec extends ZIOSpecDefault:
       ran <- Ref.make(0)
       client <- ZIO.service[Client]
       routes = Routes(createClient -> handler((_: Request) => ran.update(_ + 1).as(Response.text("ok"))))
-      _ <- TestClient.addRoutes((routes @@ TestAuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, CentralConfig](
+      _ <- TestClient.addRoutes((routes @@ TestAuditHook.middleware).provideEnvironment(ZEnvironment[AuditEvents, AuditTenants](
         events,
-        TestCentralConfig.config,
+        AuditTenants.none,
       )))
       statuses <- ZIO.foreach(1 to 10)(n => client.batched(changeRequest(s"c$n")).orDie.map(_.status))
       handled <- ran.get
@@ -97,7 +99,16 @@ object AuditQueueFullSpec extends ZIOSpecDefault:
         for
           dropping <- fullQueue(AuditEvents.Overflow.drop)
           _ <- ZIO.foreachDiscard(1 to 5)(_ =>
-            CentralAudit.certificate(dropping, CentralAudit.CertRenewed, CentralAudit.Actors.Edge, Some("edge-1"), ("edge", "edge-1")),
+            CentralAudit.certificate(
+              dropping,
+              CentralAudit.CertRenewed,
+              CentralAudit.Actors.Edge,
+              Some("edge-1"),
+              ("edge", "edge-1"),
+              AuditOutcome.success,
+              None,
+              CertAuditDetails(operation = CertOperation.Renew, clientId = None, serial = None, notAfter = None, subject = None),
+            ),
           )
           blocking <- fullQueue(AuditEvents.Overflow.block)
           _ <- ZIO.foreachDiscard(1 to 5)(_ =>

@@ -166,7 +166,7 @@ object ResourceController extends AuditedController:
       yield Response.json(response.toJson)
     }
 
-  private def toResourceResponse(record: ResourceRecord): ResourceResponse =
+  private[central] def toResourceResponse(record: ResourceRecord): ResourceResponse =
     ResourceResponse(
       resourceId = record.resourceId,
       resource = record.resource,
@@ -188,6 +188,7 @@ object ResourceController extends AuditedController:
       internal = record.isInternal,
       secretRotation = record.previousSecret.nonEmpty,
       audienceRateLimits = record.audienceRateLimits,
+      partnerId = record.partnerId,
     )
 
   private def toResourceRegistryEntry(record: ResourceRecord): ResourceRegistryEntry =

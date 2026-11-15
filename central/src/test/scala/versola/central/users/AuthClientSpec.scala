@@ -8,11 +8,13 @@ import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.JWT
 import versola.util.audit.AuditContext
+import versola.util.http.Observability
 import versola.util.{PageLimit, PageOffset, Patch}
 import zio.*
 import zio.http.*
 import zio.json.*
 import zio.json.ast.Json
+import zio.logging.logContext
 import zio.test.*
 import zio.test.Assertion.*
 
@@ -518,6 +520,29 @@ object AuthClientSpec extends ZIOSpecDefault:
         bodies(1).contains(s""""actorId":"$admin""""),
         !bodies(4).contains("actorId"),
         AuthClient.ActorParam == "actorId",
+      )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("the address of the administrator's call is passed to auth as actorIp on every call made for it, whatever its method, and on none else") {
+      for
+        seen <- Ref.make(List.empty[Request])
+        _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](r => seen.update(r :: _).as(Response.status(Status.NoContent))).toRoutes)
+        client <- ZIO.service[AuthClient]
+        // the request of an administrator, whose address the audit hook noted in its log context
+        _ <- logContext.locallyWith(identity):
+          Observability.setIp("203.0.113.7") *> client.invalidateSession(userId) *> client.setPassword(userId, "a password") *>
+            client.deleteAntifraudListEntry(
+              DeleteListEntryRequest(id = UUID.randomUUID(), userId = userId, callerTenantId = None),
+              AntifraudCaller.Operator,
+            )
+        // a request of central's own, which no administrator made, has no address to pass on
+        _ <- client.invalidateSession(userId)
+        requests <- seen.get.map(_.reverse)
+        bodies <- ZIO.foreach(requests)(_.body.asString)
+      yield assertTrue(
+        requests.map(_.url.queryParams.map.get(AuthClient.ActorIpParam).flatMap(_.headOption)) ==
+          List(Some("203.0.113.7"), Some("203.0.113.7"), Some("203.0.113.7"), None),
+        bodies.forall(!_.contains("actorIp")),
+        AuthClient.ActorIpParam == "actorIp",
       )
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("a call made for an administrator to the antifraud endpoints carries no actor: the administrator is their userId") {

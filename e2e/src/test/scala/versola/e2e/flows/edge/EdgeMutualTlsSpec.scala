@@ -98,6 +98,7 @@ object EdgeMutualTlsSpec
     nativeApp = false,
     issuedCertificate = false,
     enrolledCertificate = false,
+    groupCertificate = None,
   )
 
   override val bootstrap: ZLayer[Any, Any, OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub] =

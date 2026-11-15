@@ -3,7 +3,7 @@ package versola.user
 import versola.audit.{AuditSupport, AuthActors}
 import versola.user.model.UserId
 import versola.util.audit.AuditContext
-import versola.util.http.Unauthorized
+import versola.util.http.{IpAddress, Observability, Unauthorized}
 import versola.util.{CoreConfig, JWT}
 import zio.http.{Header, Request}
 import zio.json.JsonCodec
@@ -15,8 +15,11 @@ import zio.{UIO, ZIO}
 def actedBy(actorId: Option[UserId]): UIO[Unit] =
   ZIO.foreachDiscard(actorId)(id => AuditContext.setActor(AuthActors.admin, Some(id.toString)))
 
+/** The optional query parameter of a call from central that carries the address the administrator's call to central came from. */
+val AdminIpParam = "actorIp"
+
 /** Verifies the service token of a call from central. Also tells the audit log who acts: the `central` service itself, until the
-  * call names an administrator ([[actedBy]]). */
+  * call names an administrator ([[actedBy]]), and from where ([[AdminIpParam]]). */
 def authorizeInternal(request: Request): ZIO[CoreConfig, Unauthorized.type, Unit] =
   request.header(Header.Authorization) match
     case Some(Header.Authorization.Bearer(token)) =>
@@ -26,6 +29,9 @@ def authorizeInternal(request: Request): ZIO[CoreConfig, Unauthorized.type, Unit
           .tapError(err => ZIO.logError(s"Internal auth failed: $err"))
           .orElseFail(Unauthorized)
         _ <- AuditContext.setActor(AuthActors.service, Some("central"))
+        // The address of the administrator's call, when central passed one on; a value that is no address is not recorded. Only a
+        // caller that proved to be central gets this far, so it is central's word and not the caller's.
+        _ <- ZIO.foreachDiscard(request.url.queryParams.map.get(AdminIpParam).flatMap(_.headOption).flatMap(IpAddress.literal))(Observability.setIp)
         _ <- AuditSupport.noteUserAgent(request)
       yield ()
 

@@ -345,13 +345,16 @@ services:
       DOCKER_STEPCA_INIT_ADDRESS: "0.0.0.0:9000"
     volumes:
       - versola-step-ca-local:/home/step
-    # After the image's own init (which has written ca.json), add the JWK provisioner central
-    # signs client certificates through -- once, with a key only central is given (see
-    # `mtls-init`), valid for at most 14 days a certificate -- then run the CA as the image would.
+      - ./step-ca-init.sh:/usr/local/bin/step-ca-init.sh:ro
+    # Create the CA on a fresh volume (step-ca-init.sh, from the DOCKER_STEPCA_INIT_* variables
+    # above; it replaces the image's own entrypoint, which prints a password to the log -- see the
+    # script's header), add the JWK provisioner central signs client certificates through -- once,
+    # with a key only central is given (see `mtls-init`), valid for at most 14 days a certificate
+    # -- and drop the unused `versola` provisioner, then run the CA as the image would.
+    entrypoint: ["/bin/sh", "-ec"]
     command:
-      - /bin/sh
-      - -ec
       - |
+        sh /usr/local/bin/step-ca-init.sh
         # Keep the request's subject (the default template would rewrite it to the bare CN) and
         # restrict the certificate to client authentication. The subject is only as trustworthy
         # as the one party that can ask -- central, with its own provisioner key.
@@ -369,6 +372,12 @@ services:
             /home/step/secrets/central-provisioner.json --kty EC --crv P-256 --use sig --no-password --insecure
           step ca provisioner add central --type JWK --public-key=/home/step/certs/central-provisioner.pub.json \
             --ca-config=/home/step/config/ca.json --x509-template=/home/step/templates/client.tpl --x509-max-dur=336h --x509-default-dur=336h
+        fi
+        # Drop the `versola` provisioner `step ca init` creates: nothing signs through it, and CAs
+        # the image's own entrypoint made printed its password to the log (#890), which would
+        # otherwise keep opening it. Only when present: `remove` fails on a missing one.
+        if grep -qF '"name": "versola"' /home/step/config/ca.json; then
+          step ca provisioner remove versola --ca-config=/home/step/config/ca.json
         fi
         exec /usr/local/bin/step-ca --password-file /home/step/secrets/password /home/step/config/ca.json
     healthcheck:

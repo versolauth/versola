@@ -61,6 +61,3 @@ object CapturingAuditEvents:
 
   /** The settings the generated config has. */
   val settings: AuditEvents.Settings = AuditEvents.Settings(retention = 7.days, overflow = AuditEvents.Overflow.block, blockTimeout = 2.seconds)
-
-  /** Every kind a deployment may leave out, enabled, as the generated config has them. */
-  val tiers: AuthAudit.Tiers = AuthAudit.Tiers.all

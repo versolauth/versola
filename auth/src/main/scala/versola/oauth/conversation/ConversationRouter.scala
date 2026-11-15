@@ -123,7 +123,9 @@ object ConversationRouter:
         ipAddress: Option[String],
     ): Task[ConversationResult.Render] =
       (submission, conversation) match
-        case (_: EmailSubmission | _: PhoneSubmission, _) if conversation.userId.isDefined =>
+        // An identity is given on the credential card, and only to a conversation that has none yet: one that already knows the
+        // user (a step-up, a re-authentication) or is past the card (a code, a password, a registration step) is not asked.
+        case (_: EmailSubmission | _: PhoneSubmission, _) if conversation.userId.isDefined || !asksForCredential(conversation) =>
           conversationService.accessDenied(authId, conversation).zipLeft(AuthMetrics.stepFailed("credential"))
 
         case (_: EmailSubmission, _) if !conversation.authFlow.primary.credentials.contains(PrimaryCredential.email) =>
@@ -161,12 +163,13 @@ object ConversationRouter:
               case other: ConversationResult.Render =>
                 ZIO.succeed(other)
 
-        // A login and password say who the user is; a conversation that already knows (a step-up, a re-authentication of a known
-        // session) is not asked, and one that took them would swap the user in while keeping the factors the first one passed
-        // (`amr`), crediting the second user with them. Like any submission that does not belong to the step: refused, and the
-        // conversation stays where it is.
-        case (_: LoginPasswordSubmission, _) if conversation.userId.isDefined =>
+        // A login and password say who the user is, so they are accepted only where an identity is given (see `asksForCredential`).
+        // A conversation that already carries an identity, or state of one, must not take another in and keep what the first one
+        // passed: the factors recorded for the first user would be credited to the second. Like any submission that does not belong to
+        // the step: refused, the conversation stays where it is.
+        case (_: LoginPasswordSubmission, _) if conversation.userId.isDefined || !asksForCredential(conversation) =>
           (Observability.setError("step_mismatch") *>
+            auditLoginPasswordRefused(authId, conversation) *>
             AuthMetrics.stepFailed(stepName(conversation.step)))
             .as(ConversationResult.BadRequest)
 
@@ -261,6 +264,36 @@ object ConversationRouter:
             AuthMetrics.stepFailed(stepName(conversation.step)))
             .as(ConversationResult.BadRequest)
 
+    /** `login.step` for a login and password that the conversation does not take. The credential is not looked at, so no subject is
+      * named beyond the user the conversation already has.
+      */
+    private def auditLoginPasswordRefused(authId: AuthId, conversation: ConversationRecord): Task[Unit] =
+      audit.log(
+        AuditDraft(
+          kind = AuthAuditKinds.LoginStep,
+          outcome = AuditOutcome.denied,
+          reason = Some("step_mismatch"),
+          actor = None,
+          userId = conversation.userId,
+          target = None,
+          details = AuthAuditDetails.LoginStep(
+            step = "password",
+            conversationId = authId.toString,
+            kind = AuthMetrics.conversationKind(conversation),
+            subjectHash = None,
+            afDecision = None,
+          ),
+        ),
+      )
+
+    /** Whether the conversation is on the credential card and that card takes an identity: not the passkey-only card of a step-up,
+      * which only confirms the user the conversation already has.
+      */
+    private def asksForCredential(conversation: ConversationRecord): Boolean =
+      conversation.step match
+        case card: ConversationStep.Credential => !card.passkeyOnly
+        case _ => false
+
     /** Promote the locale the user picked in the form to the front of the conversation's preferred
       * locales, so every subsequent render keeps it. Applied in-memory before dispatch — it is
       * persisted by the same overwrite the submission already performs.
@@ -349,7 +382,7 @@ object ConversationRouter:
     ): Task[ConversationResult.Render] =
       userRepository.findByCredential(credential).flatMap:
         case Some(user) =>
-          val identified = conversation.copy(
+          val identified = conversation.withoutIdentityState.copy(
             userId = Some(user.id),
             credential = Some(credential),
             userEmail = user.email,
@@ -370,7 +403,7 @@ object ConversationRouter:
                 case ConversationResult.WriteConflict =>
                   ZIO.succeed(ConversationResult.WriteConflict)
             case None =>
-              afterAuthenticationCredential(authId, conversation, credential, proof)
+              afterAuthenticationCredential(authId, conversation.withoutIdentityState, credential, proof)
 
     private def afterAuthenticationCredential(
         authId: AuthId,

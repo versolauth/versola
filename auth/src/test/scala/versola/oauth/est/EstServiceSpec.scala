@@ -1,11 +1,13 @@
 package versola.oauth.est
 
 import org.scalamock.stubs.ZIOStubs
-import versola.audit.{AuthActors, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.audit.{AuthActors, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
 import versola.util.audit.AuditOutcome
 import versola.util.{CoreConfig, TestCertificates}
 import zio.*
+import zio.json.*
+import zio.json.ast.Json
 import zio.test.*
 
 import java.time.Instant
@@ -249,6 +251,67 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           !drafts.exists(_.details.toJson.toString.contains("wrong subject")),
         )
       },
+      test("a refused enrolment says which client and, when the request could be read, the subject it asked for, and nothing else") {
+        val central = stub[EstCentralClient]
+        val (recording, est) = audited(central)
+        for
+          _ <- central.enroll.failsWith(EstError.Forbidden("chain limit"))
+          _ <- est.enroll(credentials, csrBody).flip
+          _ <- est.enroll(credentials, "not a request").flip
+          drafts <- recording.recorded
+          members = drafts.map(_.details.toJson)
+        yield assertTrue(
+          members.head.get("operation") == Some(Json.Str("enroll")),
+          members.head.get("clientId") == Some(Json.Str("bank-a")),
+          members.head.get("subject") == Some(Json.Str("CN=bank-a")),
+          // nothing was issued: no serial and no validity are made up
+          members.forall(m => m.get("serial").isEmpty && m.get("notAfter").isEmpty),
+          // a request that cannot be read names no subject
+          members.last.get("subject").isEmpty,
+          members.forall(_.fields.map(_._1).toSet.subsetOf(Set("operation", "clientId", "serial", "notAfter", "subject"))),
+          // the request itself is not in the event
+          !members.exists(member => csrBody.sliding(40).exists(member.toJson.contains)),
+          !members.exists(_.toJson.contains("BEGIN")),
+        )
+      },
+      test("a refused re-enrolment is recorded as cert.renewed for the client the presented certificate names, with the subject requested") {
+        val central = stub[EstCentralClient]
+        val (recording, est) = audited(central)
+        val presented = TestCertificates.generate(subject = "CN=bank-a,OU=tenant-a,O=Versola")
+        for
+          _ <- realTime
+          _ <- central.renew.failsWith(EstError.Unauthorized)
+          _ <- est.reenroll(presented.certificate, csrBody).flip
+          drafts <- recording.recorded
+        yield assertTrue(
+          drafts.map(d => (d.kind, d.outcome, d.reason)) == List((AuthAuditKinds.CertRenewed, AuditOutcome.denied, Some("est_unauthorized"))),
+          // the same name central records the success under, so one filter finds both
+          drafts.head.details.toJson.get("operation") == Some(Json.Str("renew")),
+          drafts.head.details.toJson.get("clientId") == Some(Json.Str("bank-a")),
+          drafts.head.details.toJson.get("subject") == Some(Json.Str("CN=bank-a")),
+        )
+      },
+      test("a request refused by what auth itself checks is not parsed again for the log: no subject, however it was refused") {
+        val central = stub[EstCentralClient]
+        val (recording, est) = audited(central)
+        val weak = csrWith("RSA", _.initialize(1024))
+        val expired = TestCertificates.generate(
+          subject = "CN=bank-a,OU=tenant-a,O=Versola",
+          validity = Some((Date.from(Instant.parse("2019-01-01T00:00:00Z")), Date.from(Instant.parse("2020-01-01T00:00:00Z")))),
+        )
+        for
+          _ <- realTime
+          _ <- est.enroll(credentials, weak).flip
+          _ <- est.enroll(credentials, "not a request").flip
+          _ <- est.reenroll(expired.certificate, csrBody).flip
+          drafts <- recording.recorded
+        yield assertTrue(
+          drafts.map(_.reason) == List(Some("est_bad_request"), Some("est_bad_request"), Some("est_unauthorized")),
+          drafts.forall(_.details.toJson.get("subject").isEmpty),
+          central.enroll.calls.isEmpty,
+          central.renew.calls.isEmpty,
+        )
+      },
       test("a client that exceeds its attempts is recorded as a failure, rate limited") {
         val central = stub[EstCentralClient]
         val (recording, est) = audited(central, attempts = 1)
@@ -257,7 +320,12 @@ object EstServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- est.enroll(credentials, csrBody).flip
           limited <- est.enroll(credentials, csrBody).flip
           drafts <- recording.recorded
-        yield assertTrue(limited == EstError.TooManyRequests, drafts.map(_.reason).last == Some("est_rate_limited"))
+        yield assertTrue(
+          limited == EstError.TooManyRequests,
+          drafts.map(_.reason).last == Some("est_rate_limited"),
+          // a throttled request is not parsed for the log
+          drafts.last.details.toJson.get("subject").isEmpty,
+        )
       },
       test("a disabled EST and a failure of central itself record nothing") {
         val central = stub[EstCentralClient]

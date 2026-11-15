@@ -22,7 +22,7 @@ import versola.user.model.*
 import versola.util.CoreConfig
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{Controller, Observability}
-import versola.util.{Email, PageLimit, Phone}
+import versola.util.{Email, PageLimit, Phone, TemporaryPasswordTtl}
 import zio.*
 import zio.http.{Header, Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
@@ -434,18 +434,24 @@ object UserController extends Controller:
         body <- request.body.asJsonFromCodec[ResetPasswordPayload]
         _ <- actedBy(body.actorId)
         passwordService <- ZIO.service[PasswordService]
-        // A reset ends every session of the user with the temporary password (see `PasswordService.resetPassword`);
-        // the relying parties of those sessions are told afterwards, best effort, as after any logout.
-        reset <- passwordService.resetPassword(body.userId, body.expiresInSeconds, body.channel)
-        _ <- ZIO.serviceWithZIO[LogoutService](_.announceEnded(reset.endedSessions, RevocationCause.PasswordChanged))
-        _ <- audited(
-          AuthAuditKinds.AccountPasswordReset,
-          body.userId,
-          AuthAuditDetails.Account(via = "admin", detail = body.channel.map(_.toString)),
-        )
-      yield reset.password match
-        case Some(plaintext) => Response.json(ResetPasswordResponse(plaintext).toJson)
-        case None => Response.status(Status.NoContent)
+        response <-
+          if body.expiresInSeconds.exists(!TemporaryPasswordTtl.isValid(_)) then
+            Observability.setError("invalid_expires_in").as(Response.text(TemporaryPasswordTtl.violation).status(Status.BadRequest))
+          else
+            for
+              // A reset ends every session of the user with the temporary password (see `PasswordService.resetPassword`);
+              // the relying parties of those sessions are told afterwards, best effort, as after any logout.
+              reset <- passwordService.resetPassword(body.userId, body.expiresInSeconds, body.channel)
+              _ <- ZIO.serviceWithZIO[LogoutService](_.announceEnded(reset.endedSessions, RevocationCause.PasswordChanged))
+              _ <- audited(
+                AuthAuditKinds.AccountPasswordReset,
+                body.userId,
+                AuthAuditDetails.Account(via = "admin", detail = body.channel.map(_.toString)),
+              )
+            yield reset.password match
+              case Some(plaintext) => Response.json(ResetPasswordResponse(plaintext).toJson)
+              case None => Response.status(Status.NoContent)
+      yield response
     }
 
   val setPasswordEndpoint =

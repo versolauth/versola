@@ -11,9 +11,15 @@ object IpAddress:
     * the JDK's lenient forms (`1.2.3`, `16909060`) are not accepted, since they are not what a proxy writes.
     */
   def normalize(literal: String): Option[String] =
-    if literal.isEmpty || literal.length > 45 || !literal.forall(c => c.isDigit || c == '.' || c == ':' || (c.toLower >= 'a' && c.toLower <= 'f')) then None
+    if literal.isEmpty || literal.length > 45 || !literal.forall(c => c.isDigit || c == '.' || c == ':' || (c.toLower >= 'a' && c.toLower <= 'f'))
+    then None
     else if literal.contains(':') || FourParts.matches(literal) then scala.util.Try(InetAddress.getByName(literal)).toOption.flatMap(normalize)
     else None
+
+  /** `value` as the address it is, for a column that records it (an audit event's `ip`): the text itself when it is an IP literal,
+    * `None` for anything else. Not the rate-limit key [[normalize]] makes of it, which cuts an IPv6 address to its /64. */
+  def literal(value: String): Option[String] =
+    Some(value.trim).filter(candidate => normalize(candidate).isDefined)
 
   def normalize(address: InetAddress): Option[String] =
     address match

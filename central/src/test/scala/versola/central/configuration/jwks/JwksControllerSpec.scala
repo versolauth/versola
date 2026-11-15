@@ -78,11 +78,8 @@ object JwksControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(response.status == expectedStatus) && verifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
-  private val testJwk = Json.Obj(
-    "kid" -> Json.Str("test-key"),
-    "kty" -> Json.Str("RSA"),
-    "use" -> Json.Str("sig"),
-  )
+  private val testJwk = TestJwks.withField(TestJwks.rsaPublic, "kid", Json.Str("test-key"))
+  private val privateJwk = TestJwks.withField(TestJwks.rsaPrivate, "kid", Json.Str("test-key"))
 
   def spec = suite("JwksController")(
     controllerTestCase(
@@ -127,6 +124,38 @@ object JwksControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(Json.Obj("kty" -> Json.Str("RSA")).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
+    ),
+    controllerTestCase(
+      description = "POST /configuration/jwks refuses a key that carries private members and stores nothing",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "configuration" / "jwks",
+        body = Body.fromString(privateJwk.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (response, service) =>
+        response.body.asString.map: body =>
+          assertTrue(service.createKey.calls.isEmpty, body.contains("private members"), !body.contains(privateJwk.get("d").fold("")(_.toJson))),
+    ),
+    controllerTestCase(
+      description = "POST /configuration/jwks refuses a key of an unsupported type",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "configuration" / "jwks",
+        body = Body.fromString(Json.Obj("kid" -> Json.Str("test-key"), "kty" -> Json.Str("oct"), "k" -> Json.Str("c2VjcmV0")).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.createKey.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "PUT /configuration/jwks refuses a key that carries private members and changes nothing",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "jwks",
+        body = Body.fromString(privateJwk.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.updateKey.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "POST /configuration/jwks returns 400 when body is not valid JSON",

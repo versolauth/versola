@@ -87,6 +87,7 @@ object AuditRoutesSpec extends ZIOSpecDefault:
           "POST" -> "/configuration/edges",
           "POST" -> "/configuration/edges/rotate-key",
           "POST" -> "/configuration/edges/enrollment-tokens",
+          "POST" -> "/configuration/partners",
           "POST" -> "/users/password/reset",
         ),
       )
@@ -97,6 +98,34 @@ object AuditRoutesSpec extends ZIOSpecDefault:
         reads == Set(
           ("GET", "/users", "admin.user.viewed", "user"),
           ("GET", "/users/audit", "admin.audit.queried", "user"),
+        ),
+      )
+    },
+    test("the routes that are exempt from the requirement of an actor are exactly these: a new one is a decision, made here") {
+      val internal = entries.collect { case ((method, path), Entry.Internal) => method.name -> path }.toSet
+      assertTrue(
+        internal == Set(
+          "GET" -> "/configuration/authorization-detail-types/sync",
+          "GET" -> "/configuration/challenges/challenge-settings/sync",
+          "GET" -> "/configuration/challenges/otp-templates/sync",
+          "GET" -> "/configuration/clients/sync",
+          "GET" -> "/configuration/delivery-settings/sync",
+          "GET" -> "/configuration/edges/registry",
+          "GET" -> "/configuration/forms/sync",
+          "GET" -> "/configuration/jwks/signing-keys/sync",
+          "GET" -> "/configuration/jwks/sync",
+          "GET" -> "/configuration/locales/sync",
+          "GET" -> "/configuration/resources/registry",
+          "GET" -> "/configuration/scopes/sync",
+          "GET" -> "/configuration/server-metadata/sync",
+          "GET" -> "/configuration/system-settings/sync",
+          "GET" -> "/configuration/themes/sync",
+          "POST" -> "/est/enroll",
+          "POST" -> "/est/renew",
+          "POST" -> "/service/configuration/sync",
+          "POST" -> "/service/users/outbox/flush",
+          "DELETE" -> "/service/users",
+          "POST" -> "/users/registrations",
         ),
       )
     },
@@ -117,7 +146,24 @@ object AuditRoutesSpec extends ZIOSpecDefault:
   private def expectedOperation(method: Method, path: String): String =
     val last = path.split('/').last
     val actions =
-      Set("rotate-secret", "renew", "enrollment-tokens", "extend", "revoke", "dpop", "rotate-key", "active", "default", "generate", "reset", "set")
+      Set(
+        "rotate-secret",
+        "renew",
+        "enrollment-tokens",
+        "extend",
+        "revoke",
+        "dpop",
+        "rotate-key",
+        "active",
+        "default",
+        "generate",
+        "reset",
+        "set",
+        "suspend",
+        "resume",
+        "approve",
+        "reject",
+      )
     if actions.contains(last) then s"action:$last"
     else
       method match

@@ -27,8 +27,9 @@ object AuditRoutes:
     /** An administrator's read that nobody records. */
     case Unrecorded
 
-    /** Not an administrator's call: auth's syncs and callbacks, the service surface outside production. Auth records what
-      * it asks central to do under its own events. */
+    /** Not an administrator's call: auth's syncs and callbacks, the certificate flows, the service surface outside production. Auth
+      * records what it asks central to do under its own events. The one declaration that exempts a route from `audit.require-actor`:
+      * every other route is an administrator's, and is refused without an actor when the deployment requires one. */
     case Internal
 
   val AdminUserViewed: AuditKind = CentralAudit.AdminUserViewed

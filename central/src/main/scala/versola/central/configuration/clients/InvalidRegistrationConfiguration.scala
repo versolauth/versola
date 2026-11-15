@@ -1,6 +1,7 @@
 package versola.central.configuration.clients
 
 import versola.central.configuration.challenges.SecurityProfile
+import versola.central.configuration.partners.PartnerId
 import versola.central.configuration.{ConsentFlowDto, CreateClientRequest, UpdateClientRequest}
 import versola.util.theme.ThemeOverrides
 import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
@@ -40,9 +41,34 @@ object InvalidRegistrationConfiguration:
           "delete the client and register it again to use another method",
       )
 
-  /** A client that asks users for consent is a partner (its OTP messages name the app, and it
-    * is shown as one), so the consent flow can be changed but not taken away. Giving a client
-    * without one a consent flow is still allowed. */
+  /** Consent exists only on a client owned by a partner (owner decision, 2026-11-13): a first-party client asks its users for none,
+    * and it is not an option. A new client with a `consentFlow` and no `partnerId` is refused; one with a `partnerId` always has
+    * one (the registration applies [[versola.central.configuration.partners.PartnerClientRequest.DefaultConsent]] when none is sent). */
+  def validateConsentOnlyForPartner(
+      clientId: ClientId,
+      consentFlow: Option[ConsentFlowDto],
+      partnerId: Option[PartnerId],
+  ): Option[InvalidRegistrationConfiguration] =
+    Option.when(consentFlow.isDefined && partnerId.isEmpty):
+      InvalidRegistrationConfiguration(clientId, ConsentOnlyForPartnerReason)
+
+  /** The same rule for a change: a consent flow cannot be given to a stored client that has none and no owner. A change that keeps
+    * or modifies the consent flow the client already has is not held to it, so a row written before the rule stays editable. */
+  def validateConsentNotAdded(
+      clientId: ClientId,
+      requested: Option[Patch[ConsentFlowDto]],
+      stored: Option[ConsentFlow],
+      partnerId: Option[PartnerId],
+  ): Option[InvalidRegistrationConfiguration] =
+    requested.collect:
+      case Patch.Modified(_) if stored.isEmpty && partnerId.isEmpty =>
+        InvalidRegistrationConfiguration(clientId, ConsentOnlyForPartnerReason)
+
+  val ConsentOnlyForPartnerReason: String =
+    "consentFlow is only for a client owned by a partner: a first-party client asks its users for no consent; " +
+      "choose a partner as the owner (partnerId) or leave consentFlow out"
+
+  /** A client that asks users for consent is a partner's, so the consent flow can be changed but not taken away. */
   def validateConsentFlowKept(
       clientId: ClientId,
       requested: Option[Patch[ConsentFlowDto]],
@@ -52,11 +78,11 @@ object InvalidRegistrationConfiguration:
       case Patch.Deleted if stored.isDefined =>
         InvalidRegistrationConfiguration(
           clientId,
-          "consentFlow cannot be removed from a client that asks for consent (a partner client); " +
+          "consentFlow cannot be removed from a client that asks for consent (a client owned by a partner); " +
             "delete the client and register it again to make it a first-party one",
         )
 
-  /** Only a partner app (one that asks users for consent) has an appearance of its own on top of its theme: a
+  /** Only a client owned by a partner (one that asks users for consent) has an appearance of its own on top of its theme: a
     * first-party client looks like the product it belongs to. Clearing overrides (an empty set) is always
     * allowed, so a client that has some from before can be brought in line. */
   def validateThemeOverridesForPartner(
@@ -67,8 +93,8 @@ object InvalidRegistrationConfiguration:
     Option.when(!asksForConsent && themeOverrides.exists(!_.isEmpty)):
       InvalidRegistrationConfiguration(
         clientId,
-        "themeOverrides can only be set on a client that asks for consent (a partner client); " +
-          "set a consentFlow first, or leave themeOverrides out",
+        "themeOverrides can only be set on a client owned by a partner (one that asks for consent); " +
+          "choose a partner as the owner, or leave themeOverrides out",
       )
 
   def validateAccessTokenTtl(

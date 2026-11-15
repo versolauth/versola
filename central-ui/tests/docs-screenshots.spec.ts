@@ -8,6 +8,7 @@
  * Run with: npm run docs:screenshots
  */
 import { test, type Page } from '@playwright/test';
+import { defaultMyPermissions } from '../src/demo/mock-backend';
 import { loadAdminApp } from './fixtures';
 import { renderForm } from './form-harness';
 import { docsShots, tenantLogoBodies, type DocsShot, type DocsTheme } from './docs-screenshots.manifest';
@@ -32,6 +33,12 @@ async function growToDocument(page: Page) {
   await page.setViewportSize({ width: frame.width, height: Math.max(frame.height, height) });
 }
 
+/** The Partners section is not released yet (#962 and #564 build its backend), so the documentation's console has none: a scene that
+ *  names no permissions of its own gets the default set without `partners:*`, which keeps the sidebar of every image as it was. */
+function withoutPartners(permissions: typeof defaultMyPermissions): typeof defaultMyPermissions {
+  return { ...permissions, resources: Object.fromEntries(Object.entries(permissions.resources).map(([resource, grant]) => [resource, { ...grant, permissions: grant.permissions.filter(permission => !permission.startsWith('partners:')) }])) };
+}
+
 async function consoleShot(page: Page, shot: Extract<DocsShot, { kind: 'frame' | 'crop' }>, theme: DocsTheme) {
   await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
   await page.setViewportSize(frame);
@@ -39,7 +46,8 @@ async function consoleShot(page: Page, shot: Extract<DocsShot, { kind: 'frame' |
   await page.route(url => url.href in tenantLogoBodies, route =>
     route.fulfill({ contentType: 'image/svg+xml', body: tenantLogoBodies[route.request().url()] }));
   if (shot.clock) await page.clock.install({ time: new Date(shot.clock) });
-  await loadAdminApp(page, { path: shot.path, state: typeof shot.state === 'function' ? await shot.state() : shot.state });
+  const state = typeof shot.state === 'function' ? await shot.state() : shot.state;
+  await loadAdminApp(page, { path: shot.path, state: { ...state, myPermissions: state?.myPermissions ?? withoutPartners(defaultMyPermissions) } });
   await shot.before?.(page);
   // Fonts and the theme's transitions settle before the capture.
   await page.waitForTimeout(500);

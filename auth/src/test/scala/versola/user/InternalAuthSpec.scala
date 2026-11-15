@@ -4,10 +4,12 @@ import versola.audit.AuthActors
 import versola.auth.TestEnvConfig
 import versola.user.model.UserId
 import versola.util.audit.AuditContext
+import versola.util.http.Observability
 import versola.util.{CoreConfig, JWT}
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
+import zio.logging.logContext
 import zio.test.*
 import zio.test.TestAspect.silentLogging
 
@@ -81,6 +83,35 @@ object InternalAuthSpec extends ZIOSpecDefault:
         yield assertTrue(
           anonymous.actor == Some((AuthActors.service, Some("central"))),
           named.actor == Some((AuthActors.admin, Some(admin.toString))),
+        )
+      }.provide(configLayer),
+      test("the address of the administrator's call is the ip of the request's events, when it is an address and the caller is central") {
+        def ipAfter(request: zio.http.Request) =
+          logContext.locallyWith(identity)(authorizeInternal(request) *> Observability.currentIp)
+        for
+          token <- makeToken(List("central"))
+          authenticated = zio.http.Request.get(zio.http.URL.empty).addHeader(zio.http.Header.Authorization.Bearer(token))
+          v4 <- ipAfter(authenticated.updateURL(_.addQueryParam(AdminIpParam, "203.0.113.7")))
+          v6 <- ipAfter(authenticated.updateURL(_.addQueryParam(AdminIpParam, "2001:db8:1:2::1")))
+          none <- ipAfter(authenticated)
+          text <- ipAfter(authenticated.updateURL(_.addQueryParam(AdminIpParam, "not-an-address")))
+          listed <- ipAfter(authenticated.updateURL(_.addQueryParam(AdminIpParam, "203.0.113.7, 198.51.100.1")))
+          wrongKey = SecretKeySpec(Array.fill(32)(99.toByte), "AES")
+          forged <- JWT.serialize(JWT.Claims("auth", "auth", List("central"), Json.Obj()), 10.minutes, JWT.Signature.Symmetric(wrongKey))
+          refused <- logContext.locallyWith(identity)(
+            authorizeInternal(
+              zio.http.Request.get(zio.http.URL.empty).addHeader(zio.http.Header.Authorization.Bearer(forged))
+                .updateURL(_.addQueryParam(AdminIpParam, "203.0.113.7")),
+            ).exit *> Observability.currentIp,
+          )
+        yield assertTrue(
+          v4.contains("203.0.113.7"),
+          v6.contains("2001:db8:1:2::1"),
+          none.isEmpty,
+          text.isEmpty,
+          listed.isEmpty,
+          // a caller that is not central does not get to say where a call came from
+          refused.isEmpty,
         )
       }.provide(configLayer),
       test("the user agent an event stores is the short form of the header, never the raw header") {

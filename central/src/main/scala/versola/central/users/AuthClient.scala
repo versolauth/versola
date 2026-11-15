@@ -7,7 +7,7 @@ import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.util.audit.AuditContext
-import versola.util.http.EntityVersion
+import versola.util.http.{EntityVersion, Observability}
 import versola.util.{Email, PageLimit, Patch, Phone}
 import zio.Duration
 import zio.http.{Body, Client, Header, MediaType, Method, QueryParams, Request, Response, Status, URL}
@@ -147,6 +147,10 @@ object AuthClient:
     * audit context of the request, which the audit hook fills from what edge added to the request, so no controller has to pass it
     * on. The antifraud calls do not carry it: the administrator travels in their `userId`. */
   val ActorParam = "actorId"
+
+  /** The query parameter that tells auth the address the administrator's call came from, when central knows it (`AuditHook`), so that
+    * the row auth writes for the call has it too. On every call, whatever its method: an address is not a field of a payload. */
+  val ActorIpParam = "actorIp"
 
   /** Auth's answer to an audit read that it had no place for (`503`, `Retry-After`): not a failure of the report, asked again. */
   private case class AuditBusy(after: Duration) extends Exception("auth is busy with other audit reads")
@@ -625,9 +629,11 @@ object AuthClient:
               else handle(response)
       for
         actor <- admin
+        ip <- Observability.currentIp
         // On behalf of the administrator the request came from, when it is one: a call that has no body carries it in its query.
-        onBehalf =
+        named =
           actor.filter(_ => carriesActorInQuery(request)).fold(request)(id => request.updateURL(_.addQueryParam(AuthClient.ActorParam, id.toString)))
+        onBehalf = ip.fold(named)(address => named.updateURL(_.addQueryParam(AuthClient.ActorIpParam, address)))
         token <- tokenService.getToken
         result <- attemptWithToken(onBehalf)(token).catchSome:
           case AuthClient.TokenExpiredError =>

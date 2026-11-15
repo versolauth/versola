@@ -117,6 +117,13 @@ case class ConversationRecord(
   /** The user reached this conversation through the register button rather than sign-in. */
   def isRegistering: Boolean = registrationStep.isDefined
 
+  /** The conversation as it stands before anyone is identified: no factor recorded as passed, no registration begun, no
+    * password change pending. A conversation that gives an identity starts from this, so nothing a conversation of another
+    * identity recorded is credited to the new one.
+    */
+  def withoutIdentityState: ConversationRecord =
+    copy(amr = Map.empty, registrationFlow = None, registrationStep = None, needsPasswordChange = false)
+
   /** The registration step awaiting the user, or `None` once the flow is exhausted. */
   def currentRegistrationStep: Option[RegistrationStep] =
     for

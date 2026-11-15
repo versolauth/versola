@@ -5,6 +5,7 @@ import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.JWT
+import versola.util.http.Observability
 import zio.http.{Method, Request, Response, Status, handler}
 import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec}
@@ -147,8 +148,8 @@ object JwksController extends AuditedController:
   case class SigningKeysResponse(privateKeys: Map[String, String]) derives JsonCodec
 
   /** Parses the request body as a JWK and extracts its `kid`, replying with
-    * `400 Bad Request` for malformed JSON or a missing `kid` before invoking
-    * `onValid`.
+    * `400 Bad Request` for malformed JSON, a missing `kid` or a key that is not a
+    * valid public key ([[JwkValidation]]) before invoking `onValid`.
     */
   private def withValidJwk(request: Request)(onValid: (String, Json.Obj) => Task[Response]): Task[Response] =
     request.bodyAs[Json.Obj].either.flatMap:
@@ -159,4 +160,6 @@ object JwksController extends AuditedController:
           case None =>
             ZIO.succeed(Response.text("JWK must contain a 'kid' field").status(Status.BadRequest))
           case Some(kid) =>
-            onValid(kid, jwk)
+            JwkValidation.validate(jwk) match
+              case Left(reason) => Observability.setError("invalid_jwk").as(Response.text(reason).status(Status.BadRequest))
+              case Right(()) => onValid(kid, jwk)

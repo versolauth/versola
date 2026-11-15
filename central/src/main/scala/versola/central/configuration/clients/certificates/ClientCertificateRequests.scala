@@ -68,8 +68,14 @@ object ClientCertificateRequests:
     CertificateSubject.generate(subject).map: generated =>
       Generated(generated.privateKeyPem, signingRequest(generated.csrPem, subject, validity))
 
-  /** The issuer-facing form of a request for `subject`. */
-  def signingRequest(csrPem: String, subject: CertificateSubject, validity: Duration): CertificateSigningRequest =
+  /** The issuer-facing form of a request for `subject`. With `namedByCentral` the certificate carries `subject` whatever the request
+    * says ([[CertificateSigningRequest.subjectDn]]). */
+  def signingRequest(
+      csrPem: String,
+      subject: CertificateSubject,
+      validity: Duration,
+      namedByCentral: Boolean = false,
+  ): CertificateSigningRequest =
     CertificateSigningRequest(
       csrPem = csrPem,
       commonName = subject.commonName,
@@ -78,6 +84,7 @@ object ClientCertificateRequests:
       emailAddresses = subject.emailAddresses,
       ipAddresses = subject.ipAddresses,
       validity = validity,
+      subjectDn = Option.when(namedByCentral)(subject.distinguishedName),
     )
 
   def pem(label: String, der: Array[Byte]): String = CertificateSubject.pem(label, der)

@@ -74,4 +74,4 @@ object ShutdownBudgetSpec extends ZIOSpecDefault:
         worstCase <= VersolaApp.GracefulShutdownTimeout,
       )
     },
-  ) @@ TestAspect.sequential
+  ) @@ ShutdownBudgetExclusive.aspect @@ TestAspect.sequential

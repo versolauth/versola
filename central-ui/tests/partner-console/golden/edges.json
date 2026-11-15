@@ -1,0 +1,30 @@
+{
+  "edges": [
+    {
+      "id": "e2e-partner-faf53869a4-edge",
+      "publicUrl": "https://login.e2e-partner-faf53869a4.example",
+      "status": "waiting",
+      "certificateNotAfter": null,
+      "lastRenewedAt": null,
+      "replicas": 0,
+      "policies": {
+        "overload": {},
+        "accessLog": {},
+        "rateLimits": {}
+      }
+    },
+    {
+      "id": "edge-walk-edge-mwdoyyuq",
+      "publicUrl": "https://login-mwdoyyuq.e2e-partner-faf53869a4.example",
+      "status": "waiting",
+      "certificateNotAfter": null,
+      "lastRenewedAt": null,
+      "replicas": 0,
+      "policies": {
+        "overload": {},
+        "accessLog": {},
+        "rateLimits": {}
+      }
+    }
+  ]
+}
