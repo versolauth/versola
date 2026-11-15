@@ -255,15 +255,14 @@ object AntifraudFixture:
         Files.deleteIfExists(started.log)
       }).ignore,
     ).flatMap: (started, _) =>
-      ExtraService.timed(s"$name ready")(awaitReady(started, client)).as(started.instance)
+      ExtraService.timed(s"$name ready")(awaitReady(started)).as(started.instance)
 
   /** Waits until the instance answers `/readiness`, or fails with what it wrote if it stops or never gets there. */
-  private def awaitReady(started: Started, client: Client): Task[Unit] =
-    val ready = ZIO.scoped(client.request(zio.http.Request.get(URL.decode(s"${started.instance.diagnosticsUrl}/readiness").toOption.get)))
-      .map(_.status.isSuccess).catchAll(_ => ZIO.succeed(false))
+  private def awaitReady(started: Started): Task[Unit] =
+    val ready = ExtraService.isReady(s"${started.instance.diagnosticsUrl}/readiness")
     val stopped = ZIO.attemptBlocking(!started.process.isAlive)
     (ready <*> stopped)
-      .repeat(Schedule.spaced(1.second) *> Schedule.recurUntil[(Boolean, Boolean)]((r, s) => r || s))
+      .repeat(Schedule.spaced(ExtraService.ReadinessPoll) *> Schedule.recurUntil[(Boolean, Boolean)]((r, s) => r || s))
       .timeout(StartTimeout)
       .flatMap:
         case Some((true, _)) => ZIO.unit

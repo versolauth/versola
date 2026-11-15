@@ -1,7 +1,6 @@
 package versola.e2e.support
 
 import zio.*
-import zio.http.{Client, Request, URL}
 
 import java.nio.file.{Files, Path}
 import java.util.concurrent.TimeUnit
@@ -16,8 +15,23 @@ import java.util.concurrent.TimeUnit
 object ExtraService:
   private val StartTimeout = 4.minutes
 
-  /** A start slower than this has its log printed: the staged services are ready in under ten seconds. */
-  private val SlowStart = 10.seconds
+  /** Asked on a connection of its own each time, not through the suite's `Client`. That client answered "connection
+    * refused" for twenty seconds after the first refusal to a port -- the service had been listening since the second
+    * of them and was ready by the seventh -- so every start of a second service was seen 22 s in, whatever it took. */
+  private val probe: java.net.http.HttpClient =
+    java.net.http.HttpClient.newBuilder().nn.connectTimeout(java.time.Duration.ofSeconds(2)).nn.build().nn
+
+  /** Whether `readinessUrl` answers 2xx now; false for a refusal, a timeout or any other answer. */
+  def isReady(readinessUrl: String): UIO[Boolean] =
+    ZIO.attemptBlocking {
+      val request = java.net.http.HttpRequest.newBuilder(java.net.URI.create(readinessUrl)).nn
+        .timeout(java.time.Duration.ofSeconds(2)).nn.GET().nn.build().nn
+      val status = probe.send(request, java.net.http.HttpResponse.BodyHandlers.discarding()).nn.statusCode()
+      status >= 200 && status < 300
+    }.catchAll(_ => ZIO.succeed(false))
+
+  /** How often readiness is asked: a start is a few seconds, and the wait for it is in every spec that starts a service. */
+  val ReadinessPoll: Duration = 250.millis
 
   /** Runs `effect` and says how long it took, so that a run's log shows what a second service costs to start and stop. */
   def timed[R, E, A](what: String)(effect: ZIO[R, E, A]): ZIO[R, E, A] =
@@ -61,38 +75,11 @@ object ExtraService:
       }).when(alive).unit
 
   /** Waits until it answers readiness, or fails with what it logged if it stops or never gets there. */
-  def awaitReady(running: Running): ZIO[Client, Throwable, Unit] =
-    for
-      began <- Clock.ClockLive.nanoTime
-      // What each ask of readiness got and when, printed if the start was slow: whether the service was late or the asking was.
-      polls <- Ref.make(Chunk.empty[String])
-      note = (outcome: String) =>
-        Clock.ClockLive.nanoTime.flatMap(now => polls.update(_ :+ f"${(now - began) / 1e9}%.1f s: $outcome"))
-      ready = ZIO.serviceWithZIO[Client](client =>
-        ZIO.scoped(client.request(Request.get(URL.decode(running.readinessUrl).toOption.get)).map(_.status)),
-      ).foldZIO(
-        error => note(s"${error.getClass.getSimpleName}: ${error.getMessage}").as(false),
-        status => note(status.code.toString).as(status.isSuccess),
-      )
-      result <- (ready <*> running.isAlive.map(!_))
-        .repeat(Schedule.spaced(2.seconds) *> Schedule.recurUntil[(Boolean, Boolean)]((r, stopped) => r || stopped))
+  def awaitReady(running: Running): Task[Unit] =
+    timed(s"${running.name} ready"):
+      (isReady(running.readinessUrl) <*> running.isAlive.map(!_))
+        .repeat(Schedule.spaced(ReadinessPoll) *> Schedule.recurUntil[(Boolean, Boolean)]((r, stopped) => r || stopped))
         .timeout(StartTimeout)
-        .timed
-      _ <- result match
-        case (took, Some((true, _))) =>
-          Console.printLine(f"[e2e] ${running.name} ready after ${took.toMillis / 1000.0}%.1f s").ignore *>
-            slowStartReport(running, polls).when(took > SlowStart).unit
-        case _ => running.output.flatMap(out => ZIO.fail(RuntimeException(s"did not become ready:\n${out.takeRight(4000)}")))
-    yield ()
-
-  /** The asks of readiness and the service's own log without its per-request lines, each cut to a screen's width: the log
-    * is deleted with the scope. */
-  private def slowStartReport(running: Running, polls: Ref[Chunk[String]]): UIO[Unit] =
-    (for
-      asked <- polls.get
-      out <- running.output
-      lines = out.linesIterator.filterNot(line => line.contains("send-http") || line.contains("receive-http")).map(_.take(400)).toList
-      _ <- Console.printLine(
-        s"[e2e] ${running.name} was slow to start. Readiness asked:\n${asked.mkString("\n")}\n[e2e] its log (${lines.size} lines):\n${lines.take(200).mkString("\n")}",
-      )
-    yield ()).ignore
+        .flatMap:
+          case Some((true, _)) => ZIO.unit
+          case _ => running.output.flatMap(out => ZIO.fail(RuntimeException(s"did not become ready:\n${out.takeRight(4000)}")))
