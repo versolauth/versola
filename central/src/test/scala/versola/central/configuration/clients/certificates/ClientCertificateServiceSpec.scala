@@ -20,6 +20,7 @@ import versola.util.audit.{ActorType, AuditContext, AuditDraft, AuditEvents, Aud
 import versola.util.{Patch, PrivateClientCertificate, TestCertificates}
 import zio.*
 import zio.json.*
+import zio.metrics.{Metric, MetricLabel}
 import zio.test.*
 
 import java.io.StringReader
@@ -93,6 +94,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     def delete(clientId: ClientId) = ZIO.succeed { rows -= clientId }
     def expiringBefore(deadline: Instant) =
       ZIO.succeed(rows.values.filter(_.notAfter.isBefore(deadline)).toVector.sortBy(_.notAfter))
+    def pastRenewalMidpoint(now: Instant, renewBefore: Duration) = ZIO.succeed(0L)
 
   private class Enrollments extends EdgeCertificateEnrollmentRepository:
     var enrolled: Set[ClientId] = Set.empty
@@ -229,6 +231,18 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     applicationType = None,
     themeOverrides = None,
   )
+
+  /** `certificate_renewals_total` is process-wide: the tests that read it run one at a time, and read what they add. */
+  private def renewals(outcome: String): UIO[Double] =
+    Metric.counter("certificate_renewals_total")
+      .tagged(Set(MetricLabel("kind", "client"), MetricLabel("outcome", outcome))).value.map(_.count)
+
+  private def counted[E, A](effect: IO[E, A]): IO[E, (A, Map[String, Double])] =
+    for
+      before <- ZIO.foreach(List("success", "denied", "failure"))(outcome => renewals(outcome).map(outcome -> _)).map(_.toMap)
+      result <- effect
+      after <- ZIO.foreach(List("success", "denied", "failure"))(outcome => renewals(outcome).map(outcome -> _)).map(_.toMap)
+    yield (result, after.map((outcome, n) => outcome -> (n - before(outcome))))
 
   def spec = suite("ClientCertificateService")(
     test("registers a client with a certificate the CA issued for its mtlsAuth") {
@@ -1072,4 +1086,107 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- service.forgetIfReplaced(untouchedUpdate.copy(edgeClientCertificate = Some(Patch.Modified(supplied))))
       yield assertTrue(keptWhenUntouched, !issuances.rows.contains(clientId))
     },
-  )
+    suite("renewals are counted, `certificate_renewals_total{kind=client}` (#1001)")(
+      test("a renewal that gives a certificate is a success, once") {
+        val clients = stub[OAuthClientService]
+        val issuances = Issuances()
+        val service =
+          ClientCertificateService.Impl(FakeCa(), clients, issuances, Enrollments(), config, AuditEvents.noop, TestCertAuditState.renewalFailures())
+        for
+          now <- Clock.instant
+          _ = issuances.rows = Map(clientId -> ClientCertificateIssuance(clientId, "01", now.plusSeconds(3600), now.minusSeconds(86400)))
+          _ <- clients.getAllClients.succeedsWith(Vector(record))
+          _ <- clients.updateClient.succeedsWith(())
+          counted <- counted(service.renewDue)
+        yield assertTrue(counted._1 == 1, counted._2 == Map("success" -> 1.0, "denied" -> 0.0, "failure" -> 0.0))
+      },
+      test("a renewal that fails is a failure every pass it fails, though the audit log keeps one event") {
+        val clients = stub[OAuthClientService]
+        val issuances = Issuances()
+        val audit = RecordedAudit.unsafe
+        val service =
+          ClientCertificateService.Impl(
+            Switch(Some(unreachable)),
+            clients,
+            issuances,
+            Enrollments(),
+            config,
+            audit,
+            TestCertAuditState.renewalFailures(),
+          )
+        for
+          now <- Clock.instant
+          _ = issuances.rows = Map(clientId -> ClientCertificateIssuance(clientId, "01", now.plusSeconds(3600), now.minusSeconds(86400)))
+          _ <- clients.getAllClients.succeedsWith(Vector(record))
+          counted <- counted(ZIO.foreach(1 to 3)(_ => service.renewDue))
+          recorded <- audit.drafts
+        yield assertTrue(counted._2 == Map("success" -> 0.0, "denied" -> 0.0, "failure" -> 3.0), recorded.size == 1)
+      },
+      test("a refusal of a rule is counted as the audit log counts it, denied") {
+        val clients = stub[OAuthClientService]
+        val issuances = Issuances()
+        val audit = RecordedAudit.unsafe
+        val service = ClientCertificateService.Impl(FakeCa(), clients, issuances, Enrollments(), config, audit, TestCertAuditState.renewalFailures())
+        for
+          now <- Clock.instant
+          _ = issuances.rows = Map(clientId -> ClientCertificateIssuance(clientId, "01", now.plusSeconds(3600), now.minusSeconds(86400)))
+          _ <- clients.getAllClients.succeedsWith(Vector(record.copy(mtlsAuth = Some(MutualTlsAuth.SelfSignedTlsClientAuth()))))
+          counted <- counted(service.renewDue)
+          recorded <- audit.drafts
+        yield assertTrue(
+          counted._2 == Map("success" -> 0.0, "denied" -> 1.0, "failure" -> 0.0),
+          recorded.map(_.outcome) == Vector(AuditOutcome.denied),
+        )
+      },
+      test("a pass that cannot read what is due is one failure, and the next pass that can is not") {
+        val clients = stub[OAuthClientService]
+        val unreadable = new Issuances:
+          override def expiringBefore(deadline: Instant) = ZIO.fail(RuntimeException("db down"))
+        val broken =
+          ClientCertificateService.Impl(FakeCa(), clients, unreadable, Enrollments(), config, AuditEvents.noop, TestCertAuditState.renewalFailures())
+        val healthy =
+          ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config, AuditEvents.noop, TestCertAuditState.renewalFailures())
+        for
+          failed <- counted(broken.renewDue.exit)
+          idle <- counted(healthy.renewDue)
+        yield assertTrue(
+          failed._1.isFailure,
+          failed._2 == Map("success" -> 0.0, "denied" -> 0.0, "failure" -> 1.0),
+          idle._1 == 0,
+          idle._2 == Map("success" -> 0.0, "denied" -> 0.0, "failure" -> 0.0),
+        )
+      },
+      test("a renewal an administrator asks for is counted too, and a client central does not manage is not") {
+        val clients = stub[OAuthClientService]
+        val issuances = Issuances()
+        val service =
+          ClientCertificateService.Impl(FakeCa(), clients, issuances, Enrollments(), config, AuditEvents.noop, TestCertAuditState.renewalFailures())
+        for
+          now <- Clock.instant
+          _ = issuances.rows = Map(clientId -> ClientCertificateIssuance(clientId, "01", now.plusSeconds(3600), now))
+          _ <- clients.getAllClients.succeedsWith(Vector(record))
+          _ <- clients.updateClient.succeedsWith(())
+          managed <- counted(service.renew(clientId))
+          unmanaged <- counted(service.renew(ClientId("someone-else")))
+        yield assertTrue(
+          managed._2 == Map("success" -> 1.0, "denied" -> 0.0, "failure" -> 0.0),
+          unmanaged._2 == Map("success" -> 0.0, "denied" -> 0.0, "failure" -> 0.0),
+        )
+      },
+      test("a certificate an operator replaced while the CA was answering is no renewal") {
+        val clients = stub[OAuthClientService]
+        val issuances = Issuances()
+        val slowCa = new ClientCertificateIssuer:
+          private val inner = FakeCa()
+          def sign(request: CertificateSigningRequest) = issuances.delete(clientId) *> inner.sign(request)
+        val service =
+          ClientCertificateService.Impl(slowCa, clients, issuances, Enrollments(), config, AuditEvents.noop, TestCertAuditState.renewalFailures())
+        for
+          now <- Clock.instant
+          _ = issuances.rows = Map(clientId -> ClientCertificateIssuance(clientId, "01", now.plusSeconds(60), now))
+          _ <- clients.getAllClients.succeedsWith(Vector(record))
+          counted <- counted(service.renewDue)
+        yield assertTrue(counted._2 == Map("success" -> 0.0, "denied" -> 0.0, "failure" -> 0.0))
+      },
+    ),
+  ) @@ TestAspect.sequential

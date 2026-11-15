@@ -5,7 +5,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.clients.certificates.{ClientCertificateIssuance, ClientCertificateIssuanceRepository}
 import versola.util.postgres.BasicCodecs
-import zio.{Task, ZLayer}
+import zio.{Duration, Task, ZLayer}
 
 import java.time.Instant
 
@@ -57,6 +57,11 @@ class PostgresClientCertificateIssuanceRepository(
         WHERE not_after < $deadline
         ORDER BY not_after
       """.query[ClientCertificateIssuance].run()
+
+  override def pastRenewalMidpoint(now: Instant, renewBefore: Duration): Task[Long] =
+    val midpoint = now.plus(renewBefore.dividedBy(2))
+    xa.connectMeasured("client-certificates-past-renewal-midpoint"):
+      sql"SELECT count(*) FROM client_certificate_issuance WHERE not_after < $midpoint".query[Long].run().head
 
 object PostgresClientCertificateIssuanceRepository:
   def live: ZLayer[TransactorZIO, Throwable, ClientCertificateIssuanceRepository] =

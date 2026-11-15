@@ -91,3 +91,35 @@ alerts are in `versola-audit.rules.yaml`.
 | `AuditActorMissing` | `audit_actor_missing_total` grows: a call to the admin API had no actor, or one that is no user and no client (refused with `401`) (`reason`: `absent`, `invalid`), or an address that is none (`invalid_ip`) | 1h | warning |
 | `AuditReportWithoutAuth` | `audit_report_partial_total` grows: the per-user report was served without auth's part (`reason`: `endpoint_missing`, `unavailable`, `unreadable`) | 1h | warning |
 | `AuditEventWithoutTarget` | `audit_event_without_target_total{kind}` grows: a change succeeded and its row has no target (or no user on a user's route) | 1h | warning |
+
+## Certificates
+
+`versola-certificates.rules.yaml` holds the alerts of the certificates Versola holds and renews (#1001). The thresholds are not days: the
+services count the certificates past the middle of their renewal window (`certificates_past_renewal_midpoint{kind}`), which they work out from
+the lifetimes of [`deploy.md`](../../deploy.md) and their own settings, and a listener's certificate is judged against its own length. `kind` is
+`client` (the certificates `central` issues and renews for edge-fronted clients), `edge` (the identity of an edge) or `est` (a client's,
+obtained through EST). Nothing is labelled by client or edge; the certificate behind an alert is found by its `cert.renewed` events in the
+audit log.
+
+| Alert | Fires when | For | Severity |
+| --- | --- | --- | --- |
+| `CertificateRenewalOverdue` | `certificates_past_renewal_midpoint` is above 0: a certificate is past the middle of its renewal window and still not renewed | 15m | warning |
+| `CertificateRenewalsFailing` | more than one renewal of a kind ended without a certificate in 3 hours (`certificate_renewals_total`: `outcome=failure`, and for `kind=client` also `denied`) | 5m | warning |
+| `ListenerCertificateExpiring` | less than a sixth of the life of a service's mutual-TLS listener certificate is left (the middle of the last third) | 1h | warning |
+| `ListenerCertificateExpiringSoon` | less than an eighteenth of it is left, or none | 15m | critical |
+
+The file passes `promtool check rules` (4 rules), and the expressions were run against synthetic series with `promtool test rules` (a kind with nothing
+past the middle is silent, one failure does not fire `CertificateRenewalsFailing`, two do, a refusal of an edge or EST caller does not, a listener certificate at 50 of 365
+days fires the warning only); the tests are not kept in the repository.
+
+`central` reads the count from its own tables (`client_certificate_issuance`, `edge_certificates`, `client_est_certificates`) every five minutes, with one
+aggregate query for each kind, so what is exported does not grow with the number of clients; every replica publishes the same number. The edges of a
+suspended partner are not counted: they are refused renewal on purpose and their certificates are meant to run out. A certificate that expired is counted
+until its edge or client is deleted (an EST client: until it is enrolled again). The scope is the failure of the automatic renewal: for `client` and `edge`
+the count is the sign that it broke, and for `est` it is the only sign that a client, which renews itself, fell behind. No gauge of the earliest end of a
+kind is exported: with renewal working it is always far away, and a renewal that does not work is caught by the count.
+
+A renewal that never reaches `central` (an edge that cannot connect to it) is not counted in `certificate_renewals_total`; the edge's warning in its log and
+`CertificateRenewalOverdue` are what show it. The listener gauges are set once, when a service starts: they are the end of the certificate it serves now, so a
+renewed file counts only after the restart. Certificates that an edge generates for an enrolled client (`enrollEdgeClientCertificate`) are not tracked: `central`
+stores only their last serial, not their end.
