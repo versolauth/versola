@@ -26,7 +26,7 @@ import versola.user.UserRepository
 import versola.user.model.UserId
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Observability
-import versola.util.{AuthPropertyGenerator, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
+import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
 import zio.prelude.These
 import zio.{Duration, IO, Task, UIO, ZIO, ZLayer}
 

@@ -201,6 +201,30 @@ object RevocationServiceSpec extends UnitSpecBase:
           ),
         )).provide(env.layer)
       },
+      test("records the prefix of the value behind the routing key, not of the key") {
+        // Every token a cell issues starts with the same `v1.<cell>.`: nine characters of that would
+        // name the cell in every event and tell no two tokens apart.
+        val env = Env()
+        val random = Array.fill(32)(10.toByte)
+        val routed = RefreshToken.issue(Some(TestEnvConfig.cellId), random)
+        (for
+          now <- Clock.instant
+          _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepository.findToken.succeedsWith(Some(tokenRecord(now)))
+          _ <- env.tokenRepository.deleteByFamily.succeedsWith(())
+          _ <- env.accessTokenRevocationService.announceFamily.succeedsWith(())
+
+          service <- ZIO.service[RevocationService]
+          _ <- service.revokeRefreshToken(routed, ClientIdWithSecret(clientId1, Some(clientSecret1)), None)
+          drafts <- env.audit.recorded
+        yield assertTrue(
+          RefreshToken.present(routed).startsWith(s"v1.${TestEnvConfig.cellId}."),
+          drafts.map(_.details) == List(
+            AuthAuditDetails.TokenRevoked("refresh_token", None, Some(Base64.urlEncode(random).take(9)), "rfc7009", count = None),
+          ),
+        )).provide(env.layer)
+      },
       test("fail with InvalidClient when client authentication fails") {
         val env = Env()
         (for

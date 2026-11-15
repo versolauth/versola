@@ -9,7 +9,18 @@ import versola.oauth.client.model.SecurityProfile
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
 import versola.oauth.dpop.DpopService
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, RequestUri}
-import versola.util.{ClientAssertion, CoreConfig, Dpop, JsonSchemaValidator, JsonWebKeySet, RequestObject, Secret, SecureRandom, SecurityService, UnitSpecBase}
+import versola.util.{
+  ClientAssertion,
+  CoreConfig,
+  Dpop,
+  JsonSchemaValidator,
+  JsonWebKeySet,
+  RequestObject,
+  Secret,
+  SecureRandom,
+  SecurityService,
+  UnitSpecBase,
+}
 import zio.*
 import zio.http.{Request, URL}
 import zio.json.*
@@ -368,7 +379,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         _ <- env.happyPath
         secureRandom <- SecureRandom.live.build.map(_.get[SecureRandom]).provideLayer(zio.Scope.default)
         service <- env.service
-        response <- service.push(validParams(), credentials, None, request)
+        response <- service.push(validParams(), credentials, None, request, Nil)
         reference <- ZIO.fromEither(RequestUri.parse(response.requestUri)).mapError(RuntimeException(_))
         hashingSemaphore <- Semaphore.make(1)
         expected <- SecurityService.Impl(secureRandom, hashingSemaphore).mac(Secret(reference), cellConfig.security.parRequestsSecret)

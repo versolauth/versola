@@ -11,6 +11,7 @@ import versola.oauth.revocation.{RevocationCause, RevocationTerms}
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
+import versola.util.http.Observability
 import versola.util.{Base64, CoreConfig, Secret, SecurityService}
 import zio.{Clock, IO, Task, ZIO, ZLayer}
 
@@ -106,7 +107,7 @@ object RevocationService:
                   AuthAuditDetails.TokenRevoked(
                     tokenType = "refresh_token",
                     jti = None,
-                    refreshPrefix = Some(Base64.urlEncode(token).take(9)),
+                    refreshPrefix = Some(Observability.refreshTokenPrefix(RefreshToken.present(token))),
                     cause = "rfc7009",
                     count = None,
                   ),

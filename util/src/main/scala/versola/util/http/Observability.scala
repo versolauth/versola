@@ -1,10 +1,10 @@
 package versola.util.http
 
 import io.opentelemetry.api.trace.{SpanKind, StatusCode}
+import versola.util.RoutingKey
 import versola.util.audit.AuditContext
 import versola.util.audit.AuditContext.withAuditContext
 import versola.util.audit.AuditUnavailableException
-import versola.util.RoutingKey
 import zio.*
 import zio.http.*
 import zio.http.codec.HttpCodecError
@@ -83,14 +83,20 @@ object Observability:
   /** Refresh tokens are bearer credentials, so only a prefix long enough to correlate log
     * lines is kept. */
   def setRefreshToken(refreshToken: String): UIO[Unit] =
-    updateAuth(_.copy(refreshToken = Some(RoutingKey.strip(refreshToken).take(RefreshTokenPrefixLength))))
+    updateAuth(_.copy(refreshToken = Some(refreshTokenPrefix(refreshToken))))
 
   private val RefreshTokenPrefixLength = 9
+
+  /** The part of a presented refresh token that may be written down (a log line, an audit event): the first
+    * characters of the value behind its routing key. Taken from the whole string, every token a cell issues
+    * would yield the same `v1.<cell>` and correlate nothing. */
+  def refreshTokenPrefix(presented: String): String =
+    RoutingKey.strip(presented).take(RefreshTokenPrefixLength)
 
   /** Refresh token consumed by a `refresh_token` grant, i.e. the raw value exchanged for a
     * new one. A bearer credential like [[setRefreshToken]], so only a prefix is kept. */
   def setPreviousRefreshToken(refreshToken: String): UIO[Unit] =
-    updateAuth(_.copy(previousRefreshToken = Some(RoutingKey.strip(refreshToken).take(RefreshTokenPrefixLength))))
+    updateAuth(_.copy(previousRefreshToken = Some(refreshTokenPrefix(refreshToken))))
 
   /** Records the outcome of a request that ended in an error, under the `error` key. `code`
     * should come from a stable, closed vocabulary (e.g. `stepErrorKey`, `ErrorCode`) so it can

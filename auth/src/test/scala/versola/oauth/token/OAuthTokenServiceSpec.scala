@@ -47,7 +47,18 @@ import versola.user.UserRepository
 import versola.user.model.UserId
 import versola.util.Base64
 import versola.util.audit.{AuditEvents, AuditOutcome, AuditUnavailableException}
-import versola.util.{AuthPropertyGenerator, CoreConfig, EdgeIdentityNames, JsonSchemaValidator, MAC, RoutingKey, Secret, SecureRandom, SecurityService, TestCertificates}
+import versola.util.{
+  AuthPropertyGenerator,
+  CoreConfig,
+  EdgeIdentityNames,
+  JsonSchemaValidator,
+  MAC,
+  RoutingKey,
+  Secret,
+  SecureRandom,
+  SecurityService,
+  TestCertificates,
+}
 import zio.*
 import zio.http.URL
 import zio.json.*
@@ -379,7 +390,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val clientService = stub[OAuthConfigurationService]
     clientService.getResourcesForClient.returnsWith(ZIO.succeed(Nil))
     clientService.find.returnsWith(ZIO.none)
-    val clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], config)
+    clientService.auditTokenRefresh.returnsWith(ZIO.succeed(false))
+    val clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], config, ClientAuthFailures.noop)
     val tokenRepo = stub[SessionRepository]
     val userRepo = stub[UserRepository]
 
@@ -399,6 +411,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             userRepo,
             schemaValidator,
             config,
+            CapturingAuditEvents.shared(),
           )
           (service, securityService)
         }
