@@ -4,7 +4,7 @@ import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, iconButtonStyles, recordStyles, tagStyles } from '../styles/components';
 import type { AccessLogPolicy, Edge, OverloadPolicy, Partner, RateLimitPolicies, Tenant } from '../types';
 import type { EdgePolicySection } from '../utils/central-api';
-import { deleteEdge, deleteOldEdgeKey, fetchEdges, fetchPartners, fetchTenants, isPolicyConflict, patchEdgePolicies, registerEdge, rotateEdgeKey, setEdgeDpopNonce } from '../utils/central-api';
+import { deleteEdge, deleteOldEdgeKey, fetchEdges, fetchPartners, fetchRecommendedRateLimitPolicies, fetchTenants, isPolicyConflict, patchEdgePolicies, registerEdge, rotateEdgeKey, setEdgeDpopNonce } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard, formatDate } from '../utils/helpers';
 import { certificateChip, edgeCertificateState } from './partner-chips';
@@ -989,7 +989,7 @@ export class VersolaEdgesList extends LitElement {
             </div>
           </div>
         ` : this.editTarget === 'rate-limits' ? html`
-          <versola-rate-limit-policies-editor .draft=${this.draftRateLimit} ?disabled=${this.isSaving} ?submitted=${this.submitted}
+          <versola-rate-limit-policies-editor .draft=${this.draftRateLimit} .loadRecommended=${fetchRecommendedRateLimitPolicies} ?disabled=${this.isSaving} ?submitted=${this.submitted}
             @draft-change=${(e: CustomEvent<{ draft: RateLimitDraft }>) => this.draftRateLimit = e.detail.draft}></versola-rate-limit-policies-editor>
         ` : this.editTarget === 'access-log' ? html`
           <versola-access-log-policy-editor .draft=${this.draftAccessLog} ?disabled=${this.isSaving}

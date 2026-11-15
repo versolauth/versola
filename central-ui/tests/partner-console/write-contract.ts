@@ -31,6 +31,7 @@ export const WRITE_CONTRACT: Array<{ method: 'POST' | 'PUT' | 'DELETE'; path: Re
   { method: 'PUT', path: /^\/staff\/[^/]+$/, fields: ['level'] },
   { method: 'DELETE', path: /^\/staff\/[^/]+$/, fields: null },
   { method: 'PUT', path: /^\/settings$/, fields: ['version', 'contact', 'defaults'] },
+  { method: 'PUT', path: /^\/rate-limits$/, fields: ['rateLimits', 'expectedRevision'] },
   { method: 'PUT', path: /^\/profile$/, fields: ['displayName', 'logoUri'] },
 ];
 

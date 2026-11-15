@@ -306,6 +306,68 @@ object PartnerApiSpec extends ZIOSpecDefault, ZIOStubs:
           sent(1).exists(!_.toJson.contains("version")),
         )
       },
+      test("the rate limits of the group are read by anyone on the team and written by an administrator, with only the limits and the revision sent on") {
+        val stored = """{"rateLimits":{"policies":[],"replicas":1,"nativeStart":{"limit":120,"windowSeconds":60,"burst":30,"mode":"enforce"}},"revision":3}"""
+        for
+          viewer <- harness(Some(StaffLevel.viewer), answer = (_, _) => reply(Status.Ok, stored))
+          read <- send(viewer, get("/rate-limits"))
+          readBody <- read.body.asString
+          recommended <- send(viewer, get("/rate-limits/recommended"))
+          refused <- send(viewer, write(Method.PUT, "/rate-limits", """{"rateLimits":null}"""))
+          developer <- harness(Some(StaffLevel.developer))
+          developerRefused <- send(developer, write(Method.PUT, "/rate-limits", """{"rateLimits":null}"""))
+          admin <- harness(Some(StaffLevel.admin), answer = (_, _) => reply(Status.Ok, stored))
+          saved <- send(
+            admin,
+            write(
+              Method.PUT,
+              "/rate-limits",
+              """{"rateLimits":{"policies":[],"replicas":1,"nativeStart":{"limit":120,"windowSeconds":60,"burst":30,"mode":"enforce"}},"expectedRevision":2,"groupId":"operator"}""",
+            ),
+          )
+          savedBody <- saved.body.asString
+          removed <- send(admin, write(Method.PUT, "/rate-limits", """{"rateLimits":null,"expectedRevision":"2"}"""))
+          missing <- send(admin, write(Method.PUT, "/rate-limits", """{"expectedRevision":2}"""))
+          wrongShape <- send(admin, write(Method.PUT, "/rate-limits", """{"rateLimits":[]}"""))
+          viewerCalls <- viewer.central.calls.get
+          developerCalls <- developer.central.calls.get
+          calls <- admin.central.calls.get
+          sent = calls.filter(_._1 == Method.PUT)
+        yield assertTrue(
+          read.status == Status.Ok,
+          readBody.fromJson[Json] == stored.fromJson[Json],
+          recommended.status == Status.Ok,
+          viewerCalls.map(_._2) == List(List("rate-limits"), List("rate-limits", "recommended")),
+          refused.status == Status.Forbidden,
+          developerRefused.status == Status.Forbidden,
+          developerCalls.forall(_._1 == Method.GET),
+          saved.status == Status.Ok,
+          savedBody.fromJson[Json] == stored.fromJson[Json],
+          sent.map(_._2) == List(List("rate-limits"), List("rate-limits")),
+          sent.head._4.exists(body => body.toJson.contains("\"nativeStart\"") && body.toJson.contains("\"expectedRevision\":2") && !body.toJson.contains("groupId")),
+          // a removal is sent as null, and a revision that is not a number is not passed on
+          sent(1)._4.map(_.toJson) == Some("""{"rateLimits":null}"""),
+          // a body without the limits is refused here: it is not read as a removal
+          missing.status == Status.BadRequest,
+          wrongShape.status == Status.BadRequest,
+        )
+      },
+      test("central's refusal of the rate limits reaches the console: a 400 with the rule, a 409 when they changed since they were read") {
+        for
+          invalid <- harness(Some(StaffLevel.admin), answer = (_, _) => reply(Status.BadRequest, "nativeStart: burst must not exceed the smallest limit"))
+          stale <- harness(Some(StaffLevel.admin), answer = (_, _) => reply(Status.Conflict, "the rate limits changed since they were read; read them again"))
+          refused <- send(invalid, write(Method.PUT, "/rate-limits", """{"rateLimits":{"policies":[],"replicas":1}}"""))
+          (invalidCode, invalidBody) <- errorOf(refused)
+          conflict <- send(stale, write(Method.PUT, "/rate-limits", """{"rateLimits":null,"expectedRevision":1}"""))
+          (conflictCode, _) <- errorOf(conflict)
+        yield assertTrue(
+          refused.status == Status.BadRequest,
+          invalidCode == "invalid_request",
+          invalidBody.toJson.contains("burst must not exceed"),
+          conflict.status == Status.Conflict,
+          conflictCode == "conflict",
+        )
+      },
       test("central's 409 on a settings save reaches the console as a conflict with the reason, and a 400 for a missing version as invalid_request") {
         for
           stale <- harness(Some(StaffLevel.admin), answer = (_, _) => reply(Status.Conflict, "the settings changed since you read them"))

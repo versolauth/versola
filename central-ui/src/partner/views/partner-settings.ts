@@ -1,5 +1,5 @@
 import { LitElement, html, css, nothing } from 'lit';
-import { customElement, property, state } from 'lit/decorators.js';
+import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../../styles/theme';
 import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, recordStyles, tagStyles } from '../../styles/components';
 import { statusIcon } from '../../components/status-icon';
@@ -8,22 +8,29 @@ import { formatDate } from '../../utils/helpers';
 import { partnerAccessTtlError, ttlCapsLabel, ttlLabel } from '../../utils/partners';
 import { EMPTY_RECORD_ROUTE, dispatchRecordRoute, type RecordRoute } from '../../utils/record-route';
 import { recallProfileApproval, rememberProfileApproval } from '../pending-profile';
-import { fetchProfileApproval, fetchSettings, requestProfileChange, updateSettings, writeErrorMessage, readErrorMessage } from '../partner-api';
-import type { PartnerMe, PartnerSettings, ProfileApproval } from '../partner-types';
+import {
+  countText as rateLimitCountText, draftFromPolicies as rateLimitDraftFromPolicies, emptyDraft as emptyRateLimitDraft, isEmptyPolicies as isEmptyRateLimits, nativeStartText,
+  podsText as rateLimitPodsText, policiesFromDraft as rateLimitsFromDraft, summary as rateLimitSummary, validateDraft as validateRateLimitDraft, type RateLimitDraft,
+} from '../../utils/rate-limit-policies';
+import type { VersolaRateLimitPoliciesEditor } from '../../components/rate-limit-policies-editor';
+import { fetchProfileApproval, fetchRateLimits, fetchRecommendedRateLimits, fetchSettings, requestProfileChange, updateRateLimits, updateSettings, writeErrorMessage, readErrorMessage } from '../partner-api';
+import type { GroupRateLimits, PartnerMe, PartnerSettings, ProfileApproval } from '../partner-types';
 import { partnerViewStyles } from '../partner-styles';
 import '../../components/content-header';
 import '../../components/loading-cards';
 import '../../components/error-card';
 import '../../components/record-card';
 import '../../components/nav-toggle';
+import '../../components/rate-limit-policies-editor';
 
-type EditTarget = 'profile' | 'contacts' | 'defaults';
+type EditTarget = 'profile' | 'contacts' | 'defaults' | 'rate-limits';
 type Draft = { displayName: string; logoUri: string; email: string; phone: string; backChannelLogoutUri: string; accessTokenTtlMinutes: string; refreshTokenTtlDays: string };
 
 /**
  * Settings: the organisation as the operator and its users see it (a change goes to the operator
  * for approval), contacts, the defaults new clients start from, the agreement the operator set
- * (read-only) and the operator's endpoints for the firewall.
+ * (read-only), the operator's endpoints for the firewall, and the rate limits of the partner's edges
+ * (one setting for all of them, the limit on `/native/start` with it).
  */
 @customElement('versola-partner-settings')
 export class VersolaPartnerSettings extends LitElement {
@@ -33,6 +40,9 @@ export class VersolaPartnerSettings extends LitElement {
 
   @state() private settings: PartnerSettings | null = null;
   @state() private approval: ProfileApproval | null = null;
+  @state() private rateLimits: GroupRateLimits | null = null;
+  @state() private draftRateLimit: RateLimitDraft = emptyRateLimitDraft();
+  @query('versola-rate-limit-policies-editor') private rateLimitEditor?: VersolaRateLimitPoliciesEditor;
   @state() private isLoading = false;
   @state() private errorMessage = '';
   @state() private notice = '';
@@ -82,8 +92,9 @@ export class VersolaPartnerSettings extends LitElement {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      const [settings, approval] = await Promise.all([fetchSettings(), fetchProfileApproval().catch(() => null)]);
+      const [settings, approval, rateLimits] = await Promise.all([fetchSettings(), fetchProfileApproval().catch(() => null), fetchRateLimits()]);
       this.settings = settings;
+      this.rateLimits = rateLimits;
       this.approval = approval ?? recallProfileApproval(this.me.partner);
     } catch (error) {
       this.errorMessage = readErrorMessage(error, 'Failed to load the settings');
@@ -94,7 +105,7 @@ export class VersolaPartnerSettings extends LitElement {
 
   private get editTarget(): EditTarget | null {
     const edit = this.route.edit;
-    return edit === 'profile' || edit === 'contacts' || edit === 'defaults' ? edit : null;
+    return edit === 'profile' || edit === 'contacts' || edit === 'defaults' || edit === 'rate-limits' ? edit : null;
   }
 
   private resetDraft() {
@@ -110,7 +121,12 @@ export class VersolaPartnerSettings extends LitElement {
     this.formError = '';
     this.submitted = false;
     this.isSaving = false;
-    this.draftBaseline = JSON.stringify(this.draft);
+    this.draftRateLimit = rateLimitDraftFromPolicies(this.rateLimits?.rateLimits);
+    this.draftBaseline = this.draftSnapshot;
+  }
+
+  private get draftSnapshot(): string {
+    return JSON.stringify([this.draft, rateLimitsFromDraft(this.draftRateLimit)]);
   }
 
   private get errors(): Partial<Record<keyof Draft, string>> {
@@ -132,7 +148,7 @@ export class VersolaPartnerSettings extends LitElement {
   }
 
   private async cancel() {
-    if (JSON.stringify(this.draft) !== this.draftBaseline && !await confirmDiscardDraft()) return;
+    if (this.draftSnapshot !== this.draftBaseline && !await confirmDiscardDraft()) return;
     dispatchRecordRoute(this, { edit: null, create: false });
   }
 
@@ -140,6 +156,10 @@ export class VersolaPartnerSettings extends LitElement {
     event.preventDefault();
     if (this.isSaving) return;
     this.submitted = true;
+    if (this.editTarget === 'rate-limits' && Object.keys(validateRateLimitDraft(this.draftRateLimit)).length > 0) {
+      this.rateLimitEditor?.focusFirstError();
+      return;
+    }
     if (Object.keys(this.errors).length > 0) return;
     this.isSaving = true;
     this.formError = '';
@@ -150,6 +170,11 @@ export class VersolaPartnerSettings extends LitElement {
         this.approval = approval;
         rememberProfileApproval(this.me.partner.id, approval);
         this.notice = `Sent to ${this.me.partner.operator.name} for approval. Users keep seeing the current name and logo until it is approved.`;
+      } else if (this.editTarget === 'rate-limits') {
+        const limits = rateLimitsFromDraft(this.draftRateLimit);
+        // The answer carries the new revision: the next save names it.
+        this.rateLimits = await updateRateLimits(isEmptyRateLimits(limits) ? null : limits, this.rateLimits?.revision ?? 0);
+        this.notice = 'Rate limits saved. Your edges apply them on their next configuration sync.';
       } else {
         const settings: PartnerSettings = {
           version: this.settings!.version,
@@ -190,8 +215,8 @@ export class VersolaPartnerSettings extends LitElement {
 
   private renderEditor(target: EditTarget) {
     const me = this.me;
-    const titles: Record<EditTarget, string> = { profile: 'Request a change of name or logo', contacts: 'Edit contacts', defaults: 'Edit defaults for new clients' };
-    const submits: Record<EditTarget, string> = { profile: 'Send for approval', contacts: 'Save contacts', defaults: 'Save defaults' };
+    const titles: Record<EditTarget, string> = { profile: 'Request a change of name or logo', contacts: 'Edit contacts', defaults: 'Edit defaults for new clients', 'rate-limits': 'Edit rate limits' };
+    const submits: Record<EditTarget, string> = { profile: 'Send for approval', contacts: 'Save contacts', defaults: 'Save defaults', 'rate-limits': 'Save rate limits' };
     return html`
       <div class="form-header">
         <versola-nav-toggle></versola-nav-toggle>
@@ -207,6 +232,9 @@ export class VersolaPartnerSettings extends LitElement {
           ` : target === 'contacts' ? html`
             ${this.field('email', 'Security contact *', 'Who the operator reaches about incidents and the review date.', { type: 'email' })}
             ${this.field('phone', 'Phone', 'Optional.', { placeholder: '+7 …' })}
+          ` : target === 'rate-limits' ? html`
+            <versola-rate-limit-policies-editor partner .draft=${this.draftRateLimit} .loadRecommended=${fetchRecommendedRateLimits} ?disabled=${this.isSaving} ?submitted=${this.submitted}
+              @draft-change=${(e: CustomEvent<{ draft: RateLimitDraft }>) => { this.draftRateLimit = e.detail.draft; }}></versola-rate-limit-policies-editor>
           ` : html`
             ${this.field('backChannelLogoutUri', 'Back-channel logout URI', 'Prefilled for every new client; usually your edge\'s logout endpoint.', { type: 'url' })}
             <div class="field-pair">
@@ -254,6 +282,13 @@ export class VersolaPartnerSettings extends LitElement {
                   ${this.row('Back-channel logout URI', settings?.defaults.backChannelLogoutUri ? html`<span class="mono">${settings.defaults.backChannelLogoutUri}</span>` : html`<span class="muted">None</span>`)}
                   ${this.row('Token lifetimes', settings ? `access ${settings.defaults.accessTokenTtl ? ttlLabel(settings.defaults.accessTokenTtl) : 'not set'} · refresh ${settings.defaults.refreshTokenTtl ? ttlLabel(settings.defaults.refreshTokenTtl) : 'not set'}` : '—')}
                 `} @edit=${() => dispatchRecordRoute(this, { edit: 'defaults', create: false })}></versola-record-card>
+                <versola-record-card heading="Rate limits" subheading="Who may send how much through your edges: one setting for all of them. Reaches each edge on its next configuration sync." ?editable=${edit} .body=${html`
+                  ${this.row('Policies', rateLimitCountText(this.rateLimits?.rateLimits).replace('this edge applies', 'your edges apply'))}
+                  ${this.row('Edge pods', rateLimitPodsText(this.rateLimits?.rateLimits))}
+                  ${this.row('Native start', nativeStartText(this.rateLimits?.rateLimits, true))}
+                  ${(this.rateLimits?.rateLimits?.policies ?? []).slice(0, 5).map(policy => this.row(policy.name, rateLimitSummary(policy)))}
+                  ${(this.rateLimits?.rateLimits?.policies.length ?? 0) > 5 ? this.row('', `and ${this.rateLimits!.rateLimits!.policies.length - 5} more`) : ''}
+                `} @edit=${() => dispatchRecordRoute(this, { edit: 'rate-limits', create: false })}></versola-record-card>
               </div>
               <div>
                 <versola-record-card heading=${`Your agreement with ${me.partner.operator.name}`} subheading="Set by the operator. Ask them to change it." .body=${html`

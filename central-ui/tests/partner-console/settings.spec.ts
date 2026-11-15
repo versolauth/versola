@@ -116,6 +116,54 @@ test('contacts save at once; the defaults are capped by the operator', async ({ 
   await expect(page.getByRole('region', { name: 'Defaults for new clients' })).toContainText('access 10 min · refresh 30 days');
 });
 
+test('the rate limits of the edges: the card shows the default on /native/start, the limit is set, validated, saved with the revision read, and returned to the default', async ({ page }) => {
+  const api = await loadPartnerApp(page, { path: settingsPath });
+  const card = page.getByRole('region', { name: 'Rate limits' });
+  await expect(card).toContainText('Nothing: your edges apply no rate limit');
+  await expect(card).toContainText('Default: enforce · 60 / 60 s per address · burst 20 (only with client-ip = forwarded)');
+
+  await card.getByRole('button', { name: /Edit/ }).click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Edit rate limits' })).toBeVisible();
+  await expect(page.getByText('Not set: the edge applies the default')).toContainText('in enforce (calls over it get 429)');
+  await page.getByRole('button', { name: 'Set a limit' }).click();
+  await expect(page.getByRole('group', { name: 'Mode' }).getByRole('button', { name: 'Enforce' })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByLabel('Native start: calls').fill('10');
+  await expect(page.getByText('burst must not exceed the limit')).toBeVisible();
+  await page.getByRole('button', { name: 'Save rate limits' }).click();
+  await expect(page.getByLabel('Native start: burst')).toBeFocused();
+  expect(api.requests.filter(request => request.method === 'PUT')).toHaveLength(0);
+  expect(await scan(page)).toEqual([]);
+
+  await page.getByLabel('Native start: calls').fill('600');
+  await page.getByLabel('Native start: burst').fill('100');
+  await page.getByRole('button', { name: 'Add recommended policies' }).click();
+  await expect(page.getByRole('textbox', { name: 'Name', exact: true })).toHaveCount(2);
+  await page.getByRole('button', { name: 'Save rate limits' }).click();
+  const saved = await findRequest(api.requests, 'PUT', '/rate-limits');
+  expect(saved.body).toMatchObject({ expectedRevision: 0, rateLimits: { replicas: 1, nativeStart: { limit: 600, windowSeconds: 60, burst: 100, mode: 'enforce' } } });
+  expect((saved.body as { rateLimits: { policies: Array<{ name: string }> } }).rateLimits.policies.map(policy => policy.name)).toEqual(['per-client', 'per-user']);
+  await expect(page.getByRole('status').filter({ hasText: 'Rate limits saved' })).toBeVisible();
+  await expect(card).toContainText('2 policies');
+  await expect(card).toContainText('Enforce · 600 / 60 s per address · burst 100');
+
+  // The next save names the revision the first one answered with; with nothing left it removes the limits.
+  await card.getByRole('button', { name: /Edit/ }).click();
+  await page.getByRole('button', { name: 'Use the default' }).click();
+  for (const name of ['per-client', 'per-user']) await page.getByRole('button', { name: `Remove policy ${name}` }).click();
+  await page.getByRole('button', { name: 'Save rate limits' }).click();
+  await expect(card).toContainText('Default: enforce');
+  expect(api.requests.filter(request => request.method === 'PUT' && request.pathname === '/rate-limits').at(-1)?.body).toEqual({ rateLimits: null, expectedRevision: 1 });
+});
+
+test('rate limits somebody else changed since they were read are not overwritten: the save says so', async ({ page }) => {
+  const api = await loadPartnerApp(page, { path: `${settingsPath}&edit=rate-limits` });
+  await page.getByRole('button', { name: 'Set a limit' }).click();
+  api.state.rateLimits = { rateLimits: null, revision: 7 };
+  await page.getByRole('button', { name: 'Save rate limits' }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'changed since they were read' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Edit rate limits' })).toBeVisible();
+});
+
 test('cancelling an editor with a changed draft asks first', async ({ page }) => {
   await loadPartnerApp(page, { path: `${settingsPath}&edit=contacts` });
   await page.getByLabel('Phone').fill('+7 727 300 1199');

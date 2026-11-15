@@ -6,9 +6,8 @@ import { bannerStyles, buttonStyles, editorStyles, formStyles, segmentedStyles }
 import {
   BEFORE_TOKEN, DIMENSIONS, MAX_POLICIES, MAX_WINDOWS, MODES, MODE_TEXT, NATIVE_START_DEFAULT, SCOPES, draftFromPolicy, newNativeStartDraft, newPolicyDraft, validateDraft,
   type NativeStartDraft,
-  type PolicyDraft, type RateLimitDimension, type RateLimitDraft, type RateLimitMode, type WindowDraft,
+  type PolicyDraft, type RateLimitDimension, type RateLimitDraft, type RateLimitMode, type RateLimitPolicies, type WindowDraft,
 } from '../utils/rate-limit-policies';
-import { fetchRecommendedRateLimitPolicies } from '../utils/central-api';
 import { statusIcon } from './status-icon';
 
 /**
@@ -23,6 +22,10 @@ import { statusIcon } from './status-icon';
 export class VersolaRateLimitPoliciesEditor extends LitElement {
   @property({ attribute: false }) draft: RateLimitDraft = { policies: [], replicas: '', nativeStart: null };
   /** The inputs are inert while the host saves. */
+  /** Loads the starting set for "Add recommended policies": the host's API, so this element ships in either console. */
+  @property({ attribute: false }) loadRecommended: (() => Promise<RateLimitPolicies>) | null = null;
+  /** These are the limits of a partner's edges: the default on `/native/start` refuses there, and counts on an edge of the operator. */
+  @property({ type: Boolean }) partner = false;
   @property({ type: Boolean }) disabled = false;
   /** Set by the host on a submit: empty fields are errors from then on. */
   @property({ type: Boolean }) submitted = false;
@@ -218,7 +221,8 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
     this.loadingRecommended = true;
     this.recommendedError = '';
     try {
-      const recommended = await fetchRecommendedRateLimitPolicies();
+      if (!this.loadRecommended) throw new Error('Could not load the recommended policies');
+      const recommended = await this.loadRecommended();
       const have = new Set(this.draft.policies.map(policy => policy.name.trim()));
       const added = recommended.policies.filter(policy => !have.has(policy.name)).map(draftFromPolicy);
       this.change({ ...this.draft, policies: [...this.draft.policies, ...added] });
@@ -296,8 +300,8 @@ export class VersolaRateLimitPoliciesEditor extends LitElement {
         <h3>Native app sign-in start</h3>
         <p class="editor-sub"><code>/native/start</code> takes no client credential and every call makes auth store a request, so it has a limit per source address of its own (IPv4 per address, IPv6 per /64), checked before anything else. Counted in <code>edge_native_start_rate_limit_decisions_total</code>.</p>
         ${start === null ? html`
-          <p class="text-line">Not set: the edge applies the default, ${d.limit} calls per ${d.windowSeconds} seconds with bursts of ${d.burst}, in shadow (it counts and refuses nothing), and only when it reads the caller’s address from a header (<code>client-ip = forwarded</code>).</p>
-          <div class="add-row"><button type="button" class="btn btn-secondary btn-sm" @click=${() => this.change({ ...this.draft, nativeStart: newNativeStartDraft() })}>Set a limit</button></div>
+          <p class="text-line">Not set: the edge applies the default, ${d.limit} calls per ${d.windowSeconds} seconds with bursts of ${d.burst}, ${this.partner ? 'in enforce (calls over it get 429)' : 'in shadow (it counts and refuses nothing)'}, and only when it reads the caller’s address from a header (<code>client-ip = forwarded</code>).</p>
+          <div class="add-row"><button type="button" class="btn btn-secondary btn-sm" @click=${() => this.change({ ...this.draft, nativeStart: newNativeStartDraft(this.partner ? 'enforce' : 'shadow') })}>Set a limit</button></div>
         ` : html`
           <div class="block">
             <span class="ctrl-label" id="rl-native-start-mode-label">Mode</span>

@@ -128,9 +128,9 @@ export interface RateLimitDraft {
   nativeStart: NativeStartDraft | null;
 }
 
-/** What "Set a limit" starts from: the default's numbers, in the mode an operator's edge applies them in. */
-export function newNativeStartDraft(): NativeStartDraft {
-  return { mode: 'shadow', limit: String(NATIVE_START_DEFAULT.limit), windowSeconds: String(NATIVE_START_DEFAULT.windowSeconds), burst: String(NATIVE_START_DEFAULT.burst) };
+/** What "Set a limit" starts from: the default's numbers, in the mode that kind of edge applies them in. */
+export function newNativeStartDraft(mode: RateLimitMode = 'shadow'): NativeStartDraft {
+  return { mode, limit: String(NATIVE_START_DEFAULT.limit), windowSeconds: String(NATIVE_START_DEFAULT.windowSeconds), burst: String(NATIVE_START_DEFAULT.burst) };
 }
 
 let nextKey = 1;
