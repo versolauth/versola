@@ -88,7 +88,7 @@ object EdgePoliciesPatch:
         case None => Right(())
       overload <- next(PolicySection.Overload, patch.overload, record.overloadPolicy, _.validate, _ == OverloadPolicy.empty)
       accessLog <- next(PolicySection.AccessLog, patch.accessLog, record.accessLogPolicy, _.validate, _ == AccessLogPolicy.empty)
-      rateLimits <- next(PolicySection.RateLimits, patch.rateLimits, record.rateLimitPolicies, _.validate, _.policies.isEmpty)
+      rateLimits <- next(PolicySection.RateLimits, patch.rateLimits, record.rateLimitPolicies, _.validate, _.isEmpty)
     yield
       def bumped[A](section: PolicySection, before: Option[A], after: Option[A], meta: Map[String, PolicySectionMeta]) =
         if before == after then meta else meta.updated(section.key, PolicySectionMeta(revision(section) + 1, now))

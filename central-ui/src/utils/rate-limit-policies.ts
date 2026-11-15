@@ -7,6 +7,9 @@
  * The set is replaced as a whole; an empty list removes it and the edge applies no rate limit. `shadow` counts what
  * would be refused; `enforce` refuses with `429` and `Retry-After`. `GET .../rate-limits/recommended` is the starting set
  * (all in `shadow`) that the editor adds with one click.
+ *
+ * `nativeStart` is the limit on `/native/start` per address, a field of the same section: a set that has it and no policy is
+ * not empty.
  */
 
 export type RateLimitDimension = 'client' | 'subject' | 'session' | 'jkt' | 'ip' | 'certificate';
@@ -33,7 +36,23 @@ export interface RateLimitPolicies {
   policies: RateLimitPolicy[];
   /** How many edge pods share the traffic; each enforces limit / replicas. Absent means 1. */
   replicas?: number;
+  /** The limit on `/native/start` per address. Absent: the edge's default. */
+  nativeStart?: NativeStartRateLimit;
 }
+
+/**
+ * The limit on `/native/start/{clientId}` per source address (`NativeStartRateLimit` in `RateLimitPolicy.scala`). While it is
+ * not set, an edge with `client-ip = forwarded` applies `NATIVE_START_DEFAULT`: in shadow on an edge of the operator, in
+ * enforce on a partner's edge. Set, it replaces the default as written, `off` included.
+ */
+export interface NativeStartRateLimit {
+  limit: number;
+  windowSeconds: number;
+  burst: number;
+  mode: RateLimitMode;
+}
+
+export const NATIVE_START_DEFAULT = { limit: 60, windowSeconds: 60, burst: 20 } as const;
 
 export const MAX_POLICIES = 64;
 export const MAX_REPLICAS = 1000;
@@ -93,10 +112,25 @@ export interface PolicyDraft {
   cost: string;
 }
 
+/** The limit on `/native/start` as typed. */
+export interface NativeStartDraft {
+  mode: RateLimitMode;
+  limit: string;
+  windowSeconds: string;
+  burst: string;
+}
+
 export interface RateLimitDraft {
   policies: PolicyDraft[];
   /** The number of edge pods as typed; empty means 1. */
   replicas: string;
+  /** `null`: not set, the edge applies its default. */
+  nativeStart: NativeStartDraft | null;
+}
+
+/** What "Set a limit" starts from: the default's numbers, in the mode an operator's edge applies them in. */
+export function newNativeStartDraft(): NativeStartDraft {
+  return { mode: 'shadow', limit: String(NATIVE_START_DEFAULT.limit), windowSeconds: String(NATIVE_START_DEFAULT.windowSeconds), burst: String(NATIVE_START_DEFAULT.burst) };
 }
 
 let nextKey = 1;
@@ -111,12 +145,15 @@ export function newPolicyDraft(): PolicyDraft {
 }
 
 export function emptyDraft(): RateLimitDraft {
-  return { policies: [], replicas: '' };
+  return { policies: [], replicas: '', nativeStart: null };
 }
 
 export function draftFromPolicies(set: RateLimitPolicies | undefined | null): RateLimitDraft {
   return {
     replicas: set?.replicas && set.replicas !== 1 ? String(set.replicas) : '',
+    nativeStart: set?.nativeStart
+      ? { mode: set.nativeStart.mode, limit: String(set.nativeStart.limit), windowSeconds: String(set.nativeStart.windowSeconds), burst: String(set.nativeStart.burst) }
+      : null,
     policies: (set?.policies ?? []).map(policy => ({
       key: nextKey++,
       name: policy.name,
@@ -134,8 +171,10 @@ export function draftFromPolicies(set: RateLimitPolicies | undefined | null): Ra
 /** The body of the PATCH section: every field is sent, an empty burst, cost or pod count as its default (the API has no implicit values). */
 export function policiesFromDraft(draft: RateLimitDraft): RateLimitPolicies {
   const replicas = draft.replicas.trim();
+  const start = draft.nativeStart;
   return {
     replicas: replicas !== '' ? Number(replicas) : 1,
+    ...(start ? { nativeStart: { limit: Number(start.limit.trim()), windowSeconds: Number(start.windowSeconds.trim()), burst: Number(start.burst.trim()), mode: start.mode } } : {}),
     policies: draft.policies.map(policy => {
       const body: RateLimitPolicy = {
         name: policy.name.trim(),
@@ -154,7 +193,7 @@ export function policiesFromDraft(draft: RateLimitDraft): RateLimitPolicies {
 const DIMENSION_ORDER: RateLimitDimension[] = ['ip', 'certificate', 'client', 'subject', 'session', 'jkt'];
 
 export function isEmptyPolicies(set: RateLimitPolicies | undefined | null): boolean {
-  return !set || set.policies.length === 0;
+  return !set || (set.policies.length === 0 && !set.nativeStart);
 }
 
 // ── validation ──
@@ -168,6 +207,15 @@ export function validateDraft(draft: RateLimitDraft): Record<string, string> {
   const errors: Record<string, string> = {};
   const pods = draft.replicas.trim();
   if (pods !== '' && (parseInt10(pods) === null || parseInt10(pods)! < 1 || parseInt10(pods)! > MAX_REPLICAS)) errors.replicas = `replicas must be between 1 and ${MAX_REPLICAS}`;
+  if (draft.nativeStart) {
+    const limit = parseInt10(draft.nativeStart.limit);
+    const seconds = parseInt10(draft.nativeStart.windowSeconds);
+    const burst = parseInt10(draft.nativeStart.burst);
+    if (limit === null || limit < 1 || limit > MAX_COUNT) errors['nativeStart.limit'] = `limit must be between 1 and ${MAX_COUNT}`;
+    if (seconds === null || seconds < 1 || seconds > MAX_WINDOW_SECONDS) errors['nativeStart.window'] = `windowSeconds must be between 1 and ${MAX_WINDOW_SECONDS}`;
+    if (burst === null || burst < 1 || burst > MAX_COUNT) errors['nativeStart.burst'] = `burst must be between 1 and ${MAX_COUNT}`;
+    else if (limit !== null && limit >= 1 && burst > limit) errors['nativeStart.burst'] = 'burst must not exceed the limit';
+  }
   if (draft.policies.length > MAX_POLICIES) errors.set = `at most ${MAX_POLICIES} rate limit policies`;
   const seen = new Map<string, number>();
   draft.policies.forEach((policy, n) => {
@@ -239,6 +287,17 @@ export function summary(policy: RateLimitPolicy): string {
 export function podsText(set: RateLimitPolicies | undefined | null): string {
   const pods = set?.replicas ?? 1;
   return pods === 1 ? 'One (the full limit applies to each pod)' : `${pods} (each pod enforces 1/${pods} of a limit)`;
+}
+
+/** The record card's row for `/native/start`: what is set, or the default this kind of edge applies while nothing is. */
+export function nativeStartText(set: RateLimitPolicies | undefined | null, partnerEdge = false): string {
+  const start = set?.nativeStart;
+  if (!start) {
+    const d = NATIVE_START_DEFAULT;
+    return `Default: ${partnerEdge ? 'enforce' : 'shadow'} · ${d.limit} / ${d.windowSeconds} s per address · burst ${d.burst} (only with client-ip = forwarded)`;
+  }
+  if (start.mode === 'off') return 'Off: no limit';
+  return `${modeText(start.mode)} · ${start.limit} / ${start.windowSeconds} s per address · burst ${start.burst}`;
 }
 
 export function countText(set: RateLimitPolicies | undefined | null): string {

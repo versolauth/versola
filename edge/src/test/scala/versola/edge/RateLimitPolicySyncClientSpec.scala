@@ -2,7 +2,7 @@ package versola.edge
 
 import versola.util.http.GuardMode
 import versola.util.http.RateLimitScope
-import versola.util.http.{RateLimitDimension, RateLimitPolicies, RateLimitPolicy, RateLimitWindow}
+import versola.util.http.{NativeStartRateLimit, RateLimitDimension, RateLimitPolicies, RateLimitPolicy, RateLimitWindow}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -65,6 +65,18 @@ object RateLimitPolicySyncClientSpec extends ZIOSpecDefault:
         request.url.path.encode.contains("edge/sync/rate-limits"),
         request.header(Header.Authorization).contains(Header.Authorization.Bearer(syncToken)),
         got == EdgeRateLimitPolicies(List(policy), replicas = 1),
+      )
+    },
+    test("reads the limit on /native/start with the policies, and none when the set has none") {
+      val limit = NativeStartRateLimit(limit = 120, windowSeconds = 60, burst = 30, mode = GuardMode.Enforce)
+      for
+        (set, _) <- served(s"""{"rateLimitPolicies": ${policies.copy(nativeStart = Some(limit)).toJson}}""")
+        (only, _) <- served(s"""{"rateLimitPolicies": ${RateLimitPolicies(Nil, 1, Some(limit)).toJson}}""")
+        (without, _) <- served(s"""{"rateLimitPolicies": ${policies.toJson}}""")
+      yield assertTrue(
+        set == EdgeRateLimitPolicies(List(policy), replicas = 1, nativeStart = Some(limit)),
+        only == EdgeRateLimitPolicies(Nil, replicas = 1, nativeStart = Some(limit)),
+        without.nativeStart.isEmpty,
       )
     },
     test("carries no edge id of its own: central answers from the key the call is signed with") {

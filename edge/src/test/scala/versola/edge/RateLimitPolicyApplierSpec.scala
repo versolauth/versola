@@ -7,6 +7,7 @@ import versola.util.http.{
   DeclaredOwner,
   DeclaredRateLimit,
   GuardMode,
+  NativeStartRateLimit,
   RateDecision,
   RateLimitDimension,
   RateLimitKeys,
@@ -177,6 +178,7 @@ object RateLimitPolicyApplierSpec extends ZIOSpecDefault:
         service = new RateLimitPolicyService:
           override val current: UIO[List[RateLimitPolicy]] = held.get
           override val replicas: UIO[Int] = ZIO.succeed(3)
+          override val nativeStart: UIO[Option[NativeStartRateLimit]] = ZIO.some(NativeStartRateLimit.default(GuardMode.Enforce))
           override val refreshNow: Task[Unit] = ZIO.unit
         limit = DeclaredLimit(
           DeclaredOwner.Audience,

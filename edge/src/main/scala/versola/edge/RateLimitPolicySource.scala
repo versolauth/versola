@@ -1,6 +1,6 @@
 package versola.edge
 
-import versola.util.http.{ClientIpSource, DeclaredLimit, RateLimitPolicy, RateLimiter}
+import versola.util.http.{ClientIpSource, DeclaredLimit, NativeStartRateLimit, RateLimitPolicy, RateLimiter}
 import zio.*
 
 /** The rate limit policies this edge should apply now. Nothing in request handling reads it: [[RateLimitPolicyApplier]] polls
@@ -16,6 +16,9 @@ trait RateLimitPolicySource:
   /** The limits declared on resource endpoints and on clients of a resource's audience, applied together with [[current]]. */
   def declared: UIO[List[DeclaredLimit]] = ZIO.succeed(Nil)
 
+  /** The limit on `/native/start` set for this edge; none means its default ([[nativeapp.NativeStartLimit]]). */
+  def nativeStart: UIO[Option[NativeStartRateLimit]] = ZIO.none
+
 object RateLimitPolicySource:
   /** The policies central holds for this edge, as [[RateLimitPolicyService]] syncs them, and the limits declared on endpoints and
     * on audience clients, as [[DeclaredRateLimitService]] derives them.
@@ -25,7 +28,8 @@ object RateLimitPolicySource:
       new RateLimitPolicySource:
         override val current: UIO[List[RateLimitPolicy]] = service.current
         override val replicas: UIO[Int] = service.replicas
-        override val declared: UIO[List[DeclaredLimit]] = declaredService.current,
+        override val declared: UIO[List[DeclaredLimit]] = declaredService.current
+        override val nativeStart: UIO[Option[NativeStartRateLimit]] = service.nativeStart,
     )
 
   /** No policy at all (tests, tools): the limiter stays disabled and a request pays one volatile read. */
@@ -97,6 +101,16 @@ object RateLimitPolicyApplier:
   * of the service.
   */
 object EdgeRateLimiter:
+  /** How many pods share the traffic now: what `replicas-from` counts when it is set and answers, else the `replicas` central holds. */
+  def replicas(config: EdgeConfig, source: RateLimitPolicySource): URIO[Scope, UIO[Int]] =
+    (config.replicasFrom match
+      case None => ZIO.succeed(ZIO.succeed(Option.empty[Int]))
+      case Some(spec) =>
+        ZIO.fromEither(ReplicaCounter.parse(spec)).mapError(IllegalArgumentException(_)).orDie.flatMap(name =>
+          ReplicaCounter.dns(name, ReplicaCounter.resolver, 10.seconds),
+        )
+    ).map(resolved => ReplicaCounter.effective(resolved, source.replicas))
+
   val live: ZLayer[RateLimitPolicySource & Scope & EdgeConfig, Nothing, RateLimiter] =
     ZLayer.fromZIO:
       for
@@ -106,13 +120,8 @@ object EdgeRateLimiter:
           s"client-ip = forwarded: the address limit trusts the ${config.clientIpHeader} header, so this edge must be reachable only through the proxy that sets it",
         ).when(config.clientIp == ClientIpSource.Forwarded)
         scope <- ZIO.service[Scope]
-        resolved <- config.replicasFrom match
-          case None => ZIO.succeed(ZIO.succeed(Option.empty[Int]))
-          case Some(spec) =>
-            ZIO.fromEither(ReplicaCounter.parse(spec)).mapError(IllegalArgumentException(_)).orDie.flatMap(name =>
-              ReplicaCounter.dns(name, ReplicaCounter.resolver, 10.seconds).provideEnvironment(ZEnvironment(scope)),
-            )
+        pods <- replicas(config, source)
         limiter <- RateLimiter.make()
-        _ <- RateLimitPolicyApplier.run(source.current, limiter, ReplicaCounter.effective(resolved, source.replicas), source.declared).forkIn(scope)
+        _ <- RateLimitPolicyApplier.run(source.current, limiter, pods, source.declared).forkIn(scope)
         _ <- limiter.run.forkIn(scope)
       yield limiter

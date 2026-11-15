@@ -1588,7 +1588,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       for (const section of sections) {
         const value = patch[section] as Record<string, unknown> | null;
         const field = stored[section];
-        const empty = value === null || Object.keys(value).length === 0 || (section === 'rateLimits' && (value as { policies?: unknown[] }).policies?.length === 0);
+        const empty = value === null || Object.keys(value).length === 0 || (section === 'rateLimits' && (value as { policies?: unknown[] }).policies?.length === 0 && !(value as { nativeStart?: unknown }).nativeStart);
         const before = JSON.stringify(target[field] ?? null);
         if (empty) delete target[field];
         else target[field] = value;

@@ -608,7 +608,7 @@ object PartnerService:
       for
         // an empty set is the same as none, as for an edge's own
         valid <- ZIO.foreach(policies)(set => ZIO.fromEither(set.validate).mapError(detail => PartnerError.Invalid(detail)))
-          .map(_.filter(_.policies.nonEmpty))
+          .map(_.filterNot(_.isEmpty))
         stored <- partners.setRateLimits(partner.id, valid, expectedRevision)
           .catchSome:
             case _: PartnerRateLimitsChanged => ZIO.fail(PartnerError.Conflict("the rate limits changed since they were read; read them again"))

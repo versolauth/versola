@@ -7,7 +7,7 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.edge.dpop.{DpopPolicyService, DpopReplayGuard}
 import versola.edge.model.{ApplicationType, AuthorizationPreset, ClientCredential, ClientId, EdgeId, OAuthClient, PresetId}
 import versola.edge.{EdgeConfig, OAuthClientService}
-import versola.util.http.{ClientIpSource, RateLimiter}
+import versola.util.http.{ClientIpSource, GuardMode, NativeStartRateLimit}
 import versola.util.{Base64, Dpop, DpopNonce, PrivateClientCertificate, Secret, SecureRandom, SecurityService, TestCertificates}
 import zio.*
 import zio.http.*
@@ -166,8 +166,7 @@ object NativeServiceSpec extends ZIOSpecDefault:
         def requireNonce: UIO[Boolean] = ZIO.succeed(nonceRequired)
         def refreshNow: Task[Unit] = ZIO.unit
       serviceConfig = config(native, withNonceDpop = requireNonce, clientIp = clientIp)
-      operatorLimiter <- RateLimiter.make()
-      startLimit <- NativeStartLimit.make(operatorLimiter, serviceConfig).provideEnvironment(ZEnvironment(Scope.global))
+      startLimit <- NativeStartLimit.make(ZIO.some(StartLimit), ZIO.succeed(1), serviceConfig).provideEnvironment(ZEnvironment(Scope.global))
       service = NativeService.Impl(
         serviceConfig,
         clientService,
@@ -216,11 +215,14 @@ object NativeServiceSpec extends ZIOSpecDefault:
 
   private def isInvalidGrant(error: Option[NativeError]) = error.exists(_.isInstanceOf[NativeError.InvalidGrant])
 
+  // a limit that refuses, as an operator would set it: the default of an operator's edge only counts
+  private val StartLimit = NativeStartRateLimit.default(GuardMode.Enforce)
+
   private val startSuite = suite("start")(
-    test("over the default limit for its address, a start is refused before the proof is read or auth is called") {
+    test("over the limit for its address, a start is refused before the proof is read or auth is called") {
       for
         h <- harness(clientIp = ClientIpSource.Forwarded)
-        within <- ZIO.foreach(1 to NativeStartLimit.Default.burst): _ =>
+        within <- ZIO.foreach(1 to StartLimit.burst): _ =>
           h.service.start(NativeClientId, startRequest(DeviceKey()).addHeader("X-Real-IP", "203.0.113.7")).either
         refused <- failure(h.service.start(NativeClientId, startRequest(DeviceKey()).addHeader("X-Real-IP", "203.0.113.7")))
         otherAddress <- h.service.start(NativeClientId, startRequest(DeviceKey()).addHeader("X-Real-IP", "203.0.113.9")).either
@@ -229,14 +231,14 @@ object NativeServiceSpec extends ZIOSpecDefault:
         within.forall(_.isRight),
         refused.exists(_.isInstanceOf[NativeError.RateLimited]),
         otherAddress.isRight,
-        calls.size == NativeStartLimit.Default.burst + 1,
+        calls.size == StartLimit.burst + 1,
       )
     },
     test("a refused start burns no proof: the same proof is still good once the limit lets the device through") {
       val device = DeviceKey()
       for
         h <- harness(clientIp = ClientIpSource.Forwarded)
-        _ <- ZIO.foreachDiscard(1 to NativeStartLimit.Default.burst)(_ =>
+        _ <- ZIO.foreachDiscard(1 to StartLimit.burst)(_ =>
           h.service.start(NativeClientId, startRequest(DeviceKey()).addHeader("X-Real-IP", "203.0.113.7")),
         )
         request = startRequest(device)
