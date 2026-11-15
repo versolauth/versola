@@ -16,8 +16,16 @@ import java.util.concurrent.TimeUnit
 object ExtraService:
   private val StartTimeout = 4.minutes
 
+  /** A start slower than this has its log printed: the staged services are ready in under ten seconds. */
+  private val SlowStart = 10.seconds
+
+  /** Runs `effect` and says how long it took, so that a run's log shows what a second service costs to start and stop. */
+  def timed[R, E, A](what: String)(effect: ZIO[R, E, A]): ZIO[R, E, A] =
+    effect.timed.flatMap: (took, result) =>
+      Console.printLine(f"[e2e] $what after ${took.toMillis / 1000.0}%.1f s").ignore.as(result)
+
   /** @param readinessUrl the diagnostics port's `/readiness`. */
-  case class Running(process: Process, log: Path, readinessUrl: String):
+  case class Running(process: Process, log: Path, readinessUrl: String, name: String):
     def isAlive: Task[Boolean] = ZIO.attemptBlocking(process.isAlive)
 
     def output: Task[String] = ZIO.attemptBlocking(Files.readString(log))
@@ -39,16 +47,18 @@ object ExtraService:
         builder.environment().nn.putIfAbsent("HTTP_CLIENT_POOL_SIZE", "10")
         (builder.start().nn, conf, log),
     )((process, conf, log) => stopProcess(process).ignore *> ZIO.attemptBlocking(Files.deleteIfExists(conf) && Files.deleteIfExists(log)).ignore)
-      .map((process, _, log) => Running(process, log, s"http://localhost:${ports("DPORT")}/readiness"))
+      .map((process, _, log) => Running(process, log, s"http://localhost:${ports("DPORT")}/readiness", Path.of(launcher).getFileName.toString))
 
   /** Stops it the way an orchestrator does, SIGTERM and then, after a while, SIGKILL. */
   def stop(running: Running): Task[Unit] = stopProcess(running.process)
 
   private def stopProcess(process: Process): Task[Unit] =
-    ZIO.attemptBlocking:
-      process.destroy()
-      if !process.waitFor(30, TimeUnit.SECONDS) then process.destroyForcibly()
-      ()
+    ZIO.attemptBlocking(process.isAlive).flatMap: alive =>
+      timed("extra service stopped")(ZIO.attemptBlocking {
+        process.destroy()
+        if !process.waitFor(30, TimeUnit.SECONDS) then process.destroyForcibly()
+        ()
+      }).when(alive).unit
 
   /** Waits until it answers readiness, or fails with what it logged if it stops or never gets there. */
   def awaitReady(running: Running): ZIO[Client, Throwable, Unit] =
@@ -58,6 +68,11 @@ object ExtraService:
     (ready <*> running.isAlive.map(!_))
       .repeat(Schedule.spaced(2.seconds) *> Schedule.recurUntil[(Boolean, Boolean)]((r, stopped) => r || stopped))
       .timeout(StartTimeout)
+      .timed
       .flatMap:
-        case Some((true, _)) => ZIO.unit
+        case (took, Some((true, _))) =>
+          Console.printLine(f"[e2e] ${running.name} ready after ${took.toMillis / 1000.0}%.1f s").ignore *>
+            // What it did with the time, when it took long: the log is deleted with the scope.
+            running.output.flatMap(out => Console.printLine(s"[e2e] ${running.name} was slow to start; its log so far:\n${out.take(12000)}"))
+              .ignore.when(took > SlowStart).unit
         case _ => running.output.flatMap(out => ZIO.fail(RuntimeException(s"did not become ready:\n${out.takeRight(4000)}")))
