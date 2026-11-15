@@ -9,7 +9,7 @@ import versola.oauth.client.model.{ClientId, FormRecord, Locales, OAuthClientRec
 import versola.oauth.consent.ConsentService
 import versola.oauth.conversation.model.{CodeAlternative, ConversationRecord, ConversationStep}
 import versola.oauth.jwks.JwksService
-import versola.oauth.model.State
+import versola.oauth.model.{AuthorizationCode, State}
 import versola.oauth.model.{ConversationCookie, SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionInfo
 import versola.util.http.Observability
@@ -447,7 +447,7 @@ object ConversationRenderService:
           ZIO.succeed(challenge)
 
         case ConversationResult.Complete(redirectUri, state, code, sessionId, idTokenData, userAgentId, userAgentData) =>
-          val encodedCode = Base64Url.encode(code)
+          val encodedCode = AuthorizationCode.present(code)
           for
             sessionTtl <- configuration.getSessionTtl(record.clientId)
             userAgentTtl <- configuration.getUserAgentTtl(record.clientId)

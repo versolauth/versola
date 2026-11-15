@@ -4,4 +4,4 @@ import versola.util.ByteArrayNewType
 
 type RefreshToken = RefreshToken.Type
 
-object RefreshToken extends ByteArrayNewType
+object RefreshToken extends ByteArrayNewType.Routed

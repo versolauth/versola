@@ -26,7 +26,7 @@ import versola.user.UserRepository
 import versola.user.model.UserId
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Observability
-import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
+import versola.util.{AuthPropertyGenerator, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
 import zio.prelude.These
 import zio.{Duration, IO, Task, UIO, ZIO, ZLayer}
 
@@ -358,7 +358,7 @@ object OAuthTokenService:
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
       import refreshTokenRequest.{authorizationDetails, refreshToken, resources, scope}
       for
-        _ <- Observability.setPreviousRefreshToken(Base64.urlEncode(refreshToken))
+        _ <- Observability.setPreviousRefreshToken(RefreshToken.present(refreshToken))
 
         client <- authenticateClient(tokenCredentials, certificate)
 
@@ -774,7 +774,7 @@ object OAuthTokenService:
           // and the event would say what did not happen.
           case Some(renewal) if issuesRefreshToken || renewal.rebinding.isDefined =>
             for
-              _ <- Observability.setRefreshToken(Base64.urlEncode(renewal.token)).when(issuesRefreshToken)
+              _ <- Observability.setRefreshToken(RefreshToken.present(renewal.token)).when(issuesRefreshToken)
               _ <- sessionRepository
                 .renewBoundToken(
                   token = renewal.mac,
@@ -789,7 +789,7 @@ object OAuthTokenService:
           case None if issuesRefreshToken =>
             for
               token <- authPropertyGenerator.nextRefreshToken
-              _ <- Observability.setRefreshToken(Base64.urlEncode(token))
+              _ <- Observability.setRefreshToken(RefreshToken.present(token))
               mac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
               _ <- sessionRepository.createRefreshToken(mac, previousRefreshToken, record, idempotencyKey)
                 .mapError:
