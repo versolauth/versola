@@ -1,8 +1,11 @@
 package versola.util
 
+import versola.auth.TestEnvConfig
+import versola.oauth.model.{AuthorizationCode, RefreshToken}
 import zio.*
 import zio.test.*
 
+import java.nio.charset.StandardCharsets
 import java.security.SecureRandom as JSecureRandom
 
 object AuthPropertyGeneratorSpec extends ZIOSpecDefault:
@@ -28,7 +31,7 @@ object AuthPropertyGeneratorSpec extends ZIOSpecDefault:
     test("nextAuthorizationCode draws 32 bytes") {
       for
         lengths <- Ref.make(List.empty[Int])
-        generator = AuthPropertyGenerator.Impl(fakeRandom(lengths))
+        generator = AuthPropertyGenerator.Impl(fakeRandom(lengths), TestEnvConfig.coreConfig)
         code <- generator.nextAuthorizationCode
         seen <- lengths.get
       yield assertTrue(seen == List(32), code.sameElements(Array.fill(32)(32.toByte)))
@@ -36,7 +39,7 @@ object AuthPropertyGeneratorSpec extends ZIOSpecDefault:
     test("nextSessionId draws 32 bytes") {
       for
         lengths <- Ref.make(List.empty[Int])
-        generator = AuthPropertyGenerator.Impl(fakeRandom(lengths))
+        generator = AuthPropertyGenerator.Impl(fakeRandom(lengths), TestEnvConfig.coreConfig)
         id <- generator.nextSessionId
         seen <- lengths.get
       yield assertTrue(seen == List(32), id.sameElements(Array.fill(32)(32.toByte)))
@@ -44,7 +47,7 @@ object AuthPropertyGeneratorSpec extends ZIOSpecDefault:
     test("nextPublicSessionId draws 16 bytes and base64url-encodes them") {
       for
         lengths <- Ref.make(List.empty[Int])
-        generator = AuthPropertyGenerator.Impl(fakeRandom(lengths))
+        generator = AuthPropertyGenerator.Impl(fakeRandom(lengths), TestEnvConfig.coreConfig)
         id <- generator.nextPublicSessionId
         seen <- lengths.get
       yield assertTrue(
@@ -55,7 +58,7 @@ object AuthPropertyGeneratorSpec extends ZIOSpecDefault:
     test("nextRefreshTokenFamilyId draws 16 bytes and base64url-encodes them") {
       for
         lengths <- Ref.make(List.empty[Int])
-        generator = AuthPropertyGenerator.Impl(fakeRandom(lengths))
+        generator = AuthPropertyGenerator.Impl(fakeRandom(lengths), TestEnvConfig.coreConfig)
         id <- generator.nextRefreshTokenFamilyId
         seen <- lengths.get
       yield assertTrue(
@@ -66,7 +69,7 @@ object AuthPropertyGeneratorSpec extends ZIOSpecDefault:
     test("nextAccessToken draws 16 bytes") {
       for
         lengths <- Ref.make(List.empty[Int])
-        generator = AuthPropertyGenerator.Impl(fakeRandom(lengths))
+        generator = AuthPropertyGenerator.Impl(fakeRandom(lengths), TestEnvConfig.coreConfig)
         token <- generator.nextAccessToken
         seen <- lengths.get
       yield assertTrue(seen == List(16), token.sameElements(Array.fill(16)(16.toByte)))
@@ -74,9 +77,40 @@ object AuthPropertyGeneratorSpec extends ZIOSpecDefault:
     test("nextRefreshToken draws 32 bytes") {
       for
         lengths <- Ref.make(List.empty[Int])
-        generator = AuthPropertyGenerator.Impl(fakeRandom(lengths))
+        generator = AuthPropertyGenerator.Impl(fakeRandom(lengths), TestEnvConfig.coreConfig)
         token <- generator.nextRefreshToken
         seen <- lengths.get
       yield assertTrue(seen == List(32), token.sameElements(Array.fill(32)(32.toByte)))
+    },
+    // versolauth/versola#547 §6.2: the values a client presents back are issued under the
+    // cell, keyed on the whole routed string; the ones it never presents are left alone.
+    test("issues codes and refresh tokens under the configured cell, and nothing else") {
+      val routed = s"v1.${TestEnvConfig.cellId}.${Base64.urlEncode(Array.fill(32)(32.toByte))}"
+      for
+        lengths <- Ref.make(List.empty[Int])
+        generator = AuthPropertyGenerator.Impl(fakeRandom(lengths), TestEnvConfig.cellCoreConfig)
+        code <- generator.nextAuthorizationCode
+        token <- generator.nextRefreshToken
+        sessionId <- generator.nextSessionId
+        accessToken <- generator.nextAccessToken
+      yield assertTrue(
+        AuthorizationCode.present(code) == routed,
+        code.sameElements(routed.getBytes(StandardCharsets.UTF_8)),
+        RefreshToken.present(token) == routed,
+        token.sameElements(routed.getBytes(StandardCharsets.UTF_8)),
+        sessionId.sameElements(Array.fill(32)(32.toByte)),
+        accessToken.sameElements(Array.fill(16)(16.toByte)),
+      )
+    },
+    test("issues codes and refresh tokens as the bare random bytes when no cell is configured") {
+      for
+        lengths <- Ref.make(List.empty[Int])
+        generator = AuthPropertyGenerator.Impl(fakeRandom(lengths), TestEnvConfig.coreConfig)
+        code <- generator.nextAuthorizationCode
+        token <- generator.nextRefreshToken
+      yield assertTrue(
+        AuthorizationCode.present(code) == Base64.urlEncode(Array.fill(32)(32.toByte)),
+        RefreshToken.present(token) == Base64.urlEncode(Array.fill(32)(32.toByte)),
+      )
     },
   )

@@ -1,7 +1,7 @@
 package versola.oauth.model
 
-import versola.util.{ByteArrayNewType, Secret, StringNewType}
+import versola.util.ByteArrayNewType
 
 type AuthorizationCode = AuthorizationCode.Type
 
-object AuthorizationCode extends ByteArrayNewType
+object AuthorizationCode extends ByteArrayNewType.Routed

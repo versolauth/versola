@@ -20,6 +20,21 @@ trait ByteArrayNewType:
   inline def fromString(str: String): Type = apply(str.getBytes(StandardCharsets.UTF_8))
 
 object ByteArrayNewType:
+  /** A value a client holds and presents back, which may carry a [[RoutingKey]]: the bytes
+    * are what the server keys on, [[present]] and [[fromPresented]] translate to and from the
+    * string a client sees, and [[issue]] derives the bytes for a fresh value under the cell
+    * this deployment is, if it is one. See [[RoutingKey.Bytes]] for the two forms.
+    */
+  trait Routed extends ByteArrayNewType:
+    inline def issue(cell: Option[RoutingKey.CellId], random: Array[Byte]): Type =
+      apply(RoutingKey.Bytes.issue(cell, random))
+
+    inline def fromPresented(presented: String): Either[String, Type] =
+      RoutingKey.Bytes.parse(presented).map(apply)
+
+    inline def present(value: Type): String =
+      RoutingKey.Bytes.present(value)
+
   trait FixedLength(val ref: ByteArrayNewType, val length: Int):
     opaque type Type <: ref.Type = ref.Type
 

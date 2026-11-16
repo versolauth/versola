@@ -99,7 +99,7 @@ object PushedAuthorizationService:
         authorizationParams <- bindDpopKey(resolvedParams, dpopJkt)
         _ <- parser.validate(authorizationParams, request).mapError(PushedAuthorizationError.from)
 
-        reference <- secureRandom.nextBytes(ReferenceLength).map(RequestUriReference(_))
+        reference <- secureRandom.nextBytes(ReferenceLength).map(RequestUriReference.issue(config.cellId, _))
         referenceMac <- securityService.mac(Secret(reference), config.security.parRequestsSecret)
         ttl = config.parOrDefault.requestUriTtl
         record = PushedAuthorizationRecord(client.id, authorizationParams.view.mapValues(_.toList).toMap)

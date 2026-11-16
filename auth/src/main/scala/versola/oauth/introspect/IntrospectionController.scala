@@ -72,6 +72,6 @@ object IntrospectionController extends Controller:
       if s.isJWT then
         Right(Right(s))
       else
-        RefreshToken.fromBase64Url(s).map(Left(_))
+        RefreshToken.fromPresented(s).map(Left(_))
 
     FormDecoder.single(form, "token", parse)

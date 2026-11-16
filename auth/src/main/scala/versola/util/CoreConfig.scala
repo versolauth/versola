@@ -24,6 +24,13 @@ case class CoreConfig(
     limits: Option[versola.oauth.clientauth.ClientAuthThrottle.Settings] = None,
     // The in-memory list of revoked access tokens (#729); absent, the defaults of [[RevocationConfig]] apply.
     revocation: Option[RevocationConfig] = None,
+    /** The cell this deployment is, when it is one of several (versolauth/versola#547 §6.2):
+      * written at the front of the opaque values it issues and as the `cell` JOSE header of
+      * the tokens and security event tokens it signs, so a router can find their home cell
+      * without a lookup. Absent, nothing is prefixed or claimed, and values issued before
+      * a cell id was configured are accepted either way.
+      */
+    cellId: Option[RoutingKey.CellId] = None,
 ):
   def parOrDefault: CoreConfig.ParConfig = par.getOrElse(CoreConfig.ParConfig.default)
 
