@@ -12,6 +12,7 @@ import versola.edge.session.EdgeSessionRepository
 import versola.edge.{
   AccessLogPolicyService,
   AddressLimit,
+  CellTable,
   ClientCertificateFiles,
   ConfigurationSource,
   DeclaredRateLimitService,
@@ -70,6 +71,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       AccessLogPolicyService &
       DeclaredRateLimitService &
       RateLimitPolicyService &
+      CellTable &
       RateLimiter &
       OAuthClientService &
       ResourceService &
@@ -198,6 +200,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       RevocationCache.live >++>
       TokenRevocationService.live >++>
       ClientCertificateFiles.live >++>
+      CellTable.live >++>
       SSOClient.live >++>
       RevocationFeedClient.live >++>
       RevocationFeedPuller.live >++>

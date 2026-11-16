@@ -26,7 +26,7 @@ import zio.{Scope, ZIO, ZLayer}
 type ConfigurationSource =
   AuthorizationPresetsSyncClient & OAuthClientsSyncClient & ClientPermissionsSyncClient & ResourcesSyncClient &
     RolesSyncClient & PermissionsSyncClient & DpopAlgorithmsSyncClient & DpopPolicySyncClient & JwksSyncClient &
-    OverloadPolicySyncClient & AccessLogPolicySyncClient & RateLimitPolicySyncClient
+    OverloadPolicySyncClient & AccessLogPolicySyncClient & RateLimitPolicySyncClient & CellsSyncClient
 
 object ConfigurationSource:
   type Requirements = Scope & Client & EdgeConfig & SecurityService & CelEvaluator & ConfigSnapshot
@@ -61,6 +61,7 @@ object ConfigurationSource:
       OverloadPolicySyncClient.live >++>
       AccessLogPolicySyncClient.live >++>
       RateLimitPolicySyncClient.live >++>
+      CellsSyncClient.none >++>
       JwksSyncClient.live
 
   /** Everything synced from central, in the order the app wired it before the boundary
@@ -83,4 +84,5 @@ object ConfigurationSource:
       OverloadPolicySyncClient.live >++>
       AccessLogPolicySyncClient.live >++>
       RateLimitPolicySyncClient.live >++>
+      CellsSyncClient.live >++>
       JwksSyncClient.live
