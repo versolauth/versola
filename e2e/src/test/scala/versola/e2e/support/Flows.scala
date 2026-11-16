@@ -462,7 +462,9 @@ object Flows:
     * outbox, and syncs auth configuration — used as the e2e bootstrap.
     */
   val layer: ZLayer[OAuthClient, Throwable, Setups] =
-    ZLayer.fromZIO:
+    // The setups below set seven users' passwords and none of them signs in before the layer is built,
+    // so the second of a password change is waited out once, after the last, not after each.
+    ZLayer.fromZIO(OAuthClient.waitingOnceForPasswordChanges(
       for
         client <- ZIO.service[OAuthClient]
         lp <- setupLoginPassword()
@@ -515,4 +517,5 @@ object Flows:
           Id.BackChannelLogout -> backChannelLogout,
         ),
         client,
-      )
+      ),
+    ))

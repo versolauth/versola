@@ -42,6 +42,7 @@ const settings = {
   postLogoutRedirectUris: ['https://shop.example.com/bye'],
   logoLight: null,
   logoDark: null,
+  auditSettings: { log: true, tokenRefresh: false },
 };
 const keySummaries = [
   { kid: 'es256-a1', algorithm: 'ES256', keyType: 'EC', curve: 'P-256', canSign: true },
@@ -95,8 +96,10 @@ test('reads the whole record as cards with the tenant and its profile in the hea
   await expect(card(page, 'Tokens & keys')).toContainText('Required on every proof');
   await expect(card(page, 'Logout')).toContainText('https://shop.example.com/bye');
   await expect(card(page, 'Submission limits')).toContainText('5 per 10m');
+  await expect(card(page, 'Audit log')).toContainText('On');
+  await expect(card(page, 'Audit log')).toContainText('Not recorded');
   await expect(card(page, 'Security profile')).toContainText('Chosen when the tenant was created');
-  await expect(page.getByRole('button', { name: /^Edit/ })).toHaveCount(10);
+  await expect(page.getByRole('button', { name: /^Edit/ })).toHaveCount(11);
 });
 
 test('a standard tenant says Standard and an unconfigured group says so', async ({ page }) => {
@@ -115,7 +118,7 @@ test('the section rail jumps to a card and the narrow select does the same', asy
   await loadAdminApp(page, { path: base, state: state() });
 
   const rail = page.getByRole('navigation', { name: 'On this page' });
-  await expect(rail.getByRole('link')).toHaveText(['Sign-in methods', 'One-time codes', 'Passkeys', 'Registration', 'Step-up (ACR)', 'Branding', 'Sessions', 'Tokens & keys', 'Logout', 'Submission limits', 'Security profile']);
+  await expect(rail.getByRole('link')).toHaveText(['Sign-in methods', 'One-time codes', 'Passkeys', 'Registration', 'Step-up (ACR)', 'Branding', 'Sessions', 'Tokens & keys', 'Logout', 'Submission limits', 'Audit log', 'Security profile']);
   await rail.getByRole('link', { name: 'Sessions' }).click();
   await expect(rail.getByRole('link', { name: 'Sessions' })).toHaveAttribute('aria-current', 'true');
   await expect(page).toHaveURL(/#sessions$/);
@@ -180,7 +183,8 @@ test('the first save of a tenant with no settings PUTs the whole record, not a P
   await page.getByRole('button', { name: 'Save passkeys' }).click();
 
   const created = (await findRequest(api.requests, 'PUT', path)).body as Record<string, unknown>;
-  expect(created).toMatchObject({ tenantId: tenant, passkeySettings: { rpId: 'shop.example.com' }, otpLength: 6, defaultRoles: ['user'] });
+  // the first save starts the audit log on, without the refreshes, as central does for a tenant that has not chosen
+  expect(created).toMatchObject({ tenantId: tenant, passkeySettings: { rpId: 'shop.example.com' }, otpLength: 6, defaultRoles: ['user'], auditSettings: { log: true, tokenRefresh: false } });
   expect(api.requests.some(request => request.method === 'PATCH' && request.pathname === path)).toBe(false);
 });
 
@@ -635,6 +639,60 @@ test('a server error stays in the editor with the draft intact', async ({ page }
   await expect(page.getByRole('alert').filter({ hasText: 'otpLength must be between 4 and 10' })).toBeVisible();
   await expect(page.getByLabel('Code length')).toHaveValue('9');
   await expect(page).toHaveURL(/edit=codes/);
+});
+
+test('audit log: switches the log and the token refreshes, and sends only the audit settings, with both switches', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: `${base}&edit=audit`, state: state() });
+
+  await expect(page.getByRole('heading', { name: 'Edit audit log', level: 1 })).toBeVisible();
+  await expect(page.getByLabel("Record this tenant's events in the audit log")).toBeChecked();
+  await expect(page.getByLabel('Record token refreshes')).not.toBeChecked();
+  await page.getByLabel('Record token refreshes').check();
+  await page.getByRole('button', { name: 'Save audit log' }).click();
+
+  expect(await lastSaved(api.requests)).toEqual({ tenantId: tenant, auditSettings: { log: true, tokenRefresh: true } });
+  await expect(page).not.toHaveURL(/edit=/);
+  await expect(card(page, 'Audit log')).toContainText('Recorded');
+
+  await card(page, 'Audit log').getByRole('button', { name: /^Edit/ }).click();
+  await page.getByLabel("Record this tenant's events in the audit log").uncheck();
+  await page.getByRole('button', { name: 'Save audit log' }).click();
+
+  expect(await lastSaved(api.requests)).toEqual({ tenantId: tenant, auditSettings: { log: false, tokenRefresh: true } });
+  await expect(card(page, 'Audit log')).toContainText('Off: nothing is recorded');
+  await expect(card(page, 'Audit log')).toContainText('Not recorded: the audit log is off');
+  expect(api.requests.some(request => request.method === 'PUT' && request.pathname === path)).toBe(false);
+});
+
+test('audit log: token refreshes cannot be switched while the log is off, and the page says why', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: `${base}&edit=audit`,
+    state: state({ challengeSettings: { [tenant]: { ...settings, auditSettings: { log: false, tokenRefresh: false } } } as MockConfigState['challengeSettings'] }),
+  });
+
+  await expect(page.getByLabel("Record this tenant's events in the audit log")).not.toBeChecked();
+  await expect(page.getByLabel('Record token refreshes')).toBeDisabled();
+  await expect(page.getByText('It has no effect while the audit log is off.')).toBeVisible();
+  await page.getByLabel("Record this tenant's events in the audit log").check();
+  await expect(page.getByLabel('Record token refreshes')).toBeEnabled();
+});
+
+test('audit log: a record central sent without the switches reads as the log on and the refreshes off', async ({ page }) => {
+  const { auditSettings: _audit, ...older } = settings;
+  await loadAdminApp(page, { path: base, state: state({ challengeSettings: { [tenant]: older } as MockConfigState['challengeSettings'] }) });
+
+  await expect(card(page, 'Audit log')).toContainText('On');
+  await expect(card(page, 'Audit log')).toContainText('Not recorded');
+});
+
+test('audit log: a cancelled edit sends nothing', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: `${base}&edit=audit`, state: state() });
+
+  await page.getByLabel('Record token refreshes').check();
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Discard changes?' }).getByRole('button', { name: 'Discard' }).click();
+  await expect(card(page, 'Audit log')).toContainText('Not recorded');
+  expect(writes(api.requests)).toHaveLength(0);
 });
 
 test('read-only console: no Edit buttons and no Set up', async ({ page }) => {

@@ -2,6 +2,7 @@ package versola.central.configuration.edges
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.audit.TestCertAuditState
 import versola.central.configuration.clients.ApplicationType
 import versola.central.configuration.clients.attestation.{
   AttestationMode,
@@ -294,6 +295,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     def find(clientId: ClientId) = ZIO.none
     def delete(clientId: ClientId) = ZIO.unit
     def expiringBefore(deadline: Instant) = ZIO.succeed(Vector.empty)
+    def pastRenewalMidpoint(now: Instant, renewBefore: Duration) = ZIO.succeed(0L)
 
   private object NoEnrollments extends EdgeCertificateEnrollmentRepository:
     def enroll(clientId: ClientId, at: Instant) = ZIO.unit
@@ -377,7 +379,15 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
           security = security,
         )
         certificates =
-          ClientCertificateService.Impl(ClientCertificateIssuer.notConfigured, services.clients, NoIssuances, NoEnrollments, config, AuditEvents.noop)
+          ClientCertificateService.Impl(
+            ClientCertificateIssuer.notConfigured,
+            services.clients,
+            NoIssuances,
+            NoEnrollments,
+            config,
+            AuditEvents.noop,
+            TestCertAuditState.renewalFailures(),
+          )
         tracing <- tracingLayer.build
         routes =
           Observability.handleErrors(

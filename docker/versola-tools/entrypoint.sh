@@ -363,6 +363,12 @@ else
   sed -e "s/\${VERSION}/$VERSION/g" -e "s|\${REGISTRY}|$IMAGE_REGISTRY|g" "$COMPOSE_TEMPLATE" > "$OUT_DIR"/compose.fragment.yml
 fi
 
+# What both compose fragments mount into `step-ca`: it creates the CA in place of the image's own
+# init, which prints a password to the log (see the script's header). Read by other users than
+# ours, hence 644, like the vps scripts below.
+cp step-ca-init.sh "$OUT_DIR"/
+chmod 644 "$OUT_DIR"/step-ca-init.sh
+
 # Same split as the compose template just above, same reason: vps's
 # listener binds 127.0.0.1 instead of 0.0.0.0, since network_mode: host
 # (see compose.fragment.vps.yml.template) has no Docker port-publish step
@@ -400,7 +406,7 @@ cp -R central-ui "$OUT_DIR"/central-ui
 if [ "$TARGET" != "vps" ]; then
   cp nginx.conf.template "$OUT_DIR"/nginx.conf
   cp proxy_params.conf.template "$OUT_DIR"/proxy_params.conf
-  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, secrets.schema.json, release.json, compose.fragment.yml, nginx.conf, proxy_params.conf, openbao.hcl, central-ui/ to $OUT_DIR"
+  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, secrets.schema.json, release.json, compose.fragment.yml, nginx.conf, proxy_params.conf, openbao.hcl, step-ca-init.sh, central-ui/ to $OUT_DIR"
 else
-  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, secrets.schema.json, release.json, compose.fragment.yml, openbao.hcl, mtls-init.sh, step-ca-intermediates.sh, central-ui/ to $OUT_DIR"
+  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, secrets.schema.json, release.json, compose.fragment.yml, openbao.hcl, mtls-init.sh, step-ca-init.sh, step-ca-intermediates.sh, central-ui/ to $OUT_DIR"
 fi

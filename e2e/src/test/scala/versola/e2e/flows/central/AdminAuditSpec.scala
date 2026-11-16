@@ -42,6 +42,30 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
       "estEnrollment" -> Json.Bool(false),
     )
 
+  /** A web client asking central to issue the certificate its edge presents (#440): by `tls_client_auth`, which is the only method a
+    * certificate can be issued for. */
+  private def issuingBody(id: String, authMethod: String) =
+    Json.Obj(
+      "tenantId" -> Json.Str(Fixtures.suiteTenant),
+      "id" -> Json.Str(id),
+      "clientName" -> Fixtures.text("Audit issued certificate"),
+      "redirectUris" -> Json.Arr(Json.Str("https://app.test/callback")),
+      "allowedScopes" -> Json.Arr(Json.Str("openid")),
+      "accessTokenTtl" -> Json.Num(3600),
+      "authMethod" -> Json.Str(authMethod),
+      "issueEdgeClientCertificate" -> Json.Bool(true),
+      "enrollEdgeClientCertificate" -> Json.Bool(false),
+      "theme" -> Json.Str("default"),
+      "otpTemplateId" -> Json.Str("default"),
+      "frontChannelLogoutSessionRequired" -> Json.Bool(false),
+      "dpopSigningAlgs" -> Json.Arr(),
+      "dpopBoundAccessTokens" -> Json.Bool(false),
+      "certificateBoundAccessTokens" -> Json.Bool(false),
+      "requireSignedRequestObject" -> Json.Bool(false),
+      "requirePushedAuthorizationRequests" -> Json.Bool(false),
+      "estEnrollment" -> Json.Bool(false),
+    )
+
   private def serviceUpdate(id: String) =
     Json.Obj(
       "clientId" -> Json.Str(id),
@@ -124,6 +148,56 @@ object AdminAuditSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient
           !stored.exists(row => issued.exists(row.details.contains) || issued.exists(s => row.reason.exists(_.contains(s)))),
           stored.map(_.severity).forall(Set("info", "notice").contains),
         )
+    },
+    test("registering a client whose certificate central issues records one cert.enrolled, for the client, by the administrator, with no key") {
+      for
+        c <- ZIO.service[E2EConfig]
+        auth <- ZIO.service[OAuthClient]
+        edge <- ZIO.service[EdgeApi]
+        session <- ProvisionerCredential.session(auth, c, List("resource://central"))
+        id <- CentralApi.id("audit-issued")
+        created <- edge.proxyDpop(Method.POST, "central", "/configuration/clients/web", session, Some(issuingBody(id, "tls_client_auth")))
+        stored <- rows(id)(rows => rows.exists(_.kind == "cert.enrolled") && rows.exists(_.kind == "admin.client.create"))
+        _ <- edge.proxyDpop(Method.DELETE, "central", "/configuration/clients", session, query = List("clientId" -> id))
+        enrolled = stored.filter(_.kind == "cert.enrolled")
+        details = enrolled.map(detail)
+      yield assertTrue(
+        created.status == Status.Created,
+        enrolled.size == 1,
+        enrolled.forall(row => row.outcome == "success" && row.reason.isEmpty),
+        // by whom: the administrator edge identified, as for the registration itself; about which client
+        enrolled.forall(row => row.actorType == "client" && row.actorId.contains(c.provisionerClientId)),
+        enrolled.forall(row => row.targetType.contains("client") && row.targetId.contains(id)),
+        details.forall(_.get("operation").contains(Json.Str("issue"))),
+        // which certificate: its serial and when it ends, and what it was issued for
+        details.forall(_.str("serial").exists(_.nonEmpty)),
+        details.forall(_.str("notAfter").exists(_.nonEmpty)),
+        details.forall(_.str("subject").exists(_.contains(id))),
+        // the registration and the certificate are two events, in this order
+        stored.map(_.kind).filter(kind => kind == "cert.enrolled" || kind == "admin.client.create") ==
+          List("cert.enrolled", "admin.client.create"),
+        // what must never be there: a key, a PEM block, a request for a certificate
+        enrolled.forall(row =>
+          !row.details.contains("PRIVATE KEY") && !row.details.contains("BEGIN") && !row.details.contains("CERTIFICATE REQUEST"),
+        ),
+      )
+    },
+    test("a registration that asks for a certificate and is refused leaves no certificate event") {
+      for
+        c <- ZIO.service[E2EConfig]
+        auth <- ZIO.service[OAuthClient]
+        edge <- ZIO.service[EdgeApi]
+        session <- ProvisionerCredential.session(auth, c, List("resource://central"))
+        id <- CentralApi.id("audit-issued-refused")
+        // central cannot issue a certificate for a client that does not authenticate by one
+        refused <- edge.proxyDpop(Method.POST, "central", "/configuration/clients/web", session, Some(issuingBody(id, "client_secret")))
+        // the refusal is itself in the log: once it is there, a certificate event would be too
+        stored <- rows(id)(_.exists(_.kind == "admin.client.create"))
+      yield assertTrue(
+        refused.status == Status.BadRequest,
+        stored.exists(row => row.kind == "admin.client.create" && row.outcome == "failure"),
+        !stored.exists(_.kind.startsWith("cert.")),
+      )
     },
     test("a request that carries the actor's own parameters is recorded with the token's actor: edge replaces them") {
       for

@@ -157,6 +157,20 @@ class PostgresClientEstRepository(xa: TransactorZIO) extends ClientEstRepository
     """.update.run()
     ()
 
+  override def pastRenewalMidpoint(now: Instant, renewWindow: Double): Task[Long] =
+    val midWindow = renewWindow / 2
+    xa.connectMeasured("client-est-certificates-past-renewal-midpoint"):
+      sql"""
+        SELECT count(*)
+        FROM (
+          SELECT DISTINCT ON (c.client_id) c.not_after, c.issued_at
+          FROM client_est_certificates c
+          JOIN client_est_enrollments e ON e.client_id = c.client_id AND e.generation = c.generation
+          ORDER BY c.client_id, c.not_after DESC
+        ) latest
+        WHERE not_after - $now::timestamptz < (not_after - issued_at) * $midWindow::float8
+      """.query[Long].run().head
+
 object PostgresClientEstRepository:
   def live: ZLayer[TransactorZIO, Nothing, ClientEstRepository] =
     ZLayer.fromFunction(PostgresClientEstRepository(_))

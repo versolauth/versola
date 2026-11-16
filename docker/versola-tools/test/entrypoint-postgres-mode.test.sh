@@ -19,7 +19,7 @@ fail() { echo "FAIL $1" >&2; failures=$((failures + 1)); }
 
 mkdir -p "$work/app/central-ui" "$work/bin"
 for f in entrypoint.sh compose.fragment.vps.yml.template compose.fragment.yml.template openbao.hcl.vps.template openbao.hcl.template \
-  nginx.conf.template proxy_params.conf.template mtls-init.sh step-ca-intermediates.sh postgres-init-schemas.sh release.json; do
+  nginx.conf.template proxy_params.conf.template mtls-init.sh step-ca-init.sh step-ca-intermediates.sh postgres-init-schemas.sh release.json; do
   cp "$tools/$f" "$work/app/$f"
 done
 # gen-env's output as the entrypoint copies it. The configs carry the postgres block's `user`, which

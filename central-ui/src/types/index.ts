@@ -283,6 +283,16 @@ export interface ChallengeSettingsRecord {
    * dark scheme (light artwork). Both or neither. */
   logoLight?: string | null;
   logoDark?: string | null;
+  /** What the tenant's audit log records; central answers the defaults for a tenant that has not chosen. */
+  auditSettings?: AuditSettings;
+}
+
+/** The two switches of a tenant's audit log, sent and stored as one object. */
+export interface AuditSettings {
+  /** Off, none of the tenant's events is recorded. Events that belong to no tenant are recorded either way. */
+  log: boolean;
+  /** Whether a refresh_token grant is an event of the log. Refusals and the reuse of a refresh token are recorded either way. */
+  tokenRefresh: boolean;
 }
 
 /** The members of a challenge-settings record a PATCH names: absent keeps the stored value, a value replaces it, `null`

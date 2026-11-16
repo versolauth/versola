@@ -19,7 +19,7 @@ import zio.test.*
   */
 object NativeAppAttestationSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub]:
 
-  private val UpstreamPort = 9115
+  private val UpstreamPort = 9116
 
   private val config = EdgeFixture.Config(
     resourceId = "e2e-edge-native-attestation",
