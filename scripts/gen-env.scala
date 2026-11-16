@@ -1830,7 +1830,9 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   val edgePgUrl = prompt(s"  Postgres URL [$edgePgUrlDefault]: ", edgePgUrlDefault, flag = "edge-postgres-url")
   // The default names a database on the machine the script runs on, which is no database of an edge outside the cluster.
   if remoteEdge && !cliArgs.contains("edge-postgres-url") && edgePgUrl == edgePgUrlDefault then
-    throw RuntimeException("--remote-edge needs --edge-postgres-url: the JDBC URL of the database the remote edge reaches (the default is a local one)")
+    throw RuntimeException(
+      "--remote-edge needs --edge-postgres-url: the JDBC URL of the database the remote edge reaches (the default is a local one)",
+    )
   val edgePgUser = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "edge-postgres-user")
   val edgePgPass = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "edge-postgres-password")
   // The schema says vps has one POSTGRES_PASSWORD for all three services, and versola-cli stores
@@ -2520,7 +2522,9 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
       writeFile(dir, "central.conf", centralConf)
     // A remote edge's `central` block (url, pins, identity, group) comes from the chart's `central.conf`; including it last lets it
     // win, and means the operator adds nothing by hand.
-    val remoteInclude = if remoteEdge then "\n# Rendered by the versola-edge chart: central's address, its pin, the enrollment and the group.\ninclude file(\"/app/remote-edge/central.conf\")\n" else ""
+    val remoteInclude = if remoteEdge then
+      "\n# Rendered by the versola-edge chart: central's address, its pin, the enrollment and the group.\ninclude file(\"/app/remote-edge/central.conf\")\n"
+    else ""
     writeFile(dir, "edge.conf", edgeConf + remoteInclude)
 
     // versola-cli resolves each of these against OpenBao (existing value
@@ -2550,54 +2554,56 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
       SecretSchema.problems(SecretSchema.specs) match
         case Nil => ()
         case found => throw RuntimeException("secret schema is inconsistent: " + found.mkString("; "))
-      if !remoteEdge then writeGeneratedSecrets(
-        dir,
-        secretTarget,
-        "auth",
-        Seq(
-          "ACCESS_TOKENS_SECRET" -> accessTokensSecret,
-          "CLIENT_SECRETS_SECRET" -> clientSecretsSecret,
-          "REFRESH_TOKENS_SECRET" -> refreshTokensSecret,
-          "AUTH_CODES_SECRET" -> authCodesSecret,
-          "SESSIONS_SECRET" -> sessionsSecret,
-          "PASSWORDS_SECRET" -> passwordsSecret,
-          "CONVERSATION_COOKIE_SECRET" -> conversationCookieSecret,
-          "SESSION_COOKIE_SECRET" -> sessionCookieSecret,
-          "USER_AGENT_COOKIE_SECRET" -> userAgentCookieSecret,
-          "PAR_REQUESTS_SECRET" -> parRequestsSecret,
-          "DPOP_NONCES_SECRET" -> dpopNoncesSecret,
-          "ANTIFRAUD_SUBJECT_SECRET" -> antifraudSubjectSecret,
-          "JWT_PRIVATE_KEY" -> jwtKey.privateB64,
-          "CENTRAL_SECRET_KEY" -> centralSecretKey,
-        ) ++ authExtras,
-      )
+      if !remoteEdge then
+        writeGeneratedSecrets(
+          dir,
+          secretTarget,
+          "auth",
+          Seq(
+            "ACCESS_TOKENS_SECRET" -> accessTokensSecret,
+            "CLIENT_SECRETS_SECRET" -> clientSecretsSecret,
+            "REFRESH_TOKENS_SECRET" -> refreshTokensSecret,
+            "AUTH_CODES_SECRET" -> authCodesSecret,
+            "SESSIONS_SECRET" -> sessionsSecret,
+            "PASSWORDS_SECRET" -> passwordsSecret,
+            "CONVERSATION_COOKIE_SECRET" -> conversationCookieSecret,
+            "SESSION_COOKIE_SECRET" -> sessionCookieSecret,
+            "USER_AGENT_COOKIE_SECRET" -> userAgentCookieSecret,
+            "PAR_REQUESTS_SECRET" -> parRequestsSecret,
+            "DPOP_NONCES_SECRET" -> dpopNoncesSecret,
+            "ANTIFRAUD_SUBJECT_SECRET" -> antifraudSubjectSecret,
+            "JWT_PRIVATE_KEY" -> jwtKey.privateB64,
+            "CENTRAL_SECRET_KEY" -> centralSecretKey,
+          ) ++ authExtras,
+        )
 
       val centralExtras = if isVps || isKubernetes then Seq("POSTGRES_PASSWORD" -> centralPgPass) else Seq.empty
-      if !remoteEdge then writeGeneratedSecrets(
-        dir,
-        secretTarget,
-        "central",
-        Seq(
-          "CENTRAL_SECRET_KEY" -> centralSecretKey,
-          "CLIENT_SECRETS_SECRET" -> clientSecretsSecret,
-          "ACCOUNT_RESOURCE_SECRET" -> accountResourceSecret,
-          // Reached only when useOpenBao is true (isLocal, the only other target that ever
-          // sets these, has its own pinned literals and never runs this far -- see
-          // bootstrapResourceSecretLine/bootstrapUtilityClientLines above), so the placeholders
-          // these var names back always resolve to exactly the generated value here.
-          "CENTRAL_RESOURCE_SECRET" -> centralResourceSecretGenerated,
-          // The public half only -- see bootstrapUtilityClientLines for where the private
-          // half goes instead.
-          "UTILITY_CLIENT_PUBLIC_JWK" -> utilityPublicJwk,
-          // Not secret in the confidentiality sense (these are public keys),
-          // but resolved through OpenBao the same as everything else here
-          // regardless -- see the comment on jwks/public-key-jwk above for
-          // why they have to travel with JWT_PRIVATE_KEY/EDGE_PRIVATE_KEY's
-          // resolution rather than being written fresh every run.
-          "JWKS_JSON" -> jwks,
-          "EDGE_PUBLIC_JWK" -> edgeKey.jwk,
-        ) ++ centralExtras,
-      )
+      if !remoteEdge then
+        writeGeneratedSecrets(
+          dir,
+          secretTarget,
+          "central",
+          Seq(
+            "CENTRAL_SECRET_KEY" -> centralSecretKey,
+            "CLIENT_SECRETS_SECRET" -> clientSecretsSecret,
+            "ACCOUNT_RESOURCE_SECRET" -> accountResourceSecret,
+            // Reached only when useOpenBao is true (isLocal, the only other target that ever
+            // sets these, has its own pinned literals and never runs this far -- see
+            // bootstrapResourceSecretLine/bootstrapUtilityClientLines above), so the placeholders
+            // these var names back always resolve to exactly the generated value here.
+            "CENTRAL_RESOURCE_SECRET" -> centralResourceSecretGenerated,
+            // The public half only -- see bootstrapUtilityClientLines for where the private
+            // half goes instead.
+            "UTILITY_CLIENT_PUBLIC_JWK" -> utilityPublicJwk,
+            // Not secret in the confidentiality sense (these are public keys),
+            // but resolved through OpenBao the same as everything else here
+            // regardless -- see the comment on jwks/public-key-jwk above for
+            // why they have to travel with JWT_PRIVATE_KEY/EDGE_PRIVATE_KEY's
+            // resolution rather than being written fresh every run.
+            "JWKS_JSON" -> jwks,
+            "EDGE_PUBLIC_JWK" -> edgeKey.jwk,
+          ) ++ centralExtras,
+        )
 
       val edgeExtras = if isVps || isKubernetes then Seq("POSTGRES_PASSWORD" -> edgePgPass) else Seq.empty
       writeGeneratedSecrets(
@@ -2646,6 +2652,10 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
     println(
       s"""
          |Done! Files written to .local/env/$target/
-         |${if remoteEdge then "  - edge.conf, edge.generated-secrets.env (this remote edge only: no auth or central file is written, since a key\n    generated here is not the edge's and central's public half of it is unknown)" else "  - auth.conf     (auth service)\n  - central.conf  (central service)\n  - edge.conf     (edge service)"}
+         |${
+          if remoteEdge then
+            "  - edge.conf, edge.generated-secrets.env (this remote edge only: no auth or central file is written, since a key\n    generated here is not the edge's and central's public half of it is unknown)"
+          else "  - auth.conf     (auth service)\n  - central.conf  (central service)\n  - edge.conf     (edge service)"
+        }
          |""".stripMargin,
     )
