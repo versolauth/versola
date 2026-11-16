@@ -1,5 +1,6 @@
 package versola.central.configuration.topology
 
+import versola.util.RoutingKey
 import zio.json.{JsonCodec, JsonDecoder, JsonEncoder}
 import zio.schema.*
 
@@ -43,8 +44,9 @@ object CellId:
 
   inline def apply(string: String): CellId = string
 
+  /** The rule is the routing key's own ([[RoutingKey.CellId]]), so a registered cell can always be written in front of a value. */
   def from(string: String): Either[String, CellId] =
-    if TopologyId.matches(string) then Right(string) else Left(s"Cell ID ${TopologyId.rule}")
+    RoutingKey.CellId.parse(string).map(_ => string).left.map(reason => s"Cell ID: $reason")
 
   given Schema[CellId] = Schema.primitive[String].transformOrFail(from, Right(_))
   given JsonDecoder[CellId] = JsonDecoder.string.mapOrFail(from)
