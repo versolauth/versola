@@ -136,10 +136,4 @@ object TopologyControllerSpec extends ZIOSpecDefault, ZIOStubs:
       expectedStatus = Status.Unauthorized,
       verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.topology.createCell.calls.isEmpty)),
     ),
-    testCase(
-      description = "the sync auth reads is not served to the admin credential: it takes auth's token",
-      request = Request.get(cells / "sync"),
-      expectedStatus = Status.Unauthorized,
-      verify = (_, stubs) => ZIO.succeed(assertTrue(stubs.topology.get.calls.isEmpty)),
-    ),
   )

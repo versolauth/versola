@@ -12,6 +12,7 @@ import versola.edge.model.{
   State,
   TokenResponse,
 }
+import versola.util.http.Observability
 import versola.util.{Base64, ClientAssertion, JWT, PrivateClientCertificate, RedirectUri, RequestObject, RoutingKey, Secret}
 import zio.Chunk
 import zio.http.*
@@ -280,6 +281,7 @@ object SSOClient:
         topology <- cells.current
         roll <- Random.nextDouble
         cell <- ZIO.fromEither(CellRouting.route(topology, routing, roll))
+          .tapError(error => Observability.setError(CellRoutingError.code(error), Some(error.getMessage)))
       yield cell
 
     /** Runs `call` at `initial` and, when that cell answers that the user moved, once more at the cell it names: only one
@@ -601,7 +603,8 @@ object SSOClient:
       )
 
       for
-        initial <- pick(CellRouting.ByValue(refreshToken))
+        // A refresh token naming a cell this deployment does not have is one it never issued.
+        initial <- pick(CellRouting.ByValue(refreshToken)).catchSome { case _: CellRoutingError => ZIO.fail(InvalidGrant) }
         result <- routed(initial): cell =>
           submit(cell, clientId, credential, "token", form): response =>
             if response.status.isSuccess then response.bodyAs[TokenResponse]
@@ -617,7 +620,7 @@ object SSOClient:
     ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
       for
         named <- cellOf(accessToken)
-        cell <- pick(CellRouting.ByHeader(named))
+        cell <- pick(CellRouting.ByHeader(named)).catchSome { case _: CellRoutingError => ZIO.fail(SSOClient.UserInfoUnauthorized) }
         // The edge's own certificate goes to the mutual-TLS listener of the cell the token names, or, with no cell, to the
         // configured one.
         listener = cell.fold(edgeRoute)(c => c.mtlsUrl.map(base => CertificateRoute(base, c.trust)))

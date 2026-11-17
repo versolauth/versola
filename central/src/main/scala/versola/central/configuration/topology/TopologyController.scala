@@ -25,7 +25,6 @@ object TopologyController extends AuditedController:
     updateCellEndpoint,
     deleteCellEndpoint,
     setEdgeRegionEndpoint,
-    cellsSyncEndpoint,
   )
 
   val getTopologyEndpoint =
@@ -110,19 +109,6 @@ object TopologyController extends AuditedController:
           _ <- Audit.changed(body)
           response <- answered(Status.NoContent)(ZIO.serviceWithZIO[TopologyService](_.setEdgeRegion(edgeId, body.regionId)))
         yield response
-    }
-
-  /** The cells and their regions as auth reads them: a cell needs its own record and, from Phase 2 of #547, the others
-    * to place a new user and to hand a sign-in to its home cell. Internal like the other `sync` routes: auth's token
-    * only, an edge reads the same list on `/edge/sync/cells`.
-    */
-  val cellsSyncEndpoint =
-    (Method.GET / "configuration" / "cells" / "sync").audited(Audit.Internal) -> handler { (request: Request) =>
-      for
-        callerEdgeId <- authorizeInternal(request)
-        _ <- ZIO.fail(Unauthorized).when(callerEdgeId.isDefined)
-        topology <- ZIO.serviceWithZIO[TopologyService](_.get)
-      yield Response.json(CellsSyncResponse.of(topology, region = None).toJson)
     }
 
   private def answered[R](success: Status)(change: ZIO[R, Throwable | TopologyError, Unit]): ZIO[R, Throwable, Response] =

@@ -56,6 +56,16 @@ enum CellRouting:
 sealed abstract class CellRoutingError(message: String) extends RuntimeException(message)
 
 object CellRoutingError:
+  /** Registered cells exist and none takes new users (all closed, draining or weightless): a new login is not sent to the
+    * configured `auth`, which would let it past an operator's drain. */
+  case object NoOpenCell extends CellRoutingError("every registered cell is closed, draining or has no weight, so none takes a new login")
+
+  /** The closed `Observability` code of a refusal. */
+  def code(error: CellRoutingError): String = error match
+    case Unknown(_) => "cell_unknown"
+    case Malformed(_) => "routing_key_malformed"
+    case NoOpenCell => "cell_none_open"
+
   final case class Unknown(cell: String) extends CellRoutingError(s"the value names cell '$cell', which this deployment does not have")
   final case class Malformed(reason: String) extends CellRoutingError(s"the value announces a routing key and does not spell one: $reason")
 
@@ -72,7 +82,7 @@ object CellRouting:
         case CellRouting.ByValue(presented) =>
           RoutingKey.decode(presented).left.map(CellRoutingError.Malformed(_)).flatMap(decoded => named(topology, decoded.cell.map(identity[String])))
         case CellRouting.ByHeader(cell) => named(topology, cell)
-        case CellRouting.Placement => Right(place(topology, roll))
+        case CellRouting.Placement => place(topology, roll).map(Some(_)).toRight(CellRoutingError.NoOpenCell)
 
   private def named(topology: CellTopology, id: Option[String]): Either[CellRoutingError, Option[EdgeCell]] =
     id match

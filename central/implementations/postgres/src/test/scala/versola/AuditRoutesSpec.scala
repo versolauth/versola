@@ -107,7 +107,6 @@ object AuditRoutesSpec extends ZIOSpecDefault:
         internal == Set(
           "GET" -> "/configuration/authorization-detail-types/sync",
           "GET" -> "/configuration/challenges/challenge-settings/sync",
-          "GET" -> "/configuration/cells/sync",
           "GET" -> "/configuration/challenges/otp-templates/sync",
           "GET" -> "/configuration/clients/sync",
           "GET" -> "/configuration/delivery-settings/sync",

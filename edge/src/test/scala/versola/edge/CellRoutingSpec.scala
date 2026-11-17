@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.edge.model.*
-import versola.util.{RedirectUri, Secret}
+import versola.util.{PrivateClientCertificate, RedirectUri, Secret, TestCertificates}
 import zio.*
 import zio.http.*
 import zio.test.*
@@ -74,6 +74,50 @@ object CellRoutingSpec extends ZIOSpecDefault:
   private def exchange(sso: SSOClient, code: String) =
     sso.exchangeAuthorizationCode(Code(code), CodeVerifier("v"), RedirectUri("https://app.example/cb"), ClientId("web-app"), secret)
 
+  private val okFiles: ClientCertificateFiles = _ => ZIO.succeed(ClientSSLCertConfig.FromClientCertFile("client.crt", "client.key"))
+
+  private val certificateMaterial =
+    PrivateClientCertificate(TestCertificates.generate(dnsName = Some("web-app.versola.test")).bundle).material.toOption.get
+
+  private val mutualTls = ClientCredential.MutualTls(certificateMaterial)
+
+  private val cellPins = CellsSyncClient.pinned(List(TestCertificates.generate(ca = true).certificatePem))
+
+  /** A cell with a mutual-TLS listener of its own, told apart from `auth` by the path prefix like the others. */
+  private def secured(id: String) = cell(id, "almaty", mtls = Some(s"https://auth.mtls:9443/$id-mtls")).copy(trust = cellPins)
+
+  private val pushClient = OAuthClient(
+    id = ClientId("web-app"),
+    credential = secret,
+    permissions = Set.empty,
+    accessTokenTtl = 15.minutes,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = true,
+    applicationType = ApplicationType.web,
+    redirectUris = Set.empty,
+  )
+
+  private val preset = AuthorizationPreset(
+    id = PresetId("test"),
+    clientId = ClientId("web-app"),
+    description = "test",
+    redirectUri = RedirectUri("https://app.example/callback"),
+    postLoginRedirectUri = RedirectUri("https://app.example/home"),
+    postLogoutRedirectUri = None,
+    scope = Set("openid"),
+    responseType = "code",
+    uiLocales = None,
+    customParameters = Map.empty,
+    cookieDomain = None,
+    cookiePath = None,
+  )
+
+  private val pushedJson = """{"request_uri":"urn:ietf:params:oauth:request_uri:abc","expires_in":60}"""
+
+  /** An access token naming `cell` in its JOSE header; the payload and signature are never read by a router. */
+  private def tokenOf(cell: String) =
+    AccessToken(java.util.Base64.getUrlEncoder.withoutPadding.encodeToString(s"""{"alg":"RS256","cell":"$cell"}""".getBytes("UTF-8")) + ".e30.c2ln")
+
   private val moved = Response.json("""{"error":"moved","cell":"kz-3"}""").status(Status.fromInt(421))
 
   def spec = suite("cell routing")(
@@ -121,7 +165,17 @@ object CellRoutingSpec extends ZIOSpecDefault:
         val local = topology.copy(cells = Vector(one.copy(state = EdgeCellState.Closed), two.copy(weight = 0), three))
         assertTrue(
           route(CellRouting.Placement, 0.5, local).toOption.flatten.map(_.id) == Some("kz-3"),
-          route(CellRouting.Placement, 0.5, topology.copy(cells = Vector(one.copy(state = EdgeCellState.Draining)))) == Right(None),
+        )
+      },
+      test("registered cells that none takes leave a new request nowhere to go, and it is not sent to the configured auth") {
+        assertTrue(
+          route(
+            CellRouting.Placement,
+            0.5,
+            topology.copy(cells = Vector(one.copy(state = EdgeCellState.Draining))),
+          ) == Left(CellRoutingError.NoOpenCell),
+          route(CellRouting.Placement, 0.5, topology.copy(cells = Vector(one.copy(weight = 0)))) == Left(CellRoutingError.NoOpenCell),
+          route(CellRouting.Placement, 0.5, CellTopology.empty) == Right(None),
         )
       },
       test("an edge in no region places among every open cell") {
@@ -184,6 +238,92 @@ object CellRoutingSpec extends ZIOSpecDefault:
           unknown <- exchange(sso, "v1.kz-1.abc").flip
           seen <- hosts.get
         yield assertTrue(unknown == SSOClient.CellMoved("kz-9"), seen.size == 1)
+      },
+      test("a refresh token that names an unknown cell is an invalid grant, before any call") {
+        for
+          hosts <- serve(_ => Response.json(tokenJson))
+          client <- ZIO.service[Client]
+          sso = SSOClient.Impl(client, config, files, noIdentity, table(topology))
+          unknown <- sso.exchangeRefreshToken(RefreshToken("v1.kz-9.abc"), ClientId("web-app"), secret).flip
+          malformed <- sso.exchangeRefreshToken(RefreshToken("v1.kz-1"), ClientId("web-app"), secret).flip
+          seen <- hosts.get
+        yield assertTrue(unknown == SSOClient.InvalidGrant, malformed == SSOClient.InvalidGrant, seen.isEmpty)
+      },
+      test("userinfo goes to the cell the token's header names, and to the configured auth when it names none") {
+        for
+          hosts <- serve(_ => Response.json("""{"sub":"u"}"""))
+          client <- ZIO.service[Client]
+          sso = SSOClient.Impl(client, config, files, noIdentity, table(topology))
+          _ <- sso.userInfo(tokenOf("kz-2"), SSOClient.TokenBinding.Unbound)
+          _ <- sso.userInfo(AccessToken("opaque"), SSOClient.TokenBinding.Unbound)
+          seen <- hosts.get
+        yield assertTrue(seen.reverse == List("kz-2", "configured"))
+      },
+      test("a token whose header names a cell the edge does not have is unauthorized, and nothing is called") {
+        for
+          hosts <- serve(_ => Response.json("""{"sub":"u"}"""))
+          client <- ZIO.service[Client]
+          sso = SSOClient.Impl(client, config, files, noIdentity, table(topology))
+          error <- sso.userInfo(tokenOf("kz-9"), SSOClient.TokenBinding.Unbound).flip
+          seen <- hosts.get
+        yield assertTrue(error == SSOClient.UserInfoUnauthorized, seen.isEmpty)
+      },
+      test("a certificate client's call goes to the mutual-TLS listener of the cell that holds the user") {
+        val cells = topology.copy(cells = Vector(secured("kz-1"), secured("kz-2")))
+        for
+          hosts <- serve(_ => Response.json(tokenJson))
+          client <- ZIO.service[Client]
+          sso = SSOClient.Impl(client, config, okFiles, noIdentity, table(cells))
+          _ <- sso.exchangeAuthorizationCode(
+            Code("v1.kz-2.abc"),
+            CodeVerifier("v"),
+            RedirectUri("https://app.example/cb"),
+            ClientId("web-app"),
+            mutualTls,
+          )
+          _ <- sso.userInfo(tokenOf("kz-1"), SSOClient.TokenBinding.Certificate(ClientId("web-app"), mutualTls))
+          seen <- hosts.get
+        yield assertTrue(seen.reverse == List("kz-2-mtls", "kz-1-mtls"))
+      },
+      test("a cell with no mutual-TLS listener refuses a certificate client rather than receive the certificate elsewhere") {
+        for
+          hosts <- serve(_ => Response.json(tokenJson))
+          client <- ZIO.service[Client]
+          sso = SSOClient.Impl(client, config, okFiles, noIdentity, table(topology))
+          exchange <- sso.exchangeAuthorizationCode(
+            Code("v1.kz-1.abc"),
+            CodeVerifier("v"),
+            RedirectUri("https://app.example/cb"),
+            ClientId("web-app"),
+            mutualTls,
+          ).flip
+          userinfo <- sso.userInfo(tokenOf("kz-1"), SSOClient.TokenBinding.Certificate(ClientId("web-app"), mutualTls)).flip
+          seen <- hosts.get
+        yield assertTrue(
+          exchange == SSOClient.CellWithoutMutualTls(ClientId("web-app"), "kz-1"),
+          userinfo == SSOClient.CellWithoutMutualTls(ClientId("web-app"), "kz-1"),
+          seen.isEmpty,
+        )
+      },
+      test("a pushed request is placed in an open cell, and replayed once when that cell says the user moved") {
+        val placed = topology.copy(cells = Vector(one, two.copy(state = EdgeCellState.Closed), three.copy(state = EdgeCellState.Closed)))
+        for
+          hosts <- serve(host => if host == "kz-1" then moved else Response.json(pushedJson).status(Status.Created))
+          client <- ZIO.service[Client]
+          sso = SSOClient.Impl(client, config, files, noIdentity, table(placed))
+          url <- sso.authorizeUri(preset, pushClient, "challenge", State.fromBytes(Array.fill(16)(1.toByte)), Map.empty)
+          seen <- hosts.get
+        yield assertTrue(seen.reverse == List("kz-1", "kz-3"), url.queryParams.map.get("request_uri").exists(_.nonEmpty))
+      },
+      test("a pushed request with no cell open is refused and not sent to the configured auth") {
+        val shut = topology.copy(cells = Vector(one.copy(state = EdgeCellState.Draining), two.copy(state = EdgeCellState.Closed)))
+        for
+          hosts <- serve(_ => Response.json(pushedJson).status(Status.Created))
+          client <- ZIO.service[Client]
+          sso = SSOClient.Impl(client, config, files, noIdentity, table(shut))
+          error <- sso.authorizeUri(preset, pushClient, "challenge", State.fromBytes(Array.fill(16)(1.toByte)), Map.empty).flip
+          seen <- hosts.get
+        yield assertTrue(error == CellRoutingError.NoOpenCell, seen.isEmpty)
       },
       test("an installation with no cell registered reaches the configured auth for every value") {
         for

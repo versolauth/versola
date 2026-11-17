@@ -20,6 +20,7 @@ import './loading-cards';
 import './record-card';
 import './record-header';
 import './side-panel';
+import { ID_RULE, addressError, certificatesOf, validId } from '../utils/topology-input';
 
 type CellFilter = 'all' | CellState;
 type CellGroup = 'placement' | 'addresses';
@@ -31,31 +32,13 @@ const STATES: Array<{ id: CellState; label: string; text: string }> = [
   { id: 'draining', label: 'Draining', text: 'No new users, and the users it holds are being moved to other cells.' },
 ];
 
-/** Partitions, regions and cells share one shape of ID, the shape of a routing key's cell ID. */
-const ID_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
-const ID_RULE = 'Lowercase letters, digits and dashes, not starting or ending with a dash.';
 const NEW_PARTITION = '__new__';
-
-const validId = (id: string) => id.length <= 64 && ID_PATTERN.test(id);
-
-function addressError(value: string, httpsOnly: boolean): string {
-  try {
-    const url = new URL(value);
-    if (url.protocol === 'https:' || (url.protocol === 'http:' && !httpsOnly)) return '';
-  } catch { /* falls through to the message */ }
-  return httpsOnly ? 'An absolute https URL, for example https://auth-kz-1.internal:9008.' : 'An absolute http or https URL, for example http://auth-kz-1.internal:9003.';
-}
-
-/** The PEM blocks of a pasted text, one certificate each. */
-function certificatesOf(text: string): string[] {
-  return text.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) ?? [];
-}
 
 /**
  * Cells and regions: the table of every cell and, for the one selected, the side panel with its placement (state and
  * weight), its addresses and pinned certificates, the Fixed group (the ID and the region) and the danger card; below the
  * table, the regions with the cells and the edge sites in each. Everything shown comes from `GET /configuration/topology`
- * and `GET /configuration/edges`. Nothing routes by these yet (versolauth/versola#557): the screen is the registry.
+ * and `GET /configuration/edges`: the screen is the registry the edges read their cells from.
  */
 @customElement('versola-cells-list')
 export class VersolaCellsList extends LitElement {
@@ -175,12 +158,17 @@ export class VersolaCellsList extends LitElement {
   }
 
   updated(changed: Map<string, unknown>) {
-    if (changed.has('route') || changed.has('cells') || changed.has('regions')) {
+    const dataChanged = changed.has('cells') || changed.has('regions') || changed.has('partitions') || changed.has('edges');
+    if (changed.has('route') || dataChanged) {
       const mode = this.editorMode;
       const draftKey = mode === 'view' ? '' : `${mode}:${this.route.id ?? ''}:${this.route.edit ?? ''}`;
       if (draftKey !== this.draftKey) {
         this.draftKey = draftKey;
         if (mode !== 'view') this.resetDraft();
+      } else if (mode !== 'view' && dataChanged && this.draftSnapshot === this.draftBaseline) {
+        // The editor was opened before the topology arrived (a reload on a create link): an untouched draft is built again
+        // from what is known now, so the region and partition it shows are the ones it submits.
+        this.resetDraft();
       }
     }
   }
@@ -189,7 +177,15 @@ export class VersolaCellsList extends LitElement {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      const [topology, edges] = await Promise.all([fetchTopology(), fetchEdges().catch(() => [] as Edge[])]);
+      let edgesFailed = false;
+      const [topology, edges] = await Promise.all([
+        fetchTopology(),
+        fetchEdges().catch(() => {
+          edgesFailed = true;
+          return [] as Edge[];
+        }),
+      ]);
+      if (edgesFailed) this.actionError = 'The edge sites could not be loaded, so they cannot be edited until the page is reloaded.';
       this.cells = topology.cells;
       this.regions = topology.regions;
       this.partitions = topology.partitions;
@@ -317,6 +313,7 @@ export class VersolaCellsList extends LitElement {
     event.preventDefault();
     if (this.isSaving) return;
     this.submitted = true;
+    this.actionError = '';
     const mode = this.editorMode;
     if (mode === 'region') return this.saveRegion();
     if (mode === 'sites') return this.saveSites();
@@ -325,7 +322,11 @@ export class VersolaCellsList extends LitElement {
     const existing = this.openCell;
     const placement = mode === 'create' || group === 'placement';
     const addresses = mode === 'create' || group === 'addresses';
-    if (mode === 'create' && (this.idError || !this.draftId.trim() || !this.draftRegionId)) return;
+    if (mode === 'create' && !this.draftRegionId) {
+      this.formError = 'Choose a region.';
+      return;
+    }
+    if (mode === 'create' && (this.idError || !this.draftId.trim())) return;
     if (placement && this.weightError) return;
     if (addresses && (this.internalUrlError || !this.draftInternalUrl.trim() || this.mtlsUrlError || this.certificatesError)) return;
 
@@ -391,14 +392,18 @@ export class VersolaCellsList extends LitElement {
       .filter(change => (change.edge.regionId ?? null) !== change.regionId);
     this.isSaving = true;
     this.formError = '';
+    let failing = '';
     try {
       for (const change of changes) {
+        failing = change.edge.id;
         await setEdgeRegion(change.edge.id, change.regionId);
         this.edges = this.edges.map(edge => edge.id === change.edge.id ? { ...edge, regionId: change.regionId } : edge);
       }
       dispatchRecordRoute(this, { edit: null, create: false });
     } catch (error) {
-      this.formError = error instanceof Error ? error.message : 'Failed to save the edges of the region';
+      const reason = error instanceof Error ? error.message : 'Failed to save the edges of the region';
+      // The edges before the failing one are already moved; saying which is the one that was not tells the operator what to retry.
+      this.formError = failing ? `Edge ${failing} was not changed: ${reason}` : reason;
     } finally {
       this.isSaving = false;
     }

@@ -27,7 +27,7 @@ info:
       own mutual-TLS listener (`MPORT`), never on the port this document describes: the handshake must
       present a certificate that chains to the listener's trust anchors, and the certificate must carry
       the URI name `urn:versola:edge:<id>` for the edge the token names, or the call is `401`. An edge
-      is served only the tenants bound to it; the admin credential and auth's token are refused there
+      is served only the tenants of its group; the admin credential and auth's token are refused there
       (`401`). An edge of a `partner` group is refused all of `/edge/sync/*` (`401`): it is
       issued a certificate that names its group and is given no configuration.
     * `/edge/partner/*`, on the same mutual-TLS listener, the surface of a **partner's** edge (#549): an edge of a

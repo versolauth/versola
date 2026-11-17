@@ -239,3 +239,43 @@ test('the edge record names the region of the edge site', async ({ page }) => {
   await page.getByRole('button', { name: 'Open edge edge-aktau' }).click();
   await expect(panel(page, 'edge-aktau').getByRole('region', { name: 'Region' })).toContainText('None');
 });
+
+test('a create link opened on a fresh load still submits the region it shows', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: `${cellsPath}&new=1`, state: topology });
+
+  const create = panel(page, 'Register cell');
+  await expect(create.getByLabel('Region')).toHaveValue('almaty');
+  await create.getByLabel('Cell ID *').fill('kz-9');
+  await create.getByLabel('Internal URL *').fill('http://auth-kz-9.internal:9003');
+  await create.getByRole('button', { name: 'Register cell', exact: true }).click();
+
+  expect((await findRequest(api.requests, 'POST', '/configuration/cells')).body).toMatchObject({ id: 'kz-9', regionId: 'almaty' });
+});
+
+test('a region that central refuses to delete stays listed, and the refusal is shown', async ({ page }) => {
+  await loadAdminApp(page, { path: cellsPath, state: { ...topology, regions: [...topology.regions, { id: 'shymkent', partitionId: 'kz' }] } });
+  await page.route('**/configuration/regions*', route => route.request().method() === 'DELETE'
+    ? route.fulfill({ status: 409, contentType: 'text/plain', body: "region 'shymkent' still has edges in it: edge-x" })
+    : route.fallback());
+
+  await page.getByRole('button', { name: 'Delete region shymkent' }).click();
+  await page.getByRole('button', { name: 'Delete', exact: true }).click();
+
+  await expect(page.getByRole('alert').filter({ hasText: 'still has edges in it' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Region shymkent' })).toBeVisible();
+});
+
+test('a failure while placing edge sites names the edge that was not changed', async ({ page }) => {
+  await loadAdminApp(page, { path: cellsPath, state: topology });
+  await page.route('**/configuration/edges/region*', route => route.request().url().includes('edgeId=edge-almaty')
+    ? route.fulfill({ status: 400, contentType: 'text/plain', body: 'topology_invalid' })
+    : route.fallback());
+
+  await page.getByRole('button', { name: 'Edit edge sites of almaty' }).click();
+  const sites = panel(page, 'Edit edge sites');
+  await sites.getByLabel('edge-aktau').check();
+  await sites.getByLabel('edge-almaty').uncheck();
+  await sites.getByRole('button', { name: 'Save edge sites' }).click();
+
+  await expect(sites.getByRole('alert')).toContainText('Edge edge-almaty was not changed');
+});

@@ -97,18 +97,21 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
     CentralConfig.BootstrapConfig.UtilityClientSeed(ClientId("utils"), secret, publicKeyJwk)
 
   def spec = suite("BootstrapService")(
-    // #557: a tenant is served by a group of edges, and the edges a deployment seeds are created in `default`.
-    test("links the default tenant to the default group on a fresh installation that seeds edges, so that they sync central-admin") {
-      assertTrue(BootstrapService.groupToLink(current = None, seedsEdges = true) == Some(EdgeGroup.DefaultId))
+    // #557: a tenant is served by a group of edges; bootstrap links the default tenant to the group of the seeded edge.
+    test("links the default tenant to the group the seeded edge is in, so that it syncs central-admin") {
+      assertTrue(
+        BootstrapService.groupToLink(current = None, seededEdgeGroup = Some(EdgeGroup.DefaultId)) == Some(EdgeGroup.DefaultId),
+        BootstrapService.groupToLink(current = None, seededEdgeGroup = Some(EdgeGroupId("almaty"))) == Some(EdgeGroupId("almaty")),
+      )
     },
     test("leaves the group a tenant already names alone on every later start, the default one and an operator's own alike") {
       assertTrue(
-        BootstrapService.groupToLink(current = Some(EdgeGroup.DefaultId), seedsEdges = true).isEmpty,
-        BootstrapService.groupToLink(current = Some(EdgeGroupId("almaty")), seedsEdges = true).isEmpty,
+        BootstrapService.groupToLink(current = Some(EdgeGroup.DefaultId), seededEdgeGroup = Some(EdgeGroupId("almaty"))).isEmpty,
+        BootstrapService.groupToLink(current = Some(EdgeGroupId("almaty")), seededEdgeGroup = Some(EdgeGroup.DefaultId)).isEmpty,
       )
     },
     test("links nothing in a deployment that seeds no edge: no edge would serve the tenant through the group") {
-      assertTrue(BootstrapService.groupToLink(current = None, seedsEdges = false).isEmpty)
+      assertTrue(BootstrapService.groupToLink(current = None, seededEdgeGroup = None).isEmpty)
     },
     test("starts a tenant with an otp class that asks for a one-time code and a passkey class that asks for a passkey") {
       val settings = BootstrapService.defaultChallengeSettings(

@@ -110,6 +110,16 @@ object RoutingKeySpec extends ZIOSpecDefault:
           RoutingKey.Bytes.parse(stripped).exists(bytes => bytes.sameElements(random) && !bytes.sameElements(issued)),
         )
       },
+      test("reads the same value under another cell's key as different bytes, so a prefix cannot be swapped to reach another cell's record") {
+        val other = RoutingKey.CellId.parse("kz-2").toOption.get
+        val here = RoutingKey.Bytes.present(RoutingKey.Bytes.issue(Some(cell), random))
+        val there = RoutingKey.Bytes.present(RoutingKey.Bytes.issue(Some(other), random))
+        assertTrue(
+          here != there,
+          RoutingKey.Bytes.parse(here).flatMap(a => RoutingKey.Bytes.parse(there).map(b => !a.sameElements(b))) == Right(true),
+          RoutingKey.Bytes.parse(here.replace("kz-1", "kz-2")).exists(_.sameElements(RoutingKey.Bytes.issue(Some(other), random))),
+        )
+      },
       test("reads a value issued before any cell existed, which carries no key") {
         assertTrue(RoutingKey.Bytes.parse(Base64.urlEncode(random)).exists(_.sameElements(random)))
       },

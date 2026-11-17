@@ -642,8 +642,8 @@ before, an old `edge` against this `auth` and this `edge` against an old `auth` 
 
 Central serves edges on a surface of their own (#554): `GET /edge/sync/{clients,resources,roles,
 permissions,jwks,dpop,auth-request-presets,server-metadata}` and `POST
-/edge/clients/edge-certificate/sign`, each answering only for the tenants bound to the calling
-edge, **on central's mutual-TLS listener (`MPORT`) and nowhere else**. Every route outside `/edge/*`
+/edge/clients/edge-certificate/sign`, each answering only for the tenants served by the calling
+edge's group, **on central's mutual-TLS listener (`MPORT`) and nowhere else**. Every route outside `/edge/*`
 -- `/configuration/**` including the `*/sync` routes auth reads, `/users/registrations` -- refuses
 an edge token with `403`. The routes edge used before
 (`/configuration/{resources,roles,permissions,auth-request-presets}/sync`,
@@ -683,7 +683,7 @@ with a FAPI 2.0 client (`tls_client_auth`, PAR, certificate-bound tokens).
    certificate was signed by one of the certificates in the new `auth` setting
    `mutual-tls.edge-trusted-certificates` (certificate authorities, valid now; checked at startup) and names
    exactly one edge; **central still lists that edge** (auth syncs `GET /configuration/edges/registry`, ids
-   and assigned tenants, with the rest of its configuration); and the edge is **assigned to the tenant of
+   and the group each belongs to, with the rest of its configuration); and the edge's group **serves the tenant of
    the token's client**. Otherwise the call is judged as any client's. A token bound to *both* a key and a
    certificate is refused anyway, a certificate in a forwarded header is never taken for an edge's, and
    signature, revocation and the `openid` scope are checked as always. Without `edge-trusted-certificates`
@@ -712,18 +712,18 @@ What breaks, and how to migrate:
 - `dpop_edge_assertion_*` metrics are gone, and `GET /configuration/edges/registry` no longer carries keys (`auth` reads ids and tenants from it).
 
 Security implication: **the edge's certificate private key becomes the most sensitive key of the
-deployment.** Whoever holds it can call `/userinfo` as that edge, for any token of the tenants the edge is
-assigned to, with no proof of possession: that is the blast radius of a stolen edge certificate. What limits
+deployment.** Whoever holds it can call `/userinfo` as that edge, for any token of the tenants its group
+serves (every edge of a group serves the same tenants), with no proof of possession: that is the blast radius of a stolen edge certificate. What limits
 it: the edge CA must be dedicated (never the CA that issues clients' certificates: a client whose issuer
 can sign `urn:versola:edge:<id>` could otherwise impersonate an edge, which is why `auth` checks the issuer
 and not only the name; `docker-local` has a single CA and relies on central refusing to issue a client such
 a name, `gen-env` says so), edge certificates are short-lived (vps: 30 days, renewed by the edge), and
-**deleting an edge in central (or unassigning its tenants) cuts it off at `auth` within one configuration
+**deleting an edge in central (or taking its group's tenants away) cuts it off at `auth` within one configuration
 refresh**, not at expiry. Rotate the edge CA like any other, and make auth's mutual-TLS listener reachable
 only from the network the edges run in.
 
 In plain words: an edge certificate lets its holder call `/userinfo` **without proof of possession, for any
-token of the tenants assigned to that edge**. A certificate's own validity cannot be shortened after
+token of the tenants its group serves**. A certificate's own validity cannot be shortened after
 issuance; deleting the edge in central cuts it off at `auth` only **after the next configuration refresh**
 (`configuration-cache-refresh-interval` in `auth.conf`, one minute in `docker-local`, five elsewhere), and if
 central is unreachable `auth` keeps the last registry it had (with none loaded, no certificate is an edge's:

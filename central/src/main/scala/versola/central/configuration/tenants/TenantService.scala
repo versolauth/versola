@@ -103,7 +103,7 @@ object TenantService:
               "which cannot be changed after the tenant is created",
           ))
         _ <- servedByOperator(request.edgeGroupId)
-        _ <- tenantRepository.createTenant(request.id, request.description, request.edgeGroupId)
+        _ <- tenantRepository.createTenant(id = request.id, description = request.description, edgeGroupId = request.edgeGroupId)
         // A new tenant starts on the same key the rest of the deployment prefers. Left unset
         // it would instead fall back to auth's legacy configured key, quietly signing under
         // an algorithm nobody chose for it.
@@ -120,7 +120,7 @@ object TenantService:
         request: UpdateTenantRequest,
     ): Task[Unit] =
       servedByOperator(request.edgeGroupId) *>
-        tenantRepository.updateTenant(request.id, request.description, request.edgeGroupId)
+        tenantRepository.updateTenant(id = request.id, description = request.description, edgeGroupId = request.edgeGroupId)
 
     /** A tenant is served by one of the operator's own groups of edges (#557). A partner's group is refused: its edges
       * read nothing of a tenant from central, so naming it would leave the tenant served by no edge while saying

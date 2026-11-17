@@ -17,7 +17,11 @@ import scala.util.Try
   * value is.
   *
   * A value issued before cells existed carries no prefix and is read as belonging to the
-  * cell that receives it: [[decode]] answers `None` for it, never an error.
+  * cell that receives it: [[decode]] answers `None` for it, never an error. A router sends it
+  * to the deployment it is configured for, or, for a token bound to a key or a certificate, whose
+  * refresh token is renewed in place and so keeps the form it was issued in, by the `cell` header
+  * of the access token. Cells are turned on (`cell-id`) once every instance runs this version:
+  * a build that does not know the prefix refuses a prefixed value.
   */
 object RoutingKey:
   val Version = "v1"

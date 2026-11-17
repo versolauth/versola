@@ -84,13 +84,14 @@ object BootstrapService:
 
   private val NonProdAdminPhone = Phone("+12025551234")
 
-  /** The edge group bootstrap links the default tenant to, if any (#557). The edges a deployment seeds are created in
-    * the `default` group, and a tenant is served by a group: linking the tenant to that group is what has the seeded
-    * edges sync the central-admin client and its presets. A tenant that already names a group keeps it, so that an
-    * operator's own assignment survives every later start; a deployment that seeds no edge links nothing.
+  /** The edge group bootstrap links the default tenant to, if any (#557): the group the first seeded edge is in now,
+    * which is `default` unless an operator moved it. A tenant is served by a group, and linking the tenant to that group
+    * is what has the seeded edge sync the central-admin client and its presets. A tenant that already names a group
+    * keeps it, so that an operator's own assignment survives every later start; a deployment that seeds no edge links
+    * nothing.
     */
-  private[versola] def groupToLink(current: Option[EdgeGroupId], seedsEdges: Boolean): Option[EdgeGroupId] =
-    Option.when(seedsEdges && current.isEmpty)(EdgeGroup.DefaultId)
+  private[versola] def groupToLink(current: Option[EdgeGroupId], seededEdgeGroup: Option[EdgeGroupId]): Option[EdgeGroupId] =
+    seededEdgeGroup.filter(_ => current.isEmpty)
 
   private[versola] def adminPhone(envName: EnvName): Option[Phone] =
     Option.when(envName.isTest)(NonProdAdminPhone)
@@ -1794,15 +1795,18 @@ object BootstrapService:
               publicUrl = None,
             )
 
-    /** Links the default tenant to the group the seeded edges are created in, so the central-admin
+    /** Links the default tenant to the group the first seeded edge is in, so the central-admin
       * client (and its presets) are synced to them. Only applied when the
       * tenant has no group yet, to preserve manual assignments on re-runs.
       */
     private def linkTenantEdge(tenantId: TenantId, config: CentralConfig.BootstrapConfig): Task[Unit] =
-      tenantRepo.getAll.flatMap: tenants =>
-        ZIO.foreachDiscard(tenants.find(_.id == tenantId)): tenant =>
-          ZIO.foreachDiscard(BootstrapService.groupToLink(current = tenant.edgeGroupId, seedsEdges = config.edges.exists(_.nonEmpty))): group =>
-            tenantRepo.updateTenant(tenant.id, tenant.description, Some(group))
+      for
+        seededEdge <- ZIO.foreach(config.edges.getOrElse(Nil).headOption)(seed => edgeRepo.find(seed.id)).map(_.flatten)
+        tenants <- tenantRepo.getAll
+        _ <- ZIO.foreachDiscard(tenants.find(_.id == tenantId)): tenant =>
+          ZIO.foreachDiscard(BootstrapService.groupToLink(current = tenant.edgeGroupId, seededEdgeGroup = seededEdge.map(_.groupId))): group =>
+            tenantRepo.updateTenant(id = tenant.id, description = tenant.description, edgeGroupId = Some(group))
+      yield ()
 
     /** Seeds the edge-facing resource that proxies the admin API back to central.
       * Created for the default tenant (linked to the bootstrap edge) so it syncs

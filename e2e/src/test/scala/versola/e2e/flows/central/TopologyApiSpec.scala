@@ -125,7 +125,6 @@ object TopologyApiSpec extends CentralApiSpec:
           document <- synced.obj
           syncedCells <- synced.items("cells")
           refused <- onSurface(central, partner).get("/edge/sync/cells")
-          onMainListener <- central.withBearer(own.token).get("/configuration/cells/sync")
           _ <- central.put("/configuration/edges/region", Json.Obj(), "edgeId" -> own.edgeId)
         yield assertTrue(
           placed.status == Status.NoContent,
@@ -136,8 +135,10 @@ object TopologyApiSpec extends CentralApiSpec:
           assertTrue(synced.status == Status.Ok, document.str("region").contains(ids.region)).label("the edge is told its own region") &&
           assertTrue(syncedCells.exists(c => c.str("id").contains(ids.cell) && c.str("partitionId").contains(ids.partition)))
             .label("and every cell with the partition of its region") &&
-          assertTrue(refused.status == Status.Unauthorized).label("a partner's edge keeps one address and is not told the cells") &&
-          assertTrue(onMainListener.status == Status.Forbidden).label("the list auth syncs is not an edge's to read")).ensuring(cleanup(central, ids))
+          assertTrue(refused.status == Status.Unauthorized).label("a partner's edge keeps one address and is not told the cells")).ensuring(cleanup(
+          central,
+          ids,
+        ))
       yield result
     },
   )
