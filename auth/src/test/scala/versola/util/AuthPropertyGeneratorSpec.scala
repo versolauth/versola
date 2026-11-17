@@ -102,6 +102,14 @@ object AuthPropertyGeneratorSpec extends ZIOSpecDefault:
         accessToken.sameElements(Array.fill(16)(16.toByte)),
       )
     },
+    test("issues the public session id under the configured cell, and as the bare base64url without one") {
+      val random = Base64.urlEncode(Array.fill(16)(16.toByte))
+      for
+        lengths <- Ref.make(List.empty[Int])
+        routed <- AuthPropertyGenerator.Impl(fakeRandom(lengths), TestEnvConfig.cellCoreConfig).nextPublicSessionId
+        bare <- AuthPropertyGenerator.Impl(fakeRandom(lengths), TestEnvConfig.coreConfig).nextPublicSessionId
+      yield assertTrue((routed: String) == s"v1.${TestEnvConfig.cellId}.$random", (bare: String) == random)
+    },
     test("issues codes and refresh tokens as the bare random bytes when no cell is configured") {
       for
         lengths <- Ref.make(List.empty[Int])

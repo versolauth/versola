@@ -33,6 +33,15 @@ object RoutingKeySpec extends E2ESpec:
   private def cellHeader(accessToken: String): Task[Option[String]] =
     header(accessToken).map(_.get("cell").collect { case Json.Str(value) => value })
 
+  /** The `sid` claim of an access token, the public id of the session it was issued in. */
+  private def sidOf(accessToken: String): Task[Option[String]] =
+    for
+      segment <- ZIO.attempt(String(java.util.Base64.getUrlDecoder.decode(accessToken.split('.')(1)), "UTF-8"))
+        .mapError(error => RuntimeException(s"Access token is not a JWT [$error]: $accessToken"))
+      json <- ZIO.fromEither(segment.fromJson[Json.Obj])
+        .mapError(error => RuntimeException(s"Access token payload is not a JSON object [$error]: $segment"))
+    yield json.get("sid").collect { case Json.Str(value) => value }
+
   private def refreshTokenOf(tokens: TokenResult.Success): Task[String] =
     ZIO.fromOption(tokens.refreshToken)
       .orElseFail(RuntimeException("Expected a refresh token for the offline_access scope"))
@@ -79,6 +88,7 @@ object RoutingKeySpec extends E2ESpec:
         ).success
         refreshToken <- refreshTokenOf(tokens)
         cell <- cellHeader(tokens.accessToken)
+        sid <- sidOf(tokens.accessToken)
         refreshed <- auth.refresh(
           refreshToken,
           clientId = Some(s.clientId),
@@ -89,6 +99,10 @@ object RoutingKeySpec extends E2ESpec:
         userinfo <- auth.userinfo(refreshed.accessToken).success
       yield assertTrue(code.startsWith(prefixOf(auth)))
         .label(s"the authorization code must start with ${prefixOf(auth)}, got $code") &&
+        assertTrue(authorize.conversationCookie.exists(_.startsWith(prefixOf(auth))))
+          .label(s"the conversation cookie must start with ${prefixOf(auth)}, got ${authorize.conversationCookie}") &&
+        assertTrue(sid.exists(_.startsWith(prefixOf(auth))))
+          .label(s"the sid claim must start with ${prefixOf(auth)}, got $sid") &&
         assertTrue(refreshToken.startsWith(prefixOf(auth)))
           .label(s"the refresh token must start with ${prefixOf(auth)}") &&
         assertTrue(cell.contains(auth.cellId))

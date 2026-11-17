@@ -152,6 +152,7 @@ object AuthorizeEndpointController extends Controller:
                   ),
                   authConversationTtl,
                   config.security.conversationCookieSecret,
+                  config.cellId,
                 ),
               ),
           )

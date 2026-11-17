@@ -15,7 +15,7 @@ trait AuthPropertyGenerator:
 object AuthPropertyGenerator:
   def live = ZLayer.fromFunction(Impl(_, _))
 
-  /** The values a client presents back to redeem something -- codes and refresh tokens --
+  /** The values a client presents back to redeem something -- codes and refresh tokens -- and the public session id
     * are issued under this deployment's cell id, when it has one, so that a router can send
     * them home; see [[CoreConfig.cellId]]. */
   class Impl(secureRandom: SecureRandom, config: CoreConfig) extends AuthPropertyGenerator:
@@ -34,7 +34,7 @@ object AuthPropertyGenerator:
       secureRandom.nextBytes(32).map(SessionId(_))
 
     override def nextPublicSessionId: UIO[PublicSessionId] =
-      secureRandom.nextBytes(16).map(PublicSessionId.fromBytes)
+      secureRandom.nextBytes(16).map(PublicSessionId.issue(config.cellId, _))
 
     override def nextAccessToken: UIO[AccessToken] =
       secureRandom.nextBytes(16).map(AccessToken(_))
