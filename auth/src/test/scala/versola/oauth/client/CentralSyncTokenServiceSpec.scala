@@ -20,6 +20,8 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
     TestEnvConfig.coreConfig.copy(central = CoreConfig.CentralSyncConfig(URL.empty, secretKey)),
   )
 
+  private val syncUrl = URL.decode("http://central.test/configuration/clients/sync?tenant=secret-tenant").toOption.get
+
   def spec = suite("CentralSyncTokenService")(
     test("getToken returns a JWT signed with the configured secret key") {
       for
@@ -95,5 +97,48 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
       ZLayer.succeed(ConfigSnapshot.disabled),
       TestClient.layer,
       Scope.default,
+    ),
+      suite("a configuration sync that is not answered with a success")(
+      // The body is valid JSON for what a sync client decodes, as a gateway's or a proxy's error answer can be.
+      List(Status.BadRequest, Status.Forbidden, Status.NotFound, Status.TooManyRequests, Status.MovedPermanently).map: status =>
+        test(s"fails on ${status.code}, naming the status and the path and nothing of the body or the query") {
+          for
+            _ <- TestClient.addRoutes(Handler.succeed(Response.json("""{"clients":[],"secret":"leaked"}""").status(status)).toRoutes)
+            service <- ZIO.service[CentralSyncTokenService]
+            result <- ZIO.scoped(service.syncRequest(Request.get(syncUrl))).either
+          yield assertTrue(
+            result == Left(CentralSyncTokenService.UnexpectedStatus(status, "/configuration/clients/sync")),
+            result.left.exists(error => error.getMessage.contains(status.code.toString) && !error.getMessage.contains("leaked")),
+            result.left.exists(!_.getMessage.contains("tenant")),
+          )
+        }.provide(configLayer, CentralSyncTokenService.live, ZLayer.succeed(ConfigSnapshot.disabled), TestClient.layer, Scope.default)
+      ++ List(
+        test("fails when central refuses the fresh token too, since it retries once") {
+          for
+            calls <- Ref.make(0)
+            _ <- TestClient.addRoutes(
+              Handler.fromFunctionZIO[Request](_ => calls.update(_ + 1).as(Response.json("{}").status(Status.Unauthorized))).toRoutes,
+            )
+            service <- ZIO.service[CentralSyncTokenService]
+            result <- ZIO.scoped(service.syncRequest(Request.get(syncUrl))).either
+            count <- calls.get
+          yield assertTrue(result.left.exists(_.isInstanceOf[CentralSyncTokenService.UnexpectedStatus]), count == 2)
+        }.provide(configLayer, CentralSyncTokenService.live, ZLayer.succeed(ConfigSnapshot.disabled), TestClient.layer, Scope.default),
+        test("hands a success over with its body") {
+          for
+            _ <- TestClient.addRoutes(Handler.succeed(Response.json("""{"clients":[]}""")).toRoutes)
+            service <- ZIO.service[CentralSyncTokenService]
+            body <- ZIO.scoped(service.syncRequest(Request.get(syncUrl)).flatMap(_.body.asString))
+          yield assertTrue(body == """{"clients":[]}""")
+        }.provide(configLayer, CentralSyncTokenService.live, ZLayer.succeed(ConfigSnapshot.disabled), TestClient.layer, Scope.default),
+        test("leaves the statuses of a request that is not a sync to its caller") {
+          for
+            _ <- TestClient.addRoutes(Handler.succeed(Response.text("not allowed").status(Status.Forbidden)).toRoutes)
+            service <- ZIO.service[CentralSyncTokenService]
+            answer <- ZIO.scoped:
+              service.syncRequest(Request.post(syncUrl, Body.empty)).flatMap(response => response.body.asString.map(response.status -> _))
+          yield assertTrue(answer == (Status.Forbidden -> "not allowed"))
+        }.provide(configLayer, CentralSyncTokenService.live, ZLayer.succeed(ConfigSnapshot.disabled), TestClient.layer, Scope.default),
+      )*,
     ),
   ) @@ silentLogging
