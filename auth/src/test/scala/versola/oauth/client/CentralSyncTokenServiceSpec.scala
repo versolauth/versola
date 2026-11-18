@@ -20,6 +20,14 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
     TestEnvConfig.coreConfig.copy(central = CoreConfig.CentralSyncConfig(URL.empty, secretKey)),
   )
 
+  /** A real snapshot over a repository that counts what it is asked to store. */
+  private val countingSnapshot: ZLayer[Ref[Int], Throwable, ConfigSnapshot] = ZLayer.fromZIO:
+    ZIO.serviceWithZIO[Ref[Int]]: writes =>
+      val repository = new ConfigSnapshot.Repository:
+        override def find(key: String): Task[Option[ConfigSnapshot.Record]] = ZIO.none
+        override def save(record: ConfigSnapshot.Record): Task[Unit] = writes.update(_ + 1)
+      ConfigSnapshot.make(repository, Array.fill[Byte](32)(7))
+
   private val syncUrl = URL.decode("http://central.test/configuration/clients/sync?tenant=secret-tenant").toOption.get
 
   def spec = suite("CentralSyncTokenService")(
@@ -124,6 +132,22 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
             count <- calls.get
           yield assertTrue(result.left.exists(_.isInstanceOf[CentralSyncTokenService.UnexpectedStatus]), count == 2)
         }.provide(configLayer, CentralSyncTokenService.live, ZLayer.succeed(ConfigSnapshot.disabled), TestClient.layer, Scope.default),
+        // The snapshot sits in front of the check: a 5xx stays what the first load starts from the stored copy on.
+        test("leaves a 5xx to the snapshot, which fails it as SourceFailed and records nothing") {
+          for
+            _ <- TestClient.addRoutes(Handler.succeed(Response.json("""{"clients":[]}""").status(Status.BadGateway)).toRoutes)
+            service <- ZIO.service[CentralSyncTokenService]
+            result <- ZIO.scoped(service.syncRequest(Request.get(syncUrl))).either
+            writes <- ZIO.serviceWithZIO[Ref[Int]](_.get)
+          yield assertTrue(result.left.exists(_.isInstanceOf[ConfigSnapshot.SourceFailed]), writes == 0)
+        }.provide(
+          configLayer,
+          CentralSyncTokenService.live,
+          countingSnapshot,
+          ZLayer.fromZIO(Ref.make(0)),
+          TestClient.layer,
+          Scope.default,
+        ),
         test("hands a success over with its body") {
           for
             _ <- TestClient.addRoutes(Handler.succeed(Response.json("""{"clients":[]}""")).toRoutes)
