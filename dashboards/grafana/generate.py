@@ -503,6 +503,8 @@ def outbound(b: Board) -> None:
          desc="Per peer: 0 closed (calls pass), 1 half-open (probing), 2 open (calls are refused without being made). Open means the peer is failing more than the policy tolerates; it reopens by itself after the open time.")
     b.ts("Outbound guard — retries denied / s", [(f"sum by (peer, mode) (rate(http_client_retry_budget_denied_total{{{sel}}}[$__rate_interval]))", "{{peer}} ({{mode}})")], unit="reqps", minimum=0,
          desc="Retries the retry budget refused, so a failing peer is not hit with a second wave. Non-zero is the budget working; sustained means the peer is failing most calls.")
+    b.ts("Calls to other services — repeated on a closed connection / s", [(f"sum by (peer) (rate(http_client_closed_connection_retries_total{{{sel}}}[$__rate_interval]))", "{{peer}}")], unit="reqps", minimum=0,
+         desc="Safe calls (GET, HEAD, OPTIONS) sent a second time because the far side closed the connection while they were being written to it. An occasional one is the race every keep-alive connection has. A peer that stays above zero is closing connections under the client: its idle timeout (or the ingress's or sidecar's in front of it) is shorter than the client's 50 s. Lower the client's idle time or raise the far side's. Empty is healthy.")
 
 
 def overload(b: Board) -> None:

@@ -188,7 +188,8 @@ private[http] object Limiter:
   *
   * Metrics, per `peer`: `http_client_guard_in_flight`, `http_client_guard_waiting`, `http_client_guard_limit`,
   * `http_client_guard_wait_seconds`, `http_client_guard_breaker_state` (0 closed, 1 half open, 2 open),
-  * `http_client_retry_budget_denied_total`, and `http_client_guard_rejected_total` by `reason` and `mode` (in `shadow` it
+  * `http_client_retry_budget_denied_total`, `http_client_closed_connection_retries_total` (see
+  * [[repeatingOnClosedConnection]]), and `http_client_guard_rejected_total` by `reason` and `mode` (in `shadow` it
   * counts what `enforce` would have rejected).
   */
 final class OutboundGuard private (settings: Ref[OutboundGuardSettings]):
@@ -322,6 +323,34 @@ final class OutboundGuard private (settings: Ref[OutboundGuardSettings]):
       else
         Clock.nanoTime.flatMap(now => ZIO.succeed(budgetFor(peer).deposit(now, s.retryBudget))) *> attempt(0)
 
+  /** Sends a request that changes nothing once more when the connection it was sent on was closed by the far side, within the peer's
+    * retry budget ([[retrying]]; with the guard `off` there is no repeat).
+    *
+    * zio-http discards a pooled channel it has seen close before it hands it out, so a connection that went stale while idle costs
+    * nothing. What it cannot see is a connection the far side closes while the request is being written to it (an ingress or a mesh
+    * sidecar whose idle timeout runs out between the checkout and the first byte). That request fails, as `PrematureChannelClosureException`
+    * where the far side's FIN was read first and as `Connection reset by peer` or `Broken pipe` where its RST was (see
+    * [[isClosedConnection]]), and the next request is fine. It is rare and cannot be removed, only repeated: the second attempt takes
+    * another connection or opens a new one.
+    *
+    * Only `GET`, `HEAD` and `OPTIONS`, and only when the body is known in full: a body that is a stream may be half consumed by the
+    * first attempt, and the second would send it truncated. The repeat is inside [[protect]], so the guard sees one call: one permit,
+    * one breaker record, and the second attempt shares the `requestTimeout` of the first (#579).
+    */
+  def repeatingOnClosedConnection[R, E, A](peer: String, method: Method, body: Body)(call: ZIO[R, E, A]): ZIO[R, E, A] =
+    if !(isSafe(method) && body.isComplete) then call
+    else
+      ZIO.suspendSucceed:
+        val attempts = new java.util.concurrent.atomic.AtomicInteger(0)
+        retrying(peer, maxRetries = 1)((failure: E) => isClosedConnection(failure))(
+          ZIO.suspendSucceed:
+            attempts.incrementAndGet()
+            call,
+        ).ensuring(
+          ZIO.suspendSucceed:
+            if attempts.get > 1 then closedConnectionRetries.tagged(Set(MetricLabel("peer", peer))).increment else ZIO.unit,
+        )
+
   private def timed[R, E >: Throwable, A](peer: String, s: OutboundGuardSettings, mode: GuardMode, call: ZIO[R, E, A]): ZIO[R, E, A] =
     if mode == GuardMode.Enforce then
       call.timeoutFail(OutboundTimedOut(peer, s.requestTimeout))(s.requestTimeout)
@@ -350,7 +379,9 @@ final class OutboundGuard private (settings: Ref[OutboundGuardSettings]):
                 proxy: Option[Proxy],
             )(using trace: Trace): ZIO[Env & ReqEnv, Err, Response] =
               val peer = peerOf(url)
-              protect(peer, failedByStatus)(client.driver.request(version, method, url, headers, body, sslConfig, proxy))
+              protect(peer, failedByStatus)(
+                repeatingOnClosedConnection(peer, method, body)(client.driver.request(version, method, url, headers, body, sslConfig, proxy)),
+              )
 
             def socket[Env1 <: Env](version: Version, url: URL, headers: Headers, app: WebSocketApp[Env1])(using
                 trace: Trace,
@@ -360,6 +391,30 @@ final class OutboundGuard private (settings: Ref[OutboundGuardSettings]):
         )
 
 object OutboundGuard:
+  private def isSafe(method: Method): Boolean = method == Method.GET || method == Method.HEAD || method == Method.OPTIONS
+
+  /** Whether a failure is the far side having closed the connection a request was written to, however the failure is reported: Netty's
+    * `PrematureChannelClosureException` and `ClosedChannelException` when the close was read first, and an `IOException` saying the
+    * connection was reset or the pipe broken (`NativeIoException`, `SocketException`) when the reset was. Looks through the causes, since a
+    * client may wrap what Netty raised. Not a timeout and not a failure to connect: neither says the connection had been closed.
+    */
+  private[http] def isClosedConnection(failure: Any): Boolean =
+    @scala.annotation.tailrec
+    def look(t: Throwable, depth: Int): Boolean = t match
+      case null => false
+      case _: io.netty.handler.codec.PrematureChannelClosureException | _: java.nio.channels.ClosedChannelException => true
+      case io: java.io.IOException if resets(io.getMessage) => true
+      case other => depth < 8 && look(other.getCause, depth + 1)
+    failure match
+      case t: Throwable => look(t, 0)
+      case _ => false
+
+  private def resets(message: String): Boolean =
+    message != null && {
+      val lower = message.toLowerCase
+      lower.contains("connection reset") || lower.contains("broken pipe")
+    }
+
   /** The peer a URL names, as the guard keys its limits and metrics: `host:port`. */
   def peerOf(url: URL): String = url.kind match
     case loc: URL.Location.Absolute => s"${loc.host}:${loc.port}"
@@ -375,6 +430,7 @@ object OutboundGuard:
   private val rejected = Metric.counter("http_client_guard_rejected_total")
   private val breakerGauge = Metric.gauge("http_client_guard_breaker_state")
   private val retryDenied = Metric.counter("http_client_retry_budget_denied_total")
+  private val closedConnectionRetries = Metric.counter("http_client_closed_connection_retries_total")
 
   /** A response that says the peer, not the request, is at fault. */
   private val failedByStatus: Response => Boolean = r =>
