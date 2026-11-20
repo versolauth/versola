@@ -129,16 +129,22 @@ class Board:
 
     # -- panels -----------------------------------------------------------------------------
 
-    def stat(self, title: str, expr: str, unit: str = "short", desc: str = "", thresholds: dict | None = None, w: int = 6, decimals: int | None = None) -> None:
+    def stat(self, title: str, expr: str, unit: str = "short", desc: str = "", thresholds: dict | None = None, w: int = 6, decimals: int | None = None,
+             mappings: list[dict] | None = None, no_value: str | None = None) -> None:
+        """`mappings` name or color a value that is a state (0 = off); `no_value` is what the tile says when the query has no data."""
         defaults: dict = {"unit": unit, "thresholds": thresholds or steps((None, "text"))}
         if decimals is not None:
             defaults["decimals"] = decimals
+        if mappings:
+            defaults["mappings"] = mappings
+        if no_value is not None:
+            defaults["noValue"] = no_value
         self._place({
             "type": "stat", "title": title, "description": desc, "datasource": DS,
             "fieldConfig": {"defaults": defaults, "overrides": []},
             "options": {
                 "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
-                "colorMode": "background" if thresholds else "none",
+                "colorMode": "background" if thresholds or mappings else "none",
                 "graphMode": "none", "textMode": "value",
             },
             "targets": [{"refId": "A", "datasource": DS, "expr": expr, "instant": False}],
@@ -955,7 +961,7 @@ def build_antifraud() -> Board:
     b = Board(
         "versola-antifraud", "Versola — Antifraud",
         "The antifraud module of auth: decisions and what enforcing would have changed, rules, challenges, the SMS budget, the event pipeline, "
-        "velocity counters, lists, detectors and storage. Written for a shadow-mode rollout: read Decisions first. Alert rules for the same signals: dashboards/alerts/versola-antifraud.rules.yaml.",
+        "velocity counters, lists, the network signals (ASN, country), detectors and storage. Written for a shadow-mode rollout: read Decisions first. Alert rules for the same signals: dashboards/alerts/versola-antifraud.rules.yaml.",
         with_tail=False,
     )
     b.use("auth")
@@ -1084,6 +1090,87 @@ def build_antifraud() -> Board:
          desc="Seconds since the lists were last read successfully. A minute or so is healthy (the refresh interval). The dashed line is the alert: 10 minutes means the pod enforces lists that old, and a hung refresh moves no failure counter, so this is the only place it shows. Empty while lists are off.")
     b.ts("Tuning age", [(f"time() - max by (pod) (antifraud_tuning_refreshed_timestamp_seconds{{{s}}})", "{{pod}}")], unit="s", minimum=0, line=steps((None, GREEN), (600, RED)),
          desc="Seconds since the tuned settings (mode, thresholds, weights) were last read successfully. A few seconds is healthy (the refresh interval). The dashed line is the alert at 10 minutes: a pod that old ignores a switch from shadow to enforce.")
+
+    # -- network signals --------------------------------------------------------------------
+    # Three questions, in the order an operator asks them: is the database on every pod (or the decision depends on the pod
+    # that took the request), does auth see client addresses at all (or every network rule judges the proxy), and how much
+    # traffic a network rule would touch if it counted. The tiles answer the first two per signal, the graphs the third.
+    b.row("auth — Network signals (ASN, country)")
+    signals = (
+        # (name in titles, metric prefix, config block, days of age the alert fires at: three default refresh intervals)
+        ("ASN", "antifraud_asn", "antifraud.asn", 3),
+        ("Country", "antifraud_geo", "antifraud.geo", 21),
+    )
+    DAYS = "suffix: days"
+    b.text("Per database, left to right: is it on every pod, does `auth` see client addresses, is it being refreshed. A tile that is not green is something to fix "
+           "before trusting a rule that reads the network. The graphs below say how much traffic each such rule touches, and why a request carried no signal.", h=2)
+
+    def lookups(prefix: str, result: str) -> str:
+        return f"sum({r(prefix + '_lookups_total', f', result=~\"{result}\"')})"
+
+    def placed(prefix: str) -> str:
+        # Of the lookups that had a database to look in. No data while there are none, so the tile says so instead of 0%.
+        return f"({lookups(prefix, 'hit')} or vector(0)) / ({lookups(prefix, 'hit|miss')} > 0)"
+
+    def age(prefix: str, by: str = "") -> str:
+        # In days, as a plain number (DAYS): the refresh is a matter of days, and a duration unit turns eleven of them into "1.6 weeks".
+        return f"(time() - min{by} ({prefix}_database_loaded_timestamp_seconds{{{s}}})) / 86400"
+
+    for name, prefix, block, stale in signals:
+        b.stat(f"{name} database: on every pod?",
+               f"(count({prefix}_database_ranges{{{s}}} > 0) or vector(0)) / clamp_min(count(up{{{s}}} == 1), 1)", unit="percentunit", decimals=0, w=8,
+               mappings=[
+                   {"type": "value", "options": {"0": {"text": "off", "color": "text", "index": 0}, "1": {"text": "all", "color": GREEN, "index": 1}}},
+                   {"type": "range", "options": {"from": 0.0001, "to": 0.9999, "result": {"color": RED, "index": 2}}},
+               ],
+               desc=f"Share of the running auth pods that hold the {name} database. `all` is healthy. `off`: no pod has one, the signal is switched off (`{block}.file` is empty) or the file is missing everywhere. "
+                    "**A percentage in red is the case to act on:** some pods have the database and some do not, so the same request is judged with the signal on one pod and without it on another. "
+                    "The auth log of the pod without it says why (`could not read the ... file`, or the file is not on that pod's volume); fix it and restart that pod.")
+        b.stat(f"{name}: client addresses recognised", placed(prefix), unit="percentunit", decimals=1, w=8, no_value="no lookups",
+               thresholds=steps((None, RED), (0.5, YELLOW), (0.9, GREEN)),
+               desc="Of the client addresses looked up, the share the database could place. Public addresses are nearly all placed, so healthy is close to 100%. "
+                    "**Low means auth is not seeing the client's address**, not that the database is poor: the proxy in front does not set the header the tenant's `ipHeader` names, or it carries an internal hop (a private address is in no range). "
+                    "Fix the proxy before trusting any rule that reads the network, the per-address velocity limits included. Test traffic from private addresses reads low for the same reason. "
+                    "`no lookups`: nothing was looked up in the window (no request asked for a code, the decision engine is off, or no database is loaded).")
+        b.stat(f"{name} database: age", age(prefix), unit=DAYS, decimals=1, w=8, no_value="no database",
+               thresholds=steps((None, GREEN), (stale, YELLOW)),
+               desc=f"Time since the file in use was written (the oldest among the pods): since the last download that succeeded, or since an operator replaced the file. "
+                    f"Yellow from {stale} days, three default `refresh-interval`s, which is where the alert fires: the refresh is not working. "
+                    "The previous database stays in use, so nothing breaks at once, but networks change hands and the signal drifts. Look at Failed refreshes below and at the auth log for the reason.")
+
+    net_rules = 'rule=~"asn_hosting|country_mismatch|country_outside_regions|velocity_asn_.+|.+_list:(asn|country)"'
+    b.ts("Network rules — share of decisions", [
+        (f"sum by (rule, shadow) ({r(fired, ', ' + net_rules)}) / scalar(clamp_min({total(dec)}, 0.001))", "{{rule}} (shadow={{shadow}})"),
+    ], unit="percentunit", minimum=0,
+         desc="How much of the judged traffic each rule on the network fires on. **Read it before taking a rule out of `shadowRules` or raising its weight**: the line is the share of requests that would gain the rule's weight. "
+              "`asn_hosting` at a small steady share is the honest population behind VPNs and relays; at most of the traffic it means auth sees a proxy's or a cloud NAT's address (see Addresses recognised). "
+              "`country_mismatch` and `country_outside_regions` are people signing in from abroad (roaming, travellers) as well as attacks: a steady floor is your honest share, a step above it is a campaign. "
+              "`velocity_asn_*` is a per-AS limit being reached, `*_list:asn` and `*_list:country` are list entries matching. `shadow=true` only records.")
+    b.ts("Addresses not placed — share of lookups", [
+        (b.ratio(r(prefix + "_lookups_total", f', result="{result}"'), r(prefix + "_lookups_total")), f"{name}: {label}")
+        for name, prefix, _, _ in signals
+        for result, label in (("miss", "in no range"), ("unavailable", "no database"))
+    ], unit="percentunit", minimum=0, maximum=1,
+         desc="Why a request carried no network signal. `in no range`: the address was looked up and the database has nothing for it, a private or reserved address or text that is no address, "
+              "so the proxy header is the place to look. `no database`: the pod that took the request had nothing to look in, the signal is off or its file did not load there. "
+              "Both near 0 is healthy. A signal that is switched off draws `no database` at 100%; a line between 0 and 100% is pods that disagree.")
+    for name, prefix, _, stale in signals:
+        b.ts(f"{name} database age by pod", [(age(prefix, " by (pod)"), "{{pod}}")], unit=DAYS, minimum=0, w=6, line=steps((None, GREEN), (stale, RED)),
+             desc="A sawtooth is healthy: the age grows and drops to 0 at each refresh. A line that only climbs is a refresh that does not work on that pod; the dashed line is where the alert fires. "
+                  "Pods refresh on their own, so their teeth are not in step.")
+    b.ts("Ranges held across pods", [
+        (f"{fn}({prefix}_database_ranges{{{s}}})", f"{name}: {label}")
+        for name, prefix, _, _ in signals
+        for fn, label in (("min", "smallest"), ("max", "largest"))
+    ], unit="short", minimum=0, w=6,
+         desc="How many address ranges the databases hold: for each, the pod with the fewest and the pod with the most. The two lines of a database lie on each other when the pods hold the same file, "
+              "and step a little at a refresh. **A drop of `smallest` to a fraction of the usual size is a wrong file on some pod** (a truncated download, another format): "
+              "the loader refuses a file that is mostly unreadable, not one that is merely short. Lines that stay apart are pods on different files.")
+    b.ts("Failed refreshes", [
+        (f"sum(increase({prefix}_database_refresh_failed_total{{{s}}}[$__rate_interval]))", name) for name, prefix, _, _ in signals
+    ], unit="short", minimum=0, w=6, overrides=RED_SERIES,
+         desc="Downloads or reads of a fresher database that did not produce one; the database in use stays. Empty is healthy. One is a mirror that was down for a try; a failure at every interval is a wrong `url`, "
+              "a directory auth cannot write to, or a file that is not a database. The auth log names the host and the reason: `could not download the ASN database from <host>`, `could not read the country database file`.")
 
     # -- detectors and resets ---------------------------------------------------------------
     b.row("auth — Detectors and resets")

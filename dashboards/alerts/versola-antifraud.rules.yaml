@@ -158,3 +158,59 @@ groups:
         annotations:
           summary: "An antifraud counter reset did not complete in {{ $labels.namespace }} ({{ $labels.what }})"
           description: "A reset of the velocity counters or the SMS budget failed at {{ $labels.what }} (delete: the stored rows, poll: an instance reading the resets). That instance keeps counting. Repeat the reset after checking the database."
+
+      # The network signals (ASN, country). Each rule covers both databases and says which in the `signal` label.
+      # A refresh is tried once an interval (a day, a week), so the first failure on a pod matters here: the second
+      # branch of AntifraudNetworkDatabaseRefreshFailed sees a counter that has just appeared, which increase() does not.
+      - alert: AntifraudNetworkDatabaseStale
+        expr: |
+          label_replace(time() - min by (namespace) (antifraud_asn_database_loaded_timestamp_seconds) > 3 * 86400, "signal", "asn", "", "")
+          or
+          label_replace(time() - min by (namespace) (antifraud_geo_database_loaded_timestamp_seconds) > 21 * 86400, "signal", "country", "", "")
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "The antifraud {{ $labels.signal }} database is not being refreshed in {{ $labels.namespace }}"
+          description: "The file in use was written {{ $value | humanizeDuration }} ago, more than three default refresh intervals (3 days for asn, 21 for country; a deployment with a longer refresh-interval raises the threshold). The previous database stays in use, so nothing breaks, but the signal drifts. Check AntifraudNetworkDatabaseRefreshFailed and the auth log: 'could not download the ... database from <host>'."
+
+      - alert: AntifraudNetworkDatabaseRefreshFailed
+        expr: |
+          label_replace(
+            sum by (namespace) (increase(antifraud_asn_database_refresh_failed_total[6h])) > 0
+            or count by (namespace) (antifraud_asn_database_refresh_failed_total unless antifraud_asn_database_refresh_failed_total offset 6h) > 0,
+            "signal", "asn", "", "")
+          or
+          label_replace(
+            sum by (namespace) (increase(antifraud_geo_database_refresh_failed_total[6h])) > 0
+            or count by (namespace) (antifraud_geo_database_refresh_failed_total unless antifraud_geo_database_refresh_failed_total offset 6h) > 0,
+            "signal", "country", "", "")
+        labels:
+          severity: warning
+        annotations:
+          summary: "A refresh of the antifraud {{ $labels.signal }} database failed in {{ $labels.namespace }}"
+          description: "A download or a read of a fresher database did not produce one; the database in use stays. One failure is a mirror that was down for a try. If it repeats, the url is wrong, auth cannot write next to the file, or the file is not a database: the auth log names the host and the reason."
+
+      - alert: AntifraudNetworkDatabaseMissingOnSomePods
+        expr: |
+          label_replace(sum by (namespace) (rate(antifraud_asn_lookups_total{result="unavailable"}[10m])) > 0 and sum by (namespace) (antifraud_asn_database_ranges) > 0, "signal", "asn", "", "")
+          or
+          label_replace(sum by (namespace) (rate(antifraud_geo_lookups_total{result="unavailable"}[10m])) > 0 and sum by (namespace) (antifraud_geo_database_ranges) > 0, "signal", "country", "", "")
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Some auth pods have no antifraud {{ $labels.signal }} database in {{ $labels.namespace }}"
+          description: "At least one pod holds the database while lookups on another find none, so the same request is judged with the signal on one pod and without it on another. The log of the pod without it says why (the file is not on its volume, or 'could not read the ... file'); fix it and restart that pod."
+
+      - alert: AntifraudClientAddressNotRecognised
+        expr: |
+          sum by (namespace) (rate(antifraud_asn_lookups_total{result="miss"}[15m])) / sum by (namespace) (rate(antifraud_asn_lookups_total{result=~"hit|miss"}[15m])) > 0.5
+          or
+          sum by (namespace) (rate(antifraud_geo_lookups_total{result="miss"}[15m])) / sum by (namespace) (rate(antifraud_geo_lookups_total{result=~"hit|miss"}[15m])) > 0.5
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "auth does not see client addresses in {{ $labels.namespace }}"
+          description: "More than half of the addresses looked up are in no range of the database ({{ $value | humanizePercentage }}). Public addresses are nearly all placed, so auth is being given something else: the proxy does not set the header the tenant's ipHeader names, or it carries an internal hop. Every rule that reads the network, the per-address velocity limits included, is judging the proxy until this is fixed."
