@@ -239,32 +239,6 @@ object Observability:
   private val clientActiveRequests =
     Metric.gauge("http_client_active_requests")
 
-  /** A safe request sent again because the connection it was on turned out to be closed: see [[retryOnClosedConnection]]. */
-  private val clientClosedConnectionRetries =
-    Metric.counter("http_client_closed_connection_retries_total")
-
-  /** Whether a failure is the far side having closed the connection the request was written to. */
-  private def isClosedConnection(failure: Any): Boolean = failure match
-    case _: io.netty.handler.codec.PrematureChannelClosureException => true
-    case _: java.nio.channels.ClosedChannelException => true
-    case _ => false
-
-  /** Sends a safe request (`GET`, `HEAD`, `OPTIONS`) once more when the connection it was sent on was closed by the far side.
-    *
-    * zio-http discards a pooled channel it has seen close before it hands it out, so a connection that went stale while idle costs
-    * nothing. What it cannot see is a connection the far side closes at the moment the request is written to it (an ingress or a
-    * mesh sidecar whose idle timeout runs out between the checkout and the first byte): that request fails with
-    * `PrematureChannelClosureException`, and the next one is fine. It is rare and cannot be removed, only repeated: the second
-    * attempt takes another connection or opens a new one. Only requests that do not change anything are repeated, and only once;
-    * a request with a body is the caller's to decide about (#579).
-    */
-  private def retryOnClosedConnection[R, E, A](method: Method, peer: Set[MetricLabel])(call: ZIO[R, E, A]): ZIO[R, E, A] =
-    if method == Method.GET || method == Method.HEAD || method == Method.OPTIONS then
-      call.catchAllCause: cause =>
-        if cause.failures.exists(isClosedConnection) then clientClosedConnectionRetries.tagged(peer).increment *> call
-        else ZIO.failCause(cause)
-    else call
-
   /** Masks an `Authorization` header value while preserving its scheme, e.g. `Bearer secret`
     * becomes `Bearer ***` and `Basic secret` becomes `Basic ***`, so logs stay useful for
     * distinguishing auth schemes without leaking credentials. Falls back to `***` when no
@@ -618,7 +592,7 @@ object Observability:
                     case loc: URL.Location.Absolute => Set(MetricLabel("peer", s"${loc.host}:${loc.port}"))
                     case URL.Location.Relative => Set(MetricLabel("peer", "unknown"))
                   result <- clientActiveRequests.tagged(peerTag).increment *>
-                    retryOnClosedConnection(method, peerTag)(client.driver.request(version, method, url, tracedHeaders, body, sslConfig, proxy))
+                    client.driver.request(version, method, url, tracedHeaders, body, sslConfig, proxy)
                       .sandbox.exit.timed
                       .ensuring(clientActiveRequests.tagged(peerTag).decrement)
                   (duration, exit) = result
