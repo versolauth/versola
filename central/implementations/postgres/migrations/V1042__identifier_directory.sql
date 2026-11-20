@@ -2,11 +2,12 @@
 -- holds that user. It replaces `user_index`, which kept every phone, email and login in the clear and said nothing
 -- about cells. Each cell has its own database, so uniqueness of an identifier across cells is decided here.
 
--- One row per user. `cell_id` is null on an installation that registered no cell: the user is in the one `auth` the
--- deployment has. A cell that holds users cannot be deleted from under them, which is what the reference says.
+-- One row per user. `cell_id` is the cell that claimed the user, as that `auth` names itself (`cell-id`); null for an
+-- `auth` that names none. Not a reference to `cells`: an `auth` may run with a cell id before the operator registers
+-- its cell (a single `auth` needs no registry to work), and the claim of a user must not wait for that.
 CREATE TABLE user_directory (
     user_id UUID NOT NULL PRIMARY KEY,
-    cell_id TEXT REFERENCES cells (id)
+    cell_id TEXT
 );
 
 -- One row per identifier of a user. `mac` is the keyed BLAKE3 of the identifier as `auth` stores it (a phone is

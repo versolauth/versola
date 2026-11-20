@@ -6,7 +6,7 @@ import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.topology.CellId
 import versola.util.{DatabaseSpecBase, Email, Patch, Phone, Secret}
 import zio.test.*
-import zio.{Duration, Task, ZIO, ZLayer}
+import zio.{Duration, ZIO}
 
 import java.util.UUID
 
@@ -88,7 +88,6 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
       },
       test("a claim of identifiers nobody holds gives them to the candidate, in the candidate's cell, and queues nothing") {
         for
-          _ <- env.fixtures.cell(cell)
           owner <- env.repository.claim(List(phone), user(userId1, Some(cell)))
           found <- env.repository.findByIdentifier(phone)
           events <- env.repository.claimDueEvents(10, Duration.fromSeconds(60))
@@ -96,8 +95,6 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
       },
       test("a repeated claim answers the first owner and its cell, whoever the candidate and whatever its cell") {
         for
-          _ <- env.fixtures.cell(cell)
-          _ <- env.fixtures.cell(otherCell)
           first <- env.repository.claim(List(phone), user(userId1, Some(cell)))
           second <- env.repository.claim(List(phone), user(userId2, Some(otherCell)))
           candidate <- env.repository.find(userId2)
@@ -243,8 +240,4 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
     )
 
 object UserRepositorySpec:
-  /** What a case needs that the repository under test does not write: a registered cell for a user to be in. */
-  trait Fixtures:
-    def cell(id: CellId): Task[Unit]
-
-  case class Env(repository: UserRepository, fixtures: Fixtures)
+  case class Env(repository: UserRepository)
