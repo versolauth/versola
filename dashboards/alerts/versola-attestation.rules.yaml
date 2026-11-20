@@ -1,0 +1,70 @@
+# Alert rules for the app attestation of native apps, served by edge (#423, #1042). Prometheus rule-group format: loaded as it is by
+# Prometheus (`rule_files`) and by VictoriaMetrics' vmalert (`-rule`). See dashboards/alerts/README.md.
+#
+# The thresholds are placeholders until the release checks (#1019) have numbers from real devices. The counters here are created by the
+# first increment, so a failure that happens once on a fresh pod is not seen by increase(); a failure that repeats is.
+#
+# `pod` is a label the scrape copies from the pod (see k8s/monitoring/vmagent-values.yaml): the revocation list is per edge pod, and a
+# pod that never fetched it must be told from one that did.
+groups:
+  - name: versola-attestation
+    rules:
+      # Google's list of revoked Android certificates is fetched when an Android attestation first needs it, and then kept fresh. Two ways
+      # it goes wrong, and both are only worth saying while Android attestations are being verified: the last fetch is older than two
+      # refresh intervals (the interval is published by the pod, so this holds for any setting), or there never was one (no timestamp at
+      # all). A pod that has the list switched off publishes no interval and is left out of both.
+      - alert: AttestationRevocationListStale
+        expr: |
+          (
+            (time() - max by (namespace, pod) (attestation_revocation_list_refreshed_timestamp_seconds)
+              > 2 * max by (namespace, pod) (attestation_revocation_refresh_interval_seconds))
+            and on (namespace, pod)
+            (sum by (namespace, pod) (rate(attestation_requests_total{platform="android"}[1h])) > 0)
+          )
+          or
+          (
+            (sum by (namespace, pod) (rate(attestation_requests_total{platform="android"}[10m])) > 0)
+            and on (namespace, pod) max by (namespace, pod) (attestation_revocation_refresh_interval_seconds)
+            unless on (namespace, pod) max by (namespace, pod) (attestation_revocation_list_refreshed_timestamp_seconds)
+          )
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Edge pod {{ $labels.pod }} in {{ $labels.namespace }} has no fresh list of revoked Android attestation certificates"
+          description: "The pod verifies Android attestations and either has never fetched Google's revocation list or last fetched it more than two refresh intervals ago, so a revoked certificate is still accepted. A failing fetch is counted in attestation_revocation_refresh_failures_total. Check the edge's outbound access to android.googleapis.com. Dashboard: 'edge — App attestation'."
+
+      # Under enforce, a client whose refusals jump to several times its own level of the last day, and are above a floor, for an hour. A
+      # step right after an app release is a build or a policy that does not match: a new signing certificate digest, another App ID.
+      # A client with no enforce traffic a day ago has no baseline and is not alerted on.
+      - alert: AttestationRefusalsUnderEnforceUp
+        expr: |
+          (
+            sum by (namespace, client) (rate(attestation_requests_total{mode="enforce", result!="verified"}[15m]))
+            / sum by (namespace, client) (rate(attestation_requests_total{mode="enforce"}[15m]))
+          ) > 0.05
+          and
+          (
+            sum by (namespace, client) (rate(attestation_requests_total{mode="enforce", result!="verified"}[15m]))
+            / sum by (namespace, client) (rate(attestation_requests_total{mode="enforce"}[15m]))
+          ) > 3 * (
+            sum by (namespace, client) (increase(attestation_requests_total{mode="enforce", result!="verified"}[1d] offset 1h))
+            / sum by (namespace, client) (increase(attestation_requests_total{mode="enforce"}[1d] offset 1h))
+          )
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Client {{ $labels.client }} in {{ $labels.namespace }}: attestation refusals under enforce are several times their level of the last day"
+          description: "{{ $value | humanizePercentage }} of this client's sign-ins are refused for a missing or failing attestation. A step after an app release is a build or a policy that does not match (a new signing certificate digest, another App ID): correct the policy, or put the client back to report while you do. Dashboard: 'edge — App attestation', refusals under enforce by reason."
+
+      # A spent quota (the default is 10,000 decodes a day per Cloud project) or a failing credential is a 500 under enforce for every build
+      # that needs a verdict, and nothing else says so.
+      - alert: AttestationPlayIntegrityFailing
+        expr: sum by (namespace, result) (increase(attestation_play_integrity_calls_total{result=~"error|quota"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Play Integrity calls of edge in {{ $labels.namespace }} are failing: {{ $labels.result }}"
+          description: "Calls to Google's decodeIntegrityToken ended as {{ $labels.result }} for 5 minutes. quota: the Cloud project's quota is spent and every sign-in of a build that needs a verdict fails under enforce; raise the quota or move the client to report. error: the service account's credential, the network or Google; the edge log names the status. Dashboard: 'edge — App attestation', Play Integrity calls by result."

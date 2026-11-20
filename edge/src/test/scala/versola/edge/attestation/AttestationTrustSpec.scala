@@ -3,6 +3,7 @@ package versola.edge.attestation
 import versola.edge.EdgeConfig
 import zio.*
 import zio.http.*
+import zio.metrics.Metric
 import zio.test.*
 
 import java.math.BigInteger
@@ -57,6 +58,23 @@ object AttestationTrustSpec extends ZIOSpecDefault:
         revoked(BigInteger("c35747a084470c3135aeefe2b8d40cd6", 16)),
         !revoked(BigInteger.valueOf(42)),
         !revoked(BigInteger("6681152659205225094")),
+      )
+    },
+    test("a fetched list is published: how many certificates it names, when it was fetched and the interval it is fetched at") {
+      def gauge(name: String) = Metric.gauge(name).value.map(_.value)
+      for
+        trust <- trust(Response.json(list))
+        _ <- trust.androidRevocation
+        entries <- gauge("attestation_revocation_list_entries")
+        refreshed <- gauge("attestation_revocation_list_refreshed_timestamp_seconds")
+        interval <- gauge("attestation_revocation_refresh_interval_seconds")
+        now <- Clock.instant
+      yield assertTrue(
+        entries == 2.0,
+        // the age is `time()` minus this, so it has to be the time of the fetch and not a count
+        now.getEpochSecond - refreshed.toLong < 60,
+        refreshed.toLong > 0,
+        interval == 3600.0,
       )
     },
     test("a list that cannot be fetched leaves nothing revoked, and does not take the attestation down") {

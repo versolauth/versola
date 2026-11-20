@@ -2,8 +2,10 @@ package versola.edge.attestation
 
 import versola.edge.attestation.AttestationFailure.Kind
 import zio.*
+import zio.http.*
 import zio.json.*
 import zio.json.ast.Json
+import zio.metrics.{Metric, MetricLabel}
 import zio.test.*
 
 import java.time.Instant
@@ -39,6 +41,35 @@ object PlayIntegritySpec extends ZIOSpecDefault:
   private def check(payload: Json.Obj, at: Instant = now) = PlayIntegrity.check(payload, app, nonce, at, 5.minutes)
 
   private def refused(result: Either[AttestationFailure, Unit]) = result.left.toOption.map(_.kind)
+
+  /** A service account with a key of its own, so that the live decoder can sign its assertion. */
+  private val googleAccount =
+    val generator = java.security.KeyPairGenerator.getInstance("RSA")
+    generator.initialize(2048)
+    val der = generator.generateKeyPair().getPrivate.getEncoded
+    val pem = "-----BEGIN PRIVATE KEY-----\n" + Base64.getMimeEncoder(64, "\n".getBytes).encodeToString(der) + "\n-----END PRIVATE KEY-----\n"
+    PlayIntegrity.ServiceAccount.parse(
+      Json.Obj("client_email" -> Json.Str("edge@project.iam"), "private_key" -> Json.Str(pem), "token_uri" -> Json.Str("http://google.test/token")).toJson,
+    ).toOption.get
+
+  private def calls(result: String): UIO[Double] =
+    Metric.counter("attestation_play_integrity_calls_total").tagged(MetricLabel("result", result)).value.map(_.count)
+
+  private val grantedToken = Response.json("""{"access_token":"bearer","expires_in":3600}""")
+
+  /** One decode through the live decoder, against a stand-in for Google that answers the token endpoint and the decode endpoint, and how
+    * each of the four results moved. */
+  private def decodeAgainst(decode: Response, token: Response = grantedToken) =
+    for
+      _ <- TestClient.addRoutes(
+        Handler.fromFunction[Request](request => if request.url.path.encode.endsWith("/token") then token else decode).toRoutes,
+      )
+      client <- ZIO.service[Client]
+      decoder <- PlayIntegrity.GoogleDecoder.make(googleAccount, "http://google.test/v1/{package}/decodeIntegrityToken", client)
+      before <- ZIO.foreach(List("ok", "refused", "quota", "error"))(r => calls(r).map(r -> _)).map(_.toMap)
+      outcome <- decoder.decode("com.example.app", "the-token").exit
+      after <- ZIO.foreach(List("ok", "refused", "quota", "error"))(r => calls(r).map(r -> _)).map(_.toMap)
+    yield (outcome, after.map((r, n) => r -> (n - before(r))))
 
   /** A decoder that answers with the given verdict and remembers what it was asked. */
   private def service(answer: Either[AttestationFailure, Json.Obj]) =
@@ -125,4 +156,36 @@ object PlayIntegritySpec extends ZIOSpecDefault:
         notAKey.isLeft,
       )
     },
+    suite("a call to Google is counted by what it came to (#1042)")(
+      test("a verdict Google decoded is ok") {
+        for (outcome, moved) <- decodeAgainst(Response.json("""{"tokenPayloadExternal":{"requestDetails":{}}}"""))
+        yield assertTrue(outcome.isSuccess, moved == Map("ok" -> 1.0, "refused" -> 0.0, "quota" -> 0.0, "error" -> 0.0))
+      },
+      test("a token Google cannot decode is refused, which is the app's") {
+        for (outcome, moved) <- decodeAgainst(Response.status(Status.BadRequest))
+        yield assertTrue(outcome.isFailure, moved == Map("ok" -> 0.0, "refused" -> 1.0, "quota" -> 0.0, "error" -> 0.0))
+      },
+      test("a spent quota is quota, and a defect, not the app's failure") {
+        for (outcome, moved) <- decodeAgainst(Response.status(Status.TooManyRequests))
+        yield assertTrue(
+          outcome.causeOption.exists(_.isDie),
+          moved == Map("ok" -> 0.0, "refused" -> 0.0, "quota" -> 1.0, "error" -> 0.0),
+        )
+      },
+      test("any other answer of Google is an error, and so is an answer that is not a verdict") {
+        for
+          (denied, movedDenied) <- decodeAgainst(Response.status(Status.Forbidden))
+          (unreadable, movedUnreadable) <- decodeAgainst(Response.json("""{"something":"else"}"""))
+        yield assertTrue(
+          denied.causeOption.exists(_.isDie),
+          movedDenied == Map("ok" -> 0.0, "refused" -> 0.0, "quota" -> 0.0, "error" -> 1.0),
+          unreadable.isFailure,
+          movedUnreadable == Map("ok" -> 0.0, "refused" -> 0.0, "quota" -> 0.0, "error" -> 1.0),
+        )
+      },
+      test("a token endpoint that refuses the service account is an error too: nothing reached the decode endpoint") {
+        for (outcome, moved) <- decodeAgainst(Response.json("""{"tokenPayloadExternal":{}}"""), token = Response.status(Status.Unauthorized))
+        yield assertTrue(outcome.causeOption.exists(_.isDie), moved == Map("ok" -> 0.0, "refused" -> 0.0, "quota" -> 0.0, "error" -> 1.0))
+      },
+    ).provideSomeLayer[Scope](TestClient.layer) @@ TestAspect.sequential,
   )

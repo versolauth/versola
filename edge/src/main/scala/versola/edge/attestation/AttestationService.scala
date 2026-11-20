@@ -2,8 +2,9 @@ package versola.edge.attestation
 
 import versola.edge.attestation.AttestationCrypto.{malformed, sha256}
 import versola.edge.attestation.AttestationFailure.Kind
+import zio.metrics.MetricKeyType.Histogram.Boundaries
 import zio.metrics.{Metric, MetricLabel}
-import zio.{Clock, IO, URLayer, UIO, ZIO, ZLayer}
+import zio.{Chunk, Clock, IO, URLayer, UIO, ZIO, ZLayer}
 
 import java.nio.charset.StandardCharsets
 import java.util.Base64
@@ -71,6 +72,29 @@ object AttestationService:
       Set(MetricLabel("client", client), MetricLabel("platform", platform), MetricLabel("mode", mode.toString), MetricLabel("result", result)),
     ).increment
 
+  /** From a few milliseconds (an App Attest assertion, a chain checked in memory) to the ten seconds the first fetch of Google's
+    * revocation list is waited for and the fifteen of a Play Integrity decode, which is what the histogram is there to show. */
+  private val durationBoundaries: Boundaries =
+    Boundaries.fromChunk(Chunk(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 20.0))
+
+  /** How long a verification took, by platform, whatever its outcome and under `report` too: a mode that never refuses can still make a
+    * sign-in wait for Google (#1042). */
+  private[attestation] val verificationDuration = Metric.histogram("attestation_verification_duration_seconds", durationBoundaries)
+
+  /** Runs `verification` and records how long it took, however it ended. */
+  private def timed[R, E, A](platform: String)(verification: ZIO[R, E, A]): ZIO[R, E, A] =
+    for
+      started <- Clock.nanoTime
+      exit <- verification.exit
+      finished <- Clock.nanoTime
+      _ <- verificationDuration.tagged(MetricLabel("platform", platform)).update((finished - started) / 1e9)
+      result <- ZIO.done(exit)
+    yield result
+
+  /** New App Attest keys, per client: a jump is a farm of devices or a mass reinstall. Counted when the store says the key is new, so a
+    * key attested again is not counted twice. */
+  private val keysRegistered = Metric.counter("attestation_keys_registered_total")
+
   /** What an Android app hands Play Integrity as its nonce, so that a verdict is for one request of one client by one DPoP key: the
     * client data hash, in the URL-safe base64 without padding that Play Integrity requires of a nonce. */
   def integrityNonce(clientId: String, jkt: String, jti: String): String =
@@ -94,7 +118,7 @@ object AttestationService:
       else
         // A metric label is a closed set: what the app wrote is not one, and every value it could choose would be a series of its own.
         val platform = evidence.platform.filter(Platforms.contains).getOrElse("none")
-        val checked = run(clientId, policy, jkt, jti, evidence).tapBoth(
+        val checked = timed(platform)(run(clientId, policy, jkt, jti, evidence)).tapBoth(
           failure => count(clientId, platform, policy.mode, failure.kind.toString),
           _ => count(clientId, platform, policy.mode, "verified"),
         )
@@ -143,7 +167,8 @@ object AttestationService:
               attested <- ZIO.fromEither(
                 AppAttest.verifyAttestation(decoded, keyBytes, clientData, apps.appIds, apps.environment, trust.appleRoots, now),
               )
-              _ <- keys.register(clientId, key, attested.publicKey, apps.environment, now).orDie
+              isNew <- keys.register(clientId, key, attested.publicKey, apps.environment, now).orDie
+              _ <- keysRegistered.tagged(MetricLabel("client", clientId)).increment.when(isNew)
             yield ()
           case (None, Some(assertion)) =>
             for

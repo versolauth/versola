@@ -32,7 +32,9 @@ object AttestationServiceSpec extends ZIOSpecDefault:
     private def touch[A](effect: UIO[A]): Task[A] =
       asked.update(_ + 1) *> (if fails then ZIO.fail(RuntimeException("database is down")) else effect)
     def register(client: String, keyId: String, publicKey: Array[Byte], environment: IosEnvironment, at: Instant) =
-      touch(state.update(m => if m.contains(client -> keyId) then m else m.updated(client -> keyId, AttestedKey(publicKey, environment, 0))))
+      touch(state.modify(m =>
+        if m.contains(client -> keyId) then (false, m) else (true, m.updated(client -> keyId, AttestedKey(publicKey, environment, 0))),
+      ))
     def find(client: String, keyId: String) = touch(state.get.map(_.get(client -> keyId)))
     def advance(client: String, keyId: String, counter: Long, at: Instant) =
       touch(state.modify: m =>
@@ -311,6 +313,34 @@ object AttestationServiceSpec extends ZIOSpecDefault:
             ZIO.foreach(List("off", "report", "enforce"))(mode => series("metrics-off", platform, mode, "Malformed")),
           )
         yield assertTrue(counted.flatten.forall(_ == 0.0))
+      },
+      test("how long a verification took is recorded by platform, for a refusal as for an acceptance") {
+        def durations(platform: String) =
+          AttestationService.verificationDuration.tagged(MetricLabel("platform", platform)).value.map(_.count)
+        val pair = p256()
+        for
+          e <- env()
+          noneBefore <- durations("none")
+          iosBefore <- durations("ios")
+          _ <- kindOf(e.service.verify("metrics-f", enforce, jkt, "jti", evidence()))
+          _ <- e.service.verify("metrics-f", enforce, jkt, "jti-f", iosAttestation(e, pair, "jti-f", "metrics-f"))
+          noneAfter <- durations("none")
+          iosAfter <- durations("ios")
+        yield assertTrue(noneAfter - noneBefore >= 1L, iosAfter - iosBefore >= 1L)
+      },
+      test("a new App Attest key is counted for its client, and the same key attested again is not counted twice") {
+        def registered(client: String) =
+          Metric.counter("attestation_keys_registered_total").tagged(MetricLabel("client", client)).value.map(_.count)
+        val pair = p256()
+        for
+          e <- env()
+          before <- registered("metrics-g")
+          _ <- e.service.verify("metrics-g", enforce, jkt, "jti-1", iosAttestation(e, pair, "jti-1", "metrics-g"))
+          once <- registered("metrics-g")
+          _ <- e.service.verify("metrics-g", enforce, jkt, "jti-2", iosAttestation(e, pair, "jti-2", "metrics-g"))
+          again <- registered("metrics-g")
+          other <- registered("metrics-h")
+        yield assertTrue(once - before == 1.0, again == once, other == 0.0)
       },
       test("a platform the app made up is not a metric label, whatever it wrote") {
         for

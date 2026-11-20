@@ -42,6 +42,14 @@ object PostgresAttestedKeyRepositorySpec extends PostgresSpec:
         found.exists(_.counter == 0L),
       )
     },
+    test("recording says whether the key is new: true the first time, false for the same key again, true for the same id of another client") {
+      for
+        repository <- setup
+        first <- repository.register("mobile", "key-1", key, IosEnvironment.production, t0)
+        again <- repository.register("mobile", "key-1", key, IosEnvironment.production, t0.plusSeconds(60))
+        other <- repository.register("another", "key-1", key, IosEnvironment.production, t0)
+      yield assertTrue(first, !again, other)
+    },
     test("the same key id of another client is another key") {
       for
         repository <- setup

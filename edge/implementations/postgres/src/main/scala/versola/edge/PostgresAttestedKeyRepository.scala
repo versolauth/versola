@@ -12,7 +12,7 @@ class PostgresAttestedKeyRepository(xa: TransactorZIO) extends AttestedKeyReposi
   given DbCodec[Instant] = DbCodec.InstantCodec
   given DbCodec[IosEnvironment] = DbCodec.StringCodec.biMap(IosEnvironment.valueOf, _.toString)
 
-  override def register(clientId: String, keyId: String, publicKey: Array[Byte], environment: IosEnvironment, at: Instant): Task[Unit] =
+  override def register(clientId: String, keyId: String, publicKey: Array[Byte], environment: IosEnvironment, at: Instant): Task[Boolean] =
     xa.connectMeasured("register-attested-key"):
       // A key already recorded keeps its counter: a second attestation of it is not a way to wind it back.
       val expiresAt = at.plus(AttestedKeyRepository.Retention)
@@ -20,8 +20,7 @@ class PostgresAttestedKeyRepository(xa: TransactorZIO) extends AttestedKeyReposi
         INSERT INTO attested_keys (client_id, key_id, public_key, environment, counter, created_at, expires_at)
         VALUES ($clientId, $keyId, $publicKey, $environment, 0, $at, $expiresAt)
         ON CONFLICT (client_id, key_id) DO NOTHING
-      """.update.run()
-    .unit
+      """.update.run() > 0
 
   override def find(clientId: String, keyId: String): Task[Option[AttestedKey]] =
     xa.connectMeasured("find-attested-key"):

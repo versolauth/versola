@@ -5,7 +5,7 @@ import zio.http.{Client, Request}
 import zio.json.*
 import zio.json.ast.Json
 import zio.metrics.Metric
-import zio.{Duration, Ref, Scope, UIO, ZIO, ZLayer, durationInt}
+import zio.{Clock, Duration, Ref, Scope, UIO, ZIO, ZLayer, durationInt}
 
 import java.io.{ByteArrayInputStream, FileInputStream, InputStream}
 import java.math.BigInteger
@@ -35,6 +35,17 @@ object AttestationTrust:
   private val AndroidResource = "/attestation/android-key-attestation-roots.pem"
 
   private val refreshFailures = Metric.counter("attestation_revocation_refresh_failures_total")
+
+  /** When the list was last fetched, in epoch seconds, set after each successful fetch (the repository's convention for a refreshed
+    * thing, `antifraud_lists_refreshed_timestamp_seconds`): the age is `time()` minus it, which a gauge set only at a fetch could not
+    * tell. No series at all means a list never fetched, which the failure counter alone does not show (#1042). */
+  private val listRefreshed = Metric.gauge("attestation_revocation_list_refreshed_timestamp_seconds")
+
+  /** How many certificates the list that is in force names. */
+  private val listEntries = Metric.gauge("attestation_revocation_list_entries")
+
+  /** The interval between fetches this edge is configured with, so that "older than two intervals" holds for any setting. */
+  private val refreshInterval = Metric.gauge("attestation_revocation_refresh_interval_seconds")
 
   /** How long the first attestation waits for the first fetch of the list. */
   private val FirstFetchWait = 10.seconds
@@ -78,10 +89,13 @@ object AttestationTrust:
       android <- roots(settings.androidRoots, AndroidResource)
       list <- Ref.make(Set.empty[String])
       scope <- ZIO.scope
+      _ <- refreshInterval.set(settings.revocationRefreshInterval.toSeconds.toDouble).when(settings.androidRevocationEnabled)
       _ <- ZIO.logWarning("attestation: the revocation list is switched off, so no Android certificate is treated as revoked")
         .unless(settings.androidRevocationEnabled)
       // Whether the list was fetched; a failure is counted and logged, never raised.
-      refresh = fetch(client, settings.androidRevocationUrl.encode).flatMap(list.set).as(true).catchAllCause: cause =>
+      refresh = fetch(client, settings.androidRevocationUrl.encode).flatMap(entries =>
+        list.set(entries) *> listEntries.set(entries.size.toDouble) *> Clock.instant.flatMap(now => listRefreshed.set(now.getEpochSecond.toDouble)),
+      ).as(true).catchAllCause: cause =>
         refreshFailures.increment *>
           ZIO.logWarningCause("could not refresh Google's list of revoked Android attestation certificates", cause).as(false)
       // The first fetch is shared by everyone who asks while it runs, so that no attestation is checked against a list that is empty

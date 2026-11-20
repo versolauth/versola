@@ -9,6 +9,7 @@ import versola.edge.attestation.AttestationFailure.Kind
 import zio.http.{Body, Client, Header, MediaType, Request}
 import zio.json.*
 import zio.json.ast.Json
+import zio.metrics.{Metric, MetricLabel}
 import zio.{Duration, IO, Ref, UIO, ZIO, ZLayer, durationInt}
 
 import java.nio.charset.StandardCharsets
@@ -46,6 +47,17 @@ object PlayIntegrity:
   def make(decoder: Decoder, maxAge: Duration): PlayIntegrity = new PlayIntegrity:
     override def verify(app: AndroidApp, token: String, nonce: String, now: Instant): IO[AttestationFailure, Unit] =
       decoder.decode(app.packageName, token).flatMap(payload => ZIO.fromEither(check(payload, app, nonce, now, maxAge)))
+
+  /** What a call to Google's decoding endpoint came to (`attestation_play_integrity_calls_total{result}`): `ok`, `refused` (Google could
+    * not decode the token: the app's), `quota` (the Cloud project's quota is spent) or `error` (the credential, the network, Google). A
+    * quota that runs out is a 500 under `enforce` and nothing else, so this is where an operator sees it (#1042). */
+  private val calls = Metric.counter("attestation_play_integrity_calls_total")
+  private[attestation] val CallOk = "ok"
+  private[attestation] val CallRefused = "refused"
+  private[attestation] val CallQuota = "quota"
+  private[attestation] val CallError = "error"
+
+  private def counted(result: String): UIO[Unit] = calls.tagged(MetricLabel("result", result)).increment
 
   private val PlayRecognized = "PLAY_RECOGNIZED"
   private val MeetsDeviceIntegrity = "MEETS_DEVICE_INTEGRITY"
@@ -148,7 +160,7 @@ object PlayIntegrity:
       yield ServiceAccount(file.client_email, key, file.token_uri)
 
   /** Calls `decodeIntegrityToken` as the service account, keeping its access token until shortly before it expires. */
-  private final class GoogleDecoder(
+  private[attestation] final class GoogleDecoder(
       account: ServiceAccount,
       decodeUrl: String,
       client: Client,
@@ -169,14 +181,18 @@ object PlayIntegrity:
             response <- client.batched(request).timeoutFail(RuntimeException("timed out"))(Timeout)
             body <- response.body.asString
           yield (response.status.code, body)
-      yield outcome).orDie.flatMap:
+      yield outcome).tapError(_ => counted(CallError)).orDie.flatMap:
         case (200, body) =>
           ZIO.fromEither(body.fromJson[Json.Obj]).mapError(_ => malformed("Google answered the integrity token with something unreadable"))
             .flatMap(answer => ZIO.fromOption(answer.get("tokenPayloadExternal").flatMap(_.asObject)).orElseFail(malformed("the integrity token has no verdict")))
+            .tapBoth(_ => counted(CallError), _ => counted(CallOk))
         // The token is not one Google can decode for this package: made for another app, expired, or not a token.
-        case (400, _) => ZIO.fail(AttestationFailure(Kind.Malformed, "Google could not decode the integrity token"))
-        // Anything else is not the app's doing: this edge's credential, quota, or Google. Not shown to the app.
-        case (status, _) => ZIO.die(RuntimeException(s"the Play Integrity API answered $status"))
+        case (400, _) => counted(CallRefused) *> ZIO.fail(AttestationFailure(Kind.Malformed, "Google could not decode the integrity token"))
+        // The quota of the Cloud project is spent (the default is 10,000 decodes a day): not the app's doing, and it takes every Android
+        // sign-in of a build that needs a verdict down with it, which is why it is counted apart from the rest.
+        case (429, _) => counted(CallQuota) *> ZIO.die(RuntimeException("the Play Integrity API answered 429: the quota is spent"))
+        // Anything else is not the app's doing: this edge's credential, or Google. Not shown to the app.
+        case (status, _) => counted(CallError) *> ZIO.die(RuntimeException(s"the Play Integrity API answered $status"))
 
     private def accessToken: ZIO[Any, Throwable, String] = fetchAccessToken
 
@@ -199,6 +215,6 @@ object PlayIntegrity:
                   lifetime = parsed.get("expires_in").collect { case Json.Num(value) => value.longValue() }.getOrElse(3600L)
                 yield (token, Some((token, now.plusSeconds(lifetime))))
 
-  private object GoogleDecoder:
+  private[attestation] object GoogleDecoder:
     def make(account: ServiceAccount, decodeUrl: String, client: Client): UIO[Decoder] =
       Ref.Synchronized.make(Option.empty[(String, Instant)]).map(GoogleDecoder(account, decodeUrl, client, _))

@@ -14,8 +14,9 @@ final case class AttestedKey(publicKey: Array[Byte], environment: IosEnvironment
   * and its counter is what stops an assertion from being used twice. Shared by every replica of the edge. */
 trait AttestedKeyRepository:
 
-  /** Records an attested key. A key that is already recorded is left as it is: a counter that has moved is not set back. */
-  def register(clientId: String, keyId: String, publicKey: Array[Byte], environment: IosEnvironment, at: Instant): Task[Unit]
+  /** Records an attested key. A key that is already recorded is left as it is: a counter that has moved is not set back. True when the
+    * key is new, which is what `attestation_keys_registered_total` counts. */
+  def register(clientId: String, keyId: String, publicKey: Array[Byte], environment: IosEnvironment, at: Instant): Task[Boolean]
 
   def find(clientId: String, keyId: String): Task[Option[AttestedKey]]
 
