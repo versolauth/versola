@@ -326,4 +326,29 @@ object NativeAppFlowSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
         text <- body(response)
       yield assertTrue(response.status == Status.BadRequest, text.contains("invalid_dpop_proof"))
     },
+    // #489. Tokens of a native client are bound to the device's key, not to edge's certificate, so a renewal must not
+    // touch what a device already holds: its refresh token still works, and a new sign-in does too. Last in the suite: the
+    // renewal replaces the certificate the cases above use.
+    test("a device keeps authenticating after central renews the certificate edge presents") {
+      for
+        edgeApi <- edge
+        authApi <- auth
+        f <- fixture
+        centralApi <- ZIO.service[CentralApi]
+        prover <- DpopProver.make
+        (started, issued) <- tokens(prover)
+        refreshToken <- ZIO.fromOption(issued.refreshToken).orElseFail(RuntimeException("no refresh token issued"))
+        renewal <- centralApi.postEmpty("/configuration/clients/edge-certificate/renew", "clientId" -> f.clientId)
+        // Both services read the renewed certificate from central by a notification the renewal does not wait for.
+        _ <- edgeApi.syncConfiguration *> authApi.syncConfiguration()
+        refreshed <- refresh(started, refreshToken, prover)
+        refreshedTokens <- TokenResult.parse(refreshed).flatMap(_.success)
+        (_, fresh) <- tokens(prover)
+      yield assertTrue(renewal.status == Status.NoContent)
+        .label("central renewed the certificate") &&
+        assertTrue(refreshedTokens.tokenType == "DPoP")
+          .label("the refresh token issued before the renewal is still honoured") &&
+        assertTrue(fresh.tokenType == "DPoP", fresh.accessToken.nonEmpty)
+          .label("and a new sign-in works, with edge authenticating to auth's listener")
+    },
   ) @@ TestAspect.sequential @@ TestAspect.timeout(240.seconds)
