@@ -112,6 +112,16 @@ object DeliverySettingsSyncClientSpec extends ZIOSpecDefault:
         result <- fetch.either
       yield assertTrue(result.left.exists(_.isInstanceOf[DeliverySettingsSyncClient.EndpointMissing]))
     },
+    test("says so too when the sync service reports the 404 itself, as it does for every configuration sync") {
+      for
+        security <- ZIO.service[SecurityService]
+        refusing = new CentralSyncTokenService:
+          override def getToken: UIO[String] = ZIO.dieMessage("Unused in test")
+          override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] =
+            ZIO.fail(CentralSyncTokenService.UnexpectedStatus(Status.NotFound, "/configuration/delivery-settings/sync"))
+        result <- DeliverySettingsSyncClient.Impl(config = config, centralSyncTokenService = refusing, securityService = security).getAll.either
+      yield assertTrue(result.left.exists(_.isInstanceOf[DeliverySettingsSyncClient.EndpointMissing]))
+    },
     test("fails, rather than treating it as empty, when central refuses the sync token") {
       for
         _ <- serve(Status.Unauthorized, """{}""")

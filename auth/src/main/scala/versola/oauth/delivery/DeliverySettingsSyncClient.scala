@@ -50,9 +50,11 @@ object DeliverySettingsSyncClient:
 
     override def getAll: Task[Fetched] =
       ZIO.scoped:
-        centralSyncTokenService.syncRequest(Request.get(SyncURL)).flatMap: response =>
-          if response.status == Status.NotFound then ZIO.fail(EndpointMissing())
-          else response.bodyAs[SyncWire].flatMap(toFetched)
+        centralSyncTokenService.syncRequest(Request.get(SyncURL))
+          .catchSome { case CentralSyncTokenService.UnexpectedStatus(Status.NotFound, _) => ZIO.fail(EndpointMissing()) }
+          .flatMap: response =>
+            if response.status == Status.NotFound then ZIO.fail(EndpointMissing())
+            else response.bodyAs[SyncWire].flatMap(toFetched)
 
     private def toFetched(wire: SyncWire): Task[Fetched] =
       for
