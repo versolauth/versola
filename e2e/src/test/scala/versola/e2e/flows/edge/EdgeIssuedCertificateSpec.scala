@@ -3,6 +3,8 @@ package versola.e2e.flows.edge
 import versola.e2e.support.{*, given}
 import zio.*
 import zio.http.{Client, Method, Status}
+import zio.json.*
+import zio.json.ast.Json
 import zio.test.*
 
 /** #440: an edge-fronted web client whose certificate central issues from its own CA, rather
@@ -117,6 +119,20 @@ object EdgeIssuedCertificateSpec
       case _: RegisterClientResult.Success =>
         assertNever(s"central registered $id despite issueEdgeClientCertificate with $authMethod")
 
+  /** `x5t#S256` of the access token an `EDGE_SESSION` cookie carries: the certificate edge presented when it was issued. */
+  private def boundTo(cookie: String): Task[Option[String]] =
+    for
+      payload <- ZIO.attempt(String(java.util.Base64.getUrlDecoder.decode(cookie.dropWhile(_ != ':').drop(1).split('.')(1)), "UTF-8"))
+      json <- ZIO.fromEither(payload.fromJson[Json.Obj]).mapError(RuntimeException(_))
+    yield json.get("cnf").flatMap(_.asObject).flatMap(_.get("x5t#S256")).flatMap(_.asString)
+
+  /** The subject the client is registered by, as the operator's listing shows it. */
+  private def registeredSubject(clientId: String): ZIO[CentralApi, Throwable, Option[String]] =
+    for
+      centralApi <- central
+      listed <- centralApi.get("/configuration/clients", "tenantId" -> Fixtures.suiteTenant).flatMap(_.items("clients"))
+    yield listed.find(_.str("id").contains(clientId)).flatMap(_.obj("mtlsAuth")).flatMap(_.str("subjectValue"))
+
   def spec = suite("edge fronting a client whose certificate central issued")(
     test("the client is registered tls_client_auth by the issued certificate's subject, which stays with edge") {
       for
@@ -193,6 +209,21 @@ object EdgeIssuedCertificateSpec
         seen.flatMap(_.header("X-User-Sub")).exists(_.nonEmpty),
       )
     },
+    // The renewal endpoint is for a certificate central issued: anything else is told so, and nothing is renewed (#489).
+    test("renewal of a client whose certificate central does not manage is a 404") {
+      for
+        authApi <- auth
+        centralApi <- central
+        id <- Random.nextUUID.map(uuid => s"renew-unmanaged-${uuid.toString.take(8)}")
+        registered <- authApi.registerClient(id, "Secret Client", Set("https://app.test/callback"))
+        secretClient <- centralApi.postEmpty("/configuration/clients/edge-certificate/renew", "clientId" -> id)
+        unknown <- centralApi.postEmpty("/configuration/clients/edge-certificate/renew", "clientId" -> s"$id-unknown")
+      yield registered match
+        case _: RegisterClientResult.Success =>
+          assertTrue(secretClient.status == Status.NotFound, unknown.status == Status.NotFound)
+        case RegisterClientResult.Failure(response, body) =>
+          assertNever(s"central refused $id: ${response.status} $body")
+    },
     // What a renewal costs such a client today, recorded so that it is a decision and not a surprise (#1008 leaves it
     // alone). Central renews the certificate with a new key, the session's token names the old one, and auth holds the
     // grant of a client registered by its own subject to the certificate it was issued over: the refresh the edge
@@ -204,6 +235,8 @@ object EdgeIssuedCertificateSpec
         edgeApi <- edge
         session <- signIn
         before <- edgeApi.proxy(Method.GET, f.resourceId, "/profile", session.auth)
+        boundBefore <- boundTo(session.cookie)
+        subjectBefore <- registeredSubject(f.clientId)
         renewal <- centralApi.postEmpty("/configuration/clients/edge-certificate/renew", "clientId" -> f.clientId)
         // Awaited: the edge holds the renewed certificate, which shows as the old session being refused. Each attempt is
         // a fresh pull: central brings its caches up to date by a notification the renewal does not wait for.
@@ -213,6 +246,8 @@ object EdgeIssuedCertificateSpec
         // The session is over for good, not for one call: a new sign-in is what works, over the renewed certificate.
         fresh <- signIn
         after <- edgeApi.proxy(Method.GET, f.resourceId, "/profile", fresh.auth)
+        boundAfter <- boundTo(fresh.cookie)
+        subjectAfter <- registeredSubject(f.clientId)
       yield assertTrue(before.status == Status.Ok, renewal.status == Status.NoContent)
         .label("the control: the session was served, and central renewed the certificate") &&
         assertTrue(
@@ -221,6 +256,10 @@ object EdgeIssuedCertificateSpec
           EdgeApi.sessionCookie(refused.response).contains(""),
         ).label("the edge refreshed, auth refused the grant, and the browser is sent to the login with its cookie cleared") &&
         assertTrue(after.status == Status.Ok)
-          .label("signing in again is what restores access")
+          .label("signing in again is what restores access") &&
+        assertTrue(boundBefore.exists(_.nonEmpty), boundAfter.exists(_.nonEmpty), boundBefore != boundAfter)
+          .label("the new certificate is the one edge presents: the token it was issued is bound to another thumbprint") &&
+        assertTrue(subjectBefore.exists(_.nonEmpty), subjectAfter == subjectBefore)
+          .label("auth still recognises the client by the subject it was registered under, which a renewal does not change")
     },
   ) @@ TestAspect.sequential
