@@ -73,6 +73,20 @@ trait UserService:
   def setPassword(userId: UserId, password: String): Task[Unit]
 
 object UserService:
+  /** What `auth` holds of a user once `event` has been delivered to it. */
+  private[users] def applied(user: Option[AuthClient.UserDto], event: OutboxEvent): Option[AuthClient.UserDto] =
+    def patched[A](current: Option[A], patch: Option[Patch[A]]): Option[A] = patch match
+      case None => current
+      case Some(Patch.Deleted) => None
+      case Some(Patch.Modified(value)) => Some(value)
+    event match
+      case e: OutboxEvent.UpsertUser =>
+        Some(AuthClient.UserDto(email = e.email, phone = e.phone, login = e.login, claims = user.fold(Json.Obj())(_.claims)))
+      case e: OutboxEvent.PatchUser =>
+        user.map(u => u.copy(email = patched(u.email, e.email), phone = patched(u.phone, e.phone), login = patched(u.login, e.login)))
+      case _: OutboxEvent.DeleteUser => None
+      case _: OutboxEvent.UpdateUserRoles => user
+
   val live: ZLayer[UserRepository & AuthClient & OAuthClientService & SecureRandom & DirectoryKey, Nothing, UserService] =
     ZLayer.fromFunction(Impl(_, _, _, _, _))
 
@@ -95,11 +109,16 @@ object UserService:
     override def findByLogin(login: Login): Task[Option[UserSearchRecord]] =
       userRepository.findByIdentifier(directoryKey.login(login)).flatMap(enrich)
 
-    /** The directory says that the user exists; what its identifiers are is read from `auth`, which holds them. A user
-      * `auth` does not have yet (a claim whose registration did not finish, an upsert still queued) is shown by its id. */
+    /** The directory says that the user exists; what its identifiers are is read from `auth`, which holds them, with
+      * the changes central has queued for `auth` and not delivered yet applied on top: a user is read back as it was
+      * just written, although central keeps no copy of what was written. */
     private def enrich(record: Option[UserDirectoryRecord]): Task[Option[UserSearchRecord]] =
       ZIO.foreach(record): r =>
-        authClient.getUser(r.id).map: user =>
+        for
+          held <- authClient.getUser(r.id)
+          pending <- userRepository.pendingEvents(r.id)
+        yield
+          val user = pending.foldLeft(held)(UserService.applied)
           UserSearchRecord(
             id = r.id,
             email = user.flatMap(_.email),

@@ -63,6 +63,10 @@ trait UserRepository:
   /** Removes the user and its identifiers, which may be claimed again, and enqueues the deletion for `auth`. */
   def delete(id: UserId): Task[Unit]
 
+  /** The events of the user that `auth` has not been given yet, oldest first: what the user will be there once they
+    * are delivered. */
+  def pendingEvents(id: UserId): Task[Vector[OutboxEvent]]
+
   /** Atomically claim up to `limit` due outbox rows by leasing them for `lease` (other instances skip them).
     * The lease is reset to a backoff value by [[rescheduleEvent]] on failure, or the row is removed on success.
     */

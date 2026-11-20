@@ -38,6 +38,7 @@ object UserServiceSpec extends UnitSpecBase:
       for
         _ <- env.userRepository.find.succeedsWith(Some(indexRecord))
         _ <- env.authClient.getUser.succeedsWith(Some(held(email = Some(email))))
+        _ <- env.userRepository.pendingEvents.succeedsWith(Vector.empty)
         result <- env.service.findById(userId)
       yield assertTrue(result.map(_.id).contains(userId))
     },
@@ -334,6 +335,7 @@ object UserServiceSpec extends UnitSpecBase:
       for
         _ <- env.userRepository.findByIdentifier.succeedsWith(Some(indexRecord))
         _ <- env.authClient.getUser.succeedsWith(Some(held(email = Some(email))))
+        _ <- env.userRepository.pendingEvents.succeedsWith(Vector.empty)
         result <- env.service.findByEmail(email)
       yield assertTrue(result.map(_.id).contains(userId))
     },
@@ -343,6 +345,7 @@ object UserServiceSpec extends UnitSpecBase:
       for
         _ <- env.userRepository.findByIdentifier.succeedsWith(Some(indexRecord))
         _ <- env.authClient.getUser.succeedsWith(Some(held(email = Some(email))))
+        _ <- env.userRepository.pendingEvents.succeedsWith(Vector.empty)
         result <- env.service.findByPhone(phone)
       yield assertTrue(
         result.map(_.id).contains(userId),
@@ -357,6 +360,7 @@ object UserServiceSpec extends UnitSpecBase:
       for
         _ <- env.userRepository.findByIdentifier.succeedsWith(Some(indexRecord))
         _ <- env.authClient.getUser.succeedsWith(Some(held(email = Some(email))))
+        _ <- env.userRepository.pendingEvents.succeedsWith(Vector.empty)
         result <- env.service.findByLogin(login)
       yield assertTrue(result.map(_.id).contains(userId))
     },
@@ -365,6 +369,7 @@ object UserServiceSpec extends UnitSpecBase:
       for
         _ <- env.userRepository.find.succeedsWith(Some(indexRecord))
         _ <- env.authClient.getUser.succeedsWith(None)
+        _ <- env.userRepository.pendingEvents.succeedsWith(Vector.empty)
         result <- env.service.findById(userId)
       yield assertTrue(result.map(_.claims).contains(Json.Obj()))
     },
@@ -406,6 +411,32 @@ object UserServiceSpec extends UnitSpecBase:
         _ <- env.userRepository.claim.failsWith(UserIndexConflict)
         result <- env.service.indexRegistered(request).either
       yield assertTrue(result == Left(UserIndexConflict))
+    },
+    test("a user is read back as it was just written: what is queued for auth is applied over what auth holds") {
+      val env = Env()
+      val version = UUID.fromString("00000000-0000-0000-0000-000000000007")
+      val phone = Phone("+15551234567")
+      for
+        _ <- env.userRepository.find.succeedsWith(Some(indexRecord))
+        // auth has not been given the user yet
+        _ <- env.authClient.getUser.succeedsWith(None)
+        _ <- env.userRepository.pendingEvents.succeedsWith(
+          Vector(
+            OutboxEvent.UpsertUser(userId = userId, version = version, email = Some(email), phone = None, login = Some(Login("jdoe"))),
+            OutboxEvent.PatchUser(userId = userId, version = version, email = None, phone = Some(Patch.Modified(phone)), login = Some(Patch.Deleted)),
+          ),
+        )
+        created <- env.service.findById(userId)
+        // auth has the user, and a deletion is queued
+        _ <- env.authClient.getUser.succeedsWith(Some(held(email = Some(email))))
+        _ <- env.userRepository.pendingEvents.succeedsWith(Vector(OutboxEvent.DeleteUser(userId)))
+        deleted <- env.service.findById(userId)
+      yield assertTrue(
+        created.flatMap(_.email).contains(email),
+        created.flatMap(_.phone).contains(phone),
+        created.exists(_.login.isEmpty),
+        deleted.exists(u => u.email.isEmpty && u.phone.isEmpty),
+      )
     },
     test("patch replaces the MAC of what changed, removes what was deleted, and tells auth only what it named") {
       val env = Env()

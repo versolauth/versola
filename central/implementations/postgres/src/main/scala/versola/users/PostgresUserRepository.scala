@@ -131,6 +131,10 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
         enqueueEventSql(id, eventId, OutboxEvent.DeleteUser(id))
     yield ()
 
+  override def pendingEvents(id: UserId): Task[Vector[OutboxEvent]] =
+    xa.connectMeasured("find-pending-user-events"):
+      sql"SELECT payload FROM user_outbox WHERE user_id = $id ORDER BY id".query[OutboxEvent].run()
+
   override def enqueueRoleUpdate(
       userId: UserId,
       tenantId: TenantId,

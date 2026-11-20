@@ -188,6 +188,18 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
           events.isEmpty,
         )
       },
+      test("pendingEvents are the user's undelivered events, oldest first, and no other user's") {
+        val patch = OutboxEvent.PatchUser(userId = userId1, version = eventId(200), email = Some(Patch.Deleted), phone = None, login = None)
+        for
+          _ <- create(env, userId1, email)
+          _ <- create(env, userId2, phone)
+          _ <- env.repository.replaceIdentifiers(id = userId1, set = Nil, remove = Set(IdentifierKind.Email), event = patch, eventId = eventId(200))
+          pending <- env.repository.pendingEvents(userId1)
+          // Twice: the outbox hands out one event of a user at a time, the next only once the one before is gone.
+          _ <- drainOutbox(env) *> drainOutbox(env)
+          delivered <- env.repository.pendingEvents(userId1)
+        yield assertTrue(pending == Vector(upsert(userId1, created(userId1)), patch), delivered.isEmpty)
+      },
       test("enqueueRoleUpdate queues the role change for auth") {
         for
           _ <- create(env, userId1, email)
