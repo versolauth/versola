@@ -1,5 +1,6 @@
 package versola.util.http
 
+import RateLimitPolicy.given
 import zio.json.JsonCodec
 import zio.schema.{Schema, derived}
 
@@ -130,13 +131,55 @@ final case class RateLimitPolicy(
     else if by.contains(RateLimitDimension.Ip) || by.contains(RateLimitDimension.Certificate) then Checkpoint.Address
     else Checkpoint.Identity
 
+/** The limit on `/native/start/{clientId}` per source address (IPv4 per address, IPv6 per `/64`), a setting of its own next to the
+  * policies because no policy can name one route: `limit` calls per `windowSeconds` with bursts of `burst`, checked before the
+  * client is looked up, the proof is read or auth is called. The endpoint takes no client credential, and every call that passes
+  * makes auth store a request, so this is what a flood of it costs.
+  *
+  * Absent from [[RateLimitPolicies]], an edge that reads the caller's address from a header (`client-ip = forwarded`) applies
+  * [[NativeStartRateLimit.default]]: in `shadow` on an edge of the operator, in `enforce` on a partner's edge. Set, it replaces the
+  * default as written, `mode = off` included, whatever `client-ip` is.
+  */
+final case class NativeStartRateLimit(limit: Int, windowSeconds: Int, burst: Int, mode: GuardMode) derives JsonCodec, Schema:
+
+  /** The same rules as a policy's window and burst, so central refuses what an edge would not apply. */
+  def validate: Either[String, NativeStartRateLimit] =
+    toPolicy(NativeStartRateLimit.PolicyName).validate
+      .map(_ => this)
+      .left.map(_.replace(s"policy ${NativeStartRateLimit.PolicyName}:", "nativeStart:"))
+
+  /** The policy a limiter counts it with: one bucket per address. */
+  def toPolicy(name: String): RateLimitPolicy = RateLimitPolicy(
+    name = name,
+    by = List(RateLimitDimension.Ip),
+    scope = RateLimitScope.EdgeWide,
+    limits = List(RateLimitWindow(limit, windowSeconds)),
+    burst = burst,
+    cost = 1,
+    mode = mode,
+  )
+
+object NativeStartRateLimit:
+  /** The name in metrics of a limit an operator or a partner set, and of the default. */
+  val PolicyName = "native-start"
+  val DefaultPolicyName = "native-start-default"
+
+  /** 60 calls a minute with bursts of 20: generous for a person (one call per sign-in), small for a flood. */
+  def default(mode: GuardMode): NativeStartRateLimit = NativeStartRateLimit(limit = 60, windowSeconds = 60, burst = 20, mode = mode)
+
 /** The rate limit policies of one edge, as central stores and serves them: the whole set is replaced at once, so the names
   * stay unique and the limit of 64 holds. An empty set is stored as none.
+  *
+  * `nativeStart` is the limit per address on `/native/start` ([[NativeStartRateLimit]]); absent means the edge's default.
   *
   * `replicas` is how many edge pods share the traffic: each pod enforces `limit / replicas` (and `burst / replicas`, rounded up),
   * so the edge as a whole allows about the limit the operator wrote. As exact as the balancer is even; there is no shared counter.
   */
-final case class RateLimitPolicies(policies: List[RateLimitPolicy], replicas: Int) derives JsonCodec, Schema:
+final case class RateLimitPolicies(
+    policies: List[RateLimitPolicy],
+    replicas: Int,
+    nativeStart: Option[NativeStartRateLimit] = None,
+) derives JsonCodec, Schema:
   def validate: Either[String, RateLimitPolicies] =
     for
       _ <- RateLimitPolicy.check(
@@ -144,7 +187,11 @@ final case class RateLimitPolicies(policies: List[RateLimitPolicy], replicas: In
         s"replicas must be between 1 and ${RateLimitPolicies.MaxReplicas}",
       )
       _ <- RateLimitPolicy.validateAll(policies)
+      _ <- nativeStart.fold[Either[String, Unit]](Right(()))(_.validate.map(_ => ()))
     yield this
+
+  /** Nothing is set: no policy and no limit on `/native/start`. Stored as none. */
+  def isEmpty: Boolean = policies.isEmpty && nativeStart.isEmpty
 
 object RateLimitPolicies:
   val MaxReplicas = 1000

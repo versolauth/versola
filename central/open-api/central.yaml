@@ -2880,7 +2880,7 @@ paths:
       description: |
         Changes the sections the body names and leaves the others as they are. A section that is absent is kept; `null` removes it (the
         edge goes back to the values of its own deployment, or applies no rate limit); an object replaces it **as a whole**: a section is
-        never merged field by field, so the body of a section is the section. An empty object (an empty `policies` list for `rateLimits`)
+        never merged field by field, so the body of a section is the section. An empty object (an empty `policies` list and no `nativeStart` for `rateLimits`)
         is the same as `null`. A key that is not a section is refused, so a misspelled section is an error and not a silent no-op.
 
         - `overload`: what the edge does when it is asked for more than it can do: inbound admission limits, with priorities, held to a limit
@@ -7836,6 +7836,37 @@ components:
           maxItems: 64
           items:
             $ref: '#/components/schemas/RateLimitPolicy'
+        nativeStart:
+          $ref: '#/components/schemas/NativeStartRateLimit'
+    NativeStartRateLimit:
+      type: object
+      description: |
+        The limit on `/native/start/{clientId}` per source address (IPv4 per address, IPv6 per `/64`), checked before the client is
+        looked up, the DPoP proof is read or `auth` is called; over it the edge answers `429` with `Retry-After`. Optional. While it
+        is absent an edge with `client-ip = forwarded` applies the default (60 calls per 60 seconds, bursts of 20): in `shadow` on
+        an edge of the operator, in `enforce` on a partner's edge; an edge with `client-ip = socket` applies nothing. Set, it
+        replaces the default as written (`mode: off` turns the limit off) whatever `client-ip` is. Divided by `replicas` like a
+        policy. Counted apart from the policies, in `edge_native_start_rate_limit_decisions_total{policy,result}` (`policy` is
+        `native-start` when set, `native-start-default` for the default). A set with this field and no policy is not empty.
+      required: [limit, windowSeconds, burst, mode]
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 1000000
+          description: Calls per `windowSeconds` from one address.
+        windowSeconds:
+          type: integer
+          minimum: 1
+          maximum: 86400
+        burst:
+          type: integer
+          minimum: 1
+          maximum: 1000000
+          description: How many calls may arrive together. Never above `limit`.
+        mode:
+          type: string
+          enum: [off, shadow, enforce]
     RateLimitPolicy:
       type: object
       required: [name, by, scope, limits, burst, cost, mode]

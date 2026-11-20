@@ -3,8 +3,9 @@
  * edge's cookie session. Nothing here reaches central: the edge forwards what it may, scoped to
  * the partner its certificate names (#549 decision 5).
  */
+import type { RateLimitPolicies } from '../utils/rate-limit-policies';
 import type {
-  AuditPage, AuditQuery, CreatedEdge, EnrollmentToken, PartnerClient, PartnerClientWrite, PartnerEdge, PartnerErrorCode, PartnerMe, PartnerResource, PartnerResourceWrite,
+  AuditPage, AuditQuery, CreatedEdge, EnrollmentToken, GroupRateLimits, PartnerClient, PartnerClientWrite, PartnerEdge, PartnerErrorCode, PartnerMe, PartnerResource, PartnerResourceWrite,
   PartnerSettings, ProfileApproval, ProfileChange, Revocation, RevocationRequest, StaffInvite, StaffLevel, StaffMember,
 } from './partner-types';
 
@@ -142,5 +143,9 @@ export const removeStaff = (id: string) => request<void>(`/staff/${encodeURIComp
 
 export const fetchSettings = () => request<PartnerSettings>('/settings');
 export const updateSettings = (settings: PartnerSettings) => request<void>('/settings', { method: 'PUT', body: settings });
+export const fetchRateLimits = () => request<GroupRateLimits>('/rate-limits');
+export const fetchRecommendedRateLimits = () => request<RateLimitPolicies>('/rate-limits/recommended');
+/** `rateLimits: null` removes them; `expectedRevision` is the revision that was read. */
+export const updateRateLimits = (rateLimits: RateLimitPolicies | null, expectedRevision: number) => request<GroupRateLimits>('/rate-limits', { method: 'PUT', body: { rateLimits, expectedRevision } });
 export const fetchProfileApproval = () => request<{ approval: ProfileApproval | null }>('/profile').then(response => response.approval);
 export const requestProfileChange = (change: ProfileChange) => request<{ approval: ProfileApproval }>('/profile', { method: 'PUT', body: change });

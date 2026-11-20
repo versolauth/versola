@@ -154,6 +154,48 @@ object RateLimitPolicySpec extends ZIOSpecDefault:
         )
       },
     ),
+    suite("the limit on /native/start")(
+      test("is part of the set, left out of the JSON when not set, and round-trips") {
+        val limit = NativeStartRateLimit(limit = 120, windowSeconds = 60, burst = 30, mode = GuardMode.Enforce)
+        val set = RateLimitPolicies(Nil, replicas = 2, nativeStart = Some(limit))
+        assertTrue(
+          set.validate.isRight,
+          set.toJson.fromJson[RateLimitPolicies] == Right(set),
+          """{"policies":[],"replicas":1,"nativeStart":{"limit":120,"windowSeconds":60,"burst":30,"mode":"enforce"}}"""
+            .fromJson[RateLimitPolicies] == Right(RateLimitPolicies(Nil, 1, Some(limit))),
+          !RateLimitPolicies(List(valid), replicas = 1).toJson.contains("nativeStart"),
+        )
+      },
+      test("a set with only this limit is not empty; one with neither it nor a policy is") {
+        assertTrue(
+          !RateLimitPolicies(Nil, 1, Some(NativeStartRateLimit.default(GuardMode.Off))).isEmpty,
+          !RateLimitPolicies(List(valid), 1).isEmpty,
+          RateLimitPolicies.empty.isEmpty,
+        )
+      },
+      test("is held to the rules of a policy's window and burst, and the refusal names the field") {
+        def refused(limit: NativeStartRateLimit) = RateLimitPolicies(Nil, 1, Some(limit)).validate.left.toOption
+        assertTrue(
+          refused(NativeStartRateLimit(0, 60, 1, GuardMode.Enforce)).exists(_.startsWith("nativeStart: limit")),
+          refused(NativeStartRateLimit(60, 0, 1, GuardMode.Enforce)).exists(_.startsWith("nativeStart: windowSeconds")),
+          refused(NativeStartRateLimit(60, 60, 0, GuardMode.Enforce)).exists(_.startsWith("nativeStart: burst")),
+          refused(NativeStartRateLimit(60, 60, 61, GuardMode.Shadow)).exists(_.contains("burst must not exceed")),
+          """{"policies":[],"replicas":1,"nativeStart":{"limit":60,"windowSeconds":60,"burst":20,"mode":"loud"}}"""
+            .fromJson[RateLimitPolicies].isLeft,
+        )
+      },
+      test("the default is 60 a minute with bursts of 20, counted per address") {
+        val policy = NativeStartRateLimit.default(GuardMode.Shadow).toPolicy(NativeStartRateLimit.DefaultPolicyName)
+        assertTrue(
+          policy.limits == List(RateLimitWindow(60, 60)),
+          policy.burst == 20,
+          policy.by == List(RateLimitDimension.Ip),
+          policy.checkpoint == Checkpoint.Address,
+          policy.mode == GuardMode.Shadow,
+          policy.validate.isRight,
+        )
+      },
+    ),
     suite("recommended set")(
       test("validates, has unique names and starts every policy in shadow") {
         val set = RateLimitPolicies.recommended

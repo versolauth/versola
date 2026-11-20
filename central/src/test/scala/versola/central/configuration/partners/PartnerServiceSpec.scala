@@ -39,7 +39,7 @@ import versola.central.configuration.edges.{
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.users.AuthClient
-import versola.util.http.RateLimitPolicies
+import versola.util.http.{GuardMode, NativeStartRateLimit, RateLimitPolicies}
 import versola.util.{RedirectUri, RsaKeyPair}
 import zio.*
 import zio.http.URL
@@ -684,6 +684,21 @@ object PartnerServiceSpec extends ZIOSpecDefault, ZIOStubs:
           refused <- env.service.setRateLimits(acme, Some(invalid), None).flip
         yield assertTrue(
           env.partners.setRateLimits.calls == List((acme.id, None, None)),
+          refused.isInstanceOf[PartnerError.Invalid],
+        )
+      },
+      test("a set that only overrides the limit on /native/start is stored: it is the partner's answer to the default") {
+        val env = Env()
+        val only =
+          RateLimitPolicies(Nil, 1, nativeStart = Some(NativeStartRateLimit(limit = 600, windowSeconds = 60, burst = 100, mode = GuardMode.Enforce)))
+        val invalid = only.copy(nativeStart = Some(NativeStartRateLimit(limit = 5, windowSeconds = 60, burst = 50, mode = GuardMode.Enforce)))
+        for
+          _ <- env.partners.setRateLimits.succeedsWith(Some(acme))
+          _ <- env.registry.refreshNow.succeedsWith(())
+          _ <- env.service.setRateLimits(acme, Some(only), None)
+          refused <- env.service.setRateLimits(acme, Some(invalid), None).flip
+        yield assertTrue(
+          env.partners.setRateLimits.calls == List((acme.id, Some(only), None)),
           refused.isInstanceOf[PartnerError.Invalid],
         )
       },

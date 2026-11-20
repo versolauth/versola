@@ -4,7 +4,7 @@ import { theme } from '../styles/theme';
 import { bannerStyles, buttonStyles, cardStyles, chipStyles, editorStyles, formStyles, iconButtonStyles, recordStyles, tagStyles } from '../styles/components';
 import type { AccessLogPolicy, Edge, OverloadPolicy, Partner, RateLimitPolicies, Tenant } from '../types';
 import type { EdgePolicySection } from '../utils/central-api';
-import { deleteEdge, deleteOldEdgeKey, fetchEdges, fetchPartners, fetchTenants, isPolicyConflict, patchEdgePolicies, registerEdge, rotateEdgeKey, setEdgeDpopNonce } from '../utils/central-api';
+import { deleteEdge, deleteOldEdgeKey, fetchEdges, fetchPartners, fetchRecommendedRateLimitPolicies, fetchTenants, isPolicyConflict, patchEdgePolicies, registerEdge, rotateEdgeKey, setEdgeDpopNonce } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard, formatDate } from '../utils/helpers';
 import { certificateChip, edgeCertificateState } from './partner-chips';
@@ -20,7 +20,7 @@ import {
   validateDraft as validateAccessLogDraft, type AccessLogDraft,
 } from '../utils/access-log-policy';
 import {
-  countText as rateLimitCountText, podsText as rateLimitPodsText, draftFromPolicies as rateLimitDraftFromPolicies, emptyDraft as emptyRateLimitDraft, isEmptyPolicies as isEmptyRateLimitPolicies,
+  countText as rateLimitCountText, nativeStartText as rateLimitNativeStartText, podsText as rateLimitPodsText, draftFromPolicies as rateLimitDraftFromPolicies, emptyDraft as emptyRateLimitDraft, isEmptyPolicies as isEmptyRateLimitPolicies,
   policiesFromDraft as rateLimitPoliciesFromDraft, summary as rateLimitSummary, validateDraft as validateRateLimitDraft, type RateLimitDraft,
 } from '../utils/rate-limit-policies';
 import type { VersolaOverloadPolicyEditor } from './overload-policy-editor';
@@ -554,7 +554,7 @@ export class VersolaEdgesList extends LitElement {
       title: 'Remove all rate limit policies',
       messagePrefix: 'Remove every rate limit policy of edge ',
       messageSubject: edge.id,
-      messageSuffix: '? The edge applies no rate limit after its next configuration sync.',
+      messageSuffix: '? The edge applies no rate limit policy after its next configuration sync, and the limit on /native/start returns to its default.',
       confirmLabel: 'Remove all',
     });
     if (!confirmed) return;
@@ -886,6 +886,7 @@ export class VersolaEdgesList extends LitElement {
       <versola-record-card heading="Rate limits" subheading=${partnerEdge ? 'Set by the partner, once for its whole group of edges, and the same on every edge of it. You cannot change them here; overload protection and the access log stay yours.' : 'Who may send how much through this edge. Start in shadow (counts only), then enforce. Reaches the edge on its next configuration sync.'} ?editable=${this.canManage && !partnerEdge} .body=${html`
         ${this.row('Policies', rateLimitCountText(edge.rateLimitPolicies))}
         ${this.row('Edge pods', rateLimitPodsText(edge.rateLimitPolicies))}
+        ${this.row('Native start', rateLimitNativeStartText(edge.rateLimitPolicies, partnerEdge))}
         ${(edge.rateLimitPolicies?.policies ?? []).slice(0, 5).map(policy => this.row(policy.name, rateLimitSummary(policy)))}
         ${(edge.rateLimitPolicies?.policies.length ?? 0) > 5 ? this.row('', `and ${edge.rateLimitPolicies!.policies.length - 5} more`) : ''}
         ${this.canManage && !partnerEdge && !isEmptyRateLimitPolicies(edge.rateLimitPolicies) ? html`
@@ -988,7 +989,7 @@ export class VersolaEdgesList extends LitElement {
             </div>
           </div>
         ` : this.editTarget === 'rate-limits' ? html`
-          <versola-rate-limit-policies-editor .draft=${this.draftRateLimit} ?disabled=${this.isSaving} ?submitted=${this.submitted}
+          <versola-rate-limit-policies-editor .draft=${this.draftRateLimit} .loadRecommended=${fetchRecommendedRateLimitPolicies} ?disabled=${this.isSaving} ?submitted=${this.submitted}
             @draft-change=${(e: CustomEvent<{ draft: RateLimitDraft }>) => this.draftRateLimit = e.detail.draft}></versola-rate-limit-policies-editor>
         ` : this.editTarget === 'access-log' ? html`
           <versola-access-log-policy-editor .draft=${this.draftAccessLog} ?disabled=${this.isSaving}

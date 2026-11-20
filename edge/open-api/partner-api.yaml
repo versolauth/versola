@@ -1448,6 +1448,135 @@ paths:
         '503':
           $ref: '#/components/responses/CentralUnavailable'
 
+  /partner/api/rate-limits:
+    get:
+      operationId: getRateLimits
+      summary: Read the rate limits of the partner's edges
+      description: |
+        The rate limits every edge of the partner's group applies, one setting for the group, and their
+        `revision`. `rateLimits` is `null` while none are set: the edges then apply no policy, and the
+        default limit on `/native/start` (60 calls a minute per address with bursts of 20, refusing, on an
+        edge with `client-ip = forwarded`).
+
+        **Minimum level:** viewer. **Served by:** central (`GET /edge/partner/rate-limits`).
+      tags: [Organisation]
+      x-staff-level: viewer
+      x-served-by: central
+      responses:
+        '200':
+          description: The rate limits and their revision.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupRateLimits'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+    put:
+      operationId: putRateLimits
+      summary: Replace the rate limits of the partner's edges
+      description: |
+        Replaces the rate limits as a whole; `rateLimits: null` removes them. `rateLimits` must be in the
+        body: one without it is `400 invalid_request` and is not read as a removal. Only `rateLimits` and a
+        numeric `expectedRevision` are sent to central, which validates the limits (`400 invalid_request`
+        with central's text in `message`) and answers `409 conflict` when they changed since the revision
+        that was read. The edges apply the new limits on their next configuration sync.
+
+        `rateLimits.nativeStart` is the limit on `/native/start` per source address; set, it replaces the
+        default as written, and `mode: off` turns the limit off.
+
+        **Minimum level:** admin. **Served by:** central (`PUT /edge/partner/rate-limits`).
+      tags: [Organisation]
+      x-staff-level: admin
+      x-served-by: central
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rateLimits]
+              properties:
+                rateLimits:
+                  nullable: true
+                  allOf: [{ $ref: '#/components/schemas/RateLimits' }]
+                expectedRevision:
+                  type: integer
+                  minimum: 0
+                  description: The `revision` of the last read. Left out, the save is not conditional.
+      responses:
+        '200':
+          description: The rate limits as stored and their new revision.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupRateLimits'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+
+  /partner/api/rate-limits/recommended:
+    get:
+      operationId: getRecommendedRateLimits
+      summary: The starting set of rate limit policies
+      description: |
+        The policies the console offers with one click, every one in `shadow`. The same for every partner.
+
+        **Minimum level:** viewer. **Served by:** central (`GET /edge/partner/rate-limits/recommended`).
+      tags: [Organisation]
+      x-staff-level: viewer
+      x-served-by: central
+      responses:
+        '200':
+          description: The recommended set.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+            Set-Cookie:
+              $ref: '#/components/headers/RotatedSession'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimits'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenCentral'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/CentralUnavailable'
+
   /partner/api/profile:
     get:
       operationId: getProfile
@@ -2374,6 +2503,49 @@ components:
           minimum: 1
           maximum: 90
           description: Lifetime of the invitation; outside the range it is ignored, and the configured one used.
+
+    GroupRateLimits:
+      type: object
+      required: [rateLimits, revision]
+      properties:
+        rateLimits:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/RateLimits' }]
+        revision:
+          type: integer
+          minimum: 0
+          description: Moves with every change; send it back as `expectedRevision`.
+
+    RateLimits:
+      type: object
+      description: |
+        The rate limits of an edge, as central defines them (`RateLimitPolicies` of central's API, which
+        holds the rules of a policy). Passed through unchanged.
+      required: [policies, replicas]
+      properties:
+        replicas:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          description: How many pods of an edge share the traffic; each enforces its share of a limit.
+        policies:
+          type: array
+          maxItems: 64
+          items:
+            type: object
+            additionalProperties: true
+        nativeStart:
+          type: object
+          description: |
+            The limit on `/native/start/{clientId}` per source address (IPv4 per address, IPv6 per `/64`).
+            Absent: the default of a partner's edge, 60 calls per 60 seconds with bursts of 20 in `enforce`,
+            only with `client-ip = forwarded`.
+          required: [limit, windowSeconds, burst, mode]
+          properties:
+            limit: { type: integer, minimum: 1, maximum: 1000000 }
+            windowSeconds: { type: integer, minimum: 1, maximum: 86400 }
+            burst: { type: integer, minimum: 1, maximum: 1000000, description: Never above `limit`. }
+            mode: { type: string, enum: [off, shadow, enforce] }
 
     PartnerSettings:
       type: object

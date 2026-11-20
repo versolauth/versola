@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.util.ReloadingCache
-import versola.util.http.RateLimitPolicy
+import versola.util.http.{NativeStartRateLimit, RateLimitPolicy}
 import zio.{Scope, Task, UIO, ZIO, ZLayer}
 
 /** The rate limit policies central currently holds for this edge, cached on `configurationCacheRefreshInterval` like everything
@@ -14,6 +14,9 @@ trait RateLimitPolicyService:
 
   /** How many edge pods share the traffic, so each enforces its share of a limit. */
   def replicas: UIO[Int]
+
+  /** The limit on `/native/start` central holds for this edge; none means the edge's default ([[nativeapp.NativeStartLimit]]). */
+  def nativeStart: UIO[Option[NativeStartRateLimit]]
 
   /** Reloads from central now, instead of waiting for the refresh interval (the non-prod `/service/configuration/sync`). */
   def refreshNow: Task[Unit]
@@ -36,5 +39,7 @@ object RateLimitPolicyService:
     override def current: UIO[List[RateLimitPolicy]] = cache.get.map(_.policies)
 
     override def replicas: UIO[Int] = cache.get.map(_.replicas)
+
+    override def nativeStart: UIO[Option[NativeStartRateLimit]] = cache.get.map(_.nativeStart)
 
     override def refreshNow: Task[Unit] = source.getAll.flatMap(cache.set)

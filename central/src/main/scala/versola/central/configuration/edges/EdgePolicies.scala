@@ -75,7 +75,13 @@ object EdgePoliciesPatch:
     def revision(section: PolicySection) = meta.get(section.key).fold(0)(_.revision)
 
     // a section is validated, and an empty one is the same as removing it, as before
-    def next[A](section: PolicySection, change: Change[A], current: Option[A], valid: A => Either[String, A], empty: A => Boolean): Either[PolicyPatchError, Option[A]] =
+    def next[A](
+        section: PolicySection,
+        change: Change[A],
+        current: Option[A],
+        valid: A => Either[String, A],
+        empty: A => Boolean,
+    ): Either[PolicyPatchError, Option[A]] =
       change match
         case Change.Keep => Right(current)
         case Change.Remove => Right(None)
@@ -88,13 +94,21 @@ object EdgePoliciesPatch:
         case None => Right(())
       overload <- next(PolicySection.Overload, patch.overload, record.overloadPolicy, _.validate, _ == OverloadPolicy.empty)
       accessLog <- next(PolicySection.AccessLog, patch.accessLog, record.accessLogPolicy, _.validate, _ == AccessLogPolicy.empty)
-      rateLimits <- next(PolicySection.RateLimits, patch.rateLimits, record.rateLimitPolicies, _.validate, _.policies.isEmpty)
+      rateLimits <- next(PolicySection.RateLimits, patch.rateLimits, record.rateLimitPolicies, _.validate, _.isEmpty)
     yield
       def bumped[A](section: PolicySection, before: Option[A], after: Option[A], meta: Map[String, PolicySectionMeta]) =
         if before == after then meta else meta.updated(section.key, PolicySectionMeta(revision(section) + 1, now))
-      val updatedMeta = bumped(PolicySection.RateLimits, record.rateLimitPolicies, rateLimits,
-        bumped(PolicySection.AccessLog, record.accessLogPolicy, accessLog,
-          bumped(PolicySection.Overload, record.overloadPolicy, overload, meta)))
+      val updatedMeta = bumped(
+        PolicySection.RateLimits,
+        record.rateLimitPolicies,
+        rateLimits,
+        bumped(
+          PolicySection.AccessLog,
+          record.accessLogPolicy,
+          accessLog,
+          bumped(PolicySection.Overload, record.overloadPolicy, overload, meta),
+        ),
+      )
       record.copy(
         overloadPolicy = overload,
         accessLogPolicy = accessLog,
