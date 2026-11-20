@@ -159,6 +159,7 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |  }
       |  tenant-id        = loadgen-standard
       |  passwords-secret = "AAECAwQFBgcICQoLDA0ODw"
+      |  client-secrets-secret = "EBESExQVFhcYGRobHB0eHw"
       |  shard-count      = 8
       |  hash-parallelism = 16
       |  batch-size       = 10000

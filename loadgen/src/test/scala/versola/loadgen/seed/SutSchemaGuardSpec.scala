@@ -144,11 +144,11 @@ object SutSchemaGuardSpec extends ZIOSpecDefault:
           SutDatabases.sut.flatMap: sut =>
             SutDatabases.withSchemaChange(
               sut.central,
-              List("ALTER TABLE user_index RENAME TO user_index_old"),
-              List("ALTER TABLE user_index_old RENAME TO user_index"),
+              List("ALTER TABLE identifier_directory RENAME TO identifier_directory_old"),
+              List("ALTER TABLE identifier_directory_old RENAME TO identifier_directory"),
             ):
               SutSchemaGuard.check(sut.central, SchemaOwner.Central).map: findings =>
-                assertTrue(findings == Chunk(SutSchemaGuard.Finding.MissingTable("user_index")))
+                assertTrue(findings == Chunk(SutSchemaGuard.Finding.MissingTable("identifier_directory")))
       },
       // The pre-flight is where the guard earns its keep: it runs before the Argon2 bill, so a
       // schema change costs a failed startup rather than two hours and an unusable population.

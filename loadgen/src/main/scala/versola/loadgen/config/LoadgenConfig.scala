@@ -646,6 +646,11 @@ case class SeedConfig(
     central: SutDatabaseConfig,
     tenantId: String,
     passwordsSecret: Secret.Bytes16,
+    /** The *same* base64url string central is given as `CLIENT_SECRETS_SECRET`: the key central MACs a phone under in
+      * its directory is derived from it (`IdentifierDirectory`, versolauth/versola#1041), and a seeder with another
+      * value writes a directory in which central finds none of the seeded phones, so the first registration of one
+      * makes a second account. */
+    clientSecretsSecret: Secret,
     shardCount: Int,
     hashParallelism: Int,
     batchSize: Int,
@@ -730,6 +735,10 @@ object SeedConfig:
     */
   given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
     .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))
+
+  /** `CLIENT_SECRETS_SECRET`, base64url like the others and of the length central is given. */
+  private given clientSecrets: DeriveConfig[Secret] = DeriveConfig[String]
+    .mapOrFail(SecretConfig.secret)
 
   given DeriveConfig[SeedConfig] = DeriveConfig
     .derived[SeedConfig]

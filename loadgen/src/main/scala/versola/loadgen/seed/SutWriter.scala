@@ -1,9 +1,11 @@
 package versola.loadgen.seed
 
 import versola.loadgen.seed.SutSchema.SchemaOwner
+import versola.util.IdentifierDirectory
 import zio.{Chunk, Task, ZIO}
 
 import java.time.Instant
+import java.util.HexFormat
 
 /** Writes one batch of seeded users into the SUT's two databases (versola-loadgen-dev-spec.md
   * §10 steps 4-5), and runs the `ANALYZE` of step 7.
@@ -12,10 +14,10 @@ import java.time.Instant
   * is no transaction spanning both: auth's and central's schemas live in separate databases, and
   * two-phase commit across them to make a load-test population marginally more consistent is not
   * a trade anyone would take. The consequence is bounded and stated: a crash between the two
-  * commits leaves one batch of users in auth that central's routing index does not know about,
+  * commits leaves one batch of users in auth that central's directory does not know about,
   * and the resume path's [[deleteRange]] removes them before rewriting the range.
   */
-final class SutWriter(auth: CopySink, central: CopySink, phonePrefix: String):
+final class SutWriter(auth: CopySink, central: CopySink, phonePrefix: String, directoryKey: IdentifierDirectory.Key):
 
   def write(
       seeded: Chunk[SeededUser],
@@ -38,7 +40,8 @@ final class SutWriter(auth: CopySink, central: CopySink, phonePrefix: String):
       _ <- central.atomically:
         for
           _ <- deleteRange(central, SchemaOwner.Central, from, until)
-          _ <- copy(central, SutSchema.userIndex, seeded.map(SeedRows.userIndex))
+          _ <- copy(central, SutSchema.userDirectory, seeded.map(SeedRows.userDirectory))
+          _ <- copy(central, SutSchema.identifierDirectory, seeded.map(SeedRows.identifierDirectory(_, directoryKey)))
         yield ()
     yield ()
 
@@ -149,4 +152,13 @@ final class SutWriter(auth: CopySink, central: CopySink, phonePrefix: String):
           ),
         )(sink.execute)
       case SchemaOwner.Central =>
-        sink.execute(s"DELETE FROM user_index WHERE $range")
+        // Central keeps the MAC of a phone, not the phone, so there is no range to name: the MACs of this batch's
+        // phones are listed. Whoever holds one of them goes, which is the seeded user of an earlier run under any id
+        // namespace; its identifiers go with it by the cascade of the reference. Hex literals of this process's own
+        // making, like the bounds above.
+        val macs = (from until until).map: id =>
+          s"'\\x${HexFormat.of().formatHex(directoryKey.mac(IdentifierDirectory.Phone, PopulationPlan.phoneOf(phonePrefix, id)))}'"
+        sink.execute(
+          s"DELETE FROM user_directory WHERE user_id IN (SELECT user_id FROM identifier_directory " +
+            s"WHERE kind = '${IdentifierDirectory.Phone}' AND mac IN (${macs.mkString(", ")}))",
+        ).when(macs.nonEmpty).unit

@@ -420,7 +420,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     test("GET /users/claims with valid token returns the user's claims") {
       val repo = stub[UserRepository]
       val userId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
-      val record = UserRecord.empty(userId).copy(claims = Json.Obj("name" -> Json.Str("John")))
+      val record = UserRecord.empty(userId).copy(claims = Json.Obj("name" -> Json.Str("John")), phone = Some(Phone("+15551234567")))
       for
         client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
@@ -436,7 +436,58 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         resp.status == Status.Ok,
         decoded.claims == Json.Obj("name" -> Json.Str("John")),
+        // versolauth/versola#1041: central keeps only the MACs, so the identifiers are read here.
+        decoded.phone.contains(Phone("+15551234567")),
+        decoded.email.isEmpty,
+        decoded.login.isEmpty,
       )
+    },
+    test("PATCH /users without Authorization returns 401 and changes nothing") {
+      val repo = stub[UserRepository]
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(routes(tracing, users = repo))
+        resp <- client.batched(Request(method = Method.PATCH, url = URL.empty / "users", body = Body.fromString("{}")))
+      yield assertTrue(resp.status == Status.Unauthorized, repo.patch.calls.isEmpty)
+    },
+    test("PATCH /users changes the identifiers named: an absent one is kept, null removes, a value replaces") {
+      val repo = stub[UserRepository]
+      val userId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
+      val version = UUID.fromString("00000000-0000-0000-0000-000000000002")
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- repo.find.succeedsWith(Some(UserRecord.empty(userId)))
+        _ <- repo.patch.succeedsWith(())
+        _ <- TestClient.addRoutes(routes(tracing, users = repo))
+        body = s"""{"id":"$userId","version":"$version","email":null,"phone":"+15551234567"}"""
+        resp <- client.batched(
+          Request(method = Method.PATCH, url = URL.empty / "users", body = Body.fromString(body))
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json)),
+        )
+      yield assertTrue(
+        resp.status == Status.NoContent,
+        repo.patch.calls == List((userId, version, Some(Patch.Deleted), Some(Patch.Modified(Phone("+15551234567"))), None)),
+      )
+    },
+    test("PATCH /users for a user this auth does not have is 404 and creates nothing") {
+      val repo = stub[UserRepository]
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- repo.find.succeedsWith(None)
+        _ <- TestClient.addRoutes(routes(tracing, users = repo))
+        body = """{"id":"00000000-0000-0000-0000-000000000009","version":"00000000-0000-0000-0000-000000000002","phone":"+15551234567"}"""
+        resp <- client.batched(
+          Request(method = Method.PATCH, url = URL.empty / "users", body = Body.fromString(body))
+            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.ContentType(MediaType.application.json)),
+        )
+      yield assertTrue(resp.status == Status.NotFound, repo.patch.calls.isEmpty)
     },
     test("GET /users/claims returns 204 when the user is not found") {
       val repo = stub[UserRepository]

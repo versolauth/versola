@@ -5,7 +5,7 @@ import com.augustnagro.magnum.sql
 import versola.loadgen.config.*
 import versola.loadgen.model.*
 import versola.loadgen.store.{LoadgenPostgresSpec, PostgresVirtualUserRepository}
-import versola.util.{Argon2Config, MAC, Salt, Secret, SecureRandom, SecurityService}
+import versola.util.{Argon2Config, IdentifierDirectory, MAC, Salt, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.prelude.EqualOps
 import zio.test.*
@@ -60,6 +60,10 @@ object SeederSmokeSpec extends ZIOSpecDefault:
     */
   private val pepper: Secret.Bytes16 = Secret.Bytes16(Array.tabulate(16)(index => (index * 7 + 3).toByte))
 
+  private val clientSecrets: Secret = Secret(Array.tabulate(16)(index => (index * 5 + 1).toByte))
+
+  private val directoryKey = IdentifierDirectory.deriveKey(clientSecrets)
+
   private val shardCount = 8
 
   private val seedConfig = SeedConfig(
@@ -67,6 +71,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
     central = SutDatabaseConfig("unused-in-this-spec", "unused", Config.Secret("unused")),
     tenantId = "default",
     passwordsSecret = pepper,
+    clientSecretsSecret = clientSecrets,
     shardCount = shardCount,
     hashParallelism = 4,
     // Four batches over 1,000 users, so the batch loop, the per-batch transaction and the
@@ -92,7 +97,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
         .map(_.get[SecurityService])
       random <- SecureRandom.live.build.map(_.get[SecureRandom])
       services = SeedServices(
-        sut = SutWriter(CopySink.OfConnection(sut.auth), CopySink.OfConnection(sut.central), PopulationConfig.DefaultPhonePrefix),
+        sut = SutWriter(CopySink.OfConnection(sut.auth), CopySink.OfConnection(sut.central), PopulationConfig.DefaultPhonePrefix, directoryKey),
         store = CopySink.OfTransactor(store),
         hasher = BulkHasher(security, random, pepper, seedConfig.hashParallelism),
         minter = None,
@@ -107,7 +112,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
       _ <- ZIO.foreachDiscard(List("user_passwords", "passkeys", "user_roles", "refresh_tokens", "users"))(table =>
         SutDatabases.statement(harness.auth, s"TRUNCATE TABLE $table CASCADE"),
       )
-      _ <- SutDatabases.statement(harness.central, "TRUNCATE TABLE user_index")
+      _ <- SutDatabases.statement(harness.central, "TRUNCATE TABLE user_directory CASCADE")
     yield ()
 
   private def count(connection: Connection, query: String): Task[Long] =
@@ -178,7 +183,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
             passwords <- count(harness.auth, "SELECT count(*) FROM user_passwords")
             roles <- count(harness.auth, "SELECT count(*) FROM user_roles")
             passkeys <- count(harness.auth, "SELECT count(*) FROM passkeys")
-            index <- count(harness.central, "SELECT count(*) FROM user_index")
+            index <- count(harness.central, "SELECT count(*) FROM identifier_directory")
             states <- PostgresVirtualUserRepository(harness.store).countByState
           yield assertTrue(
             users == population.target,
@@ -313,13 +318,13 @@ object SeederSmokeSpec extends ZIOSpecDefault:
           for
             _ <- truncate(harness)
             _ <- ZIO.foreachDiscard(authTables)(reset(harness.auth, _))
-            _ <- reset(harness.central, "user_index")
+            _ <- reset(harness.central, "identifier_directory")
             _ <- harness.store.connect(
               sql"SELECT pg_stat_reset_single_table_counters('vu_users'::regclass::oid)".query[Option[String]].run(),
             )
             _ <- Seeder.run(harness.services, population, seedConfig, None)
             counts <- ZIO.foreach(authTables)(analyzed(harness.auth, _))
-            index <- analyzed(harness.central, "user_index")
+            index <- analyzed(harness.central, "identifier_directory")
             // The emulator's own table too: the coordinator's population counts are a
             // `GROUP BY state` over it on a 60 s timer, which is a sequential scan of 10M rows
             // if the planner thinks the table is empty.
@@ -340,7 +345,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
             _ <- harness.store.connect(sql"DELETE FROM vu_users WHERE id > 750".update.run()).unit
             resumed <- Seeder.run(harness.services, population, seedConfig, None).exit
             users <- count(harness.auth, "SELECT count(*) FROM users")
-            index <- count(harness.central, "SELECT count(*) FROM user_index")
+            index <- count(harness.central, "SELECT count(*) FROM identifier_directory")
             passwords <- count(harness.auth, "SELECT count(*) FROM user_passwords")
             states <- PostgresVirtualUserRepository(harness.store).countByState
           yield assertTrue(
@@ -367,7 +372,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
             users <- count(harness.auth, "SELECT count(*) FROM users")
             roles <- count(harness.auth, "SELECT count(*) FROM user_roles")
             passwords <- count(harness.auth, "SELECT count(*) FROM user_passwords")
-            index <- count(harness.central, "SELECT count(*) FROM user_index")
+            index <- count(harness.central, "SELECT count(*) FROM identifier_directory")
             states <- PostgresVirtualUserRepository(harness.store).countByState
           yield assertTrue(
             again.isSuccess,
@@ -398,13 +403,14 @@ object SeederSmokeSpec extends ZIOSpecDefault:
                 Flaky(CopySink.OfConnection(harness.auth), 7, calls),
                 CopySink.OfConnection(harness.central),
                 PopulationConfig.DefaultPhonePrefix,
+                directoryKey,
               ),
             )
             crashed <- Seeder.run(crashing, population, seedConfig, None).exit
             resumed <- Seeder.run(harness.services, population, seedConfig, None).exit
             users <- count(harness.auth, "SELECT count(*) FROM users")
             roles <- count(harness.auth, "SELECT count(*) FROM user_roles")
-            index <- count(harness.central, "SELECT count(*) FROM user_index")
+            index <- count(harness.central, "SELECT count(*) FROM identifier_directory")
             states <- PostgresVirtualUserRepository(harness.store).countByState
           yield assertTrue(
             crashed.isFailure,

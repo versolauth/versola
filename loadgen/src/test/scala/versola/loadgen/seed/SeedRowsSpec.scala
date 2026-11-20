@@ -29,6 +29,8 @@ object SeedRowsSpec extends ZIOSpecDefault:
 
   private val now = java.time.Instant.parse("2026-09-14T09:00:00Z")
 
+  private val directoryKey = versola.util.IdentifierDirectory.deriveKey(Array.fill(16)(4.toByte))
+
   private def seeded(id: Long): SeededUser =
     SeededUser(PopulationPlan.userOf(population, 8, id), None, None, None)
 
@@ -106,7 +108,8 @@ object SeedRowsSpec extends ZIOSpecDefault:
             expiresAt = now.plusSeconds(2592000),
           ),
         ) == SutSchema.refreshTokens.columns.size,
-        fields(SeedRows.userIndex(user)) == SutSchema.userIndex.columns.size,
+        fields(SeedRows.userDirectory(user)) == SutSchema.userDirectory.columns.size,
+        fields(SeedRows.identifierDirectory(user, directoryKey)) == SutSchema.identifierDirectory.columns.size,
         fields(SeedRows.vuUsers(user)) == 13,
         fields(
           SeedRows.vuSessions(user, refreshToken, clientId = "mobile-passkey", now = now, refreshExpiresAt = now.plusSeconds(2592000)),
@@ -117,8 +120,10 @@ object SeedRowsSpec extends ZIOSpecDefault:
       assertTrue(
         SutSchema.copyStatement(SutSchema.users) ==
           "COPY users (id, phone, claims) FROM STDIN WITH (FORMAT csv, NULL '')",
-        SutSchema.copyStatement(SutSchema.userIndex) ==
-          "COPY user_index (id, phone) FROM STDIN WITH (FORMAT csv, NULL '')",
+        SutSchema.copyStatement(SutSchema.userDirectory) ==
+          "COPY user_directory (user_id) FROM STDIN WITH (FORMAT csv, NULL '')",
+        SutSchema.copyStatement(SutSchema.identifierDirectory) ==
+          "COPY identifier_directory (kind, mac, user_id) FROM STDIN WITH (FORMAT csv, NULL '')",
       )
     },
     // NULL is the only unquoted field, and that is the entire NULL protocol: Postgres' CSV reader
@@ -243,7 +248,7 @@ object SeedRowsSpec extends ZIOSpecDefault:
         def execute(statement: String): zio.Task[Unit] = zio.ZIO.unit
         def atomically[A](effect: zio.Task[A]): zio.Task[A] = effect
 
-      val writer = SutWriter(short, short, PopulationConfig.DefaultPhonePrefix)
+      val writer = SutWriter(short, short, PopulationConfig.DefaultPhonePrefix, directoryKey)
       writer
         .write(zio.Chunk(seeded(1L), seeded(2L)), "default", now, 1L, 3L, None)
         .exit

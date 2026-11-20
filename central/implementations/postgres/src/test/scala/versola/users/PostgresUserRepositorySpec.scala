@@ -30,5 +30,7 @@ object PostgresUserRepositorySpec extends PostgresSpec, UserRepositorySpec:
 
   override def beforeEach(env: UserRepositorySpec.Env) =
     ZIO.serviceWithZIO[TransactorZIO] { xa =>
-      xa.connect(sql"TRUNCATE TABLE user_directory, identifier_directory, user_outbox, cells, regions, partitions CASCADE".update.run())
+      xa.connect(
+        sql"TRUNCATE TABLE user_directory, identifier_directory, user_outbox, user_outbox_dead, cells, regions, partitions CASCADE".update.run(),
+      )
     }.unit
