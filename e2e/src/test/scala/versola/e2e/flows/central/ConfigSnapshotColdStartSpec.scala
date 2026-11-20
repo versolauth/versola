@@ -98,13 +98,11 @@ object ConfigSnapshotColdStartSpec extends ZIOSpec[OAuthClient & EdgeApi & EdgeF
     ).map((process, _, log) => Started(process, log, s"http://localhost:${ports("DPORT")}/readiness"))
 
   /** Waits until the service is ready, or fails with its output if it stops or never gets there. */
-  private def awaitReady(started: Started): ZIO[Client, Throwable, Unit] =
-    val ready = ZIO.serviceWithZIO[Client](client =>
-      ZIO.scoped(client.request(zio.http.Request.get(URL.decode(started.readinessUrl).toOption.get)).map(_.status.isSuccess)),
-    ).catchAll(_ => ZIO.succeed(false))
+  private def awaitReady(started: Started): Task[Unit] =
+    val ready = ExtraService.isReady(started.readinessUrl)
     val stopped = ZIO.attemptBlocking(!started.process.isAlive)
     (ready <*> stopped)
-      .repeat(Schedule.spaced(2.seconds) *> Schedule.recurUntil[(Boolean, Boolean)]((r, s) => r || s))
+      .repeat(Schedule.spaced(ExtraService.ReadinessPoll) *> Schedule.recurUntil[(Boolean, Boolean)]((r, s) => r || s))
       .timeout(StartTimeout)
       .flatMap:
         case Some((true, _)) => ZIO.unit

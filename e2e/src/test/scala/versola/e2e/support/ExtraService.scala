@@ -1,7 +1,6 @@
 package versola.e2e.support
 
 import zio.*
-import zio.http.{Client, Request, URL}
 
 import java.nio.file.{Files, Path}
 import java.util.concurrent.TimeUnit
@@ -16,8 +15,31 @@ import java.util.concurrent.TimeUnit
 object ExtraService:
   private val StartTimeout = 4.minutes
 
+  /** Asked on a connection of its own each time, not through the suite's `Client`. That client answered "connection
+    * refused" for twenty seconds after the first refusal to a port -- the service had been listening since the second
+    * of them and was ready by the seventh -- so every start of a second service was seen 22 s in, whatever it took. */
+  private val probe: java.net.http.HttpClient =
+    java.net.http.HttpClient.newBuilder().nn.connectTimeout(java.time.Duration.ofSeconds(2)).nn.build().nn
+
+  /** Whether `readinessUrl` answers 2xx now; false for a refusal, a timeout or any other answer. */
+  def isReady(readinessUrl: String): UIO[Boolean] =
+    ZIO.attemptBlocking {
+      val request = java.net.http.HttpRequest.newBuilder(java.net.URI.create(readinessUrl)).nn
+        .timeout(java.time.Duration.ofSeconds(2)).nn.GET().nn.build().nn
+      val status = probe.send(request, java.net.http.HttpResponse.BodyHandlers.discarding()).nn.statusCode()
+      status >= 200 && status < 300
+    }.catchAll(_ => ZIO.succeed(false))
+
+  /** How often readiness is asked: a start is a few seconds, and the wait for it is in every spec that starts a service. */
+  val ReadinessPoll: Duration = 250.millis
+
+  /** Runs `effect` and says how long it took, so that a run's log shows what a second service costs to start and stop. */
+  def timed[R, E, A](what: String)(effect: ZIO[R, E, A]): ZIO[R, E, A] =
+    effect.timed.flatMap: (took, result) =>
+      Console.printLine(f"[e2e] $what after ${took.toMillis / 1000.0}%.1f s").ignore.as(result)
+
   /** @param readinessUrl the diagnostics port's `/readiness`. */
-  case class Running(process: Process, log: Path, readinessUrl: String):
+  case class Running(process: Process, log: Path, readinessUrl: String, name: String):
     def isAlive: Task[Boolean] = ZIO.attemptBlocking(process.isAlive)
 
     def output: Task[String] = ZIO.attemptBlocking(Files.readString(log))
@@ -39,25 +61,25 @@ object ExtraService:
         builder.environment().nn.putIfAbsent("HTTP_CLIENT_POOL_SIZE", "10")
         (builder.start().nn, conf, log),
     )((process, conf, log) => stopProcess(process).ignore *> ZIO.attemptBlocking(Files.deleteIfExists(conf) && Files.deleteIfExists(log)).ignore)
-      .map((process, _, log) => Running(process, log, s"http://localhost:${ports("DPORT")}/readiness"))
+      .map((process, _, log) => Running(process, log, s"http://localhost:${ports("DPORT")}/readiness", Path.of(launcher).getFileName.toString))
 
   /** Stops it the way an orchestrator does, SIGTERM and then, after a while, SIGKILL. */
   def stop(running: Running): Task[Unit] = stopProcess(running.process)
 
   private def stopProcess(process: Process): Task[Unit] =
-    ZIO.attemptBlocking:
-      process.destroy()
-      if !process.waitFor(30, TimeUnit.SECONDS) then process.destroyForcibly()
-      ()
+    ZIO.attemptBlocking(process.isAlive).flatMap: alive =>
+      timed("extra service stopped")(ZIO.attemptBlocking {
+        process.destroy()
+        if !process.waitFor(30, TimeUnit.SECONDS) then process.destroyForcibly()
+        ()
+      }).when(alive).unit
 
   /** Waits until it answers readiness, or fails with what it logged if it stops or never gets there. */
-  def awaitReady(running: Running): ZIO[Client, Throwable, Unit] =
-    val ready = ZIO.serviceWithZIO[Client](client =>
-      ZIO.scoped(client.request(Request.get(URL.decode(running.readinessUrl).toOption.get)).map(_.status.isSuccess)),
-    ).catchAll(_ => ZIO.succeed(false))
-    (ready <*> running.isAlive.map(!_))
-      .repeat(Schedule.spaced(2.seconds) *> Schedule.recurUntil[(Boolean, Boolean)]((r, stopped) => r || stopped))
-      .timeout(StartTimeout)
-      .flatMap:
-        case Some((true, _)) => ZIO.unit
-        case _ => running.output.flatMap(out => ZIO.fail(RuntimeException(s"did not become ready:\n${out.takeRight(4000)}")))
+  def awaitReady(running: Running): Task[Unit] =
+    timed(s"${running.name} ready"):
+      (isReady(running.readinessUrl) <*> running.isAlive.map(!_))
+        .repeat(Schedule.spaced(ReadinessPoll) *> Schedule.recurUntil[(Boolean, Boolean)]((r, stopped) => r || stopped))
+        .timeout(StartTimeout)
+        .flatMap:
+          case Some((true, _)) => ZIO.unit
+          case _ => running.output.flatMap(out => ZIO.fail(RuntimeException(s"did not become ready:\n${out.takeRight(4000)}")))
