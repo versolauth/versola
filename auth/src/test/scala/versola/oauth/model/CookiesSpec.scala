@@ -100,9 +100,22 @@ object CookiesSpec extends ZIOSpecDefault:
       },
     ),
     suite("SessionCookie")(
+      test("under a cell id the session cookie carries the routing key in front, parses back, and a tampered body still fails") {
+        val cell = RoutingKey.CellId.parse("kz-1").toOption.get
+        val id = SessionId(Array.fill(32)(4.toByte))
+        val key = Secret.Bytes32(Array.fill(32)(6.toByte))
+        val content = SessionCookie(id, 1.hour, key, cell = Some(cell)).content
+        assertTrue(
+          content.startsWith("v1.kz-1."),
+          RoutingKey.strip(content) == SessionCookie(id, 1.hour, key, cell = None).content,
+          SessionCookie.parse(content, key).exists(_.sameElements(id)),
+          SessionCookie.parse(content.dropRight(2) + "AA", key).isLeft,
+          SessionCookie.parse("v1.KZ-1.abc.def", key).isLeft,
+        )
+      },
       test("creates a session cookie with valid signature") {
         val sessionId = SessionId(Array.fill(32)(1.toByte))
-        val cookie = SessionCookie(sessionId, 1.hour, sessionSecret)
+        val cookie = SessionCookie(sessionId, 1.hour, sessionSecret, cell = None)
         assertTrue(
           cookie.name == SessionCookie.name,
           cookie.isHttpOnly,
@@ -113,13 +126,13 @@ object CookiesSpec extends ZIOSpecDefault:
       },
       test("parse fails with wrong secret") {
         val sessionId = SessionId(Array.fill(32)(1.toByte))
-        val content = SessionCookie(sessionId, 1.hour, sessionSecret).content
+        val content = SessionCookie(sessionId, 1.hour, sessionSecret, cell = None).content
         val wrongSecret = Secret.Bytes32(Array.fill(32)(9.toByte))
         assertTrue(SessionCookie.parse(content, wrongSecret).isLeft)
       },
       test("parse fails with tampered content") {
         val sessionId = SessionId(Array.fill(32)(1.toByte))
-        val content = SessionCookie(sessionId, 1.hour, sessionSecret).content
+        val content = SessionCookie(sessionId, 1.hour, sessionSecret, cell = None).content
         val parts = content.split('.')
         val tamperedPayload = Base64.urlEncode(Array.fill(32)(2.toByte))
         val tamperedContent = s"$tamperedPayload.${parts(1)}"
@@ -127,7 +140,7 @@ object CookiesSpec extends ZIOSpecDefault:
       },
       test("parse rejects a payload that is not a 32-byte session id") {
         val shortPayload = Base64.urlEncode(Array.fill(8)(1.toByte))
-        val content = SessionCookie(SessionId(Array.fill(8)(1.toByte)), 1.hour, sessionSecret).content
+        val content = SessionCookie(SessionId(Array.fill(8)(1.toByte)), 1.hour, sessionSecret, cell = None).content
         assertTrue(
           SessionCookie.parse(content, sessionSecret) == Left("invalid session id length"),
           shortPayload.nonEmpty,

@@ -1884,7 +1884,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       test("parses a signed session cookie") {
         val env = Env()
         val sessionId = SessionId(Array.fill(32)(1.toByte))
-        val cookie = SessionCookie(sessionId, 1.hour, TestEnvConfig.coreConfig.security.sessionCookieSecret)
+        val cookie = SessionCookie(sessionId, 1.hour, TestEnvConfig.coreConfig.security.sessionCookieSecret, cell = None)
         val request = Request.get(URL.root.addQueryParams(validParams))
           .addCookie(Cookie.Request(SessionCookie.name, cookie.content))
         for

@@ -477,6 +477,7 @@ object ConversationRenderService:
                 value = sessionId,
                 ttl = sessionTtl,
                 secret = config.security.sessionCookieSecret,
+                cell = config.cellId,
               ),
             )
             .addCookie(

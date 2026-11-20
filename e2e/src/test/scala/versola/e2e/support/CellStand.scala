@@ -38,7 +38,7 @@ object CellStand:
   val SecondCellId = "local-2"
 
   /** How many registration setups are made up front. */
-  val Setups = 6
+  val Setups = 10
 
   /** @param auth the cell reached by its own address, as nothing in front of it would route */
   final case class Cell(id: String, auth: OAuthClient, url: String, mutualTlsUrl: String)

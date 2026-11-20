@@ -2,7 +2,7 @@ package versola.e2e.flows.cells
 
 import versola.e2e.support.{*, given}
 import zio.*
-import zio.http.{Client, Method, Status}
+import zio.http.{Client, Header, Method, QueryParams, Request, Status, URL}
 import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
@@ -78,6 +78,20 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
     Chunk(TestAspect.withLiveClock, TestAspect.sequential)
 
   private val stand = ZIO.service[CellStand]
+
+  /** A second edge of the staged build with the issuer's listener on (`APORT`), started once the cells are registered:
+    * it reads them when it starts. The staged edge is started without the listener. */
+  private val FrontPorts = Map("PORT" -> "9061", "DPORT" -> "9062", "MPORT" -> "9063", "APORT" -> "9064")
+  private val FrontUrl = "http://localhost:9064"
+
+  /** The issuer as a browser reaches it through the front: the same calls as to a cell, at the front's address. */
+  private def startFront: ZIO[Scope & Client & E2EConfig, Throwable, CellStand.Cell] =
+    for
+      config <- ZIO.service[E2EConfig]
+      client <- ZIO.service[Client]
+      running <- ExtraService.start(config.edgeLauncher, config.edgeEnvConf, "", FrontPorts)
+      _ <- ExtraService.awaitReady(running)
+    yield CellStand.Cell("front", OAuthClient(client, config.copy(authUrl = FrontUrl)), FrontUrl, FrontUrl)
 
   private def segment(jwt: String, index: Int): Task[Json.Obj] =
     for
@@ -203,6 +217,61 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         assertTrue(deleted.status.isSuccess).label(s"central deletes the user: ${deleted.status} ${deleted.body}") &&
         assertTrue(after.isEmpty).label("the directory no longer has the address") &&
         assertTrue(subAgain.nonEmpty && subAgain != sub).label("the address registers again as another user")
+    },
+    // Phase 2 step 4 (versolauth/versola#1044): the issuer behind edge.
+    test("through the issuer's listener a new sign-in is placed and finished at one cell, and a returning browser goes to the cell of its session") {
+      ZIO.scoped:
+        for
+          s <- stand
+          client <- ZIO.service[Client]
+          front <- startFront
+          // A new sign-in, every request of it through the front: placed in the open cell, continued there by the
+          // conversation cookie, its code exchanged there by the code's key.
+          fresh <- s.nextRegistration
+          viaFront <- register(front, fresh, fresh.email.get)
+          placedCell <- cellHeader(viaFront.tokens.accessToken)
+          // A user of cell 2, signed in at cell 2 itself: the browser now holds cell 2's session cookie.
+          returning <- s.nextRegistration
+          (_, atHome) <- submitCode(s.second, returning, returning.email.get)
+          session <- ZIO.fromOption(atHome.sessionCookie).orElseFail(RuntimeException("cell 2 set no session cookie"))
+          sub <- atHome.assertRedirect.flatMap(code => ZIO.succeed(code))
+          // The same browser comes back through the front: the session cookie's key sends it to cell 2, which knows
+          // the session and answers with a code of its own, and the code's key sends the exchange there too.
+          (verifier, challenge) = PkceHelper.generate()
+          authorizeUrl <- ZIO.fromEither(URL.decode(s"$FrontUrl/authorize")).mapError(RuntimeException(_))
+          resumed <- client.batched(
+            Request.get(
+              authorizeUrl.addQueryParams(
+                List(
+                  "response_type" -> "code",
+                  "client_id" -> returning.clientId,
+                  "redirect_uri" -> returning.redirectUri,
+                  "scope" -> "openid",
+                  "state" -> "s",
+                  "code_challenge" -> challenge,
+                  "code_challenge_method" -> "S256",
+                ).map((name, value) => QueryParams(name -> value)).reduce(_ ++ _),
+              ),
+            ).addHeader(Header.Custom("Cookie", s"SSO_SESSION=$session")),
+          )
+          location = resumed.headers.get("Location").getOrElse("")
+          resumedCode <- ZIO.fromOption(URL.decode(location).toOption.flatMap(_.queryParams.getAll("code").headOption))
+            .orElseFail(RuntimeException(s"the front did not answer with a code: ${resumed.status} $location"))
+          tokens <- front.auth.token(
+            resumedCode,
+            verifier,
+            clientId = Some(returning.clientId),
+            clientSecret = Some(returning.clientSecret),
+            redirectUri = Some(returning.redirectUri),
+          ).success
+          resumedCell <- cellHeader(tokens.accessToken)
+          internal <- client.batched(Request.get(URL.decode(s"$FrontUrl/users/claims").toOption.get))
+        yield assertTrue(viaFront.code.startsWith(s"v1.${s.first.id}."), placedCell.contains(s.first.id))
+          .label(s"a new sign-in through the front is placed in the open cell: ${viaFront.code}") &&
+          assertTrue(session.startsWith(s"v1.${s.second.id}.")).label(s"cell 2's session cookie names it: $session") &&
+          assertTrue(resumedCode.startsWith(s"v1.${s.second.id}."), resumedCell.contains(s.second.id))
+            .label(s"the returning browser was sent to cell 2: $resumedCode") &&
+          assertTrue(internal.status == Status.NotFound).label("auth's internal routes are not served through the front")
     },
     test("with the cells registered the staged edge signs a user in and makes its calls at the cell the values name") {
       for

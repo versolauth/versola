@@ -156,12 +156,15 @@ object UserAgentCookie:
 object SessionCookie:
   val name = "SSO_SESSION"
 
-  def apply(value: SessionId, ttl: Duration, secret: Secret.Bytes32): Cookie.Response =
+  /** Under a cell id the content is written behind the routing key, like [[ConversationCookie.responseCookie]]'s: what
+    * is in front of the issuer sends a returning browser to the cell of its session by it (versolauth/versola#1044).
+    * The key is a hint outside the signature; [[parse]] sets it aside and verifies the rest. */
+  def apply(value: SessionId, ttl: Duration, secret: Secret.Bytes32, cell: Option[RoutingKey.CellId]): Cookie.Response =
     val payloadB64 = Base64.urlEncode(value)
     val sigB64 = Base64.urlEncode(computeMac(value, secret))
     Cookie.Response(
       name = name,
-      content = s"$payloadB64.$sigB64",
+      content = cell.fold(s"$payloadB64.$sigB64")(cell => RoutingKey.encode(cell, s"$payloadB64.$sigB64")),
       domain = None,
       path = Some(Path.root),
       isSecure = true,
@@ -183,7 +186,10 @@ object SessionCookie:
       sameSite = Some(Cookie.SameSite.Lax),
     )
 
-  def parse(content: String, secret: Secret.Bytes32): Either[String, SessionId] =
+  def parse(presented: String, secret: Secret.Bytes32): Either[String, SessionId] =
+    RoutingKey.decode(presented).map(_.value).flatMap(parseSigned(_, secret))
+
+  private def parseSigned(content: String, secret: Secret.Bytes32): Either[String, SessionId] =
     val dotIdx = content.lastIndexOf('.')
     if dotIdx < 0 then Left("missing signature")
     else
