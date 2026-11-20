@@ -6,6 +6,7 @@ import versola.central.audit.{AuthAuditError, CentralAudit, UserAuditEventsQuery
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.TopologyRepository
 import versola.util.audit.AuditContext
 import versola.util.http.{EntityVersion, Observability}
 import versola.util.{Email, PageLimit, Patch, Phone}
@@ -151,8 +152,22 @@ trait AuthClient:
   def antifraudStatus: IO[AntifraudListError | Throwable, AntifraudStatusResponse]
 
 object AuthClient:
+  /** The `auth` central is configured with, and no other. */
   val live: ZLayer[Scope & Client & CentralConfig, Throwable, AuthClient] =
-    AuthTokenService.live >>> ZLayer.fromFunction(Impl(_, _, _))
+    AuthTokenService.live >>> ZLayer.fromFunction((client: Client, config: CentralConfig, tokens: AuthTokenService) =>
+      Impl(client, config.auth.url, tokens),
+    )
+
+  /** Every call about a user goes to the cell that holds the user ([[CellAuthClient]]). */
+  val routed: ZLayer[Scope & Client & CentralConfig & UserRepository & TopologyRepository, Throwable, AuthClient] =
+    AuthTokenService.live >>> ZLayer.fromFunction:
+      (client: Client, config: CentralConfig, tokens: AuthTokenService, users: UserRepository, topology: TopologyRepository) =>
+        CellAuthClient(
+          configured = Impl(client, config.auth.url, tokens),
+          at = url => Impl(client, url, tokens),
+          users = users,
+          topology = topology,
+        )
 
   /** The name of the query parameter, and of the optional field of a body, that names the administrator on whose behalf central
     * calls auth: auth records it as the actor of what the call changes (an absent one is central itself). It is taken from the
@@ -278,12 +293,13 @@ object AuthClient:
       actorId: Option[UserId],
   ) derives JsonCodec
 
+  /** @param base the `auth` the calls go to: the one central is configured with, or a cell's own address. */
   class Impl(
       httpClient: Client,
-      config: CentralConfig,
+      base: URL,
       tokenService: AuthTokenService,
   ) extends AuthClient:
-    private val usersUrl: URL = config.auth.url / "users"
+    private val usersUrl: URL = base / "users"
     private val rolesUrl: URL = usersUrl / "roles"
     private val claimsUrl: URL = usersUrl / "claims"
     private val sessionsUrl: URL = usersUrl / "sessions"
@@ -293,12 +309,12 @@ object AuthClient:
     private val passkeysUrl: URL = usersUrl / "passkeys"
     private val passwordResetUrl: URL = usersUrl / "password" / "reset"
     private val passwordSetUrl: URL = usersUrl / "password" / "set"
-    private val antifraudListsUrl: URL = config.auth.url / "antifraud" / "lists"
-    private val antifraudSettingsUrl: URL = config.auth.url / "antifraud" / "settings"
-    private val antifraudCountersResetUrl: URL = config.auth.url / "antifraud" / "counters" / "reset"
-    private val antifraudRulesUrl: URL = config.auth.url / "antifraud" / "rules"
-    private val antifraudStatusUrl: URL = config.auth.url / "antifraud" / "status"
-    private val configSyncUrl: URL = config.auth.url / "service" / "configuration" / "sync"
+    private val antifraudListsUrl: URL = base / "antifraud" / "lists"
+    private val antifraudSettingsUrl: URL = base / "antifraud" / "settings"
+    private val antifraudCountersResetUrl: URL = base / "antifraud" / "counters" / "reset"
+    private val antifraudRulesUrl: URL = base / "antifraud" / "rules"
+    private val antifraudStatusUrl: URL = base / "antifraud" / "status"
+    private val configSyncUrl: URL = base / "service" / "configuration" / "sync"
     private val auditEventsUrl: URL = usersUrl / "audit-events"
     private val auditSummaryUrl: URL = usersUrl / "audit-summary"
 

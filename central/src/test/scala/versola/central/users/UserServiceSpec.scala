@@ -4,7 +4,7 @@ import versola.central.configuration.clients.ApplicationType
 import versola.central.configuration.clients.{AuthFlow, AuthMethod, ClientApproval, ClientId, OAuthClientRecord, OAuthClientService}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.central.configuration.topology.CellId
+import versola.central.configuration.topology.{CellId, CellPlacement, CellRecord, CellState, RegionId, TopologyRepository}
 import versola.util.{Email, Patch, Phone, RedirectUri, Secret, SecureRandom, UnitSpecBase}
 import zio.*
 import zio.durationInt
@@ -30,7 +30,8 @@ object UserServiceSpec extends UnitSpecBase:
     val authClient = stub[AuthClient]
     val oAuthClientService = stub[OAuthClientService]
     val secureRandom = stub[SecureRandom]
-    val service = UserService.Impl(userRepository, authClient, oAuthClientService, secureRandom, key)
+    val topology = stub[TopologyRepository]
+    val service = UserService.Impl(userRepository, authClient, oAuthClientService, secureRandom, key, topology)
 
   def spec = suite("UserService")(
     test("findById returns enriched record when user found") {
@@ -54,9 +55,60 @@ object UserServiceSpec extends UnitSpecBase:
       val newId = UUID.fromString("00000000-0000-0000-0000-000000000002")
       for
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(newId)
+        _ <- env.topology.getCells.succeedsWith(Vector.empty)
         _ <- env.userRepository.create.succeedsWith(())
         result <- env.service.create(CreateUserRequest(Some(email), None, None))
-      yield assertTrue(result == UserId(newId))
+      yield assertTrue(
+        result == UserId(newId),
+        // With no cell registered the user is in the auth central is configured with.
+        env.userRepository.create.calls.map(_._1) == List(UserDirectoryRecord(UserId(newId), cellId = None)),
+      )
+    },
+    // versolauth/versola#547 Phase 2 step 3
+    test("create places the user in an open cell, never in one that takes no users") {
+      val env = Env()
+      val newId = UUID.fromString("00000000-0000-0000-0000-000000000002")
+      def cellOf(id: String, state: CellState, weight: Int) =
+        CellRecord(
+          id = CellId(id),
+          regionId = RegionId("almaty"),
+          internalUrl = s"http://$id:9003",
+          mtlsUrl = None,
+          trustedCertificates = Nil,
+          state = state,
+          weight = weight,
+        )
+      for
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(newId)
+        _ <- env.topology.getCells.succeedsWith(
+          Vector(
+            cellOf("kz-1", CellState.Closed, 100),
+            cellOf("kz-2", CellState.Open, 100),
+            cellOf("kz-3", CellState.Draining, 100),
+            cellOf("kz-4", CellState.Open, 0),
+          ),
+        )
+        _ <- env.userRepository.create.succeedsWith(())
+        _ <- ZIO.foreachDiscard(1 to 20)(_ => env.service.create(CreateUserRequest(Some(email), None, None)))
+      yield assertTrue(env.userRepository.create.calls.map(_._1.cellId).distinct == List(Some(CellId("kz-2"))))
+    },
+    test("the weights of the open cells decide where a user is placed, and no cell that takes users is none") {
+      def cellOf(id: String, weight: Int) =
+        CellRecord(
+          id = CellId(id),
+          regionId = RegionId("almaty"),
+          internalUrl = s"http://$id:9003",
+          mtlsUrl = None,
+          trustedCertificates = Nil,
+          state = CellState.Open,
+          weight = weight,
+        )
+      val cells = Vector(cellOf("kz-1", 30), cellOf("kz-2", 70))
+      assertTrue(
+        List(0.0, 0.29, 0.31, 0.99).map(CellPlacement.pick(cells, _)) == List("kz-1", "kz-1", "kz-2", "kz-2").map(id => Some(CellId(id))),
+        CellPlacement.pick(Vector.empty, 0.5).isEmpty,
+        CellPlacement.pick(Vector(cellOf("kz-1", 0)), 0.5).isEmpty,
+      )
     },
     // versolauth/versola#1041
     test("indexRegistered claims the MAC of the credential for a new id in the caller's cell") {
@@ -399,6 +451,7 @@ object UserServiceSpec extends UnitSpecBase:
       val newId = UUID.fromString("00000000-0000-0000-0000-000000000003")
       for
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(newId)
+        _ <- env.topology.getCells.succeedsWith(Vector.empty)
         _ <- env.userRepository.create.failsWith(UserConflict)
         result <- env.service.create(CreateUserRequest(Some(email), None, None)).either
       yield assertTrue(result == Left(UserConflict))

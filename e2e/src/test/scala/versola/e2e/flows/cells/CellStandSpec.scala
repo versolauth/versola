@@ -183,6 +183,27 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         assertTrue(foundFirst.flatMap(_.str("id")) == Chunk.fromIterable(firstSub)).label("central's directory has the user of cell 1") &&
         assertTrue(foundSecond.flatMap(_.str("id")) == Chunk.fromIterable(secondSub)).label("and the user of cell 2")
     },
+    // Phase 2 step 3: central's own directory says which cell holds a user, and its calls about the user go there.
+    test("central reads a user of cell 2 from cell 2 and deletes it there, which frees the address") {
+      for
+        s <- stand
+        central <- ZIO.service[CentralApi]
+        setup <- s.nextRegistration
+        email = setup.email.get
+        registered <- register(s.second, setup, email)
+        sub <- subject(registered.tokens.accessToken)
+        id <- ZIO.fromOption(sub).orElseFail(RuntimeException("the token has no sub"))
+        found <- central.get("/users", "id" -> id).flatMap(_.items("users"))
+        deleted <- central.delete("/users", "id" -> id)
+        after <- central.get("/users", "email" -> email).flatMap(_.items("users"))
+        // The account is gone from cell 2 and its address is nobody's: the same address registers as a new user.
+        again <- register(s.second, setup, email)
+        subAgain <- subject(again.tokens.accessToken)
+      yield assertTrue(found.flatMap(_.str("email")) == Chunk(email)).label(s"central shows the address cell 2 holds: $found") &&
+        assertTrue(deleted.status.isSuccess).label(s"central deletes the user: ${deleted.status} ${deleted.body}") &&
+        assertTrue(after.isEmpty).label("the directory no longer has the address") &&
+        assertTrue(subAgain.nonEmpty && subAgain != sub).label("the address registers again as another user")
+    },
     test("with the cells registered the staged edge signs a user in and makes its calls at the cell the values name") {
       for
         s <- stand

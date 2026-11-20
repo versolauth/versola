@@ -110,7 +110,7 @@ object AuthClientSpec extends ZIOSpecDefault:
     ).orDie)
 
   private def authClientLayer: ZLayer[Client & CentralConfig & AuthTokenService, Nothing, AuthClient] =
-    ZLayer.fromFunction(AuthClient.Impl(_, _, _))
+    ZLayer.fromFunction((client: Client, config: CentralConfig, tokens: AuthTokenService) => AuthClient.Impl(client, config.auth.url, tokens))
 
   /** Verifies Bearer token for a void method (route returns 204 No Content). */
   private def mkTest(name: String, call: AuthClient => Task[Unit]) =
@@ -185,7 +185,7 @@ object AuthClientSpec extends ZIOSpecDefault:
   ): AuthClient =
     AuthClient.Impl(
       ZClient.fromDriver(driver),
-      TestCentralConfig.config,
+      TestCentralConfig.config.auth.url,
       new AuthTokenService:
         override def getToken: UIO[String] = ZIO.succeed(token)
         override def refreshToken(): Task[String] = ZIO.succeed(token),
@@ -1002,7 +1002,7 @@ object AuthClientSpec extends ZIOSpecDefault:
           )(using trace: Trace, ev: Scope =:= Scope): ZIO[Env1 & Scope, Throwable, Response] =
             ZIO.dieMessage("WebSocket not used in AuthClient tests")
 
-        client = AuthClient.Impl(ZClient.fromDriver(driver), TestCentralConfig.config, tokenService)
+        client = AuthClient.Impl(ZClient.fromDriver(driver), TestCentralConfig.config.auth.url, tokenService)
         _ <- client.upsertUser(userId, version, None, None, None)
         isRefreshed <- refreshed.get
       yield assertTrue(isRefreshed)

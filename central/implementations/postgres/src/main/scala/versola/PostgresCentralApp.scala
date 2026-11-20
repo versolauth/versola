@@ -382,7 +382,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       SystemSettingsService.live >++>
       DeliverySettingsService.live >++>
       CacheSyncService.live >++>
-      AuthClient.live >++>
+      AuthClient.routed >++>
       PartnerClientService.live >++>
       PartnerService.live >++>
       AuditReportService.live >++>

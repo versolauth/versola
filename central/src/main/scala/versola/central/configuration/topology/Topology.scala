@@ -108,3 +108,23 @@ case class CellRecord(
     state: CellState,
     weight: Int,
 ) derives Schema, JsonCodec
+
+/** Where a user nobody placed yet is created (versolauth/versola#547, D8): a weighted choice over the open cells, so
+  * that adding a cell is a change of weights and no user moves. An edge makes the same choice for a registration it
+  * takes, among the cells of its own region; this is the one central makes for a user an administrator creates, which
+  * comes from no region.
+  */
+object CellPlacement:
+
+  /** @param roll a number in `[0, 1)`
+    * @return `None` when no cell takes users: there is none, or every one is closed, draining or weightless
+    */
+  def pick(cells: Vector[CellRecord], roll: Double): Option[CellId] =
+    val takers = cells.filter(cell => cell.state == CellState.Open && cell.weight > 0)
+    val total = takers.map(_.weight.toLong).sum
+    if total == 0 then None
+    else
+      val target = math.min(math.max(roll, 0.0), 0.999999999) * total
+      takers
+        .scanLeft((None: Option[CellId], 0L)) { case ((_, upTo), cell) => (Some(cell.id), upTo + cell.weight) }
+        .collectFirst { case (Some(cell), upTo) if target < upTo => cell }

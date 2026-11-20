@@ -3,9 +3,10 @@ package versola.central.users
 import versola.central.configuration.clients.{ClientId, OAuthClientService}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.{CellPlacement, TopologyRepository}
 import versola.util.{Email, Patch, Phone, SecureRandom}
 import zio.json.ast.Json
-import zio.{Duration, IO, Task, ZIO, ZLayer, duration2DurationOps}
+import zio.{Duration, IO, Random, Task, ZIO, ZLayer, duration2DurationOps}
 
 import java.time.Instant
 import scala.util.Try
@@ -87,8 +88,8 @@ object UserService:
       case _: OutboxEvent.DeleteUser => None
       case _: OutboxEvent.UpdateUserRoles => user
 
-  val live: ZLayer[UserRepository & AuthClient & OAuthClientService & SecureRandom & DirectoryKey, Nothing, UserService] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _))
+  val live: ZLayer[UserRepository & AuthClient & OAuthClientService & SecureRandom & DirectoryKey & TopologyRepository, Nothing, UserService] =
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   class Impl(
       userRepository: UserRepository,
@@ -96,6 +97,7 @@ object UserService:
       oAuthClientService: OAuthClientService,
       secureRandom: SecureRandom,
       directoryKey: DirectoryKey,
+      topology: TopologyRepository,
   ) extends UserService:
     override def findById(id: UserId): Task[Option[UserSearchRecord]] =
       userRepository.find(id).flatMap(enrich)
@@ -220,10 +222,12 @@ object UserService:
       for
         id <- secureRandom.nextUUIDv7.map(UserId(_))
         version <- secureRandom.nextUUIDv7
-        // A user an administrator creates is in the `auth` central is configured with: placing it in a cell comes
-        // with central reaching every cell (versolauth/versola#547, Phase 2 step 3).
+        // Placed like a registration is, by the weights of the open cells; with no cell that takes users the user is in
+        // the `auth` central is configured with. The outbox then carries the user to the cell it was placed in.
+        cells <- topology.getCells
+        roll <- Random.nextDouble
         _ <- userRepository.create(
-          user = UserDirectoryRecord(id, cellId = None),
+          user = UserDirectoryRecord(id, cellId = CellPlacement.pick(cells, roll)),
           identifiers = identifiers(request.email, request.phone, request.login),
           event = OutboxEvent.UpsertUser(userId = id, version = version, email = request.email, phone = request.phone, login = request.login),
           eventId = version,
