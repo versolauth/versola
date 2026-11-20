@@ -643,6 +643,41 @@ def add_auth(b: Board, phase: str) -> None:
     runtime(b)
 
 
+def attestation(b: Board) -> None:
+    """App attestation of native apps (#423, #1042). Each panel is placed for the decision it serves; the thresholds are placeholders until the release checks (#1019) have numbers from real devices."""
+    s = b.sel
+    b.row("edge — App attestation")
+    b.ts("Attestation — share not verified under report, by client and platform (last 24 h)", [
+        (f'sum by (client, platform, result) (increase(attestation_requests_total{{{s}, mode="report", result!="verified"}}[24h]))'
+         f' / on (client, platform) group_left sum by (client, platform) (increase(attestation_requests_total{{{s}, mode="report"}}[24h]))', "{{client}} {{platform}} {{result}}"),
+    ], unit="percentunit", minimum=0,
+         desc="Of the sign-ins of a client in report mode, the share that did not verify, split by why, over the last 24 hours. The decision it serves: below the threshold you agreed for several days, switch the client to enforce. One reason that dominates (UntrustedChain, AppNotAccepted, Absent) is to be fixed first, in the app or in the policy. Empty means no client is in report mode.")
+    b.ts("Attestation — refusals under enforce / s, by client and reason", [
+        (f'sum by (client, result) (rate(attestation_requests_total{{{s}, mode="enforce", result!="verified"}}[$__rate_interval]))', "{{client}} {{result}}"),
+    ], unit="reqps", stack=True, minimum=0,
+         desc="Sign-ins turned away under enforce. A step right after an app release is a build or a policy that does not match: a new signing certificate digest, another App ID. Correct the policy, or put the client back to report while you do. Empty is healthy.")
+    b.ts("Attestation — revocation list age", [
+        (f"time() - min by (pod) (attestation_revocation_list_refreshed_timestamp_seconds{{{s}}})", "{{pod}} age"),
+        (f"2 * max(attestation_revocation_refresh_interval_seconds{{{s}}})", "two refresh intervals"),
+    ], unit="s", minimum=0,
+         desc="Seconds since each edge pod last fetched Google's list of revoked Android attestation certificates, against two refresh intervals. A pod above the second line is not refreshing: check the edge's outbound access to android.googleapis.com. A pod missing here has never fetched the list (the list is first fetched when an Android attestation needs it).")
+    b.ts("Attestation — revocation list entries", [(f"max by (pod) (attestation_revocation_list_entries{{{s}}})", "{{pod}}")], unit="short", minimum=0,
+         desc="How many certificates the list in force names. A pod that stays at 0 while the age above is fresh is reading a list with nothing on it.")
+    b.ts("Attestation — verification latency by platform", [
+        (f"histogram_quantile(0.5, sum by (le, platform) (rate(attestation_verification_duration_seconds_bucket{{{s}}}[$__rate_interval])))", "{{platform}} p50"),
+        (f"histogram_quantile(0.99, sum by (le, platform) (rate(attestation_verification_duration_seconds_bucket{{{s}}}[$__rate_interval])))", "{{platform}} p99"),
+    ], unit="s", minimum=0,
+         desc="How long a verification takes, also under report, where it can make a sign-in wait. A p99 in seconds points at Google (the revocation list, or a Play Integrity decode), not at the app.")
+    b.ts("Attestation — new App Attest keys per day, by client", [
+        (f"sum by (client) (increase(attestation_keys_registered_total{{{s}}}[1d]))", "{{client}}"),
+    ], unit="short", minimum=0,
+         desc="Keys attested for the first time in the last 24 hours. Growth with no app release or campaign behind it is a farm of devices or a mass reinstall: look at the limits per device (#1040).")
+    b.ts("Attestation — Play Integrity calls by result", [
+        (f"sum by (result) (rate(attestation_play_integrity_calls_total{{{s}}}[$__rate_interval]))", "{{result}}"),
+    ], unit="reqps", stack=True, minimum=0,
+         desc="Calls to Google's decode endpoint: ok; refused (Google could not decode the token, the app's); quota (the Cloud project's quota is spent, the default is 10,000 a day, and every sign-in that needs a verdict fails with it under enforce); error (the service account's credential, the network, Google). quota or error is the edge's, not the app's.")
+
+
 def add_edge(b: Board, phase: str) -> None:
     b.use("edge")
     proxied = ', route=~"/resources/.*"'
@@ -685,6 +720,8 @@ unit="s", line=steps((None, GREEN), (0.015, RED)),
             what="/login and /complete finish a sign-in; /complete includes a code exchange with auth, so it carries auth's latency")
     traffic(b, title="Mobile apps (/native/*)", extra=mobile,
             what="start and complete = sign-in, token = refresh, revoke = sign-out; a 401 with a DPoP nonce is part of the normal handshake, not a failure")
+
+    attestation(b)
 
     b.row("edge — Token revocation")
     b.ts("Revoked tokens held in cache", [(f"sum(revocation_cache_entries{{{s}}})", "entries")], desc="Entries in the revocation list edge checks every token against.")
