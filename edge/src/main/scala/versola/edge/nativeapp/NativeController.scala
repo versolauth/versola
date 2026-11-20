@@ -49,6 +49,7 @@ object NativeController extends Controller:
         oauth("unsupported_grant_type", Some("only refresh_token is served here"))
       case NativeError.InvalidDpopProof(description) => oauth("invalid_dpop_proof", Some(description))
       case NativeError.InvalidGrant(description) => oauth("invalid_grant", Some(description))
+      case NativeError.InvalidClientAttestation(description) => oauth("invalid_client_attestation", Some(description))
       // §9: the same challenge shape as the proxy's Outcome.UseDpopNonce -- a bare 401 here
       // (EdgeController's own comment on that case applies unchanged).
       case NativeError.NonceRequired(nonce) =>

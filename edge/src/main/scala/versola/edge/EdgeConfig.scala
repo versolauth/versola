@@ -505,6 +505,8 @@ object EdgeConfig:
     *   in place of a stored login record. Its own key, not `tokenEncryption`'s.
     * @param blobTtl how long a blob can be redeemed after `/native/start`. Bounded above by the
     *   single-use `request_uri` and code in any case.
+    * @param attestation what app attestation (#423) is trusted against. Verification is for a client whose policy is not `off`, but the
+    *   roots it names are read, and must parse, when edge starts.
     * @param authIssuer the `iss` auth's authorization responses carry -- its `jwt.issuer`
     *   (`CoreConfig.JwtConfig.issuer`), a setting of auth's own and not derived from
     *   [[versolaUrl]]. Absent defaults to `versolaUrl` via [[issuer]] below, which is right
@@ -519,12 +521,55 @@ object EdgeConfig:
       blobKey: Secret.Bytes32,
       blobTtl: Duration = Duration.fromSeconds(600),
       authIssuer: Option[URL] = None,
+      attestation: Attestation = Attestation(),
   ):
     def externalUrl: URL = authMutualTlsExternalUrl.getOrElse(authMutualTlsUrl)
 
     /** RFC 9207 `iss` comparison target: [[authIssuer]] if this deployment names one, else
       * `versolaUrl` -- see [[authIssuer]]'s own comment for when that fallback is wrong. */
     def issuer(versolaUrl: URL): URL = authIssuer.getOrElse(versolaUrl)
+
+  /** What app attestation of `/native/start` (#423) is trusted against. The roots of Apple and Google ship with edge; a platform's
+    * rotation of one is met by pointing these at a file before a release of edge carries it.
+    *
+    * @param appleRoots a PEM file of Apple App Attestation roots, replacing the bundled one.
+    * @param androidRoots a PEM file of Android Key Attestation roots, replacing the bundled ones.
+    * @param androidRevocationUrl Google's list of revoked attestation certificates, fetched and kept.
+    * @param androidRevocationEnabled false for an edge that may not reach Google: nothing is then treated as revoked, at the price of
+    *   a stolen attestation key being trusted until the roots change. A field of its own rather than an absent URL, since a
+    *   configuration that leaves an optional setting out reads as that setting being absent, never as its default.
+    * @param revocationRefreshInterval how often the list is fetched again; a failed fetch leaves the last list in force.
+    */
+  case class Attestation(
+      appleRoots: Option[String] = None,
+      androidRoots: Option[String] = None,
+      androidRevocationUrl: URL = Attestation.DefaultRevocationUrl,
+      androidRevocationEnabled: Boolean = true,
+      revocationRefreshInterval: Duration = Duration.fromSeconds(6 * 3600),
+      playIntegrity: Option[PlayIntegritySettings] = None,
+  )
+
+  /** Where edge decodes a Play Integrity token, for an Android build whose policy asks for one. Absent, edge cannot, and a policy that
+    * asks for Play Integrity is refused as unsupported (under `report`, counted).
+    *
+    * The credential is a Google service account of the Google Cloud project the app's Play Integrity API is linked to, with the
+    * Play Integrity API enabled. Its key is a file the operator mounts, as the roots are, and is never put in the configuration.
+    *
+    * @param serviceAccountFile the service account's JSON key file.
+    * @param decodeUrl the Play Integrity API, `{package}` standing for the package of the build.
+    * @param maxTokenAge how old a verdict may be: Google issues them for ten minutes, and a request is made within seconds of one.
+    */
+  case class PlayIntegritySettings(
+      serviceAccountFile: String,
+      decodeUrl: String = PlayIntegritySettings.DefaultDecodeUrl,
+      maxTokenAge: Duration = Duration.fromSeconds(300),
+  )
+
+  object PlayIntegritySettings:
+    val DefaultDecodeUrl: String = "https://playintegrity.googleapis.com/v1/{package}:decodeIntegrityToken"
+
+  object Attestation:
+    val DefaultRevocationUrl: URL = URL.decode("https://android.googleapis.com/attestation/status").toOption.get
 
   object Dpop:
     /** The values a generated `dpop { }` block ships with (see `scripts/gen-env.scala`), for
