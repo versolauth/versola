@@ -160,7 +160,9 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         again <- register(s.second, setup, email)
         subAgain <- subject(again.tokens.accessToken)
       yield assertTrue(atOther.response.status != Status.SeeOther).label(s"cell 1 must not finish the sign-in, got ${atOther.response.status}") &&
-        assertTrue(found.flatMap(_.str("id")) == Chunk.fromIterable(sub)).label(s"central finds one user for the address, the one of cell 2: $found") &&
+        assertTrue(
+          found.flatMap(_.str("id")) == Chunk.fromIterable(sub),
+        ).label(s"central finds one user for the address, the one of cell 2: $found") &&
         assertTrue(subAgain == sub).label("a second sign-in at cell 2 is the same user")
     },
     test("an address nobody holds becomes a user of the cell that took the registration") {

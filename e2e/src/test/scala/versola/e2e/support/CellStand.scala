@@ -125,7 +125,9 @@ object CellStand:
       .flatMap:
         case Some((true, _)) => ZIO.unit
         case _ =>
-          ZIO.attemptBlocking(Files.readString(log)).flatMap(out => ZIO.fail(RuntimeException(s"the second cell did not become ready:\n${out.takeRight(4000)}")))
+          ZIO.attemptBlocking(Files.readString(log)).flatMap(out =>
+            ZIO.fail(RuntimeException(s"the second cell did not become ready:\n${out.takeRight(4000)}")),
+          )
 
   private def cell(id: String, internalUrl: String, mutualTlsUrl: String, pin: String, state: String, weight: Int): Json.Obj =
     Json.Obj(
