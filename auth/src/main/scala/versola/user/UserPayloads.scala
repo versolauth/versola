@@ -26,6 +26,15 @@ case class UpsertUserPayload(
     login: Option[Login],
 ) derives JsonCodec, Schema
 
+/** A change of some identifiers: an absent field is kept, `null` removes it, a value replaces it. */
+case class PatchUserPayload(
+    id: UserId,
+    version: UUID,
+    email: Option[Patch[Email]],
+    phone: Option[Patch[Phone]],
+    login: Option[Patch[Login]],
+) derives JsonCodec, Schema
+
 case class UpdateUserRolesPayload(
     userId: UserId,
     tenantId: TenantId,
@@ -42,7 +51,14 @@ case class ResetUserLimitsPayload(
     actorId: Option[UserId],
 ) derives JsonCodec, Schema
 
-case class UserClaimsResponse(claims: Json.Obj) derives JsonCodec, Schema
+/** The user as central reads it: central keeps only the MACs of the identifiers (versolauth/versola#1041), so what
+  * they are is asked here. */
+case class UserClaimsResponse(
+    claims: Json.Obj,
+    email: Option[Email],
+    phone: Option[Phone],
+    login: Option[Login],
+) derives JsonCodec, Schema
 
 case class PatchUserClaimsPayload(id: UserId, claims: Json.Obj, actorId: Option[UserId]) derives JsonCodec, Schema
 

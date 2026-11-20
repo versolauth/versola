@@ -50,6 +50,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     email = Some(email),
     phone = None,
     login = None,
+    cell = None,
   )
 
   private val registeredRequestBody = s"""{"email":"$email"}"""
@@ -133,13 +134,13 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(registeredRequestBody),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Ok,
-      setup = service => service.indexRegistered.succeedsWith(userId),
+      setup = service => service.indexRegistered.succeedsWith(RegisteredUserResponse(userId = userId, cell = None)),
       authorization = internalAuthorization,
       verify = (response, service) =>
         for body <- response.body.asJson[RegisteredUserResponse]
         yield assertTrue(
           service.indexRegistered.calls == List(registeredRequest),
-          body == RegisteredUserResponse(userId),
+          body == RegisteredUserResponse(userId = userId, cell = None),
         ),
     ),
     controllerTestCase(
@@ -161,7 +162,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(s"""{"email":"$email","login":"jdoe"}"""),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Ok,
-      setup = service => service.indexRegistered.succeedsWith(userId),
+      setup = service => service.indexRegistered.succeedsWith(RegisteredUserResponse(userId = userId, cell = None)),
       authorization = internalAuthorization,
       verify = (_, service) =>
         ZIO.succeed(assertTrue(

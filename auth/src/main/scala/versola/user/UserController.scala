@@ -63,6 +63,7 @@ object UserController extends Controller:
 
   def routes: Routes[Env, Throwable] = Routes(
     upsertUserEndpoint,
+    patchUserEndpoint,
     deleteUserEndpoint,
     patchClaimsEndpoint,
     patchRolesEndpoint,
@@ -102,6 +103,32 @@ object UserController extends Controller:
         ).collect { case (name, true) => name }
         _ <- ZIO.when(changed.nonEmpty)(audited(AuthAuditKinds.AccountUpdated, body.id, AuthAuditDetails.AccountUpdated(changed), asService))
       yield Response.status(Status.NoContent)
+    }
+
+  /** Central changed some of the account's identifiers. It names only those: the others stay as they are here, since
+    * central keeps no copy to send back (versolauth/versola#1041). A user this `auth` does not have is not created
+    * by a change: `404`, and central's outbox tries again behind the upsert that creates it. */
+  val patchUserEndpoint =
+    Method.PATCH / "users" -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        repo <- ZIO.service[UserRepository]
+        body <- request.body.asJsonFromCodec[PatchUserPayload]
+        before <- repo.find(body.id)
+        response <- before match
+          case None => Observability.setError("user_not_found").as(Response.status(Status.NotFound))
+          case Some(previous) =>
+            for
+              _ <- repo.patch(id = body.id, version = body.version, email = body.email, phone = body.phone, login = body.login)
+              after <- repo.find(body.id)
+              changed = List(
+                "email" -> (previous.email != after.flatMap(_.email)),
+                "phone" -> (previous.phone != after.flatMap(_.phone)),
+                "login" -> (previous.login != after.flatMap(_.login)),
+              ).collect { case (name, true) => name }
+              _ <- ZIO.when(changed.nonEmpty)(audited(AuthAuditKinds.AccountUpdated, body.id, AuthAuditDetails.AccountUpdated(changed), asService))
+            yield Response.status(Status.NoContent)
+      yield response
     }
 
   /** Everything the account can still act with goes in one purge, and the relying parties of
@@ -166,7 +193,8 @@ object UserController extends Controller:
         id <- request.url.queryZIO[UserId]("id")
         user <- repo.find(id)
       yield user match
-        case Some(record) => Response.json(UserClaimsResponse(record.claims).toJson)
+        case Some(record) =>
+          Response.json(UserClaimsResponse(claims = record.claims, email = record.email, phone = record.phone, login = record.login).toJson)
         case None => Response.status(Status.NoContent)
     }
 

@@ -177,8 +177,8 @@ object UserController extends AuditedController:
         _ <- authorizeInternal(request)
         service <- ZIO.service[UserService]
         body <- request.bodyAs[RegisteredUserRequest]
-        userId <- service.indexRegistered(body)
-      yield Response.json(RegisteredUserResponse(userId).toJson))
+        claim <- service.indexRegistered(body)
+      yield Response.json(claim.toJson))
         .catchAll:
           case UserIndexConflict => ZIO.succeed(Response.status(Status.Conflict))
           case error: Throwable => ZIO.fail(error)

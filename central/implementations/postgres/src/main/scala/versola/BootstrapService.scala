@@ -63,7 +63,7 @@ import versola.central.configuration.{
   ResourceUri,
   UpdateClientRequest,
 }
-import versola.central.users.{Login, UserConflict, UserId, UserRepository}
+import versola.central.users.{DirectoryKey, Login, OutboxEvent, UserConflict, UserDirectoryRecord, UserId, UserRepository}
 import versola.util.SequentialLayers.*
 import versola.util.audit.{ActorType, AuditDetails, AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.theme.{ThemePresets, ThemeTokens}
@@ -1461,20 +1461,28 @@ object BootstrapService:
 
     private def seedAdminUser(config: CentralConfig.BootstrapConfig): Task[Unit] =
       val adminUserId = UserId(config.adminUserId)
-      userRepo.findById(adminUserId).flatMap:
-        case Some(_) => ZIO.logInfo(s"Admin user '${config.login}' already exists in user index, skipping")
+      val key = DirectoryKey.derive(this.config.clientSecretsSecret)
+      val phone = BootstrapService.adminPhone(envName)
+      val login = Login(config.login)
+      userRepo.find(adminUserId).flatMap:
+        case Some(_) => ZIO.logInfo(s"Admin user '${config.login}' already exists in the directory, skipping")
         case None =>
-          userRepo
-            .create(adminUserId, email = None, phone = BootstrapService.adminPhone(envName), login = Some(Login(config.login)))
-            .foldZIO(
-              {
-                case _: UserConflict => ZIO.logInfo(s"Admin user '${config.login}' already exists in user index (conflict), skipping")
-                case t: Throwable => ZIO.fail(t)
-              },
-              _ =>
-                ZIO.logInfo(s"Seeded admin user '${config.login}' with id $adminUserId in user index") *>
-                  recordCreated("admin-user", adminUserId.toString),
+          secureRandom.nextUUIDv7.flatMap: version =>
+            userRepo.create(
+              user = UserDirectoryRecord(adminUserId, cellId = None),
+              identifiers = phone.map(key.phone).toList :+ key.login(login),
+              event = OutboxEvent.UpsertUser(userId = adminUserId, version = version, email = None, phone = phone, login = Some(login)),
+              eventId = version,
             )
+          .foldZIO(
+            {
+              case _: UserConflict => ZIO.logInfo(s"Admin user '${config.login}' already exists in user index (conflict), skipping")
+              case t: Throwable => ZIO.fail(t)
+            },
+            _ =>
+              ZIO.logInfo(s"Seeded admin user '${config.login}' with id $adminUserId in user index") *>
+                recordCreated("admin-user", adminUserId.toString),
+          )
 
     /** RFC 8705 §6.5: `central-admin`'s certificate reaches auth through the default tenant's
       * TLS terminator, in the header that tenant names -- which central also requires before it

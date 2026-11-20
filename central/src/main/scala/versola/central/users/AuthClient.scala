@@ -29,6 +29,15 @@ trait AuthClient:
       login: Option[Login],
   ): Task[Unit]
 
+  /** Changes the identifiers named and leaves the others as `auth` has them. */
+  def patchUser(
+      id: UserId,
+      version: UUID,
+      email: Option[Patch[Email]],
+      phone: Option[Patch[Phone]],
+      login: Option[Patch[Login]],
+  ): Task[Unit]
+
   def updateUserRoles(
       userId: UserId,
       tenantId: TenantId,
@@ -37,6 +46,9 @@ trait AuthClient:
   ): Task[Unit]
 
   def deleteUser(userId: UserId): Task[Unit]
+
+  /** The user as `auth` holds it: its identifiers, which central keeps only the MACs of, and its claims. */
+  def getUser(id: UserId): Task[Option[AuthClient.UserDto]]
 
   def getUserClaims(id: UserId): Task[Option[Json.Obj]]
 
@@ -172,7 +184,15 @@ object AuthClient:
       remove: Set[RoleId],
   ) derives JsonCodec
 
-  private case class UserClaimsResponse(claims: Json.Obj) derives JsonCodec
+  private case class PatchUserPayload(
+      id: UserId,
+      version: UUID,
+      email: Option[Patch[Email]],
+      phone: Option[Patch[Phone]],
+      login: Option[Patch[Login]],
+  ) derives JsonCodec
+
+  case class UserDto(email: Option[Email], phone: Option[Phone], login: Option[Login], claims: Json.Obj) derives JsonCodec
 
   private case class PatchUserClaimsPayload(id: UserId, claims: Json.Obj, actorId: Option[UserId]) derives JsonCodec
 
@@ -297,6 +317,21 @@ object AuthClient:
         ),
       )
 
+    override def patchUser(
+        id: UserId,
+        version: UUID,
+        email: Option[Patch[Email]],
+        phone: Option[Patch[Phone]],
+        login: Option[Patch[Login]],
+    ): Task[Unit] =
+      send(
+        Request(
+          method = Method.PATCH,
+          url = usersUrl,
+          body = Body.from(PatchUserPayload(id = id, version = version, email = email, phone = phone, login = login)),
+        ),
+      )
+
     override def updateUserRoles(
         userId: UserId,
         tenantId: TenantId,
@@ -311,10 +346,11 @@ object AuthClient:
         ),
       )
 
+    override def getUser(id: UserId): Task[Option[UserDto]] =
+      sendReceiveOptional[UserDto](Request.get(claimsUrl.addQueryParam("id", id.toString)))
+
     override def getUserClaims(id: UserId): Task[Option[Json.Obj]] =
-      sendReceiveOptional[UserClaimsResponse](
-        Request.get(claimsUrl.addQueryParam("id", id.toString)),
-      ).map(_.map(_.claims))
+      getUser(id).map(_.map(_.claims))
 
     override def patchUserClaims(id: UserId, patch: Json.Obj): Task[Unit] =
       admin.flatMap: actorId =>

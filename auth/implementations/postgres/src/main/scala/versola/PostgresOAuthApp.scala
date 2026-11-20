@@ -81,7 +81,7 @@ import versola.oauth.session.{PostgresSessionRepository, PostgresUserAgentReposi
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
 import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresPushedAuthorizationRepository}
-import versola.user.{PostgresUserRepository, UserController, UserRegistrationSyncClient, UserRepository, UserService}
+import versola.user.{PostgresUserRepository, UserController, UserDirectory, UserRepository, UserService}
 import versola.util.*
 import versola.util.SequentialLayers.*
 import versola.util.audit.{AuditEventRepository, AuditEvents, AuditTenants}
@@ -174,7 +174,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ChallengeThrottleRepository &
       LogoutService &
       SessionService &
-      UserRegistrationSyncClient &
+      UserDirectory &
       EstCentralClient &
       EstService &
       AuditEvents &
@@ -432,7 +432,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       LogoutService.live >++>
       AccountSettingsService.live >++>
       AcrResolutionService.live >++>
-      UserRegistrationSyncClient.live >++>
+      UserDirectory.live >++>
       EstCentralClient.live >++>
       EstService.live >++>
       UserService.live >++>

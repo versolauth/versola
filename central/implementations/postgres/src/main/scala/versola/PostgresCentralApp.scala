@@ -75,7 +75,7 @@ import versola.central.configuration.system.{SystemSettingsController, SystemSet
 import versola.central.configuration.tenants.{TenantController, TenantRepository, TenantService}
 import versola.central.configuration.themes.{ThemeController, ThemeRepository, ThemeService}
 import versola.central.configuration.topology.{TopologyController, TopologyRepository, TopologyService}
-import versola.central.users.{AuthClient, ServiceController, UserController, UserOutboxProcessor, UserRepository, UserService}
+import versola.central.users.{AuthClient, DirectoryKey, ServiceController, UserController, UserOutboxProcessor, UserRepository, UserService}
 import versola.central.{CentralConfig, refuseEdgeCallers}
 import versola.configuration.challenges.{PostgresChallengeSettingsRepository, PostgresOtpChallengeRepository}
 import versola.configuration.clients.{
@@ -386,6 +386,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       PartnerClientService.live >++>
       PartnerService.live >++>
       AuditReportService.live >++>
+      DirectoryKey.live >++>
       UserService.live >++>
       AntifraudListService.live >++>
       AntifraudSettingsService.live >++>

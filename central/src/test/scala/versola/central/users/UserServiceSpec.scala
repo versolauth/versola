@@ -4,7 +4,8 @@ import versola.central.configuration.clients.ApplicationType
 import versola.central.configuration.clients.{AuthFlow, AuthMethod, ClientApproval, ClientId, OAuthClientRecord, OAuthClientService}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.util.{Email, Patch, Phone, RedirectUri, SecureRandom, UnitSpecBase}
+import versola.central.configuration.topology.CellId
+import versola.util.{Email, Patch, Phone, RedirectUri, Secret, SecureRandom, UnitSpecBase}
 import zio.*
 import zio.durationInt
 import zio.json.ast.Json
@@ -18,28 +19,32 @@ object UserServiceSpec extends UnitSpecBase:
   private val userId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
   private val tenantId = TenantId("t1")
   private val email = Email("user@example.com")
-  private val indexRecord = UserIndexRecord(userId, Some(email), None, None)
+  private val indexRecord = UserDirectoryRecord(userId, cellId = None)
+  private val key = DirectoryKey.derive(Secret(Array.fill(16)(7.toByte)))
+  private val cell = CellId("kz-1")
+  private def held(email: Option[Email] = None, phone: Option[Phone] = None, login: Option[Login] = None) =
+    AuthClient.UserDto(email = email, phone = phone, login = login, claims = Json.Obj())
 
   class Env:
     val userRepository = stub[UserRepository]
     val authClient = stub[AuthClient]
     val oAuthClientService = stub[OAuthClientService]
     val secureRandom = stub[SecureRandom]
-    val service = UserService.Impl(userRepository, authClient, oAuthClientService, secureRandom)
+    val service = UserService.Impl(userRepository, authClient, oAuthClientService, secureRandom, key)
 
   def spec = suite("UserService")(
     test("findById returns enriched record when user found") {
       val env = Env()
       for
-        _ <- env.userRepository.findById.succeedsWith(Some(indexRecord))
-        _ <- env.authClient.getUserClaims.succeedsWith(Some(Json.Obj()))
+        _ <- env.userRepository.find.succeedsWith(Some(indexRecord))
+        _ <- env.authClient.getUser.succeedsWith(Some(held(email = Some(email))))
         result <- env.service.findById(userId)
       yield assertTrue(result.map(_.id).contains(userId))
     },
     test("findById returns None when user not found") {
       val env = Env()
       for
-        _ <- env.userRepository.findById.succeedsWith(None)
+        _ <- env.userRepository.find.succeedsWith(None)
         result <- env.service.findById(userId)
       yield assertTrue(result.isEmpty)
     },
@@ -52,13 +57,42 @@ object UserServiceSpec extends UnitSpecBase:
         result <- env.service.create(CreateUserRequest(Some(email), None, None))
       yield assertTrue(result == UserId(newId))
     },
-    test("indexRegistered returns the canonical repository id") {
+    // versolauth/versola#1041
+    test("indexRegistered claims the MAC of the credential for a new id in the caller's cell") {
       val env = Env()
-      val request = RegisteredUserRequest(Some(email), None, None)
+      val minted = UUID.fromString("00000000-0000-0000-0000-000000000009")
       for
-        _ <- env.userRepository.indexFromAuth.succeedsWith(userId)
-        result <- env.service.indexRegistered(request)
-      yield assertTrue(result == userId)
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(minted)
+        _ <- env.userRepository.claim.returnsZIO((_, candidate) => ZIO.succeed(candidate))
+        result <-
+          env.service.indexRegistered(RegisteredUserRequest(email = None, phone = Some(Phone("+15551234567")), login = None, cell = Some(cell)))
+        calls = env.userRepository.claim.calls
+      yield assertTrue(
+        result == RegisteredUserResponse(userId = UserId(minted), cell = Some(cell)),
+        calls.map(_._2) == List(UserDirectoryRecord(UserId(minted), Some(cell))),
+        calls.map(_._1.map(_.kind)) == List(List(IdentifierKind.Phone)),
+        // Only the MAC leaves the service, and it is the one a search for the same phone computes.
+        calls.flatMap(_._1.map(_.mac.toList)) == List(key.phone(Phone("+15551234567")).mac.toList),
+      )
+    },
+    test("indexRegistered answers the owner and the owner's cell for a credential claimed before, whatever cell asks") {
+      val env = Env()
+      val owner = UserDirectoryRecord(userId, Some(CellId("kz-2")))
+      for
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.fromString("00000000-0000-0000-0000-000000000009"))
+        _ <- env.userRepository.claim.succeedsWith(owner)
+        result <- env.service.indexRegistered(RegisteredUserRequest(email = Some(email), phone = None, login = None, cell = Some(cell)))
+      yield assertTrue(result == RegisteredUserResponse(userId = userId, cell = Some(CellId("kz-2"))))
+    },
+    test("the MAC of an identifier depends on its kind and on the key, and is the same for the same value") {
+      val other = DirectoryKey.derive(Secret(Array.fill(16)(8.toByte)))
+      val phone = Phone("+15551234567")
+      assertTrue(
+        key.phone(phone).mac.toList == key.phone(phone).mac.toList,
+        key.phone(phone).mac.toList != other.phone(phone).mac.toList,
+        key.phone(phone).mac.toList != key.login(Login("+15551234567")).mac.toList,
+        key.phone(phone).mac.length == 32,
+      )
     },
     test("getRoles delegates to authClient") {
       val env = Env()
@@ -298,36 +332,39 @@ object UserServiceSpec extends UnitSpecBase:
     test("findByEmail returns enriched record when user found") {
       val env = Env()
       for
-        _ <- env.userRepository.findByEmail.succeedsWith(Some(indexRecord))
-        _ <- env.authClient.getUserClaims.succeedsWith(Some(Json.Obj()))
+        _ <- env.userRepository.findByIdentifier.succeedsWith(Some(indexRecord))
+        _ <- env.authClient.getUser.succeedsWith(Some(held(email = Some(email))))
         result <- env.service.findByEmail(email)
       yield assertTrue(result.map(_.id).contains(userId))
     },
     test("findByPhone returns enriched record when user found") {
       val env = Env()
       val phone = Phone("+16502530000")
-      val record = UserIndexRecord(userId, None, Some(phone), None)
       for
-        _ <- env.userRepository.findByPhone.succeedsWith(Some(record))
-        _ <- env.authClient.getUserClaims.succeedsWith(Some(Json.Obj()))
+        _ <- env.userRepository.findByIdentifier.succeedsWith(Some(indexRecord))
+        _ <- env.authClient.getUser.succeedsWith(Some(held(email = Some(email))))
         result <- env.service.findByPhone(phone)
-      yield assertTrue(result.map(_.id).contains(userId))
+      yield assertTrue(
+        result.map(_.id).contains(userId),
+        // The directory is asked by the MAC, and the identifiers shown are what auth holds.
+        env.userRepository.findByIdentifier.calls.map(i => (i.kind, i.mac.toList)) == List((IdentifierKind.Phone, key.phone(phone).mac.toList)),
+        result.flatMap(_.email).contains(email),
+      )
     },
     test("findByLogin returns enriched record when user found") {
       val env = Env()
       val login = Login("jdoe")
-      val record = UserIndexRecord(userId, None, None, Some(login))
       for
-        _ <- env.userRepository.findByLogin.succeedsWith(Some(record))
-        _ <- env.authClient.getUserClaims.succeedsWith(Some(Json.Obj()))
+        _ <- env.userRepository.findByIdentifier.succeedsWith(Some(indexRecord))
+        _ <- env.authClient.getUser.succeedsWith(Some(held(email = Some(email))))
         result <- env.service.findByLogin(login)
       yield assertTrue(result.map(_.id).contains(userId))
     },
     test("findById defaults to an empty claims object when auth has none for the user") {
       val env = Env()
       for
-        _ <- env.userRepository.findById.succeedsWith(Some(indexRecord))
-        _ <- env.authClient.getUserClaims.succeedsWith(None)
+        _ <- env.userRepository.find.succeedsWith(Some(indexRecord))
+        _ <- env.authClient.getUser.succeedsWith(None)
         result <- env.service.findById(userId)
       yield assertTrue(result.map(_.claims).contains(Json.Obj()))
     },
@@ -363,21 +400,42 @@ object UserServiceSpec extends UnitSpecBase:
     },
     test("indexRegistered fails with UserIndexConflict when credentials resolve to multiple users") {
       val env = Env()
-      val request = RegisteredUserRequest(Some(email), None, None)
+      val request = RegisteredUserRequest(email = Some(email), phone = None, login = None, cell = None)
       for
-        _ <- env.userRepository.indexFromAuth.failsWith(UserIndexConflict)
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.fromString("00000000-0000-0000-0000-000000000009"))
+        _ <- env.userRepository.claim.failsWith(UserIndexConflict)
         result <- env.service.indexRegistered(request).either
       yield assertTrue(result == Left(UserIndexConflict))
     },
-    test("patch delegates request fields to repository") {
+    test("patch replaces the MAC of what changed, removes what was deleted, and tells auth only what it named") {
       val env = Env()
-      val request = PatchUserRequest(userId, Some(Patch.Modified(email)), None, None)
+      val version = UUID.fromString("00000000-0000-0000-0000-000000000007")
+      val request = PatchUserRequest(userId, Some(Patch.Modified(email)), Some(Patch.Deleted), None)
       for
-        _ <- env.userRepository.patch.succeedsWith(())
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(version)
+        _ <- env.userRepository.replaceIdentifiers.succeedsWith(())
         _ <- env.service.patch(request)
+        calls = env.userRepository.replaceIdentifiers.calls
       yield assertTrue(
-        env.userRepository.patch.calls == List((userId, Some(Patch.Modified(email)), None, None)),
+        calls.map(_._1) == List(userId),
+        calls.map(_._2.map(i => (i.kind, i.mac.toList))) == List(List((IdentifierKind.Email, key.email(email).mac.toList))),
+        calls.map(_._3) == List(Set(IdentifierKind.Phone)),
+        calls.map(_._4) == List(OutboxEvent.PatchUser(
+          userId = userId,
+          version = version,
+          email = Some(Patch.Modified(email)),
+          phone = Some(Patch.Deleted),
+          login = None,
+        )),
       )
+    },
+    test("patch fails with UserConflict when the identifier belongs to another user") {
+      val env = Env()
+      for
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.fromString("00000000-0000-0000-0000-000000000007"))
+        _ <- env.userRepository.replaceIdentifiers.failsWith(UserConflict)
+        result <- env.service.patch(PatchUserRequest(userId, Some(Patch.Modified(email)), None, None)).either
+      yield assertTrue(result == Left(UserConflict))
     },
     test("patchClaims delegates to authClient") {
       val env = Env()
@@ -391,7 +449,7 @@ object UserServiceSpec extends UnitSpecBase:
       val env = Env()
       for
         order <- Ref.make(List.empty[String])
-        _ <- env.userRepository.findById.succeedsWith(Some(indexRecord))
+        _ <- env.userRepository.find.succeedsWith(Some(indexRecord))
         _ <- env.authClient.deleteUser.returnsZIO(_ => order.update(_ :+ "auth"))
         _ <- env.userRepository.delete.returnsZIO(_ => order.update(_ :+ "index"))
         _ <- env.service.delete(userId)
@@ -405,7 +463,7 @@ object UserServiceSpec extends UnitSpecBase:
     test("delete fails with UserNotFound for an id that is not indexed and touches nothing") {
       val env = Env()
       for
-        _ <- env.userRepository.findById.succeedsWith(None)
+        _ <- env.userRepository.find.succeedsWith(None)
         exit <- env.service.delete(userId).exit
       yield assertTrue(
         exit == Exit.fail(UserNotFound),
@@ -417,7 +475,7 @@ object UserServiceSpec extends UnitSpecBase:
       val env = Env()
       val failure = RuntimeException("auth unavailable")
       for
-        _ <- env.userRepository.findById.succeedsWith(Some(indexRecord))
+        _ <- env.userRepository.find.succeedsWith(Some(indexRecord))
         _ <- env.authClient.deleteUser.failsWith(failure)
         exit <- env.service.delete(userId).exit
       yield assertTrue(

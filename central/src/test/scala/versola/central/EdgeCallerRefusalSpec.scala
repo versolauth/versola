@@ -10,7 +10,7 @@ import versola.central.configuration.jwks.{JwksController, JwksService}
 import versola.central.configuration.metadata.{ServerMetadataController, ServerMetadataService}
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.roles.{RoleController, RoleService}
-import versola.central.users.{UserController, UserId, UserService}
+import versola.central.users.{RegisteredUserResponse, UserController, UserId, UserService}
 import versola.util.http.Observability
 import versola.util.{EnvName, JWT, RsaKeyPair}
 import zio.*
@@ -135,7 +135,7 @@ object EdgeCallerRefusalSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- services.jwks.getRaw.succeedsWith(Json.Obj())
         _ <- services.jwks.getSigningKeys.succeedsWith(Map.empty)
         _ <- services.metadata.getMetadata.succeedsWith(None)
-        _ <- services.users.indexRegistered.succeedsWith(userId)
+        _ <- services.users.indexRegistered.succeedsWith(RegisteredUserResponse(userId = userId, cell = None))
         _ <- services.roles.getTenantRoles.succeedsWith(Vector.empty)
         header <- authorization
         response <- httpClient.batched(header.fold(request)(request.addHeader))

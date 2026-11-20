@@ -7,7 +7,8 @@ import versola.oauth.client.model.TenantId
 import versola.role.model.RoleId
 import versola.user.model.UserRecord
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
-import versola.util.{Email, Phone}
+import versola.util.http.Observability
+import versola.util.{CoreConfig, Email, Phone, RoutingKey}
 import zio.*
 
 trait UserService:
@@ -26,12 +27,16 @@ trait UserService:
   ): Task[UserRecord]
 
 object UserService:
-  def live: ZLayer[UserRepository & UserRegistrationSyncClient & AuditEvents, Nothing, UserService] =
-    ZLayer.fromFunction(Impl(_, _, _))
+  /** The credential is held by a user of another cell, which this cell cannot create or sign in. */
+  final case class HomeCellElsewhere(cell: RoutingKey.CellId) extends RuntimeException(s"the user is held by cell '$cell'")
+
+  def live: ZLayer[UserRepository & UserDirectory & CoreConfig & AuditEvents, Nothing, UserService] =
+    ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
       userRepository: UserRepository,
-      registrationSyncClient: UserRegistrationSyncClient,
+      directory: UserDirectory,
+      config: CoreConfig,
       audit: AuditEvents,
   ) extends UserService:
     override def register(
@@ -39,12 +44,14 @@ object UserService:
         tenantId: TenantId,
         roleIds: Set[RoleId],
     ): Task[UserRecord] =
-      val claim = credential match
-        case Left(email) => UserRegisteredEvent(Some(email), None, None)
-        case Right(phone) => UserRegisteredEvent(None, Some(phone), None)
       for
-        userId <- registrationSyncClient.claimRegistration(claim)
-        user <- userRepository.register(userId, credential, tenantId, roleIds)
+        claim <- directory.claim(credential)
+        // The credential belongs to a user another cell holds: creating one here would be a second account under the
+        // same id. Handing the sign-in to that cell is versolauth/versola#547 Phase 2 step 5; until then it is refused.
+        _ <- ZIO.foreachDiscard(claim.cell.filterNot(config.cellId.contains)): home =>
+          Observability.setError("user_home_cell_elsewhere", Some(s"the credential belongs to a user of cell '$home'")) *>
+            ZIO.fail(UserService.HomeCellElsewhere(home))
+        user <- userRepository.register(claim.userId, credential, tenantId, roleIds)
         _ <- audit.log(
           AuditDraft(
             kind = AuthAuditKinds.AccountRegistered,

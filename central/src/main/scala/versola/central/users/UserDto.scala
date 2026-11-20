@@ -3,6 +3,7 @@ package versola.central.users
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellId
 import versola.util.{Email, Patch, Phone}
 import zio.json.ast.Json
 import zio.json.{JsonCodec, jsonExplicitNull}
@@ -18,14 +19,25 @@ case class CreateUserRequest(
 
 case class CreateUserResponse(id: UserId) derives JsonCodec, Schema
 
-/** An account auth created through self-service registration. */
+/** The claim of an account's identifiers by the `auth` that is about to create it through self-service registration
+  * (versolauth/versola#1041).
+  *
+  * @param cell the cell of the caller; absent from an `auth` that is not one. It is a statement of the caller, whose
+  *   token is signed with the key every `auth` shares.
+  */
 case class RegisteredUserRequest(
     email: Option[Email],
     phone: Option[Phone],
     login: Option[Login],
+    cell: Option[CellId],
 ) derives JsonCodec, Schema
 
-case class RegisteredUserResponse(userId: UserId) derives JsonCodec, Schema
+/** Who holds the identifiers now.
+  *
+  * @param cell the cell that holds the user: the caller's own for a new claim, the owner's for identifiers claimed
+  *   before. Absent for a user of an installation with no cell.
+  */
+case class RegisteredUserResponse(userId: UserId, cell: Option[CellId]) derives JsonCodec, Schema
 
 case class PatchUserRequest(
     id: UserId,

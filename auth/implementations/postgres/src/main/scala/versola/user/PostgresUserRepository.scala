@@ -8,8 +8,9 @@ import versola.oauth.client.model.TenantId
 import versola.oauth.revocation.{PostgresAuthRevocationRepository, RevocationTerms}
 import versola.role.model.RoleId
 import versola.user.model.*
+import versola.util.Patch.toUpdate
 import versola.util.postgres.BasicCodecs
-import versola.util.{Email, Phone}
+import versola.util.{Email, Patch, Phone}
 import zio.json.*
 import zio.json.ast.Json
 import zio.{Clock, Task, ZIO, ZLayer}
@@ -97,6 +98,31 @@ class PostgresUserRepository(
                 case when excluded.phone is distinct from users.phone then 'phone_number_verified' end
               ]::text[], null)
             where users.last_version is null or users.last_version < excluded.last_version
+         """.update.run()
+    .unit
+
+  override def patch(
+      id: UserId,
+      version: UUID,
+      email: Option[Patch[Email]],
+      phone: Option[Patch[Phone]],
+      login: Option[Patch[Login]],
+  ): Task[Unit] =
+    val (updEmail, valEmail) = email.toUpdate
+    val (updPhone, valPhone) = phone.toUpdate
+    val (updLogin, valLogin) = login.toUpdate
+    xa.connectMeasured("patch-user"):
+      sql"""update users set
+              email = case when $updEmail then $valEmail else email end,
+              phone = case when $updPhone then $valPhone else phone end,
+              login = case when $updLogin then $valLogin else login end,
+              last_version = $version,
+              -- A verified flag describes the contact it was earned for: when the contact changes it goes.
+              claims = claims - array_remove(array[
+                case when $updEmail and $valEmail is distinct from email then 'email_verified' end,
+                case when $updPhone and $valPhone is distinct from phone then 'phone_number_verified' end
+              ]::text[], null)
+            where id = $id and (last_version is null or last_version < $version)
          """.update.run()
     .unit
 
