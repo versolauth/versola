@@ -1,6 +1,7 @@
 package versola.edge
 
 import versola.edge.model.*
+import versola.edge.nativeapp.NativeAuthClient
 import versola.util.{PrivateClientCertificate, RedirectUri, Secret, TestCertificates}
 import zio.*
 import zio.http.*
@@ -118,6 +119,20 @@ object CellRoutingSpec extends ZIOSpecDefault:
   private def tokenOf(cell: String) =
     AccessToken(java.util.Base64.getUrlEncoder.withoutPadding.encodeToString(s"""{"alg":"RS256","cell":"$cell"}""".getBytes("UTF-8")) + ".e30.c2ln")
 
+  private val nativeConfig = config.copy(native =
+    Some(
+      EdgeConfig.Native(
+        authMutualTlsUrl = url("https://auth.mtls:9443/configured"),
+        trustedCertificates = Set("/etc/versola/auth-mtls.pem"),
+        blobKey = Secret.Bytes32(Array.fill(32)(9.toByte)),
+      ),
+    ),
+  )
+
+  private def native(client: Client, cells: CellTopology) = NativeAuthClient.Impl(client, nativeConfig, okFiles, table(cells))
+
+  private def form(fields: (String, String)*) = Form(fields.map(FormField.simpleField(_, _))*)
+
   private val moved = Response.json("""{"error":"moved","cell":"kz-3"}""").status(Status.fromInt(421))
 
   def spec = suite("cell routing")(
@@ -183,6 +198,66 @@ object CellRoutingSpec extends ZIOSpecDefault:
         assertTrue(route(CellRouting.Placement, 0.0, anywhere).toOption.flatten.map(_.id) == Some("kz-3"))
       },
     ),
+    suite("native flow")(
+      test("a native code, refresh token and token to revoke go to the mutual-TLS listener of the cell they name") {
+        val cells = topology.copy(cells = Vector(secured("kz-1"), secured("kz-2")))
+        for
+          hosts <- serve(_ => Response.json(tokenJson))
+          client <- ZIO.service[Client]
+          auth = native(client, cells)
+          _ <- auth.token("app", certificateMaterial, form("grant_type" -> "authorization_code", "code" -> "v1.kz-2.abc"), Headers.empty)
+          _ <- auth.token("app", certificateMaterial, form("grant_type" -> "refresh_token", "refresh_token" -> "v1.kz-1.abc"), Headers.empty)
+          _ <- auth.revoke("app", certificateMaterial, form("token" -> "v1.kz-2.abc"), Headers.empty)
+          _ <- auth.revoke("app", certificateMaterial, form("token" -> tokenOf("kz-1").toString), Headers.empty)
+          _ <- auth.token("app", certificateMaterial, form("grant_type" -> "refresh_token", "refresh_token" -> "legacy"), Headers.empty)
+          seen <- hosts.get
+        yield assertTrue(seen.reverse == List("kz-2-mtls", "kz-1-mtls", "kz-2-mtls", "kz-1-mtls", "configured"))
+      },
+      test("a native pushed request is placed in an open cell and replayed once on moved; a refresh is too, a revocation is not") {
+        val cells = topology.copy(cells = Vector(secured("kz-1"), secured("kz-3").copy(state = EdgeCellState.Closed)))
+        for
+          hosts <- serve(host => if host == "kz-1-mtls" then moved else Response.json(pushedJson).status(Status.Created))
+          client <- ZIO.service[Client]
+          auth = native(client, cells)
+          pushed <- auth.par("app", certificateMaterial, form("scope" -> "openid"))
+          refreshed <- auth.token("app", certificateMaterial, form("refresh_token" -> "v1.kz-1.abc"), Headers.empty)
+          revoked <- auth.revoke("app", certificateMaterial, form("token" -> "v1.kz-1.abc"), Headers.empty)
+          seen <- hosts.get
+        yield assertTrue(
+          seen.reverse == List("kz-1-mtls", "kz-3-mtls", "kz-1-mtls", "kz-3-mtls", "kz-1-mtls"),
+          pushed.status == Status.Created,
+          refreshed.status == Status.Created,
+          revoked.status.code == 421,
+        )
+      },
+      test("a native value naming an unknown cell is an invalid grant with no call made, and a cell without a pinned listener is not reached") {
+        for
+          hosts <- serve(_ => Response.json(tokenJson))
+          client <- ZIO.service[Client]
+          unknown <- native(client, topology).token("app", certificateMaterial, form("refresh_token" -> "v1.kz-9.abc"), Headers.empty)
+          unreachable <- native(client, topology).token("app", certificateMaterial, form("refresh_token" -> "v1.kz-1.abc"), Headers.empty).flip
+          shut <- native(client, topology.copy(cells = Vector(secured("kz-1").copy(state = EdgeCellState.Draining))))
+            .par("app", certificateMaterial, form("scope" -> "openid")).flip
+          seen <- hosts.get
+        yield assertTrue(
+          unknown.status == Status.BadRequest,
+          unknown.bodyAsString.contains("invalid_grant"),
+          unreachable == NativeAuthClient.CellUnreachable("kz-1"),
+          shut == CellRoutingError.NoOpenCell,
+          seen.isEmpty,
+        )
+      },
+      test("with no cell registered every native call goes to the configured listener") {
+        for
+          hosts <- serve(_ => Response.json(tokenJson))
+          client <- ZIO.service[Client]
+          auth = native(client, CellTopology.empty)
+          _ <- auth.par("app", certificateMaterial, form("scope" -> "openid"))
+          _ <- auth.token("app", certificateMaterial, form("code" -> "v1.kz-1.abc"), Headers.empty)
+          seen <- hosts.get
+        yield assertTrue(seen == List("configured", "configured"))
+      },
+    ).provideLayer(TestClient.layer) @@ TestAspect.silentLogging,
     suite("SSOClient")(
       test("a code with a routing key is exchanged at its cell, and one without at the configured auth") {
         for
@@ -324,6 +399,15 @@ object CellRoutingSpec extends ZIOSpecDefault:
           error <- sso.authorizeUri(preset, pushClient, "challenge", State.fromBytes(Array.fill(16)(1.toByte)), Map.empty).flip
           seen <- hosts.get
         yield assertTrue(error == CellRoutingError.NoOpenCell, seen.isEmpty)
+      },
+      test("a 421 that names no cell is a failure, not an answer handed on") {
+        for
+          hosts <- serve(_ => Response.text("misdirected").status(Status.fromInt(421)))
+          client <- ZIO.service[Client]
+          sso = SSOClient.Impl(client, config, files, noIdentity, table(topology))
+          error <- exchange(sso, "v1.kz-1.abc").flip
+          seen <- hosts.get
+        yield assertTrue(error.getMessage.contains("421"), seen == List("kz-1"))
       },
       test("an installation with no cell registered reaches the configured auth for every value") {
         for

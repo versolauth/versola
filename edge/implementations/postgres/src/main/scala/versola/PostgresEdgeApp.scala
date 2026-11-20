@@ -204,6 +204,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       CellTable.live >++>
       SSOClient.live >++>
       RevocationFeedClient.live >++>
+      RevocationFeedClient.Factory.live >++>
       RevocationFeedPuller.live >++>
       DpopReplayGuard.shared >++>
       DpopVerifier.live >++>

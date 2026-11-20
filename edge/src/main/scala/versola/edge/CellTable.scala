@@ -7,9 +7,10 @@ import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
 import zio.{Scope, Task, UIO, ZIO, ZLayer}
 
 import java.nio.charset.StandardCharsets
-import java.nio.file.{Files, Path, StandardOpenOption}
+import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.HexFormat
+import java.util.concurrent.ConcurrentHashMap
 
 /** Whether new users are placed in a cell (versolauth/versola#547). A cell in any state still serves the users it holds. */
 enum EdgeCellState:
@@ -139,17 +140,24 @@ object CellsSyncClient:
   private[edge] val states: Map[String, EdgeCellState] =
     Map("open" -> EdgeCellState.Open, "closed" -> EdgeCellState.Closed, "draining" -> EdgeCellState.Draining)
 
-  /** The trust for a cell's pins: the PEMs central sent, written once to a file named by their digest (so a refresh that
-    * changes nothing writes nothing) that is removed on exit, since zio-http reads trust from a path. */
+  /** The trust for a cell's pins: the PEMs central sent, written to a file of this process's own (zio-http reads
+    * trust from a path), once for each distinct set, so a refresh that changes nothing writes nothing and the same pins
+    * are the same value. The file is created by `createTempFile`, not under a name that could be guessed: a file
+    * waiting at a predictable path in a shared temporary directory would be taken for the pins. Removed on exit. */
   private[edge] def pinned(pems: List[String]): Option[ClientSSLConfig] =
     Option.when(pems.nonEmpty):
       val bundle = pems.sorted.mkString("\n").getBytes(StandardCharsets.UTF_8)
       val digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bundle))
-      val path: Path = Path.of(System.getProperty("java.io.tmpdir"), s"versola-cell-pins-$digest.pem")
-      if !Files.exists(path) then
-        Files.write(path, bundle, StandardOpenOption.CREATE_NEW)
-        path.toFile.deleteOnExit()
-      ClientSSLConfig.FromCertFile(path.toString)
+      pinFiles.computeIfAbsent(
+        digest,
+        _ =>
+          val path = Files.createTempFile("versola-cell-pins", ".pem").nn
+          path.toFile.nn.deleteOnExit()
+          Files.write(path, bundle)
+          ClientSSLConfig.FromCertFile(path.toString),
+      )
+
+  private val pinFiles = ConcurrentHashMap[String, ClientSSLConfig]()
 
   private case class CellResponse(
       id: String,

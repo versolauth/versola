@@ -1,9 +1,10 @@
 package versola.edge.revocation
 
-import versola.edge.EdgeConfig
 import versola.edge.revocation.RevocationFeedMetrics.Outcome
+import versola.edge.{CellTable, EdgeConfig}
 import versola.util.revocation.{RevocationConfig, RevocationCursor}
 import zio.*
+import zio.http.ClientSSLConfig
 
 import java.net.InetAddress
 import java.time.Instant
@@ -40,7 +41,7 @@ object RevocationFeedPuller:
   private[revocation] val WarnEvery: Duration = 5.minutes
 
   val live: ZLayer[
-    Scope & EdgeConfig & RevocationCursorRepository & EdgeRevocationRepository & RevocationFeedClient,
+    Scope & EdgeConfig & RevocationCursorRepository & EdgeRevocationRepository & RevocationFeedClient & RevocationFeedClient.Factory & CellTable,
     Throwable,
     Unit,
   ] =
@@ -50,26 +51,104 @@ object RevocationFeedPuller:
         _ <-
           if !config.revocation.feed.enabled then ZIO.unit
           else
-            config.native match
-              // The listener the feed is on is named by this block, and its certificate is how auth knows the
-              // caller for an edge. Said once, here: the edge carries on with the notifications alone.
-              case None =>
-                ZIO.logWarning(
-                  "revocation.feed is enabled but there is no `native` block naming auth's mutual-TLS listener, which the " +
-                    "feed is read from: it is not started, and revocations reach this edge by notification only",
-                )
-              case Some(native) =>
-                for
-                  cursors <- ZIO.service[RevocationCursorRepository]
-                  repository <- ZIO.service[EdgeRevocationRepository]
-                  client <- ZIO.service[RevocationFeedClient]
-                  source = native.authMutualTlsUrl.encode
-                  _ <- cursors.seed(source)
-                  suffix <- Random.nextUUID
-                  puller <- make(source, podId(suffix), config.revocation.feed, config.revocation.cache, cursors, client, repository)
-                  _ <- puller.run.forkScoped
-                yield ()
+            for
+              cursors <- ZIO.service[RevocationCursorRepository]
+              repository <- ZIO.service[EdgeRevocationRepository]
+              client <- ZIO.service[RevocationFeedClient]
+              factory <- ZIO.service[RevocationFeedClient.Factory]
+              cells <- ZIO.service[CellTable]
+              // The listener the configured auth's feed is on is named by this block, and its certificate is how
+              // auth knows the caller for an edge. Said once, here: the edge carries on with the notifications alone.
+              _ <- ZIO.logWarning(
+                "revocation.feed is enabled but there is no `native` block naming auth's mutual-TLS listener, which the " +
+                  "feed is read from: it is not started, and revocations reach this edge by notification only",
+              ).when(config.native.isEmpty)
+              suffix <- Random.nextUUID
+              feeds <- Feeds.make(
+                configured = config.native.map(native => native.authMutualTlsUrl.encode -> client),
+                podId = podId(suffix),
+                feed = config.revocation.feed,
+                cache = config.revocation.cache,
+                cursors = cursors,
+                factory = factory,
+                revocations = repository,
+                cells = cells,
+              )
+              _ <- feeds.run.forkScoped
+            yield ()
       yield ()
+
+  /** Every feed this edge reads: the configured auth's and, once cells are registered, each cell's own
+    * (versolauth/versola#559). A cell keeps its own list of revocations, so reading only one of them would leave
+    * this edge accepting what another cell revoked until the token expired. The set follows the cell table: a cell
+    * registered while the edge runs is read from the next poll, from the beginning of its list, and one that was
+    * removed is no longer read. Each source has its own cursor row and lease, so the feeds do not wait on each other.
+    *
+    * A cell without a mutual-TLS listener has no feed to read (the certificate is how auth knows an edge), which is
+    * said once for the cell; its revocations then reach this edge by notification only.
+    */
+  private[revocation] class Feeds(
+      configured: Option[(String, RevocationFeedClient)],
+      podId: String,
+      feed: EdgeConfig.RevocationFeed,
+      cache: RevocationConfig,
+      cursors: RevocationCursorRepository,
+      factory: RevocationFeedClient.Factory,
+      revocations: EdgeRevocationRepository,
+      cells: CellTable,
+      pullers: Ref[Map[Feeds.Key, Impl]],
+      warned: Ref[Set[String]],
+  ):
+    /** Jittered, so pods started together do not tick in step and take the lease in turns by chance of timing. */
+    def run: UIO[Nothing] =
+      tick.repeat(Schedule.spaced(feed.pollInterval).jittered).forever
+
+    /** One look at every source. Never fails: a source that cannot be seeded is tried again at the next poll. */
+    def tick: UIO[Unit] =
+      for
+        topology <- cells.current
+        (served, unserved) = topology.cells.partition(_.mtlsUrl.isDefined)
+        _ <- ZIO.foreachDiscard(unserved)(cell => warnOnce(cell.id))
+        // The configured auth first: registered as a cell too, it is read once, with the trust of the configuration.
+        wanted = (configured.toList.map((source, client) => (Feeds.Key(source, None), () => client)) ++
+          served.flatMap(cell => cell.mtlsUrl.map(url => (Feeds.Key(url.encode, cell.trust), () => factory.at(url, cell.trust)))))
+          .distinctBy(_._1.source)
+        known <- pullers.get
+        // Keyed by the pins too, so a cell whose pins were replaced is read with the new ones from the next poll.
+        added <- ZIO.foreach(wanted.filterNot((key, _) => known.contains(key))): (key, client) =>
+          (cursors.seed(key.source) *> make(key.source, podId, feed, cache, cursors, client(), revocations)).map(key -> _).either
+        current = (known ++ added.collect { case Right(entry) => entry }).view.filterKeys(wanted.map(_._1).toSet).toMap
+        _ <- pullers.set(current)
+        _ <- ZIO.foreachParDiscard(current.values)(_.tick)
+        // After the pullers, each of which reported its own: the figure to alert on is the feed furthest behind.
+        lags <- ZIO.foreach(current.keys.toList)(key => cursors.lagSeconds(key.source).orElseSucceed(None))
+        _ <- ZIO.foreachDiscard(lags.flatten.maxOption)(RevocationFeedMetrics.lagging)
+      yield ()
+
+    private def warnOnce(cell: String): UIO[Unit] =
+      warned.modify(seen => (!seen.contains(cell), seen + cell)).flatMap: first =>
+        ZIO.logWarning(
+          s"Cell '$cell' has no mutual-TLS listener, which its revocation feed is read from: its revocations reach this edge by notification only",
+        ).when(first).unit
+
+  private[revocation] object Feeds:
+    /** A feed and the pins it is read with; `None` for the configured auth, whose pins are its configuration's. */
+    final case class Key(source: String, trust: Option[ClientSSLConfig])
+
+    def make(
+        configured: Option[(String, RevocationFeedClient)],
+        podId: String,
+        feed: EdgeConfig.RevocationFeed,
+        cache: RevocationConfig,
+        cursors: RevocationCursorRepository,
+        factory: RevocationFeedClient.Factory,
+        revocations: EdgeRevocationRepository,
+        cells: CellTable,
+    ): UIO[Feeds] =
+      for
+        pullers <- Ref.make(Map.empty[Key, Impl])
+        warned <- Ref.make(Set.empty[String])
+      yield Feeds(configured, podId, feed, cache, cursors, factory, revocations, cells, pullers, warned)
 
   private def podId(suffix: UUID): String =
     s"${Try(InetAddress.getLocalHost.getHostName).getOrElse("edge")}-${suffix.toString.take(8)}"
@@ -102,10 +181,6 @@ object RevocationFeedPuller:
       lastFullRead: Ref[Instant],
       lastWarning: Ref[Option[Instant]],
   ):
-
-    /** Jittered, so pods started together do not tick in step and take the lease in turns by chance of timing. */
-    def run: UIO[Nothing] =
-      tick.repeat(Schedule.spaced(feed.pollInterval).jittered).forever
 
     /** One look: take the lease if it is free, run a cycle if it was taken, give it back. Never fails. */
     def tick: UIO[Unit] =

@@ -294,13 +294,14 @@ object SSOClient:
               case Some(target) if !initial.exists(_.id == target.id) => call(Some(target))
               case _ => ZIO.fail(SSOClient.CellMoved(to))
 
-    /** `421` is auth's answer that the user is in another cell. */
+    /** `421` is auth's answer that the user is in another cell. Any other `421` (a proxy's Misdirected Request) is a
+      * failure said as such: its body is read here, so it is not handed on to be read a second time. */
     private def refuseMoved(response: Response): Task[Unit] =
       if response.status.code != 421 then ZIO.unit
       else
         response.bodyAs[SSOClient.MovedResponse].option.flatMap:
           case Some(SSOClient.MovedResponse("moved", Some(cell))) => ZIO.fail(SSOClient.CellMoved(cell))
-          case _ => ZIO.unit
+          case _ => ZIO.fail(new RuntimeException("auth answered 421 without naming the cell the user moved to"))
 
     /** The `cell` JOSE header of an access token, which a cell writes and the edge only reads to route: not verified here,
       * the token is verified where it is presented. An opaque or malformed token names none. */
