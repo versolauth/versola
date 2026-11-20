@@ -187,6 +187,27 @@ services:
       # in central.conf).
       mtls-init:
         condition: service_completed_successfully
+    # Ready, not merely started: /readiness on the diagnostics port answers 200 once central has built its
+    # dependencies and bound its server (503 before). No curl or wget in the JRE image, so the probe is
+    # bash's /dev/tcp; it is bash and not CMD-SHELL, because /bin/sh there is dash and has no /dev/tcp.
+    # The port is the container's own DPORT (`$$` keeps compose from interpolating it), so a port a
+    # generated compose.yml moves (vps) is followed, not probed at the wrong number. start_period covers
+    # a cold start (JVM, pool, schema validation) so failures in it do not count; after it, 12 failed
+    # 5s probes mark central unhealthy and `docker compose up` stops with that named, instead of
+    # leaving auth and edge to wait on a central that is not coming.
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/$${DPORT:-8091} &&
+          printf 'GET /readiness HTTP/1.0\r\n\r\n' >&3 &&
+          head -n 1 <&3 | grep -q ' 200 '
+      start_period: 180s
+      interval: 5s
+      timeout: 5s
+      retries: 12
     environment:
       PORT: 8090
       DPORT: 8091
@@ -250,21 +271,17 @@ services:
     tmpfs:
       - /tmp:exec,mode=1777,size=67108864
     pids_limit: 4096
-    # central has no healthcheck (no curl in eclipse-temurin:21-jre), so
-    # this depends_on can only wait for "container started", not "actually
-    # ready". If auth starts before central is really up, its startup
-    # fails fatally ("Could not start application") -- but confirmed by
-    # hand (docker inspect: RestartCount=0, Status=running, ExitCode=0)
-    # that the JVM process does NOT exit when this happens, it just hangs
-    # without ever binding its port. "restart: unless-stopped" can't save
-    # this -- there's nothing for Docker to notice and restart. Whatever
-    # starts this compose file MUST wait for central's readiness (e.g.
-    # GET /readiness on its diagnostic port) before starting auth/edge,
-    # the same two-stage sequence the manual bootstrap test used by hand.
-    # Do not rely on Docker's restart policy to recover from this.
+    # auth waits for central to be healthy (its /readiness, see central's healthcheck), so a plain
+    # `docker compose up` starts it after central is serving, not merely started. What this does not
+    # cover: after a host reboot the Docker daemon starts every container by its restart policy and
+    # does not honour depends_on, so auth can still come up first. It then does not hang: its caches
+    # wait up to two minutes for central (/liveness answers, /readiness stays 503), and a startup
+    # that still fails exits (VersolaApp), so `restart: unless-stopped` starts it again (#378). One restart
+    # after a reboot is therefore expected. `versola up` additionally waits for central's /readiness
+    # itself before starting auth/edge.
     depends_on:
       central:
-        condition: service_started
+        condition: service_healthy
       mtls-init:
         condition: service_completed_successfully
     environment:
@@ -310,7 +327,7 @@ services:
     pids_limit: 4096
     depends_on:
       central:
-        condition: service_started
+        condition: service_healthy
       mtls-init:
         condition: service_completed_successfully
     environment:
