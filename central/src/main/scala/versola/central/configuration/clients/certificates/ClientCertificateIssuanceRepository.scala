@@ -34,3 +34,7 @@ trait ClientCertificateIssuanceRepository:
 
   /** Issuances whose certificate expires before `deadline`. */
   def expiringBefore(deadline: Instant): Task[Vector[ClientCertificateIssuance]]
+
+  /** How many managed certificates are past the middle of their renewal window at `now`: less than half of `renewBefore` left, an expired
+    * one included. One aggregate, since the number of clients is not bounded. */
+  def pastRenewalMidpoint(now: Instant, renewBefore: Duration): Task[Long]

@@ -22,6 +22,7 @@ import versola.central.configuration.challenges.{
   OtpChallengeService,
 }
 import versola.central.configuration.clients.certificates.{
+  CertificateExpiryReporter,
   ClientCertificateIssuanceRepository,
   ClientCertificateIssuer,
   ClientCertificateService,
@@ -267,20 +268,21 @@ object PostgresCentralApp extends VersolaApp("central"):
     * `Optional` with `includeClientCert` drops the connection of a client that sends no
     * certificate, and no edge route is reachable without one anyway. */
   override def mutualTlsServerConfig: ZIO[Dependencies, Throwable, Option[Server.Config]] =
-    ZIO.serviceWith[CentralConfig](
-      _.mutualTls.map(mtls =>
-        Server.Config.default.binding(mutualTlsBindHost, mutualTlsPort).ssl(
-          SSLConfig.fromFile(
-            behaviour = SSLConfig.HttpBehaviour.Fail,
-            certPath = mtls.certificate,
-            keyPath = mtls.privateKey,
-            clientAuth = Some(ClientAuth.Required),
-            trustCertCollectionPath = Some(mtls.trustedCertificates),
-            includeClientCert = true,
+    ZIO.serviceWithZIO[CentralConfig]: config =>
+      ZIO.foreach(config.mutualTls): mtls =>
+        // what the listener serves is what is read here, once, at start (#1001)
+        CertificateMetrics.listenerFromFile("central", CertificateMetrics.MutualTlsListener, mtls.certificate).as(
+          Server.Config.default.binding(mutualTlsBindHost, mutualTlsPort).ssl(
+            SSLConfig.fromFile(
+              behaviour = SSLConfig.HttpBehaviour.Fail,
+              certPath = mtls.certificate,
+              keyPath = mtls.privateKey,
+              clientAuth = Some(ClientAuth.Required),
+              trustCertCollectionPath = Some(mtls.trustedCertificates),
+              includeClientCert = true,
+            ),
           ),
-        ),
-      ),
-    )
+        )
 
   private val repositories =
     PostgresHikariDataSource.transactor(serviceName = Some("central"), migrate = runMigrations) >++>
@@ -392,7 +394,10 @@ object PostgresCentralApp extends VersolaApp("central"):
       UserOutboxProcessor.live >++>
       // Renews the certificates central issued, for as long as it runs. A no-op where
       // `client-certificates` is not configured.
-      ClientCertificateService.renewal
+      ClientCertificateService.renewal >++>
+      // How long the certificates central holds have left, as gauges (#1001).
+      CertificateExpiryReporter.live >++>
+      CertificateExpiryReporter.reporting
 
   given DeriveConfig[Secret] = DeriveConfig[String]
     .mapOrFail(SecretConfig.secret)

@@ -6,9 +6,10 @@ import versola.central.audit.CentralAudit.{CertFailure, CertReasons}
 import versola.central.configuration.clients.*
 import versola.central.configuration.edges.{EdgeCertificate, EdgeId}
 import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
-import versola.util.CertificateSubject
+import versola.util.CertificateMetrics.Kind
 import versola.util.audit.{ActorType, AuditContext, AuditEvents, AuditKind, AuditOutcome, CertAuditDetails, CertOperation}
 import versola.util.http.Observability
+import versola.util.{CertificateMetrics, CertificateSubject}
 import versola.util.{Patch, PrivateClientCertificate}
 import zio.*
 
@@ -344,7 +345,7 @@ object ClientCertificateService:
             .as(true)
 
     override def renewDue: Task[Int] =
-      for
+      (for
         now <- Clock.instant
         due <- issuances.expiringBefore(now.plus(settings.renewBefore))
         // What is remembered of a failing renewal is only for the clients that are due, so it cannot outgrow them.
@@ -359,13 +360,15 @@ object ClientCertificateService:
               _ <- ZIO.logError(s"renewing the certificate of client '${issuance.clientId}' failed: ${failure.error}")
             yield 0
         _ <- ZIO.logInfo(s"renewed ${renewed.sum} client certificate(s)").when(renewed.sum > 0)
-      yield renewed.sum
+      yield renewed.sum)
+        // A pass that could not even look for what is due renews nothing, whatever is due: it counts as a failure of its own, once a pass.
+        .tapError(_ => CertificateMetrics.renewal(Kind.Client, AuditOutcome.failure))
 
     override def forgetIfReplaced(request: UpdateClientRequest): Task[Unit] =
       issuances.delete(request.clientId).when(request.edgeClientCertificate.isDefined).unit
 
     private def renewIssued(clientId: ClientId): IO[CertFailure[InvalidRegistrationConfiguration | Throwable], Unit] =
-      for
+      (for
         record <- clients.getAllClients.mapError(unexpected).map(_.find(_.id == clientId))
           .someOrFail(CertFailure(
             AuditOutcome.failure,
@@ -395,6 +398,7 @@ object ClientCertificateService:
             _ <- issuances.replace(ClientCertificateIssuance(clientId, issued.serial, issued.notAfter, now))
           yield ()).mapError(unexpected) *>
             failures.recovered(clientId) *>
+            CertificateMetrics.renewal(Kind.Client, AuditOutcome.success) *>
             certificateEvent(
               CentralAudit.CertRenewed,
               clientId,
@@ -403,7 +407,9 @@ object ClientCertificateService:
               CertAuditDetails.of(CertOperation.Renew, Some(clientId.toString), issued.leaf),
             ) *>
             ZIO.logInfo(s"issued certificate ${issued.serial} to client '$clientId', valid until ${issued.notAfter}")
-      yield ()
+      yield ())
+        // Every attempt that ends without a certificate, as the audit log classifies it (`denied` or `failure`), each time it is made.
+        .tapError(failure => CertificateMetrics.renewal(Kind.Client, failure.outcome))
 
     private def issue(clientId: ClientId, auth: MutualTlsAuth): IO[CertFailure[InvalidRegistrationConfiguration | Throwable], Issued] =
       for

@@ -16,9 +16,10 @@ import versola.central.configuration.clients.{
   RegisteredClient,
 }
 import versola.central.configuration.edges.EdgeCertificate
+import versola.util.CertificateMetrics.Kind
 import versola.util.audit.{ActorType, AuditEvents, AuditKind, AuditOutcome, CertAuditDetails, CertOperation}
 import versola.util.http.Observability
-import versola.util.{Base64Url, CertificateSubject, SecureRandom}
+import versola.util.{Base64Url, CertificateMetrics, CertificateSubject, SecureRandom}
 import zio.*
 import zio.json.JsonCodec
 import zio.metrics.{Metric, MetricLabel}
@@ -199,23 +200,37 @@ object ClientEstService:
     ): IO[Refused | InvalidCredentials.type | Throwable, A] =
       for
         attempt <- Ref.make(Attempt(claimed, None, None))
-        result <- counted(operation.name)(effect(attempt)).tapError(error => attempt.get.flatMap(failed(operation, kind, _, error)))
+        result <- counted(operation.name)(effect(attempt))
+          .tapError(error => attempt.get.flatMap(failed(operation, kind, _, error)))
+          .tapBoth(
+            // A renewal is counted as the audit log classifies it, whether or not the attempt could be tied to a client: the refusals
+            // that anybody can cause are `denied`, which no rule pages on.
+            error =>
+              ZIO.when(operation == CertOperation.Renew)(attempt.get.flatMap(known =>
+                CertificateMetrics.renewal(Kind.Est, classify(known, error)._1),
+              )),
+            _ => ZIO.when(operation == CertOperation.Renew)(CertificateMetrics.renewal(Kind.Est, AuditOutcome.success)),
+          )
       yield result
 
-    /** A refusal is `denied`, whatever its kind; anything else is a `failure`, called what the attempt says it was (the CA's) or
-      * `unexpected`. Nobody identified, nothing recorded: auth, which took the request, records the attempt.
+    /** How an attempt that failed is told in the audit log: a refusal is `denied`, whatever its kind; anything else is a `failure`, called
+      * what the attempt says it was (the CA's) or `unexpected`. */
+    private def classify(attempt: Attempt, error: Refused | InvalidCredentials.type | Throwable): (AuditOutcome, String) =
+      attempt.verdict.getOrElse:
+        error match
+          case InvalidCredentials => (AuditOutcome.denied, CertReasons.InvalidCredentials)
+          case Refused(Refusal.BadRequest, _) => (AuditOutcome.denied, CertReasons.BadRequest)
+          case Refused(Refusal.Forbidden, _) => (AuditOutcome.denied, CertReasons.Forbidden)
+          case Refused(Refusal.ChainClosed, _) => (AuditOutcome.denied, CertReasons.ChainFork)
+          case _ => (AuditOutcome.failure, CertReasons.Unexpected)
+
+    /** The event of an attempt that failed ([[classify]]). Nobody identified, nothing recorded: auth, which took the request, records the attempt.
       *
       * The credentials that are not good are the refusal anybody can cause (a token that is unknown, spent or another's): recorded only
       * for a client registered with EST, and once a minute for each. */
     private def failed(operation: CertOperation, kind: AuditKind, attempt: Attempt, error: Refused | InvalidCredentials.type | Throwable): UIO[Unit] =
       ZIO.foreachDiscard(attempt.clientId): clientId =>
-        val (outcome, reason) = attempt.verdict.getOrElse:
-          error match
-            case InvalidCredentials => (AuditOutcome.denied, CertReasons.InvalidCredentials)
-            case Refused(Refusal.BadRequest, _) => (AuditOutcome.denied, CertReasons.BadRequest)
-            case Refused(Refusal.Forbidden, _) => (AuditOutcome.denied, CertReasons.Forbidden)
-            case Refused(Refusal.ChainClosed, _) => (AuditOutcome.denied, CertReasons.ChainFork)
-            case _ => (AuditOutcome.failure, CertReasons.Unexpected)
+        val (outcome, reason) = classify(attempt, error)
         val record = certificateEvent(
           kind,
           CentralAudit.Actors.Client,

@@ -366,6 +366,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     def find(clientId: ClientId) = ZIO.none
     def delete(clientId: ClientId) = ZIO.unit
     def expiringBefore(deadline: java.time.Instant) = ZIO.succeed(Vector.empty)
+    def pastRenewalMidpoint(now: Instant, renewBefore: Duration) = ZIO.succeed(0L)
 
   private object Enrollments:
     def apply(): EdgeCertificateEnrollmentRepository = new EdgeCertificateEnrollmentRepository:

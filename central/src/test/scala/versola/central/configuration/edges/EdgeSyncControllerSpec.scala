@@ -285,6 +285,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     def find(clientId: ClientId) = ZIO.none
     def delete(clientId: ClientId) = ZIO.unit
     def expiringBefore(deadline: Instant) = ZIO.succeed(Vector.empty)
+    def pastRenewalMidpoint(now: Instant, renewBefore: Duration) = ZIO.succeed(0L)
 
   private object NoEnrollments extends EdgeCertificateEnrollmentRepository:
     def enroll(clientId: ClientId, at: Instant) = ZIO.unit
