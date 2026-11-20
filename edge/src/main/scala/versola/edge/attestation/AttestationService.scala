@@ -63,8 +63,13 @@ object AttestationService:
 
   private val requests = Metric.counter("attestation_requests_total")
 
-  private def count(platform: String, mode: AttestationMode, result: String): UIO[Unit] =
-    requests.tagged(Set(MetricLabel("platform", platform), MetricLabel("mode", mode.toString), MetricLabel("result", result))).increment
+  /** `client` is the client the request is for, which is what lets an operator see whose installs fail under `report` before moving
+    * that client to `enforce`. It is a closed set: `verify` is only called for a client central holds a policy for, and the id is
+    * the one the request's path names and edge looked the policy up by, never something the app wrote in the form. */
+  private def count(client: String, platform: String, mode: AttestationMode, result: String): UIO[Unit] =
+    requests.tagged(
+      Set(MetricLabel("client", client), MetricLabel("platform", platform), MetricLabel("mode", mode.toString), MetricLabel("result", result)),
+    ).increment
 
   /** What an Android app hands Play Integrity as its nonce, so that a verdict is for one request of one client by one DPoP key: the
     * client data hash, in the URL-safe base64 without padding that Play Integrity requires of a nonce. */
@@ -90,8 +95,8 @@ object AttestationService:
         // A metric label is a closed set: what the app wrote is not one, and every value it could choose would be a series of its own.
         val platform = evidence.platform.filter(Platforms.contains).getOrElse("none")
         val checked = run(clientId, policy, jkt, jti, evidence).tapBoth(
-          failure => count(platform, policy.mode, failure.kind.toString),
-          _ => count(platform, policy.mode, "verified"),
+          failure => count(clientId, platform, policy.mode, failure.kind.toString),
+          _ => count(clientId, platform, policy.mode, "verified"),
         )
         policy.mode match
           case AttestationMode.enforce => checked
@@ -99,7 +104,7 @@ object AttestationService:
           // (a defect here, a failed request under `enforce`, which the caller can retry) is no reason to fail the request either.
           case _ =>
             checked.catchAll(_ => ZIO.unit).catchAllDefect: error =>
-              count(platform, policy.mode, "Unavailable") *> ZIO.logWarning(s"attestation of client '$clientId' could not be checked: $error")
+              count(clientId, platform, policy.mode, "Unavailable") *> ZIO.logWarning(s"attestation of client '$clientId' could not be checked: $error")
 
     private def run(
         clientId: String,

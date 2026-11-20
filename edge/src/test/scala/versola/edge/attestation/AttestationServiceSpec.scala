@@ -53,7 +53,7 @@ object AttestationServiceSpec extends ZIOSpecDefault:
 
   private def b64(bytes: Array[Byte]): String = Base64.getEncoder.encodeToString(bytes)
 
-  private def hashFor(jti: String) = AttestationService.clientDataHash(clientId, jkt, jti)
+  private def hashFor(jti: String, client: String = clientId) = AttestationService.clientDataHash(client, jkt, jti)
 
   private def evidence(
       platform: Option[String] = None,
@@ -63,11 +63,17 @@ object AttestationServiceSpec extends ZIOSpecDefault:
       chain: List[Array[Byte]] = Nil,
   ) = AttestationEvidence(platform, keyId, attestation.map(b64), assertion.map(b64), chain.map(b64))
 
-  private def iosAttestation(e: Env, pair: KeyPair, jti: String) =
-    evidence(Some("ios"), Some(b64(keyId(pair))), attestation = Some(appleAttestation(e.chain, pair, appId, hashFor(jti))))
+  private def iosAttestation(e: Env, pair: KeyPair, jti: String, client: String = clientId) =
+    evidence(Some("ios"), Some(b64(keyId(pair))), attestation = Some(appleAttestation(e.chain, pair, appId, hashFor(jti, client))))
 
   private def iosAssertion(pair: KeyPair, jti: String, counter: Long) =
     evidence(Some("ios"), Some(b64(keyId(pair))), assertion = Some(appleAssertion(pair, appId, counter, hashFor(jti))))
+
+  /** The count of one series of `attestation_requests_total`; every label is part of the key. */
+  private def series(client: String, platform: String, mode: String, result: String): UIO[Double] =
+    Metric.counter("attestation_requests_total")
+      .tagged(Set(MetricLabel("client", client), MetricLabel("platform", platform), MetricLabel("mode", mode), MetricLabel("result", result)))
+      .value.map(_.count)
 
   private def kindOf(effect: IO[AttestationFailure, Unit]): UIO[Option[Kind]] = effect.either.map(_.left.toOption.map(_.kind))
 
@@ -265,18 +271,56 @@ object AttestationServiceSpec extends ZIOSpecDefault:
         yield assertTrue(reported.isEmpty, enforced.isFailure, enforced.causeOption.exists(_.isDie))
       },
     ),
-    test("a platform the app made up is not a metric label, whatever it wrote") {
-      def series(platform: String) =
-        Metric.counter("attestation_requests_total")
-          .tagged(Set(MetricLabel("platform", platform), MetricLabel("mode", "enforce"), MetricLabel("result", "Malformed")))
-          .value.map(_.count)
-      for
-        e <- env()
-        _ <- ZIO.foreachDiscard(1 to 5)(i => kindOf(e.service.verify(clientId, enforce, jkt, "jti", evidence(Some(s"made-up-$i")))))
-        made <- series("made-up-1")
-        folded <- series("none")
-      yield assertTrue(made == 0.0, folded >= 0.0)
-    },
+    suite("the outcome is counted per client, platform, mode and result")(
+      test("two clients have series of their own: an outcome of one is not the other's") {
+        for
+          e <- env()
+          a0 <- series("metrics-a", "none", "enforce", "Absent")
+          b0 <- series("metrics-b", "none", "report", "Absent")
+          _ <- ZIO.foreachDiscard(1 to 2)(_ => kindOf(e.service.verify("metrics-a", enforce, jkt, "jti", evidence())))
+          _ <- kindOf(e.service.verify("metrics-b", policy(AttestationMode.report), jkt, "jti", evidence()))
+          a <- series("metrics-a", "none", "enforce", "Absent")
+          b <- series("metrics-b", "none", "report", "Absent")
+          aElsewhere <- series("metrics-a", "none", "report", "Absent")
+          bElsewhere <- series("metrics-b", "none", "enforce", "Absent")
+        yield assertTrue(a - a0 == 2.0, b - b0 == 1.0, aElsewhere == 0.0, bElsewhere == 0.0)
+      },
+      test("a verified attestation is counted for its client") {
+        val pair = p256()
+        for
+          e <- env()
+          before <- series("metrics-d", "ios", "enforce", "verified")
+          _ <- e.service.verify("metrics-d", enforce, jkt, "jti-m", iosAttestation(e, pair, "jti-m", "metrics-d"))
+          after <- series("metrics-d", "ios", "enforce", "verified")
+        yield assertTrue(after - before == 1.0)
+      },
+      test("a report that could not be checked is counted as Unavailable, for its client") {
+        val pair = p256()
+        for
+          e <- env(fails = true)
+          before <- series("metrics-e", "ios", "report", "Unavailable")
+          _ <- e.service.verify("metrics-e", policy(AttestationMode.report), jkt, "jti-u", iosAttestation(e, pair, "jti-u", "metrics-e"))
+          after <- series("metrics-e", "ios", "report", "Unavailable")
+        yield assertTrue(after - before == 1.0)
+      },
+      test("a client whose mode is off is not counted at all") {
+        for
+          e <- env()
+          _ <- e.service.verify("metrics-off", policy(AttestationMode.off), jkt, "jti", evidence(Some("ios"), Some("garbage")))
+          counted <- ZIO.foreach(List("none", "ios", "android"))(platform =>
+            ZIO.foreach(List("off", "report", "enforce"))(mode => series("metrics-off", platform, mode, "Malformed")),
+          )
+        yield assertTrue(counted.flatten.forall(_ == 0.0))
+      },
+      test("a platform the app made up is not a metric label, whatever it wrote") {
+        for
+          e <- env()
+          _ <- ZIO.foreachDiscard(1 to 5)(i => kindOf(e.service.verify("metrics-c", enforce, jkt, "jti", evidence(Some(s"made-up-$i")))))
+          made <- series("metrics-c", "made-up-1", "enforce", "Malformed")
+          folded <- series("metrics-c", "none", "enforce", "Malformed")
+        yield assertTrue(made == 0.0, folded >= 5.0)
+      },
+    ),
     test("the client data hash is bound to the client, the key and the proof") {
       val base = AttestationService.clientDataHash("a", "k", "j")
       assertTrue(

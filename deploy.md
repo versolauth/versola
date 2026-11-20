@@ -492,7 +492,7 @@ Attest, Android Key Attestation) and which builds those are. The mode is `off`, 
 satisfy one once it carries a version of the SDK that sends attestation.
 
 - **Roll out in two steps.** Set `report` first: `edge` verifies what the app sends, counts the outcome and answers as if it had not
-  (`attestation_requests_total{platform,mode,result}`; `result` is `verified` or why not). Move to `enforce` when the count shows the
+  (`attestation_requests_total{client,platform,mode,result}`; `result` is `verified` or why not, `client` is whose installs). Move to `enforce` when the count shows the
   installs in use pass. `enforce` before the apps send attestation turns those apps away with `invalid_client_attestation`.
 - **Migrations.** `V1040__client_attestation_policies.sql` (central) holds the policy per client; `V2011__attested_keys.sql` (edge) holds
   the App Attest keys that have been attested and the counter of their last assertion, which is what makes an assertion single use.
