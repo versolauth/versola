@@ -103,6 +103,15 @@ object OAuthScopeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.service.deleteScope(tenantId, profileScope)
       yield assertTrue(env.repository.deleteScope.calls === List((tenantId, profileScope)))
     },
+    test("reload replaces the cache with what the repository holds") {
+      val env = new Env(Vector(scopeRecord))
+
+      for
+        _ <- env.repository.getAll.succeedsWith(Vector(otherTenantScope))
+        _ <- env.service.reload
+        cached <- env.cache.get
+      yield assertTrue(cached == Vector(otherTenantScope))
+    },
     test("sync removes cached scope on delete event") {
       val env = new Env(Vector(scopeRecord, otherTenantScope))
 

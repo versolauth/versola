@@ -116,6 +116,15 @@ object PermissionServiceSpec extends ZIOSpecDefault, ZIOStubs:
         result <- env.service.getPermissionsForSync(Some(edgeId))
       yield assertTrue(result.isEmpty)
     },
+    test("reload replaces the cache with what the repository holds") {
+      val env = new Env(Vector(tenantPermission))
+
+      for
+        _ <- env.repository.getAll.succeedsWith(Vector(otherTenantPermission))
+        _ <- env.service.reload
+        cached <- env.cache.get
+      yield assertTrue(cached == Vector(otherTenantPermission))
+    },
     test("sync removes cached permission on delete event") {
       val env = new Env(Vector(tenantPermission, otherTenantPermission))
 

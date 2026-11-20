@@ -15,6 +15,9 @@ trait OtpChallengeService:
   def deleteTemplate(id: String, tenantId: TenantId, purpose: OtpTemplatePurpose, channel: OtpTemplateChannel): Task[Unit]
   def sync(event: SyncEvent.OtpTemplatesUpdated): Task[Unit]
 
+  /** Reads the whole cache again from the database, for when notifications may have been missed. */
+  def reload: Task[Unit]
+
 object OtpChallengeService:
   def live: ZLayer[OtpChallengeRepository & Scope & LocaleService & CentralConfig, Throwable, OtpChallengeService] =
     (ZLayer.fromZIO:
@@ -49,6 +52,9 @@ object OtpChallengeService:
 
     override def deleteTemplate(id: String, tenantId: TenantId, purpose: OtpTemplatePurpose, channel: OtpTemplateChannel): Task[Unit] =
       repository.deleteTemplate(id, tenantId, purpose, channel)
+
+    override def reload: Task[Unit] =
+      repository.getAll.flatMap(cache.set(_))
 
     override def sync(event: SyncEvent.OtpTemplatesUpdated): Task[Unit] =
       SyncOps.syncCache(event)(

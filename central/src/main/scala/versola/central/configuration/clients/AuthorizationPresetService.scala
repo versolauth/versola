@@ -19,6 +19,9 @@ trait AuthorizationPresetService:
 
   def sync(event: SyncEvent.PresetsUpdated): Task[Unit]
 
+  /** Reads the whole cache again from the database, for when notifications may have been missed. */
+  def reload: Task[Unit]
+
 object AuthorizationPresetService:
   def live: ZLayer[
     AuthorizationPresetRepository & OAuthClientService & ChallengeSettingsService & Scope & CentralConfig,
@@ -139,6 +142,9 @@ object AuthorizationPresetService:
             clients <- clientService.getClientsForSync(edgeId)
             allowedClientIds = clients.map(_.id).toSet
           yield presets.filter(p => allowedClientIds.contains(p.clientId))
+
+    override def reload: Task[Unit] =
+      repository.getAll.flatMap(cache.set(_))
 
     override def sync(event: SyncEvent.PresetsUpdated): Task[Unit] =
       SyncOps.syncCache(event)(

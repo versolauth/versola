@@ -134,6 +134,15 @@ object AuthorizationDetailTypeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.serverMetadataService.updateAuthorizationDetailType.calls == List(("payment_initiation", SyncEvent.Op.DELETE)),
       )
     },
+    test("reload replaces the cache with what the repository holds") {
+      val env = new Env(Vector(paymentRecord))
+
+      for
+        _ <- env.repository.getAll.succeedsWith(Vector(otherTenantRecord))
+        _ <- env.service.reload
+        cached <- env.cache.get
+      yield assertTrue(cached == Vector(otherTenantRecord))
+    },
     test("sync removes cached type on delete event") {
       val env = new Env(Vector(paymentRecord, otherTenantRecord))
 
