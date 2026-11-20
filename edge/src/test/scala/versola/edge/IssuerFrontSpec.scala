@@ -12,8 +12,8 @@ import zio.test.*
 import java.security.KeyPairGenerator
 import java.util.Base64
 
-/** The issuer's listener of edge (versolauth/versola#1044): which cell a request is sent to by what it carries, what is
-  * served and what is not, and what is passed on. */
+/** The pages of a sign-in served by edge (versolauth/versola#1044): which cell a browser's request is sent to by what
+  * it carries, what is served and what is not, and what is passed on. */
 object IssuerFrontSpec extends ZIOSpecDefault:
 
   private def url(value: String) = URL.decode(value).toOption.get
@@ -26,17 +26,10 @@ object IssuerFrontSpec extends ZIOSpecDefault:
 
   private def b64(json: String) = Base64.getUrlEncoder.withoutPadding.encodeToString(json.getBytes("UTF-8"))
 
-  private def tokenOf(cell: String) = s"${b64(s"""{"alg":"RS256","cell":"$cell"}""")}.e30.c2ln"
-
   private def idTokenOf(sid: String) = s"${b64("""{"alg":"RS256"}""")}.${b64(s"""{"sid":"$sid"}""")}.c2ln"
 
-  private def routing(
-      path: String,
-      cookies: Map[String, String] = Map.empty,
-      form: Map[String, String] = Map.empty,
-      query: Map[String, String] = Map.empty,
-      bearer: Option[String] = None,
-  ) = IssuerFront.routingOf(path.split('/').toList, cookies.get, form.get, query.get, bearer)
+  private def routing(path: String, cookies: Map[String, String] = Map.empty, query: Map[String, String] = Map.empty) =
+    IssuerFront.routingOf(path.split('/').toList, cookies.get, query.get)
 
   private def where(routing: CellRouting, cells: CellTopology = topology) =
     IssuerFront.cellOf(cells, routing, 0.0).map(_.map(_.id))
@@ -102,23 +95,6 @@ object IssuerFrontSpec extends ZIOSpecDefault:
           where(routing("challenge", cookies = Map("SSO_CONVERSATION" -> "abc.def"))) == Right(None),
         )
       },
-      test("a token request goes to the cell of the code, the refresh token or the token it presents") {
-        assertTrue(
-          where(routing("token", form = Map("code" -> "v1.kz-2.abc"))) == Right(Some("kz-2")),
-          where(routing("token", form = Map("refresh_token" -> "v1.kz-2.abc"))) == Right(Some("kz-2")),
-          where(routing("revoke", form = Map("token" -> "v1.kz-2.abc"))) == Right(Some("kz-2")),
-          where(routing("introspect", form = Map("token" -> tokenOf("kz-2")))) == Right(Some("kz-2")),
-          // nothing that names a cell (client_credentials): placed
-          where(routing("token", form = Map("grant_type" -> "client_credentials"))) == Right(Some("kz-1")),
-        )
-      },
-      test("userinfo goes to the cell of the token's header") {
-        assertTrue(
-          where(routing("userinfo", bearer = Some(tokenOf("kz-2")))) == Right(Some("kz-2")),
-          where(routing("userinfo", bearer = Some("opaque"))) == Right(None),
-          where(routing("userinfo")) == Right(Some("kz-1")),
-        )
-      },
       test("an authorization request goes to the cell of its request_uri, else of the browser's session, else is placed") {
         assertTrue(
           where(routing("authorize", query = Map("request_uri" -> "urn:ietf:params:oauth:request_uri:v1.kz-2.abc"))) == Right(Some("kz-2")),
@@ -141,24 +117,21 @@ object IssuerFrontSpec extends ZIOSpecDefault:
           where(routing("logout", query = Map("id_token_hint" -> "not-a-token"))) == Right(Some("kz-1")),
         )
       },
-      test("a pushed request and discovery are placed in an open cell") {
-        assertTrue(where(routing("par")) == Right(Some("kz-1")), where(routing(".well-known/openid-configuration")) == Right(Some("kz-1")))
-      },
       test("a key that names no cell, or does not spell one, is placed like a request with none: auth answers it") {
         assertTrue(
-          where(routing("token", form = Map("code" -> "v1.kz-9.abc"))) == Right(Some("kz-1")),
-          where(routing("token", form = Map("code" -> "v1.kz-1"))) == Right(Some("kz-1")),
+          where(routing("challenge", cookies = Map("SSO_CONVERSATION" -> "v1.kz-9.abc.def"))) == Right(Some("kz-1")),
+          where(routing("authorize", cookies = Map("SSO_SESSION" -> "v1.kz-1"))) == Right(Some("kz-1")),
           where(routing("challenge", cookies = Map("SSO_CONVERSATION" -> "v1.KZ.abc.def"))) == Right(Some("kz-1")),
         )
       },
       test("with no cell registered everything goes to the configured auth, and with none open a new request has nowhere to go") {
         val shut = CellTopology(Vector(cell("kz-1", EdgeCellState.Draining)), None)
         assertTrue(
-          where(routing("token", form = Map("code" -> "v1.kz-2.abc")), CellTopology.empty) == Right(None),
+          where(routing("challenge", cookies = Map("SSO_CONVERSATION" -> "v1.kz-2.abc.def")), CellTopology.empty) == Right(None),
           where(routing("authorize"), CellTopology.empty) == Right(None),
           where(routing("authorize"), shut) == Left(CellRoutingError.NoOpenCell),
           // what names the draining cell still reaches it
-          where(routing("token", form = Map("code" -> "v1.kz-1.abc")), shut) == Right(Some("kz-1")),
+          where(routing("challenge", cookies = Map("SSO_CONVERSATION" -> "v1.kz-1.abc.def")), shut) == Right(Some("kz-1")),
         )
       },
     ),
@@ -184,17 +157,33 @@ object IssuerFrontSpec extends ZIOSpecDefault:
           sent.method == Method.POST,
           body.contains("code=123456") && body.contains("csrf=t"),
           sent.headers.get("Cookie").exists(_.contains("v1.kz-2.abc.def")),
+          // edge's own session is not auth's to see
+          !sent.headers.get("Cookie").exists(_.contains("EDGE_SESSION")),
           response.status == Status.Ok,
           answer == "page",
           response.headers.get("Set-Cookie").exists(_.contains("v1.kz-2.x.y")),
         )
       },
-      test("a path that is not the issuer's is not found, and nothing is called: auth's internal routes are not reachable") {
+      test(
+        "only the pages of a sign-in are served: the issuer's endpoints for clients and auth's internal routes are not found, and nothing is called",
+      ) {
         for
           (seen, call) <- front(topology)(_ => Response.ok)
-          statuses <- ZIO.foreach(List("users", "antifraud/lists", "service/configuration/sync", "revocations", "settings", ""))(path =>
-            call(Request.get(url(s"https://idp.example/$path"))).map(_.status),
-          )
+          statuses <- ZIO.foreach(
+            List(
+              "token",
+              "par",
+              "userinfo",
+              "introspect",
+              "revoke",
+              ".well-known/openid-configuration",
+              "users",
+              "antifraud/lists",
+              "service/configuration/sync",
+              "logout/extra",
+              "",
+            ),
+          )(path => call(Request.get(url(s"https://idp.example/$path"))).map(_.status))
           called <- seen.get
         yield assertTrue(statuses.forall(_ == Status.NotFound), called.isEmpty)
       },
@@ -205,27 +194,12 @@ object IssuerFrontSpec extends ZIOSpecDefault:
           called <- seen.get
         yield assertTrue(response.status == Status.NotFound, called.isEmpty)
       },
-      test("a token request the cell answers moved is asked once more at the cell named, and a browser step is not") {
-        val moved = Response.json("""{"error":"moved","cell":"kz-1"}""").status(Status.fromInt(421))
-        for
-          (seen, call) <- front(topology)(host => if host == "kz-2" then moved else Response.json("""{"access_token":"t"}"""))
-          token <- call(post("token", "refresh_token" -> "v1.kz-2.abc"))
-          afterToken <- seen.getAndSet(Nil)
-          step <- call(Request.get(url("https://idp.example/challenge")).addHeader(Header.Custom("Cookie", "SSO_CONVERSATION=v1.kz-2.abc.def")))
-          afterStep <- seen.get
-        yield assertTrue(
-          token.status == Status.Ok,
-          afterToken.reverse.map(_.url.path.segments.head) == List("kz-2", "kz-1"),
-          step.status.code == 421,
-          afterStep.size == 1,
-        )
-      },
       test("registered cells that none takes answer a new request 503, and a body over the limit is refused unread by a cell") {
         val shut = CellTopology(Vector(cell("kz-1", EdgeCellState.Draining)), None)
         for
           (seen, call) <- front(shut)(_ => Response.ok)
           placed <- call(Request.get(url("https://idp.example/authorize")))
-          large <- call(Request.post(url("https://idp.example/par"), Body.fromString("a" * (IssuerFront.BodyLimit + 1))))
+          large <- call(Request.post(url("https://idp.example/challenge/otp"), Body.fromString("a" * (IssuerFront.BodyLimit + 1))))
           called <- seen.get
         yield assertTrue(placed.status == Status.ServiceUnavailable, large.status == Status.RequestEntityTooLarge, called.isEmpty)
       },

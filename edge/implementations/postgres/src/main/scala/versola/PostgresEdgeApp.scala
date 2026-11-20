@@ -55,8 +55,6 @@ import zio.http.Client
 import zio.http.Server.RequestStreaming
 import zio.telemetry.opentelemetry.tracing.Tracing
 
-import java.lang.System as JavaSystem
-
 object PostgresEdgeApp extends VersolaApp("edge"):
   val environmentTag = Tag[Environment]
 
@@ -128,19 +126,12 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       List(
         EdgeController.routes,
         NativeController.routes,
+        IssuerFront.routes,
       ).reduce(_ ++ _),
       AddressLimit.Listener.Plain,
     )
 
   /** The proxy alone, on the listener that reads the caller's certificate (`EdgeConfig.mutualTls`). */
-  /** The issuer's own listener, which sends a browser's and a public client's request to the cell that holds what it
-    * names (versolauth/versola#1044). Served only by an edge that is given `APORT`: an edge that is not in front of the
-    * issuer opens no port for it, and on a host where the services share the network the default of `APORT` is another
-    * service's. Not behind the address limit of edge's own entry points: what is counted and refused on the issuer's
-    * endpoints is `auth`'s to decide, with the caller's address passed on. */
-  override def additionalRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
-    Option.when(Option(JavaSystem.getenv("APORT")).isDefined)(IssuerFront.routes)
-
   override def mutualTlsRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
     Some(AddressLimit[Dependencies & Tracing & EnvName, Throwable](EdgeController.resourceRoutes, AddressLimit.Listener.MutualTls))
 

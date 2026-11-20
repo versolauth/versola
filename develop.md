@@ -251,7 +251,7 @@ Metrics, liveness, and readiness probes are served on the diagnostics port (`DPO
 - `GET /readiness`
 
 The application API is served on the main port (`PORT`, default 8080). Services may expose a
-separate internal application surface on `APORT` (default 8082); auth uses it for Account Settings. Edge serves the issuer on it, and only when `APORT` is set: its listener in front of the cells, which sends a browser's and a public client's request to the cell that holds what the request names (#1044).
+separate internal application surface on `APORT` (default 8082); auth uses it for Account Settings.
 Auth and central may also expose a third surface on `MPORT` (default 8083); `MBIND_HOST` sets where it
 binds, `BIND_HOST` unless set, since it is the one listener a deployment may need to reach from outside
 the host or cluster. Central's is the edge surface, described under "The edge surface" below. Auth's is RFC 8705 §5's mutual-TLS
