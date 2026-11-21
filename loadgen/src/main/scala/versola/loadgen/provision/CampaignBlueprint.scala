@@ -441,7 +441,7 @@ object CampaignBlueprint:
       tenantId = provision.tenantId,
       description = s"Loadgen campaign ($profile)",
       securityProfile = profile,
-      edgeId = provision.edgeId,
+      edgeGroupId = provision.edgeGroupId,
     )
 
     CampaignBlueprint(

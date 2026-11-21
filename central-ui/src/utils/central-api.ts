@@ -21,6 +21,8 @@ import type {
   ClientEstState,
   CreatePartnerRequest,
   CreatedPartner,
+  Cell,
+  EdgeGroup,
   EdgeGroupKind,
   Partner,
   PartnerApproval,
@@ -44,6 +46,7 @@ import type {
   ServiceKey,
   SecurityProfile,
   Tenant,
+  Topology,
   ThemeOverrides,
   ThemePreset,
   ThemeRecord,
@@ -128,6 +131,7 @@ type ResourceResponseDto = { resourceId: string; resource: string; audience: str
 type EdgeResponseDto = {
   id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; overloadPolicy?: OverloadPolicy | null; accessLogPolicy?: AccessLogPolicy | null;
   rateLimitPolicies?: RateLimitPolicies | null; policyRevisions?: Record<string, number>;
+  regionId?: string | null;
   groupId?: string; groupKind?: EdgeGroupKind; partnerId?: string | null; partnerDisplayName?: string | null; partnerTenantId?: string | null; publicUrl?: string; certificateNotAfter?: string; lastRenewedAt?: string;
 };
 type PartnersResponse = { partners: Partner[] };
@@ -136,7 +140,7 @@ type EdgesResponse = { edges: EdgeResponseDto[] };
 type ServiceKeyResponseDto = { keyId: string; privateKey: string };
 
 type TenantsResponse = {
-  tenants: Array<{ id: string; description: string; edgeId?: string | null; securityProfile: SecurityProfile; signingKeyId?: string | null }>;
+  tenants: Array<{ id: string; description: string; edgeGroupId?: string | null; securityProfile: SecurityProfile; signingKeyId?: string | null }>;
 };
 type PermissionsResponse = { permissions: Array<{ permission: string; description: LocalizedDescription; endpointIds: ResourceEndpointId[] }> };
 type ScopesResponse = { scopes: Array<{ scope: string; description: LocalizedDescription; claims: Array<{ claim: string; description: LocalizedDescription }> }> };
@@ -702,7 +706,7 @@ export async function fetchTenants(): Promise<Tenant[]> {
     id: tenant.id,
     name: tenant.description || tenant.id,
     description: tenant.description,
-    edgeId: tenant.edgeId ?? null,
+    edgeGroupId: tenant.edgeGroupId ?? null,
     securityProfile: tenant.securityProfile,
     signingKeyId: tenant.signingKeyId ?? null,
   })));
@@ -711,19 +715,19 @@ export async function fetchTenants(): Promise<Tenant[]> {
 export async function createTenant(
   id: string,
   description: string,
-  edgeId: string | null = null,
+  edgeGroupId: string | null = null,
   securityProfile: SecurityProfile = 'fapi2',
 ): Promise<void> {
   await requestVoid('/configuration/tenants', {
     method: 'POST',
-    body: { id, description, edgeId, securityProfile },
+    body: { id, description, edgeGroupId, securityProfile },
   });
 }
 
-export async function updateTenant(id: string, description: string, edgeId: string | null = null): Promise<void> {
+export async function updateTenant(id: string, description: string, edgeGroupId: string | null = null): Promise<void> {
   await requestVoid('/configuration/tenants', {
     method: 'PUT',
-    body: { id, description, edgeId },
+    body: { id, description, edgeGroupId },
   });
 }
 
@@ -1416,6 +1420,12 @@ export async function upsertServerMetadata(metadata: Record<string, unknown>): P
 }
 
 
+/** Every group of edges, the operator's own and the partners'. A tenant is served by one of the operator's own. */
+export async function fetchEdgeGroups(): Promise<EdgeGroup[]> {
+  const response = await request<{ groups: EdgeGroup[] }>('/configuration/edge-groups');
+  return sortById(response.groups);
+}
+
 export async function fetchEdges(): Promise<Edge[]> {
   const response = await request<EdgesResponse>('/configuration/edges');
   return sortById(response.edges.map(edge => ({
@@ -1435,6 +1445,7 @@ export async function fetchEdges(): Promise<Edge[]> {
     ...(edge.partnerDisplayName ? { partnerDisplayName: edge.partnerDisplayName } : {}),
     ...(edge.partnerTenantId ? { partnerTenantId: edge.partnerTenantId } : {}),
     ...(edge.publicUrl ? { publicUrl: edge.publicUrl } : {}),
+    regionId: edge.regionId ?? null,
     ...(edge.certificateNotAfter ? { certificateNotAfter: edge.certificateNotAfter } : {}),
     ...(edge.lastRenewedAt ? { lastRenewedAt: edge.lastRenewedAt } : {}),
   })));
@@ -1486,6 +1497,46 @@ export async function approvePartnerApproval(id: string, note: string, overrides
 
 export async function rejectPartnerApproval(id: string, note: string): Promise<void> {
   await requestVoid('/configuration/partners/approvals/reject', { method: 'POST', body: { id, note } });
+}
+
+/** Partitions, regions and cells in one read. */
+export async function fetchTopology(): Promise<Topology> {
+  const response = await request<Topology>('/configuration/topology');
+  return {
+    partitions: sortById(response.partitions),
+    regions: sortById(response.regions),
+    cells: sortById(response.cells.map(cell => ({ ...cell, mtlsUrl: cell.mtlsUrl ?? null }))),
+  };
+}
+
+export async function createPartition(id: string): Promise<void> {
+  await requestVoid('/configuration/partitions', { method: 'POST', body: { id } });
+}
+
+export async function createRegion(id: string, partitionId: string): Promise<void> {
+  await requestVoid('/configuration/regions', { method: 'POST', body: { id, partitionId } });
+}
+
+export async function deleteRegion(regionId: string): Promise<void> {
+  await requestVoid('/configuration/regions', { method: 'DELETE', query: { regionId } });
+}
+
+export async function createCell(cell: Cell): Promise<void> {
+  await requestVoid('/configuration/cells', { method: 'POST', body: cell });
+}
+
+/** Replaces the addresses, the pins, the state and the weight; the id and the region stay. */
+export async function updateCell(cell: Cell): Promise<void> {
+  await requestVoid('/configuration/cells', { method: 'PUT', body: cell });
+}
+
+export async function deleteCell(cellId: string): Promise<void> {
+  await requestVoid('/configuration/cells', { method: 'DELETE', query: { cellId } });
+}
+
+/** The region of one of the operator's own edges; `null` takes it out of any region. */
+export async function setEdgeRegion(edgeId: string, regionId: string | null): Promise<void> {
+  await requestVoid('/configuration/edges/region', { method: 'PUT', query: { edgeId }, body: regionId ? { regionId } : {} });
 }
 
 export async function setEdgeDpopNonce(edgeId: string, requireDpopNonce: boolean): Promise<void> {

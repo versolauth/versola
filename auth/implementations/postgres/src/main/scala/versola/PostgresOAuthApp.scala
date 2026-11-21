@@ -70,6 +70,7 @@ import versola.oauth.conversation.{
 import versola.oauth.delivery.DeliveryChannels
 import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, PostgresDpopProofRepository}
 import versola.oauth.est.{EstCentralClient, EstController, EstService}
+import versola.oauth.handoff.CellHandoff
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
@@ -81,7 +82,7 @@ import versola.oauth.session.{PostgresSessionRepository, PostgresUserAgentReposi
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
 import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresPushedAuthorizationRepository}
-import versola.user.{PostgresUserRepository, UserController, UserRegistrationSyncClient, UserRepository, UserService}
+import versola.user.{PostgresUserRepository, UserController, UserDirectory, UserRepository, UserService}
 import versola.util.*
 import versola.util.SequentialLayers.*
 import versola.util.audit.{AuditEventRepository, AuditEvents, AuditTenants}
@@ -144,6 +145,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AuthorizeEndpointService &
       AuthorizationResponseService &
       ConversationRouter &
+      CellHandoff &
       ConversationService &
       AntifraudEvents &
       AntifraudCounters &
@@ -174,7 +176,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ChallengeThrottleRepository &
       LogoutService &
       SessionService &
-      UserRegistrationSyncClient &
+      UserDirectory &
       EstCentralClient &
       EstService &
       AuditEvents &
@@ -432,7 +434,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       LogoutService.live >++>
       AccountSettingsService.live >++>
       AcrResolutionService.live >++>
-      UserRegistrationSyncClient.live >++>
+      UserDirectory.live >++>
       EstCentralClient.live >++>
       EstService.live >++>
       UserService.live >++>
@@ -456,6 +458,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PowChallengeVerifier.live >++>
       CodeAlternativeService.live >++>
       ConversationService.live >++>
+      CellHandoff.live >++>
       ConversationRouter.live >++>
       AuthorizationResponseService.live >++>
       AuthorizeEndpointService.live >++>

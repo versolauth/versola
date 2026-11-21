@@ -3,9 +3,10 @@ package versola.central.users
 import versola.central.configuration.clients.{ClientId, OAuthClientService}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.util.{Email, Phone, SecureRandom}
+import versola.central.configuration.topology.{CellPlacement, TopologyRepository}
+import versola.util.{Email, Patch, Phone, SecureRandom}
 import zio.json.ast.Json
-import zio.{Duration, IO, Task, ZIO, ZLayer, duration2DurationOps}
+import zio.{Duration, IO, Random, Task, ZIO, ZLayer, duration2DurationOps}
 
 import java.time.Instant
 import scala.util.Try
@@ -45,7 +46,11 @@ trait UserService:
   def create(request: CreateUserRequest): IO[UserConflict | Throwable, UserId]
 
   /** Claim credentials and return the canonical ID for self-service registration. */
-  def indexRegistered(request: RegisteredUserRequest): IO[UserIndexConflict | Throwable, UserId]
+  def indexRegistered(request: RegisteredUserRequest): IO[UserIndexConflict | Throwable, RegisteredUserResponse]
+
+  /** The user that holds the identifiers and the cell that holds the user, without claiming anything; `None` when
+    * nobody holds them, or when they belong to more than one user (which a claim reports, not a lookup). */
+  def lookup(request: LookupUserRequest): Task[Option[RegisteredUserResponse]]
 
   def patch(request: PatchUserRequest): IO[UserNotFound | UserConflict | Throwable, Unit]
 
@@ -73,31 +78,63 @@ trait UserService:
   def setPassword(userId: UserId, password: String): Task[Unit]
 
 object UserService:
-  val live: ZLayer[UserRepository & AuthClient & OAuthClientService & SecureRandom, Nothing, UserService] =
-    ZLayer.fromFunction(Impl(_, _, _, _))
+  /** What `auth` holds of a user once `event` has been delivered to it. */
+  private[users] def applied(user: Option[AuthClient.UserDto], event: OutboxEvent): Option[AuthClient.UserDto] =
+    def patched[A](current: Option[A], patch: Option[Patch[A]]): Option[A] = patch match
+      case None => current
+      case Some(Patch.Deleted) => None
+      case Some(Patch.Modified(value)) => Some(value)
+    event match
+      case e: OutboxEvent.UpsertUser =>
+        Some(AuthClient.UserDto(email = e.email, phone = e.phone, login = e.login, claims = user.fold(Json.Obj())(_.claims)))
+      case e: OutboxEvent.PatchUser =>
+        user.map(u => u.copy(email = patched(u.email, e.email), phone = patched(u.phone, e.phone), login = patched(u.login, e.login)))
+      case _: OutboxEvent.DeleteUser => None
+      case _: OutboxEvent.UpdateUserRoles => user
+
+  val live: ZLayer[UserRepository & AuthClient & OAuthClientService & SecureRandom & DirectoryKey & TopologyRepository, Nothing, UserService] =
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   class Impl(
       userRepository: UserRepository,
       authClient: AuthClient,
       oAuthClientService: OAuthClientService,
       secureRandom: SecureRandom,
+      directoryKey: DirectoryKey,
+      topology: TopologyRepository,
   ) extends UserService:
     override def findById(id: UserId): Task[Option[UserSearchRecord]] =
-      userRepository.findById(id).flatMap(enrich)
+      userRepository.find(id).flatMap(enrich)
 
     override def findByEmail(email: Email): Task[Option[UserSearchRecord]] =
-      userRepository.findByEmail(email).flatMap(enrich)
+      userRepository.findByIdentifier(directoryKey.email(email)).flatMap(enrich)
 
     override def findByPhone(phone: Phone): Task[Option[UserSearchRecord]] =
-      userRepository.findByPhone(phone).flatMap(enrich)
+      userRepository.findByIdentifier(directoryKey.phone(phone)).flatMap(enrich)
 
     override def findByLogin(login: Login): Task[Option[UserSearchRecord]] =
-      userRepository.findByLogin(login).flatMap(enrich)
+      userRepository.findByIdentifier(directoryKey.login(login)).flatMap(enrich)
 
-    private def enrich(record: Option[UserIndexRecord]): Task[Option[UserSearchRecord]] =
+    /** The directory says that the user exists; what its identifiers are is read from `auth`, which holds them, with
+      * the changes central has queued for `auth` and not delivered yet applied on top: a user is read back as it was
+      * just written, although central keeps no copy of what was written. */
+    private def enrich(record: Option[UserDirectoryRecord]): Task[Option[UserSearchRecord]] =
       ZIO.foreach(record): r =>
-        authClient.getUserClaims(r.id).map: claims =>
-          UserSearchRecord(r.id, r.email, r.phone, r.login, claims.getOrElse(Json.Obj()))
+        for
+          held <- authClient.getUser(r.id)
+          pending <- userRepository.pendingEvents(r.id)
+        yield
+          val user = pending.foldLeft(held)(UserService.applied)
+          UserSearchRecord(
+            id = r.id,
+            email = user.flatMap(_.email),
+            phone = user.flatMap(_.phone),
+            login = user.flatMap(_.login),
+            claims = user.fold(Json.Obj())(_.claims),
+          )
+
+    private def identifiers(email: Option[Email], phone: Option[Phone], login: Option[Login]): List[DirectoryIdentifier] =
+      List(email.map(directoryKey.email), phone.map(directoryKey.phone), login.map(directoryKey.login)).flatten
 
     override def getRoles(id: UserId, tenantId: TenantId): Task[List[RoleId]] =
       authClient.getUserRoles(id, tenantId)
@@ -188,21 +225,63 @@ object UserService:
     override def create(request: CreateUserRequest): IO[UserConflict | Throwable, UserId] =
       for
         id <- secureRandom.nextUUIDv7.map(UserId(_))
-        _ <- userRepository.create(id, request.email, request.phone, request.login)
+        version <- secureRandom.nextUUIDv7
+        // Placed like a registration is, by the weights of the open cells; with no cell that takes users the user is in
+        // the `auth` central is configured with. The outbox then carries the user to the cell it was placed in.
+        cells <- topology.getCells
+        roll <- Random.nextDouble
+        _ <- userRepository.create(
+          user = UserDirectoryRecord(id, cellId = CellPlacement.pick(cells, roll)),
+          identifiers = identifiers(request.email, request.phone, request.login),
+          event = OutboxEvent.UpsertUser(userId = id, version = version, email = request.email, phone = request.phone, login = request.login),
+          eventId = version,
+        )
       yield id
 
-    override def indexRegistered(request: RegisteredUserRequest): IO[UserIndexConflict | Throwable, UserId] =
-      userRepository.indexFromAuth(request.email, request.phone, request.login)
+    override def indexRegistered(request: RegisteredUserRequest): IO[UserIndexConflict | Throwable, RegisteredUserResponse] =
+      for
+        id <- secureRandom.nextUUIDv7.map(UserId(_))
+        // The cell of a new claim is the caller's: the user is created where the registration was taken. An identifier
+        // claimed before answers its owner and the owner's cell, whatever cell asks.
+        owner <- userRepository.claim(
+          identifiers = identifiers(request.email, request.phone, request.login),
+          candidate = UserDirectoryRecord(id, cellId = request.cell),
+        )
+      yield RegisteredUserResponse(userId = owner.id, cell = owner.cellId)
+
+    override def lookup(request: LookupUserRequest): Task[Option[RegisteredUserResponse]] =
+      ZIO.foreach(identifiers(request.email, request.phone, request.login))(userRepository.findByIdentifier).map: owners =>
+        owners.flatten.distinctBy(_.id) match
+          case owner :: Nil => Some(RegisteredUserResponse(userId = owner.id, cell = owner.cellId))
+          case _ => None
 
     override def patch(request: PatchUserRequest): IO[UserNotFound | UserConflict | Throwable, Unit] =
-      userRepository.patch(request.id, request.email, request.phone, request.login)
+      def change[A](kind: IdentifierKind, patch: Option[Patch[A]])(mac: A => DirectoryIdentifier) =
+        patch.map:
+          case Patch.Modified(value) => kind -> Some(mac(value))
+          case Patch.Deleted => kind -> None
+      val changes = List(
+        change(IdentifierKind.Email, request.email)(directoryKey.email),
+        change(IdentifierKind.Phone, request.phone)(directoryKey.phone),
+        change(IdentifierKind.Login, request.login)(directoryKey.login),
+      ).flatten
+      for
+        version <- secureRandom.nextUUIDv7
+        _ <- userRepository.replaceIdentifiers(
+          id = request.id,
+          set = changes.flatMap(_._2),
+          remove = changes.collect { case (kind, None) => kind }.toSet,
+          event = OutboxEvent.PatchUser(userId = request.id, version = version, email = request.email, phone = request.phone, login = request.login),
+          eventId = version,
+        )
+      yield ()
 
     override def patchClaims(id: UserId, patch: Json.Obj): Task[Unit] =
       authClient.patchUserClaims(id, patch)
 
     override def delete(id: UserId): IO[UserNotFound | Throwable, Unit] =
       for
-        _ <- userRepository.findById(id).someOrFail(UserNotFound)
+        _ <- userRepository.find(id).someOrFail(UserNotFound)
         _ <- authClient.deleteUser(id)
         // The index row goes with a `DeleteUser` event queued behind it: the outbox delivers
         // per user in order, so an upsert still in flight for this user is followed by a

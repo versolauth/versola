@@ -7,50 +7,51 @@ import zio.{Duration, IO, Task}
 
 import java.util.UUID
 
+/** The directory of users (versolauth/versola#1041) and the outbox that carries central's changes of a user to `auth`.
+  * A repository stores what it is given: which identifiers a user may hold, and under which key they are MACed, is
+  * the service's to decide.
+  */
 trait UserRepository:
-  def findById(id: UserId): Task[Option[UserIndexRecord]]
-  def findByEmail(email: Email): Task[Option[UserIndexRecord]]
-  def findByPhone(phone: Phone): Task[Option[UserIndexRecord]]
-  def findByLogin(login: Login): Task[Option[UserIndexRecord]]
+  def find(id: UserId): Task[Option[UserDirectoryRecord]]
 
-  /** Atomically inserts/updates the index row and enqueues a UpsertUser outbox event.
-    * Fails with [[UserConflict]] when the email/phone/login violates a unique constraint.
+  /** The user an identifier belongs to, in any cell. */
+  def findByIdentifier(identifier: DirectoryIdentifier): Task[Option[UserDirectoryRecord]]
+
+  /** The kinds of identifier the user holds. */
+  def identifierKinds(id: UserId): Task[Set[IdentifierKind]]
+
+  /** Atomically stores the user with its identifiers and enqueues `event` for `auth`.
+    * Fails with [[UserConflict]] when the id or one of the identifiers is already taken.
     */
   def create(
-      id: UserId,
-      email: Option[Email],
-      phone: Option[Phone],
-      login: Option[Login],
+      user: UserDirectoryRecord,
+      identifiers: List[DirectoryIdentifier],
+      event: OutboxEvent,
+      eventId: UUID,
   ): IO[UserConflict | Throwable, Unit]
 
-  /** Claims credentials for a user being created through self-service registration.
-    *
-    * Returns the canonical user ID already owning any supplied credential, or mints a new one
-    * and queues an auth upsert for recovery. Existing rows are left untouched so retries cannot
-    * clobber later central edits. Fails with [[UserIndexConflict]] when the supplied credentials
-    * already resolve to more than one existing user.
+  /** Claims `identifiers` for `candidate`, a user that does not exist yet, and answers who holds them now: the
+    * candidate when none was claimed before, the owner when they already belong to one user. A claim is permanent and
+    * repeating it changes nothing, so a caller that stopped half-way claims again and gets the same answer. Nothing is
+    * enqueued: the caller is the `auth` that creates the user. Fails with [[UserIndexConflict]] when the identifiers
+    * belong to more than one user.
     */
-  def indexFromAuth(
-      email: Option[Email],
-      phone: Option[Phone],
-      login: Option[Login],
-  ): IO[UserIndexConflict | Throwable, UserId]
+  def claim(identifiers: List[DirectoryIdentifier], candidate: UserDirectoryRecord): IO[UserIndexConflict | Throwable, UserDirectoryRecord]
 
-  /** Atomically patches index columns and enqueues a UpsertUser outbox event.
-    * Each `Option[Patch[A]]` follows three-state semantics: `None` keeps the column,
-    * `Some(Patch.Deleted)` sets it to NULL, `Some(Patch.Modified(v))` sets it to `v`.
-    * Fails with [[UserNotFound]] when no such user is indexed, or [[UserConflict]] when an
-    * identifier is already held by another user.
+  /** Atomically gives the user the identifiers of `set` in place of what it held of those kinds, takes away the kinds
+    * of `remove`, and enqueues `event`. Fails with [[UserNotFound]] when there is no such user, or [[UserConflict]]
+    * when an identifier is held by another user.
     */
-  def patch(
+  def replaceIdentifiers(
       id: UserId,
-      email: Option[Patch[Email]],
-      phone: Option[Patch[Phone]],
-      login: Option[Patch[Login]],
+      set: List[DirectoryIdentifier],
+      remove: Set[IdentifierKind],
+      event: OutboxEvent,
+      eventId: UUID,
   ): IO[UserNotFound | UserConflict | Throwable, Unit]
 
   /** Enqueues an UpdateUserRoles outbox event, dispatched to auth in per-user FIFO order.
-    * Ordering behind [[create]]/[[patch]] events guarantees the user exists in auth before roles are applied.
+    * Ordering behind [[create]]/[[replaceIdentifiers]] events guarantees the user exists in auth before roles are applied.
     */
   def enqueueRoleUpdate(
       userId: UserId,
@@ -59,7 +60,12 @@ trait UserRepository:
       remove: Set[RoleId],
   ): Task[Unit]
 
+  /** Removes the user and its identifiers, which may be claimed again, and enqueues the deletion for `auth`. */
   def delete(id: UserId): Task[Unit]
+
+  /** The events of the user that `auth` has not been given yet, oldest first: what the user will be there once they
+    * are delivered. */
+  def pendingEvents(id: UserId): Task[Vector[OutboxEvent]]
 
   /** Atomically claim up to `limit` due outbox rows by leasing them for `lease` (other instances skip them).
     * The lease is reset to a backoff value by [[rescheduleEvent]] on failure, or the row is removed on success.

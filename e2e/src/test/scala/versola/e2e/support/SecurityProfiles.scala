@@ -37,13 +37,13 @@ object SecurityProfiles:
 
   private def createSuiteTenant(api: CentralApi): Task[Unit] =
     for
-      // Served by the same edge as `default`: the edge specs sync the clients and presets they
-      // register here, and an edge only receives those of the tenants it is assigned.
+      // Served by the same group of edges as `default`: the edge specs sync the clients and presets they
+      // register here, and an edge only receives those of the tenants its group serves.
       tenants <- api.get("/configuration/tenants").flatMap(_.items("tenants"))
-      edgeId = tenants.find(_.str("id").contains(Fixtures.defaultTenant)).flatMap(_.str("edgeId"))
+      edgeGroupId = tenants.find(_.str("id").contains(Fixtures.defaultTenant)).flatMap(_.str("edgeGroupId"))
       created <- api.post(
         "/configuration/tenants",
-        Fixtures.tenant(Fixtures.suiteTenant, description = "e2e suite tenant", edgeId = edgeId, securityProfile = Some("standard")),
+        Fixtures.tenant(Fixtures.suiteTenant, description = "e2e suite tenant", edgeGroupId = edgeGroupId, securityProfile = Some("standard")),
       )
       _ <- ZIO.fail(RuntimeException(
         s"Could not create the suite tenant '${Fixtures.suiteTenant}' on the standard profile: ${created.status} ${created.body}",

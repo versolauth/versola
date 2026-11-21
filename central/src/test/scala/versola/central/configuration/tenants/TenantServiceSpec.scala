@@ -11,6 +11,7 @@ import versola.central.configuration.challenges.{
   SecurityProfile,
   SubmissionLimits,
 }
+import versola.central.configuration.edges.{EdgeGroupId, EdgeGroupKind, EdgeGroupRecord, EdgeGroupRepository}
 import versola.central.configuration.jwks.{JwksRecord, JwksRepository}
 import versola.central.configuration.{CreateTenantRequest, UpdateTenantRequest}
 import versola.util.http.BadRequest
@@ -67,8 +68,16 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val repository = stub[TenantRepository]
     val challengeSettingsService = stub[ChallengeSettingsService]
     val jwksRepository = stub[JwksRepository]
+    val edgeGroupRepository = stub[EdgeGroupRepository]
     val service =
-      TenantService.Impl(cache, repository, challengeSettingsService, jwksRepository, TestCentralConfig.config)
+      TenantService.Impl(
+        cache = cache,
+        tenantRepository = repository,
+        edgeGroupRepository = edgeGroupRepository,
+        challengeSettingsService = challengeSettingsService,
+        jwksRepository = jwksRepository,
+        config = TestCentralConfig.config,
+      )
 
   def spec = suite("TenantService")(
     test("getAllTenants returns cached tenants sorted by id") {
@@ -278,6 +287,67 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.updateTenant.succeedsWith(())
         _ <- env.service.updateTenant(updateRequest)
       yield assertTrue(env.repository.updateTenant.calls == List((tenant1, "Updated Tenant A", None)))
+    },
+    // #557: a tenant is served by a group of edges, and only by one of the operator's own.
+    test("createTenant and updateTenant store the operator's group the request names") {
+      val env = new Env()
+      val group = EdgeGroupId("almaty")
+
+      for
+        _ <- env.edgeGroupRepository.find.succeedsWith(Some(EdgeGroupRecord(group, EdgeGroupKind.FirstParty)))
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
+        _ <- env.repository.createTenant.succeedsWith(())
+        _ <- env.repository.updateTenant.succeedsWith(())
+        _ <- env.jwksRepository.getAll.succeedsWith(Vector.empty)
+        _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
+        _ <- env.service.createTenant(createRequest.copy(edgeGroupId = Some(group)))
+        _ <- env.service.updateTenant(updateRequest.copy(edgeGroupId = Some(group)))
+      yield assertTrue(
+        env.edgeGroupRepository.find.calls == List(group, group),
+        env.repository.createTenant.calls == List((tenant1, "Tenant A", Some(group))),
+        env.repository.updateTenant.calls == List((tenant1, "Updated Tenant A", Some(group))),
+      )
+    },
+    test("createTenant and updateTenant refuse a partner's group with a bad request, writing nothing") {
+      val env = new Env()
+      val group = EdgeGroupId("partner-acme")
+
+      for
+        _ <- env.edgeGroupRepository.find.succeedsWith(Some(EdgeGroupRecord(group, EdgeGroupKind.Partner)))
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
+        created <- env.service.createTenant(createRequest.copy(edgeGroupId = Some(group))).either
+        updated <- env.service.updateTenant(updateRequest.copy(edgeGroupId = Some(group))).either
+      yield assertTrue(
+        created.left.exists(_.isInstanceOf[BadRequest]),
+        updated.left.exists(_.isInstanceOf[BadRequest]),
+        env.repository.createTenant.calls.isEmpty,
+        env.repository.updateTenant.calls.isEmpty,
+        env.challengeSettingsService.upsertSettings.calls.isEmpty,
+      )
+    },
+    test("createTenant and updateTenant refuse a group that does not exist with a bad request, writing nothing") {
+      val env = new Env()
+      val group = EdgeGroupId("nowhere")
+
+      for
+        _ <- env.edgeGroupRepository.find.succeedsWith(None)
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
+        created <- env.service.createTenant(createRequest.copy(edgeGroupId = Some(group))).either
+        updated <- env.service.updateTenant(updateRequest.copy(edgeGroupId = Some(group))).either
+      yield assertTrue(
+        created.left.exists(_.isInstanceOf[BadRequest]),
+        updated.left.exists(_.isInstanceOf[BadRequest]),
+        env.repository.createTenant.calls.isEmpty,
+        env.repository.updateTenant.calls.isEmpty,
+      )
+    },
+    test("a tenant that names no group is stored without asking which groups exist") {
+      val env = new Env()
+
+      for
+        _ <- env.repository.updateTenant.succeedsWith(())
+        _ <- env.service.updateTenant(updateRequest)
+      yield assertTrue(env.edgeGroupRepository.find.calls.isEmpty)
     },
     test("deleteTenant delegates id to repository") {
       val env = new Env()

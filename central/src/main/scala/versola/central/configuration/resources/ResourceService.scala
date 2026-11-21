@@ -111,8 +111,7 @@ object ResourceService:
         case Some(id) =>
           for
             resources <- cache.get
-            tenants <- tenantRepository.getAll
-            allowedTenantIds = tenants.filter(_.edgeId.contains(id)).map(_.id).toSet
+            allowedTenantIds <- tenantRepository.getServedBy(id).map(_.toSet)
           // A partner's resource is served to the partner's own edge (`/edge/partner/sync/resources`) and to auth, never to the
           // operator's edges: it carries the upstream secret and endpoint rules of another organisation.
           yield resources.filter(r => r.partnerId.isEmpty && allowedTenantIds.contains(r.tenantId))

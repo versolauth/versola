@@ -50,6 +50,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     email = Some(email),
     phone = None,
     login = None,
+    cell = None,
   )
 
   private val registeredRequestBody = s"""{"email":"$email"}"""
@@ -133,14 +134,53 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(registeredRequestBody),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Ok,
-      setup = service => service.indexRegistered.succeedsWith(userId),
+      setup = service => service.indexRegistered.succeedsWith(RegisteredUserResponse(userId = userId, cell = None)),
       authorization = internalAuthorization,
       verify = (response, service) =>
         for body <- response.body.asJson[RegisteredUserResponse]
         yield assertTrue(
           service.indexRegistered.calls == List(registeredRequest),
-          body == RegisteredUserResponse(userId),
+          body == RegisteredUserResponse(userId = userId, cell = None),
         ),
+    ),
+    // versolauth/versola#1046
+    controllerTestCase(
+      description = "lookup answers the holder of a credential to auth's token",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "lookup",
+        body = Body.fromString(registeredRequestBody),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Ok,
+      setup = service => service.lookup.succeedsWith(Some(RegisteredUserResponse(userId = userId, cell = None))),
+      authorization = internalAuthorization,
+      verify = (response, service) =>
+        for body <- response.body.asJson[RegisteredUserResponse]
+        yield assertTrue(
+          service.lookup.calls == List(LookupUserRequest(email = Some(email), phone = None, login = None)),
+          body == RegisteredUserResponse(userId = userId, cell = None),
+        ),
+    ),
+    controllerTestCase(
+      description = "lookup of a credential nobody holds is 404",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "lookup",
+        body = Body.fromString(registeredRequestBody),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      setup = service => service.lookup.succeedsWith(None),
+      authorization = internalAuthorization,
+    ),
+    controllerTestCase(
+      description = "lookup is not served to the admin credential: it is auth's",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "lookup",
+        body = Body.fromString(registeredRequestBody),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Unauthorized,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.lookup.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "registered user maps UserIndexConflict to 409 Conflict",
@@ -161,7 +201,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(s"""{"email":"$email","login":"jdoe"}"""),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Ok,
-      setup = service => service.indexRegistered.succeedsWith(userId),
+      setup = service => service.indexRegistered.succeedsWith(RegisteredUserResponse(userId = userId, cell = None)),
       authorization = internalAuthorization,
       verify = (_, service) =>
         ZIO.succeed(assertTrue(

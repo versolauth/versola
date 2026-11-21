@@ -105,7 +105,7 @@ object SSOClientInternalTrustSpec extends ZIOSpecDefault:
   private def exchange(trust: Option[Path], port: Int): ZIO[Client, Throwable, Unit] =
     for
       httpClient <- ZIO.service[Client]
-      sso = SSOClient.Impl(httpClient, edgeConfig(port, trust), certificateFiles, noIdentity)
+      sso = SSOClient.Impl(httpClient, edgeConfig(port, trust), certificateFiles, noIdentity, CellTable.empty)
       _ <- sso.exchangeAuthorizationCode(
         Code("c-1"),
         CodeVerifier("v-1"),

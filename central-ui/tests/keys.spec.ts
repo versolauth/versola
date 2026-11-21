@@ -17,9 +17,9 @@ const summaries = [
   { kid: 'partner-rs256', algorithm: 'RS256', keyType: 'RSA', curve: null, canSign: false },
 ];
 const tenants = [
-  { id: 'tenant-alpha', description: 'Alpha', edgeId: null, securityProfile: 'fapi2' as const, signingKeyId: 'es256-a1' },
-  { id: 'tenant-bravo', description: 'Bravo', edgeId: null, securityProfile: 'fapi2' as const, signingKeyId: 'es256-a1' },
-  { id: 'tenant-charlie', description: 'Charlie', edgeId: null, securityProfile: 'standard' as const, signingKeyId: null },
+  { id: 'tenant-alpha', description: 'Alpha', edgeGroupId: null, securityProfile: 'fapi2' as const, signingKeyId: 'es256-a1' },
+  { id: 'tenant-bravo', description: 'Bravo', edgeGroupId: null, securityProfile: 'fapi2' as const, signingKeyId: 'es256-a1' },
+  { id: 'tenant-charlie', description: 'Charlie', edgeGroupId: null, securityProfile: 'standard' as const, signingKeyId: null },
 ];
 const state = (extra: Partial<MockConfigState> = {}): Partial<MockConfigState> => ({
   jwksKeys: [es256, ps256, partner] as MockConfigState['jwksKeys'],

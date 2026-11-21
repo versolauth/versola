@@ -70,6 +70,9 @@ object AddressLimit:
 
   private def kindOf(pattern: String): Kind =
     if pattern.startsWith("/service/") || pattern == "/logout/backchannel" then Kind.Skip
+    // The pages of a sign-in are auth's (IssuerFront): what is counted and refused on them is auth's to decide, with the
+    // caller's address passed on.
+    else if pattern == IssuerFront.Authorize || pattern == IssuerFront.Logout || pattern.startsWith(IssuerFront.Challenge) then Kind.Skip
     else if pattern.startsWith("/login/") || pattern == "/complete" || pattern.startsWith("/native/start/") ||
       pattern.startsWith("/native/complete/") || pattern.startsWith("/logout/")
     then Kind.Entry

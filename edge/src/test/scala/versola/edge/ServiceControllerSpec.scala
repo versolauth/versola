@@ -96,6 +96,7 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
               ZEnvironment[AccessLogPolicyService](services.accessLogPolicy) ++
               ZEnvironment[RateLimitPolicyService](services.rateLimitPolicy) ++
               ZEnvironment[EdgeConfig](config) ++
+              ZEnvironment[CellTable](CellTable.empty) ++
               ZEnvironment[EnvName](env) ++
               tracing,
           ),

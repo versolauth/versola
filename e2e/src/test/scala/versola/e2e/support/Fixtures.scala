@@ -37,7 +37,7 @@ object Fixtures:
   def tenant(
       id: String,
       description: String = "e2e tenant",
-      edgeId: Option[String] = None,
+      edgeGroupId: Option[String] = None,
       submissionLimits: Json = submissionLimits(
         otpRequest = List(rateLimit(2, 60)),
         otpSubmit = List(rateLimit(3, 120)),
@@ -52,7 +52,7 @@ object Fixtures:
         "id" -> Json.Str(id),
         "description" -> Json.Str(description),
         "submissionLimits" -> submissionLimits,
-      ) ++ Chunk.fromIterable(edgeId.map(value => "edgeId" -> Json.Str(value))) ++
+      ) ++ Chunk.fromIterable(edgeGroupId.map(value => "edgeGroupId" -> Json.Str(value))) ++
         Chunk.fromIterable(securityProfile.map(value => "securityProfile" -> Json.Str(value))),
     )
 

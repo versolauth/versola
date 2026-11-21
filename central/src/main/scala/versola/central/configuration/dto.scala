@@ -16,6 +16,7 @@ import versola.central.configuration.clients.{
   ResponseType,
 }
 import versola.central.configuration.details.AuthorizationDetailType
+import versola.central.configuration.edges.EdgeGroupId
 import versola.central.configuration.partners.PartnerId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.{AudienceRateLimit, ResourceEndpointId, ResourceId}
@@ -336,7 +337,8 @@ case class UpdateAuthorizationDetailTypeRequest(
 case class TenantResponse(
     id: TenantId,
     description: String,
-    edgeId: Option[String],
+    /** The group of edges that serves the tenant (#557); `None` when no edge does. */
+    edgeGroupId: Option[EdgeGroupId],
     /** From the tenant's challenge settings, where the profile is stored; a tenant whose
       * settings are missing reads as `ChallengeSettingsRecord.DefaultSecurityProfile`, what
       * `getSecurityProfile` would answer for it. */
@@ -358,7 +360,8 @@ case class GetAllTenantsResponse(
 case class CreateTenantRequest(
     id: TenantId,
     description: String,
-    edgeId: Option[String],
+    /** The operator's own group of edges that serves the tenant (#557); a partner's group is refused. */
+    edgeGroupId: Option[EdgeGroupId],
     /** Which FAPI profile the tenant's clients are held to; absent takes
       * `ChallengeSettingsRecord.DefaultSecurityProfile`. Settled here and never changed:
       * the challenge-settings endpoint refuses any other value afterwards. */
@@ -368,7 +371,7 @@ case class CreateTenantRequest(
 case class UpdateTenantRequest(
     id: TenantId,
     description: String,
-    edgeId: Option[String],
+    edgeGroupId: Option[EdgeGroupId],
 ) derives Schema, JsonCodec
 
 case class OAuthClientResponse(

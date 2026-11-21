@@ -154,25 +154,38 @@ object SutSchema:
     ),
   )
 
-  /** Central's routing index (§10 step 5). Written directly rather than through the outbox: the
-    * outbox exists to carry a user central created to auth, and the seeder writes both sides
+  /** Central's directory (§10 step 5; versolauth/versola#1041): the user, in no cell. Written directly rather than
+    * through the outbox: the outbox exists to carry a user central created to auth, and the seeder writes both sides
     * itself, so there is nothing left to dispatch.
     */
-  val userIndex: SeededTable = SeededTable(
+  val userDirectory: SeededTable = SeededTable(
     owner = SchemaOwner.Central,
-    name = "user_index",
+    name = "user_directory",
     columns = List(
-      SeededColumn("id", "uuid"),
-      SeededColumn("phone", "text"),
+      SeededColumn("user_id", "uuid"),
+    ),
+  )
+
+  /** The MAC of the user's phone, which is how central finds the user of a phone and refuses a second account for
+    * it: a registration of a seeded phone has to resolve to the seeded user.
+    */
+  val identifierDirectory: SeededTable = SeededTable(
+    owner = SchemaOwner.Central,
+    name = "identifier_directory",
+    columns = List(
+      SeededColumn("kind", "text"),
+      SeededColumn("mac", "bytea"),
+      SeededColumn("user_id", "uuid"),
     ),
   )
 
   /** Write order, and therefore also the reverse of the delete order. `users` first because
-    * `user_roles.user_id` references it; `refreshTokens` last of auth's tables for the same
+    * `user_roles.user_id` references it, and `userDirectory` before `identifierDirectory` for the
+    * same reason in central; `refreshTokens` last of auth's tables for the same
     * reason -- it references `users.id` too, just without a declared foreign key (see
     * `refresh_tokens`'s migration).
     */
-  val all: List[SeededTable] = List(users, userPasswords, userRoles, passkeys, refreshTokens, userIndex)
+  val all: List[SeededTable] = List(users, userPasswords, userRoles, passkeys, refreshTokens, userDirectory, identifierDirectory)
 
   def tablesOwnedBy(owner: SchemaOwner): List[SeededTable] = all.filter(_.owner == owner)
 

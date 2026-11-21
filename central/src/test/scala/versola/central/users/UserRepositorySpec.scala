@@ -3,20 +3,39 @@ package versola.central.users
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.util.{DatabaseSpecBase, Email, Patch, Phone, SecureRandom}
+import versola.central.configuration.topology.CellId
+import versola.util.{DatabaseSpecBase, Email, Patch, Phone, Secret}
 import zio.test.*
-import zio.{Duration, ZIO, ZLayer}
+import zio.{Duration, ZIO}
 
 import java.util.UUID
 
+/** The directory (versolauth/versola#1041) and the outbox to `auth`, held to by every storage. */
 trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
   self: ZIOSpec[TransactorZIO] =>
 
   private val userId1 = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
   private val userId2 = UserId(UUID.fromString("00000000-0000-0000-0000-000000000002"))
-  private val email = Email("user@example.com")
-  private val phone = Phone("+15551234567")
-  private val login = Login("nickname")
+  private val userId3 = UserId(UUID.fromString("00000000-0000-0000-0000-000000000003"))
+  private val key = DirectoryKey.derive(Secret(Array.fill(16)(7.toByte)))
+  private val email = key.email(Email("user@example.com"))
+  private val phone = key.phone(Phone("+15551234567"))
+  private val otherPhone = key.phone(Phone("+15557654321"))
+  private val login = key.login(Login("nickname"))
+  private val cell = CellId("kz-1")
+  private val otherCell = CellId("kz-2")
+
+  private def user(id: UserId, cellId: Option[CellId] = None) = UserDirectoryRecord(id, cellId)
+
+  private def eventId(n: Int) = UUID.fromString(f"00000000-0000-7000-8000-$n%012d")
+
+  private def upsert(id: UserId, n: Int) = OutboxEvent.UpsertUser(userId = id, version = eventId(n), email = None, phone = None, login = None)
+
+  /** The event of a creation has an id of its own for each user, apart from the ids the cases use for later events. */
+  private def created(id: UserId) = 100 + id.toString.last.asDigit
+
+  private def create(env: UserRepositorySpec.Env, id: UserId, identifiers: DirectoryIdentifier*) =
+    env.repository.create(user = user(id), identifiers = identifiers.toList, event = upsert(id, created(id)), eventId = eventId(created(id)))
 
   /** Claims and acknowledges everything currently queued, so a later assertion sees only the
     * events the test itself provoked. The outbox is per-user FIFO, so simply claiming the
@@ -28,132 +47,162 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
 
   override def testCases(env: UserRepositorySpec.Env) =
     List(
-      test("create inserts user and is retrievable by email/phone/login") {
+      test("a created user is found by its id and by each of its identifiers, and its creation is queued for auth") {
         for
-          _ <- env.repository.create(userId1, Some(email), Some(phone), Some(login))
-          byEmail <- env.repository.findByEmail(email)
-          byPhone <- env.repository.findByPhone(phone)
-          byLogin <- env.repository.findByLogin(login)
-        yield assertTrue(
-          byEmail.contains(UserIndexRecord(userId1, Some(email), Some(phone), Some(login))),
-          byPhone.contains(UserIndexRecord(userId1, Some(email), Some(phone), Some(login))),
-          byLogin.contains(UserIndexRecord(userId1, Some(email), Some(phone), Some(login))),
-        )
-      },
-      test("create fails with UserConflict when email already exists for another user") {
-        for
-          _ <- env.repository.create(userId1, Some(email), None, None)
-          result <- env.repository.create(userId2, Some(email), None, None).either
-        yield assertTrue(result == Left(UserConflict))
-      },
-      test("create fails with UserConflict when phone already exists for another user") {
-        for
-          _ <- env.repository.create(userId1, None, Some(phone), None)
-          result <- env.repository.create(userId2, None, Some(phone), None).either
-        yield assertTrue(result == Left(UserConflict))
-      },
-      test("create fails with UserConflict when login already exists for another user") {
-        for
-          _ <- env.repository.create(userId1, None, None, Some(login))
-          result <- env.repository.create(userId2, None, None, Some(login)).either
-        yield assertTrue(result == Left(UserConflict))
-      },
-      test("create with the same id is treated as an upsert and does not conflict") {
-        for
-          _ <- env.repository.create(userId1, Some(email), None, None)
-          _ <- env.repository.create(userId1, Some(email), Some(phone), None)
-          found <- env.repository.findById(userId1)
-        yield assertTrue(found.contains(UserIndexRecord(userId1, Some(email), Some(phone), None)))
-      },
-      test("registration claim mints a new id and queues a recovery upsert") {
-        for
-          owner <- env.repository.indexFromAuth(Some(email), None, None)
-          events <- env.repository.claimDueEvents(10, Duration.fromSeconds(60))
-          upsertUserIds = events.map(_.event).collect { case event: OutboxEvent.UpsertUser => event.userId }
-        yield assertTrue(upsertUserIds == Vector(owner))
-      },
-      test("registration claim returns the existing credential owner") {
-        for
-          first <- env.repository.indexFromAuth(Some(email), None, None)
-          second <- env.repository.indexFromAuth(Some(email), None, None)
+          _ <- create(env, userId1, email, phone, login)
+          byId <- env.repository.find(userId1)
+          byEmail <- env.repository.findByIdentifier(email)
+          byPhone <- env.repository.findByIdentifier(phone)
+          byLogin <- env.repository.findByIdentifier(login)
+          kinds <- env.repository.identifierKinds(userId1)
           events <- env.repository.claimDueEvents(10, Duration.fromSeconds(60))
         yield assertTrue(
-          first == second,
-          events.size == 1,
+          List(byId, byEmail, byPhone, byLogin).forall(_.contains(user(userId1))),
+          kinds == Set(IdentifierKind.Email, IdentifierKind.Phone, IdentifierKind.Login),
+          events.map(_.event) == Vector(upsert(userId1, created(userId1))),
         )
       },
-      test("concurrent registration claims converge on one user id") {
+      test("an identifier nobody holds, or a value of another kind, finds nobody") {
         for
-          owners <- ZIO.collectAllPar(
-            List(
-              env.repository.indexFromAuth(Some(email), None, None),
-              env.repository.indexFromAuth(Some(email), None, None),
-            ),
-          )
-          indexed <- env.repository.findByEmail(email)
-          events <- env.repository.claimDueEvents(10, Duration.fromSeconds(60))
-        yield assertTrue(
-          owners.toSet.size == 1,
-          indexed.map(_.id).contains(owners.head),
-          events.size == 1,
-        )
+          _ <- create(env, userId1, phone)
+          unknown <- env.repository.findByIdentifier(otherPhone)
+          // The same bytes under another kind are another row: the kind is part of the key.
+          wrongKind <- env.repository.findByIdentifier(phone.copy(kind = IdentifierKind.Email))
+        yield assertTrue(unknown.isEmpty, wrongKind.isEmpty)
       },
-      test("registration claim fails with UserIndexConflict when credentials resolve to different users") {
+      test("create fails with UserConflict when an identifier belongs to another user, and stores nothing of the second") {
         for
-          _ <- env.repository.indexFromAuth(Some(email), None, None)
-          _ <- env.repository.indexFromAuth(None, Some(phone), None)
-          result <- env.repository.indexFromAuth(Some(email), Some(phone), None).either
-        yield assertTrue(result == Left(UserIndexConflict))
-      },
-      test("patch applies the three-state semantics per column") {
-        for
-          _ <- env.repository.create(userId1, Some(email), Some(phone), Some(login))
-          _ <- env.repository.patch(
-            userId1,
-            email = Some(Patch.Modified(Email("new@example.com"))),
-            phone = Some(Patch.Deleted),
-            login = None,
-          )
-          found <- env.repository.findById(userId1)
-        yield assertTrue(
-          found == Some(UserIndexRecord(userId1, Some(Email("new@example.com")), None, Some(login))),
-        )
-      },
-      test("patch queues an upsert carrying the full post-patch state") {
-        for
-          _ <- env.repository.create(userId1, Some(email), None, None)
+          _ <- create(env, userId1, phone)
           _ <- drainOutbox(env)
-          _ <- env.repository.patch(userId1, Some(Patch.Modified(Email("new@example.com"))), None, None)
+          result <- create(env, userId2, email, phone).either
+          second <- env.repository.find(userId2)
+          byEmail <- env.repository.findByIdentifier(email)
           events <- env.repository.claimDueEvents(10, Duration.fromSeconds(60))
-          upserts = events.map(_.event).collect { case e: OutboxEvent.UpsertUser => e }
+        yield assertTrue(result == Left(UserConflict), second.isEmpty, byEmail.isEmpty, events.isEmpty)
+      },
+      test("create fails with UserConflict when the id is taken") {
+        for
+          _ <- create(env, userId1, phone)
+          result <- create(env, userId1, email).either
+        yield assertTrue(result == Left(UserConflict))
+      },
+      test("a claim of identifiers nobody holds gives them to the candidate, in the candidate's cell, and queues nothing") {
+        for
+          owner <- env.repository.claim(List(phone), user(userId1, Some(cell)))
+          found <- env.repository.findByIdentifier(phone)
+          events <- env.repository.claimDueEvents(10, Duration.fromSeconds(60))
+        yield assertTrue(owner == user(userId1, Some(cell)), found.contains(user(userId1, Some(cell))), events.isEmpty)
+      },
+      test("a repeated claim answers the first owner and its cell, whoever the candidate and whatever its cell") {
+        for
+          first <- env.repository.claim(List(phone), user(userId1, Some(cell)))
+          second <- env.repository.claim(List(phone), user(userId2, Some(otherCell)))
+          candidate <- env.repository.find(userId2)
+        yield assertTrue(first == user(userId1, Some(cell)), second == first, candidate.isEmpty)
+      },
+      test("concurrent claims of one identifier converge on one user") {
+        for
+          owners <- ZIO.foreachPar(1 to 8)(n => env.repository.claim(List(phone), user(UserId(eventId(n)))))
+          found <- env.repository.findByIdentifier(phone)
+        yield assertTrue(owners.map(_.id).distinct.size == 1, found.map(_.id) == owners.headOption.map(_.id))
+      },
+      test("a claim fails with UserIndexConflict when its identifiers belong to different users, and claims nothing") {
+        for
+          _ <- env.repository.claim(List(email), user(userId1))
+          _ <- env.repository.claim(List(phone), user(userId2))
+          result <- env.repository.claim(List(email, phone), user(userId3)).either
+          third <- env.repository.find(userId3)
+        yield assertTrue(result == Left(UserIndexConflict), third.isEmpty)
+      },
+      test("replaceIdentifiers swaps the kinds it names, removes the kinds asked and keeps the rest") {
+        for
+          _ <- create(env, userId1, email, phone, login)
+          _ <- drainOutbox(env)
+          event = OutboxEvent.PatchUser(userId = userId1, version = eventId(2), email = Some(Patch.Deleted), phone = None, login = None)
+          _ <- env.repository.replaceIdentifiers(
+            id = userId1,
+            set = List(otherPhone),
+            remove = Set(IdentifierKind.Email),
+            event = event,
+            eventId = eventId(2),
+          )
+          oldPhone <- env.repository.findByIdentifier(phone)
+          newPhone <- env.repository.findByIdentifier(otherPhone)
+          byEmail <- env.repository.findByIdentifier(email)
+          byLogin <- env.repository.findByIdentifier(login)
+          events <- env.repository.claimDueEvents(10, Duration.fromSeconds(60))
         yield assertTrue(
-          upserts.map(_.userId) == Vector(userId1),
-          upserts.map(_.email) == Vector(Some(Email("new@example.com"))),
+          oldPhone.isEmpty,
+          newPhone.contains(user(userId1)),
+          byEmail.isEmpty,
+          byLogin.contains(user(userId1)),
+          events.map(_.event) == Vector(event),
         )
       },
-      test("patch fails with UserNotFound for an unknown user") {
+      test("an identifier a user gave up can be claimed by another") {
         for
-          result <- env.repository.patch(userId1, None, Some(Patch.Modified(phone)), None).either
+          _ <- create(env, userId1, phone)
+          _ <- env.repository.replaceIdentifiers(
+            id = userId1,
+            set = Nil,
+            remove = Set(IdentifierKind.Phone),
+            event = upsert(userId1, 2),
+            eventId = eventId(2),
+          )
+          owner <- env.repository.claim(List(phone), user(userId2))
+        yield assertTrue(owner == user(userId2))
+      },
+      test("replaceIdentifiers fails with UserNotFound for an unknown user and queues nothing") {
+        for
+          result <- env.repository.replaceIdentifiers(
+            id = userId1,
+            set = List(phone),
+            remove = Set.empty,
+            event = upsert(userId1, 2),
+            eventId = eventId(2),
+          ).either
           events <- env.repository.claimDueEvents(10, Duration.fromSeconds(60))
         yield assertTrue(result == Left(UserNotFound), events.isEmpty)
       },
-      test("patch fails with UserConflict when the phone belongs to another user") {
+      test("replaceIdentifiers fails with UserConflict when the identifier belongs to another user, and changes nothing") {
         for
-          _ <- env.repository.create(userId1, None, Some(phone), None)
-          _ <- env.repository.create(userId2, Some(email), None, None)
+          _ <- create(env, userId1, phone)
+          _ <- create(env, userId2, otherPhone, email)
           _ <- drainOutbox(env)
-          result <- env.repository.patch(userId2, None, Some(Patch.Modified(phone)), None).either
-          found <- env.repository.findById(userId2)
+          result <- env.repository.replaceIdentifiers(
+            id = userId2,
+            set = List(phone),
+            remove = Set(IdentifierKind.Email),
+            event = upsert(userId2, 2),
+            eventId = eventId(2),
+          ).either
+          owner <- env.repository.findByIdentifier(phone)
+          kept <- env.repository.findByIdentifier(otherPhone)
+          keptEmail <- env.repository.findByIdentifier(email)
           events <- env.repository.claimDueEvents(10, Duration.fromSeconds(60))
         yield assertTrue(
           result == Left(UserConflict),
-          found == Some(UserIndexRecord(userId2, Some(email), None, None)),
+          owner.contains(user(userId1)),
+          kept.contains(user(userId2)),
+          keptEmail.contains(user(userId2)),
           events.isEmpty,
         )
       },
+      test("pendingEvents are the user's undelivered events, oldest first, and no other user's") {
+        val patch = OutboxEvent.PatchUser(userId = userId1, version = eventId(200), email = Some(Patch.Deleted), phone = None, login = None)
+        for
+          _ <- create(env, userId1, email)
+          _ <- create(env, userId2, phone)
+          _ <- env.repository.replaceIdentifiers(id = userId1, set = Nil, remove = Set(IdentifierKind.Email), event = patch, eventId = eventId(200))
+          pending <- env.repository.pendingEvents(userId1)
+          // Twice: the outbox hands out one event of a user at a time, the next only once the one before is gone.
+          _ <- drainOutbox(env) *> drainOutbox(env)
+          delivered <- env.repository.pendingEvents(userId1)
+        yield assertTrue(pending == Vector(upsert(userId1, created(userId1)), patch), delivered.isEmpty)
+      },
       test("enqueueRoleUpdate queues the role change for auth") {
         for
-          _ <- env.repository.create(userId1, Some(email), None, None)
+          _ <- create(env, userId1, email)
           _ <- drainOutbox(env)
           _ <- env.repository.enqueueRoleUpdate(userId1, TenantId("tenant-a"), Set(RoleId("role-a")), Set(RoleId("role-b")))
           events <- env.repository.claimDueEvents(10, Duration.fromSeconds(60))
@@ -164,19 +213,21 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
           roleUpdates.map(_.remove) == Vector(Set(RoleId("role-b"))),
         )
       },
-      test("delete removes the index entry and queues a delete for auth") {
+      test("delete removes the user with its identifiers, which can be claimed again, and queues a delete for auth") {
         for
-          _ <- env.repository.create(userId1, Some(email), None, None)
+          _ <- create(env, userId1, email, phone)
           _ <- drainOutbox(env)
           _ <- env.repository.delete(userId1)
-          found <- env.repository.findById(userId1)
+          found <- env.repository.find(userId1)
+          byPhone <- env.repository.findByIdentifier(phone)
           events <- env.repository.claimDueEvents(10, Duration.fromSeconds(60))
           deletes = events.map(_.event).collect { case e: OutboxEvent.DeleteUser => e }
-        yield assertTrue(found.isEmpty, deletes.map(_.userId) == Vector(userId1))
+          owner <- env.repository.claim(List(phone), user(userId2))
+        yield assertTrue(found.isEmpty, byPhone.isEmpty, deletes.map(_.userId) == Vector(userId1), owner == user(userId2))
       },
       test("deleteEvent drops a dispatched event from the outbox") {
         for
-          _ <- env.repository.create(userId1, Some(email), None, None)
+          _ <- create(env, userId1, email)
           claimed <- env.repository.claimDueEvents(10, Duration.fromSeconds(0))
           _ <- ZIO.foreachDiscard(claimed)(record => env.repository.deleteEvent(record.id))
           remaining <- env.repository.claimDueEvents(10, Duration.fromSeconds(0))
@@ -184,7 +235,7 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
       },
       test("rescheduleEvent counts the attempt and holds the event back") {
         for
-          _ <- env.repository.create(userId1, Some(email), None, None)
+          _ <- create(env, userId1, email)
           claimed <- env.repository.claimDueEvents(10, Duration.fromSeconds(0))
           _ <- ZIO.foreachDiscard(claimed)(record => env.repository.rescheduleEvent(record.id, Duration.fromSeconds(60)))
           heldBack <- env.repository.claimDueEvents(10, Duration.fromSeconds(0))
@@ -192,7 +243,7 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
       },
       test("moveToDeadLetter takes the event out of the outbox for good") {
         for
-          _ <- env.repository.create(userId1, Some(email), None, None)
+          _ <- create(env, userId1, email)
           claimed <- env.repository.claimDueEvents(10, Duration.fromSeconds(0))
           _ <- ZIO.foreachDiscard(claimed)(record => env.repository.moveToDeadLetter(record.id, "auth rejected it"))
           remaining <- env.repository.claimDueEvents(10, Duration.fromSeconds(0))
@@ -202,6 +253,3 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
 
 object UserRepositorySpec:
   case class Env(repository: UserRepository)
-
-  val testLayer: ZLayer[UserRepository, Nothing, Env] =
-    ZLayer.fromFunction(Env(_))

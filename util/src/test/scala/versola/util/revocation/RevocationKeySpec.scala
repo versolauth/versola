@@ -31,6 +31,18 @@ object RevocationKeySpec extends ZIOSpecDefault:
         RevocationKey.decode("token-1").isEmpty,
       )
     },
+    // versolauth/versola#606: a session issued under a cell id has a public id behind a routing key. The key is matched
+    // as the string it is, so a session issued before and one issued after both revoke by the id each has.
+    test("a session id behind a routing key is an id like any other: it round-trips and matches only itself") {
+      val routed = RevocationKey.Sid("v1.kz-1.AAAAAAAAAAAAAAAAAAAAAA")
+      val bare = RevocationKey.Sid("AAAAAAAAAAAAAAAAAAAAAA")
+      assertTrue(
+        routed.encoded == "sid:v1.kz-1.AAAAAAAAAAAAAAAAAAAAAA",
+        RevocationKey.decode(routed.encoded).contains(routed),
+        RevocationKey.decode(bare.encoded).contains(bare),
+        routed != bare,
+      )
+    },
     test("keeps a colon inside an id") {
       assertTrue(RevocationKey.decode("sub:a:b").contains(RevocationKey.Sub("a:b")))
     },

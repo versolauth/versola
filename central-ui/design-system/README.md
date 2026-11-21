@@ -239,7 +239,7 @@ stack of cards. Reference: `clients-list.ts`.
 
 **Table + panel (small entities).** The list above, and the record in `versola-side-panel`
 next to it: an entity with at most two editable groups and no wizard (Scopes, Permissions,
-Roles, Tenants, Edges; later JWKS keys, OTP templates, authorization detail types) never gets a
+Roles, Tenants, Edges, Cells; later JWKS keys, OTP templates, authorization detail types) never gets a
 page of its own. A row click, Enter on the row's `.row-link` or the row menu's Open selects the
 row (`selectedKey`) and opens the panel in view mode: kind label, title, ID with copy, chips,
 `Open page`, Close; then the same `versola-record-card` groups a page would show, each with its

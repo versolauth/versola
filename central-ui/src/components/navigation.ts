@@ -7,7 +7,7 @@ import './versola-wordmark';
 import './theme-switcher';
 
 export type NavItem = 'security' | 'clients' | 'resources' | 'partners' | 'scopes' | 'permissions' | 'roles' | 'otp-templates' | 'authorization-details'
-  | 'tenants' | 'edges' | 'users' | 'keys' | 'system-settings' | 'delivery' | 'forms' | 'themes';
+  | 'tenants' | 'edges' | 'cells' | 'users' | 'keys' | 'system-settings' | 'delivery' | 'forms' | 'themes';
 
 @customElement('versola-navigation')
 export class VersolaNavigation extends LitElement {
@@ -321,6 +321,7 @@ export class VersolaNavigation extends LitElement {
       case 'tenants':
         return p.has('tenants:read');
       case 'edges':
+      case 'cells':
         return p.has('edges:read');
       case 'keys':
         return p.has('jwks:read');
@@ -405,6 +406,7 @@ export class VersolaNavigation extends LitElement {
               <div class="nav-section-title">Global</div>
               ${this.navItem('tenants', 'Tenants')}
               ${this.navItem('edges', 'Edges')}
+              ${this.navItem('cells', 'Cells')}
               ${this.navItem('users', 'Users')}
               ${this.navItem('keys', 'Keys & metadata')}
               ${this.navItem('system-settings', 'System settings')}

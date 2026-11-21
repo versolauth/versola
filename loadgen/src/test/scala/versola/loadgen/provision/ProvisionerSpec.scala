@@ -53,7 +53,7 @@ object ProvisionerSpec extends ZIOSpecDefault:
       yield assertTrue(
         created.size == 1,
         tenant.map(_.profile).contains("standard"),
-        tenant.flatMap(_.edgeId).contains("edge-1"),
+        tenant.flatMap(_.edgeGroupId).contains("edge-1"),
         state.tenants("default").profile == "fapi2",
       )
     },

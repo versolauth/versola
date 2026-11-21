@@ -5,6 +5,7 @@ import versola.central.configuration.clients.ClientId
 import versola.central.configuration.partners.{PartnerId, PartnerRecord, PartnerRegistry}
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
+import versola.central.configuration.topology.{RegionId, TopologyRepository}
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Base64Url
 import versola.util.http.{AccessLogPolicy, Observability, OverloadPolicy, RateLimitPolicies, Unauthorized}
@@ -18,7 +19,7 @@ import java.time.Instant
 
 object EdgeController extends AuditedController:
   type Env = Tracing & EdgeService & EdgeGroupService & EdgeIdentityService & EdgeCertificateRepository & PartnerRegistry & ResourceService &
-    CentralConfig & TenantRepository
+    CentralConfig & TenantRepository & TopologyRepository
 
   def endpoints = List(
     getAllEdgesEndpoint,
@@ -44,8 +45,14 @@ object EdgeController extends AuditedController:
         edges <- service.getAllEdges
         partners <- ZIO.serviceWithZIO[PartnerRegistry](_.getAll)
         certificates <- ZIO.serviceWithZIO[EdgeCertificateRepository](_.latest)
+        regions <- ZIO.serviceWithZIO[TopologyRepository](_.getEdgeRegions)
         response = GetAllEdgesResponse(
-          edges = edges.map(edge => EdgeResponse.of(edge, partners.find(_.groupId == edge.groupId), certificates.get(edge.id))).toList,
+          edges = edges
+            .map: edge =>
+              EdgeResponse
+                .of(edge, partners.find(_.groupId == edge.groupId), certificates.get(edge.id))
+                .copy(regionId = regions.get(edge.id))
+            .toList,
         )
       yield Response.json(response.toJson)
     }
@@ -287,7 +294,7 @@ object EdgeController extends AuditedController:
           edges = edges.filter(_.groupKind == EdgeGroupKind.FirstParty).map(edge =>
             EdgeRegistryEntry(
               id = edge.id,
-              tenantIds = tenants.filter(_.edgeId.contains(edge.id)).map(_.id).toList,
+              tenantIds = tenants.filter(_.edgeGroupId.contains(edge.groupId)).map(_.id).toList,
             ),
           ).toList,
         )
@@ -327,6 +334,8 @@ case class EdgeResponse(
     partnerId: Option[PartnerId],
     /** Where browsers reach the edge; absent where none was registered. */
     publicUrl: Option[String],
+    /** The region the edge site is in (#557); absent for an edge in none, which a partner's edge always is. */
+    regionId: Option[RegionId],
     /** The expiry of the certificate central last issued to this edge, and when it was issued; absent until the edge enrolled. */
     certificateNotAfter: Option[Instant],
     lastRenewedAt: Option[Instant],
@@ -335,6 +344,7 @@ case class EdgeResponse(
 object EdgeResponse:
   /** `partner` is the owner of the edge's group, if any: the rate limits of a partner's edge are the partner's, one setting for the group, so they
     * and their revision are the partner's and not the edge's own. */
+  /** Without a region: the listing of the operator's edges adds the one it reads for each. */
   def of(edge: EdgeRecord, partner: Option[PartnerRecord], certificate: Option[EdgeCertificateRepository.Issued]): EdgeResponse =
     val revisions = edge.policyMeta.fold(Map.empty[String, Int])(_.view.mapValues(_.revision).toMap)
     EdgeResponse(
@@ -352,6 +362,7 @@ object EdgeResponse:
       groupKind = edge.groupKind,
       partnerId = partner.map(_.id),
       publicUrl = edge.publicUrl,
+      regionId = None,
       certificateNotAfter = certificate.map(_.notAfter),
       lastRenewedAt = certificate.map(_.issuedAt),
     )

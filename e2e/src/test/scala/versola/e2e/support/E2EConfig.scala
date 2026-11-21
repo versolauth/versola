@@ -62,6 +62,10 @@ final case class E2EConfig(
       * (`edge/dev/mtls`). */
     edgeMutualTlsUrl: String = "https://localhost:8083",
     edgeMutualTlsTrustedCertificates: String = "../edge/dev/mtls/ca.crt",
+    /** The `cell-id` the staged `auth` runs with (`scripts/gen-env.scala`'s `local` target), which
+      * it writes at the front of the codes, refresh tokens and `request_uri`s it issues and in
+      * the `cell` JOSE header parameter of its access tokens. */
+    authCellId: String,
 )
 
 object E2EConfig:
@@ -109,6 +113,8 @@ object E2EConfig:
       centralMutualTlsServerCertificate <- env("CENTRAL_MTLS_SERVER_CERT", "../central/dev/mtls/server.crt")
       edgeMutualTlsUrl <- env("EDGE_MTLS_URL", "https://localhost:8083")
       edgeMutualTlsTrustedCertificates <- env("EDGE_MTLS_CA", "../edge/dev/mtls/ca.crt")
+      // Default matches scripts/gen-env.scala's `local` target.
+      authCellId <- env("AUTH_CELL_ID", "local-1")
     yield E2EConfig(
       authUrl,
       authAdditionalUrl,
@@ -139,6 +145,7 @@ object E2EConfig:
       centralMutualTlsServerCertificate,
       edgeMutualTlsUrl,
       edgeMutualTlsTrustedCertificates,
+      authCellId,
     )
 
   private def env(name: String, default: String): Task[String] =

@@ -61,7 +61,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       NonEmptyChunk(
         Cookie.Request(
           SessionCookie.name,
-          SessionCookie(id, 1.hour, TestEnvConfig.coreConfig.security.sessionCookieSecret).content,
+          SessionCookie(id, 1.hour, TestEnvConfig.coreConfig.security.sessionCookieSecret, cell = None).content,
         ),
       ),
     )

@@ -117,10 +117,14 @@ object BasicAuthFlowSpec extends E2ESpec:
           clientSecret = Some(s.clientSecret),
           redirectUri = Some(s.redirectUri),
         ).success
-      yield assertTrue(code.length == 43)
-        .label(s"a 32-byte code is 43 base64url characters, got ${code.length}: '$code'") &&
-        assertTrue(code.matches("[A-Za-z0-9_-]{43}"))
-          .label("the code must be unpadded base64url") &&
+      // The staged auth is a cell, so the code carries the `v1.<cell>.` routing key ahead of the
+      // random part (#558); the entropy the suite estimates is the random part's.
+      yield assertTrue(code.startsWith(s"v1.${auth.cellId}."))
+        .label(s"the code must carry the staged cell's routing key, got '$code'") &&
+        assertTrue(code.stripPrefix(s"v1.${auth.cellId}.").length == 43)
+          .label(s"a 32-byte code is 43 base64url characters behind the routing key, got '$code'") &&
+        assertTrue(code.stripPrefix(s"v1.${auth.cellId}.").matches("[A-Za-z0-9_-]{43}"))
+          .label("the code must be unpadded base64url behind the routing key") &&
         assertTrue(token.accessToken.nonEmpty)
           .label("a code of the new length must still redeem")
     },

@@ -6,7 +6,7 @@ import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.model.AuthId
 import versola.oauth.session.model.{SessionId, UserAgentDetails, UserAgentId}
 import versola.user.model.UserId
-import versola.util.{Base64, Base64Url, Secret}
+import versola.util.{Base64, Base64Url, RoutingKey, Secret}
 import zio.Duration
 import zio.http.{Cookie, Path}
 import zio.json.*
@@ -41,14 +41,19 @@ object ConversationCookie:
 
   /** Serialises the payload as JSON, computes a Blake3 keyed-hash over those bytes,
    *  and produces a cookie whose content is `base64url(json) + "." + base64url(mac)`.
+   *
+   *  Under a cell id the content is written behind the routing key, `v1.<cell>.` (versolauth/versola#606), which a
+   *  router reads to send the browser's next request home. The key is a hint outside the signature, like the others
+   *  (`RoutingKey`): [[parse]] sets it aside and verifies the rest, so a cookie with another cell's key is no more
+   *  valid than one with none, and one issued before cells existed is read as ever.
    */
-  def responseCookie(payload: ConversationCookie, ttl: Duration, secret: Secret.Bytes32): Cookie.Response =
+  def responseCookie(payload: ConversationCookie, ttl: Duration, secret: Secret.Bytes32, cell: Option[RoutingKey.CellId]): Cookie.Response =
     val payloadBytes = payload.toJson.getBytes(StandardCharsets.UTF_8)
     val payloadB64 = Base64.urlEncode(payloadBytes)
     val sigB64 = Base64.urlEncode(computeMac(payloadBytes, secret))
     Cookie.Response(
       name = name,
-      content = s"$payloadB64.$sigB64",
+      content = cell.fold(s"$payloadB64.$sigB64")(cell => RoutingKey.encode(cell, s"$payloadB64.$sigB64")),
       domain = None,
       path = Some(Path.root / "challenge"),
       isSecure = true,
@@ -73,7 +78,13 @@ object ConversationCookie:
   /** Parses and HMAC-verifies a cookie produced by [[responseCookie]].
    *  Returns [[Left]] if the content is malformed or the signature does not match.
    */
-  def parse(content: String, secret: Secret.Bytes32): Either[String, ConversationCookie] =
+  def parse(presented: String, secret: Secret.Bytes32): Either[String, ConversationCookie] =
+    for
+      content <- RoutingKey.decode(presented).map(_.value)
+      cookie <- parseSigned(content, secret)
+    yield cookie
+
+  private def parseSigned(content: String, secret: Secret.Bytes32): Either[String, ConversationCookie] =
     val dotIdx = content.lastIndexOf('.')
     if dotIdx < 0 then Left("missing signature")
     else
@@ -145,12 +156,15 @@ object UserAgentCookie:
 object SessionCookie:
   val name = "SSO_SESSION"
 
-  def apply(value: SessionId, ttl: Duration, secret: Secret.Bytes32): Cookie.Response =
+  /** Under a cell id the content is written behind the routing key, like [[ConversationCookie.responseCookie]]'s: what
+    * is in front of the issuer sends a returning browser to the cell of its session by it (versolauth/versola#1044).
+    * The key is a hint outside the signature; [[parse]] sets it aside and verifies the rest. */
+  def apply(value: SessionId, ttl: Duration, secret: Secret.Bytes32, cell: Option[RoutingKey.CellId]): Cookie.Response =
     val payloadB64 = Base64.urlEncode(value)
     val sigB64 = Base64.urlEncode(computeMac(value, secret))
     Cookie.Response(
       name = name,
-      content = s"$payloadB64.$sigB64",
+      content = cell.fold(s"$payloadB64.$sigB64")(cell => RoutingKey.encode(cell, s"$payloadB64.$sigB64")),
       domain = None,
       path = Some(Path.root),
       isSecure = true,
@@ -172,7 +186,10 @@ object SessionCookie:
       sameSite = Some(Cookie.SameSite.Lax),
     )
 
-  def parse(content: String, secret: Secret.Bytes32): Either[String, SessionId] =
+  def parse(presented: String, secret: Secret.Bytes32): Either[String, SessionId] =
+    RoutingKey.decode(presented).map(_.value).flatMap(parseSigned(_, secret))
+
+  private def parseSigned(content: String, secret: Secret.Bytes32): Either[String, SessionId] =
     val dotIdx = content.lastIndexOf('.')
     if dotIdx < 0 then Left("missing signature")
     else

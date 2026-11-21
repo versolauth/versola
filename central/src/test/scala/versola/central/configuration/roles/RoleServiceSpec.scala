@@ -227,12 +227,7 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env(Vector(adminRole, otherTenantRole))
 
       for
-        _ <- env.tenantRepository.getAll.succeedsWith(
-          Vector(
-            TenantRecord(tenantId, "Tenant A", Some(edgeId)),
-            TenantRecord(otherTenantId, "Tenant B", None),
-          ),
-        )
+        _ <- env.tenantRepository.getServedBy.succeedsWith(Vector(tenantId))
         result <- env.service.getRolesForSync(Some(edgeId))
       yield assertTrue(result === Vector(adminRole))
     },
@@ -241,12 +236,7 @@ object RoleServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env(Vector(adminRole, otherTenantRole))
 
       for
-        _ <- env.tenantRepository.getAll.succeedsWith(
-          Vector(
-            TenantRecord(tenantId, "Tenant A", None),
-            TenantRecord(otherTenantId, "Tenant B", None),
-          ),
-        )
+        _ <- env.tenantRepository.getServedBy.succeedsWith(Vector.empty)
         result <- env.service.getRolesForSync(Some(edgeId))
       yield assertTrue(result.isEmpty)
     },

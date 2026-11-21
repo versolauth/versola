@@ -225,10 +225,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env(Vector(resource, otherTenantResource))
 
       for
-        _ <- env.tenantRepository.getAll.succeedsWith(Vector(
-          TenantRecord(tenantId, "tenant a", Some(syncEdgeId)),
-          TenantRecord(otherTenantId, "tenant b", None),
-        ))
+        _ <- env.tenantRepository.getServedBy.succeedsWith(Vector(tenantId))
         result <- env.service.getResourcesForSync(Some(syncEdgeId))
       yield assertTrue(result == Vector(resource))
     },
@@ -239,7 +236,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env(Vector(resource, partnersResource))
 
       for
-        _ <- env.tenantRepository.getAll.succeedsWith(Vector(TenantRecord(tenantId, "tenant a", Some(syncEdgeId))))
+        _ <- env.tenantRepository.getServedBy.succeedsWith(Vector(tenantId))
         forEdge <- env.service.getResourcesForSync(Some(syncEdgeId))
         forAuth <- env.service.getResourcesForSync(None)
       yield assertTrue(forEdge == Vector(resource), forAuth == Vector(resource, partnersResource))

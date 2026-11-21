@@ -80,8 +80,8 @@ const secretBackedHighClient = {
 
 /** A tenant that is not held to FAPI 2.0: what admits a client secret, so a service app can pick one. */
 const standardTenants = [
-  { id: 'tenant-alpha', description: 'Alpha Workspace', edgeId: null, securityProfile: 'standard' as const },
-  { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null },
+  { id: 'tenant-alpha', description: 'Alpha Workspace', edgeGroupId: null, securityProfile: 'standard' as const },
+  { id: 'tenant-bravo', description: 'Bravo Workspace', edgeGroupId: null },
 ];
 
 type Profile = 'fapi2' | 'standard';

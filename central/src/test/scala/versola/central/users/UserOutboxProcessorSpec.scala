@@ -247,6 +247,33 @@ object UserOutboxProcessorSpec extends ZIOSpecDefault, ZIOStubs:
         client.deleteUser.calls == List(userId),
       )
     },
+    // versolauth/versola#1041
+    test("dispatch sends a PatchUser as a patch: what it names, and nothing of the identifiers it does not") {
+      val version = UUID.fromString("00000000-0000-0000-0000-000000000097")
+      val patch = OutboxEvent.PatchUser(
+        userId = userId,
+        version = version,
+        email = Some(Patch.Deleted),
+        phone = Some(Patch.Modified(Phone("+15551234567"))),
+        login = None,
+      )
+      val repo = stub[UserRepository]
+      val client = stub[AuthClient]
+
+      for
+        _ <- repo.claimDueEvents.succeedsWith(Vector(record.copy(event = patch)))
+        _ <- client.patchUser.succeedsWith(())
+        _ <- repo.deleteEvent.succeedsWith(())
+
+        fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
+        semaphore <- Semaphore.make(1)
+        processor = UserOutboxProcessor.Live(config, repo, client, fiberRef, semaphore)
+        _ <- processor.processOnce
+      yield assertTrue(
+        client.patchUser.calls == List((userId, version, Some(Patch.Deleted), Some(Patch.Modified(Phone("+15551234567"))), None)),
+        client.upsertUser.calls.isEmpty,
+      )
+    },
     test("start forks a background poll loop that runs after the initial delay") {
       val repo = stub[UserRepository]
       val client = stub[AuthClient]

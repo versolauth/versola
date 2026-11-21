@@ -1,6 +1,7 @@
 package versola.oauth.conversation
 
 import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
+import versola.auth.TestEnvConfig
 import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.client.OAuthConfigurationService
@@ -26,13 +27,14 @@ import versola.oauth.client.model.{
 }
 import versola.oauth.conversation.CodeAlternativeFixtures as Alt
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
+import versola.oauth.handoff.CellHandoff
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, State, UserAgentData}
 import versola.oauth.session.model.{SessionId, UserAgentDetails, UserAgentId}
 import versola.role.model.RoleId
-import versola.user.UserRepository
 import versola.user.model.{Login, UserId, UserRecord}
+import versola.user.{UserDirectory, UserRepository}
 import versola.util.audit.AuditOutcome
-import versola.util.{Email, Phone, SecureRandom, UnitSpecBase}
+import versola.util.{CoreConfig, Email, Phone, RoutingKey, SecureRandom, UnitSpecBase}
 import zio.http.URL
 import zio.json.ast.Json
 import zio.prelude.NonEmptyList
@@ -197,7 +199,7 @@ object ConversationRouterSpec extends UnitSpecBase:
   /** What the tenant's policy gives an unknown phone number: the one-time code, then the default roles. */
   val tenantRegistrationFlow = RegistrationFlow(RegistrationCredential.phone, List(RegistrationStep.Otp()), Set(roleId))
 
-  class Env:
+  class Env(config: CoreConfig = TestEnvConfig.coreConfig):
     val conversationRepository = stub[ConversationRepository]
     val otpConversationService = stub[ConversationService]
     val configService = stub[OAuthConfigurationService]
@@ -206,6 +208,8 @@ object ConversationRouterSpec extends UnitSpecBase:
     val secureRandom = stub[SecureRandom]
     val userRepository = stub[UserRepository]
     val audit = CapturingAuditEvents.shared()
+    val directory = stub[UserDirectory]
+    val handoff = stub[CellHandoff]
     val router = ConversationRouter.Impl(
       conversationRepository,
       otpConversationService,
@@ -213,6 +217,9 @@ object ConversationRouterSpec extends UnitSpecBase:
       secureRandom,
       userRepository,
       audit,
+      directory,
+      handoff,
+      config,
     )
 
   private val passkeyOnlyAcr = Acr("passkey-level")
@@ -283,6 +290,95 @@ object ConversationRouterSpec extends UnitSpecBase:
           record == emailRecord,
           prepareTimes == 1,
         )
+      },
+      // versolauth/versola#1046: a cell that does not find the address asks the directory before it treats it as new.
+      test("a cell hands the sign-in to the cell that holds the address: nothing is sent here and the conversation is gone") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val home = RoutingKey.CellId.parse("kz-2").toOption.get
+        val submission = EmailSubmission(email, ProofInput.NoScript, "test-csrf")
+        val emailRecord = initialRecord.copy(
+          step = ConversationStep.Credential(List(PrimaryCredential.email), inlinePassword = false, passkey = false),
+          authFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(credentials = List(PrimaryCredential.email)), otpType = OtpType.email),
+        )
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(emailRecord))
+          _ <- env.userRepository.findByCredential.succeedsWith(None)
+          _ <- env.directory.lookup.succeedsWith(Some(UserDirectory.Claim(UserId(UUID.randomUUID()), Some(home))))
+          _ <- env.handoff.seal.succeedsWith("v1.kz-2.sealed")
+          _ <- env.conversationRepository.delete.succeedsWith(true)
+          (result, _) <- env.router.submit(authId, submission, None, None)
+          sealedFor = env.handoff.seal.calls.map(call => (call._2, call._3))
+          deleted = env.conversationRepository.delete.calls.map(_._1)
+          prepared = env.otpConversationService.prepareInitialOtp.times
+          registrations = env.otpConversationService.startRegistration.times
+        yield assertTrue(
+          result == ConversationResult.Handoff(CellHandoff.location("v1.kz-2.sealed")),
+          sealedFor == List((Left(submission.email), home)),
+          deleted == List(authId),
+          prepared == 0,
+          registrations == 0,
+        )
+      },
+      test("a cell goes on here for an address nobody holds, and for one the directory says is its own") {
+        val submission = EmailSubmission(email, ProofInput.NoScript, "test-csrf")
+        val emailRecord = initialRecord.copy(
+          step = ConversationStep.Credential(List(PrimaryCredential.email), inlinePassword = false, passkey = false),
+          authFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(credentials = List(PrimaryCredential.email)), otpType = OtpType.email),
+        )
+        def run(found: Option[UserDirectory.Claim]) =
+          val env = Env(TestEnvConfig.cellCoreConfig)
+          for
+            _ <- env.otpConversationService.find.succeedsWith(Some(emailRecord))
+            _ <- env.userRepository.findByCredential.succeedsWith(None)
+            _ <- env.directory.lookup.succeedsWith(found)
+            _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+            _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+            (result, _) <- env.router.submit(authId, submission, None, None)
+          yield (result, env.handoff.seal.calls.size, env.conversationRepository.delete.calls.size)
+        for
+          nobody <- run(None)
+          own <- run(Some(UserDirectory.Claim(UserId(UUID.randomUUID()), Some(TestEnvConfig.cellId))))
+          noCell <- run(Some(UserDirectory.Claim(UserId(UUID.randomUUID()), None)))
+        yield assertTrue(List(nobody, own, noCell).forall(_ == (conversationResult, 0, 0)))
+      },
+      test("a cell that cannot ask the directory refuses the step and sends nothing") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val submission = EmailSubmission(email, ProofInput.NoScript, "test-csrf")
+        val emailRecord = initialRecord.copy(
+          step = ConversationStep.Credential(List(PrimaryCredential.email), inlinePassword = false, passkey = false),
+          authFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(credentials = List(PrimaryCredential.email)), otpType = OtpType.email),
+        )
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(emailRecord))
+          _ <- env.userRepository.findByCredential.succeedsWith(None)
+          _ <- env.directory.lookup.failsWith(RuntimeException("central is down"))
+          (result, _) <- env.router.submit(authId, submission, None, None)
+          prepared = env.otpConversationService.prepareInitialOtp.times
+          sealedTimes = env.handoff.seal.calls.size
+        yield assertTrue(result == ConversationResult.ServiceUnavailable, prepared == 0, sealedTimes == 0)
+      },
+      test("an auth that is no cell asks the directory nothing, and neither does a cell that finds the user itself") {
+        val submission = EmailSubmission(email, ProofInput.NoScript, "test-csrf")
+        val emailRecord = initialRecord.copy(
+          step = ConversationStep.Credential(List(PrimaryCredential.email), inlinePassword = false, passkey = false),
+          authFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(credentials = List(PrimaryCredential.email)), otpType = OtpType.email),
+        )
+        val plain = Env()
+        val cell = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- plain.otpConversationService.find.succeedsWith(Some(emailRecord))
+          _ <- plain.userRepository.findByCredential.succeedsWith(None)
+          _ <- plain.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- plain.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          _ <- plain.router.submit(authId, submission, None, None)
+          _ <- cell.otpConversationService.find.succeedsWith(Some(emailRecord))
+          _ <-
+            cell.userRepository.findByCredential.succeedsWith(Some(UserRecord(UserId(UUID.randomUUID()), Some(email), None, None, Json.Obj(), None)))
+          _ <- cell.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- cell.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          _ <- cell.router.submit(authId, submission, None, None)
+          asked = plain.directory.lookup.calls.size + cell.directory.lookup.calls.size
+        yield assertTrue(asked == 0)
       },
       test("email submission with locked identity (userId set) returns access_denied") {
         val env = Env()

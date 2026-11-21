@@ -23,6 +23,7 @@ import './partners-list';
 import './roles-list';
 import './tenants-list';
 import './edges-list';
+import './cells-list';
 import './users-list';
 import './forms-list';
 import './themes-list';
@@ -331,6 +332,7 @@ export class VersolaAdmin extends LitElement {
       case 'tenants':
         return p.has('tenants:read');
       case 'edges':
+      case 'cells':
         return p.has('edges:read');
       case 'keys':
         return p.has('jwks:read');
@@ -367,6 +369,7 @@ export class VersolaAdmin extends LitElement {
       case 'tenants':
         return p.has('tenants:manage');
       case 'edges':
+      case 'cells':
         return p.has('edges:manage');
       case 'keys':
         return p.has('jwks:manage');
@@ -481,7 +484,7 @@ export class VersolaAdmin extends LitElement {
     locales: { view: 'system-settings', notice: 'Locales live under System settings.' },
   };
 
-  private static readonly VIEWS: ReadonlySet<NavItem> = new Set<NavItem>(['security', 'clients', 'resources', 'partners', 'scopes', 'permissions', 'roles', 'otp-templates', 'authorization-details', 'tenants', 'edges', 'users', 'keys', 'system-settings', 'delivery', 'forms', 'themes']);
+  private static readonly VIEWS: ReadonlySet<NavItem> = new Set<NavItem>(['security', 'clients', 'resources', 'partners', 'scopes', 'permissions', 'roles', 'otp-templates', 'authorization-details', 'tenants', 'edges', 'cells', 'users', 'keys', 'system-settings', 'delivery', 'forms', 'themes']);
 
   /** The views whose records belong to the selected tenant: switching it closes the open record.
     * A global view keeps its record (the selector also fires on load, picking the first tenant). */
@@ -642,6 +645,8 @@ export class VersolaAdmin extends LitElement {
         return html`<versola-tenants-list .selectedTenantId=${this.currentTenantId} .canManage=${this.canManage('tenants')} .route=${this.recordRoute} @tenant-change=${this.handleTenantChange}></versola-tenants-list>`;
       case 'edges':
         return html`<versola-edges-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('edges')} .route=${this.recordRoute}></versola-edges-list>`;
+      case 'cells':
+        return html`<versola-cells-list .canManage=${this.canManage('cells')} .route=${this.recordRoute}></versola-cells-list>`;
       case 'users':
         return html`<versola-users-list .tenantId=${this.currentTenantId} .canManage=${this.canManage('users')} .canRevealPassword=${!this.isProd} .canReadAudit=${this.adminPermissions.has('audit:read')} .route=${this.recordRoute}></versola-users-list>`;
       case 'forms':

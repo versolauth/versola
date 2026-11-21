@@ -39,7 +39,7 @@ import versola.central.configuration.clients.{
   PrimaryCredential,
   ResponseType,
 }
-import versola.central.configuration.edges.{EdgeGroup, EdgeId, EdgeRecord, EdgeRepository}
+import versola.central.configuration.edges.{EdgeGroup, EdgeGroupId, EdgeId, EdgeRecord, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
 import versola.central.configuration.jwks.{JwksKeyGeneration, JwksRecord, JwksRepository}
 import versola.central.configuration.locales.{LocaleRecord, LocaleRepository}
@@ -63,7 +63,7 @@ import versola.central.configuration.{
   ResourceUri,
   UpdateClientRequest,
 }
-import versola.central.users.{Login, UserConflict, UserId, UserRepository}
+import versola.central.users.{DirectoryKey, Login, OutboxEvent, UserConflict, UserDirectoryRecord, UserId, UserRepository}
 import versola.util.SequentialLayers.*
 import versola.util.audit.{ActorType, AuditDetails, AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.theme.{ThemePresets, ThemeTokens}
@@ -83,6 +83,15 @@ trait BootstrapService:
 object BootstrapService:
 
   private val NonProdAdminPhone = Phone("+12025551234")
+
+  /** The edge group bootstrap links the default tenant to, if any (#557): the group the first seeded edge is in now,
+    * which is `default` unless an operator moved it. A tenant is served by a group, and linking the tenant to that group
+    * is what has the seeded edge sync the central-admin client and its presets. A tenant that already names a group
+    * keeps it, so that an operator's own assignment survives every later start; a deployment that seeds no edge links
+    * nothing.
+    */
+  private[versola] def groupToLink(current: Option[EdgeGroupId], seededEdgeGroup: Option[EdgeGroupId]): Option[EdgeGroupId] =
+    seededEdgeGroup.filter(_ => current.isEmpty)
 
   private[versola] def adminPhone(envName: EnvName): Option[Phone] =
     Option.when(envName.isTest)(NonProdAdminPhone)
@@ -594,6 +603,7 @@ object BootstrapService:
         endpointId("GET", "/configuration/edges/policies"),
         endpointId("GET", "/configuration/edges/rate-limits/recommended"),
         endpointId("GET", "/configuration/edge-groups"),
+        endpointId("GET", "/configuration/topology"),
       ),
     ),
     (
@@ -608,6 +618,13 @@ object BootstrapService:
         endpointId("PUT", "/configuration/edges/dpop"),
         endpointId("POST", "/configuration/edges/enrollment-tokens"),
         endpointId("POST", "/configuration/edge-groups"),
+        endpointId("PUT", "/configuration/edges/region"),
+        endpointId("POST", "/configuration/partitions"),
+        endpointId("POST", "/configuration/regions"),
+        endpointId("DELETE", "/configuration/regions"),
+        endpointId("POST", "/configuration/cells"),
+        endpointId("PUT", "/configuration/cells"),
+        endpointId("DELETE", "/configuration/cells"),
       ),
     ),
     (
@@ -1019,6 +1036,14 @@ object BootstrapService:
     "POST" -> "/configuration/edges/enrollment-tokens",
     "GET" -> "/configuration/edge-groups",
     "POST" -> "/configuration/edge-groups",
+    "PUT" -> "/configuration/edges/region",
+    "GET" -> "/configuration/topology",
+    "POST" -> "/configuration/partitions",
+    "POST" -> "/configuration/regions",
+    "DELETE" -> "/configuration/regions",
+    "POST" -> "/configuration/cells",
+    "PUT" -> "/configuration/cells",
+    "DELETE" -> "/configuration/cells",
     "GET" -> "/configuration/partners",
     "POST" -> "/configuration/partners",
     "PUT" -> "/configuration/partners",
@@ -1436,20 +1461,28 @@ object BootstrapService:
 
     private def seedAdminUser(config: CentralConfig.BootstrapConfig): Task[Unit] =
       val adminUserId = UserId(config.adminUserId)
-      userRepo.findById(adminUserId).flatMap:
-        case Some(_) => ZIO.logInfo(s"Admin user '${config.login}' already exists in user index, skipping")
+      val key = DirectoryKey.derive(this.config.clientSecretsSecret)
+      val phone = BootstrapService.adminPhone(envName)
+      val login = Login(config.login)
+      userRepo.find(adminUserId).flatMap:
+        case Some(_) => ZIO.logInfo(s"Admin user '${config.login}' already exists in the directory, skipping")
         case None =>
-          userRepo
-            .create(adminUserId, email = None, phone = BootstrapService.adminPhone(envName), login = Some(Login(config.login)))
-            .foldZIO(
-              {
-                case _: UserConflict => ZIO.logInfo(s"Admin user '${config.login}' already exists in user index (conflict), skipping")
-                case t: Throwable => ZIO.fail(t)
-              },
-              _ =>
-                ZIO.logInfo(s"Seeded admin user '${config.login}' with id $adminUserId in user index") *>
-                  recordCreated("admin-user", adminUserId.toString),
+          secureRandom.nextUUIDv7.flatMap: version =>
+            userRepo.create(
+              user = UserDirectoryRecord(adminUserId, cellId = None),
+              identifiers = phone.map(key.phone).toList :+ key.login(login),
+              event = OutboxEvent.UpsertUser(userId = adminUserId, version = version, email = None, phone = phone, login = Some(login)),
+              eventId = version,
             )
+          .foldZIO(
+            {
+              case _: UserConflict => ZIO.logInfo(s"Admin user '${config.login}' already exists in user index (conflict), skipping")
+              case t: Throwable => ZIO.fail(t)
+            },
+            _ =>
+              ZIO.logInfo(s"Seeded admin user '${config.login}' with id $adminUserId in user index") *>
+                recordCreated("admin-user", adminUserId.toString),
+          )
 
     /** RFC 8705 §6.5: `central-admin`'s certificate reaches auth through the default tenant's
       * TLS terminator, in the header that tenant names -- which central also requires before it
@@ -1770,17 +1803,18 @@ object BootstrapService:
               publicUrl = None,
             )
 
-    /** Links the default tenant to the first seeded edge so the central-admin
-      * client (and its presets) are synced to that edge. Only applied when the
-      * tenant has no edge yet, to preserve manual assignments on re-runs.
+    /** Links the default tenant to the group the first seeded edge is in, so the central-admin
+      * client (and its presets) are synced to them. Only applied when the
+      * tenant has no group yet, to preserve manual assignments on re-runs.
       */
     private def linkTenantEdge(tenantId: TenantId, config: CentralConfig.BootstrapConfig): Task[Unit] =
-      ZIO.foreachDiscard(config.edges.getOrElse(Nil).headOption): edge =>
-        tenantRepo.getAll.flatMap: tenants =>
-          tenants.find(_.id == tenantId) match
-            case Some(tenant) if tenant.edgeId.isEmpty =>
-              tenantRepo.updateTenant(tenant.id, tenant.description, Some(edge.id))
-            case _ => ZIO.unit
+      for
+        seededEdge <- ZIO.foreach(config.edges.getOrElse(Nil).headOption)(seed => edgeRepo.find(seed.id)).map(_.flatten)
+        tenants <- tenantRepo.getAll
+        _ <- ZIO.foreachDiscard(tenants.find(_.id == tenantId)): tenant =>
+          ZIO.foreachDiscard(BootstrapService.groupToLink(current = tenant.edgeGroupId, seededEdgeGroup = seededEdge.map(_.groupId))): group =>
+            tenantRepo.updateTenant(id = tenant.id, description = tenant.description, edgeGroupId = Some(group))
+      yield ()
 
     /** Seeds the edge-facing resource that proxies the admin API back to central.
       * Created for the default tenant (linked to the bootstrap edge) so it syncs

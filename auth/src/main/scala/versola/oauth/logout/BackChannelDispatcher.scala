@@ -2,7 +2,7 @@ package versola.oauth.logout
 
 import versola.oauth.client.model.{ClientId, TenantId}
 import versola.oauth.jwks.JwksService
-import versola.util.{CoreConfig, JWT}
+import versola.util.{CoreConfig, JWT, RoutingKey}
 import zio.*
 import zio.http.{Body, Client, Form, Request, URL}
 import zio.json.ast.Json
@@ -98,4 +98,8 @@ object BackChannelDispatcher:
         ),
         ttl = TokenTtl,
         signature = signingKey,
+        // The cell the event comes from (versolauth/versola#547 §6.2), on every event alike --
+        // a logout and a revocation both name state this cell holds. Absent on a deployment
+        // that is not a cell, which leaves its events exactly as they were.
+        headers = config.cellId.map(cell => RoutingKey.JoseHeader -> (cell: String)).toMap,
       )

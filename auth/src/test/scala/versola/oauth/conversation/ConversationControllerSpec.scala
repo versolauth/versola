@@ -46,6 +46,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           ),
           Duration.Zero,
           TestEnvConfig.coreConfig.security.conversationCookieSecret,
+          cell = None,
         ).content,
       ),
     ),

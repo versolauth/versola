@@ -198,7 +198,7 @@ export const partnerApprovals = [
 
 /** The whole state of the partner-edge screens, for `loadAdminApp(page, { state })`. */
 export const partnerState: Partial<MockConfigState> = {
-  tenants: [{ id: partnerTenant, description: 'Alpha Workspace', edgeId: 'edge-alpha' }, { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null }],
+  tenants: [{ id: partnerTenant, description: 'Alpha Workspace', edgeGroupId: 'default' }, { id: 'tenant-bravo', description: 'Bravo Workspace', edgeGroupId: null }],
   scopes: { [partnerTenant]: partnerScopes },
   clients: { [partnerTenant]: [alphaWeb, pilotWeb, pilotCheckout, pilotConsole] },
   resources: { [partnerTenant]: [pilotOrders] },

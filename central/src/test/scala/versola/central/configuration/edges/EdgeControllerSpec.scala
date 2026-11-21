@@ -15,6 +15,7 @@ import versola.central.configuration.partners.{
 }
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
+import versola.central.configuration.topology.{RegionId, TopologyRepository}
 import versola.central.{TestAdminAuth, TestCentralConfig}
 import versola.util.http.RateLimitScope
 import versola.util.http.{
@@ -82,6 +83,9 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- partners.getAll.succeedsWith(owner.toVector)
         _ <- partners.findByGroup.succeedsWith(owner)
         _ <- certificates.latest.succeedsWith(Map.empty)
+        topology = stub[TopologyRepository]
+        // The first edge is a site in a region, the others are in none.
+        _ <- topology.getEdgeRegions.succeedsWith(Map(edgeId -> RegionId("almaty")))
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
@@ -93,6 +97,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[PartnerRegistry](partners) ++
                 ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[TenantRepository](tenantRepository) ++
+                ZEnvironment[TopologyRepository](topology) ++
                 ZEnvironment(TestCentralConfig.config) ++
                 tracing,
             ),
@@ -130,6 +135,9 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         certificates = stub[EdgeCertificateRepository]
         _ <- partners.getAll.succeedsWith(Vector.empty)
         _ <- certificates.latest.succeedsWith(Map.empty)
+        topology = stub[TopologyRepository]
+        // The first edge is a site in a region, the others are in none.
+        _ <- topology.getEdgeRegions.succeedsWith(Map(edgeId -> RegionId("almaty")))
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
@@ -141,6 +149,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[PartnerRegistry](partners) ++
                 ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[TenantRepository](tenantRepository) ++
+                ZEnvironment[TopologyRepository](topology) ++
                 ZEnvironment(TestCentralConfig.config) ++
                 tracing,
             ),
@@ -321,6 +330,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               groupKind = EdgeGroupKind.FirstParty,
               partnerId = None,
               publicUrl = None,
+              regionId = Some(RegionId("almaty")),
               certificateNotAfter = None,
               lastRenewedAt = None,
             ),
@@ -336,6 +346,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               groupKind = EdgeGroupKind.FirstParty,
               partnerId = None,
               publicUrl = None,
+              regionId = None,
               certificateNotAfter = None,
               lastRenewedAt = None,
             ),
@@ -422,7 +433,21 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               accessLogPolicy = None,
               rateLimitPolicies = None,
               policyMeta = None,
-              groupId = EdgeGroup.DefaultId,
+              groupId = EdgeGroupId("astana"),
+              groupKind = EdgeGroupKind.FirstParty,
+              publicUrl = None,
+            ),
+            // A second site of the first edge's group (#557): it serves the same tenants.
+            EdgeRecord(
+              EdgeId("edge-3"),
+              Some(publicJwk),
+              oldPublicKey = None,
+              requireDpopNonce = true,
+              overloadPolicy = None,
+              accessLogPolicy = None,
+              rateLimitPolicies = None,
+              policyMeta = None,
+              groupId = edgeRecord.groupId,
               groupKind = EdgeGroupKind.FirstParty,
               publicUrl = None,
             ),
@@ -444,24 +469,26 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           ),
         ),
       tenants = Vector(
-        TenantRecord(TenantId("tenant-a"), "Tenant A", edgeId = Some(edgeId)),
-        TenantRecord(TenantId("tenant-b"), "Tenant B", edgeId = Some(edgeId)),
-        TenantRecord(TenantId("tenant-c"), "Tenant C", edgeId = Some(EdgeId("edge-2"))),
-        TenantRecord(TenantId("tenant-p"), "Tenant P", edgeId = Some(EdgeId("edge-partner"))),
-        // Assigned to neither edge below, and must not leak into either one's tenantIds --
+        TenantRecord(TenantId("tenant-a"), "Tenant A", edgeGroupId = Some(edgeRecord.groupId)),
+        TenantRecord(TenantId("tenant-b"), "Tenant B", edgeGroupId = Some(edgeRecord.groupId)),
+        TenantRecord(TenantId("tenant-c"), "Tenant C", edgeGroupId = Some(EdgeGroupId("astana"))),
+        TenantRecord(TenantId("tenant-p"), "Tenant P", edgeGroupId = Some(EdgeGroupId("partner-acme"))),
+        // Served by no group, and must not leak into any edge's tenantIds --
         // this is the set `EdgeCertificateTrust` checks a token's tenant against.
-        TenantRecord(TenantId("tenant-d"), "Tenant D", edgeId = None),
+        TenantRecord(TenantId("tenant-d"), "Tenant D", edgeGroupId = None),
       ),
       verify = response =>
         for
           raw <- response.body.asString
           body <- ZIO.fromEither(raw.fromJson[GetEdgesRegistryResponse]).mapError(new RuntimeException(_))
         yield assertTrue(
-          body.edges.map(_.id) == List(edgeId, EdgeId("edge-2")),
+          body.edges.map(_.id) == List(edgeId, EdgeId("edge-2"), EdgeId("edge-3")),
           // What lets auth refuse a call from a real edge, with a valid certificate, that is
           // simply not the one this token's tenant is behind.
           body.edges.head.tenantIds.toSet == Set(TenantId("tenant-a"), TenantId("tenant-b")),
           body.edges(1).tenantIds == List(TenantId("tenant-c")),
+          // Every edge of a group serves the group's tenants: the second site is vouched for like the first.
+          body.edges(2).tenantIds.toSet == Set(TenantId("tenant-a"), TenantId("tenant-b")),
         ),
     ),
     // An edge has no business reading its peers' identities.

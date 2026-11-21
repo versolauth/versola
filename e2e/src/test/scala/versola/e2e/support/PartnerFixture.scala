@@ -129,7 +129,8 @@ object PartnerFixture:
       ssl <- certificate.clientSsl(central.config.centralMutualTlsServerCertificate)
       known <- eventually(central.onEdgeSurface(Some(token), Some(ssl)).get("/edge/sync/dpop"))(_.status == Status.Ok)
       _ <- ZIO.fail(RuntimeException(s"central never authenticated the first-party edge: ${known.status}")).unless(known.status == Status.Ok)
-      _ <- central.post("/configuration/tenants", Fixtures.tenant(tenantId, edgeId = Some(edgeId), securityProfile = Some("standard")))
+      // The edge was registered without a group, which puts it in `default`: the tenant is served by that group.
+      _ <- central.post("/configuration/tenants", Fixtures.tenant(tenantId, edgeGroupId = Some("default"), securityProfile = Some("standard")))
         .flatMap(result => ZIO.fail(RuntimeException(s"tenant refused: ${result.status} ${result.body}")).unless(result.status.isSuccess))
       _ <- SecurityProfiles.awaitProfile(central, tenantId, "standard")
       _ <- readsCertificateFromHeader(central, tenantId)
@@ -260,7 +261,9 @@ object PartnerFixture:
       _.find(_.str("id").contains(partner.consoleClientId)).flatMap(_.obj("authFlow")).flatMap(_.obj("primary")).flatMap(_.bool("inlinePassword")),
     )
     eventually(inlinePassword)(_.contains(true)).flatMap: served =>
-      ZIO.fail(RuntimeException(s"central still serves the old auth flow of ${partner.consoleClientId} after ten seconds")).unless(served.contains(true)).unit
+      ZIO.fail(
+        RuntimeException(s"central still serves the old auth flow of ${partner.consoleClientId} after ten seconds"),
+      ).unless(served.contains(true)).unit
 
   /** A staff member's access token for the partner's console: the console client is given the login-and-password flow, and a user
     * signs in through it with the certificate of the partner's group. This is what a partner's edge forwards in `Versola-Principal`. */

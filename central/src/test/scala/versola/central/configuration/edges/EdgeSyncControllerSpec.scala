@@ -48,6 +48,19 @@ import versola.central.configuration.resources.{
 import versola.central.configuration.roles.{RoleId, RoleRecord, RoleService}
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.{
+  CellId,
+  CellRecord,
+  CellState,
+  CellSyncRecord,
+  CellsSyncResponse,
+  PartitionId,
+  PartitionRecord,
+  RegionId,
+  RegionRecord,
+  Topology,
+  TopologyService,
+}
 import versola.central.configuration.{
   GetAuthorizationPresetsSyncResponse,
   GetOAuthClientsSyncResponse,
@@ -292,6 +305,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
       edges: Stub[EdgeService],
       identity: Stub[EdgeIdentityService],
       registry: Stub[PartnerRegistry],
+      topology: Stub[TopologyService],
       security: SecurityService,
   )
 
@@ -350,6 +364,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
           edges = stub[EdgeService],
           identity = stub[EdgeIdentityService],
           registry = stub[PartnerRegistry],
+          topology = stub[TopologyService],
           security = security,
         )
         certificates =
@@ -377,6 +392,7 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[EdgeService](services.edges) ++
                 ZEnvironment[EdgeIdentityService](services.identity) ++
                 ZEnvironment[PartnerRegistry](services.registry) ++
+                ZEnvironment[TopologyService](services.topology) ++
                 ZEnvironment[SecurityService](security) ++
                 ZEnvironment[CentralConfig](config) ++
                 tracing,
@@ -414,6 +430,32 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
     reviewAt = None,
     createdAt = Instant.parse("2026-11-01T00:00:00Z"),
     version = 0L,
+  )
+
+  private def topology(edgeRegions: Map[EdgeId, RegionId]) = Topology(
+    partitions = Vector(PartitionRecord(PartitionId("kz"))),
+    regions = Vector(RegionRecord(RegionId("almaty"), PartitionId("kz")), RegionRecord(RegionId("astana"), PartitionId("kz"))),
+    cells = Vector(
+      CellRecord(
+        id = CellId("kz-1"),
+        regionId = RegionId("almaty"),
+        internalUrl = "http://auth-kz-1.internal:9003",
+        mtlsUrl = Some("https://auth-kz-1.internal:9008"),
+        trustedCertificates = List("PIN-1"),
+        state = CellState.Open,
+        weight = 100,
+      ),
+      CellRecord(
+        id = CellId("kz-2"),
+        regionId = RegionId("astana"),
+        internalUrl = "http://auth-kz-2.internal:9003",
+        mtlsUrl = None,
+        trustedCertificates = Nil,
+        state = CellState.Draining,
+        weight = 0,
+      ),
+    ),
+    edgeRegions = edgeRegions,
   )
 
   private def sync(resource: String): URL = URL.root / "edge" / "sync" / resource
@@ -773,6 +815,58 @@ object EdgeSyncControllerSpec extends ZIOSpecDefault, ZIOStubs:
         certificate = Some(otherGroupCertificate.certificate),
         expectedStatus = Status.Unauthorized,
         verify = (_, services) => ZIO.succeed(assertTrue(services.clients.getClientsForSync.calls.isEmpty)),
+      ),
+      // #557: an edge routes a call to the cell that holds its user, and looks for an open cell in its own region first.
+      testCase(
+        description = "cells: every cell with the partition of its region, and the region the calling edge is in",
+        request = Request.get(sync("cells")),
+        expectedStatus = Status.Ok,
+        setup = _.topology.get.succeedsWith(topology(edgeRegions = Map(edgeId -> RegionId("almaty"), EdgeId("edge-b") -> RegionId("astana")))),
+        verify = (response, _) =>
+          for body <- decodeBody[CellsSyncResponse](response)
+          yield assertTrue(
+            body.region == Some(RegionId("almaty")),
+            body.cells == Vector(
+              CellSyncRecord(
+                id = CellId("kz-1"),
+                regionId = RegionId("almaty"),
+                partitionId = PartitionId("kz"),
+                internalUrl = "http://auth-kz-1.internal:9003",
+                mtlsUrl = Some("https://auth-kz-1.internal:9008"),
+                trustedCertificates = List("PIN-1"),
+                state = CellState.Open,
+                weight = 100,
+              ),
+              CellSyncRecord(
+                id = CellId("kz-2"),
+                regionId = RegionId("astana"),
+                partitionId = PartitionId("kz"),
+                internalUrl = "http://auth-kz-2.internal:9003",
+                mtlsUrl = None,
+                trustedCertificates = Nil,
+                state = CellState.Draining,
+                weight = 0,
+              ),
+            ),
+          ),
+      ),
+      testCase(
+        description = "cells: an edge in no region is served the cells and no region",
+        request = Request.get(sync("cells")),
+        expectedStatus = Status.Ok,
+        setup = _.topology.get.succeedsWith(topology(edgeRegions = Map.empty)),
+        verify = (response, _) =>
+          for body <- decodeBody[CellsSyncResponse](response)
+          yield assertTrue(body.region.isEmpty, body.cells.map(_.id) == Vector(CellId("kz-1"), CellId("kz-2"))),
+      ),
+      // A partner's edge keeps one address for the issuer: the internal addresses of the cells are not its to know.
+      testCase(
+        description = "cells: an edge of a partner group is refused, and the topology is not read",
+        request = Request.get(sync("cells")),
+        edge = edgeRecord.copy(groupId = EdgeGroupId("partner-acme"), groupKind = EdgeGroupKind.Partner),
+        certificate = Some(otherGroupCertificate.certificate),
+        expectedStatus = Status.Unauthorized,
+        verify = (_, services) => ZIO.succeed(assertTrue(services.topology.get.calls.isEmpty)),
       ),
       testCase(
         description = "an edge of a partner group is refused the configuration, certificate and token notwithstanding",

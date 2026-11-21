@@ -3,7 +3,8 @@ export interface Tenant {
   id: string;
   name: string;
   description?: string;
-  edgeId?: string | null;
+  /** The group of edges that serves the tenant: every edge of it syncs the tenant's configuration. */
+  edgeGroupId?: string | null;
   /** Fixed when the tenant is created; `GET /configuration/tenants` reads it from the challenge settings. */
   securityProfile: SecurityProfile;
   /** The `kid` the tenant's tokens are signed with; `null` when it falls back to auth's configured key. */
@@ -455,12 +456,54 @@ export interface Edge {
   partnerDisplayName?: string | null;
   partnerTenantId?: string | null;
   publicUrl?: string;
+  /** The region the edge site is in; absent for an edge in none. */
+  regionId?: string | null;
   /** The not-after of the edge's current certificate and when it was last renewed; absent until enrolled. */
   certificateNotAfter?: string;
   lastRenewedAt?: string;
 }
 
 export type EdgeGroupKind = 'first_party' | 'partner';
+
+/** One metro inside a partition: a cell and an edge site are each in one region. */
+export interface Region {
+  id: string;
+  partitionId: string;
+}
+
+/** One jurisdiction, with its own issuer, keys and directory. A deployment has one. */
+export interface Partition {
+  id: string;
+}
+
+/** Whether new users are placed in a cell; a cell in any state still serves the users it holds. */
+export type CellState = 'open' | 'closed' | 'draining';
+
+/** The capacity unit: one `auth` deployment with its own database, holding a fixed set of users. */
+export interface Cell {
+  id: string;
+  regionId: string;
+  internalUrl: string;
+  mtlsUrl?: string | null;
+  /** The leaf certificates (PEM) the cell's endpoints are pinned by. */
+  trustedCertificates: string[];
+  state: CellState;
+  /** The cell's share of new users among the open cells of its region. */
+  weight: number;
+}
+
+/** What `GET /configuration/topology` answers. */
+export interface Topology {
+  partitions: Partition[];
+  regions: Region[];
+  cells: Cell[];
+}
+
+/** A group of edges, as `GET /configuration/edge-groups` lists it. */
+export interface EdgeGroup {
+  id: string;
+  kind: EdgeGroupKind;
+}
 
 // Partners (#549): an organisation that runs its own edge and owns clients inside the operator's tenant.
 export type PartnerStatus = 'onboarding' | 'active' | 'suspended';

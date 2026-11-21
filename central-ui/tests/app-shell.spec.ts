@@ -97,7 +97,7 @@ test('the navigation lists the tenant items, then the global ones, in the agreed
   const labels = (await links.allInnerTexts()).map(text => text.trim()).filter(Boolean);
   expect(labels).toEqual([
     'Security', 'Clients', 'Resources', 'Partners', 'Scopes', 'Permissions', 'Roles', 'OTP templates', 'Authorization details',
-    'Tenants', 'Edges', 'Users', 'Keys & metadata', 'System settings', 'Delivery', 'Forms', 'Themes',
+    'Tenants', 'Edges', 'Cells', 'Users', 'Keys & metadata', 'System settings', 'Delivery', 'Forms', 'Themes',
   ]);
 });
 

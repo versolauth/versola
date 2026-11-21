@@ -29,6 +29,7 @@ object UserController extends AuditedController:
     revokeRefreshTokensEndpoint,
     createUserEndpoint,
     registeredUserEndpoint,
+    lookupUserEndpoint,
     patchUserEndpoint,
     deleteUserEndpoint,
     patchUserClaimsEndpoint,
@@ -177,11 +178,22 @@ object UserController extends AuditedController:
         _ <- authorizeInternal(request)
         service <- ZIO.service[UserService]
         body <- request.bodyAs[RegisteredUserRequest]
-        userId <- service.indexRegistered(body)
-      yield Response.json(RegisteredUserResponse(userId).toJson))
+        claim <- service.indexRegistered(body)
+      yield Response.json(claim.toJson))
         .catchAll:
           case UserIndexConflict => ZIO.succeed(Response.status(Status.Conflict))
           case error: Throwable => ZIO.fail(error)
+    }
+
+  /** Who holds a credential (versolauth/versola#1046). Internal like the claim: only an `auth` asks, with its token. */
+  val lookupUserEndpoint =
+    (Method.POST / "users" / "lookup").audited(Audit.Internal) -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        service <- ZIO.service[UserService]
+        body <- request.bodyAs[LookupUserRequest]
+        owner <- service.lookup(body)
+      yield owner.fold(Response.status(Status.NotFound))(found => Response.json(found.toJson))
     }
 
   val patchUserEndpoint =

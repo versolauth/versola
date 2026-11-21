@@ -5,10 +5,11 @@ import versola.audit.{AuditSupport, AuthActors, AuthAuditDetails, AuthAuditKinds
 import versola.oauth.AuthMetrics
 import versola.oauth.authorize.model.{AuthorizeErrorResponse, AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.model.ConversationCookie
+import versola.oauth.handoff.CellHandoff
+import versola.oauth.model.{AuthorizationCode, ConversationCookie}
+import versola.util.CoreConfig
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome, AuditUnavailableException}
 import versola.util.http.{Controller, Observability}
-import versola.util.{Base64Url, CoreConfig}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -17,59 +18,81 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 
 object AuthorizeEndpointController extends Controller:
   type Env = Tracing & AuthorizeRequestParser & AuthorizeEndpointService & AuthorizationResponseService &
-    OAuthConfigurationService & CoreConfig & AuditEvents & ClientAuthFailures
+    OAuthConfigurationService & CoreConfig & AuditEvents & ClientAuthFailures & CellHandoff
 
   def routes: Routes[Env, Throwable] = Routes(
     getAuthorizeRoute,
     postAuthorizeRoute,
+    handoffRoute,
   )
+
+  /** A sign-in another cell took and sealed for this one, because this cell holds the user of the address typed there
+    * (`CellHandoff`, versolauth/versola#1046). The parameters inside are validated as those of any authorization
+    * request and the request starts as at `/authorize`, with the address as the login hint. A seal that is not this
+    * cell's to open is a plain `400`: there is no client to tell, the browser arrived with nothing else. */
+  val handoffRoute: Route[Env, Throwable] =
+    Method.GET / "challenge" / "handoff" -> handler { (request: Request) =>
+      ZIO.serviceWithZIO[CellHandoff](_.open(request.url.queryParams.getAll(CellHandoff.Parameter).headOption.getOrElse(""))).foldZIO(
+        refused =>
+          AuthMetrics.authorizeError("handoff_refused") *>
+            Observability.setError("handoff_refused", Some(refused.reason)).as(Response.badRequest),
+        payload =>
+          answered:
+            ZIO.serviceWithZIO[AuthorizeRequestParser](_.validate(payload.params.view.mapValues(Chunk.fromIterable).toMap, request))
+              .flatMap(authorizeAndRedirect(_, par = false)),
+      )
+    }
 
   val getAuthorizeRoute = authorize(Method.GET)
   val postAuthorizeRoute = authorize(Method.POST)
 
   def authorize(method: Method): Route[Env, Throwable] =
     method / "authorize" -> handler { (request: Request) =>
-      val result =
+      answered:
         for
           parser <- ZIO.service[AuthorizeRequestParser]
           parsedRequest <- parser.parse(request)
           response <- authorizeAndRedirect(parsedRequest, pushed(request))
         yield response
-      result
-        .catchSome {
-          case Error.BadRequest =>
-            AuthMetrics.authorizeError("invalid_request") *>
-              auditFailure("invalid_request", None) *>
-              (Observability.setError("invalid_request", Some(Error.BadRequest.description))
-                .as(Response.badRequest(Error.BadRequest.description)))
-
-          case error: Error.InvalidRequestObject =>
-            // RFC 9101 §6.2: an object that fails verification must be reported as
-            // `invalid_request_object`, not as an undifferentiated 400 -- that is the only
-            // thing that lets a client tell this apart from Error.BadRequest above.
-            AuthMetrics.authorizeError(Error.InvalidRequestObject.error) *>
-              auditFailure(error.error, None) *>
-              (Observability.setError(error.error, error.logDescription)
-                .as(Response.json(
-                  AuthorizeErrorResponse(Error.InvalidRequestObject.error, Error.InvalidRequestObject.description).toJson,
-                ).status(Status.BadRequest)))
-
-          case error: Error.RedirectError =>
-            for
-              config <- ZIO.service[CoreConfig]
-              responseService <- ZIO.service[AuthorizationResponseService]
-              _ <- AuthMetrics.authorizeError(error.error.toString)
-              _ <- Observability.setError(error.error, Some(error.errorDescription))
-              _ <- auditFailure(error.error.toString, Some(error.clientId))
-              redirect <- responseService.redirect(
-                error.clientId,
-                error.uri,
-                error.responseMode,
-                error.errorParams(config.jwt.issuer),
-              )
-            yield Response.seeOther(redirect)
-        }
     }
+
+  /** The answer to an authorization request that failed: a `400` where there is no client to tell, the client's redirect
+    * URI with the error where there is. */
+  private def answered[R](result: ZIO[R, Throwable | Error, Response]) =
+    result
+      .catchSome {
+        case Error.BadRequest =>
+          AuthMetrics.authorizeError("invalid_request") *>
+            auditFailure("invalid_request", None) *>
+            (Observability.setError("invalid_request", Some(Error.BadRequest.description))
+              .as(Response.badRequest(Error.BadRequest.description)))
+
+        case error: Error.InvalidRequestObject =>
+          // RFC 9101 §6.2: an object that fails verification must be reported as
+          // `invalid_request_object`, not as an undifferentiated 400 -- that is the only
+          // thing that lets a client tell this apart from Error.BadRequest above.
+          AuthMetrics.authorizeError(Error.InvalidRequestObject.error) *>
+            auditFailure(error.error, None) *>
+            (Observability.setError(error.error, error.logDescription)
+              .as(Response.json(
+                AuthorizeErrorResponse(Error.InvalidRequestObject.error, Error.InvalidRequestObject.description).toJson,
+              ).status(Status.BadRequest)))
+
+        case error: Error.RedirectError =>
+          for
+            config <- ZIO.service[CoreConfig]
+            responseService <- ZIO.service[AuthorizationResponseService]
+            _ <- AuthMetrics.authorizeError(error.error.toString)
+            _ <- Observability.setError(error.error, Some(error.errorDescription))
+            _ <- auditFailure(error.error.toString, Some(error.clientId))
+            redirect <- responseService.redirect(
+              error.clientId,
+              error.uri,
+              error.responseMode,
+              error.errorParams(config.jwt.issuer),
+            )
+          yield Response.seeOther(redirect)
+      }
 
   /** RFC 9126 §4: a pushed request is redeemed at `/authorize` by its `request_uri`. */
   private def pushed(request: Request): Boolean = request.url.queryParams.hasQueryParam("request_uri")
@@ -134,7 +157,7 @@ object AuthorizeEndpointController extends Controller:
             request.clientId,
             request.redirectUri,
             request.responseMode,
-            AuthorizeRedirect.successParams(Base64Url.encode(code), request.state, idToken, config.jwt.issuer),
+            AuthorizeRedirect.successParams(AuthorizationCode.present(code), request.state, idToken, config.jwt.issuer),
           ).map(Response.seeOther)
 
         case AuthorizeResponse.Initialize(authId) =>
@@ -152,6 +175,7 @@ object AuthorizeEndpointController extends Controller:
                   ),
                   authConversationTtl,
                   config.security.conversationCookieSecret,
+                  config.cellId,
                 ),
               ),
           )

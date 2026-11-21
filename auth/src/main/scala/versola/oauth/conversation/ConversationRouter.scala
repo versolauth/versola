@@ -17,10 +17,11 @@ import versola.oauth.client.model.{
   RegistrationStep,
 }
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
-import versola.user.UserRepository
+import versola.oauth.handoff.CellHandoff
+import versola.user.{UserDirectory, UserRepository}
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Observability
-import versola.util.{Email, Phone, SecureRandom}
+import versola.util.{CoreConfig, Email, Phone, RoutingKey, SecureRandom}
 import zio.{Task, UIO, ZIO, ZLayer}
 
 trait ConversationRouter:
@@ -46,7 +47,7 @@ trait ConversationRouter:
   def advance(authId: AuthId, conversation: ConversationRecord): Task[Unit]
 
 object ConversationRouter:
-  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _))
 
   class Impl(
       conversationRepository: ConversationRepository,
@@ -55,6 +56,9 @@ object ConversationRouter:
       secureRandom: SecureRandom,
       userRepository: UserRepository,
       audit: AuditEvents,
+      directory: UserDirectory,
+      handoff: CellHandoff,
+      config: CoreConfig,
   ) extends ConversationRouter:
 
     /** Sets `auth.user_id` and `auth.user_agent_id` as soon as an already-identified conversation
@@ -392,18 +396,50 @@ object ConversationRouter:
           )
           afterAuthenticationCredential(authId, identified, credential, proof)
 
-        // A new user: the tenant decides whether this address may create an account. When it may
-        // not, the ordinary sign-in path runs, indistinguishable from any other unknown credential.
+        // Not a user of this cell. A cell asks the directory whether another one holds the user before it treats the
+        // address as new, and sends the sign-in there (versolauth/versola#1046).
         case None =>
-          configService.registrationFor(conversation.clientId, credential).flatMap:
-            case Some(flow) =>
-              conversationService.startRegistration(authId, conversation, flow, credential).flatMap:
-                case RegistrationEntry.Registering(updated) =>
-                  runRegistrationStep(authId, updated, proof)
-                case ConversationResult.WriteConflict =>
-                  ZIO.succeed(ConversationResult.WriteConflict)
-            case None =>
-              afterAuthenticationCredential(authId, conversation.withoutIdentityState, credential, proof)
+          homeElsewhere(credential).flatMap:
+            case Left(unavailable) => ZIO.succeed(unavailable)
+            case Right(Some(home)) =>
+              for
+                ticket <- handoff.seal(conversation, credential, home)
+                // Gone whatever the browser does next: the sign-in continues in the other cell or not at all.
+                _ <- conversationRepository.delete(authId, conversation.version)
+              yield ConversationResult.Handoff(CellHandoff.location(ticket))
+            case Right(None) => afterUnknownCredential(authId, conversation, credential, proof)
+
+    /** The cell that holds the user of `credential`, when it is another than this one. An `auth` that is no cell asks
+      * nothing: it is the only place a user can be. Central unreachable is the step's "service unavailable": going on
+      * would send a code for an address this cell cannot say is new. */
+    private def homeElsewhere(credential: Either[Email, Phone]): UIO[Either[ConversationResult.Render, Option[RoutingKey.CellId]]] =
+      config.cellId match
+        case None => ZIO.right(None)
+        case Some(own) =>
+          directory.lookup(credential).foldCauseZIO(
+            cause =>
+              ZIO.logWarningCause("Could not ask the directory which cell holds a credential; the step is refused", cause) *>
+                Observability.setError("directory_unavailable").as(Left(ConversationResult.ServiceUnavailable)),
+            found => ZIO.right(found.flatMap(_.cell).filterNot(_ == own)),
+          )
+
+    private def afterUnknownCredential(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        credential: Either[Email, Phone],
+        proof: ProofInput,
+    ): Task[ConversationResult.Render] =
+      // A new user: the tenant decides whether this address may create an account. When it may
+      // not, the ordinary sign-in path runs, indistinguishable from any other unknown credential.
+      configService.registrationFor(conversation.clientId, credential).flatMap:
+        case Some(flow) =>
+          conversationService.startRegistration(authId, conversation, flow, credential).flatMap:
+            case RegistrationEntry.Registering(updated) =>
+              runRegistrationStep(authId, updated, proof)
+            case ConversationResult.WriteConflict =>
+              ZIO.succeed(ConversationResult.WriteConflict)
+        case None =>
+          afterAuthenticationCredential(authId, conversation.withoutIdentityState, credential, proof)
 
     private def afterAuthenticationCredential(
         authId: AuthId,

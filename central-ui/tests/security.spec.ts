@@ -718,7 +718,7 @@ test('switching the tenant reloads that tenant\'s settings', async ({ page }) =>
   await loadAdminApp(page, {
     path: base,
     state: state({
-      tenants: [{ id: tenant, description: 'Alpha', edgeId: null, securityProfile: 'fapi2' }, { id: 'tenant-bravo', description: 'Bravo', edgeId: null, securityProfile: 'standard' }],
+      tenants: [{ id: tenant, description: 'Alpha', edgeGroupId: null, securityProfile: 'fapi2' }, { id: 'tenant-bravo', description: 'Bravo', edgeGroupId: null, securityProfile: 'standard' }],
       challengeSettings: { [tenant]: settings, 'tenant-bravo': { ...settings, tenantId: 'tenant-bravo', securityProfile: 'standard', otpLength: 8 } } as MockConfigState['challengeSettings'],
     }),
   });

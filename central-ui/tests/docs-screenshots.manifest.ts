@@ -56,8 +56,8 @@ export type DocsShot = FrameShot | CropShot | LoginShot;
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
 const tenant = 'tenant-alpha';
 const standardTenants = [
-  { id: tenant, description: 'Alpha Workspace', edgeId: null, securityProfile: 'standard' as const },
-  { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null },
+  { id: tenant, description: 'Alpha Workspace', edgeGroupId: null, securityProfile: 'standard' as const },
+  { id: 'tenant-bravo', description: 'Bravo Workspace', edgeGroupId: null },
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -450,12 +450,26 @@ export const realThemeCss: Act = async page => {
 // Global data
 
 const edgeTenants = [
-  { id: 'acme', description: 'Acme', edgeId: 'edge-default' },
-  { id: 'acme-fapi', description: 'Acme FAPI', edgeId: 'edge-default', securityProfile: 'fapi2' as const },
-  { id: 'default', description: 'Default', edgeId: 'edge-default' },
+  { id: 'acme', description: 'Acme', edgeGroupId: 'default' },
+  { id: 'acme-fapi', description: 'Acme FAPI', edgeGroupId: 'default', securityProfile: 'fapi2' as const },
+  { id: 'default', description: 'Default', edgeGroupId: 'default' },
 ];
 const edges = [{ id: 'edge-default', hasOldKey: false, requireDpopNonce: true, tenants: ['acme', 'acme-fapi', 'default'], clients: [] }];
 const edgesState: MockState = { tenants: edgeTenants, edges };
+const cellsState: MockState = {
+  tenants: edgeTenants,
+  partitions: [{ id: 'kz' }],
+  regions: [{ id: 'almaty', partitionId: 'kz' }, { id: 'astana', partitionId: 'kz' }],
+  cells: [
+    { id: 'kz-1', regionId: 'almaty', internalUrl: 'http://auth-kz-1.internal.example.com:9003', mtlsUrl: 'https://auth-kz-1.internal.example.com:9008', trustedCertificates: [], state: 'open', weight: 100 },
+    { id: 'kz-2', regionId: 'almaty', internalUrl: 'http://auth-kz-2.internal.example.com:9003', mtlsUrl: null, trustedCertificates: [], state: 'closed', weight: 100 },
+    { id: 'kz-3', regionId: 'astana', internalUrl: 'http://auth-kz-3.internal.example.com:9003', mtlsUrl: null, trustedCertificates: [], state: 'open', weight: 100 },
+  ],
+  edges: [
+    { id: 'edge-almaty', hasOldKey: false, requireDpopNonce: true, tenants: ['acme', 'acme-fapi', 'default'], clients: [], regionId: 'almaty' },
+    { id: 'edge-astana', hasOldKey: false, requireDpopNonce: true, tenants: ['acme', 'acme-fapi', 'default'], clients: [], regionId: 'astana' },
+  ],
+};
 
 const deliverySettingsState: MockState = {
   deliverySettings: {
@@ -486,7 +500,7 @@ const jwksState: MockState = {
 // The keys screen also shows who signs with a key, from the tenants' own settings.
 const keysState: MockState = {
   ...jwksState,
-  tenants: [{ id: tenant, description: 'Alpha Workspace', edgeId: null, securityProfile: 'fapi2' as const, signingKeyId: 'central-es256' }],
+  tenants: [{ id: tenant, description: 'Alpha Workspace', edgeGroupId: null, securityProfile: 'fapi2' as const, signingKeyId: 'central-es256' }],
 };
 
 const serverMetadata = {
@@ -846,6 +860,30 @@ const consoleShots: DocsShot[] = [
   { name: 'console/client-wizard-service-2-basics', kind: 'frame', fullPage: true, path: clientsPath, state: { ...alpha, tenants: standardTenants }, before: serviceBasics },
   { name: 'console/client-wizard-service-3-signin', kind: 'frame', fullPage: true, path: clientsPath, state: { ...alpha, tenants: standardTenants }, before: servicePermissions },
   { name: 'console/client-wizard-service-4-review', kind: 'frame', fullPage: true, path: clientsPath, state: { ...alpha, tenants: standardTenants }, before: serviceReview },
+
+  // Cells
+  {
+    name: 'console/cells-list', kind: 'frame', path: '/?view=cells&tenant=default', state: cellsState,
+    before: async page => {
+      await expect(page.getByRole('columnheader')).toHaveText(['Cell', 'Region', 'State', 'Weight', 'Address', 'Actions']);
+      await expect(page.getByRole('region', { name: 'Region almaty' })).toContainText('edge-almaty');
+    },
+  },
+  {
+    name: 'console/cell-record', kind: 'frame', path: '/?view=cells&tenant=default', state: cellsState,
+    before: async page => {
+      await page.getByRole('button', { name: 'Open cell kz-1' }).click();
+      await expect(sidePanel(page, 'kz-1').getByRole('region', { name: 'Placement' })).toContainText('New users are placed here');
+    },
+  },
+  {
+    name: 'console/cell-form', kind: 'frame', path: '/?view=cells&tenant=default', state: cellsState,
+    before: async page => {
+      await page.getByRole('button', { name: '+ Register Cell' }).click();
+      await expect(sidePanelDialog(page, 'Register cell')).toBeVisible();
+      await expect(sidePanel(page, 'Register cell').getByLabel('Cell ID *')).toBeVisible();
+    },
+  },
 
   // Edges
   {
@@ -1363,7 +1401,7 @@ const consoleShots: DocsShot[] = [
   // Tenants
   {
     name: 'entities/tenants-list', kind: 'frame', path: `/?view=tenants&tenant=${tenant}`,
-    state: { ...alpha, tenants: [{ id: tenant, description: 'Alpha Workspace', edgeId: null }, { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null }, { id: 'acme-prod', description: 'Acme production', edgeId: null, securityProfile: 'standard' }] },
+    state: { ...alpha, tenants: [{ id: tenant, description: 'Alpha Workspace', edgeGroupId: null }, { id: 'tenant-bravo', description: 'Bravo Workspace', edgeGroupId: null }, { id: 'acme-prod', description: 'Acme production', edgeGroupId: null, securityProfile: 'standard' }] },
     before: async page => {
       await expect(page.locator('versola-data-table').getByRole('button', { name: /^Open tenant/ })).toHaveCount(3);
     },

@@ -1,7 +1,7 @@
 package versola.edge.nativeapp
 
 import versola.edge.model.EdgeId
-import versola.edge.{ClientCertificateFiles, EdgeConfig}
+import versola.edge.{CellTable, ClientCertificateFiles, EdgeConfig}
 import versola.util.{PrivateClientCertificate, Secret, TestCertificates}
 import zio.*
 import zio.http.*
@@ -115,7 +115,7 @@ object NativeAuthClientHandshakeSpec extends ZIOSpecDefault:
         listening <- ZIO.service[Listener]
         httpClient <- ZIO.service[Client]
         certificateFiles <- ZIO.service[ClientCertificateFiles]
-        authClient = NativeAuthClient.Impl(httpClient, edgeConfig(listening), certificateFiles)
+        authClient = NativeAuthClient.Impl(httpClient, edgeConfig(listening), certificateFiles, CellTable.empty)
         relayed <- authClient.token(
           "mobile-app",
           material(client),
@@ -145,7 +145,7 @@ object NativeAuthClientHandshakeSpec extends ZIOSpecDefault:
         certificateFiles <- ZIO.service[ClientCertificateFiles]
         _ <- listening.seen.set(None)
         otherPin <- write(paths._4.getParent, "other.crt", TestCertificates.generate(subject = "CN=someone-else").certificatePem)
-        authClient = NativeAuthClient.Impl(httpClient, edgeConfig(listening.copy(serverPin = otherPin)), certificateFiles)
+        authClient = NativeAuthClient.Impl(httpClient, edgeConfig(listening.copy(serverPin = otherPin)), certificateFiles, CellTable.empty)
         result <- authClient.par("mobile-app", material(client), Form(FormField.simpleField("scope", "openid"))).either
         seen <- listening.seen.get
       yield assertTrue(result.isLeft, seen.isEmpty)
@@ -164,7 +164,7 @@ object NativeAuthClientHandshakeSpec extends ZIOSpecDefault:
             native.copy(trustedCertificates = Set(otherPin.toString, listening.serverPin.toString)),
           ),
         )
-        authClient = NativeAuthClient.Impl(httpClient, config, certificateFiles)
+        authClient = NativeAuthClient.Impl(httpClient, config, certificateFiles, CellTable.empty)
         relayed <- authClient.par("mobile-app", material(client), Form(FormField.simpleField("scope", "openid")))
       yield assertTrue(relayed.status == Status.BadRequest)
     },

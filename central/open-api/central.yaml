@@ -15,10 +15,10 @@ info:
     replication endpoints that are not part of this document:
 
     * `/configuration/*/sync`, `/configuration/*/registry`, `/configuration/jwks/signing-keys/sync`
-      and `POST /users/registrations`, which auth reads with its shared-secret token. Every
+      and `POST /users/registrations` and `POST /users/lookup`, which auth reads with its shared-secret token. Every
       route outside `/edge/*` refuses a token that authenticates an edge (`403`).
     * `/edge/sync/*` (`clients`, `resources`, `roles`, `permissions`, `jwks`, `dpop`,
-      `auth-request-presets`, `server-metadata`, `overload`, `access-log`, `rate-limits`), `POST /edge/clients/edge-certificate/sign`
+      `auth-request-presets`, `server-metadata`, `overload`, `access-log`, `rate-limits`, `cells`), `POST /edge/clients/edge-certificate/sign`
       and `POST /edge/certificate/renew` (an edge's own certificate, over the same listener; the one
       route an edge of either kind reaches, since renewal is always on and a partner's edge is stopped by
       suspending the partner; it accepts an optional new public `signingKey` JWK together with the certificate request,
@@ -27,7 +27,7 @@ info:
       own mutual-TLS listener (`MPORT`), never on the port this document describes: the handshake must
       present a certificate that chains to the listener's trust anchors, and the certificate must carry
       the URI name `urn:versola:edge:<id>` for the edge the token names, or the call is `401`. An edge
-      is served only the tenants bound to it; the admin credential and auth's token are refused there
+      is served only the tenants of its group; the admin credential and auth's token are refused there
       (`401`). An edge of a `partner` group is refused all of `/edge/sync/*` (`401`): it is
       issued a certificate that names its group and is given no configuration.
     * `/edge/partner/*`, on the same mutual-TLS listener, the surface of a **partner's** edge (#549): an edge of a
@@ -201,6 +201,8 @@ tags:
       Passwords are write-only.
   - name: Edges
     description: Registered edge deployments and their signing keys.
+  - name: Topology
+    description: Partitions, regions and cells, and the region of each edge site.
   - name: Partners
     description: |
       Organisations the operator lets run a Versola edge on their own infrastructure and own clients inside the
@@ -264,12 +266,16 @@ paths:
       responses:
         '201':
           description: Tenant created.
+        '400':
+          description: >-
+            `edgeGroupId` names a partner's group or a group that does not exist, or the
+            tenant already exists with another `securityProfile`.
         '401':
           $ref: '#/components/responses/Unauthorized'
     put:
       tags: [Tenants]
       summary: Update a tenant
-      description: Replaces the description and edge binding of an existing tenant.
+      description: Replaces the description and the edge group of an existing tenant.
       operationId: updateTenant
       requestBody:
         required: true
@@ -280,6 +286,9 @@ paths:
       responses:
         '204':
           description: Tenant updated.
+        '400':
+          description: >-
+            `edgeGroupId` names a partner's group or a group that does not exist.
         '401':
           $ref: '#/components/responses/Unauthorized'
     delete:
@@ -2824,6 +2833,178 @@ paths:
         '404':
           description: No edge is registered under that id, or the validity asked for is out of range.
 
+  /configuration/topology:
+    get:
+      tags: [Topology]
+      summary: Read the topology
+      description: |
+        The partitions, regions and cells central knows, in one piece. A partition is one
+        jurisdiction (its own issuer, keys and directory; a deployment has one), a region is one
+        metro inside it, and a cell is the capacity unit: one `auth` deployment with its own
+        database, holding a fixed set of users. An edge site and a cell are each in one region.
+        An installation that registered none of these behaves as it did before they existed. The
+        region of an edge is on the edge (`GET /configuration/edges`, `regionId`).
+      operationId: getTopology
+      responses:
+        '200':
+          description: Partitions, regions and cells.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TopologyResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/partitions:
+    post:
+      tags: [Topology]
+      summary: Create a partition
+      operationId: createPartition
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Partition'
+      responses:
+        '201':
+          description: Partition created.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: A partition with this id already exists.
+
+  /configuration/regions:
+    post:
+      tags: [Topology]
+      summary: Create a region
+      operationId: createRegion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Region'
+      responses:
+        '201':
+          description: Region created.
+        '400':
+          description: The partition does not exist.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: A region with this id already exists.
+    delete:
+      tags: [Topology]
+      summary: Delete a region
+      operationId: deleteRegion
+      parameters:
+        - name: regionId
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/TopologyId'
+      responses:
+        '204':
+          description: Region deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: There is no such region.
+        '409':
+          description: The region still has a cell or an edge in it; the body names them.
+
+  /configuration/cells:
+    post:
+      tags: [Topology]
+      summary: Register a cell
+      operationId: createCell
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Cell'
+      responses:
+        '201':
+          description: Cell registered.
+        '400':
+          description: >-
+            The record is malformed: a negative weight, an address that is not an absolute
+            `http` or `https` URL (`mtlsUrl` must be `https`), a pin that is not a PEM
+            certificate or is named twice, or a region that does not exist. The body says which.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: A cell with this id already exists.
+    put:
+      tags: [Topology]
+      summary: Update a cell
+      description: >-
+        Replaces the addresses, the pins, the state and the weight. The id and the region are
+        not changed: a cell is where its database is.
+      operationId: updateCell
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Cell'
+      responses:
+        '204':
+          description: Cell updated.
+        '400':
+          description: The record is malformed, as on creation, or names another region than the cell is in.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: There is no such cell.
+    delete:
+      tags: [Topology]
+      summary: Delete a cell
+      operationId: deleteCell
+      parameters:
+        - name: cellId
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/TopologyId'
+      responses:
+        '204':
+          description: Cell deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: There is no such cell.
+        '409':
+          description: The cell is `open` or `draining`. Only a `closed` cell is deleted.
+
+  /configuration/edges/region:
+    put:
+      tags: [Topology]
+      summary: Set the region of an edge
+      description: >-
+        Where one of the operator's own edge sites is. A body without `regionId` takes the edge
+        out of any region. A partner's edge is in no region.
+      operationId: setEdgeRegion
+      parameters:
+        - $ref: '#/components/parameters/EdgeIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetEdgeRegionRequest'
+      responses:
+        '204':
+          description: Region recorded.
+        '400':
+          description: The edge is a partner's, or the region does not exist.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No edge is registered under that id.
+
   /configuration/edges/dpop:
     put:
       tags: [Edges]
@@ -3782,6 +3963,10 @@ components:
       type: string
       pattern: '^[a-z][a-z0-9-]*$'
       examples: [eu-central]
+    EdgeGroupId:
+      type: string
+      pattern: '^[a-z][a-z0-9-]*$'
+      examples: [default]
     ScopeToken:
       type: string
       pattern: '^[a-z][a-z0-9_]*$'
@@ -4024,13 +4209,14 @@ components:
           $ref: '#/components/schemas/TenantId'
         description:
           type: string
-        edgeId:
+        edgeGroupId:
           description: |
-            The edge this tenant is bound to. Sync is edge-scoped: an edge only receives
-            tenants whose `edgeId` matches its own, so `null` means the tenant is not
-            assigned to any edge yet and no edge will serve it.
+            The group of edges that serves this tenant. Sync is scoped by it: an edge only
+            receives the tenants whose `edgeGroupId` is the group the edge belongs to, and every
+            edge of that group receives them, which is what lets one tenant have several edge
+            sites. `null` means no edge serves the tenant.
           oneOf:
-            - $ref: '#/components/schemas/EdgeId'
+            - $ref: '#/components/schemas/EdgeGroupId'
             - type: 'null'
         securityProfile:
           allOf:
@@ -4063,9 +4249,12 @@ components:
           $ref: '#/components/schemas/TenantId'
         description:
           type: string
-        edgeId:
+        edgeGroupId:
+          description: >-
+            One of the operator's own groups (`first_party`). A partner's group, or one that
+            does not exist, is refused with `400`.
           oneOf:
-            - $ref: '#/components/schemas/EdgeId'
+            - $ref: '#/components/schemas/EdgeGroupId'
             - type: 'null'
         securityProfile:
           oneOf:
@@ -4087,9 +4276,12 @@ components:
           $ref: '#/components/schemas/TenantId'
         description:
           type: string
-        edgeId:
+        edgeGroupId:
+          description: >-
+            One of the operator's own groups (`first_party`). A partner's group, or one that
+            does not exist, is refused with `400`.
           oneOf:
-            - $ref: '#/components/schemas/EdgeId'
+            - $ref: '#/components/schemas/EdgeGroupId'
             - type: 'null'
       required: [id, description]
 
@@ -7535,6 +7727,91 @@ components:
           enum: [first_party, partner]
           description: Who runs the edges of the group. Set once, by the operator, never changed.
       required: [id, kind]
+    TopologyId:
+      type: string
+      maxLength: 64
+      pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+      description: >-
+        The id of a partition, a region or a cell: lowercase letters, digits and hyphens,
+        neither starting nor ending with a hyphen. A cell's id is written in front of the opaque
+        values the cell issues, so it is never reused; nothing reads a partition or a region out
+        of it.
+      examples: [kz-1]
+    Partition:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/TopologyId'
+      required: [id]
+    Region:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/TopologyId'
+        partitionId:
+          $ref: '#/components/schemas/TopologyId'
+      required: [id, partitionId]
+    Cell:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/TopologyId'
+        regionId:
+          $ref: '#/components/schemas/TopologyId'
+        internalUrl:
+          type: string
+          format: uri
+          description: The address an edge sends the cell's token, PAR and userinfo calls to.
+        mtlsUrl:
+          description: >-
+            The cell's mutual-TLS listener, for the calls that present a client certificate;
+            `https` only. Absent for a cell without one.
+          oneOf:
+            - type: string
+              format: uri
+            - type: 'null'
+        trustedCertificates:
+          type: array
+          items:
+            type: string
+          description: >-
+            The leaf certificates (PEM) the cell's endpoints are pinned by. Several, so that a
+            certificate can be replaced without a gap; empty when nothing is pinned.
+        state:
+          type: string
+          enum: [open, closed, draining]
+          description: >-
+            Whether new users are placed in the cell: `open` takes them by its weight, `closed`
+            takes none, `draining` takes none and is being emptied. A cell in any state still
+            serves the users it holds.
+        weight:
+          type: integer
+          minimum: 0
+          description: The cell's share of new users among the open cells of its region.
+      required: [id, regionId, internalUrl, trustedCertificates, state, weight]
+    TopologyResponse:
+      type: object
+      properties:
+        partitions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Partition'
+        regions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Region'
+        cells:
+          type: array
+          items:
+            $ref: '#/components/schemas/Cell'
+      required: [partitions, regions, cells]
+    SetEdgeRegionRequest:
+      type: object
+      properties:
+        regionId:
+          oneOf:
+            - $ref: '#/components/schemas/TopologyId'
+            - type: 'null'
     GetEdgeGroupsResponse:
       type: object
       properties:
@@ -7624,6 +7901,9 @@ components:
         publicUrl:
           type: string
           description: Where browsers reach the edge; absent where none was registered.
+        regionId:
+          $ref: '#/components/schemas/TopologyId'
+          description: The region the edge site is in; absent for an edge in none, which a partner's edge always is.
         certificateNotAfter:
           type: string
           format: date-time

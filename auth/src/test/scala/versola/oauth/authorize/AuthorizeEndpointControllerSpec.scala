@@ -8,6 +8,7 @@ import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.conversation.model.AuthId
+import versola.oauth.handoff.CellHandoff
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod}
 import versola.util.UnitSpecBase
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
@@ -57,6 +58,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
       parser: Stub[AuthorizeRequestParser],
       authService: Stub[AuthorizeEndpointService],
       configService: Stub[OAuthConfigurationService],
+      handoff: Stub[CellHandoff],
   )
 
   def controllerTestCase(
@@ -74,9 +76,10 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
         parser = stub[AuthorizeRequestParser]
         authService = stub[AuthorizeEndpointService]
         configService = stub[OAuthConfigurationService]
+        handoff = stub[CellHandoff]
         responseService = AuthorizationResponseService.Impl(config, configService, TestEnvConfig.jwksService)
         tracing <- NoopTracing.layer.build
-        services = Services(parser, authService, configService)
+        services = Services(parser, authService, configService, handoff)
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             AuthorizeEndpointController.routes
@@ -88,6 +91,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
                   ZEnvironment(config) ++
                   ZEnvironment[AuditEvents](audit) ++
                   ZEnvironment[ClientAuthFailures](ImmediateClientAuthFailures(audit)) ++
+                  ZEnvironment[CellHandoff](handoff) ++
                   tracing,
               ),
           ),
@@ -133,6 +137,63 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
           ZIO.succeed(assertTrue(
             resp.header(Header.Location).exists(_.url.path.encode.contains("challenge")),
             resp.header(Header.SetCookie).isDefined,
+          )),
+      ),
+      // versolauth/versola#1046: a sign-in another cell sealed for this one.
+      controllerTestCase(
+        description = "a handoff sealed for this cell is validated as an authorization request and starts the conversation here",
+        request = Request.get((URL.root / "challenge" / "handoff").addQueryParam(CellHandoff.Parameter, "v1.kz-1.sealed")),
+        expectedStatus = Status.SeeOther,
+        setup = services =>
+          for
+            _ <- services.handoff.open.succeedsWith(
+              CellHandoff.Payload(
+                params = Map("client_id" -> List("test-client"), "login_hint" -> List("user@example.com")),
+                to = "kz-1",
+                expiresAt = 0L,
+              ),
+            )
+            _ <- services.parser.validate.succeedsWith(baseRequest)
+            _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+            _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
+          yield (),
+        verify = resp =>
+          ZIO.succeed(assertTrue(
+            resp.header(Header.Location).exists(_.url.path.encode.contains("challenge")),
+            resp.header(Header.SetCookie).isDefined,
+          )),
+      ),
+      controllerTestCase(
+        description = "a handoff that is not this cell's to open is a 400 and starts nothing",
+        request = Request.get((URL.root / "challenge" / "handoff").addQueryParam(CellHandoff.Parameter, "v1.kz-2.sealed")),
+        expectedStatus = Status.BadRequest,
+        setup = _.handoff.open.failsWith(CellHandoff.Refused.Elsewhere),
+      ),
+      controllerTestCase(
+        description = "a handoff whose parameters this cell does not accept is answered like any authorization request that does not parse",
+        request = Request.get((URL.root / "challenge" / "handoff").addQueryParam(CellHandoff.Parameter, "v1.kz-1.sealed")),
+        expectedStatus = Status.BadRequest,
+        setup = services =>
+          services.handoff.open.succeedsWith(CellHandoff.Payload(params = Map.empty, to = "kz-1", expiresAt = 0L)) *>
+            services.parser.validate.failsWith(Error.BadRequest),
+      ),
+      controllerTestCase(
+        // The redirect carries the code the way the token endpoint reads it back: as the routed
+        // string when it was issued under a cell, with the key no client is expected to strip.
+        description = "places a code issued under a cell on the redirect with its routing key",
+        request = Request.get(URL.root / "authorize"),
+        expectedStatus = Status.SeeOther,
+        setup = services =>
+          for
+            _ <- services.parser.parse.succeedsWith(baseRequest)
+            _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+            _ <- services.authService.authorize.succeedsWith(
+              AuthorizeResponse.Authorized(AuthorizationCode.issue(Some(TestEnvConfig.cellId), Array.fill(32)(1.toByte)), None),
+            )
+          yield (),
+        verify = resp =>
+          ZIO.succeed(assertTrue(
+            resp.header(Header.Location).exists(_.url.encode.contains(s"code=v1.${TestEnvConfig.cellId}.")),
           )),
       ),
       controllerTestCase(

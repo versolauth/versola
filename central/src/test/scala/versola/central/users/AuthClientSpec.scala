@@ -9,7 +9,7 @@ import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.JWT
 import versola.util.audit.AuditContext
 import versola.util.http.Observability
-import versola.util.{PageLimit, PageOffset, Patch}
+import versola.util.{PageLimit, PageOffset, Patch, Phone}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -110,7 +110,7 @@ object AuthClientSpec extends ZIOSpecDefault:
     ).orDie)
 
   private def authClientLayer: ZLayer[Client & CentralConfig & AuthTokenService, Nothing, AuthClient] =
-    ZLayer.fromFunction(AuthClient.Impl(_, _, _))
+    ZLayer.fromFunction((client: Client, config: CentralConfig, tokens: AuthTokenService) => AuthClient.Impl(client, config.auth.url, tokens))
 
   /** Verifies Bearer token for a void method (route returns 204 No Content). */
   private def mkTest(name: String, call: AuthClient => Task[Unit]) =
@@ -185,7 +185,7 @@ object AuthClientSpec extends ZIOSpecDefault:
   ): AuthClient =
     AuthClient.Impl(
       ZClient.fromDriver(driver),
-      TestCentralConfig.config,
+      TestCentralConfig.config.auth.url,
       new AuthTokenService:
         override def getToken: UIO[String] = ZIO.succeed(token)
         override def refreshToken(): Task[String] = ZIO.succeed(token),
@@ -255,6 +255,15 @@ object AuthClientSpec extends ZIOSpecDefault:
     mkTest(
       "resetPassword",
       _.resetPassword(resetRequest.userId, 3600L, resetRequest.channel).unit,
+    ),
+    mkTest(
+      "patchUser",
+      _.patchUser(userId, version, Some(Patch.Deleted), None, None),
+    ),
+    mkJsonTest(
+      "getUser",
+      """{"claims":{},"email":null,"phone":"+15551234567","login":null}""",
+      _.getUser(userId).unit,
     ),
     mkJsonTest(
       "getUserClaims",
@@ -701,6 +710,49 @@ object AuthClientSpec extends ZIOSpecDefault:
         result <- client.getUserClaims(userId)
       yield assertTrue(result.isDefined)
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    // versolauth/versola#1041: central keeps only the MACs, so the identifiers a search shows are read from auth.
+    test("getUser reads the identifiers and the claims auth holds, and None for a user auth does not have") {
+      for
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](request =>
+            ZIO.succeed(
+              if request.url.queryParams.map.get("id").exists(_.contains(userId.toString))
+              then Response.json("""{"claims":{"role":"admin"},"phone":"+15551234567"}""")
+              else Response.status(Status.NoContent),
+            ),
+          ).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        found <- client.getUser(userId)
+        missing <- client.getUser(UserId(UUID.fromString("00000000-0000-0000-0000-0000000000ff")))
+      yield assertTrue(
+        found.flatMap(_.phone).contains(Phone("+15551234567")),
+        found.exists(_.email.isEmpty),
+        found.exists(_.claims.fields.nonEmpty),
+        missing.isEmpty,
+      )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("patchUser sends PATCH /users with only the identifiers named") {
+      for
+        seen <- Ref.make(Option.empty[(Method, String, String)])
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](request =>
+            request.body.asString.orDie.flatMap(body => seen.set(Some((request.method, request.url.path.encode, body)))).as(Response.status(
+              Status.NoContent,
+            )),
+          ).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        _ <- client.patchUser(userId, version, Some(Patch.Deleted), Some(Patch.Modified(Phone("+15551234567"))), None)
+        sent <- seen.get.someOrFail(RuntimeException("no request captured"))
+      yield assertTrue(
+        sent._1 == Method.PATCH,
+        sent._2.endsWith("users"),
+        sent._3.contains(""""email":null"""),
+        sent._3.contains(""""phone":"+15551234567""""),
+        !sent._3.contains("login"),
+      )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("getUserClaims returns None when server responds 204") {
       for
         _ <- TestClient.addRoutes(
@@ -950,7 +1002,7 @@ object AuthClientSpec extends ZIOSpecDefault:
           )(using trace: Trace, ev: Scope =:= Scope): ZIO[Env1 & Scope, Throwable, Response] =
             ZIO.dieMessage("WebSocket not used in AuthClient tests")
 
-        client = AuthClient.Impl(ZClient.fromDriver(driver), TestCentralConfig.config, tokenService)
+        client = AuthClient.Impl(ZClient.fromDriver(driver), TestCentralConfig.config.auth.url, tokenService)
         _ <- client.upsertUser(userId, version, None, None, None)
         isRefreshed <- refreshed.get
       yield assertTrue(isRefreshed)

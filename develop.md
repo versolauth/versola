@@ -130,6 +130,13 @@ The script first asks for the environment **Name** (default `local`):
     - `auth/dev/env.conf`
     - `central/dev/env.conf`
     - `edge/dev/env.conf`
+
+  This is the only target that sets auth's optional `cell-id` (`local-1`), so the stack
+  `sbt e2e/test` drives issues its authorization codes, refresh tokens and PAR `request_uri`s
+  (and the public session id, the `sid` claim, and the `SSO_CONVERSATION` cookie) with the `v1.<cell>.` routing prefix and names the cell in the `cell` JOSE header parameter of
+  access tokens (#547, #558, #606).
+  Every other target leaves the key commented out, which keeps those values exactly as they
+  were; an unprefixed value is accepted either way.
 - **`docker-local`** — also runs non-interactively, for the case where auth/central/edge
   each run in their own container on one Docker Compose bridge network, sitting behind
   nginx as the single published port (used by `versola bootstrap local`). Files are
@@ -579,7 +586,7 @@ real, in-use counterparts, and each mismatch fails differently.
 |---|---|
 | `POSTGRES_PASSWORD` | the existing Postgres role's real password; wrong → connection refused at startup |
 | `JWT_PRIVATE_KEY` | `central` is the source of truth for signing keys (`JwksRepository`; auth caches a synced copy). Bootstrap seeding adds a key by `kid` instead of replacing, so a fresh one sits *beside* the real one, publishing a key nobody holds; auth matches its private key to a JWKS entry (an RSA key by modulus, an EC key by proof of possession: a challenge signed with the key must verify under the entry's public key) and the entry needs a usable `alg`, which is also the algorithm tokens are signed under. `gen-env` generates an EC P-256 key (`jwt-es256-<date>`, ES256) and publishes only its public half; a pre-existing RSA key is still accepted. Seed the real key so only one `kid` is in play |
-| `CLIENT_SECRETS_SECRET` | encrypts existing OAuth client secrets in `central`; a fresh one cannot decrypt them |
+| `CLIENT_SECRETS_SECRET` | encrypts existing OAuth client secrets in `central`; a fresh one cannot decrypt them. The key of the identifier MACs in `central`'s directory of users is derived from it too, so with a fresh one no phone, email or login is found and each registers a second account |
 | `PASSWORDS_SECRET` | the key of every stored password hash (`PasswordService`); a fresh one fails every user's login |
 | `REFRESH_TOKENS_SECRET` | the MAC key of every stored refresh token; a fresh one turns each, including on-device `offline_access` tokens, into `invalid_grant` |
 | `EDGE_TOKEN_ENC_KEY` | the AES key (exactly 32 bytes, base64url) of the refresh tokens in edge's session table; with a fresh one every session fails to decrypt in `refreshSession`, a server error rather than a re-login |

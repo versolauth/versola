@@ -8,6 +8,7 @@ import versola.central.configuration.partners.PartnerRegistry
 import versola.central.configuration.permissions.PermissionService
 import versola.central.configuration.resources.{ResourceRecord, ResourceService}
 import versola.central.configuration.roles.RoleService
+import versola.central.configuration.topology.{CellsSyncResponse, TopologyService}
 import versola.central.configuration.{
   AuthorizationPresetSyncResponse,
   GetAuthorizationPresetsSyncResponse,
@@ -41,7 +42,8 @@ import java.security.cert.X509Certificate
   */
 object EdgeSyncController extends Controller:
   type Env = Tracing & CentralConfig & EdgeService & EdgeIdentityService & SecurityService & OAuthClientService & ClientCertificateService &
-    AuthorizationPresetService & ResourceService & RoleService & PermissionService & JwksService & ServerMetadataService & PartnerRegistry
+    AuthorizationPresetService & ResourceService & RoleService & PermissionService & JwksService & ServerMetadataService & PartnerRegistry &
+    TopologyService
 
   def routes: Routes[Env, Throwable] = Routes(
     clientsEndpoint,
@@ -55,6 +57,7 @@ object EdgeSyncController extends Controller:
     rateLimitEndpoint,
     presetsEndpoint,
     serverMetadataEndpoint,
+    cellsEndpoint,
     signEdgeCertificateEndpoint,
     renewIdentityEndpoint,
   )
@@ -65,6 +68,18 @@ object EdgeSyncController extends Controller:
         edgeId <- authorizeEdge(request)
         response <- ClientController.clientsSyncResponse(Some(edgeId))
       yield Response.json(response.toJson)
+    }
+
+  /** The cells of the deployment and the region the calling edge is in (#557), for an edge to route a call to the
+    * cell that holds its user and to look for an open cell in its own region first. Served to the operator's own
+    * edges only ([[authorizeEdge]]): a partner's edge keeps one address for the issuer and is not told the cells.
+    */
+  val cellsEndpoint =
+    Method.GET / "edge" / "sync" / "cells" -> handler { (request: Request) =>
+      for
+        edgeId <- authorizeEdge(request)
+        topology <- ZIO.serviceWithZIO[TopologyService](_.get)
+      yield Response.json(CellsSyncResponse.of(topology, region = topology.edgeRegions.get(edgeId)).toJson)
     }
 
   val resourcesEndpoint =
