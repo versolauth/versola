@@ -95,6 +95,21 @@ object IssuerFrontSpec extends ZIOSpecDefault:
           where(routing("challenge", cookies = Map("SSO_CONVERSATION" -> "abc.def"))) == Right(None),
         )
       },
+      test("a sign-in handed to another cell goes to the cell the handoff names, whatever cookie the browser still holds") {
+        assertTrue(
+          where(routing(
+            "challenge/handoff",
+            query = Map("handoff" -> "v1.kz-2.sealed"),
+            cookies = Map("SSO_CONVERSATION" -> "v1.kz-1.abc.def"),
+          )) == Right(Some("kz-2")),
+          // the parameter means nothing on another page
+          where(routing(
+            "challenge/otp",
+            query = Map("handoff" -> "v1.kz-2.sealed"),
+            cookies = Map("SSO_CONVERSATION" -> "v1.kz-1.abc.def"),
+          )) == Right(Some("kz-1")),
+        )
+      },
       test("an authorization request goes to the cell of its request_uri, else of the browser's session, else is placed") {
         assertTrue(
           where(routing("authorize", query = Map("request_uri" -> "urn:ietf:params:oauth:request_uri:v1.kz-2.abc"))) == Right(Some("kz-2")),

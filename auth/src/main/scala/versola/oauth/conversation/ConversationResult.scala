@@ -50,6 +50,10 @@ object ConversationResult:
       userAgentData: UserAgentData,
   ) extends Render
 
+  /** The user of the address typed is held by another cell: the browser is sent there with the sign-in sealed
+    * (`CellHandoff`, versolauth/versola#1046). This cell's conversation is over. */
+  case class Handoff(location: URL) extends Render
+
   case class StepPassed(record: ConversationRecord) extends Decision
 
 sealed trait Directive

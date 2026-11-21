@@ -19,8 +19,8 @@ import java.util.Base64
   * the cell that holds the sign-in.
   *
   * It has no protocol logic. It reads where a request belongs from what `auth` itself wrote into what the browser
-  * carries (the routing key of the conversation or session cookie, of a `request_uri`, of the `sid` of an ID token
-  * hint), forwards the request as it came and relays the answer as it is. A key that names no cell of the deployment is
+  * carries (the routing key of the conversation or session cookie, of a `request_uri`, of a handoff, of the `sid` of
+  * an ID token hint), forwards the request as it came and relays the answer as it is. A key that names no cell of the deployment is
   * not refused here: the request goes where a new one would, and `auth` answers with its own page.
   *
   * With no cell registered the requests go to the `auth` edge is configured with, so the issuer's address may be an
@@ -45,6 +45,7 @@ object IssuerFront extends Controller:
 
   private val ConversationCookie = "SSO_CONVERSATION"
   private val SessionCookie = "SSO_SESSION"
+  private val HandoffParameter = "handoff"
   private val RequestUriNamespace = "urn:ietf:params:oauth:request_uri:"
 
   /** What the hop itself owns and is not passed on, in either direction. */
@@ -58,6 +59,10 @@ object IssuerFront extends Controller:
     */
   private[edge] def routingOf(path: List[String], cookie: String => Option[String], query: String => Option[String]): CellRouting =
     path.headOption match
+      // A sign-in one cell hands to another names the cell it is for, and the cookie the browser still holds is the
+      // first cell's (versolauth/versola#1046).
+      case Some("challenge") if path == List("challenge", "handoff") =>
+        query(HandoffParameter).orElse(cookie(ConversationCookie)).fold(CellRouting.Placement)(CellRouting.ByValue(_))
       case Some("challenge") => cookie(ConversationCookie).fold(CellRouting.Placement)(CellRouting.ByValue(_))
       // The pushed request is in one cell and nowhere else, so it decides before the browser's session does.
       case Some("authorize") =>

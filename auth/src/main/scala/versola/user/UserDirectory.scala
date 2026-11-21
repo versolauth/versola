@@ -3,7 +3,7 @@ package versola.user
 import versola.oauth.client.CentralSyncTokenService
 import versola.user.model.UserId
 import versola.util.{CoreConfig, Email, Phone, RoutingKey}
-import zio.http.{Body, Header, MediaType, Request}
+import zio.http.{Body, Header, MediaType, Request, Status}
 import zio.json.*
 import zio.{Task, URLayer, ZIO, ZLayer}
 
@@ -21,6 +21,11 @@ trait UserDirectory:
     * next one.
     */
   def claim(credential: Either[Email, Phone]): Task[UserDirectory.Claim]
+
+  /** Who holds a credential, and in which cell, without claiming it; `None` when nobody does. Asked by a cell that did
+    * not find the credential in its own database, to send the sign-in to the cell that holds the user
+    * (versolauth/versola#1046). */
+  def lookup(credential: Either[Email, Phone]): Task[Option[UserDirectory.Claim]]
 
 object UserDirectory:
   /** @param cell the cell that holds the user; `None` on an installation with no cell. */
@@ -40,6 +45,31 @@ object UserDirectory:
   ) extends UserDirectory:
     private val RegistrationsUrl = config.central.url / "users" / "registrations"
 
+    private val LookupUrl = config.central.url / "users" / "lookup"
+
+    override def lookup(credential: Either[Email, Phone]): Task[Option[Claim]] =
+      val request = ClaimRequest(email = credential.left.toOption, phone = credential.toOption, cell = None)
+      ZIO.scoped:
+        for
+          response <- centralSyncTokenService.syncRequest(
+            Request
+              .post(LookupUrl, Body.fromString(request.toJson))
+              .addHeader(Header.ContentType(MediaType.application.json)),
+          )
+          found <-
+            if response.status == Status.NotFound then ZIO.none
+            else if !response.status.isSuccess then ZIO.fail(new Exception(s"Looking a credential up failed with ${response.status}"))
+            else response.body.asJsonFromCodec[ClaimResponse].flatMap(read).asSome
+        yield found
+
+    /** A cell id central answers and this build cannot read is a failure, not "no cell": the user would be created
+      * here although it is held elsewhere. */
+    private def read(claim: ClaimResponse): Task[Claim] =
+      ZIO.foreach(claim.cell)(id =>
+        ZIO.fromEither(RoutingKey.CellId.parse(id)).mapError(reason => new Exception(s"central answered an invalid cell: $reason")),
+      )
+        .map(Claim(claim.userId, _))
+
     override def claim(credential: Either[Email, Phone]): Task[Claim] =
       val request = ClaimRequest(email = credential.left.toOption, phone = credential.toOption, cell = config.cellId.map(identity[String]))
       ZIO.scoped:
@@ -51,10 +81,5 @@ object UserDirectory:
           )
           _ <- ZIO.unless(response.status.isSuccess):
             ZIO.fail(new Exception(s"Claiming registration failed with ${response.status}"))
-          claim <- response.body.asJsonFromCodec[ClaimResponse]
-          // A cell id central answers and this build cannot read is a failure, not "no cell": the user would be
-          // created here although it is held elsewhere.
-          cell <- ZIO.foreach(claim.cell)(id =>
-            ZIO.fromEither(RoutingKey.CellId.parse(id)).mapError(reason => new Exception(s"central answered an invalid cell: $reason")),
-          )
-        yield Claim(claim.userId, cell)
+          claim <- response.body.asJsonFromCodec[ClaimResponse].flatMap(read)
+        yield claim

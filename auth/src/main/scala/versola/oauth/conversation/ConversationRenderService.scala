@@ -446,6 +446,10 @@ object ConversationRenderService:
         case ConversationResult.BadRequest | ConversationResult.WriteConflict =>
           ZIO.succeed(challenge)
 
+        // The conversation went to another cell with the browser: this cell's cookie has nothing behind it any more.
+        case ConversationResult.Handoff(location) =>
+          ZIO.succeed(Response.seeOther(location).addCookie(ConversationCookie.expired))
+
         case ConversationResult.Complete(redirectUri, state, code, sessionId, idTokenData, userAgentId, userAgentData) =>
           val encodedCode = AuthorizationCode.present(code)
           for

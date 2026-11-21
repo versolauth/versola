@@ -39,6 +39,13 @@ case class RegisteredUserRequest(
   */
 case class RegisteredUserResponse(userId: UserId, cell: Option[CellId]) derives JsonCodec, Schema
 
+/** Who holds a credential, asked by a cell that did not find it in its own database (versolauth/versola#1046). */
+case class LookupUserRequest(
+    email: Option[Email],
+    phone: Option[Phone],
+    login: Option[Login],
+) derives JsonCodec, Schema
+
 case class PatchUserRequest(
     id: UserId,
     email: Option[Patch[Email]],

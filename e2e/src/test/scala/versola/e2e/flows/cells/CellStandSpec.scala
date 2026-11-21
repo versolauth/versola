@@ -160,14 +160,17 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         email = setup.email.get
         registered <- register(s.second, setup, email)
         sub <- subject(registered.tokens.accessToken)
-        // The same address at cell 1: the directory answers that cell 2 holds its user. Until the sign-in is handed
-        // to that cell (Phase 2 step 5) cell 1 refuses it, and creates nothing.
-        (_, atOther) <- submitCode(s.first, setup, email)
+        // The same address at cell 1: the directory answers that cell 2 holds its user, so cell 1 sends no code and
+        // creates nothing; it sends the browser to cell 2 (the next case follows it there).
+        authorize <- s.first.auth.authorize(clientId = Some(setup.clientId), redirectUri = Some(setup.redirectUri)).assertChallengeRedirect
+        credential <- s.first.auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
+        atOther <- s.first.auth.submitEmail(authorize.conversationCookie.get, email, credential.csrf)
         found <- central.get("/users", "email" -> email).flatMap(_.items("users"))
         // Signing in again at cell 2 is the same user: the claim answered the same id.
         again <- register(s.second, setup, email)
         subAgain <- subject(again.tokens.accessToken)
-      yield assertTrue(atOther.response.status != Status.SeeOther).label(s"cell 1 must not finish the sign-in, got ${atOther.response.status}") &&
+      yield assertTrue(atOther.location.contains(s"/challenge/handoff?handoff=v1.${s.second.id}."))
+        .label(s"cell 1 does not go on with the sign-in but hands it to cell 2: ${atOther.response.status} ${atOther.location}") &&
         assertTrue(
           found.flatMap(_.str("id")) == Chunk.fromIterable(sub),
         ).label(s"central finds one user for the address, the one of cell 2: $found") &&
@@ -275,6 +278,52 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         assertTrue(resumedCode.startsWith(s"v1.${s.second.id}."), resumedCell.contains(s.second.id))
           .label(s"the returning browser was sent to cell 2: $resumedCode") &&
         assertTrue(notServed.forall(_ == Status.NotFound)).label(s"only the pages of a sign-in are served by edge: $notServed")
+    },
+    // Phase 2 step 5 (versolauth/versola#1046): a sign-in handed to the cell that holds the address.
+    test("a user of cell 2 whose sign-in was placed in cell 1 is handed to cell 2 once the address is typed, and finishes there") {
+      for
+        s <- stand
+        config <- ZIO.service[E2EConfig]
+        client <- ZIO.service[Client]
+        front <- front
+        setup <- s.nextRegistration
+        email = setup.email.get
+        // The user exists in cell 2.
+        registered <- register(s.second, setup, email)
+        sub <- subject(registered.tokens.accessToken)
+        // A new browser, through edge: nothing says who it is, so the sign-in is placed in the open cell, cell 1.
+        authorize <- front.auth.authorize(clientId = Some(setup.clientId), redirectUri = Some(setup.redirectUri)).assertChallengeRedirect
+        firstCookie = authorize.conversationCookie.get
+        credential <- front.auth.getChallenge(firstCookie).assertStep(ConversationStep.Credential)
+        // The address typed is not cell 1's: it asks the directory and sends the browser on with the sign-in sealed.
+        typed <- front.auth.submitEmail(firstCookie, email, credential.csrf)
+        handoff = typed.location
+        handoffUrl <- ZIO.fromEither(URL.decode(s"${config.edgeUrl}$handoff")).mapError(RuntimeException(_))
+        // The browser follows it, still holding cell 1's cookie: edge goes by the cell the handoff names.
+        taken <- client.batched(Request.get(handoffUrl).addHeader(Header.Custom("Cookie", s"SSO_CONVERSATION=$firstCookie")))
+        secondCookie <- ZIO.fromOption(
+          taken.headers.getAll(Header.SetCookie).collectFirst {
+            case h if h.value.name == "SSO_CONVERSATION" && h.value.content.nonEmpty => h.value.content
+          },
+        ).orElseFail(RuntimeException(s"cell 2 did not take the handoff: ${taken.status}"))
+        // Cell 2 knows the user: the address is not asked again, the browser is at the code step.
+        otp <- front.auth.getChallenge(secondCookie).assertStep(ConversationStep.Otp)
+        code <- front.auth.submitOtp(secondCookie, fixedOtp, otp.csrf).flatMap(_.assertRedirect)
+        tokens <- s.second.auth.token(
+          code,
+          authorize.verifier,
+          clientId = Some(setup.clientId),
+          clientSecret = Some(setup.clientSecret),
+          redirectUri = Some(setup.redirectUri),
+        ).success
+        subAgain <- subject(tokens.accessToken)
+      yield assertTrue(firstCookie.startsWith(s"v1.${s.first.id}.")).label(s"the sign-in was placed in cell 1: $firstCookie") &&
+        assertTrue(typed.response.status == Status.SeeOther, handoff.contains(s"/challenge/handoff?handoff=v1.${s.second.id}."))
+          .label(s"cell 1 hands the sign-in to cell 2: ${typed.response.status} $handoff") &&
+        assertTrue(!handoff.contains(email.takeWhile(_ != '@'))).label("the address is not readable in the handoff") &&
+        assertTrue(secondCookie.startsWith(s"v1.${s.second.id}."), code.startsWith(s"v1.${s.second.id}."))
+          .label(s"the sign-in continues and finishes in cell 2: $secondCookie $code") &&
+        assertTrue(subAgain == sub).label("as the user cell 2 holds, with the PKCE of the request that was placed in cell 1")
     },
     test("with the cells registered the staged edge signs a user in and makes its calls at the cell the values name") {
       for

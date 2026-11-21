@@ -48,6 +48,10 @@ trait UserService:
   /** Claim credentials and return the canonical ID for self-service registration. */
   def indexRegistered(request: RegisteredUserRequest): IO[UserIndexConflict | Throwable, RegisteredUserResponse]
 
+  /** The user that holds the identifiers and the cell that holds the user, without claiming anything; `None` when
+    * nobody holds them, or when they belong to more than one user (which a claim reports, not a lookup). */
+  def lookup(request: LookupUserRequest): Task[Option[RegisteredUserResponse]]
+
   def patch(request: PatchUserRequest): IO[UserNotFound | UserConflict | Throwable, Unit]
 
   def patchClaims(id: UserId, patch: Json.Obj): Task[Unit]
@@ -244,6 +248,12 @@ object UserService:
           candidate = UserDirectoryRecord(id, cellId = request.cell),
         )
       yield RegisteredUserResponse(userId = owner.id, cell = owner.cellId)
+
+    override def lookup(request: LookupUserRequest): Task[Option[RegisteredUserResponse]] =
+      ZIO.foreach(identifiers(request.email, request.phone, request.login))(userRepository.findByIdentifier).map: owners =>
+        owners.flatten.distinctBy(_.id) match
+          case owner :: Nil => Some(RegisteredUserResponse(userId = owner.id, cell = owner.cellId))
+          case _ => None
 
     override def patch(request: PatchUserRequest): IO[UserNotFound | UserConflict | Throwable, Unit] =
       def change[A](kind: IdentifierKind, patch: Option[Patch[A]])(mac: A => DirectoryIdentifier) =

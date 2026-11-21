@@ -68,6 +68,32 @@ object UserDirectorySpec extends ZIOSpecDefault:
         claim <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).claim(Right(phone))
       yield assertTrue(claim.cell.map(identity[String]).contains("kz-2"))
     },
+    // versolauth/versola#1046
+    test("a lookup asks who holds the credential without naming a cell, and reads the holder's cell") {
+      for
+        (client, seen) <- central(Response.json(UserDirectory.ClaimResponse(userId, Some("kz-2")).toJson))
+        found <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).lookup(Right(phone))
+        (request, body) <- sent(seen)
+      yield assertTrue(
+        found.map(_.userId) == Some(userId),
+        found.flatMap(_.cell).map(identity[String]) == Some("kz-2"),
+        request.url.path.encode.contains("users/lookup"),
+        body.get("phone").contains(Json.Str(phone)),
+        body.get("cell").forall(_ == Json.Null),
+      )
+    },
+    test("a lookup of a credential nobody holds is nobody, and any other refusal of central is a failure") {
+      for
+        (client, _) <- central(Response.status(Status.NotFound))
+        nobody <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).lookup(Right(phone))
+      yield assertTrue(nobody.isEmpty)
+    },
+    test("a lookup central refuses is a failure, not nobody") {
+      for
+        (client, _) <- central(Response.status(Status.InternalServerError))
+        refused <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).lookup(Right(phone)).exit
+      yield assertTrue(refused.isFailure)
+    },
     test("fails when central rejects the claim, or names a cell that is not a cell id") {
       for
         (client, _) <- central(Response.status(Status.Conflict))

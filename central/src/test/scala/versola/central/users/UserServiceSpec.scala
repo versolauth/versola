@@ -456,6 +456,26 @@ object UserServiceSpec extends UnitSpecBase:
         result <- env.service.create(CreateUserRequest(Some(email), None, None)).either
       yield assertTrue(result == Left(UserConflict))
     },
+    // versolauth/versola#1046
+    test("lookup answers the user and the cell that hold a credential, by its MAC and without claiming it") {
+      val env = Env()
+      val phone = Phone("+15551234567")
+      for
+        _ <- env.userRepository.findByIdentifier.succeedsWith(Some(UserDirectoryRecord(userId, Some(cell))))
+        found <- env.service.lookup(LookupUserRequest(email = None, phone = Some(phone), login = None))
+      yield assertTrue(
+        found == Some(RegisteredUserResponse(userId = userId, cell = Some(cell))),
+        env.userRepository.findByIdentifier.calls.map(i => (i.kind, i.mac.toList)) == List((IdentifierKind.Phone, key.phone(phone).mac.toList)),
+        env.userRepository.claim.calls.isEmpty,
+      )
+    },
+    test("lookup answers nobody for a credential nobody holds") {
+      val env = Env()
+      for
+        _ <- env.userRepository.findByIdentifier.succeedsWith(None)
+        found <- env.service.lookup(LookupUserRequest(email = Some(email), phone = None, login = None))
+      yield assertTrue(found.isEmpty)
+    },
     test("indexRegistered fails with UserIndexConflict when credentials resolve to multiple users") {
       val env = Env()
       val request = RegisteredUserRequest(email = Some(email), phone = None, login = None, cell = None)

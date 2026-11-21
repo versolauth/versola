@@ -70,6 +70,7 @@ import versola.oauth.conversation.{
 import versola.oauth.delivery.DeliveryChannels
 import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, PostgresDpopProofRepository}
 import versola.oauth.est.{EstCentralClient, EstController, EstService}
+import versola.oauth.handoff.CellHandoff
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
@@ -144,6 +145,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AuthorizeEndpointService &
       AuthorizationResponseService &
       ConversationRouter &
+      CellHandoff &
       ConversationService &
       AntifraudEvents &
       AntifraudCounters &
@@ -456,6 +458,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PowChallengeVerifier.live >++>
       CodeAlternativeService.live >++>
       ConversationService.live >++>
+      CellHandoff.live >++>
       ConversationRouter.live >++>
       AuthorizationResponseService.live >++>
       AuthorizeEndpointService.live >++>
