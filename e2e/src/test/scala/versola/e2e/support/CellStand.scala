@@ -24,8 +24,15 @@ import java.util.concurrent.TimeUnit
   * @param second the cell this stand started
   * @param setups email-registration clients registered before the second cell started, so that it knows them from its
   *   first read of the configuration; each has an address nobody registered
+  * @param passwordClient a client of the same tenant whose sign-in is an email and then a password, registered before
+  *   the second cell started too: for a user who registered through one of `setups` and was given a password
   */
-final case class CellStand(first: CellStand.Cell, second: CellStand.Cell, private val setups: Ref[List[Flows.Setup]]):
+final case class CellStand(
+    first: CellStand.Cell,
+    second: CellStand.Cell,
+    passwordClient: CellStand.RegisteredClient,
+    private val setups: Ref[List[Flows.Setup]],
+):
 
   /** A registration client and an address nobody has used. */
   def nextRegistration: Task[Flows.Setup] =
@@ -38,7 +45,24 @@ object CellStand:
   val SecondCellId = "local-2"
 
   /** How many registration setups are made up front. */
-  val Setups = 10
+  val Setups = 12
+
+  /** A client as a spec uses it at `/authorize` and `/token`. */
+  final case class RegisteredClient(clientId: String, clientSecret: String, redirectUri: String)
+
+  /** An email address and then a password, no code: the first factor a handed-over sign-in lands on is not always a code. */
+  private val emailPasswordAuthFlow: Json = Json.Obj(
+    "primary" -> Json.Obj(
+      "credentials" -> Json.Arr(Json.Str("email")),
+      "inlinePassword" -> Json.Bool(false),
+      "factors" -> Json.Arr(Json.Obj("type" -> Json.Str("password"), "required" -> Json.Bool(true))),
+    ),
+    "passkey" -> Json.Null,
+    "equivalents" -> Json.Obj(),
+    "otpType" -> Json.Str("email"),
+  )
+
+  private val RedirectUri = "http://localhost:3000"
 
   /** @param auth the cell reached by its own address, as nothing in front of it would route */
   final case class Cell(id: String, auth: OAuthClient, url: String, mutualTlsUrl: String)
@@ -178,6 +202,14 @@ object CellStand:
         edge <- ZIO.service[EdgeApi]
         // Before the second cell starts: it reads the configuration once at start-up and then on its refresh interval.
         setups <- ZIO.foreach(List.range(0, Setups))(_ => Flows.setupEmailRegistration().provideEnvironment(ZEnvironment(oauth)))
+        passwordClientId <- CentralApi.id("cell-stand-password")
+        passwordClient <- oauth.registerClient(
+          passwordClientId,
+          "Cell stand: email and password",
+          Set(RedirectUri),
+          allowedScopes = Set("openid", "email"),
+          authFlow = Some(emailPasswordAuthFlow),
+        ).success
         server <- databaseOf(config.authEnvConf)
         database = s"${server.name}_cell2"
         _ <- freshDatabase(server, database)
@@ -202,5 +234,6 @@ object CellStand:
           secondUrl,
           secondMutualTlsUrl,
         ),
+        passwordClient = RegisteredClient(passwordClientId, passwordClient.secret, RedirectUri),
         setups = unused,
       )

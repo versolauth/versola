@@ -325,6 +325,51 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
           .label(s"the sign-in continues and finishes in cell 2: $secondCookie $code") &&
         assertTrue(subAgain == sub).label("as the user cell 2 holds, with the PKCE of the request that was placed in cell 1")
     },
+    test("a handed-over sign-in lands on the first factor of the client's flow: a password, where the flow asks for one first") {
+      for
+        s <- stand
+        config <- ZIO.service[E2EConfig]
+        client <- ZIO.service[Client]
+        auth <- ZIO.service[OAuthClient]
+        front <- front
+        setup <- s.nextRegistration
+        email = setup.email.get
+        password = "Cell-Stand-Pass-1!"
+        // A user of cell 2, with a password an administrator set: central sets it in the cell that holds the user.
+        registered <- register(s.second, setup, email)
+        sub <- subject(registered.tokens.accessToken)
+        userId <- ZIO.fromOption(sub).mapBoth(_ => RuntimeException("the token has no sub"), java.util.UUID.fromString)
+        _ <- auth.setUserPassword(userId, password)
+        // Through edge with the client whose flow is an email and then a password: placed in cell 1.
+        pw = s.passwordClient
+        authorize <- front.auth.authorize(clientId = Some(pw.clientId), redirectUri = Some(pw.redirectUri)).assertChallengeRedirect
+        firstCookie = authorize.conversationCookie.get
+        credential <- front.auth.getChallenge(firstCookie).assertStep(ConversationStep.Credential)
+        typed <- front.auth.submitEmail(firstCookie, email, credential.csrf)
+        handoffUrl <- ZIO.fromEither(URL.decode(s"${config.edgeUrl}${typed.location}")).mapError(RuntimeException(_))
+        taken <- client.batched(Request.get(handoffUrl).addHeader(Header.Custom("Cookie", s"SSO_CONVERSATION=$firstCookie")))
+        secondCookie <- ZIO.fromOption(
+          taken.headers.getAll(Header.SetCookie).collectFirst {
+            case h if h.value.name == "SSO_CONVERSATION" && h.value.content.nonEmpty => h.value.content
+          },
+        ).orElseFail(RuntimeException(s"cell 2 did not take the handoff: ${taken.status} ${typed.location}"))
+        // Cell 2 asks for what its flow asks first: the password, with no code in between and the address not asked again.
+        step <- front.auth.getChallenge(secondCookie).assertStep(ConversationStep.Password)
+        code <- front.auth.submitPassword(secondCookie, password, step.csrf).flatMap(_.assertRedirect)
+        tokens <- s.second.auth.token(
+          code,
+          authorize.verifier,
+          clientId = Some(pw.clientId),
+          clientSecret = Some(pw.clientSecret),
+          redirectUri = Some(pw.redirectUri),
+        ).success
+        subAgain <- subject(tokens.accessToken)
+      yield assertTrue(firstCookie.startsWith(s"v1.${s.first.id}."), typed.location.contains(s"handoff=v1.${s.second.id}."))
+        .label(s"placed in cell 1 and handed to cell 2: ${typed.location}") &&
+        assertTrue(secondCookie.startsWith(s"v1.${s.second.id}."), code.startsWith(s"v1.${s.second.id}."))
+          .label("the password was asked and checked in cell 2") &&
+        assertTrue(subAgain == sub).label("and the sign-in is the user cell 2 holds")
+    },
     test("with the cells registered the staged edge signs a user in and makes its calls at the cell the values name") {
       for
         s <- stand
