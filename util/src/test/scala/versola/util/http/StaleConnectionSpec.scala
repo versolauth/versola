@@ -109,12 +109,20 @@ object StaleConnectionSpec extends ZIOSpecDefault:
       ZLayer.succeed(api.OpenTelemetry.noop().getTracer("test")),
     )
 
-  /** The client as the services use it: the raw one, the shared middleware and the guard, in that order, with the guard in `mode`. */
-  private def sharedClientFor(config: ZClient.Config, mode: GuardMode = GuardMode.Shadow): ZIO[Scope, Throwable, Client] =
+  /** The client as the services use it: the raw one, the shared middleware and the guard, in that order, with the guard in `mode` and the
+    * peer's retry budget as given. `exempt`: `None` leaves the guard unarmed (the time before the service is up), `Some(peers)` arms it with those
+    * peers exempt. */
+  private def sharedClientFor(
+      config: ZClient.Config,
+      mode: GuardMode = GuardMode.Shadow,
+      budget: RetryBudgetSettings = RetryBudgetSettings.default,
+      exempt: Option[Set[String]] = Some(Set.empty),
+  ): ZIO[Scope, Throwable, Client] =
     for
       raw <- clientFor(config)
       traced <- tracing.build.map(_.get[Tracing])
-      guard <- OutboundGuard.make(OutboundGuard.initialSettings(Observability.defaultClientPoolSize).copy(mode = mode))
+      guard <- OutboundGuard.make(OutboundGuard.initialSettings(Observability.defaultClientPoolSize).copy(mode = mode, retryBudget = budget))
+      _ <- ZIO.foreachDiscard(exempt)(peers => guard.arm(peers))
     yield raw @@ Observability.clientMiddleware(traced) @@ guard.aspect
 
   /** The pool the services ship with: `Dynamic(0, 128, 30s)`. */
@@ -217,16 +225,106 @@ object StaleConnectionSpec extends ZIOSpecDefault:
           yield assertTrue(result.isLeft, server.requests.get == 2)
       },
     ),
-    test("the repeat spends the peer's retry budget: when it is spent the failure is returned, as for any other retry") {
-      ZIO.scoped:
-        for
-          // every other request of the server is closed on, so each GET needs its repeat; the budget holds ten and refills at five a second
-          server <- peer(drop = _ % 2 == 1)
-          client <- sharedClientFor(shipped, mode = GuardMode.Enforce)
-          _ <- ZIO.sleep(1.second)
-          results <- ZIO.foreach(1 to 40)(_ => get(client, server.port))
-        yield assertTrue(results.exists(_ == Right("ok")), results.exists(_.isLeft))
-    },
+    suite("the repeat and the retry budget")(
+      test("in enforce, a peer whose retry budget is spent is not sent the GET again: the caller is told, and so is the log") {
+        ZIO.scoped:
+          for
+            server <- peer(drop = _ == 2)
+            client <- sharedClientFor(shipped, mode = GuardMode.Enforce, budget = RetryBudgetSettings(ratio = 0, minPerSecond = 0))
+            first <- get(client, server.port)
+            second <- get(client, server.port)
+            logs <- ZTestLogger.logOutput
+          yield assertTrue(
+            first == Right("ok"),
+            second.isLeft,
+            server.requests.get == 2,
+            logs.exists(line => line.logLevel == LogLevel.Error && line.message().contains("not sent again")),
+          )
+      },
+      test("in enforce, a peer whose retry budget has tokens is sent the GET again, and the caller sees no failure") {
+        ZIO.scoped:
+          for
+            server <- peer(drop = _ == 2)
+            client <- sharedClientFor(shipped, mode = GuardMode.Enforce)
+            first <- get(client, server.port)
+            // the budget refills at five tokens a second from the first call, so 300 ms leaves one and a half
+            _ <- ZIO.sleep(300.millis)
+            second <- get(client, server.port)
+          yield assertTrue(first == Right("ok"), second == Right("ok"), server.requests.get == 3)
+      },
+      test("in shadow, the default, the repeat is made whatever the budget: a denial is only counted") {
+        ZIO.scoped:
+          for
+            server <- peer(drop = _ == 2)
+            client <- sharedClientFor(shipped, mode = GuardMode.Shadow, budget = RetryBudgetSettings(ratio = 0, minPerSecond = 0))
+            first <- get(client, server.port)
+            second <- get(client, server.port)
+          yield assertTrue(first == Right("ok"), second == Right("ok"), server.requests.get == 3)
+      },
+      test("with the guard off there is no repeat") {
+        ZIO.scoped:
+          for
+            server <- peer(drop = _ == 2)
+            client <- sharedClientFor(shipped, mode = GuardMode.Off)
+            first <- get(client, server.port)
+            second <- get(client, server.port)
+          yield assertTrue(first == Right("ok"), second.isLeft, server.requests.get == 2)
+      },
+      test("an exempt peer is read as shadow in enforce, as the guard leaves it alone: the repeat is made though the budget is spent") {
+        ZIO.scoped:
+          for
+            server <- peer(drop = _ == 2)
+            client <- sharedClientFor(
+              shipped,
+              mode = GuardMode.Enforce,
+              budget = RetryBudgetSettings(ratio = 0, minPerSecond = 0),
+              exempt = Some(Set(s"localhost:${server.port}")),
+            )
+            first <- get(client, server.port)
+            second <- get(client, server.port)
+          yield assertTrue(first == Right("ok"), second == Right("ok"), server.requests.get == 3)
+      },
+      test("before the guard is armed, enforce is read as shadow too") {
+        ZIO.scoped:
+          for
+            server <- peer(drop = _ == 2)
+            client <- sharedClientFor(shipped, mode = GuardMode.Enforce, budget = RetryBudgetSettings(ratio = 0, minPerSecond = 0), exempt = None)
+            first <- get(client, server.port)
+            second <- get(client, server.port)
+          yield assertTrue(first == Right("ok"), second == Right("ok"), server.requests.get == 3)
+      },
+    ),
+    suite("what the first attempt logs")(
+      test("a failure the caller never sees, because the repeat succeeded, is a warning and not an error") {
+        ZIO.scoped:
+          for
+            server <- peer(drop = _ == 2)
+            client <- sharedClientFor(shipped)
+            _ <- get(client, server.port)
+            // the test logger is the whole spec's: only what this case wrote
+            before <- ZTestLogger.logOutput.map(_.size)
+            second <- get(client, server.port)
+            logs <- ZTestLogger.logOutput.map(_.drop(before))
+            sendHttp = logs.filter(_.message() == "send-http")
+          yield assertTrue(
+            second == Right("ok"),
+            sendHttp.exists(_.logLevel == LogLevel.Warning),
+            !sendHttp.exists(_.logLevel == LogLevel.Error),
+          )
+      },
+      test("the same failure of a request that is not sent again is an error") {
+        ZIO.scoped:
+          for
+            server <- peer(drop = _ == 2)
+            client <- sharedClientFor(shipped)
+            _ <- get(client, server.port)
+            before <- ZTestLogger.logOutput.map(_.size)
+            second <- read(client, Request.post(urlOf(server.port), Body.fromString("x")))
+            logs <- ZTestLogger.logOutput.map(_.drop(before))
+            sendHttp = logs.filter(_.message() == "send-http")
+          yield assertTrue(second.isLeft, sendHttp.exists(_.logLevel == LogLevel.Error))
+      },
+    ),
     test("which failures count as a closed connection: those that say so, through their causes, and not a timeout or a refusal") {
       import io.netty.handler.codec.PrematureChannelClosureException
       import java.io.IOException
