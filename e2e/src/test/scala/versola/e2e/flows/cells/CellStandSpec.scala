@@ -21,6 +21,9 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
 
   private val UpstreamPort = 9116
 
+  /** The user id edge would add for the operator who changes the antifraud settings. */
+  private val Operator = "00000000-0000-0000-0000-0000000e2e05"
+
   private val config = EdgeFixture.Config(
     resourceId = "e2e-cell-stand",
     resourceUri = UpstreamStub.uriOn(UpstreamPort),
@@ -214,6 +217,35 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         assertTrue(deleted.status.isSuccess).label(s"central deletes the user: ${deleted.status} ${deleted.body}") &&
         assertTrue(after.isEmpty).label("the directory no longer has the address") &&
         assertTrue(subAgain.nonEmpty && subAgain != sub).label("the address registers again as another user")
+    },
+    // The antifraud policy is central's, one for every cell: each cell copies it on a poll and enforces its copy.
+    test("a change of the antifraud settings made in central reaches every cell, which the status of each cell says") {
+      // The version of the settings each cell holds, by cell; a cell that did not answer has none.
+      def versions(central: CentralApi): Task[Map[String, Option[Long]]] =
+        central.get("/antifraud/status").flatMap(_.items("cells")).map: cells =>
+          cells.flatMap: cell =>
+            cell.str("cell").map: id =>
+              id -> cell.get("status").collect { case status: Json.Obj => status }
+                .flatMap(_.get("tuning")).collect { case tuning: Json.Obj => tuning }
+                .flatMap(_.get("version")).collect { case Json.Num(version) => version.longValue }
+          .toMap
+      for
+        s <- stand
+        central <- ZIO.service[CentralApi]
+        read <- central.get("/antifraud/settings").flatMap(_.obj)
+        settings = Json.Obj(read.fields.filterNot((name, _) => name == "version"))
+        // The same settings again: nothing changes for the suite, and the version moves, as with every write.
+        written <- central.asAdmin(Operator).put("/antifraud/settings", Json.Obj("settings" -> settings))
+        version <- written.obj.map(_.get("version").collect { case Json.Num(version) => version.longValue })
+        // Awaited: each instance asks central every `antifraud.tuning.refresh-interval` (5 s) and rereads its copy after.
+        reached <- versions(central)
+          .repeat(Schedule.spaced(500.millis) *> Schedule.recurUntil[Map[String, Option[Long]]](_.values.forall(_ == version)))
+          .timeout(40.seconds)
+          .someOrElseZIO(versions(central))
+      yield assertTrue(written.status.isSuccess).label(s"central stores the settings: ${written.status} ${written.body}") &&
+        assertTrue(version.exists(_ > 0)).label("the write has a version") &&
+        assertTrue(reached.keySet == Set(s.first.id, s.second.id)).label(s"the status lists both cells: $reached") &&
+        assertTrue(reached.values.forall(_ == version)).label(s"both cells hold version $version: $reached")
     },
     // Phase 2 step 4 (versolauth/versola#1044): the pages of a sign-in behind edge.
     test("through edge a new sign-in is placed and finished at one cell, and a returning browser goes to the cell of its session") {

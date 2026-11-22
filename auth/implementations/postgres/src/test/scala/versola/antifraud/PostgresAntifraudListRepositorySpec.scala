@@ -23,12 +23,6 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec, AntifraudListRe
     override def clearStats: Task[Unit] =
       xa.connect(sql"DELETE FROM af_dest_stats".update.run()).unit
 
-    override def entryOfKind(listType: String, valueType: String, value: String): Task[Unit] =
-      xa.connect(
-        sql"""INSERT INTO af_list_entry (id, type, value_type, value, source, created_by, created_at)
-              VALUES (${UUID.randomUUID()}, $listType, $valueType, $value, 's', 'c', now())""".update.run(),
-      ).unit
-
   override lazy val environment =
     ZLayer:
       for
@@ -45,7 +39,7 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec, AntifraudListRe
       xa <- ZIO.service[TransactorZIO]
       _ <- xa.connect:
         sql"DELETE FROM af_list_entry".update.run()
-        sql"DELETE FROM af_list_audit".update.run()
+        sql"UPDATE af_list_version SET version = 0".update.run()
         sql"DELETE FROM af_counter_reset".update.run()
         // What the preview cases wrote: the events of the hour before `at`, in partitions that may be gone by now.
         sql"DELETE FROM af_event WHERE at >= ${at.minusSeconds(3600).atOffset(ZoneOffset.UTC)}".update.run()
@@ -59,22 +53,17 @@ object PostgresAntifraudListRepositorySpec extends PostgresSpec, AntifraudListRe
           impatient = PostgresAntifraudListRepository(xa, statementTimeout = 100.millis)
           id = UUID.randomUUID()
           holder <- xa.transact:
-            sql"LOCK TABLE af_list_entry, af_list_audit, af_list_version IN ACCESS EXCLUSIVE MODE".update.run()
+            sql"LOCK TABLE af_list_entry, af_list_version, af_counter_reset IN ACCESS EXCLUSIVE MODE".update.run()
             Thread.sleep(4000)
           .fork
           _ <- Live.live(ZIO.sleep(500.millis))
           calls = List(
-            "upsert" -> impatient.upsert(entry(), "x", at).unit,
-            "delete" -> impatient.delete(id, "x", at).unit,
-            "find" -> impatient.find(id).unit,
-            "list" -> impatient.list(AntifraudListFilter.all, 10, 0).unit,
+            "replaceAll" -> impatient.replaceAll(List(entry()), 1).unit,
             "loadActive" -> impatient.loadActive(at).unit,
             "version" -> impatient.version.unit,
             "addHits" -> impatient.addHits(List(ListHit(id, 1, at))),
-            "purgeExpired" -> impatient.purgeExpired(at, 10).unit,
-            "pruneAudit" -> impatient.pruneAudit(at, 10).unit,
-            "audit of all" -> impatient.audit(None, 10, None).unit,
-            "audit of one" -> impatient.audit(Some(id), 10, None).unit,
+            "hits" -> impatient.hits(List(id)).unit,
+            "pruneCounterResets" -> impatient.pruneCounterResets(at, 10).unit,
           )
           exits <- ZIO.foreach(calls)((name, call) => call.exit.map(name -> _))
           _ <- holder.join

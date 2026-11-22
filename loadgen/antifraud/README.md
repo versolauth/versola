@@ -102,12 +102,12 @@ own keys, so a run differs from the one it is compared with by exactly those:
 | `evaluate-no-budget` (the same profile) | nothing | the `evaluate` settings with `sentPerHour 0`: the velocity limits alone |
 | `challenge` | `challenge.enabled = true`, `pause` (the proof of work and the pause are on; the profile includes `evaluate`) | `"mode": "enforce"`, `challengeAt` above 0 and below `blockAt`, the velocity limits of `evaluate` (the runbook's `tuning/challenge.json`) |
 
-The limits are stored settings, not keys of the config: in a deployment they are set through central's
-`PUT /antifraud/settings` (deploy.md), and `auth` rereads them within `antifraud.tuning.refresh-interval` (5 s).
-The local stack is driven by the `utils` client, which has no antifraud permission, so the settings of each profile
-are written straight into `af_settings` by the `tune.sh` of the runbook (below), after `auth` has started with the
-profile and before the run (`AF_TUNE_VIA=api` makes it `PATCH /antifraud/settings` through central instead, once the admin API
-of versolauth/versola#884 is on `main`). A profile that measures what is refused or challenged needs `"mode": "enforce"` in
+The limits are stored settings, not keys of the config: they are set through central's
+`PUT` or `PATCH /antifraud/settings` (deploy.md), central stores them, and `auth` copies them within
+`antifraud.tuning.refresh-interval` (5 s) and rereads its copy within another. The settings of each profile are put in by the
+`tune.sh` of the runbook (below) with `AF_TUNE_VIA=api`, after `auth` has started with the profile and before the run.
+Writing them straight into `auth`'s `af_settings` no longer holds: that table is a copy of central's, and the next
+change in central replaces it. A profile that measures what is refused or challenged needs `"mode": "enforce"` in
 them: the default mode is `shadow`, which decides, records the would-be action and lets everything through.
 
 **The scripts that drive a whole ladder of runs, the settings of each profile and the recorded runs are not here:**
@@ -221,8 +221,8 @@ AF_LABEL=off-repeat AF_REPORT=loadgen/antifraud/results/off-repeat.json AF_BASEL
   loadgen/target/universal/stage/bin/loadgen -Denv.path=loadgen/antifraud/loadgen.conf
 
 # 8. Restart auth with the profile switched on, put its settings in, and run against the baseline
-#    (stop auth, then the auth line of step 5 with auth-profiles/sms-budget.conf; wait for readiness; write the
-#    profile's settings into af_settings and bump af_settings_version, which is what the runbook's tune.sh does)
+#    (stop auth, then the auth line of step 5 with auth-profiles/sms-budget.conf; wait for readiness; put the
+#    profile's settings in through central, which is what the runbook's tune.sh does with AF_TUNE_VIA=api)
 AF_LABEL=sms-budget AF_REPORT=loadgen/antifraud/results/sms-budget.json AF_BASELINE=loadgen/antifraud/results/off.json \
   loadgen/target/universal/stage/bin/loadgen -Denv.path=loadgen/antifraud/loadgen.conf
 

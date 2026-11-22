@@ -27,8 +27,21 @@ case class AntifraudTuningStatus(
 ) derives JsonCodec, Schema
 
 /** What one auth instance says of its antifraud (the one that answers: another may be behind, the ages say by how much). */
+case class AntifraudInstanceStatus(
+    decision: AntifraudDecisionStatus,
+    lists: AntifraudListsStatus,
+    tuning: AntifraudTuningStatus,
+) derives JsonCodec, Schema
+
+/** What an instance of one cell says, or why the cell did not answer (`error`, and then no `status`). `tuning.version` is the
+  * version of central's settings the cell has copied: the same number in every cell once a change has reached them all. */
+case class AntifraudCellStatus(cell: String, status: Option[AntifraudInstanceStatus], error: Option[String]) derives JsonCodec, Schema
+
+/** The status of the `auth` central is configured with, and of an instance of every registered cell (none where there is
+  * no cell): the policy is one, but each cell copies and enforces it on its own. */
 case class AntifraudStatusResponse(
     decision: AntifraudDecisionStatus,
     lists: AntifraudListsStatus,
     tuning: AntifraudTuningStatus,
+    cells: List[AntifraudCellStatus],
 ) derives JsonCodec, Schema

@@ -105,6 +105,8 @@ object AuditRoutesSpec extends ZIOSpecDefault:
       val internal = entries.collect { case ((method, path), Entry.Internal) => method.name -> path }.toSet
       assertTrue(
         internal == Set(
+          "GET" -> "/antifraud/policy/sync",
+          "GET" -> "/antifraud/policy/lists/sync",
           "GET" -> "/configuration/authorization-detail-types/sync",
           "GET" -> "/configuration/challenges/challenge-settings/sync",
           "GET" -> "/configuration/challenges/otp-templates/sync",

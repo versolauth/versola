@@ -43,6 +43,20 @@ object AntifraudStatusControllerSpec extends ZIOSpecDefault, ZIOStubs:
     decision = AntifraudDecisionStatus(enabled = true),
     lists = AntifraudListsStatus(enabled = true, snapshotAgeSeconds = Some(12), size = 40, skipped = 2, lastRefreshError = Some("db down")),
     tuning = AntifraudTuningStatus(available = true, version = Some(7), ageSeconds = Some(3), lastRefreshError = None),
+    cells = List(
+      AntifraudCellStatus(
+        cell = "kz-1",
+        status = Some(
+          AntifraudInstanceStatus(
+            decision = AntifraudDecisionStatus(enabled = true),
+            lists = AntifraudListsStatus(enabled = true, snapshotAgeSeconds = Some(1), size = 40, skipped = 0, lastRefreshError = None),
+            tuning = AntifraudTuningStatus(available = true, version = Some(7), ageSeconds = Some(2), lastRefreshError = None),
+          ),
+        ),
+        error = None,
+      ),
+      AntifraudCellStatus(cell = "kz-2", status = None, error = Some("connection refused")),
+    ),
   )
 
   def spec = suite("central AntifraudStatusController")(

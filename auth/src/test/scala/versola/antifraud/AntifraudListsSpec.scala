@@ -7,39 +7,29 @@ import zio.test.*
 
 import java.time.Instant
 import java.util.UUID
+import scala.util.Try
 
 object AntifraudListsSpec extends UnitSpecBase:
 
   private val tenant = TenantId("tenant-a")
-  private val operator = "op"
 
-  /** The repository, in memory. */
-  private class FakeRepository(var entries: List[AntifraudListEntry] = Nil) extends AntifraudListRepository:
+  /** The copy of central's lists, in memory. */
+  private class FakeRepository(var entries: List[PolicyListEntry] = Nil) extends AntifraudListRepository:
     var failLoad = false
     var ver = 0L
     var loads = 0
     def changed(): Unit = ver += 1
     var failHits = false
     var written: List[ListHit] = Nil
-    var audits: List[AntifraudListAudit] = Nil
+    var hitsAsked: List[List[UUID]] = Nil
 
-    override def upsert(entry: AntifraudListEntry, actor: String, at: Instant): Task[AntifraudListEntry] =
+    override def replaceAll(entries: List[PolicyListEntry], version: Long): Task[Boolean] =
       ZIO.succeed:
-        val same =
-          entries.find(e => e.listType == entry.listType && e.valueType == entry.valueType && e.value == entry.value && e.tenantId == entry.tenantId)
-        val stored = same.fold(entry)(e => e.copy(expiresAt = entry.expiresAt, reason = entry.reason, source = entry.source))
-        entries = stored :: entries.filterNot(e => same.exists(_.id == e.id))
-        changed()
-        stored
-
-    override def delete(id: UUID, actor: String, at: Instant): Task[Boolean] =
-      ZIO.succeed:
-        val found = entries.exists(_.id == id)
-        entries = entries.filterNot(_.id == id)
-        changed()
-        found
-
-    override def find(id: UUID): Task[Option[AntifraudListEntry]] = ZIO.succeed(entries.find(_.id == id))
+        if ver == version then false
+        else
+          this.entries = entries
+          ver = version
+          true
 
     var previewResult = ListPreview(matched = None, total = 0)
     var previewedFor: List[Option[TenantId]] = Nil
@@ -47,36 +37,37 @@ object AntifraudListsSpec extends UnitSpecBase:
     /** Answers by tenant, as the repository does; by default `previewResult` for all. */
     var previewBy: Option[Option[TenantId] => ListPreview] = None
     var previewedValues: List[String] = Nil
-
-    /** Answers by value, as a repository that counts a prefix for that prefix does. */
-    var previewOf: Option[String => ListPreview] = None
+    var previewedSince: List[Instant] = Nil
 
     override def preview(valueType: AntifraudValueType, value: String, tenantId: Option[TenantId], since: Instant): Task[ListPreview] =
       ZIO.succeed:
         previewedFor = previewedFor :+ tenantId
         previewedValues = previewedValues :+ value
-        previewOf.fold(previewBy.fold(previewResult)(_(tenantId)))(_(value))
-
-    override def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]] = ZIO.succeed(entries)
+        previewedSince = previewedSince :+ since
+        previewBy.fold(previewResult)(_(tenantId))
 
     override def version: Task[Long] = if failLoad then ZIO.fail(RuntimeException("db down")) else ZIO.succeed(ver)
 
-    override def purgeExpired(now: Instant, limit: Int): Task[Int] = ZIO.succeed(0)
-
-    override def pruneAudit(before: Instant, limit: Int): Task[Int] = ZIO.succeed(0)
+    override def pruneCounterResets(before: Instant, limit: Int): Task[Int] = ZIO.succeed(0)
 
     override def loadActive(now: Instant): Task[List[ListedValue]] =
       loads += 1
       if failLoad then ZIO.fail(RuntimeException("db down"))
       else
         ZIO.succeed:
-          entries.filter(_.expiresAt.forall(_.isAfter(now))).map: e =>
-            ListedValue(e.id, e.listType, e.valueType, e.value, e.tenantId, e.expiresAt, e.shadow)
+          entries.filter(_.expiresAt.forall(_.isAfter(now))).flatMap: e =>
+            for
+              listType <- Try(AntifraudListType.valueOf(e.listType)).toOption
+              valueType <- Try(AntifraudValueType.valueOf(e.valueType)).toOption
+            yield ListedValue(e.id, listType, valueType, e.value, e.tenantId.map(TenantId(_)), e.expiresAt, e.shadow)
 
     override def addHits(hits: List[ListHit]): Task[Unit] =
       if failHits then ZIO.fail(RuntimeException("db down")) else ZIO.succeed { written = written ++ hits }
 
-    override def audit(entryId: Option[UUID], limit: Int, visibleTo: Option[TenantId]): Task[List[AntifraudListAudit]] = ZIO.succeed(audits)
+    override def hits(ids: List[UUID]): Task[List[ListHit]] =
+      ZIO.succeed:
+        hitsAsked = hitsAsked :+ ids
+        written.filter(h => ids.contains(h.id))
 
   // The longest an entry may live is longer than the year the helpers below give theirs; the limit has specs of its own.
   private val settings = AntifraudTestSettings.lists.copy(enabled = true, maxBroadTtl = 400.days)
@@ -110,15 +101,40 @@ object AntifraudListsSpec extends UnitSpecBase:
     val cache = AntifraudLists.ListCache()
     (AntifraudLists.Impl(repository, config, AntifraudTestSettings.listsPolicy, cache), cache)
 
+  /** What central does with an entry, and the sync after it: the service says whether it is valid and what its value is, the copy
+    * is made what central has and the snapshot is built again. */
+  private def put(repository: FakeRepository, lists: AntifraudLists.Impl, entry: NewListEntry): Task[PolicyListEntry] =
+    for
+      value <- lists.check(entry)
+      stored = PolicyListEntry(
+        id = UUID.randomUUID(),
+        listType = entry.listType.toString,
+        valueType = entry.valueType.toString,
+        value = value,
+        tenantId = entry.tenantId.map(identity[String]),
+        expiresAt = entry.expiresAt,
+        reason = entry.reason,
+        source = entry.source,
+        shadow = entry.shadow,
+        createdBy = "central",
+        createdAt = Instant.EPOCH,
+      )
+      _ <- repository.replaceAll(repository.entries :+ stored, repository.ver + 1)
+      _ <- lists.refresh
+    yield stored
+
   private def add(
-      lists: AntifraudLists,
+      repository: FakeRepository,
+      lists: AntifraudLists.Impl,
       listType: AntifraudListType,
       valueType: AntifraudValueType,
       value: String,
       tenantId: Option[TenantId] = None,
       shadow: Boolean = false,
   ) =
-    lists.create(
+    put(
+      repository,
+      lists,
       NewListEntry(
         listType = listType,
         valueType = valueType,
@@ -129,7 +145,6 @@ object AntifraudListsSpec extends UnitSpecBase:
         source = "manual",
         shadow = shadow,
       ),
-      operator,
     )
 
   /** The weight-only rule of a source that is not the lists, here a score of 60 (a challenge). */
@@ -148,17 +163,18 @@ object AntifraudListsSpec extends UnitSpecBase:
       val (lists, _) = make(repository)
       val (off, _) = make(repository, AntifraudTestSettings.lists)
       for
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
+        _ <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
         offRules <- off.ruleSet.rules
         d <- decide(off)(ctx(subjectHash = Some("d")))
       yield assertTrue(offRules.isEmpty, d == Decision.allow)
     },
     test("a deny blocks, a fake fakes, a watch adds its weight") {
-      val (lists, _) = make(FakeRepository())
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
       for
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "bad")
-        _ <- add(lists, AntifraudListType.fake, AntifraudValueType.prefix, "4915")
-        _ <- add(lists, AntifraudListType.watch, AntifraudValueType.cidr, "10.0.0.0/8")
+        _ <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "bad")
+        _ <- add(repository, lists, AntifraudListType.fake, AntifraudValueType.prefix, "4915")
+        _ <- add(repository, lists, AntifraudListType.watch, AntifraudValueType.cidr, "10.0.0.0/8")
         blocked <- decide(lists)(ctx(subjectHash = Some("bad")))
         faked <- decide(lists)(ctx(destPrefix = Some("491512")))
         watched <- decide(lists)(ctx(ip = Some("10.2.3.4")))
@@ -171,10 +187,11 @@ object AntifraudListsSpec extends UnitSpecBase:
       )
     },
     test("an allow outweighs score-based rules, the lists' own watch included") {
-      val (lists, _) = make(FakeRepository())
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
       for
-        _ <- add(lists, AntifraudListType.allow, AntifraudValueType.phone_hash, "vip")
-        _ <- add(lists, AntifraudListType.watch, AntifraudValueType.phone_hash, "vip")
+        _ <- add(repository, lists, AntifraudListType.allow, AntifraudValueType.phone_hash, "vip")
+        _ <- add(repository, lists, AntifraudListType.watch, AntifraudValueType.phone_hash, "vip")
         unlisted <- decide(lists, scoring)(ctx(subjectHash = Some("other")))
         allowed <- decide(lists, scoring)(ctx(subjectHash = Some("vip")))
       yield assertTrue(
@@ -184,19 +201,21 @@ object AntifraudListsSpec extends UnitSpecBase:
       )
     },
     test("an allow does not override a rule of another source that forces an action") {
-      val (lists, _) = make(FakeRepository())
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
       for
-        _ <- add(lists, AntifraudListType.allow, AntifraudValueType.phone_hash, "vip")
+        _ <- add(repository, lists, AntifraudListType.allow, AntifraudValueType.phone_hash, "vip")
         d <- decide(lists, scoring, blocking)(ctx(subjectHash = Some("vip")))
       yield assertTrue(d.action == DecisionAction.Block)
     },
     test("an allow never overrides a deny of the same specificity, nor a more specific one") {
-      val (lists, _) = make(FakeRepository())
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
       for
-        _ <- add(lists, AntifraudListType.allow, AntifraudValueType.phone_hash, "same")
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "same")
-        _ <- add(lists, AntifraudListType.allow, AntifraudValueType.cidr, "203.0.113.9/32")
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.ip, "203.0.113.9")
+        _ <- add(repository, lists, AntifraudListType.allow, AntifraudValueType.phone_hash, "same")
+        _ <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "same")
+        _ <- add(repository, lists, AntifraudListType.allow, AntifraudValueType.cidr, "203.0.113.9/32")
+        _ <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.ip, "203.0.113.9")
         tie <- decide(lists, scoring)(ctx(subjectHash = Some("same")))
         narrower <- decide(lists, scoring)(ctx(ip = Some("203.0.113.9")))
         rest <- decide(lists, scoring)(ctx(ip = Some("203.0.113.1")))
@@ -208,27 +227,32 @@ object AntifraudListsSpec extends UnitSpecBase:
       )
     },
     test("an allow that is more specific than a deny wins over it") {
-      val (lists, _) = make(FakeRepository())
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
       for
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.cidr, "203.0.113.0/24")
-        _ <- add(lists, AntifraudListType.allow, AntifraudValueType.ip, "203.0.113.9")
+        _ <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.cidr, "203.0.113.0/24")
+        _ <- add(repository, lists, AntifraudListType.allow, AntifraudValueType.ip, "203.0.113.9")
         allowed <- decide(lists, scoring)(ctx(ip = Some("203.0.113.9")))
         denied <- decide(lists, scoring)(ctx(ip = Some("203.0.113.10")))
       yield assertTrue(allowed.action == DecisionAction.Allow, denied.action == DecisionAction.Block)
     },
     test("a tenant's entry does not apply to another tenant") {
-      val (lists, _) = make(FakeRepository())
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
       for
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d", tenantId = Some(tenant))
+        _ <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d", tenantId = Some(tenant))
         mine <- decide(lists)(ctx(subjectHash = Some("d")))
         other <- decide(lists)(ctx(subjectHash = Some("d"), tenantId = Some(TenantId("tenant-b"))))
       yield assertTrue(mine.action == DecisionAction.Block, other == Decision.allow)
     },
     test("an entry stops applying when it expires, without a refresh") {
-      val (lists, _) = make(FakeRepository())
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
       for
         now <- Clock.instant
-        _ <- lists.create(
+        _ <- put(
+          repository,
+          lists,
           NewListEntry(
             listType = AntifraudListType.deny,
             valueType = AntifraudValueType.phone_hash,
@@ -239,7 +263,6 @@ object AntifraudListsSpec extends UnitSpecBase:
             source = "manual",
             shadow = false,
           ),
-          operator,
         )
         before <- decide(lists)(ctx(subjectHash = Some("d")))
         _ <- TestClock.adjust(61.seconds)
@@ -250,7 +273,7 @@ object AntifraudListsSpec extends UnitSpecBase:
       val repository = FakeRepository()
       val (lists, _) = make(repository)
       for
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
+        _ <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
         _ <- ZIO.succeed { repository.failLoad = true }
         _ <- lists.refresh
         kept <- decide(lists)(ctx(subjectHash = Some("d")))
@@ -264,7 +287,7 @@ object AntifraudListsSpec extends UnitSpecBase:
       val (lists, _) = make(repository)
       for
         cold <- lists.status
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
+        _ <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
         _ <- lists.refresh
         loaded <- lists.status
         _ <- TestClock.adjust(10.seconds)
@@ -298,10 +321,10 @@ object AntifraudListsSpec extends UnitSpecBase:
           _ <- ZIO.succeed {
             repository.changed()
             repository.entries = List(
-              AntifraudListEntry(
+              PolicyListEntry(
                 id = UUID.randomUUID(),
-                listType = AntifraudListType.deny,
-                valueType = AntifraudValueType.phone_hash,
+                listType = "deny",
+                valueType = "phone_hash",
                 value = "d",
                 tenantId = None,
                 expiresAt = None,
@@ -310,8 +333,6 @@ object AntifraudListsSpec extends UnitSpecBase:
                 shadow = false,
                 createdBy = "t",
                 createdAt = Instant.EPOCH,
-                hitCount = 0,
-                lastHitAt = None,
               ),
             )
           }
@@ -327,7 +348,7 @@ object AntifraudListsSpec extends UnitSpecBase:
       val repository = FakeRepository()
       val (lists, cache) = make(repository)
       for
-        stored <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
+        stored <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
         _ <- decide(lists)(ctx(subjectHash = Some("d")))
         _ <- decide(lists)(ctx(subjectHash = Some("d")))
         _ <- decide(lists)(ctx(subjectHash = Some("other")))
@@ -343,10 +364,13 @@ object AntifraudListsSpec extends UnitSpecBase:
       )
     },
     test("refuses a value that is not valid for its type, and an expiry in the past") {
-      val (lists, _) = make(FakeRepository())
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
       for
-        bad <- add(lists, AntifraudListType.deny, AntifraudValueType.cidr, "10.0.0.0/40").either
-        past <- lists.create(
+        bad <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.cidr, "10.0.0.0/40").either
+        past <- put(
+          repository,
+          lists,
           NewListEntry(
             listType = AntifraudListType.deny,
             valueType = AntifraudValueType.phone_hash,
@@ -357,31 +381,24 @@ object AntifraudListsSpec extends UnitSpecBase:
             source = "manual",
             shadow = false,
           ),
-          operator,
         ).either
       yield assertTrue(bad.left.exists(_.isInstanceOf[InvalidListEntry]), past.left.exists(_.isInstanceOf[InvalidListEntry]))
     },
-    test("adding a value again refreshes it, and deleting it lifts the effect at once") {
-      val (lists, _) = make(FakeRepository())
+    test("a copy that central changes is picked up: an entry it removes stops applying at once, one it adds applies") {
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
       for
-        first <- add(lists, AntifraudListType.deny, AntifraudValueType.cidr, "10.9.9.9/16")
-        second <- add(lists, AntifraudListType.deny, AntifraudValueType.cidr, "10.9.0.0/16")
+        first <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.cidr, "10.9.9.9/16")
         blocked <- decide(lists)(ctx(ip = Some("10.9.1.1")))
-        removed <- lists.delete(first.id, operator)
-        removedAgain <- lists.delete(first.id, operator)
+        _ <- repository.replaceAll(Nil, repository.ver + 1)
+        _ <- lists.refresh
         after <- decide(lists)(ctx(ip = Some("10.9.1.1")))
-      yield assertTrue(
-        first.value == "10.9.0.0/16",
-        second.id == first.id,
-        blocked.action == DecisionAction.Block,
-        removed,
-        !removedAgain,
-        after == Decision.allow,
-      )
+      yield assertTrue(first.value == "10.9.0.0/16", blocked.action == DecisionAction.Block, after == Decision.allow)
     },
     test("an allow is refused for anything but an exact subject, and cannot exempt a population") {
-      val (lists, _) = make(FakeRepository())
-      def allow(valueType: AntifraudValueType, value: String) = add(lists, AntifraudListType.allow, valueType, value).either.map(_.isLeft)
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
+      def allow(valueType: AntifraudValueType, value: String) = add(repository, lists, AntifraudListType.allow, valueType, value).either.map(_.isLeft)
       for
         asn <- allow(AntifraudValueType.asn, "64500")
         asnWritten <- allow(AntifraudValueType.asn, "AS64500")
@@ -398,12 +415,13 @@ object AntifraudListsSpec extends UnitSpecBase:
         device <- allow(AntifraudValueType.device_id, "d")
         phone <- allow(AntifraudValueType.phone_hash, "h")
         // the same broad values are fine for a deny
-        denied <- add(lists, AntifraudListType.deny, AntifraudValueType.cidr, "10.0.0.0/8").either.map(_.isRight)
+        denied <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.cidr, "10.0.0.0/8").either.map(_.isRight)
       yield assertTrue(asn, asnWritten, wide, prefix, domain, country, ua, ja4, !host, !host6, !ip, device, !phone, denied)
     },
     test("an entry of a kind no request carries yet is refused, so that nothing is listed that cannot match") {
-      val (lists, _) = make(FakeRepository())
-      def deny(valueType: AntifraudValueType, value: String) = add(lists, AntifraudListType.deny, valueType, value).either
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
+      def deny(valueType: AntifraudValueType, value: String) = add(repository, lists, AntifraudListType.deny, valueType, value).either
       for
         device <- deny(AntifraudValueType.device_id, "d")
         ja4 <- deny(AntifraudValueType.ja4_hash, "t13d")
@@ -417,10 +435,11 @@ object AntifraudListsSpec extends UnitSpecBase:
       )
     },
     test("an asn entry is accepted in either spelling, stored as digits, and matches the AS the address was given") {
-      val (lists, _) = make(FakeRepository())
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
       for
-        written <- add(lists, AntifraudListType.deny, AntifraudValueType.asn, "AS64500")
-        lower <- add(lists, AntifraudListType.watch, AntifraudValueType.asn, "as64501")
+        written <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.asn, "AS64500")
+        lower <- add(repository, lists, AntifraudListType.watch, AntifraudValueType.asn, "as64501")
         blocked <- decide(lists)(ctx(asn = Some(64500)))
         watched <- decide(lists)(ctx(asn = Some(64501)))
         other <- decide(lists)(ctx(asn = Some(64502)))
@@ -436,11 +455,12 @@ object AntifraudListsSpec extends UnitSpecBase:
       )
     },
     test("a country entry is accepted in either case, stored in upper case, and matches the country signal of the request") {
-      val (lists, _) = make(FakeRepository())
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
       def in(country: String) = ctx(signals = Map(GeoRules.CountrySignal -> country))
       for
-        written <- add(lists, AntifraudListType.deny, AntifraudValueType.country, "kz")
-        watch <- add(lists, AntifraudListType.watch, AntifraudValueType.country, "Ru")
+        written <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.country, "kz")
+        watch <- add(repository, lists, AntifraudListType.watch, AntifraudValueType.country, "Ru")
         blocked <- decide(lists)(in("KZ"))
         watched <- decide(lists)(in("RU"))
         other <- decide(lists)(in("DE"))
@@ -457,14 +477,15 @@ object AntifraudListsSpec extends UnitSpecBase:
       )
     },
     test("a country entry is refused when it is not an alpha-2 code, and an allow on one is refused with the reason") {
-      val (lists, _) = make(FakeRepository())
-      def deny(value: String) = add(lists, AntifraudListType.deny, AntifraudValueType.country, value).either.map(_.isLeft)
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
+      def deny(value: String) = add(repository, lists, AntifraudListType.deny, AntifraudValueType.country, value).either.map(_.isLeft)
       for
         three <- deny("KAZ")
         digit <- deny("K1")
         empty <- deny(" ")
         unknown <- deny("zz")
-        allow <- add(lists, AntifraudListType.allow, AntifraudValueType.country, "KZ").either
+        allow <- add(repository, lists, AntifraudListType.allow, AntifraudValueType.country, "KZ").either
       yield assertTrue(
         three,
         digit,
@@ -474,22 +495,23 @@ object AntifraudListsSpec extends UnitSpecBase:
       )
     },
     test("a country entry names a whole population, so it needs an expiry no longer than max-broad-ttl, and a tenant's applies to its own requests") {
-      val (lists, _) = make(FakeRepository(), settings.copy(maxBroadTtl = 30.days))
+      val repository = FakeRepository()
+      val (lists, _) = make(repository, settings.copy(maxBroadTtl = 30.days))
       def create(expiresAt: Option[Instant], tenantId: Option[TenantId] = None, value: String = "KZ") =
-        lists
-          .create(
-            NewListEntry(
-              listType = AntifraudListType.deny,
-              valueType = AntifraudValueType.country,
-              value = value,
-              tenantId = tenantId,
-              expiresAt = expiresAt,
-              reason = None,
-              source = "manual",
-              shadow = false,
-            ),
-            operator,
-          )
+        put(
+          repository,
+          lists,
+          NewListEntry(
+            listType = AntifraudListType.deny,
+            valueType = AntifraudValueType.country,
+            value = value,
+            tenantId = tenantId,
+            expiresAt = expiresAt,
+            reason = None,
+            source = "manual",
+            shadow = false,
+          ),
+        )
           .either
       def in(tenantId: TenantId) = ctx(tenantId = Some(tenantId), signals = Map(GeoRules.CountrySignal -> "KZ"))
       for
@@ -507,15 +529,17 @@ object AntifraudListsSpec extends UnitSpecBase:
       )
     },
     test("a request with no ASN (the database is off) matches no asn entry") {
-      val (lists, _) = make(FakeRepository())
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
       for
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.asn, "64500")
+        _ <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.asn, "64500")
         d <- decide(lists)(ctx(ip = Some("203.0.113.7"), subjectHash = Some("h")))
       yield assertTrue(d == Decision.allow)
     },
     test("an asn entry is refused when it is not a number: text, a negative or a number larger than an AS can be") {
-      val (lists, _) = make(FakeRepository())
-      def deny(value: String) = add(lists, AntifraudListType.deny, AntifraudValueType.asn, value).either.map(_.isLeft)
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
+      def deny(value: String) = add(repository, lists, AntifraudListType.deny, AntifraudValueType.asn, value).either.map(_.isLeft)
       for
         text <- deny("ASx")
         negative <- deny("-5")
@@ -524,62 +548,66 @@ object AntifraudListsSpec extends UnitSpecBase:
       yield assertTrue(text, negative, huge, empty)
     },
     test("an allow on an asn is refused with the reason, so that a whole network is never exempted from the score") {
-      val (lists, _) = make(FakeRepository())
-      add(lists, AntifraudListType.allow, AntifraudValueType.asn, "64500").either.map: result =>
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
+      add(repository, lists, AntifraudListType.allow, AntifraudValueType.asn, "64500").either.map: result =>
         assertTrue(result.swap.exists(e => e.isInstanceOf[InvalidListEntry] && e.getMessage.contains("exact subject")))
     },
     test("an asn entry names a whole network, so it needs an expiry, and an address that is allowed inside a denied AS is allowed") {
-      val (lists, _) = make(FakeRepository())
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
       def deny(expiresAt: Option[Instant]) =
-        lists
-          .create(
-            NewListEntry(
-              listType = AntifraudListType.deny,
-              valueType = AntifraudValueType.asn,
-              value = "64500",
-              tenantId = None,
-              expiresAt = expiresAt,
-              reason = None,
-              source = "manual",
-              shadow = false,
-            ),
-            operator,
-          )
+        put(
+          repository,
+          lists,
+          NewListEntry(
+            listType = AntifraudListType.deny,
+            valueType = AntifraudValueType.asn,
+            value = "64500",
+            tenantId = None,
+            expiresAt = expiresAt,
+            reason = None,
+            source = "manual",
+            shadow = false,
+          ),
+        )
           .either
           .map(_.isRight)
       for
         permanent <- deny(None)
         _ <- deny(Some(Instant.EPOCH.plusSeconds(3600)))
-        _ <- add(lists, AntifraudListType.allow, AntifraudValueType.ip, "203.0.113.7")
+        _ <- add(repository, lists, AntifraudListType.allow, AntifraudValueType.ip, "203.0.113.7")
         inside <- decide(lists)(ctx(asn = Some(64500), ip = Some("203.0.113.7")))
         beside <- decide(lists)(ctx(asn = Some(64500), ip = Some("203.0.113.8")))
       yield assertTrue(!permanent, inside.action == DecisionAction.Allow, beside.action == DecisionAction.Block)
     },
     test("an asn entry of a tenant applies to that tenant's requests only") {
-      val (lists, _) = make(FakeRepository())
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
       for
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.asn, "64500", tenantId = Some(tenant))
+        _ <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.asn, "64500", tenantId = Some(tenant))
         own <- decide(lists)(ctx(asn = Some(64500)))
         foreign <- decide(lists)(ctx(asn = Some(64500), tenantId = Some(TenantId("tenant-b"))))
       yield assertTrue(own.action == DecisionAction.Block, foreign == Decision.allow)
     },
     test("an entry that names many clients, or an automated one, needs an expiry") {
-      val (lists, _) = make(FakeRepository())
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
       def create(valueType: AntifraudValueType, value: String, source: String, expiresAt: Option[Instant]) =
-        lists
-          .create(
-            NewListEntry(
-              listType = AntifraudListType.deny,
-              valueType = valueType,
-              value = value,
-              tenantId = None,
-              expiresAt = expiresAt,
-              reason = None,
-              source = source,
-              shadow = false,
-            ),
-            operator,
-          )
+        put(
+          repository,
+          lists,
+          NewListEntry(
+            listType = AntifraudListType.deny,
+            valueType = valueType,
+            value = value,
+            tenantId = None,
+            expiresAt = expiresAt,
+            reason = None,
+            source = source,
+            shadow = false,
+          ),
+        )
           .either
           .map(_.isRight)
       val later = Some(Instant.EPOCH.plusSeconds(3600))
@@ -595,8 +623,9 @@ object AntifraudListsSpec extends UnitSpecBase:
       yield assertTrue(!broad, !wide, !prefix, narrow, exact, !automated, automatedExpiring, broadExpiring)
     },
     test("a network wider than /8 (IPv4) or /32 (IPv6) is refused, the limit itself is not, and an address is not a network") {
-      val (lists, _) = make(FakeRepository())
-      def deny(valueType: AntifraudValueType, value: String) = add(lists, AntifraudListType.deny, valueType, value).either
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
+      def deny(valueType: AntifraudValueType, value: String) = add(repository, lists, AntifraudListType.deny, valueType, value).either
       for
         everybody <- deny(AntifraudValueType.cidr, "0.0.0.0/0")
         seven <- deny(AntifraudValueType.cidr, "10.0.0.0/7")
@@ -618,22 +647,23 @@ object AntifraudListsSpec extends UnitSpecBase:
       )
     },
     test("a broad network, a mail domain or a prefix lives 30 days at most, and exact subjects and the other kinds are not held to it") {
-      val (lists, _) = make(FakeRepository(), AntifraudTestSettings.lists.copy(enabled = true))
+      val repository = FakeRepository()
+      val (lists, _) = make(repository, AntifraudTestSettings.lists.copy(enabled = true))
       def create(valueType: AntifraudValueType, value: String, days: Long) =
-        lists
-          .create(
-            NewListEntry(
-              listType = AntifraudListType.deny,
-              valueType = valueType,
-              value = value,
-              tenantId = None,
-              expiresAt = Some(Instant.EPOCH.plusSeconds(days * 86400)),
-              reason = None,
-              source = ListEntrySource.Manual,
-              shadow = false,
-            ),
-            operator,
-          )
+        put(
+          repository,
+          lists,
+          NewListEntry(
+            listType = AntifraudListType.deny,
+            valueType = valueType,
+            value = value,
+            tenantId = None,
+            expiresAt = Some(Instant.EPOCH.plusSeconds(days * 86400)),
+            reason = None,
+            source = ListEntrySource.Manual,
+            shadow = false,
+          ),
+        )
           .either
       for
         prefix <- create(AntifraudValueType.prefix, "4915", 31)
@@ -659,29 +689,30 @@ object AntifraudListsSpec extends UnitSpecBase:
       )
     },
     test("the limit of a lifetime is the configured one") {
-      val (lists, _) = make(FakeRepository(), AntifraudTestSettings.lists.copy(enabled = true, maxBroadTtl = 3.days))
+      val repository = FakeRepository()
+      val (lists, _) = make(repository, AntifraudTestSettings.lists.copy(enabled = true, maxBroadTtl = 3.days))
       def prefix(days: Long) =
-        lists
-          .create(
-            NewListEntry(
-              listType = AntifraudListType.deny,
-              valueType = AntifraudValueType.prefix,
-              value = "4915",
-              tenantId = None,
-              expiresAt = Some(Instant.EPOCH.plusSeconds(days * 86400)),
-              reason = None,
-              source = ListEntrySource.Manual,
-              shadow = false,
-            ),
-            operator,
-          )
+        put(
+          repository,
+          lists,
+          NewListEntry(
+            listType = AntifraudListType.deny,
+            valueType = AntifraudValueType.prefix,
+            value = "4915",
+            tenantId = None,
+            expiresAt = Some(Instant.EPOCH.plusSeconds(days * 86400)),
+            reason = None,
+            source = ListEntrySource.Manual,
+            shadow = false,
+          ),
+        )
           .either
       for
         long <- prefix(4)
         short <- prefix(3)
       yield assertTrue(long.isLeft, short.isRight)
     },
-    test("a preview and the traffic-share guard are over the traffic of the entry's tenant, and of all of it for a global entry") {
+    test("a preview is over the traffic of the entry's tenant, and of all of it for a global entry, of the last 24 hours") {
       val repository = FakeRepository()
       val (lists, _) = make(repository)
       def entry(tenantId: Option[TenantId]) =
@@ -696,107 +727,84 @@ object AntifraudListsSpec extends UnitSpecBase:
           shadow = false,
         )
       for
+        now <- Clock.instant
         _ <- lists.preview(entry(Some(tenant)))
         _ <- lists.preview(entry(None))
-        _ <- lists.create(entry(Some(tenant)), operator)
-        _ <- lists.create(entry(None), operator)
-      yield assertTrue(repository.previewedFor == List(Some(tenant), None, Some(tenant), None))
-    },
-    test("a tenant's entry that covers all of that tenant's traffic is refused although it is a small part of everyone's") {
-      val repository = FakeRepository()
-      val (lists, _) = make(repository)
-      // The tenant has 400 requests, all of the range; everyone has 100000.
-      repository.previewBy = Some(tenantId => if tenantId.isDefined then ListPreview(Some(400), 400) else ListPreview(Some(400), 100000))
-      val guarded = lists
-      def entry(tenantId: Option[TenantId]) =
-        NewListEntry(
-          listType = AntifraudListType.deny,
-          valueType = AntifraudValueType.prefix,
-          value = "4915",
-          tenantId = tenantId,
-          expiresAt = Some(Instant.EPOCH.plusSeconds(60)),
-          reason = None,
-          source = ListEntrySource.Manual,
-          shadow = false,
-        )
-      for
-        scoped <- guarded.create(entry(Some(tenant)), operator).either
-        global <- guarded.create(entry(None), operator).either
-      yield assertTrue(scoped.left.exists(_.isInstanceOf[InvalidListEntry]), global.isRight)
-    },
-    test("a prefix of six digits is judged by its own share: a narrow one in a heavy range is accepted, a broad one of it is refused") {
-      val repository = FakeRepository()
-      val (lists, _) = make(repository)
-      // The range 4915 holds 80% of the traffic; of it 491512 is 1% and 491599 is 40%.
-      repository.previewOf = Some:
-        case "491512" => ListPreview(Some(10), 1000)
-        case "491599" => ListPreview(Some(400), 1000)
-        case _ => ListPreview(Some(800), 1000)
-      for
-        narrow <- add(lists, AntifraudListType.fake, AntifraudValueType.prefix, "491512").either
-        broad <- add(lists, AntifraudListType.fake, AntifraudValueType.prefix, "491599").either
-        range <- add(lists, AntifraudListType.fake, AntifraudValueType.prefix, "4915").either
       yield assertTrue(
-        narrow.isRight,
-        broad.left.exists(_.isInstanceOf[InvalidListEntry]),
-        range.left.exists(_.isInstanceOf[InvalidListEntry]),
-        // The value is asked about whole, not cut to a range.
-        repository.previewedValues == List("491512", "491599", "4915"),
+        repository.previewedFor == List(Some(tenant), None),
+        repository.previewedSince == List(now.minusSeconds(24 * 3600), now.minusSeconds(24 * 3600)),
       )
     },
     test("a shadow entry enforces nothing and only shows in the fired rules") {
-      val (lists, _) = make(FakeRepository())
-      for
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d", shadow = true)
-        d <- decide(lists)(ctx(subjectHash = Some("d")))
-      yield assertTrue(d == Decision(DecisionAction.Allow, 0, List("shadow_list:phone_hash")))
-    },
-    test("an enforcing entry that would have matched too much of the recent traffic is refused, a shadow one is not") {
       val repository = FakeRepository()
       val (lists, _) = make(repository)
       for
+        _ <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d", shadow = true)
+        d <- decide(lists)(ctx(subjectHash = Some("d")))
+      yield assertTrue(d == Decision(DecisionAction.Allow, 0, List("shadow_list:phone_hash")))
+    },
+    test(
+      "a preview answers the canonical value and what the entry would have matched, and counts a value as it is asked: whole, not cut to a range",
+    ) {
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
+      def entry(valueType: AntifraudValueType, value: String) =
+        NewListEntry(
+          listType = AntifraudListType.deny,
+          valueType = valueType,
+          value = value,
+          tenantId = None,
+          expiresAt = Some(Instant.EPOCH.plusSeconds(60)),
+          reason = None,
+          source = "manual",
+          shadow = false,
+        )
+      for
         _ <- ZIO.succeed { repository.previewResult = ListPreview(matched = Some(600), total = 1000) }
-        enforcing <- add(lists, AntifraudListType.deny, AntifraudValueType.prefix, "49").either
-        shadow <- add(lists, AntifraudListType.deny, AntifraudValueType.prefix, "49", shadow = true).either
-        _ <- ZIO.succeed { repository.previewResult = ListPreview(matched = Some(3), total = 1000) }
-        small <- add(lists, AntifraudListType.deny, AntifraudValueType.prefix, "4915").either
-        _ <- ZIO.succeed { repository.previewResult = ListPreview(matched = Some(5), total = 5) }
-        tooFew <- add(lists, AntifraudListType.deny, AntifraudValueType.prefix, "4916").either
+        counted <- lists.preview(entry(AntifraudValueType.prefix, "491512"))
         _ <- ZIO.succeed { repository.previewResult = ListPreview(matched = None, total = 1000) }
         // a network: a kind the event log has no column for, so the preview cannot count it
-        unknown <- add(lists, AntifraudListType.deny, AntifraudValueType.cidr, "198.51.100.0/24").either
-        previewed <- lists.preview(
+        uncounted <- lists.preview(entry(AntifraudValueType.asn, "AS64500"))
+      yield assertTrue(
+        counted == ("491512", ListPreview(matched = Some(600), total = 1000)),
+        uncounted == ("64500", ListPreview(matched = None, total = 1000)),
+        repository.previewedValues == List("491512", "64500"),
+      )
+    },
+    test("a preview refuses an entry that is not valid, as a check does, and counts nothing") {
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
+      for
+        bad <- lists.preview(
           NewListEntry(
             listType = AntifraudListType.deny,
-            valueType = AntifraudValueType.prefix,
-            value = "49",
+            valueType = AntifraudValueType.cidr,
+            value = "10.0.0.0/40",
             tenantId = None,
-            expiresAt = Some(Instant.EPOCH.plusSeconds(60)),
+            expiresAt = None,
             reason = None,
             source = "manual",
             shadow = false,
           ),
-        )
-      yield assertTrue(
-        enforcing.left.exists(_.isInstanceOf[InvalidListEntry]),
-        shadow.isRight,
-        small.isRight,
-        tooFew.isRight,
-        unknown.isRight,
-        previewed == ListPreview(matched = None, total = 1000),
-      )
+        ).either
+      yield assertTrue(bad.left.exists(_.isInstanceOf[InvalidListEntry]), repository.previewedValues.isEmpty)
     },
-    test("a page outside 1 to 500 entries, or before the first, is refused") {
-      val (lists, _) = make(FakeRepository())
+    test("hits asks the repository for the counters of the ids, and refuses more than the most one call may ask") {
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
+      val id = UUID.randomUUID()
+      val at = Instant.parse("2026-11-01T00:00:00Z")
       for
-        ok <- lists.list(AntifraudListFilter.all, 500, 0).either
-        zero <- lists.list(AntifraudListFilter.all, 0, 0).either
-        huge <- lists.list(AntifraudListFilter.all, 501, 0).either
-        negative <- lists.list(AntifraudListFilter.all, 10, -1).either
-        auditHuge <- lists.audit(None, 501, None).either
+        _ <- repository.addHits(List(ListHit(id, 4, at), ListHit(UUID.randomUUID(), 1, at)))
+        counted <- lists.hits(List(id))
+        most <- lists.hits(List.fill(AntifraudLists.MaxLimit)(id)).either
+        tooMany <- lists.hits(List.fill(AntifraudLists.MaxLimit + 1)(id)).either
       yield assertTrue(
-        ok.isRight,
-        List(zero, huge, negative, auditHuge).forall(_.left.exists(_.isInstanceOf[InvalidListEntry])),
+        counted == List(ListHit(id, 4, at)),
+        most.isRight,
+        tooMany.left.exists(_.isInstanceOf[InvalidListEntry]),
+        // the refused call never reached the repository
+        repository.hitsAsked.size == 2,
       )
     },
     test("a first load that fails is retried every second, not at the steady interval, and the lists apply once it works") {
@@ -808,10 +816,10 @@ object AntifraudListsSpec extends UnitSpecBase:
             repository.failLoad = true
             repository.changed()
             repository.entries = List(
-              AntifraudListEntry(
+              PolicyListEntry(
                 id = UUID.randomUUID(),
-                listType = AntifraudListType.deny,
-                valueType = AntifraudValueType.phone_hash,
+                listType = "deny",
+                valueType = "phone_hash",
                 value = "d",
                 tenantId = None,
                 expiresAt = None,
@@ -820,8 +828,6 @@ object AntifraudListsSpec extends UnitSpecBase:
                 shadow = false,
                 createdBy = "t",
                 createdAt = Instant.EPOCH,
-                hitCount = 0,
-                lastHitAt = None,
               ),
             )
           }
@@ -838,7 +844,7 @@ object AntifraudListsSpec extends UnitSpecBase:
       val repository = FakeRepository()
       val (lists, _) = make(repository)
       for
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
+        _ <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
         afterCreate <- ZIO.succeed(repository.loads)
         _ <- lists.refresh.repeatN(9)
         unchanged <- ZIO.succeed(repository.loads)
@@ -852,10 +858,11 @@ object AntifraudListsSpec extends UnitSpecBase:
       yield assertTrue(unchanged == afterCreate, stillThere.action == DecisionAction.Block, gone == Decision.allow)
     },
     test("a hit on a shadow entry is counted as one, apart from a hit on an enforcing entry of the same kind") {
-      val (lists, cache) = make(FakeRepository())
+      val repository = FakeRepository()
+      val (lists, cache) = make(repository)
       for
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d", shadow = true)
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.prefix, "4915")
+        _ <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d", shadow = true)
+        _ <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.prefix, "4915")
         _ <- decide(lists)(ctx(subjectHash = Some("d")))
         _ <- decide(lists)(ctx(destPrefix = Some("491512")))
         _ <- decide(lists)(ctx(destPrefix = Some("491512")))
@@ -867,9 +874,10 @@ object AntifraudListsSpec extends UnitSpecBase:
       )
     },
     test("every rule the lists contribute is in the catalogue of rule names the settings are checked against") {
-      val (lists, _) = make(FakeRepository())
+      val repository = FakeRepository()
+      val (lists, _) = make(repository)
       for
-        _ <- add(lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
+        _ <- add(repository, lists, AntifraudListType.deny, AntifraudValueType.phone_hash, "d")
         rules <- lists.ruleSet.rules
       yield assertTrue(
         rules.nonEmpty,
@@ -878,9 +886,10 @@ object AntifraudListsSpec extends UnitSpecBase:
       )
     },
     test("counts hits by list and kind of value, for the metric") {
-      val (lists, cache) = make(FakeRepository())
+      val repository = FakeRepository()
+      val (lists, cache) = make(repository)
       for
-        _ <- add(lists, AntifraudListType.fake, AntifraudValueType.prefix, "4915")
+        _ <- add(repository, lists, AntifraudListType.fake, AntifraudValueType.prefix, "4915")
         _ <- decide(lists)(ctx(destPrefix = Some("491512")))
         _ <- decide(lists)(ctx(destPrefix = Some("491512")))
       yield assertTrue(cache.drainKinds() == List((AntifraudListType.fake, AntifraudValueType.prefix, false) -> 2L), cache.drainKinds().isEmpty)

@@ -12,6 +12,8 @@ import versola.antifraud.{
   AntifraudListController,
   AntifraudListRepository,
   AntifraudLists,
+  AntifraudPolicySource,
+  AntifraudPolicySync,
   AntifraudProposalRepository,
   AntifraudSettingsController,
   AntifraudSettingsRepository,
@@ -441,8 +443,11 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConsentService.live >++>
       antifraudSettings >++>
       antifraudListSettings >++>
-      AntifraudLists.live >++>
       antifraudTuningSettings >++>
+      // Before the lists and the tuning are first read: they read this cell's copy of central's policy, which this makes current.
+      AntifraudPolicySource.live >++>
+      AntifraudPolicySync.live >++>
+      AntifraudLists.live >++>
       AntifraudTuningStore.live >++>
       VelocityCounters.live >++>
       Antifraud.live >++>

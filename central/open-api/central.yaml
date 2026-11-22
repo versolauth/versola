@@ -15,7 +15,8 @@ info:
     replication endpoints that are not part of this document:
 
     * `/configuration/*/sync`, `/configuration/*/registry`, `/configuration/jwks/signing-keys/sync`
-      and `POST /users/registrations` and `POST /users/lookup`, which auth reads with its shared-secret token. Every
+      and `POST /users/registrations`, `POST /users/lookup`, `GET /antifraud/policy/sync` and
+      `GET /antifraud/policy/lists/sync`, which auth reads with its shared-secret token. Every
       route outside `/edge/*` refuses a token that authenticates an edge (`403`).
     * `/edge/sync/*` (`clients`, `resources`, `roles`, `permissions`, `jwks`, `dpop`,
       `auth-request-presets`, `server-metadata`, `overload`, `access-log`, `rate-limits`, `cells`), `POST /edge/clients/edge-certificate/sign`
@@ -115,8 +116,8 @@ info:
     a success, a failure with the request's error code, or a denial. The log holds the names of the fields an
     update carried, never their values. The event is handed to the audit queue after the handler has answered.
     A change that is made in auth (sessions, refresh tokens, passkeys, passwords, claims, limits and the antifraud
-    lists, settings and counters) is recorded here with its outcome too, and auth records its effect: the two rows carry
-    the same trace id.
+    counters) is recorded here with its outcome too, and auth records its effect: the two rows carry
+    the same trace id. A change to the antifraud lists or settings is made in central and recorded here alone.
     Certificates central issues are recorded as `cert.enrolled`, `cert.renewed` and `cert.revoked`, by the client,
     the edge or the system. Their `details` say which certificate it is: `operation`, the `serial` (hex), `notAfter`
     (an ISO-8601 instant) and the `subject` (RFC 4514), and `clientId` for a client's. `operation` is one of `enroll`
@@ -210,7 +211,12 @@ tags:
       with `partnerId` ownership, are served by the partner's own edge group and never by the operator's edges.
   - name: Antifraud lists
     description: |
-      Values the antifraud rules block, fake, watch or allow at once. Stored and enforced by auth.
+      Values the antifraud rules block, fake, watch or allow at once. Central stores them, once for the deployment, with who
+      changed them; every auth (every cell) copies them on a poll of central and enforces its copy, so a change reaches
+      every instance within about two `antifraud.tuning.refresh-interval` (the poll, then the instance's own reload), and a cell that
+      cannot reach central goes on with the copy it has. Auth validates an entry before central stores it. How often an entry
+      matched (`hitCount`, `lastHitAt`) is counted by each cell and summed when the entries are listed; a cell that does not
+      answer is left out of the sum.
 
       **Who may change what.** There are two families of routes, and the route decides the scope, not the request.
       `/antifraud/lists/...` is for the admin of a tenant (`antifraud:read`, `antifraud:manage`): it acts in the tenant of the
@@ -222,7 +228,9 @@ tags:
   - name: Antifraud settings
     description: |
       Thresholds, rule weights, shadow rules, limits on codes sent and the proof-of-work difficulty that are tuned during an
-      attack. Stored and applied by auth, without a restart. Reading is `antifraud:read`; changing or resetting them is the
+      attack. Central stores them, once for the deployment; every auth (every cell) copies them on a poll of central and
+      applies its copy, without a restart. Auth validates a change before central stores it, and says what "everything off"
+      is, so a change, and a read where nothing is stored yet, need an auth to answer. Reading is `antifraud:read`; changing or resetting them is the
       operator's (`antifraud:operate`). The settings are versioned: a read gives `version` and the same number as the
       `ETag`, a change is made on a version (`If-Match`), and one made on a version the settings have left is `412`.
   - name: Antifraud operations
@@ -3244,14 +3252,15 @@ paths:
         Adds an entry of the admin's tenant, or refreshes the expiry, reason and source of the one for the same list, kind of
         value, value and tenant (the response is then that entry, with its own `id`). The entry is the tenant's whether
         the body names the tenant or not; a body that names another tenant is `403`. A global entry is the operator's, through
-        `/antifraud/global/lists`. This instance of auth applies it at once, the others within
-        `antifraud.lists.refresh-interval`. Every change is recorded in the audit.
+        `/antifraud/global/lists`. Every auth copies it on its next poll of central. Every change is recorded in the audit.
 
         Auth refuses (`400`, with the reason as text) a value that does not fit its kind (and a device id or a JA4
         hash, which no request carries yet); an `allow` for anything but an exact subject; an entry that
         names many clients, or whose `source` is not `manual`, without `expiresAt`; an `expiresAt` in the past; and
-        an enforcing (not `shadow`) entry that would have matched more than `antifraud.lists.max-traffic-share` of the last
-        24 hours of events: add it as `shadow` first. Needs `antifraud:manage`.
+        an enforcing (not `shadow`) entry that would have matched more than 5% of the last 24 hours of events, summed over
+        every cell (judged over at least 100 events): add it as `shadow` first. An enforcing entry therefore needs every cell
+        to answer, and is not stored while one does not; a `shadow` entry needs only the auth that validates it.
+        Needs `antifraud:manage`.
       operationId: createAntifraudListEntry
       requestBody:
         required: true
@@ -3306,7 +3315,8 @@ paths:
       tags: [Antifraud lists]
       summary: Preview what an entry would match (a tenant's)
       description: |
-        How many of the last 24 hours of events the entry would have matched, with the same validation as adding it and
+        How many of the last 24 hours of events the entry would have matched, summed over every cell (each counts its own
+        event log, and one that does not answer fails the preview), with the same validation as adding it and
         nothing stored, as the admin's tenant's entry (it is previewed as the entry `POST /antifraud/lists` would make; a body
         that names another tenant is `403`). `matched` is `null` for a kind of value the event log has no column for (an
         address, a network, a mail domain): the share guard cannot judge those, so give them an expiry and add
@@ -3511,8 +3521,7 @@ paths:
       summary: The settings
       description: |
         What applies to the whole deployment, with the `version` of the row next to the settings and the same number as the
-        `ETag`: a change may be made on it (see `PUT` and `PATCH`). Auth's bootstrap seeds the row with everything off when the service starts
-        (the migration only creates the table), so there is one once a start has finished; before that a read gives
+        `ETag`: a change may be made on it (see `PUT` and `PATCH`). Until the first change nothing is stored, and a read gives
         everything off at version `0`. Nothing in auth's configuration sets these values. Needs `antifraud:read`.
       operationId: getAntifraudSettings
       responses:
@@ -3540,8 +3549,8 @@ paths:
           overwrites**. This is the mode for service-to-service clients and tooling that hold the desired state themselves and
           reapply it. A person tuning during an attack should use `PATCH`, or name the version.
 
-        The response has the new `version` and `ETag` either way, and the version moves on every change. This instance of auth
-        applies it at once, the others within `antifraud.tuning.refresh-interval`, with no restart and no loss of the counters.
+        The response has the new `version` and `ETag` either way, and the version moves on every change. Every auth copies
+        it on its next poll of central (`antifraud.tuning.refresh-interval`) and applies it, with no restart and no loss of the counters.
         Needs `antifraud:operate`.
 
         `shadowRules` are evaluated and listed in the fired rules as `shadow:<name>` but add no weight and force nothing;
@@ -3606,9 +3615,9 @@ paths:
           `null` map empties it) and a value replaces the entry whole, so an entry of `byPrefix` names all three members of an
           `AntifraudSmsLimit`.
 
-        Everything the body does not name is left as it is. Auth applies the patch to the stored
-        settings, checks the result as a whole as `PUT` does (`400`, with the reason, and nothing is written when it is not
-        valid), and answers all the settings with their new version. Unlike a `PUT`, a patch need not carry `mode` or any other
+        Everything the body does not name is left as it is. Auth applies the patch to the settings central has stored and
+        checks the result as a whole as for a `PUT` (`400`, with the reason, and nothing is written when it is not
+        valid); central stores it and answers all the settings with their new version. Unlike a `PUT`, a patch need not carry `mode` or any other
         member: it names only what it changes. The body is `application/merge-patch+json`;
         `application/json` is taken too, and any other type is `415`.
 
@@ -3703,7 +3712,8 @@ paths:
       summary: Reset counters
       description: |
         Clears the velocity counters, the SMS budget, or both: all of them, or those of one value (a phone, an address or a
-        range of numbers). It is the support path for "my number gets no code" and for a range that was closed. Auth hashes
+        range of numbers). It is the support path for "my number gets no code" and for a range that was closed. The counters are
+        each cell's own, so the reset goes to every cell, and one that cannot be reached fails the call. Each auth hashes
         a phone, clears the memory of every instance (they pick the reset up within `antifraud.tuning.refresh-interval`) and the
         stored rows, and records who did it. `valueType` and `value` go together. Needs `antifraud:operate`.
       operationId: resetAntifraudCounters
@@ -3722,7 +3732,7 @@ paths:
                 properties:
                   generation:
                     type: integer
-                    description: The number of the reset, which every instance picks up and clears its memory for.
+                    description: The number of the reset, which every instance picks up and clears its memory for; the highest of the cells' where there are several.
                 required: [generation]
         '400':
           description: The body is not valid, or auth refused it (text body with the reason).
@@ -8604,7 +8614,7 @@ components:
           additionalProperties: true
     AntifraudStatus:
       type: object
-      description: What one auth instance says of its antifraud.
+      description: What an instance of the auth central is configured with says of its antifraud, and one of each cell.
       properties:
         decision:
           type: object
@@ -8628,7 +8638,22 @@ components:
             ageSeconds: { type: integer, minimum: 0, description: Seconds since it last checked them against the database successfully. }
             lastRefreshError: { type: string, description: What the last refresh that failed said; absent once one has succeeded. }
           required: [available]
-      required: [decision, lists, tuning]
+        cells:
+          type: array
+          description: |
+            The same of one instance of every registered cell (empty where there is no cell). The policy is one, and each
+            cell copies and enforces it on its own: `status.tuning.version` is the version of the settings the cell has
+            copied, the same number in every cell once a change has reached them all.
+          items:
+            type: object
+            properties:
+              cell: { type: string, description: The id of the cell. }
+              status:
+                type: object
+                description: "What the instance said: `decision`, `lists` and `tuning`, as above. Absent when the cell did not answer."
+              error: { type: string, description: Why the cell did not answer; absent when it did. }
+            required: [cell]
+      required: [decision, lists, tuning, cells]
     AntifraudVelocityLimit:
       type: object
       description: The most requests a key may have in each window (0 for no limit); a rule fires above it and adds `weight` to the score.

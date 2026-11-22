@@ -2,13 +2,17 @@ package versola
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.zaxxer.hikari.HikariDataSource
+import versola.antifraud.{PostgresAntifraudListRepository, PostgresAntifraudSettingsRepository}
 import versola.audit.PostgresAuditEventRepository
 import versola.central.antifraud.{
   AntifraudCountersController,
   AntifraudCountersService,
   AntifraudListController,
+  AntifraudListRepository,
   AntifraudListService,
+  AntifraudPolicyController,
   AntifraudSettingsController,
+  AntifraudSettingsRepository,
   AntifraudSettingsService,
   AntifraudStatusController,
   AntifraudStatusService,
@@ -185,6 +189,8 @@ object PostgresCentralApp extends VersolaApp("central"):
       SecurityService &
       UserRepository &
       UserService &
+      AntifraudListRepository &
+      AntifraudSettingsRepository &
       AntifraudListService &
       AntifraudSettingsService &
       AntifraudCountersService &
@@ -241,6 +247,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       UserController.endpoints,
       AntifraudListController.endpoints,
       AntifraudSettingsController.endpoints,
+      AntifraudPolicyController.endpoints,
       AntifraudCountersController.endpoints,
       AntifraudStatusController.endpoints,
       JwksController.endpoints,
@@ -302,6 +309,8 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresEdgeRepository.live >++>
           PostgresEdgeGroupRepository.live >++>
           PostgresTopologyRepository.live >++>
+          PostgresAntifraudListRepository.live >++>
+          PostgresAntifraudSettingsRepository.live >++>
           PostgresEdgeEnrollmentTokenRepository.live >++>
           PostgresEdgeCertificateRepository.live >++>
           PostgresPartnerRepository.live >++>

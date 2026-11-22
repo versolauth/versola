@@ -9,11 +9,11 @@ import zio.test.*
 import java.time.{Instant, ZoneOffset}
 import java.util.UUID
 
-/** What every [[AntifraudListRepository]] promises: entries stored with their audit, refreshed on a repeat and kept apart by scope,
-  * filtered and paged, expired and pruned in batches, counted for the cache's version, and previewed against the event log and
-  * its rollup. A preview reads the events the real [[AntifraudEventRepository]] wrote and the statistics a case gets from
-  * [[AntifraudListRepositorySpec.Fixtures]], which the storage's runner implements, as it does an entry of a kind this version
-  * does not know; the storage adds in `implementationCases` what it alone promises (a statement timeout). */
+/** What every [[AntifraudListRepository]] promises: central's entries copied under central's version, written once per version, with
+  * the hit counters of an entry that stays kept and those of one that goes dropped; an entry of a kind this version does not know
+  * stored and skipped when the cache loads; the hits read back; and a preview against the event log and its rollup. A preview reads
+  * the events the real [[AntifraudEventRepository]] wrote and the statistics a case gets from [[AntifraudListRepositorySpec.Fixtures]],
+  * which the storage's runner implements; the storage adds in `implementationCases` what it alone promises (a statement timeout). */
 trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListRepositorySpec.Env]:
   self: ZIOSpec[TransactorZIO] =>
 
@@ -25,211 +25,164 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
     val resets = env.resets
     val f = env.fixtures
     List(
-      test("stores an entry with every column and reads it back, with an audit record") {
+      test("the copy is at version 0 and has nothing before the first replacement") {
         for
-          tenant = Some(TenantId("tenant-a"))
-          e = entry(
-            listType = AntifraudListType.fake,
-            valueType = AntifraudValueType.cidr,
-            value = "10.0.0.0/8",
-            tenantId = tenant,
-            expiresAt = Some(at.plusSeconds(3600)),
+          version <- repository.version
+          active <- repository.loadActive(at)
+        yield assertTrue(version == 0L, active.isEmpty)
+      },
+      test("replaces the copy with the entries, with every column, and sets the version") {
+        for
+          e <- ZIO.succeed(
+            entry(
+              listType = "fake",
+              valueType = "cidr",
+              value = "10.0.0.0/8",
+              tenantId = Some("tenant-a"),
+              expiresAt = Some(at.plusSeconds(3600)),
+              shadow = true,
+            ),
           )
-          stored <- repository.upsert(e, "alice", at)
-          listed <- repository.list(AntifraudListFilter.all, 10, 0)
-          audit <- repository.audit(None, 10, None)
+          wrote <- repository.replaceAll(List(e), 4)
+          version <- repository.version
+          active <- repository.loadActive(at)
         yield assertTrue(
-          stored == e,
-          listed == List(e),
-          audit.map(a => (a.action, a.actor, a.entryId, a.listType, a.valueType, a.value, a.tenantId, a.expiresAt, a.reason)) ==
-            List((
-              AntifraudListAction.create,
-              "alice",
-              e.id,
-              AntifraudListType.fake,
-              AntifraudValueType.cidr,
-              "10.0.0.0/8",
-              tenant,
-              e.expiresAt,
-              e.reason,
-            )),
+          wrote,
+          version == 4L,
+          active == List(
+            ListedValue(
+              id = e.id,
+              listType = AntifraudListType.fake,
+              valueType = AntifraudValueType.cidr,
+              value = "10.0.0.0/8",
+              tenantId = Some(TenantId("tenant-a")),
+              expiresAt = Some(at.plusSeconds(3600)),
+              shadow = true,
+            ),
+          ),
         )
       },
-      test("adding the same value in the same scope again refreshes it and keeps the id; another scope is another entry") {
+      test("writes nothing when the copy is at that version already, and says so") {
+        val kept = entry(value = "kept")
         for
-          first <- repository.upsert(entry(), "alice", at)
-          again <- repository.upsert(
-            entry().copy(expiresAt = Some(at.plusSeconds(60)), reason = Some("again"), source = "rule", createdBy = "bob"),
-            "bob",
-            at.plusSeconds(1),
-          )
-          tenantScoped <- repository.upsert(entry(tenantId = Some(TenantId("t"))), "alice", at)
-          otherList <- repository.upsert(entry(AntifraudListType.watch), "alice", at)
-          listed <- repository.list(AntifraudListFilter.all, 10, 0)
-          audit <- repository.audit(Some(first.id), 10, None)
+          first <- repository.replaceAll(List(kept), 2)
+          again <- repository.replaceAll(Nil, 2)
+          active <- repository.loadActive(at)
+          version <- repository.version
+        yield assertTrue(first, !again, active.map(_.id) == List(kept.id), version == 2L)
+      },
+      test("a new version replaces the entries: the ones central no longer has are removed, a changed one is updated") {
+        val staying = entry(value = "staying")
+        val going = entry(value = "going")
+        val added = entry(value = "added", listType = "watch")
+        for
+          _ <- repository.replaceAll(List(staying, going), 1)
+          wrote <- repository.replaceAll(List(staying.copy(reason = Some("changed"), expiresAt = Some(at.plusSeconds(60))), added), 2)
+          active <- repository.loadActive(at)
+          version <- repository.version
         yield assertTrue(
-          again.id == first.id,
-          again.expiresAt.contains(at.plusSeconds(60)),
-          again.reason.contains("again"),
-          again.source == "rule",
-          again.createdBy == "alice",
-          tenantScoped.id != first.id,
-          otherList.id != first.id,
-          listed.size == 3,
-          audit.map(_.actor) == List("bob", "alice"),
+          wrote,
+          version == 2L,
+          active.map(_.id).toSet == Set(staying.id, added.id),
+          active.find(_.id == staying.id).flatMap(_.expiresAt).contains(at.plusSeconds(60)),
+          active.find(_.id == added.id).map(_.listType).contains(AntifraudListType.watch),
         )
       },
-      test("filters by list, value type and scope; pages") {
+      test("an empty list from central empties the copy") {
         for
-          global <- repository.upsert(entry(value = "a"), "x", at)
-          scoped <- repository.upsert(entry(value = "b", tenantId = Some(TenantId("t"))), "x", at)
-          watch <- repository.upsert(entry(AntifraudListType.watch, AntifraudValueType.asn, "64500"), "x", at)
-          denies <- repository.list(AntifraudListFilter.all.copy(listType = Some(AntifraudListType.deny)), 10, 0)
-          asns <- repository.list(AntifraudListFilter.all.copy(valueType = Some(AntifraudValueType.asn)), 10, 0)
-          globals <- repository.list(AntifraudListFilter.all.copy(tenantId = Some(None)), 10, 0)
-          tenants <- repository.list(AntifraudListFilter.all.copy(tenantId = Some(Some(TenantId("t")))), 10, 0)
-          page <- repository.list(AntifraudListFilter.all, 2, 2)
-        yield assertTrue(
-          denies.map(_.id).toSet == Set(global.id, scoped.id),
-          asns.map(_.id) == List(watch.id),
-          globals.map(_.id).toSet == Set(global.id, watch.id),
-          tenants.map(_.id) == List(scoped.id),
-          page.size == 1,
-        )
+          _ <- repository.replaceAll(List(entry(), entry(value = "dev-2")), 1)
+          wrote <- repository.replaceAll(Nil, 2)
+          active <- repository.loadActive(at)
+        yield assertTrue(wrote, active.isEmpty)
+      },
+      test("an entry that stays keeps its hit counters, and one that goes loses them") {
+        val staying = entry(value = "staying")
+        val going = entry(value = "going")
+        for
+          _ <- repository.replaceAll(List(staying, going), 1)
+          _ <- repository.addHits(List(ListHit(staying.id, 3, at.plusSeconds(10)), ListHit(going.id, 1, at)))
+          _ <- repository.replaceAll(List(staying.copy(reason = Some("changed"))), 2)
+          kept <- repository.hits(List(staying.id, going.id))
+        yield assertTrue(kept == List(ListHit(staying.id, 3, at.plusSeconds(10))))
       },
       test("loads what has not expired, as the cache needs it") {
+        val forever = entry(value = "forever")
+        val later = entry(value = "later", expiresAt = Some(at.plusSeconds(10)))
         for
-          forever <- repository.upsert(entry(value = "forever"), "x", at)
-          later <- repository.upsert(entry(value = "later", expiresAt = Some(at.plusSeconds(10))), "x", at)
-          _ <- repository.upsert(entry(value = "gone", expiresAt = Some(at)), "x", at)
-          _ <- repository.upsert(entry(value = "past", expiresAt = Some(at.minusSeconds(10))), "x", at)
+          _ <- repository.replaceAll(
+            List(
+              forever,
+              later,
+              entry(value = "gone", expiresAt = Some(at)),
+              entry(value = "past", expiresAt = Some(at.minusSeconds(10))),
+            ),
+            1,
+          )
           active <- repository.loadActive(at)
         yield assertTrue(
           active.map(_.id).toSet == Set(forever.id, later.id),
           active.find(_.id == later.id).flatMap(_.expiresAt).contains(at.plusSeconds(10)),
         )
       },
-      test("a listing and the audit can be limited to what a tenant sees: the global entries and its own") {
+      test("an entry of a kind this version does not know is stored, and skipped when the cache loads") {
         for
-          a = Some(TenantId("tenant-a"))
-          b = Some(TenantId("tenant-b"))
-          global <- repository.upsert(entry(value = "g"), "x", at)
-          own <- repository.upsert(entry(value = "a", tenantId = a), "x", at.plusSeconds(1))
-          other <- repository.upsert(entry(value = "b", tenantId = b), "x", at.plusSeconds(2))
-          seenByA <- repository.list(AntifraudListFilter.all.copy(visibleTo = a), 10, 0)
-          seenByB <- repository.list(AntifraudListFilter.all.copy(visibleTo = b), 10, 0)
-          everything <- repository.list(AntifraudListFilter.all, 10, 0)
-          onlyOwn <- repository.list(AntifraudListFilter(listType = None, valueType = None, tenantId = Some(a), visibleTo = a), 10, 0)
-          noneOfOthers <- repository.list(AntifraudListFilter(listType = None, valueType = None, tenantId = Some(b), visibleTo = a), 10, 0)
-          auditA <- repository.audit(None, 10, a)
-          auditAll <- repository.audit(None, 10, None)
-          auditOfOthers <- repository.audit(Some(other.id), 10, a)
-          auditOfOwn <- repository.audit(Some(own.id), 10, a)
-          auditOfGlobal <- repository.audit(Some(global.id), 10, a)
-        yield assertTrue(
-          seenByA.map(_.id).toSet == Set(global.id, own.id),
-          seenByB.map(_.id).toSet == Set(global.id, other.id),
-          everything.size == 3,
-          onlyOwn.map(_.id) == List(own.id),
-          noneOfOthers.isEmpty,
-          auditA.map(_.entryId).toSet == Set(global.id, own.id),
-          auditAll.size == 3,
-          auditOfOthers.isEmpty,
-          auditOfOwn.size == 1,
-          auditOfGlobal.size == 1,
-        )
+          now <- Clock.instant
+          _ <- repository.replaceAll(
+            List(
+              entry(listType = "ban", valueType = "ip", value = "x"),
+              entry(listType = "deny", valueType = "fingerprint", value = "y"),
+              entry(listType = "deny", valueType = "ip", value = "203.0.113.7"),
+            ),
+            1,
+          )
+          loaded <- repository.loadActive(now)
+        yield assertTrue(loaded.map(_.value) == List("203.0.113.7"))
       },
-      test("deletes an entry, records who did, and says so when there was none") {
+      test("an entry of an unknown kind keeps its hit counters across versions like any other") {
+        val future = entry(listType = "ban", valueType = "ip", value = "x")
         for
-          e <- repository.upsert(entry(), "alice", at)
-          removed <- repository.delete(e.id, "bob", at.plusSeconds(5))
-          again <- repository.delete(e.id, "bob", at.plusSeconds(6))
-          listed <- repository.list(AntifraudListFilter.all, 10, 0)
-          audit <- repository.audit(Some(e.id), 10, None)
-        yield assertTrue(
-          removed,
-          !again,
-          listed.isEmpty,
-          audit.map(a => (a.action, a.actor, a.value)) == List(
-            (AntifraudListAction.delete, "bob", "dev-1"),
-            (AntifraudListAction.create, "alice", "dev-1"),
-          ),
-        )
-      },
-      test("removes expired entries and records each as expired") {
-        for
-          live <- repository.upsert(entry(value = "live", expiresAt = Some(at.plusSeconds(60))), "x", at)
-          old <- repository.upsert(entry(value = "old", expiresAt = Some(at.plusSeconds(1))), "x", at)
-          n <- repository.purgeExpired(at.plusSeconds(2), 1000)
-          listed <- repository.list(AntifraudListFilter.all, 10, 0)
-          audit <- repository.audit(Some(old.id), 10, None)
-        yield assertTrue(
-          n == 1,
-          listed.map(_.id) == List(live.id),
-          audit.map(a => (a.action, a.actor)).head == (AntifraudListAction.expire, "system"),
-        )
-      },
-      test("every change bumps the version and nothing else does") {
-        for
-          v0 <- repository.version
-          e <- repository.upsert(entry(expiresAt = Some(at.plusSeconds(1))), "x", at)
-          v1 <- repository.version
-          _ <- repository.addHits(List(ListHit(e.id, 1, at)))
-          _ <- repository.list(AntifraudListFilter.all, 10, 0)
-          v2 <- repository.version
-          _ <- repository.purgeExpired(at, 10)
-          v3 <- repository.version
-          _ <- repository.purgeExpired(at.plusSeconds(5), 10)
-          v4 <- repository.version
-          _ <- repository.purgeExpired(at.plusSeconds(5), 10)
-          v5 <- repository.version
-          _ <- repository.delete(e.id, "x", at)
-          v6 <- repository.version
-          e2 <- repository.upsert(entry(), "x", at)
-          _ <- repository.delete(e2.id, "x", at)
-          v7 <- repository.version
-        yield assertTrue(v1 == v0 + 1, v2 == v1, v3 == v2, v4 == v3 + 1, v5 == v4, v6 == v5, v7 == v6 + 2)
-      },
-      test("purges and prunes in batches of at most the limit, oldest first, and does not touch what is not yet due") {
-        for
-          _ <- ZIO.foreachDiscard(1 to 5)(i => repository.upsert(entry(value = s"d$i", expiresAt = Some(at.plusSeconds(i))), "x", at.plusSeconds(i)))
-          first <- repository.purgeExpired(at.plusSeconds(100), 2)
-          second <- repository.purgeExpired(at.plusSeconds(100), 2)
-          third <- repository.purgeExpired(at.plusSeconds(100), 2)
-          fourth <- repository.purgeExpired(at.plusSeconds(100), 2)
-          // 5 'create' audit records at +1..+5 s and 5 'expire' at +100 s
-          none <- repository.pruneAudit(at, 10)
-          some <- repository.pruneAudit(at.plusSeconds(50), 3)
-          rest <- repository.pruneAudit(at.plusSeconds(50), 3)
-          left <- repository.audit(None, 100, None)
-        yield assertTrue(
-          first == 2,
-          second == 2,
-          third == 1,
-          fourth == 0,
-          none == 0,
-          some == 3,
-          rest == 2,
-          left.size == 5,
-          left.forall(_.action == AntifraudListAction.expire),
-        )
+          _ <- repository.replaceAll(List(future), 1)
+          _ <- repository.addHits(List(ListHit(future.id, 2, at)))
+          _ <- repository.replaceAll(List(future), 2)
+          counted <- repository.hits(List(future.id))
+        yield assertTrue(counted == List(ListHit(future.id, 2, at)))
       },
       test("adds the hits to the counters, and keeps the latest time") {
+        val e = entry()
         for
-          e <- repository.upsert(entry(), "x", at)
+          _ <- repository.replaceAll(List(e), 1)
           _ <- repository.addHits(List(ListHit(e.id, 3, at.plusSeconds(10)), ListHit(UUID.randomUUID(), 5, at)))
           _ <- repository.addHits(List(ListHit(e.id, 2, at.plusSeconds(5))))
-          listed <- repository.list(AntifraudListFilter.all, 10, 0)
-        yield assertTrue(listed.map(l => (l.hitCount, l.lastHitAt)) == List((5L, Some(at.plusSeconds(10)))))
+          counted <- repository.hits(List(e.id))
+        yield assertTrue(counted == List(ListHit(e.id, 5, at.plusSeconds(10))))
       },
-      test("keeps the shadow flag, refreshes it on a repeat, and loads it for the cache") {
+      test("hits leaves out an entry that never matched and an id the copy does not have") {
+        val hit = entry(value = "hit")
+        val quiet = entry(value = "quiet")
         for
-          first <- repository.upsert(entry(shadow = true), "x", at)
+          _ <- repository.replaceAll(List(hit, quiet), 1)
+          _ <- repository.addHits(List(ListHit(hit.id, 1, at)))
+          counted <- repository.hits(List(hit.id, quiet.id, UUID.randomUUID()))
+          none <- repository.hits(Nil)
+        yield assertTrue(counted == List(ListHit(hit.id, 1, at)), none.isEmpty)
+      },
+      test("counting hits does not move the version") {
+        val e = entry()
+        for
+          _ <- repository.replaceAll(List(e), 1)
+          before <- repository.version
+          _ <- repository.addHits(List(ListHit(e.id, 1, at)))
+          after <- repository.version
+        yield assertTrue(before == 1L, after == before)
+      },
+      test("keeps the shadow flag, and loads it for the cache") {
+        val e = entry(shadow = true)
+        for
+          _ <- repository.replaceAll(List(e), 1)
           loaded <- repository.loadActive(at)
-          again <- repository.upsert(entry(shadow = false), "x", at)
-          found <- repository.find(first.id)
-          missing <- repository.find(UUID.randomUUID())
-        yield assertTrue(first.shadow, loaded.map(_.shadow) == List(true), !again.shadow, found.map(_.shadow).contains(false), missing.isEmpty)
+          _ <- repository.replaceAll(List(e.copy(shadow = false)), 2)
+          changed <- repository.loadActive(at)
+        yield assertTrue(loaded.map(_.shadow) == List(true), changed.map(_.shadow) == List(false))
       },
       test("previews what an entry would have matched of the event log, for the values the log has a column for") {
         for
@@ -453,49 +406,27 @@ trait AntifraudListRepositorySpec extends DatabaseSpecBase[AntifraudListReposito
           preview <- repository.preview(AntifraudValueType.prefix, "491512", a, since)
         yield assertTrue(preview == ListPreview(matched = Some(2), total = 3))
       },
-      test("an entry added again is audited as an update, with what it was; the first time as a create") {
-        for
-          first <- repository.upsert(entry(expiresAt = Some(at.plusSeconds(3600))), "alice", at)
-          again <- repository.upsert(
-            entry().copy(expiresAt = Some(at.plusSeconds(60)), reason = Some("changed"), source = "detector:prefix_anomaly", shadow = true),
-            "bob",
-            at.plusSeconds(1),
-          )
-          audit <- repository.audit(Some(first.id), 10, None)
-        yield assertTrue(
-          again.id == first.id,
-          audit.map(_.action) == List(AntifraudListAction.update, AntifraudListAction.create),
-          // The record has the entry as it became, and what it had.
-          audit.head.expiresAt.contains(at.plusSeconds(60)),
-          audit.head.reason.contains("changed"),
-          audit.head.previous.contains(
-            PreviousListValues(expiresAt = Some(at.plusSeconds(3600)), reason = Some("seen in an attack"), source = "manual", shadow = false),
-          ),
-          audit.last.previous.isEmpty,
-        )
-      },
-      test("pruning the audit also removes counter resets older than the limit, except the newest, which the generations count from") {
+      test("pruning counter resets removes those older than the limit, except the newest, which the generations count from") {
         val oldAt = at.minusSeconds(400L * 86400)
         for
           _ <- resets.record(AntifraudCounterResetRepositorySpec.whole, "x", oldAt)
           _ <- resets.record(AntifraudCounterResetRepositorySpec.whole, "x", oldAt)
           _ <- resets.record(AntifraudCounterResetRepositorySpec.whole, "x", at)
-          _ <- repository.pruneAudit(at.minusSeconds(365L * 86400), 100)
+          removed <- repository.pruneCounterResets(at.minusSeconds(365L * 86400), 100)
           left <- resets.since(0, 100).map(_.map(_.generation))
           // Everything is old, and the newest still stays.
-          _ <- repository.pruneAudit(at.plusSeconds(400L * 86400), 100)
+          _ <- repository.pruneCounterResets(at.plusSeconds(400L * 86400), 100)
           newest <- resets.since(0, 100).map(_.map(_.generation))
           latest <- resets.latest
-        yield assertTrue(left == List(3L), newest == List(3L), latest == 3L)
+        yield assertTrue(removed == 2, left == List(3L), newest == List(3L), latest == 3L)
       },
-      test("a row of a kind this version does not know is stored, and skipped when the cache loads") {
+      test("pruning counter resets removes at most the limit, oldest first") {
+        val oldAt = at.minusSeconds(400L * 86400)
         for
-          now <- Clock.instant
-          _ <- env.fixtures.entryOfKind(listType = "ban", valueType = "ip", value = "x")
-          _ <- env.fixtures.entryOfKind(listType = "deny", valueType = "fingerprint", value = "y")
-          _ <- env.fixtures.entryOfKind(listType = "deny", valueType = "ip", value = "203.0.113.7")
-          loaded <- repository.loadActive(now)
-        yield assertTrue(loaded.map(_.value) == List("203.0.113.7"))
+          _ <- ZIO.foreachDiscard(1 to 5)(_ => resets.record(AntifraudCounterResetRepositorySpec.whole, "x", oldAt))
+          first <- repository.pruneCounterResets(at, 2)
+          left <- resets.since(0, 100).map(_.map(_.generation))
+        yield assertTrue(first == 2, left == List(3L, 4L, 5L))
       },
     )
 
@@ -507,17 +438,12 @@ object AntifraudListRepositorySpec:
       fixtures: Fixtures,
   )
 
-  /** What a case writes that the repository under test does not: the rollup's statistics, for the preview of a prefix, and an entry
-    * of a kind only a later version writes. */
+  /** What a case writes that the repository under test does not: the rollup's statistics, for the preview of a prefix. */
   trait Fixtures:
     /** One row of the rollup, `requests` in the minute. */
     def stats(tenant: String, prefix: String, minute: Instant, requests: Int): Task[Unit]
 
     def clearStats: Task[Unit]
-
-    /** An entry as a later version would store it, with no expiry: its type and the type of its value by the names they are stored
-      * under, which this version does not have to know. */
-    def entryOfKind(listType: String, valueType: String, value: String): Task[Unit]
 
   val at: Instant = Instant.parse("2026-10-23T10:00:00Z")
 
@@ -550,14 +476,15 @@ object AntifraudListRepositorySpec:
     country = None,
   )
 
+  /** The kinds are text, as central sends them: a case names one this version does not know the same way. */
   def entry(
-      listType: AntifraudListType = AntifraudListType.deny,
-      valueType: AntifraudValueType = AntifraudValueType.device_id,
+      listType: String = "deny",
+      valueType: String = "device_id",
       value: String = "dev-1",
-      tenantId: Option[TenantId] = None,
+      tenantId: Option[String] = None,
       expiresAt: Option[Instant] = None,
       shadow: Boolean = false,
-  ): AntifraudListEntry = AntifraudListEntry(
+  ): PolicyListEntry = PolicyListEntry(
     id = UUID.randomUUID(),
     listType = listType,
     valueType = valueType,
@@ -569,6 +496,4 @@ object AntifraudListRepositorySpec:
     shadow = shadow,
     createdBy = "alice",
     createdAt = at,
-    hitCount = 0,
-    lastHitAt = None,
   )

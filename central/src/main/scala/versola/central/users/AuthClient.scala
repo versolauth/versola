@@ -8,8 +8,8 @@ import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.topology.TopologyRepository
 import versola.util.audit.AuditContext
-import versola.util.http.{EntityVersion, Observability}
-import versola.util.{Email, PageLimit, Patch, Phone}
+import versola.util.http.Observability
+import versola.util.{Email, Patch, Phone}
 import zio.Duration
 import zio.http.{Body, Client, Header, MediaType, Method, QueryParams, Request, Response, Status, URL}
 import zio.json.ast.Json
@@ -112,44 +112,36 @@ trait AuthClient:
     * adds to it and does not read into it. */
   def getUserAuditSummary(userId: UserId, from: Option[Instant], to: Option[Instant]): IO[AuthAuditError | Throwable, Json.Obj]
 
-  /** The antifraud lists live in auth, which validates the entries: its refusals are [[AntifraudListError]]s, not
-    * failures of the call. `userId` is the admin who asked, recorded by auth as who made the change. `caller` is whose scope
-    * the call is made in; auth enforces it, and it is sent as the call's own fields (`scope` and `callerTenantId`), never taken
-    * from what the request says. */
-  def createAntifraudListEntry(request: NewListEntryRequest, caller: AntifraudCaller): IO[AntifraudListError | Throwable, ListEntryResponse]
+  /** Central stores the antifraud lists and settings, and auth says whether an entry or the settings are valid before
+    * they are stored: the rules of what is valid belong to the engine that enforces them, and auth has the key a phone is
+    * hashed with. Its refusals are [[AntifraudListError]]s, not failures of the call.
+    *
+    * One `auth` answers a check, and every cell a preview, a count of hits and a reset: what an entry matched, how often
+    * it fired and the counters are each cell's own. */
+  def checkAntifraudListEntry(entry: ListEntryCheck): IO[AntifraudListError | Throwable, CheckedListEntry]
 
-  def previewAntifraudListEntry(request: NewListEntryRequest, caller: AntifraudCaller): IO[AntifraudListError | Throwable, PreviewResponse]
+  /** The check, with what the entry would have matched of the last 24 hours of events, summed over every cell. One cell
+    * that cannot answer fails the call: a sum without it would understate what the entry does. */
+  def previewAntifraudListEntry(entry: ListEntryCheck): IO[AntifraudListError | Throwable, CheckedListEntry]
 
-  def listAntifraudListEntries(query: ListEntriesQuery, caller: AntifraudCaller): IO[AntifraudListError | Throwable, List[ListEntryResponse]]
+  /** How often each of `ids` matched, summed over the cells. A cell that cannot answer is left out and logged: the
+    * counters are for reading, and a listing must not fail on one cell. */
+  def antifraudListHits(ids: List[UUID]): Task[List[ListHits]]
 
-  def deleteAntifraudListEntry(request: DeleteListEntryRequest, caller: AntifraudCaller): IO[AntifraudListError | Throwable, Unit]
+  /** The settings a change would make, validated: `check.patch` applied to `check.settings`. */
+  def checkAntifraudSettings(check: SettingsCheck): IO[AntifraudListError | Throwable, AntifraudSettings]
 
-  def antifraudListAudit(
-      entryId: Option[UUID],
-      limit: Option[PageLimit],
-      caller: AntifraudCaller,
-  ): IO[AntifraudListError | Throwable, List[AuditRecordResponse]]
-
-  /** The antifraud settings live in auth too, which validates them: its refusals are [[AntifraudListError]]s as well. A change
-    * made on a version the settings have left is [[AntifraudListError.StaleVersion]]. */
-  def getAntifraudSettings: IO[AntifraudListError | Throwable, VersionedAntifraudSettings]
-
-  /** `request.version` is the version the change is made on, when the caller named one; without it the settings are replaced. */
-  def putAntifraudSettings(request: PutAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings]
-
-  /** A typed patch of the settings (see [[PatchAntifraudSettingsRequest]]); auth applies it, validates and answers all of them. */
-  def patchAntifraudSettings(request: PatchAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings]
-
-  /** Puts everything off; on `expectedVersion` if the caller named one. */
-  def deleteAntifraudSettings(request: DeleteAntifraudSettingsRequest, expectedVersion: Option[Long]): IO[AntifraudListError | Throwable, Unit]
-
-  /** Clears counters; auth owns them and answers 202 with the generation of the reset. */
+  /** Clears counters in every cell; each answers 202 with the generation of its reset, and the highest is answered. */
   def resetAntifraudCounters(request: ResetCountersRequest): IO[AntifraudListError | Throwable, ResetCountersResponse]
 
   /** The catalogue of rule names, and what one auth instance says of its antifraud. */
   def antifraudRules: IO[AntifraudListError | Throwable, AntifraudRulesResponse]
 
-  def antifraudStatus: IO[AntifraudListError | Throwable, AntifraudStatusResponse]
+  def antifraudStatus: IO[AntifraudListError | Throwable, AntifraudInstanceStatus]
+
+  /** What an instance of each registered cell says of its antifraud; a cell that does not answer is listed with why. None
+    * where there is no cell. */
+  def antifraudStatusOfCells: Task[List[AntifraudCellStatus]]
 
 object AuthClient:
   /** The `auth` central is configured with, and no other. */
@@ -286,6 +278,8 @@ object AuthClient:
       channel: Option[DeliveryChannel],
       actorId: Option[UserId],
   ) derives JsonCodec
+
+  private case class HitsPayload(ids: List[UUID]) derives JsonCodec
 
   private case class SetPasswordPayload(
       userId: UserId,
@@ -505,78 +499,18 @@ object AuthClient:
           ),
         )
 
-    /** The call's own scope fields: what auth enforces, from the route central served. */
-    private def scopeParams(caller: AntifraudCaller): List[(String, String)] = caller match
-      case AntifraudCaller.Tenant(tenantId) => List("scope" -> "tenant", "callerTenantId" -> tenantId.toString)
-      case AntifraudCaller.Operator => List("scope" -> "operator")
+    override def checkAntifraudListEntry(entry: ListEntryCheck): IO[AntifraudListError | Throwable, CheckedListEntry] =
+      antifraud[CheckedListEntry](Request(method = Method.POST, url = antifraudListsUrl / "check", body = Body.from(entry.copy(preview = false))))
 
-    /** The entry as the admin sent it, with the scope fields set to the caller's: the request's own `callerTenantId` (what
-      * edge put there, or a client's, on a route that does not take it) is replaced, so that nothing but the route decides. */
-    private def scopedBody(request: NewListEntryRequest, caller: AntifraudCaller): Body =
-      val fields = request.toJsonAST match
-        case Right(obj: Json.Obj) => obj.fields.filterNot((name, _) => name == "callerTenantId")
-        case _ => Chunk.empty
-      Body.fromString(Json.Obj(fields ++ scopeParams(caller).map((name, value) => name -> Json.Str(value))).toJson)
+    override def previewAntifraudListEntry(entry: ListEntryCheck): IO[AntifraudListError | Throwable, CheckedListEntry] =
+      antifraud[CheckedListEntry](Request(method = Method.POST, url = antifraudListsUrl / "check", body = Body.from(entry.copy(preview = true))))
 
-    override def createAntifraudListEntry(
-        request: NewListEntryRequest,
-        caller: AntifraudCaller,
-    ): IO[AntifraudListError | Throwable, ListEntryResponse] =
-      antifraud[ListEntryResponse](Request(method = Method.POST, url = antifraudListsUrl, body = scopedBody(request, caller)))
+    override def antifraudListHits(ids: List[UUID]): Task[List[ListHits]] =
+      if ids.isEmpty then ZIO.succeed(Nil)
+      else sendReceive[List[ListHits]](Request(method = Method.POST, url = antifraudListsUrl / "hits", body = Body.from(AuthClient.HitsPayload(ids))))
 
-    override def previewAntifraudListEntry(
-        request: NewListEntryRequest,
-        caller: AntifraudCaller,
-    ): IO[AntifraudListError | Throwable, PreviewResponse] =
-      antifraud[PreviewResponse](Request(method = Method.POST, url = antifraudListsUrl / "preview", body = scopedBody(request, caller)))
-
-    override def listAntifraudListEntries(
-        query: ListEntriesQuery,
-        caller: AntifraudCaller,
-    ): IO[AntifraudListError | Throwable, List[ListEntryResponse]] =
-      val params = List(
-        query.listType.map("listType" -> _.toString),
-        query.valueType.map("valueType" -> _.toString),
-        query.tenantId.map("tenantId" -> _.toString),
-        query.global.map("global" -> _.toString),
-        query.limit.map("limit" -> _.toString),
-        query.offset.map("offset" -> _.toString),
-      ).flatten
-      antifraud[List[ListEntryResponse]](Request.get(antifraudListsUrl.addQueryParams(params ++ scopeParams(caller))))
-
-    override def deleteAntifraudListEntry(request: DeleteListEntryRequest, caller: AntifraudCaller): IO[AntifraudListError | Throwable, Unit] =
-      antifraudUnit(
-        Request(
-          method = Method.DELETE,
-          url = antifraudListsUrl.addQueryParams(List("id" -> request.id.toString, "userId" -> request.userId.toString) ++ scopeParams(caller)),
-          body = Body.empty,
-        ),
-      )
-
-    override def antifraudListAudit(
-        entryId: Option[UUID],
-        limit: Option[PageLimit],
-        caller: AntifraudCaller,
-    ): IO[AntifraudListError | Throwable, List[AuditRecordResponse]] =
-      val params = List(entryId.map("entryId" -> _.toString), limit.map("limit" -> _.toString)).flatten
-      antifraud[List[AuditRecordResponse]](Request.get((antifraudListsUrl / "audit").addQueryParams(params ++ scopeParams(caller))))
-
-    override def getAntifraudSettings: IO[AntifraudListError | Throwable, VersionedAntifraudSettings] =
-      antifraud[VersionedAntifraudSettings](Request.get(antifraudSettingsUrl))
-
-    override def putAntifraudSettings(request: PutAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings] =
-      antifraud[VersionedAntifraudSettings](Request(method = Method.PUT, url = antifraudSettingsUrl, body = Body.from(request)))
-
-    override def patchAntifraudSettings(request: PatchAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings] =
-      antifraud[VersionedAntifraudSettings](Request(method = Method.PATCH, url = antifraudSettingsUrl, body = Body.from(request)))
-
-    override def deleteAntifraudSettings(
-        request: DeleteAntifraudSettingsRequest,
-        expectedVersion: Option[Long],
-    ): IO[AntifraudListError | Throwable, Unit] =
-      val delete =
-        Request(method = Method.DELETE, url = antifraudSettingsUrl.addQueryParams(List("userId" -> request.userId.toString)), body = Body.empty)
-      antifraudUnit(expectedVersion.fold(delete)(version => delete.addHeader(Header.Custom("If-Match", EntityVersion.etag(version)))))
+    override def checkAntifraudSettings(check: SettingsCheck): IO[AntifraudListError | Throwable, AntifraudSettings] =
+      antifraud[AntifraudSettings](Request(method = Method.POST, url = antifraudSettingsUrl / "check", body = Body.from(check)))
 
     override def resetAntifraudCounters(request: ResetCountersRequest): IO[AntifraudListError | Throwable, ResetCountersResponse] =
       antifraud[ResetCountersResponse](Request(method = Method.POST, url = antifraudCountersResetUrl, body = Body.from(request)))
@@ -584,29 +518,23 @@ object AuthClient:
     override def antifraudRules: IO[AntifraudListError | Throwable, AntifraudRulesResponse] =
       antifraud[AntifraudRulesResponse](Request.get(antifraudRulesUrl))
 
-    override def antifraudStatus: IO[AntifraudListError | Throwable, AntifraudStatusResponse] =
-      antifraud[AntifraudStatusResponse](Request.get(antifraudStatusUrl))
+    override def antifraudStatus: IO[AntifraudListError | Throwable, AntifraudInstanceStatus] =
+      antifraud[AntifraudInstanceStatus](Request.get(antifraudStatusUrl))
+
+    // One `auth` knows of no cell.
+    override def antifraudStatusOfCells: Task[List[AntifraudCellStatus]] = ZIO.succeed(Nil)
 
     private def antifraud[A: JsonDecoder](request: Request): IO[AntifraudListError | Throwable, A] =
       antifraudAnswer(request): response =>
         response.body.asString.flatMap: body =>
           ZIO.fromEither(body.fromJson[A]).mapError(msg => new RuntimeException(s"Auth response decode failed: $msg"))
 
-    private def antifraudUnit(request: Request): IO[AntifraudListError | Throwable, Unit] =
-      antifraudAnswer(request)(_ => ZIO.unit)
-
-    /** Auth's 400, 403, 404 and 412 are its answers to an entry it will not take, not failures of the call. */
+    /** Auth's 400 is its answer to an entry or settings it will not take, not a failure of the call. */
     private def antifraudAnswer[A](request: Request)(success: Response => Task[A]): IO[AntifraudListError | Throwable, A] =
       execute(request): response =>
         response.status match
           case status if status.isSuccess => success(response).map(Right(_))
           case Status.BadRequest => response.body.asString.map(message => Left(AntifraudListError.Invalid(message)))
-          case Status.NotFound => ZIO.succeed(Left(AntifraudListError.NotFound))
-          case Status.Forbidden => response.body.asString.map(message => Left(AntifraudListError.Forbidden(message)))
-          case Status.PreconditionFailed =>
-            response.body.asString.map: message =>
-              val current = response.headers.get("ETag").flatMap(EntityVersion.parseIfMatch(_).toOption)
-              Left(AntifraudListError.StaleVersion(message, current))
           case _ => failResponse(response)
       .flatMap(ZIO.fromEither(_))
 

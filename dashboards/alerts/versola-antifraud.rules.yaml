@@ -78,6 +78,15 @@ groups:
           summary: "Antifraud tuning in {{ $labels.namespace }} was last read more than 10 minutes ago"
           description: "The oldest pod works with settings that are {{ $value | humanizeDuration }} old, so it ignores a switch from shadow to enforce. A refresh that hangs moves no failure counter. Normal age is a few seconds."
 
+      - alert: AntifraudPolicyCopyStale
+        expr: time() - min by (namespace) (antifraud_policy_synced_timestamp_seconds) > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The antifraud policy in {{ $labels.namespace }} was last copied from central more than 10 minutes ago"
+          description: "The oldest pod last confirmed its copy of central's antifraud settings and lists {{ $value | humanizeDuration }} ago, so a new deny entry or a switch from shadow to enforce does not reach this cell. Sign-ins are not affected: the cell enforces the copy it has. Check that auth reaches central (antifraud_policy_sync_failed_total, the auth log: 'could not copy the antifraud policy from central') and that central is up. Normal age is a few seconds."
+
       - alert: AntifraudStatsRollupFailed
         expr: sum by (namespace) (increase(antifraud_stats_rollup_failed_total[5m])) > 0
         for: 10m

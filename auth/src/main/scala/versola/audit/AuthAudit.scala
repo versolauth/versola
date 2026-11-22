@@ -38,9 +38,8 @@ object AuthAuditKinds:
   val AccountUpdated: AuditKind = AuditKind("account.updated")
   val AccountRolesUpdated: AuditKind = AuditKind("account.roles_updated")
 
-  /** An administrator's change to the antifraud lists, settings or counters, as central told auth. */
-  val AntifraudListChanged: AuditKind = AuditKind("antifraud.list_changed")
-  val AntifraudSettingsChanged: AuditKind = AuditKind("antifraud.settings_changed")
+  /** An administrator's reset of the antifraud counters, as central told auth. A change to the lists or the settings is
+    * made in central and is in its audit log. */
   val AntifraudCountersReset: AuditKind = AuditKind("antifraud.counters_reset")
   val CertEnrolled: AuditKind = AuditKind("cert.enrolled")
   val CertRenewed: AuditKind = AuditKind("cert.renewed")
@@ -74,8 +73,6 @@ object AuthAuditKinds:
     AccountDeleted,
     AccountUpdated,
     AccountRolesUpdated,
-    AntifraudListChanged,
-    AntifraudSettingsChanged,
     AntifraudCountersReset,
     CertEnrolled,
     CertRenewed,
@@ -111,8 +108,6 @@ object AuthAudit:
       AuthAuditKinds.AccountDeleted,
       AuthAuditKinds.AccountUpdated,
       AuthAuditKinds.AccountRolesUpdated,
-      AuthAuditKinds.AntifraudListChanged,
-      AuthAuditKinds.AntifraudSettingsChanged,
       AuthAuditKinds.AntifraudCountersReset,
     ),
   )

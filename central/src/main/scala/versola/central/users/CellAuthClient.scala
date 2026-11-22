@@ -6,10 +6,10 @@ import versola.central.configuration.clients.ClientId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.topology.{CellRecord, TopologyRepository}
-import versola.util.{Email, PageLimit, Patch, Phone}
+import versola.util.{Email, Patch, Phone}
 import zio.http.URL
 import zio.json.ast.Json
-import zio.{IO, Task, ZIO}
+import zio.{Cause, IO, Task, ZIO}
 
 import java.time.Instant
 import java.util.UUID
@@ -22,8 +22,9 @@ import java.util.concurrent.ConcurrentHashMap
   *  - A user of no cell, a user whose cell is not registered (an `auth` may name itself a cell before its cell is
   *    registered), and a user the directory does not have go to the `auth` central is configured with, as every call did.
   *  - The nudge to read the configuration again goes to every cell: each has its own caches.
-  *  - The antifraud calls go to the configured `auth` only. Each cell keeps its own lists and versioned settings, and
-  *    writing one change to several stores that version separately is a decision of its own, not made here.
+  *  - The antifraud policy is central's own and no cell is written to. A check of an entry or of the settings is
+  *    answered by the configured `auth`; what an entry matched, how often it fired and a reset of the counters are each
+  *    cell's own and go to every cell. The rule names and the status are those of the configured `auth`.
   *
   * @param at the client of a cell at its internal address; one is kept for each address
   */
@@ -118,55 +119,67 @@ final class CellAuthClient(configured: AuthClient, at: URL => AuthClient, users:
   override def getUserAuditSummary(userId: UserId, from: Option[Instant], to: Option[Instant]): IO[AuthAuditError | Throwable, Json.Obj] =
     of(userId).flatMap(_.getUserAuditSummary(userId, from, to))
 
-  override def createAntifraudListEntry(
-      request: NewListEntryRequest,
-      caller: AntifraudCaller,
-  ): IO[AntifraudListError | Throwable, ListEntryResponse] =
-    configured.createAntifraudListEntry(request, caller)
+  override def checkAntifraudListEntry(entry: ListEntryCheck): IO[AntifraudListError | Throwable, CheckedListEntry] =
+    configured.checkAntifraudListEntry(entry)
 
-  override def previewAntifraudListEntry(request: NewListEntryRequest, caller: AntifraudCaller): IO[AntifraudListError | Throwable, PreviewResponse] =
-    configured.previewAntifraudListEntry(request, caller)
+  /** Every cell is asked, and what the entry matched is the sum. They agree on the value (it is normalised by the same
+    * rule, and a phone is hashed with the key they share), so the first one's is answered. */
+  override def previewAntifraudListEntry(entry: ListEntryCheck): IO[AntifraudListError | Throwable, CheckedListEntry] =
+    every.flatMap(clients => ZIO.foreachPar(clients)(_.previewAntifraudListEntry(entry))).map: answers =>
+      val previews = answers.flatMap(_.preview)
+      CheckedListEntry(
+        value = answers.head.value,
+        preview = Option.when(previews.nonEmpty):
+          PreviewResponse(
+            // A kind of value the event log has no column for is counted by no cell.
+            matched = Option.when(previews.exists(_.matched.isDefined))(previews.flatMap(_.matched).sum),
+            total = previews.map(_.total).sum,
+          ),
+      )
 
-  override def listAntifraudListEntries(
-      query: ListEntriesQuery,
-      caller: AntifraudCaller,
-  ): IO[AntifraudListError | Throwable, List[ListEntryResponse]] =
-    configured.listAntifraudListEntries(query, caller)
+  override def antifraudListHits(ids: List[UUID]): Task[List[ListHits]] =
+    every.flatMap: clients =>
+      ZIO.foreachPar(clients): client =>
+        client.antifraudListHits(ids).catchAll: error =>
+          ZIO.logWarningCause("a cell did not answer how often the antifraud list entries matched; its hits are left out", Cause.fail(error)).as(Nil)
+    .map: answers =>
+      answers.flatten.groupMapReduce(_.id)(identity)((a, b) =>
+        ListHits(id = a.id, count = a.count + b.count, lastAt = if a.lastAt.isAfter(b.lastAt) then a.lastAt else b.lastAt),
+      ).values.toList
 
-  override def deleteAntifraudListEntry(request: DeleteListEntryRequest, caller: AntifraudCaller): IO[AntifraudListError | Throwable, Unit] =
-    configured.deleteAntifraudListEntry(request, caller)
+  override def checkAntifraudSettings(check: SettingsCheck): IO[AntifraudListError | Throwable, AntifraudSettings] =
+    configured.checkAntifraudSettings(check)
 
-  override def antifraudListAudit(
-      entryId: Option[UUID],
-      limit: Option[PageLimit],
-      caller: AntifraudCaller,
-  ): IO[AntifraudListError | Throwable, List[AuditRecordResponse]] =
-    configured.antifraudListAudit(entryId, limit, caller)
-
-  override def putAntifraudSettings(request: PutAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings] =
-    configured.putAntifraudSettings(request)
-
-  override def patchAntifraudSettings(request: PatchAntifraudSettingsRequest): IO[AntifraudListError | Throwable, VersionedAntifraudSettings] =
-    configured.patchAntifraudSettings(request)
-
-  override def deleteAntifraudSettings(
-      request: DeleteAntifraudSettingsRequest,
-      expectedVersion: Option[Long],
-  ): IO[AntifraudListError | Throwable, Unit] =
-    configured.deleteAntifraudSettings(request, expectedVersion)
-
+  /** Every cell clears its own counters. One that cannot be reached fails the call: an operator who cleared a number
+    * must not be told it is done while a cell still refuses it. */
   override def resetAntifraudCounters(request: ResetCountersRequest): IO[AntifraudListError | Throwable, ResetCountersResponse] =
-    configured.resetAntifraudCounters(request)
-
-  override def getAntifraudSettings: IO[AntifraudListError | Throwable, VersionedAntifraudSettings] = configured.getAntifraudSettings
+    every.flatMap(clients => ZIO.foreachPar(clients)(_.resetAntifraudCounters(request))).map: answers =>
+      ResetCountersResponse(answers.map(_.generation).max)
 
   override def antifraudRules: IO[AntifraudListError | Throwable, AntifraudRulesResponse] = configured.antifraudRules
 
-  override def antifraudStatus: IO[AntifraudListError | Throwable, AntifraudStatusResponse] = configured.antifraudStatus
+  override def antifraudStatus: IO[AntifraudListError | Throwable, AntifraudInstanceStatus] = configured.antifraudStatus
+
+  override def antifraudStatusOfCells: Task[List[AntifraudCellStatus]] =
+    topology.getCells.flatMap: cells =>
+      ZIO.foreachPar(cells.toList): cell =>
+        clientOf(cell).flatMap(_.antifraudStatus).fold(
+          {
+            case error: Throwable => AntifraudCellStatus(cell = cell.id, status = None, error = Some(reasonOf(error)))
+            case refusal: AntifraudListError => AntifraudCellStatus(cell = cell.id, status = None, error = Some(refusal.toString))
+          },
+          status => AntifraudCellStatus(cell = cell.id, status = Some(status), error = None),
+        )
+
+  /** Short enough to show, and never the whole of what a failed call carried. */
+  private def reasonOf(error: Throwable): String =
+    Option(error.getMessage).getOrElse(error.getClass.getSimpleName).take(200)
+
+  /** Every cell, and the configured `auth` when there is none. */
+  private def every: Task[Vector[AuthClient]] =
+    topology.getCells.flatMap(cells => ZIO.foreach(cells)(clientOf)).map(ofCells => if ofCells.isEmpty then Vector(configured) else ofCells)
 
   /** Every cell, and the configured `auth` when it is none of them. One that cannot be reached fails the call, as the
     * one `auth` did: the caller asked for the configuration to be read now. */
   override def syncConfiguration(): Task[Unit] =
-    topology.getCells.flatMap(cells => ZIO.foreach(cells)(clientOf)).flatMap: ofCells =>
-      val configuredToo = if ofCells.isEmpty then Vector(configured) else ofCells
-      ZIO.foreachParDiscard(configuredToo)(_.syncConfiguration())
+    every.flatMap(clients => ZIO.foreachParDiscard(clients)(_.syncConfiguration()))

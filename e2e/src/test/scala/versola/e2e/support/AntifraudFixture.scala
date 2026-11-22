@@ -162,7 +162,7 @@ object AntifraudFixture:
        |    flush-interval = "${sync.toMillis} millis"
        |    load-interval = "${sync.toMillis} millis"
        |  }
-       |  # The thresholds are not configuration: `tuned` writes them to the row of af_settings.
+       |  # The thresholds are not configuration: `tuned` stores them in central, which the instances copy.
        |  lists {
        |    enabled = true
        |    refresh-interval = "1 second"
@@ -309,9 +309,9 @@ object AntifraudFixture:
           (oauth.syncConfiguration() *> Flows.enrollPasskeyAfterCode(s, oauth, thenPassword = true))
             .retry(Schedule.spaced(1.second) && Schedule.recurs(15))
             .map(PasskeyUser(s, _))
-        _ <- tuned
+        _ <- tuned(CentralApi(client, config, Some("central" -> config.resourceSecret)))
         // Both at once: each waits for central and loads the configuration. The tuning is stored before they start, which
-        // is when they first read it.
+        // is when they first copy it.
         asn <- asnFile
         geo <- geoFile
         instances <- launch("antifraud-a", config, client, APorts, asn, geo) <&> launch("antifraud-b", config, client, BPorts, asn, geo)
@@ -333,34 +333,22 @@ object AntifraudFixture:
         finally connection.close()
     yield result
 
-  private def writeSettings(settings: String): Task[Unit] =
-    database: connection =>
-      connection.setAutoCommit(false)
-      val upsert = connection.prepareStatement(
-        """INSERT INTO af_settings (id, settings, updated_by, updated_at) VALUES (1, ?::jsonb, 'e2e', now())
-          |ON CONFLICT (id) DO UPDATE SET settings = EXCLUDED.settings, updated_by = 'e2e', updated_at = now()""".stripMargin,
-      ).nn
-      upsert.setString(1, settings)
-      upsert.executeUpdate()
-      bump(connection)
-      connection.commit()
+  /** The settings as central answers them, as a body that can be sent back: without their version. */
+  private def readSettings(central: CentralApi): Task[Json.Obj] =
+    central.get("/antifraud/settings").flatMap: read =>
+      ZIO.fromEither(read.body.fromJson[Json.Obj]).mapBoth(
+        message => RuntimeException(s"central did not answer the antifraud settings: ${read.status} ${read.body} ($message)"),
+        settings => Json.Obj(settings.fields.filterNot((name, _) => name == "version")),
+      )
 
-  private def bump(connection: Connection): Unit =
-    connection.createStatement().nn.executeUpdate(
-      "INSERT INTO af_settings_version (id, version) VALUES (1, 1) ON CONFLICT (id) DO UPDATE SET version = af_settings_version.version + 1",
-    )
+  private def writeSettings(central: CentralApi, settings: Json.Obj): Task[Unit] =
+    central.asAdmin(OperatorId).put("/antifraud/settings", Json.Obj("settings" -> settings)).flatMap: written =>
+      ZIO.fail(RuntimeException(s"central refused the antifraud settings: ${written.status} ${written.body}")).unless(written.status.isSuccess).unit
 
-  private def deleteSettings: Task[Unit] =
-    database: connection =>
-      connection.setAutoCommit(false)
-      connection.createStatement().nn.executeUpdate("DELETE FROM af_settings WHERE id = 1")
-      bump(connection)
-      connection.commit()
-
-  /** The fixture's thresholds, set the way the admin API would: in the row of `af_settings` and the bump of
-    * `af_settings_version` that tells the instances to reload. The row is put back as it was when the fixture goes (or
-    * removed, if there was none, which fails the fixture first), so that the running stack, and the next run, find everything off. */
-  private val tuned: ZIO[Scope, Throwable, Unit] =
+  /** The fixture's thresholds, set the way an operator sets them: through central's admin API (`PUT /antifraud/settings`),
+    * which stores them for the deployment; the instances copy them when they start and on every poll of central after. The
+    * settings are put back as they were when the fixture goes, so that the running stack, and the next run, find what was there. */
+  private def tuned(central: CentralApi): ZIO[Scope, Throwable, Unit] =
     val limit = (perHour: Int) =>
       Json.Obj(
         "perMinute" -> Json.Num(0),
@@ -369,38 +357,28 @@ object AntifraudFixture:
         "perDay" -> Json.Num(0),
         "weight" -> Json.Num(50),
       )
-    ZIO.acquireRelease(
-      database: connection =>
-        val rs = connection.createStatement().nn.executeQuery("SELECT settings FROM af_settings WHERE id = 1").nn
-        if rs.next() then Some(rs.getString(1).nn) else None,
-    )(before => before.fold(deleteSettings)(writeSettings).ignore).flatMap: before =>
-      for
-        text <- ZIO.fromOption(before).orElseFail(RuntimeException("af_settings has no row: auth's bootstrap writes it when the stack starts"))
-        row <- ZIO.fromEither(text.fromJson[Json.Obj]).mapError(RuntimeException(_))
-        thresholds = row.get("thresholds").collect { case o: Json.Obj => o }.getOrElse(Json.Obj())
-        tuned = row
-          // The specs assert what is done, not what would be: the stack's default is shadow.
-          .add("mode", Json.Str("enforce"))
-          .add("challengeAt", Json.Num(15))
-          .add("blockAt", Json.Num(50))
-          // The two rules on the country start as shadow rules, as an operator starts them: the carrier's range is in another
-          // country than the suite's numbers, and the cases that are not about the country must not meet a rule of it.
-          .add("shadowRules", Json.Arr(CountryRules.map(Json.Str(_))*))
-          .add("thresholds", thresholds.add("phone", limit(PhoneLimitPerHour)).add("ip", limit(IpLimitPerHour)))
-        _ <- writeSettings(tuned.toJson)
-      yield ()
+    ZIO.acquireRelease(readSettings(central))(before => writeSettings(central, before).ignore).flatMap: row =>
+      val thresholds = row.get("thresholds").collect { case o: Json.Obj => o }.getOrElse(Json.Obj())
+      val tuned = row
+        // The specs assert what is done, not what would be: the stack's default is shadow.
+        .add("mode", Json.Str("enforce"))
+        .add("challengeAt", Json.Num(15))
+        .add("blockAt", Json.Num(50))
+        // The two rules on the country start as shadow rules, as an operator starts them: the carrier's range is in another
+        // country than the suite's numbers, and the cases that are not about the country must not meet a rule of it.
+        .add("shadowRules", Json.Arr(CountryRules.map(Json.Str(_))*))
+        .add("thresholds", thresholds.add("phone", limit(PhoneLimitPerHour)).add("ip", limit(IpLimitPerHour)))
+      writeSettings(central, tuned)
 
-  /** What the specs seed the lists with, the way [[versola.antifraud.AntifraudListRepository.upsert]] stores an entry:
-    * the row, and the bump of `af_list_version` that tells the instances to reload. A row written by hand is otherwise not
-    * seen until the instances' full reload (a minute). [[seedThroughApi]] makes them through central's admin API instead.
-    */
+  /** What the specs seed the lists with, through central's admin API ([[seed]]): central stores the entry, and the instances
+    * copy the lists on their next poll of central. */
   final case class ListEntry(
       listType: String,
       valueType: String,
       value: String,
       expiresAt: Option[Instant],
       shadow: Boolean,
-      /** For a `phone_hash` entry through the API: the number, which auth hashes (see [[seedThroughApi]]); `value` is then not used. */
+      /** For a `phone_hash` entry: the number, which auth hashes (see [[seed]]); `value` is then not used. */
       phone: Option[String],
   )
 
@@ -437,21 +415,29 @@ object AntifraudFixture:
         found += ((rows.getString(1).nn, Option.when(present)(asn), Option(rows.getString(3)), Option(rows.getString(4))))
       found.result()
 
-  /** Removes the entries of `valueType` (`asn`, `country`) the specs seeded, so that a rerun, and the cases of the suite that follow, meet none. */
-  def unseed(valueType: String): Task[Unit] =
-    database: connection =>
-      connection.setAutoCommit(false)
-      val delete = connection.prepareStatement("DELETE FROM af_list_entry WHERE value_type = ? AND source = 'e2e'").nn
-      delete.setString(1, valueType)
-      delete.executeUpdate()
-      connection.createStatement().nn.executeUpdate("UPDATE af_list_version SET version = version + 1 WHERE id = 1")
-      connection.commit()
+  /** Removes the entries of `valueType` (`asn`, `country`) the specs seeded, so that a rerun, and the cases of the suite that
+    * follow, meet none: listed and removed through central's admin API, as an operator does. */
+  def unseed(central: CentralApi, valueType: String): Task[Unit] =
+    val operator = central.asAdmin(OperatorId)
+    for
+      listed <- operator.get("/antifraud/global/lists", "valueType" -> valueType, "limit" -> "500")
+      ids <- ZIO.fromEither(listed.body.fromJson[Json.Obj]).mapBoth(
+        message => RuntimeException(s"central did not list the $valueType entries: ${listed.status} ${listed.body} ($message)"),
+        _.get("entries").collect { case Json.Arr(entries) => entries.toList }.getOrElse(Nil).flatMap:
+          case entry: Json.Obj if entry.get("reason").contains(Json.Str(SeedReason)) => entry.get("id").collect { case Json.Str(id) => id }
+          case _ => None,
+      )
+      _ <- ZIO.foreachDiscard(ids): id =>
+        operator.deleteWithBody("/antifraud/global/lists", Json.Obj("id" -> Json.Str(id))).flatMap: removed =>
+          ZIO.fail(RuntimeException(s"central did not remove the list entry $id: ${removed.status} ${removed.body}"))
+            .unless(removed.status == zio.http.Status.NoContent)
+    yield ()
 
-  /** The same entries made through central's admin API, as an operator does (`POST /antifraud/global/lists`), which is what
-    * auth then enforces: the way an entry reaches the lists in a deployment. Auth validates them (a broad entry needs an
-    * expiry, an `allow` is for an exact subject), so a case that seeds something it refuses fails here, which seeding SQL does
-    * not. The entries are global, as the SQL ones are; a reload (one second in the specs) is awaited by the caller. */
-  def seedThroughApi(central: CentralApi, entries: List[ListEntry]): Task[Unit] =
+  /** The entries made through central's admin API, as an operator does (`POST /antifraud/global/lists`): the way an entry
+    * reaches the lists in a deployment. Auth validates them for central (a broad entry needs an expiry, an `allow` is for an
+    * exact subject), so a case that seeds something it refuses fails here. The entries are global; the instances' next poll of
+    * central and reload (a second each in the specs) is awaited by the caller. */
+  def seed(central: CentralApi, entries: List[ListEntry]): Task[Unit] =
     val operator = central.asAdmin(OperatorId)
     ZIO.foreachDiscard(entries): entry =>
       val body = Json.Obj(
@@ -460,7 +446,7 @@ object AntifraudFixture:
           "valueType" -> Json.Str(entry.valueType),
           entry.phone.fold("value" -> Json.Str(entry.value))(phone => "phone" -> Json.Str(phone)),
           "shadow" -> Json.Bool(entry.shadow),
-          "reason" -> Json.Str("e2e"),
+          "reason" -> Json.Str(SeedReason),
         ) ++ entry.expiresAt.map(at => "expiresAt" -> Json.Str(at.toString)),
       )
       operator.post("/antifraud/global/lists", body).flatMap: created =>
@@ -468,33 +454,8 @@ object AntifraudFixture:
           RuntimeException(s"central refused the list entry $entry: ${created.status} ${created.body}"),
         ).unless(created.status == zio.http.Status.Created)
 
+  /** What the entries the specs make say of why they were made, and what [[unseed]] knows them by. */
+  private val SeedReason = "e2e"
+
   /** The user id edge would add for the operator who makes the entries. */
   private val OperatorId = "00000000-0000-0000-0000-0000000e2e03"
-
-  def seed(entries: List[ListEntry]): Task[Unit] =
-    for
-      url <- ZIO.attempt(Option(JavaSystem.getenv("E2E_DB_URL"))).map(_.getOrElse("jdbc:postgresql://localhost:5432/auth"))
-      user <- ZIO.attempt(Option(JavaSystem.getenv("E2E_DB_USER"))).map(_.getOrElse("dev"))
-      password <- ZIO.attempt(Option(JavaSystem.getenv("E2E_DB_PASSWORD"))).map(_.getOrElse("1234"))
-      now <- Clock.instant
-      _ <- ZIO.attemptBlocking:
-        val connection: Connection = DriverManager.getConnection(url, user, password).nn
-        try
-          connection.setAutoCommit(false)
-          val insert = connection.prepareStatement(
-            """INSERT INTO af_list_entry (id, type, value_type, value, tenant_id, expires_at, reason, source, shadow, created_by, created_at)
-              |VALUES (?, ?, ?, ?, NULL, ?, 'e2e', 'e2e', ?, 'e2e', ?)""".stripMargin,
-          ).nn
-          entries.foreach: entry =>
-            insert.setObject(1, UUID.randomUUID())
-            insert.setString(2, entry.listType)
-            insert.setString(3, entry.valueType)
-            insert.setString(4, entry.value)
-            insert.setTimestamp(5, entry.expiresAt.map(Timestamp.from).orNull)
-            insert.setBoolean(6, entry.shadow)
-            insert.setTimestamp(7, Timestamp.from(now))
-            insert.executeUpdate()
-          connection.createStatement().nn.executeUpdate("UPDATE af_list_version SET version = version + 1 WHERE id = 1")
-          connection.commit()
-        finally connection.close()
-    yield ()

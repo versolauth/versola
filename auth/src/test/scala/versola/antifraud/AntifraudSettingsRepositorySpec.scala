@@ -7,9 +7,8 @@ import zio.test.*
 
 import java.time.Instant
 
-/** What every [[AntifraudSettingsRepository]] promises: one row, empty until the first change; a seed that writes once and
-  * never over an operator's row; a put that replaces the row whole and moves both the row's version and the reload signal;
-  * a put on a named version that writes only while the row is still at it, with 0 the version of a row that is not there; and
+/** What every [[AntifraudSettingsRepository]] promises: one row, empty until the first copy; a replacement that writes central's
+  * tuning at central's version, replaces the row whole and moves the reload signal, or removes the row where central has none; and
   * a row another build wrote reads by the rules of the codec (a key added since has its default, a retired key is passed over, a
   * key nothing knows or a value of the wrong type fails the read). Such a row is stored through
   * [[AntifraudSettingsRepositorySpec.Fixtures]]. */
@@ -27,76 +26,38 @@ trait AntifraudSettingsRepositorySpec extends DatabaseSpecBase[AntifraudSettings
           version <- repository.version
         yield assertTrue(row.isEmpty, version == 0L)
       },
-      test("seeding writes the first row once, at version 1, and never over a row an operator saved") {
+      test("replace(Some) writes the tuning at central's version and moves the reload signal") {
         for
-          first <- repository.seed(Tuning.off, "bootstrap", at)
-          second <- repository.seed(Tuning.off, "bootstrap", at)
-          seeded <- repository.find
-          saved <- repository.put(tuned, "alice", at, None)
-          third <- repository.seed(Tuning.off, "bootstrap", at)
-          row <- repository.find
-          version <- repository.version
-        yield assertTrue(
-          first,
-          !second,
-          !third,
-          seeded.contains(StoredTuning(Tuning.off, 1)),
-          saved.contains(2L),
-          row.contains(StoredTuning(tuned, 2)),
-          version == 2L,
-        )
-      },
-      test("a put replaces the row as a whole and moves both versions") {
-        for
-          _ <- repository.seed(Tuning.off, "bootstrap", at)
           v0 <- repository.version
-          a <- repository.put(tuned, "alice", at, None)
+          _ <- repository.replace(Some(tuned), 7, at)
           stored <- repository.find
-          b <- repository.put(Tuning.off, "bob", at.plusSeconds(60), None)
-          reset <- repository.find
-          v2 <- repository.version
-        yield assertTrue(
-          a.contains(2L),
-          b.contains(3L),
-          stored.contains(StoredTuning(tuned, 2)),
-          reset.contains(StoredTuning(Tuning.off, 3)),
-          v2 == v0 + 2,
-        )
+          v1 <- repository.version
+        yield assertTrue(stored.contains(StoredTuning(tuned, 7)), v1 == v0 + 1)
       },
-      test("a put on the version that was read writes, and one on a version the row has left writes nothing and moves nothing") {
+      test("replace(Some) replaces the row as a whole and takes the new version, whichever way it moved") {
         for
-          _ <- repository.seed(Tuning.off, "bootstrap", at)
-          first <- repository.put(tuned, "alice", at, Some(1))
+          _ <- repository.replace(Some(tuned), 7, at)
+          _ <- repository.replace(Some(Tuning.off), 3, at.plusSeconds(60))
+          lower <- repository.find
+          _ <- repository.replace(Some(tuned), 9, at.plusSeconds(120))
+          higher <- repository.find
+          v <- repository.version
+        yield assertTrue(lower.contains(StoredTuning(Tuning.off, 3)), higher.contains(StoredTuning(tuned, 9)), v == 3L)
+      },
+      test("replace(None) removes the row, which is everything off, and moves the reload signal") {
+        for
+          _ <- repository.replace(Some(tuned), 7, at)
           before <- repository.version
-          stale <- repository.put(Tuning.off, "bob", at.plusSeconds(1), Some(1))
-          ahead <- repository.put(Tuning.off, "bob", at.plusSeconds(1), Some(7))
+          _ <- repository.replace(None, 0, at.plusSeconds(1))
+          row <- repository.find
           after <- repository.version
-          row <- repository.find
-          next <- repository.put(Tuning.off, "bob", at.plusSeconds(2), Some(2))
-        yield assertTrue(
-          first.contains(2L),
-          stale.isEmpty,
-          ahead.isEmpty,
-          after == before,
-          row.contains(StoredTuning(tuned, 2)),
-          next.contains(3L),
-        )
+        yield assertTrue(row.isEmpty, after == before + 1)
       },
-      test("with no row, version 0 is the version a first put may name, and any other is refused") {
+      test("replace(None) with no row there is no failure") {
         for
-          wrong <- repository.put(tuned, "alice", at, Some(1))
-          none <- repository.find
-          first <- repository.put(tuned, "alice", at, Some(0))
-          again <- repository.put(Tuning.off, "bob", at, Some(0))
+          _ <- repository.replace(None, 0, at)
           row <- repository.find
-        yield assertTrue(wrong.isEmpty, none.isEmpty, first.contains(1L), again.isEmpty, row.contains(StoredTuning(tuned, 1)))
-      },
-      test("two puts on the same version: one wins, the other is refused") {
-        for
-          _ <- repository.seed(Tuning.off, "bootstrap", at)
-          results <- ZIO.foreachPar(List("alice", "bob", "carol", "dave"))(actor => repository.put(tuned, actor, at, Some(1)))
-          row <- repository.find
-        yield assertTrue(results.count(_.isDefined) == 1, results.count(_.isEmpty) == 3, row.map(_.version).contains(2L))
+        yield assertTrue(row.isEmpty)
       },
       test("a value that is not a Tuning fails the read the way the codec reports it, and the row is left as it is") {
         for

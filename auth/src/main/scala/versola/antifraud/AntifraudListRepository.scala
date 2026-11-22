@@ -6,17 +6,12 @@ import zio.Task
 import java.time.Instant
 import java.util.UUID
 
+/** This cell's copy of the lists (`af_list_entry`), which are central's, and what the cell counts of them itself. */
 trait AntifraudListRepository:
-  /** Adds the entry, or refreshes the expiry, reason, source and shadow flag of the one that is there already (same
-    * list, value type, value and tenant), and writes the audit record in the same transaction: `create` for a new
-    * entry, `update` with the previous values for an existing one. Returns what is stored, which has the id of the
-    * existing entry in the second case. */
-  def upsert(entry: AntifraudListEntry, actor: String, at: Instant): Task[AntifraudListEntry]
-
-  /** Removes the entry and records it; false when there was none. */
-  def delete(id: UUID, actor: String, at: Instant): Task[Boolean]
-
-  def find(id: UUID): Task[Option[AntifraudListEntry]]
+  /** Makes the copy what central has: the entries are written (one that is there keeps its hit counters), those central
+    * no longer has are removed, and `version`, central's, becomes the copy's. Nothing is written when the copy is at
+    * `version` already, which is how several instances that read the same change apply it once. True when it wrote. */
+  def replaceAll(entries: List[PolicyListEntry], version: Long): Task[Boolean]
 
   /** How many of the events since `since` the value would have matched, and how many there were, of the events of
     * `tenantId` (an entry of a tenant applies to that tenant's traffic alone) or, for `None` (a global entry), of all.
@@ -27,9 +22,8 @@ trait AntifraudListRepository:
     * its share is its own and not that of the range it falls in. */
   def preview(valueType: AntifraudValueType, value: String, tenantId: Option[TenantId], since: Instant): Task[ListPreview]
 
-  def list(filter: AntifraudListFilter, limit: Int, offset: Int): Task[List[AntifraudListEntry]]
-
-  /** A number that changes with every change made through this repository (`upsert`, `delete`, `purgeExpired`). */
+  /** The version of central's lists the copy was made at; 0 before the first copy. It changes with every
+    * [[replaceAll]] that wrote, which is what tells an instance to build its snapshot again. */
   def version: Task[Long]
 
   /** Every entry that has not expired at `now`: what the cache is built from. */
@@ -38,14 +32,9 @@ trait AntifraudListRepository:
   /** Adds the hits to the counters of the entries; one that is gone is skipped. */
   def addHits(hits: List[ListHit]): Task[Unit]
 
-  /** Removes up to `limit` entries that expired at or before `now` and records each as expired. Returns how many;
-    * fewer than `limit` means no more are due. Safe to run on several instances at once. */
-  def purgeExpired(now: Instant, limit: Int): Task[Int]
+  /** How often each of `ids` matched in this cell; one that never did, or is not in the copy, is left out. */
+  def hits(ids: List[UUID]): Task[List[ListHit]]
 
-  /** Removes up to `limit` audit records older than `before`; fewer than `limit` means no more are due. Also removes (as many,
-    * not counted) the records of counter resets older than `before`, but never the newest, which the generations count from. */
-  def pruneAudit(before: Instant, limit: Int): Task[Int]
-
-  /** The changes of one entry, or of all, the latest first; with `visibleTo`, only those of global entries and that
-    * tenant's. */
-  def audit(entryId: Option[UUID], limit: Int, visibleTo: Option[TenantId]): Task[List[AntifraudListAudit]]
+  /** Removes up to `limit` records of counter resets older than `before`, but never the newest, which the generations
+    * count from; fewer than `limit` means no more are due. */
+  def pruneCounterResets(before: Instant, limit: Int): Task[Int]

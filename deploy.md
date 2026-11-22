@@ -864,7 +864,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
 
   `audit:read` is not tenant-scoped, like `users:read`: a holder reads the report of any user.
 
-  Where an action is made in auth (sessions, refresh tokens, passkeys, passwords, claims, limits, the antifraud settings), central records
+  Where an action is made in auth (sessions, refresh tokens, passkeys, passwords, claims, limits, the antifraud counters), central records
   its outcome and auth records its effect; the two rows carry the same trace id. The per-user report shows both as they are. A report
   served without auth's part is counted in `audit_report_partial_total{reason}`. A page holds at most `limit` events of the two logs together
   (100 by default), and its `nextCursor` is the key of its last event; the changes administrators made, in the summary of the first page, are
@@ -919,12 +919,15 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   `decision.enabled` is on and `mode` is `enforce`), and `mode` is `shadow` by default, so turning `decision.enabled` on
   changes nothing for the traffic until someone sets `mode` to `enforce`.
 
-  **Stored settings (`af_settings`, migration `V0024`; `V0027` adds `version`).** One row for the whole deployment, with the
+  **Stored settings.** They are stored once, in `central` (`antifraud_settings`, its migration `V1043`), and every `auth`
+  copies them into its own `af_settings` on a poll of central every `antifraud.tuning.refresh-interval`, so several `auth`s
+  with databases of their own (cells) apply one policy. An `auth` that cannot reach central goes on with its copy, and
+  one that starts without central reads the copy from its database; `antifraud_policy_synced_timestamp_seconds` is when
+  the copy was last confirmed. One row for the whole deployment, with the
   keys `mode` (`shadow` or `enforce`), `challengeAt`, `blockAt`, `pow`, `thresholds` (with `trustedDiscount`), `smsLimits`,
   `ruleWeights` and `shadowRules`. Every key has a default and a stored row that lacks one is read with it, so a release
-  that adds a key never makes the row of the version before it unreadable. The migration creates the table empty and
-  `auth` writes the first row, everything off, at start if there is none (a row an operator saved is never
-  overwritten). They are changed through central's `GET`/`PUT`/`PATCH`/`DELETE /antifraud/settings` (see
+  that adds a key never makes the row of the version before it unreadable. Until the first change nothing is stored and
+  everything is off. They are changed through central's `GET`/`PUT`/`PATCH`/`DELETE /antifraud/settings` (see
   `central/open-api/central.yaml`; `GET` needs `antifraud:read`, the others `antifraud:operate`). `PATCH` is a typed
   settings patch (`AntifraudSettingsPatch` in that file, the members of the settings and no others): it changes what it
   names, and `null` puts a setting back to its default (everything off) and removes a `byPrefix` or `ruleWeights` entry.
@@ -933,9 +936,9 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   says) until the row is corrected; the three keys that builds before the removal of the Delay step wrote (`delayAt`,
   `delayMillis`, `fakeSendDelayMillis`) are still read and ignored. `PUT` and `PATCH` may name the version they were
   read at, in `If-Match`, and are answered `412` if the row has moved on. Every instance
-  holds the row in memory and rereads it when `af_settings_version` changes, checked every
-  `antifraud.tuning.refresh-interval`, and in full once a minute; a change made by hand in SQL has to bump `version` and
-  `af_settings_version` too. An instance that starts with the database unreadable decides every request as
+  holds its copy in memory and rereads it when `af_settings_version` changes, checked every
+  `antifraud.tuning.refresh-interval`, and in full once a minute. A change is made through central: one made by hand in an
+  `auth`'s copy is overwritten by the next change in central. An instance that starts with the database unreadable decides every request as
   `decision.failure-action` says until a read succeeds. The request and response shapes, the validation and the rule
   names are on the Antifraud settings page of the documentation (`antifraud/settings`).
 
@@ -957,12 +960,16 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   | `V0029` | `af_event.country TEXT`, nullable, no default, no index | as `V0028` |
   | `V0030` | `af_event_default`, the default partition of `af_event`: an event of a day that has no partition goes there instead of being refused | `CREATE TABLE ... PARTITION OF af_event DEFAULT` takes `ACCESS EXCLUSIVE` on `af_event` once, for an instant, under `lock_timeout = 5s`: if it fails, run the migration again, outside a long query on the table |
 
+  | `V0035` | drops `af_list_audit`: who changed the lists is recorded where they are changed, in central | the table is gone with its rows |
+
   Upgrade: before this version an administrator who changed the settings or reset them with `antifraud:manage` now needs
   `antifraud:operate` (below).
 
 - **What runs where.** Everything that decides runs in `auth`: the rule engine, the velocity counters, the lists, the SMS
   budget, the challenge, the detectors and the event log. `central` serves the admin API (settings, lists, counter reset,
-  rule names, status) and keeps no antifraud state, passing the calls to `auth`'s internal `/antifraud/...` routes. `edge`
+  rule names, status) and stores the policy: the settings, the lists and the audit of the lists, which every `auth` copies.
+  It asks `auth` to validate a change before it stores it, and asks every `auth` what only that `auth` has: what an entry
+  would have matched, how often it fired, and a reset of the counters. `edge`
   takes no part in a decision. Auth keeps in memory, per instance: the settings and the lists (reread every
   `tuning.refresh-interval` and `lists.refresh-interval`; a request never queries the database), the velocity counters
   (at most 20000 keys of each of five kinds, see the velocity bullet below),
@@ -1042,7 +1049,7 @@ roles, forms and the admin user; anything configured by hand is gone. For a sing
   it. Edge also tells central who the admin is (an inject rule for `userId` on the calls that change something, a body
   field from the verified token; a removal is a `DELETE` with a JSON body naming the `id`), and a request to such an endpoint
   whose body is not JSON (`application/json`, or `application/merge-patch+json`) is refused by edge with `415` rather than
-  forwarded. A change that reaches central with the resource secret but no `userId` is `400`; auth records that user id as
+  forwarded. A change that reaches central with the resource secret but no `userId` is `400`; central records that user id as
   who made each change (`created_by`, the audit). The lists are **off by default** (`antifraud.lists.enabled`); the
   console has no screen for them yet. Upgrade: an administrator who changed the settings or reset them with
   `antifraud:manage` now needs `antifraud:operate`. Rules of the lists (precedence, expiry, preview, the audit) are on
