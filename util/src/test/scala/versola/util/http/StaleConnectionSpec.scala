@@ -68,6 +68,7 @@ object StaleConnectionSpec extends ZIOSpecDefault:
           else
             buffer.append(byte.toChar)
             if buffer.endsWith("\r\n\r\n") then
+              drainBody(in, buffer.toString.toLowerCase)
               buffer.clear()
               val n = requests.incrementAndGet()
               if reset(n) then
@@ -81,6 +82,20 @@ object StaleConnectionSpec extends ZIOSpecDefault:
       catch case _: SocketTimeoutException => ()
       finally client.close()
 
+    /** Reads the body of the request whose head is `head`, so that the far side closes a connection the client has finished writing to:
+      * closing it with the body unread resets it under the client's write, which is not the case under test (and a client that is told
+      * so late, or never, leaves the request waiting). */
+    private def drainBody(in: java.io.InputStream, head: String): Unit =
+      val length = "content-length: *(\\d+)".r.findFirstMatchIn(head).map(_.group(1).toInt)
+      length match
+        case Some(n) => (0 until n).foreach(_ => in.read())
+        case None if head.contains("transfer-encoding: chunked") =>
+          val tail = StringBuilder()
+          while !tail.endsWith("0\r\n\r\n") do
+            val byte = in.read()
+            if byte < 0 then tail.append("0\r\n\r\n") else tail.append(byte.toChar)
+        case None => ()
+
     def close(): Unit = socket.close()
 
   private def peer(
@@ -93,14 +108,26 @@ object StaleConnectionSpec extends ZIOSpecDefault:
 
   private def urlOf(port: Int): URL = URL.decode(s"http://localhost:$port/").toOption.get
 
+  /** A request the far side closed on without answering fails; the bound keeps one that is never told so from running into the suite's
+    * timeout. The tests that expect a failure end with a request that succeeds: the client is then shown to be usable after it. */
   private def read(client: Client, request: Request): UIO[Either[Throwable, String]] =
-    ZIO.scoped(client.request(request).flatMap(_.body.asString)).either
+    ZIO.scoped(client.request(request).flatMap(_.body.asString))
+      .disconnect
+      .timeoutFail(java.util.concurrent.TimeoutException("no answer within 10 s"))(10.seconds)
+      .either
 
   private def get(client: Client, port: Int): UIO[Either[Throwable, String]] = read(client, Request.get(urlOf(port)))
 
+  /** The client lives in a scope of its own, closed in the background: on Linux (2 CPUs) a shutdown that has not returned (a connection
+    * the far side had closed is still in it) kept the next test from building its client, which is not what the spec is about and ended
+    * the suite in its timeout. */
   private def clientFor(config: ZClient.Config): ZIO[Scope, Throwable, Client] =
-    (ZLayer.succeed(config) ++ ZLayer.succeed(zio.http.netty.NettyConfig.defaultWithFastShutdown) ++ DnsResolver.default >>> ZClient.live)
-      .build.map(_.get[Client])
+    for
+      own <- Scope.make
+      client <- (ZLayer.succeed(config) ++ ZLayer.succeed(zio.http.netty.NettyConfig.defaultWithFastShutdown) ++ DnsResolver.default >>> ZClient.live)
+        .build.map(_.get[Client]).provideEnvironment(ZEnvironment(own))
+      _ <- ZIO.addFinalizer(own.close(Exit.unit).forkDaemon)
+    yield client
 
   private val tracing: ULayer[Tracing] =
     ZLayer.make[Tracing](
@@ -178,7 +205,8 @@ object StaleConnectionSpec extends ZIOSpecDefault:
             client <- clientFor(shipped)
             first <- get(client, server.port)
             second <- get(client, server.port)
-          yield assertTrue(first == Right("ok"), second.isLeft)
+            third <- get(client, server.port)
+          yield assertTrue(first == Right("ok"), second.isLeft, third == Right("ok"))
       },
       test("reset: the shared client sends the GET again and the caller sees no failure") {
         ZIO.scoped:
@@ -204,7 +232,8 @@ object StaleConnectionSpec extends ZIOSpecDefault:
             client <- sharedClientFor(shipped)
             first <- get(client, server.port)
             second <- read(client, Request.post(urlOf(server.port), Body.fromString("x")))
-          yield assertTrue(first == Right("ok"), second.isLeft, server.requests.get == 2)
+            third <- get(client, server.port)
+          yield assertTrue(first == Right("ok"), second.isLeft, third == Right("ok"), server.requests.get == 3)
       },
       test("a GET whose body is a stream is not sent again: the first attempt may have consumed it") {
         ZIO.scoped:
@@ -214,7 +243,8 @@ object StaleConnectionSpec extends ZIOSpecDefault:
             first <- get(client, server.port)
             streamed = Body.fromStreamChunked(ZStream.fromChunk(Chunk.fromArray("x".getBytes("UTF-8"))))
             second <- read(client, Request.get(urlOf(server.port)).withBody(streamed))
-          yield assertTrue(first == Right("ok"), second.isLeft, server.requests.get == 2)
+            third <- get(client, server.port)
+          yield assertTrue(first == Right("ok"), second.isLeft, third == Right("ok"), server.requests.get == 3)
       },
       test("a connection that is closed every time is tried twice and then reported, not repeated without end") {
         ZIO.scoped:
@@ -268,7 +298,8 @@ object StaleConnectionSpec extends ZIOSpecDefault:
             client <- sharedClientFor(shipped, mode = GuardMode.Off)
             first <- get(client, server.port)
             second <- get(client, server.port)
-          yield assertTrue(first == Right("ok"), second.isLeft, server.requests.get == 2)
+            third <- get(client, server.port)
+          yield assertTrue(first == Right("ok"), second.isLeft, third == Right("ok"), server.requests.get == 3)
       },
       test("an exempt peer is read as shadow in enforce, as the guard leaves it alone: the repeat is made though the budget is spent") {
         ZIO.scoped:
@@ -322,7 +353,8 @@ object StaleConnectionSpec extends ZIOSpecDefault:
             second <- read(client, Request.post(urlOf(server.port), Body.fromString("x")))
             logs <- ZTestLogger.logOutput.map(_.drop(before))
             sendHttp = logs.filter(_.message() == "send-http")
-          yield assertTrue(second.isLeft, sendHttp.exists(_.logLevel == LogLevel.Error))
+            third <- get(client, server.port)
+          yield assertTrue(second.isLeft, third == Right("ok"), sendHttp.exists(_.logLevel == LogLevel.Error))
       },
     ),
     test("which failures count as a closed connection: those that say so, through their causes, and not a timeout or a refusal") {
