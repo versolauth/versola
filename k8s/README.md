@@ -470,6 +470,7 @@ of them fails loudly when it does not:
 | `versola-url` of the edge | `--auth-url` of `gen-env` | the same address |
 | `versola-internal-url` of the edge | `--auth-internal-url` of `gen-env` | a real address of an `auth`, never the edge's own. It defaults to `--auth-url`, so leaving it out makes the edge call itself. With cells registered the edge calls each cell at the `internalUrl` of its registration instead |
 | `cell-id` of each `auth` | `--cell-id` of `gen-env` | the cell's own id, different in every cell. Set it only once every instance runs a version that knows the `v1.<cell>.` prefix |
+| `mutual-tls.external-url` of every `auth` | `--mtls-domain` (VPS) or the generated value | the same in every cell, and what the edge has as `native.auth-mutual-tls-external-url`. It is the issuer's name for the mutual-TLS listener, not the address of one cell's: a mobile app signs it into its proof before anyone knows which cell will answer, so a cell that names its listener differently refuses the proof and the sign-in of its users fails at `/native/complete` |
 
 On the issuer's host list `pages` in place of `oidc`, so that `/authorize`, `/logout` and `/challenge`
 lead to edge:

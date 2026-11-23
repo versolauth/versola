@@ -117,11 +117,13 @@ object CellStand:
         val conf = Files.createTempFile("e2e-cell-", ".conf").nn
         val log = Files.createTempFile("e2e-cell-", ".log").nn
         // Appended, so each replaces what the running auth's file says: a later definition of a key wins.
+        // `mutual-tls.external-url` is NOT replaced: it is the issuer's name for the listener, the same in every cell,
+        // like `jwt.issuer`. A device signs the `htu` of its proof before anyone knows which cell will answer (a
+        // sign-in may be handed on), so a cell that named its own listener differently would refuse that proof.
         val overrides =
           s"""
              |cell-id = "$SecondCellId"
              |postgres.url = "$database"
-             |mutual-tls.external-url = "https://localhost:$MutualTlsPort"
              |""".stripMargin
         Files.writeString(conf, Files.readString(Path.of(config.authEnvConf)) + overrides)
         // From the repository root, as the staged auth is started: a service finds its migrations under the directory

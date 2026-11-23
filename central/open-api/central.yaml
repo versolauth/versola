@@ -3321,7 +3321,7 @@ paths:
         that names another tenant is `403`). `matched` is `null` for a kind of value the event log has no column for (an
         address, a network, a mail domain): the share guard cannot judge those, so give them an expiry and add
         them as `shadow` first. For an ASN or a country it is the events of that AS or country, which the event log has once `antifraud.asn.file` or
-        `antifraud.geo.file` is set (events written before, or without the database, have none). The count is over every tenant's events until the guard is made per tenant. Needs
+        `antifraud.geo.file` is set (events written before, or without the database, have none). The count is over the events of the entry's tenant, and over every tenant's for a global entry. Needs
         `antifraud:manage`.
       operationId: previewAntifraudListEntry
       requestBody:
