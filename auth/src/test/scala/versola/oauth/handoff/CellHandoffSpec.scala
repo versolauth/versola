@@ -1,16 +1,23 @@
 package versola.oauth.handoff
 
+import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.conversation.ConversationRouterSpec
 import versola.oauth.model.{Nonce, State}
-import versola.util.{CoreConfig, Email, Phone, RoutingKey, SecureRandom, SecurityService}
+import versola.oauth.session.SessionRepository
+import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionRecord, SupersededSession, UserAgentId}
+import versola.user.model.UserId
+import versola.util.{CoreConfig, Email, MAC, Phone, RoutingKey, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
+import zio.json.*
 import zio.test.*
 
+import java.time.Instant
+import java.util.UUID
 import javax.crypto.spec.SecretKeySpec
 
 /** The seal a sign-in is handed to another cell in (versolauth/versola#1046): what goes in it, and who may open it. */
-object CellHandoffSpec extends ZIOSpecDefault:
+object CellHandoffSpec extends UnitSpecBase:
 
   private val home = RoutingKey.CellId.parse("kz-2").toOption.get
   private val record = ConversationRouterSpec.initialRecord.copy(nonce = Some(Nonce("n-1")), promptConsent = true, uiLocales = Some(List("ru", "kk")))
@@ -18,11 +25,31 @@ object CellHandoffSpec extends ZIOSpecDefault:
 
   private val cookie = "conversation-cookie-content"
 
-  private def at(cell: Option[String], config: CoreConfig = TestEnvConfig.coreConfig): URIO[SecurityService & SecureRandom, CellHandoff] =
+  private val userId = UserId(UUID.fromString("00000000-0000-0000-0000-0000000000a1"))
+  private val priorMac = MAC(Array.fill(32)(7.toByte))
+
+  private val priorSession = SessionRecord(
+    userId = userId,
+    clients = List(ClientEntry(record.clientId, Instant.EPOCH)),
+    userAgentId = UserAgentId(UUID.fromString("00000000-0000-0000-0000-0000000000b1")),
+    createdAt = Instant.EPOCH,
+    amr = Map.empty,
+    publicId = PublicSessionId("kz-1.first-cells-session"),
+    expiresAt = Instant.EPOCH,
+  )
+
+  /** A sign-in that was started in a cell by a browser that had a session there. */
+  private val withPrior = record.copy(priorSessionId = Some(priorMac), priorSessionUserId = Some(userId))
+
+  private def at(
+      cell: Option[String],
+      config: CoreConfig = TestEnvConfig.coreConfig,
+      sessions: Stub[SessionRepository] = stub[SessionRepository],
+  ): URIO[SecurityService & SecureRandom, CellHandoff] =
     for
       security <- ZIO.service[SecurityService]
       random <- ZIO.service[SecureRandom]
-    yield CellHandoff.Impl(config.copy(cellId = cell.map(RoutingKey.CellId.parse(_).toOption.get)), security, random)
+    yield CellHandoff.Impl(config.copy(cellId = cell.map(RoutingKey.CellId.parse(_).toOption.get)), security, random, sessions)
 
   def spec = suite("CellHandoff")(
     test("the home cell opens what another cell sealed for it: the request's parameters and the address as the login hint") {
@@ -187,6 +214,125 @@ object CellHandoffSpec extends ZIOSpecDefault:
           ticket <- first.sealSubmission(record, home, cookie, None)
           elsewhere <- third.open(ticket).either
         yield assertTrue(elsewhere == Left(CellHandoff.Refused.Elsewhere))
+      },
+    ),
+    // versolauth/versola#1048: the session the browser had in the first cell travels in the seal.
+    suite("the session the sign-in replaces")(
+      test("an address seal names the prior session of the first cell by its public id and its user") {
+        val sessions = stub[SessionRepository]
+        for
+          _ <- sessions.findSession.succeedsWith(Some(priorSession))
+          first <- at(Some("kz-1"), sessions = sessions)
+          second <- at(Some("kz-2"))
+          payload <- first.seal(withPrior, Left(email), home).flatMap(second.open)
+        yield assertTrue(
+          payload.superseded == Some(SupersededSession(userId = userId, sessionId = priorSession.publicId)),
+          sessions.findSession.calls.size == 1,
+        )
+      },
+      test("a submission seal names it too") {
+        val sessions = stub[SessionRepository]
+        for
+          _ <- sessions.findSession.succeedsWith(Some(priorSession))
+          first <- at(Some("kz-1"), sessions = sessions)
+          second <- at(Some("kz-2"))
+          payload <- first.sealSubmission(withPrior, home, cookie, None).flatMap(second.open)
+        yield assertTrue(payload.superseded == Some(SupersededSession(userId = userId, sessionId = priorSession.publicId)))
+      },
+      test("the session id is looked up by the record's prior session, and the seal does not carry the MAC") {
+        val sessions = stub[SessionRepository]
+        for
+          _ <- sessions.findSession.succeedsWith(Some(priorSession))
+          first <- at(Some("kz-1"), sessions = sessions)
+          ticket <- first.seal(withPrior, Left(email), home)
+        yield assertTrue(
+          sessions.findSession.calls.size == 1,
+          java.util.Arrays.equals(sessions.findSession.calls.head: Array[Byte], priorMac: Array[Byte]),
+        )
+      },
+      test("a record that already carries a superseded session carries that one, and the repository is not asked") {
+        val sessions = stub[SessionRepository]
+        val handed = SupersededSession(userId = userId, sessionId = PublicSessionId("kz-0.sessions-of-another-cell"))
+        val handedRecord = withPrior.copy(supersededSessionId = Some(handed.sessionId), supersededSessionUserId = Some(handed.userId))
+        for
+          first <- at(Some("kz-1"), sessions = sessions)
+          second <- at(Some("kz-2"))
+          address <- first.seal(handedRecord, Left(email), home).flatMap(second.open)
+          submission <- first.sealSubmission(handedRecord, home, cookie, None).flatMap(second.open)
+        yield assertTrue(
+          address.superseded == Some(handed),
+          submission.superseded == Some(handed),
+          sessions.findSession.calls.isEmpty,
+        )
+      },
+      test("a record with no prior session carries none, and the repository is not asked") {
+        val sessions = stub[SessionRepository]
+        for
+          first <- at(Some("kz-1"), sessions = sessions)
+          second <- at(Some("kz-2"))
+          address <- first.seal(record, Left(email), home).flatMap(second.open)
+          submission <- first.sealSubmission(record, home, cookie, None).flatMap(second.open)
+        yield assertTrue(address.superseded.isEmpty, submission.superseded.isEmpty, sessions.findSession.calls.isEmpty)
+      },
+      test("a prior session the repository no longer knows gives none, and the seal is made") {
+        val sessions = stub[SessionRepository]
+        for
+          _ <- sessions.findSession.succeedsWith(None)
+          first <- at(Some("kz-1"), sessions = sessions)
+          second <- at(Some("kz-2"))
+          payload <- first.seal(withPrior, Left(email), home).flatMap(second.open)
+        yield assertTrue(payload.superseded.isEmpty)
+      },
+      test("a repository that fails gives none, and the seal is still made") {
+        val sessions = stub[SessionRepository]
+        for
+          _ <- sessions.findSession.failsWith(RuntimeException("database is down"))
+          first <- at(Some("kz-1"), sessions = sessions)
+          second <- at(Some("kz-2"))
+          address <- first.seal(withPrior, Left(email), home).flatMap(second.open)
+          submission <- first.sealSubmission(withPrior, home, cookie, None).flatMap(second.open)
+        yield assertTrue(address.superseded.isEmpty, submission.superseded.isEmpty, address.params("client_id") == List(record.clientId: String))
+      },
+      test("a prior session id without a user gives none: a session id is not acted on without its user") {
+        val sessions = stub[SessionRepository]
+        for
+          _ <- sessions.findSession.succeedsWith(Some(priorSession))
+          first <- at(Some("kz-1"), sessions = sessions)
+          second <- at(Some("kz-2"))
+          payload <- first.seal(withPrior.copy(priorSessionUserId = None), Left(email), home).flatMap(second.open)
+        yield assertTrue(payload.superseded.isEmpty)
+      },
+      test("a record with only half of a superseded session falls back to its own prior session") {
+        val sessions = stub[SessionRepository]
+        val half = withPrior.copy(supersededSessionId = Some(PublicSessionId("kz-0.x")), supersededSessionUserId = None)
+        for
+          _ <- sessions.findSession.succeedsWith(Some(priorSession))
+          first <- at(Some("kz-1"), sessions = sessions)
+          second <- at(Some("kz-2"))
+          payload <- first.seal(half, Left(email), home).flatMap(second.open)
+        yield assertTrue(payload.superseded == Some(SupersededSession(userId = userId, sessionId = priorSession.publicId)))
+      },
+      test("a seal made under the old shape of the payload, with no superseded field, is not read as having one") {
+        val old = """{"params":{},"to":"kz-2","expiresAt":1,"submission":null}"""
+        assertTrue(old.fromJson[CellHandoff.Payload].isLeft || old.fromJson[CellHandoff.Payload].exists(_.superseded.isEmpty))
+      },
+    ),
+    suite("SupersededSession")(
+      test("round-trips through JSON as the user id and the session id") {
+        val session = SupersededSession(userId = userId, sessionId = PublicSessionId("kz-1.first-cells-session"))
+        val json = session.toJson
+        assertTrue(
+          json.fromJson[SupersededSession] == Right(session),
+          json.fromJson[zio.json.ast.Json] == Right(
+            zio.json.ast.Json.Obj(
+              "userId" -> zio.json.ast.Json.Str(userId.toString),
+              "sessionId" -> zio.json.ast.Json.Str("kz-1.first-cells-session"),
+            ),
+          ),
+        )
+      },
+      test("is not read from a body that lacks the user") {
+        assertTrue("""{"sessionId":"kz-1.s"}""".fromJson[SupersededSession].isLeft)
       },
     ),
     suite("paramsOf")(

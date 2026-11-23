@@ -451,6 +451,20 @@ object UserServiceSpec extends UnitSpecBase:
         ended <- env.service.endSession(userId, "c2lk")
       yield assertTrue(!ended, env.authClient.endSession.calls == List((userId, "c2lk")))
     },
+    test("supersedeSession passes the user and the session to authClient and answers that the session was ended") {
+      val env = Env()
+      for
+        _ <- env.authClient.supersedeSession.succeedsWith(true)
+        ended <- env.service.supersedeSession(SupersededSessionRequest(userId = userId, sessionId = "c2lk"))
+      yield assertTrue(ended, env.authClient.supersedeSession.calls == List((userId, "c2lk")), env.authClient.endSession.calls.isEmpty)
+    },
+    test("supersedeSession answers false when authClient does not know the session as the user's") {
+      val env = Env()
+      for
+        _ <- env.authClient.supersedeSession.succeedsWith(false)
+        ended <- env.service.supersedeSession(SupersededSessionRequest(userId = userId, sessionId = "c2lk"))
+      yield assertTrue(!ended, env.authClient.supersedeSession.calls == List((userId, "c2lk")))
+    },
     test("revokeRefreshTokens delegates to authClient") {
       val env = Env()
       for

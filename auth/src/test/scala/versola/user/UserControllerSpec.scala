@@ -720,8 +720,55 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         )
       yield assertTrue(
         resp.status == Status.NoContent,
-        logout.invalidateSession.calls == List((PublicSessionId("c2lk"), testUserId)),
+        logout.invalidateSession.calls == List((PublicSessionId("c2lk"), testUserId, RevocationCause.AdminRevoked)),
         logout.invalidateAllSessions.calls.isEmpty,
+      )
+    },
+    // versolauth/versola#1048: central ends the session a sign-in handed to another cell replaced.
+    test("DELETE /users/sessions with cause=superseded ends the session as superseded") {
+      val logout = stub[LogoutService]
+      val testUserId = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- logout.invalidateSession.succeedsWith(true)
+        _ <- TestClient.addRoutes(routes(tracing, logout = logout))
+        resp <- client.batched(
+          Request(
+            method = Method.DELETE,
+            url = (URL.empty / "users" / "sessions")
+              .addQueryParam("userId", testUserId.toString)
+              .addQueryParam("sessionId", "c2lk")
+              .addQueryParam("cause", "superseded"),
+          ).addHeader(Header.Authorization.Bearer(token)),
+        )
+      yield assertTrue(
+        resp.status == Status.NoContent,
+        logout.invalidateSession.calls == List((PublicSessionId("c2lk"), testUserId, RevocationCause.Superseded)),
+      )
+    },
+    test("DELETE /users/sessions with a cause other than superseded ends the session as an administrator's action") {
+      val logout = stub[LogoutService]
+      val testUserId = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- logout.invalidateSession.succeedsWith(true)
+        _ <- TestClient.addRoutes(routes(tracing, logout = logout))
+        resp <- client.batched(
+          Request(
+            method = Method.DELETE,
+            url = (URL.empty / "users" / "sessions")
+              .addQueryParam("userId", testUserId.toString)
+              .addQueryParam("sessionId", "c2lk")
+              .addQueryParam("cause", "anything-else"),
+          ).addHeader(Header.Authorization.Bearer(token)),
+        )
+      yield assertTrue(
+        resp.status == Status.NoContent,
+        logout.invalidateSession.calls == List((PublicSessionId("c2lk"), testUserId, RevocationCause.AdminRevoked)),
       )
     },
     test("DELETE /users/sessions with a sessionId that is not the user's answers 404") {

@@ -45,7 +45,7 @@ object IssuerFront extends Controller:
 
   private val ConversationCookie = "__Host-SSO_CONVERSATION"
   private val SessionCookie = "__Host-SSO_SESSION"
-  private val UserAgentCookie = "SSO_USER_AGENT_ID"
+  private val UserAgentCookie = "__Host-SSO_USER_AGENT_ID"
 
   /** The issuer's own cookies. Where the issuer's address is this edge's, a browser sends them with every request to
     * the host (their path is `/`), the ones edge proxies to a resource among them: they are the session of the person

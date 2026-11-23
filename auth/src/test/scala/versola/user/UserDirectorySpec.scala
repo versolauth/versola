@@ -2,6 +2,7 @@ package versola.user
 
 import versola.auth.TestEnvConfig
 import versola.oauth.client.CentralSyncTokenService
+import versola.oauth.session.model.{PublicSessionId, SupersededSession}
 import versola.user.model.{Login, UserId}
 import versola.util.{Email, Phone}
 import zio.*
@@ -156,6 +157,44 @@ object UserDirectorySpec extends ZIOSpecDefault:
           ofLogin <- directory.homeOfLogin(Login("alice")).exit
           ofUser <- directory.homeOfUser(userId).exit
         yield assertTrue(ofLogin.isFailure, ofUser.isFailure)
+      },
+    ),
+    // versolauth/versola#1048: the session a handed sign-in replaced, ended in the cell that holds it.
+    suite("sessionSuperseded")(
+      test("posts the user and the session to central's superseded endpoint") {
+        val session = SupersededSession(userId = userId, sessionId = PublicSessionId("kz-1.session-1"))
+        for
+          (client, seen) <- central(Response.status(Status.NoContent))
+          _ <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).sessionSuperseded(session)
+          (request, body) <- sent(seen)
+        yield assertTrue(
+          request.method == Method.POST,
+          request.url.path.encode.endsWith("users/sessions/superseded"),
+          body == Json.Obj("userId" -> Json.Str(userId.toString), "sessionId" -> Json.Str("kz-1.session-1")),
+        )
+      },
+      test("is done when central answers 204, or 404 for a session that is gone already") {
+        val session = SupersededSession(userId = userId, sessionId = PublicSessionId("kz-1.session-1"))
+        for
+          (noContent, _) <- central(Response.status(Status.NoContent))
+          ended <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(noContent)).sessionSuperseded(session).exit
+          (gone, _) <- central(Response.status(Status.NotFound))
+          alreadyGone <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(gone)).sessionSuperseded(session).exit
+        yield assertTrue(ended.isSuccess, alreadyGone.isSuccess)
+      },
+      test("fails when central answers 500, so the caller can say the session was left to expire") {
+        val session = SupersededSession(userId = userId, sessionId = PublicSessionId("kz-1.session-1"))
+        for
+          (client, _) <- central(Response.status(Status.InternalServerError))
+          refused <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).sessionSuperseded(session).exit
+        yield assertTrue(refused.isFailure)
+      },
+      test("fails when central refuses the request, as it does one it does not authorize") {
+        val session = SupersededSession(userId = userId, sessionId = PublicSessionId("kz-1.session-1"))
+        for
+          (client, _) <- central(Response.status(Status.Unauthorized))
+          refused <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).sessionSuperseded(session).exit
+        yield assertTrue(refused.isFailure)
       },
     ),
   ).provide(TestClient.layer) @@ TestAspect.silentLogging

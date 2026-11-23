@@ -15,7 +15,7 @@ import versola.oauth.client.model.{
 }
 import versola.oauth.model.UserAgentCookiePayload
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
-import versola.oauth.session.model.SessionId
+import versola.oauth.session.model.{PublicSessionId, SessionId, SupersededSession}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.{Login, UserId, UserRecord}
 import versola.util.{Email, MAC, Phone}
@@ -91,7 +91,19 @@ case class ConversationRecord(
     challengeFailed: Int = 0,
     /** Challenges solved so far; a challenge token names the value it was issued at, so a solved one cannot be used twice. */
     challengeSolved: Int = 0,
+    /** The session the browser had in another cell when this sign-in was handed here, and its user
+      * (versolauth/versola#1048). This cell cannot end it itself, as it ends [[priorSessionId]]: when the sign-in
+      * finishes, central is asked to. Both or neither. */
+    supersededSessionId: Option[PublicSessionId] = None,
+    supersededSessionUserId: Option[UserId] = None,
 ):
+  /** The session in another cell this sign-in replaces, when it was handed over from a browser that had one. */
+  def supersededSession: Option[SupersededSession] =
+    for
+      sessionId <- supersededSessionId
+      userId <- supersededSessionUserId
+    yield SupersededSession(userId = userId, sessionId = sessionId)
+
   def user: Option[UserRecord] = userId.map { userId =>
     UserRecord(
       id = userId,

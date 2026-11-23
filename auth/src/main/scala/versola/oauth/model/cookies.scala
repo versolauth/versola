@@ -125,7 +125,9 @@ case class UserAgentData(
 case class UserAgentCookiePayload(id: UserAgentId, data: UserAgentData) derives JsonCodec
 
 object UserAgentCookie:
-  val name = "SSO_USER_AGENT_ID"
+  /** `__Host-`, like the two cookies below it in the same request ([[ConversationCookie.name]]): the device a sign-in is
+    * recorded for is the browser's own, not one a page on a sibling subdomain chose for it. */
+  val name = "__Host-SSO_USER_AGENT_ID"
 
   def apply(id: UserAgentId, data: UserAgentData, ttl: Duration, secret: Secret.Bytes32): Cookie.Response =
     val payloadBytes = UserAgentCookiePayload(id, data).toJson.getBytes(StandardCharsets.UTF_8)

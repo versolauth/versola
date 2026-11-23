@@ -602,6 +602,61 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         assertTrue(code.startsWith(s"v1.${s.second.id}."), subAgain == user.sub).label(s"cell 2 signed its user in: $code") &&
         assertTrue(again.response.status == Status.BadRequest).label(s"the assertion is not good twice: ${again.response.status}")
     },
+    test("a sign-in handed to cell 2 ends the session the browser had in cell 1 once it has finished there, and not before") {
+      for
+        s <- stand
+        front <- front
+        // A user of cell 1, signed in there: the browser holds cell 1's session cookie, and a client holds a token of it.
+        first <- s.nextRegistration
+        (authorized, signedIn) <- submitCode(s.first, first, first.email.get)
+        session <- ZIO.fromOption(signedIn.sessionCookie).orElseFail(RuntimeException("cell 1 set no session cookie"))
+        firstCode <- signedIn.assertRedirect
+        held <- s.first.auth.token(
+          firstCode,
+          authorized.verifier,
+          clientId = Some(first.clientId),
+          clientSecret = Some(first.clientSecret),
+          redirectUri = Some(first.redirectUri),
+        ).success
+        other <- loginUserOfSecond(s)
+        // The same browser is asked to sign in again (`prompt=login`): its session cookie sends the request to cell 1,
+        // whose card takes another user, and the user typed is cell 2's.
+        again <- front.auth.authorizeRaw(
+          clientId = s.loginClient.clientId,
+          redirectUri = s.loginClient.redirectUri,
+          prompt = Some("login"),
+          sessionCookie = Some(session),
+        ).assertChallengeRedirect
+        firstCookie = again.conversationCookie.get
+        card <- front.auth.getChallenge(firstCookie).assertStep(ConversationStep.Credential)
+        wrong = "Wrong-Pass-9!"
+        typed <- front.auth.submitLoginPassword(firstCookie, other.login, wrong, card.csrf)
+        // A wrong password: handed over and refused in cell 2. Nothing has finished, so the session in cell 1 stays.
+        refused <- repeated(typed, Map("login" -> other.login, "password" -> wrong, "csrf" -> card.csrf), Some(firstCookie))
+        secondCookie <- ZIO.fromOption(
+          refused.response.headers.getAll(Header.SetCookie).collectFirst {
+            case h if h.value.name == "__Host-SSO_CONVERSATION" && h.value.content.nonEmpty => h.value.content
+          },
+        ).orElseFail(RuntimeException(s"cell 2 did not take the handoff: ${refused.response.status}"))
+        untouched <- s.first.auth.userinfo(held.accessToken).map(_.response.status)
+        // The right password, on cell 2's own card now: the sign-in finishes there.
+        retry <- front.auth.getChallenge(secondCookie).assertStep(ConversationStep.Credential)
+        code <- front.auth.submitLoginPassword(secondCookie, other.login, other.password, retry.csrf).flatMap(_.assertRedirect)
+        // Awaited: cell 2 tells central, central tells cell 1, which ends the session and with it the tokens it issued.
+        ended <- s.first.auth.userinfo(held.accessToken).map(_.response.status)
+          .repeat(Schedule.spaced(200.millis) && Schedule.recurUntil[Status](_ == Status.Unauthorized))
+          .map(_._2)
+          .timeoutFail(RuntimeException("cell 1 still honours a token of the session that was replaced"))(15.seconds)
+        // And the cookie of that session signs nobody in any more.
+        resumed <- s.first.auth.authorizeRaw(clientId = first.clientId, redirectUri = first.redirectUri, sessionCookie = Some(session))
+      yield assertTrue(firstCookie.startsWith(s"v1.${s.first.id}.")).label(s"the session cookie sent the request to cell 1: $firstCookie") &&
+        assertTrue(sentTo(s.second, typed)).label(s"the user typed is cell 2's: ${typed.response.status} ${typed.location}") &&
+        assertTrue(secondCookie.startsWith(s"v1.${s.second.id}."), untouched == Status.Ok)
+          .label(s"a sign-in that did not finish leaves the session in cell 1 alone: $untouched") &&
+        assertTrue(code.startsWith(s"v1.${s.second.id}."), ended == Status.Unauthorized)
+          .label(s"once it has finished in cell 2, the session in cell 1 is ended: $ended") &&
+        assertTrue(resumed.location.contains("/challenge")).label(s"and its cookie asks for a sign-in again: ${resumed.location}")
+    },
     test("with the cells registered the staged edge signs a user in and makes its calls at the cell the values name") {
       for
         s <- stand

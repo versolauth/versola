@@ -19,6 +19,10 @@ enum RevocationCause(val code: String):
   case OfflineAccessRevoked extends RevocationCause("offline_access_revoked")
   case RolesChanged extends RevocationCause("roles_changed")
 
+  /** A sign-in in the same browser that finished in another cell took the place of this session
+    * (versolauth/versola#1048): the cell of the session is told through central. */
+  case Superseded extends RevocationCause("superseded")
+
 /** What a repository method that ends a session or a refresh family needs to write the revocation
   * in the same transaction: the method knows the key (it is what the method ends) and the instant
   * (its own clock), the caller knows why and for how long a token could still be alive.

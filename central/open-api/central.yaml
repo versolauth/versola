@@ -15,7 +15,7 @@ info:
     replication endpoints that are not part of this document:
 
     * `/configuration/*/sync`, `/configuration/*/registry`, `/configuration/jwks/signing-keys/sync`
-      and `POST /users/registrations`, `POST /users/lookup`, `POST /users/home`, `GET /antifraud/policy/sync`
+      and `POST /users/registrations`, `POST /users/lookup`, `POST /users/home`, `POST /users/sessions/superseded`, `GET /antifraud/policy/sync`
       and `GET /antifraud/policy/lists/sync`, which auth reads with its shared-secret token. Every
       route outside `/edge/*` refuses a token that authenticates an edge (`403`).
     * `/edge/sync/*` (`clients`, `resources`, `roles`, `permissions`, `jwks`, `dpop`,

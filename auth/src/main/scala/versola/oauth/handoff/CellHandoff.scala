@@ -3,10 +3,12 @@ package versola.oauth.handoff
 import org.apache.commons.codec.digest.Blake3
 import versola.oauth.authorize.model.ResponseTypeEntry
 import versola.oauth.conversation.model.ConversationRecord
+import versola.oauth.session.SessionRepository
+import versola.oauth.session.model.SupersededSession
 import versola.util.{Base64, CoreConfig, Dpop, Email, Phone, RoutingKey, SecureRandom, SecurityService}
 import zio.http.{Path, URL}
 import zio.json.*
-import zio.{Clock, Duration, IO, Task, ZIO, ZLayer, durationInt}
+import zio.{Clock, Duration, IO, Task, UIO, ZIO, ZLayer, durationInt}
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -80,8 +82,17 @@ object CellHandoff:
     * @param to the cell the seal is for
     * @param expiresAt epoch seconds
     * @param submission set when the request that follows the seal is the submission the first cell took
+    * @param superseded the session the browser had in the first cell when the sign-in was started there, which a
+    *   sign-in that finishes in the home cell replaces: the home cell has it ended through central once the sign-in is
+    *   finished, as the first cell would have ended it itself
     */
-  final case class Payload(params: Map[String, List[String]], to: String, expiresAt: Long, submission: Option[Submission]) derives JsonCodec
+  final case class Payload(
+      params: Map[String, List[String]],
+      to: String,
+      expiresAt: Long,
+      submission: Option[Submission],
+      superseded: Option[SupersededSession],
+  ) derives JsonCodec
 
   /** What a seal that hands a submission over carries besides the request.
     *
@@ -112,9 +123,10 @@ object CellHandoff:
     * sign-in in the home cell is always a new authentication, and its `auth_time` says so. `prompt=none` never starts
     * a conversation, and an `id_token_hint` that names a user starts one that knows its user, which is not handed over.
     *
-    * What is lost with them is the link to the session the browser had in the first cell (`priorSessionId`): a sign-in
-    * that finishes in the home cell does not end it, or move its refresh tokens, as one that finishes here does. It
-    * stays until it expires or is revoked. */
+    * The session the browser had in the first cell is named in the seal beside the parameters
+    * ([[Payload.superseded]]): a sign-in that finishes in the home cell has it ended through central. Its refresh
+    * tokens are ended with it and not moved to the new session, as they are for the same user in one cell: the user of
+    * a session in this cell is not a user of the home cell. */
   private[handoff] def paramsOf(record: ConversationRecord, credential: Option[Either[Email, Phone]]): Map[String, List[String]] =
     def one(name: String, value: Option[String]) = value.map(name -> List(_))
     List(
@@ -140,30 +152,53 @@ object CellHandoff:
   /** Never to change: it separates this key from every other use of the secret it is derived from. */
   private val Context = "versola auth cell handoff v1".getBytes(StandardCharsets.UTF_8)
 
-  val live: ZLayer[CoreConfig & SecurityService & SecureRandom, Nothing, CellHandoff] =
-    ZLayer.fromFunction(Impl(_, _, _))
+  val live: ZLayer[CoreConfig & SecurityService & SecureRandom & SessionRepository, Nothing, CellHandoff] =
+    ZLayer.fromFunction(Impl(_, _, _, _))
 
-  class Impl(config: CoreConfig, security: SecurityService, random: SecureRandom) extends CellHandoff:
+  class Impl(config: CoreConfig, security: SecurityService, random: SecureRandom, sessions: SessionRepository) extends CellHandoff:
     private val key: SecretKeySpec =
       val derived = Array.ofDim[Byte](32)
       Blake3.initKeyDerivationFunction(Context).update(config.central.secretKey.getEncoded).doFinalize(derived)
       SecretKeySpec(derived, "AES")
 
     override def seal(record: ConversationRecord, credential: Either[Email, Phone], to: RoutingKey.CellId): Task[String] =
-      sealOf(params = paramsOf(record, Some(credential)), to = to, submission = None)
+      sealOf(record, params = paramsOf(record, Some(credential)), to = to, submission = None)
 
     override def sealSubmission(record: ConversationRecord, to: RoutingKey.CellId, cookie: String, passkeyRequest: Option[String]): Task[String] =
       random.nextHex(32).flatMap: id =>
         sealOf(
+          record,
           params = paramsOf(record, None),
           to = to,
           submission = Some(Submission(id = id, cookie = cookieDigest(cookie), passkeyRequest = passkeyRequest)),
         )
 
-    private def sealOf(params: Map[String, List[String]], to: RoutingKey.CellId, submission: Option[Submission]): Task[String] =
+    /** The session this sign-in replaces, as the home cell can name it: the one handed here with the sign-in, or this
+      * cell's own, by its public id. A session that cannot be read is left out, and stays until it expires: the
+      * sign-in is not refused for it. */
+    private def supersededBy(record: ConversationRecord): UIO[Option[SupersededSession]] =
+      record.supersededSession match
+        case handed @ Some(_) => ZIO.succeed(handed)
+        case None =>
+          (record.priorSessionId, record.priorSessionUserId) match
+            case (Some(id), Some(userId)) =>
+              sessions.findSession(id)
+                .map(_.map(session => SupersededSession(userId = userId, sessionId = session.publicId)))
+                .catchAllCause(cause =>
+                  ZIO.logWarningCause("Could not read the session a handed sign-in replaces; it is left to expire", cause).as(None),
+                )
+            case _ => ZIO.none
+
+    private def sealOf(
+        record: ConversationRecord,
+        params: Map[String, List[String]],
+        to: RoutingKey.CellId,
+        submission: Option[Submission],
+    ): Task[String] =
       for
         now <- Clock.instant
-        payload = Payload(params = params, to = to, expiresAt = now.plus(Lifetime).getEpochSecond, submission = submission)
+        superseded <- supersededBy(record)
+        payload = Payload(params = params, to = to, expiresAt = now.plus(Lifetime).getEpochSecond, submission = submission, superseded = superseded)
         ciphertext <- security.encryptAes256(payload.toJson.getBytes(StandardCharsets.UTF_8), key)
         ticket = RoutingKey.encode(to, Base64.urlEncode(ciphertext))
         _ <- ZIO.fail(TooLarge(ticket.length)).when(ticket.length > MaxLength)

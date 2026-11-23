@@ -111,7 +111,7 @@ object AuthAuditDetails:
     def toJson = AuditDetails.render(this)
     override def counted(count: Int): AuditDetails = copy(count = count)
 
-  /** `session.ended`: `cause` is `rp_logout`, `user_revoked`, `admin_revoked`, `user_agent_forgotten` or `user_deleted`;
+  /** `session.ended`: `cause` is `rp_logout`, `user_revoked`, `admin_revoked`, `superseded`, `user_agent_forgotten` or `user_deleted`;
     * `clients` how many relying parties took part in the session. */
   case class SessionEnded(cause: String, clients: Int) extends AuditDetails derives JsonEncoder:
     def toJson = AuditDetails.render(this)

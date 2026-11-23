@@ -35,6 +35,10 @@ trait UserService:
     * when the session is not the user's or no longer live. */
   def endSession(userId: UserId, sessionId: String): Task[Boolean]
 
+  /** Passes on to the cell of the session's user that a sign-in finished in another cell took the session's place
+    * (versolauth/versola#1048). `false` when that cell does not know the session as this user's. */
+  def supersedeSession(request: SupersededSessionRequest): Task[Boolean]
+
   /** Revokes the offline access one client holds for the user. The user's sessions stay. */
   def revokeRefreshTokens(userId: UserId, clientId: ClientId): Task[Unit]
 
@@ -224,6 +228,9 @@ object UserService:
 
     override def endSession(userId: UserId, sessionId: String): Task[Boolean] =
       authClient.endSession(userId, sessionId)
+
+    override def supersedeSession(request: SupersededSessionRequest): Task[Boolean] =
+      authClient.supersedeSession(request.userId, request.sessionId)
 
     override def revokeRefreshTokens(userId: UserId, clientId: ClientId): Task[Unit] =
       authClient.revokeRefreshTokens(userId, clientId)

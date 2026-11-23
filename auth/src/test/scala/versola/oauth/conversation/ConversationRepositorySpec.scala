@@ -5,6 +5,7 @@ import versola.auth.model.OtpCode
 import versola.oauth.client.model.{Acr, AuthFlow, AuthorizationDetail, ClientId, PassedAuthFactor, PrimaryCredential, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
+import versola.oauth.session.model.{PublicSessionId, SupersededSession}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, Email, Phone}
 import zio.*
@@ -255,6 +256,44 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           found2.priorSessionId.exists(m => java.util.Arrays.equals(m: Array[Byte], mac: Array[Byte])),
           found2.priorSessionUserId.contains(userId2),
           found2.version == found1.version + 1,
+        )
+      },
+      test("a conversation created with a superseded session reads back with both its session and its user") {
+        val superseded = SupersededSession(userId = userId2, sessionId = PublicSessionId("kz-1.session-1"))
+        val started = initial.copy(supersededSessionId = Some(superseded.sessionId), supersededSessionUserId = Some(superseded.userId))
+        for
+          _ <- env.repository.create(authId1, started, ttl)
+          found <- env.repository.find(authId1).map(_.get)
+        yield assertTrue(
+          found.supersededSessionId.contains(superseded.sessionId),
+          found.supersededSessionUserId.contains(superseded.userId),
+          found.supersededSession.contains(superseded),
+        )
+      },
+      test("a conversation created without a superseded session reads back with none") {
+        for
+          _ <- env.repository.create(authId1, initial, ttl)
+          found <- env.repository.find(authId1).map(_.get)
+        yield assertTrue(found.supersededSessionId.isEmpty, found.supersededSessionUserId.isEmpty, found.supersededSession.isEmpty)
+      },
+      test("overwrite records a superseded session on a conversation that had none, and replaces one it had") {
+        val first = SupersededSession(userId = userId1, sessionId = PublicSessionId("kz-1.session-1"))
+        val second = SupersededSession(userId = userId2, sessionId = PublicSessionId("kz-1.session-2"))
+        def recorded(session: SupersededSession, version: Long) =
+          initial.copy(supersededSessionId = Some(session.sessionId), supersededSessionUserId = Some(session.userId), version = version)
+        for
+          _ <- env.repository.create(authId1, initial, ttl)
+          found0 <- env.repository.find(authId1).map(_.get)
+          wroteFirst <- env.repository.overwrite(authId1, recorded(first, found0.version))
+          found1 <- env.repository.find(authId1).map(_.get)
+          wroteSecond <- env.repository.overwrite(authId1, recorded(second, found1.version))
+          found2 <- env.repository.find(authId1).map(_.get)
+        yield assertTrue(
+          found0.supersededSession.isEmpty,
+          wroteFirst,
+          found1.supersededSession.contains(first),
+          wroteSecond,
+          found2.supersededSession.contains(second),
         )
       },
       test("wrong solutions of a challenge are counted by the statement, one by one, and read back with the record") {

@@ -20,7 +20,8 @@ import versola.oauth.conversation.{
 }
 import versola.oauth.handoff.CellHandoff
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, ConversationCookie}
-import versola.user.model.Login
+import versola.oauth.session.model.{PublicSessionId, SupersededSession}
+import versola.user.model.{Login, UserId}
 import versola.util.UnitSpecBase
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{NoopTracing, Observability}
@@ -31,6 +32,7 @@ import zio.test.*
 
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.ConcurrentLinkedQueue
 
 object AuthorizeEndpointControllerSpec extends UnitSpecBase:
 
@@ -126,16 +128,23 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   private val handedCookie = "first-cells-conversation-cookie"
+  private val handedTrace = ConcurrentLinkedQueue[String]()
+  private val supersededSession =
+    SupersededSession(
+      userId = UserId(UUID.fromString("00000000-0000-0000-0000-0000000000c1")),
+      sessionId = PublicSessionId("kz-0.first-cells-session"),
+    )
 
   private def submission(cookie: String, passkeyRequest: Option[String] = None) =
     CellHandoff.Submission(id = "sub-1", cookie = CellHandoff.cookieDigest(cookie), passkeyRequest = passkeyRequest)
 
-  private def payload(submission: Option[CellHandoff.Submission]) =
+  private def payload(submission: Option[CellHandoff.Submission], superseded: Option[SupersededSession] = None) =
     CellHandoff.Payload(
       params = Map("client_id" -> List("test-client")),
       to = "kz-1",
       expiresAt = 1000L,
       submission = submission,
+      superseded = superseded,
     )
 
   /** The browser repeating a submission at the cell the first cell sent it to.
@@ -152,6 +161,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
       cookie: Option[String] = Some(handedCookie),
       opened: Boolean = true,
       taken: Boolean = true,
+      trace: ConcurrentLinkedQueue[String] = ConcurrentLinkedQueue[String](),
       verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
       verifyServices: Services => TestResult = _ => assertCompletes,
   ) =
@@ -174,8 +184,11 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
           _ <- services.configService.getIpHeader.succeedsWith("X-Real-IP")
           _ <- services.configService.getPasswordRegex.succeedsWith(".*")
           _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
-          _ <- services.router.submitHanded.succeedsWith(
-            (ConversationResult.RenderStep(ConversationRouterSpec.initialRecord.step), ConversationRouterSpec.initialRecord),
+          _ = services.router.supersedes.returnsWith(ZIO.succeed(trace.add("supersedes")).unit)
+          _ = services.router.submitHanded.returnsWith(
+            ZIO.succeed(trace.add("submitHanded")).as(
+              (ConversationResult.RenderStep(ConversationRouterSpec.initialRecord.step), ConversationRouterSpec.initialRecord),
+            ),
           )
           _ <- services.renderService.renderSubmit.succeedsWith(Response.seeOther(URL.root / "challenge"))
         yield (),
@@ -232,6 +245,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
                 to = "kz-1",
                 expiresAt = 0L,
                 submission = None,
+                superseded = None,
               ),
             )
             _ <- services.parser.validate.succeedsWith(baseRequest)
@@ -245,6 +259,33 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
           )),
       ),
       controllerTestCase(
+        description = "a handoff that names the session the browser had in the first cell records it on the conversation it starts",
+        request = Request.get((URL.root / "challenge" / "handoff").addQueryParam(CellHandoff.Parameter, "v1.kz-1.sealed")),
+        expectedStatus = Status.SeeOther,
+        setup = services =>
+          for
+            _ <- services.handoff.open.succeedsWith(payload(submission = None, superseded = Some(supersededSession)))
+            _ <- services.parser.validate.succeedsWith(baseRequest)
+            _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+            _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
+            _ <- services.router.supersedes.succeedsWith(())
+          yield (),
+        verifyServices = services => assertTrue(services.router.supersedes.calls == List((authId, supersededSession))),
+      ),
+      controllerTestCase(
+        description = "a handoff that names no session records none",
+        request = Request.get((URL.root / "challenge" / "handoff").addQueryParam(CellHandoff.Parameter, "v1.kz-1.sealed")),
+        expectedStatus = Status.SeeOther,
+        setup = services =>
+          for
+            _ <- services.handoff.open.succeedsWith(payload(submission = None, superseded = None))
+            _ <- services.parser.validate.succeedsWith(baseRequest)
+            _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+            _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
+          yield (),
+        verifyServices = services => assertTrue(services.router.supersedes.calls.isEmpty),
+      ),
+      controllerTestCase(
         description = "a handoff that is not this cell's to open is a 400 and starts nothing",
         request = Request.get((URL.root / "challenge" / "handoff").addQueryParam(CellHandoff.Parameter, "v1.kz-2.sealed")),
         expectedStatus = Status.BadRequest,
@@ -255,7 +296,13 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
         request = Request.get((URL.root / "challenge" / "handoff").addQueryParam(CellHandoff.Parameter, "v1.kz-1.sealed")),
         expectedStatus = Status.BadRequest,
         setup = services =>
-          services.handoff.open.succeedsWith(CellHandoff.Payload(params = Map.empty, to = "kz-1", expiresAt = 0L, submission = None)) *>
+          services.handoff.open.succeedsWith(CellHandoff.Payload(
+            params = Map.empty,
+            to = "kz-1",
+            expiresAt = 0L,
+            submission = None,
+            superseded = None,
+          )) *>
             services.parser.validate.failsWith(Error.BadRequest),
       ),
       controllerTestCase(
@@ -495,6 +542,38 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
               (authId, LoginPasswordSubmission(Login("user"), Password("s3cret"), "first-cells-csrf"), None, None, None),
             ),
           ),
+      ),
+      handedTestCase(
+        description = "records the session the browser had in the first cell on the conversation it starts, before the submission is checked",
+        payload = payload(submission = Some(submission(cookie = handedCookie)), superseded = Some(supersededSession)),
+        trace = handedTrace,
+        expectedStatus = Status.SeeOther,
+        verifyServices = services =>
+          assertTrue(
+            services.router.supersedes.calls == List((authId, supersededSession)),
+            services.router.submitHanded.calls.size == 1,
+            handedTrace.toArray.toList == List("supersedes", "submitHanded"),
+          ),
+      ),
+      handedTestCase(
+        description = "records no session when the seal names none",
+        payload = payload(submission = Some(submission(cookie = handedCookie)), superseded = None),
+        expectedStatus = Status.SeeOther,
+        verifyServices = services => assertTrue(services.router.supersedes.calls.isEmpty, services.router.submitHanded.calls.size == 1),
+      ),
+      handedTestCase(
+        description = "records no session when the seal is refused, so a replayed seal ends nothing",
+        payload = payload(submission = Some(submission(cookie = handedCookie)), superseded = Some(supersededSession)),
+        taken = false,
+        expectedStatus = Status.BadRequest,
+        verifyServices = services => assertTrue(services.router.supersedes.calls.isEmpty),
+      ),
+      handedTestCase(
+        description = "records no session when the cookie is not the one the seal was made with",
+        payload = payload(submission = Some(submission(cookie = handedCookie)), superseded = Some(supersededSession)),
+        cookie = Some("another-browsers-cookie"),
+        expectedStatus = Status.BadRequest,
+        verifyServices = services => assertTrue(services.router.supersedes.calls.isEmpty),
       ),
       handedTestCase(
         description = "has the conversation it starts check a passkey with the request the seal carries",

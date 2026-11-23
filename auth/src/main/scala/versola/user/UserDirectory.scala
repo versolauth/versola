@@ -1,6 +1,7 @@
 package versola.user
 
 import versola.oauth.client.CentralSyncTokenService
+import versola.oauth.session.model.SupersededSession
 import versola.user.model.{Login, UserId}
 import versola.util.{CoreConfig, Email, Phone, RoutingKey}
 import zio.http.{Body, Header, MediaType, Request, Status}
@@ -34,6 +35,11 @@ trait UserDirectory:
 
   /** The cell that holds a user this cell does not, as a passkey names it; `None` when no cell does. */
   def homeOfUser(userId: UserId): Task[Option[RoutingKey.CellId]]
+
+  /** Has the session a sign-in handed to this cell replaced ended in the cell that holds it (versolauth/versola#1048):
+    * central passes it on to the cell of the session's user, which ends it as a logout does. A session that is gone
+    * already is not a failure. */
+  def sessionSuperseded(session: SupersededSession): Task[Unit]
 
 object UserDirectory:
   /** @param cell the cell that holds the user; `None` on an installation with no cell. */
@@ -75,6 +81,19 @@ object UserDirectory:
         yield found
 
     private val HomeUrl = config.central.url / "users" / "home"
+
+    private val SupersededUrl = config.central.url / "users" / "sessions" / "superseded"
+
+    override def sessionSuperseded(session: SupersededSession): Task[Unit] =
+      ZIO.scoped:
+        centralSyncTokenService.syncRequest(
+          Request
+            .post(SupersededUrl, Body.fromString(session.toJson))
+            .addHeader(Header.ContentType(MediaType.application.json)),
+        ).flatMap: response =>
+          ZIO.fail(new Exception(s"Ending a superseded session failed with ${response.status}"))
+            .unless(response.status.isSuccess || response.status == Status.NotFound)
+            .unit
 
     override def homeOfLogin(login: Login): Task[Option[RoutingKey.CellId]] =
       home(HomeRequest(login = Some(login), userId = None))

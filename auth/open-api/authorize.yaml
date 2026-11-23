@@ -465,7 +465,7 @@ components:
         type: string
 
     UserAgentCookie:
-      name: SSO_USER_AGENT_ID
+      name: __Host-SSO_USER_AGENT_ID
       in: cookie
       required: false
       description: Signed device identifier, used to recognise a returning browser.

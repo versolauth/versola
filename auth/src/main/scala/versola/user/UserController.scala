@@ -336,10 +336,16 @@ object UserController extends Controller:
         sessionId <- request.queryZIO[Option[PublicSessionId]]("sessionId")
         actorId <- request.queryZIO[Option[UserId]]("actorId")
         _ <- actedBy(actorId)
+        // Why one session ends: an administrator's action, unless central says a sign-in in another cell replaced it.
+        superseded = request.url.queryParams.getAll("cause").headOption.contains(RevocationCause.Superseded.code)
         response <- sessionId match
           case None => logoutService.invalidateAllSessions(userId, RevocationCause.AdminRevoked).as(Response.status(Status.NoContent))
           case Some(publicId) =>
-            logoutService.invalidateSession(publicId, userId).flatMap:
+            logoutService.invalidateSession(
+              publicId,
+              userId,
+              if superseded then RevocationCause.Superseded else RevocationCause.AdminRevoked,
+            ).flatMap:
               case true => ZIO.succeed(Response.status(Status.NoContent))
               case false => Observability.setError("session_not_found").as(Response.status(Status.NotFound))
       yield response

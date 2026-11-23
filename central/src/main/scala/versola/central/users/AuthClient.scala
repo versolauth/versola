@@ -71,6 +71,11 @@ trait AuthClient:
   /** Ends one session of the user. `false` when auth does not know it as this user's. */
   def endSession(userId: UserId, sessionId: String): Task[Boolean]
 
+  /** Ends one session of the user because a sign-in that finished in another cell took its place: ended as
+    * [[endSession]] ends it, and recorded as superseded, not as an administrator's action. `false` when auth does not
+    * know it as this user's. */
+  def supersedeSession(userId: UserId, sessionId: String): Task[Boolean]
+
   /** Revokes the offline access `clientId` holds for the user: its live refresh tokens. */
   def revokeRefreshTokens(userId: UserId, clientId: ClientId): Task[Unit]
 
@@ -410,13 +415,13 @@ object AuthClient:
       )
 
     override def endSession(userId: UserId, sessionId: String): Task[Boolean] =
-      execute(
-        Request(
-          method = Method.DELETE,
-          url = sessionsUrl.addQueryParam("userId", userId.toString).addQueryParam("sessionId", sessionId),
-          body = Body.empty,
-        ),
-      ): response =>
+      endOne(sessionsUrl.addQueryParam("userId", userId.toString).addQueryParam("sessionId", sessionId))
+
+    override def supersedeSession(userId: UserId, sessionId: String): Task[Boolean] =
+      endOne(sessionsUrl.addQueryParam("userId", userId.toString).addQueryParam("sessionId", sessionId).addQueryParam("cause", "superseded"))
+
+    private def endOne(url: URL): Task[Boolean] =
+      execute(Request(method = Method.DELETE, url = url, body = Body.empty)): response =>
         response.status match
           case Status.NotFound => ZIO.succeed(false)
           case status if status.isSuccess => ZIO.succeed(true)

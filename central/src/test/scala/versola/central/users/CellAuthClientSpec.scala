@@ -105,6 +105,36 @@ object CellAuthClientSpec extends UnitSpecBase:
         asked <- env.asked.get
       yield assertTrue(env.configured.getUserClaims.calls.size == 3, asked.isEmpty)
     },
+    test("a superseded session is ended in the cell that holds the user, and nowhere else") {
+      val env = Env()
+      for
+        _ <- env.held(Some("kz-2"))
+        _ <- env.topology.getCells.succeedsWith(cells)
+        _ <- env.ofCells(kz2).supersedeSession.succeedsWith(true)
+        ended <- env.client.supersedeSession(userId, "c2lk")
+      yield assertTrue(
+        ended,
+        env.ofCells(kz2).supersedeSession.calls == List((userId, "c2lk")),
+        env.ofCells(kz1).supersedeSession.calls.isEmpty,
+        env.configured.supersedeSession.calls.isEmpty,
+      )
+    },
+    test("a superseded session of a user of no cell, or of a cell that is not registered, goes to the configured auth") {
+      val env = Env()
+      for
+        _ <- env.topology.getCells.succeedsWith(cells)
+        _ <- env.configured.supersedeSession.succeedsWith(false)
+        _ <- env.held(None)
+        first <- env.client.supersedeSession(userId, "c2lk")
+        _ <- env.held(Some("local-1"))
+        second <- env.client.supersedeSession(userId, "c2lk")
+      yield assertTrue(
+        !first,
+        !second,
+        env.configured.supersedeSession.calls.size == 2,
+        env.ofCells.values.forall(_.supersedeSession.calls.isEmpty),
+      )
+    },
     test("the nudge to read the configuration goes to every cell, and to the configured auth when there is no cell") {
       val env = Env()
       for

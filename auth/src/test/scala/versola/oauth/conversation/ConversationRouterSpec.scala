@@ -30,7 +30,7 @@ import versola.oauth.conversation.CodeAlternativeFixtures as Alt
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import versola.oauth.handoff.CellHandoff
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, State, UserAgentData}
-import versola.oauth.session.model.{SessionId, UserAgentDetails, UserAgentId}
+import versola.oauth.session.model.{PublicSessionId, SessionId, SupersededSession, UserAgentDetails, UserAgentId}
 import versola.role.model.RoleId
 import versola.user.model.{Login, UserId, UserRecord}
 import versola.user.{UserDirectory, UserRepository}
@@ -496,8 +496,145 @@ object ConversationRouterSpec extends UnitSpecBase:
     ),
   )
 
+  private val superseded = SupersededSession(userId = testUserId, sessionId = PublicSessionId("kz-1.first-cells-session"))
+  private val supersedingRecord =
+    loginRecord.copy(supersededSessionId = Some(superseded.sessionId), supersededSessionUserId = Some(superseded.userId))
+
+  private val finished = ConversationResult.Complete(
+    redirectUri,
+    Some(State("test-state")),
+    AuthorizationCode(Array.fill(32)(1.toByte)),
+    SessionId(Array.fill(32)(2.toByte)),
+    None,
+    testUserAgentId,
+    UserAgentData(None, testUserId, UserAgentDetails.parse(None)),
+  )
+
+  /** versolauth/versola#1048: the session a handed sign-in replaces is ended when the sign-in finishes. */
+  val supersededSessionSuite = suite("the session a handed sign-in replaces")(
+    suite("supersedes")(
+      test("writes both the session and its user on the conversation with one overwrite") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val read = loginRecord.copy(version = 3)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(read))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.router.supersedes(authId, superseded)
+        yield assertTrue(
+          env.conversationRepository.overwrite.calls == List(
+            (authId, read.copy(supersededSessionId = Some(superseded.sessionId), supersededSessionUserId = Some(superseded.userId))),
+          ),
+        )
+      },
+      test("does nothing for a conversation that is not there") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(None)
+          _ <- env.router.supersedes(authId, superseded)
+        yield assertTrue(env.conversationRepository.overwrite.calls.isEmpty)
+      },
+      test("is done even when the conversation changed under it and the write was not made") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.conversationRepository.overwrite.succeedsWith(false)
+          exit <- env.router.supersedes(authId, superseded).exit
+        yield assertTrue(exit.isSuccess, env.directory.sessionSuperseded.calls.isEmpty)
+      },
+    ),
+    suite("submit")(
+      test("ends the superseded session once, through the directory, when the sign-in completes") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(supersedingRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(finished)
+          _ <- env.directory.sessionSuperseded.succeedsWith(())
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(result == finished, env.directory.sessionSuperseded.calls == List(superseded))
+      },
+      test("does not end it when the step is not complete") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(supersedingRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(checked)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(result == checked, env.directory.sessionSuperseded.calls.isEmpty)
+      },
+      test("does not end it when the sign-in is refused") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(supersedingRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(ConversationResult.BadRequest)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(result == ConversationResult.BadRequest, env.directory.sessionSuperseded.calls.isEmpty)
+      },
+      test("asks nobody when the conversation has no superseded session") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(finished)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(result == finished, env.directory.sessionSuperseded.calls.isEmpty)
+      },
+      test("asks nobody when the conversation has a superseded session id but no user for it") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(supersedingRecord.copy(supersededSessionUserId = None)))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(finished)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(result == finished, env.directory.sessionSuperseded.calls.isEmpty)
+      },
+      test("leaves the result complete when the directory fails to end the session") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(supersedingRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(finished)
+          _ <- env.directory.sessionSuperseded.failsWith(RuntimeException("central is down"))
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(result == finished, env.directory.sessionSuperseded.calls == List(superseded))
+      },
+    ),
+    suite("submitHanded")(
+      test("ends the superseded session once, through the directory, when the sign-in completes") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(supersedingRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(finished)
+          _ <- env.directory.sessionSuperseded.succeedsWith(())
+          (result, _) <- env.router.submitHanded(authId, loginSubmission, None, None, None)
+        yield assertTrue(result == finished, env.directory.sessionSuperseded.calls == List(superseded))
+      },
+      test("does not end it when the step is not complete") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(supersedingRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(checked)
+          (result, _) <- env.router.submitHanded(authId, loginSubmission, None, None, None)
+        yield assertTrue(result == checked, env.directory.sessionSuperseded.calls.isEmpty)
+      },
+      test("asks nobody when the conversation has no superseded session") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(finished)
+          (result, _) <- env.router.submitHanded(authId, loginSubmission, None, None, None)
+        yield assertTrue(result == finished, env.directory.sessionSuperseded.calls.isEmpty)
+      },
+      test("leaves the result complete when the directory fails to end the session") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(supersedingRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(finished)
+          _ <- env.directory.sessionSuperseded.failsWith(RuntimeException("central is down"))
+          (result, _) <- env.router.submitHanded(authId, loginSubmission, None, None, None)
+        yield assertTrue(result == finished, env.directory.sessionSuperseded.calls == List(superseded))
+      },
+    ),
+  )
+
   val spec = suite("ConversationRouter")(
     handedSubmissionSuite,
+    supersededSessionSuite,
     suite("getConversation")(
       test("return conversation record when it exists") {
         val env = Env()

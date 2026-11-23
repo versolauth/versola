@@ -89,6 +89,9 @@ final class CellAuthClient(configured: AuthClient, at: URL => AuthClient, users:
   override def endSession(userId: UserId, sessionId: String): Task[Boolean] =
     of(userId).flatMap(_.endSession(userId, sessionId))
 
+  override def supersedeSession(userId: UserId, sessionId: String): Task[Boolean] =
+    of(userId).flatMap(_.supersedeSession(userId, sessionId))
+
   override def revokeRefreshTokens(userId: UserId, clientId: ClientId): Task[Unit] =
     of(userId).flatMap(_.revokeRefreshTokens(userId, clientId))
 

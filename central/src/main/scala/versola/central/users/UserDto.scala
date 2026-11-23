@@ -52,6 +52,10 @@ case class HomeCellRequest(login: Option[Login], userId: Option[UserId]) derives
 
 case class HomeCellResponse(cell: CellId) derives JsonCodec, Schema
 
+/** A session a sign-in finished in another cell took the place of (versolauth/versola#1048): sent by the cell where the
+  * sign-in finished, passed on to the cell of the session's user. */
+case class SupersededSessionRequest(userId: UserId, sessionId: String) derives JsonCodec, Schema
+
 case class PatchUserRequest(
     id: UserId,
     email: Option[Patch[Email]],

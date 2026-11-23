@@ -214,6 +214,7 @@ const SESSION_CAUSES: Record<string, string> = {
   rp_logout: 'sign out',
   user_revoked: 'signed out by the user',
   admin_revoked: 'signed out by an administrator',
+  superseded: 'replaced by a new sign-in',
   user_agent_forgotten: 'device forgotten',
   user_deleted: 'user deleted',
 };

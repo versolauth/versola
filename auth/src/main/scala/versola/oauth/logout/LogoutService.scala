@@ -32,7 +32,7 @@ trait LogoutService:
   /** Ends one of the user's sessions (admin-panel action) the way [[logout]] would, relying
     * parties included. `false` when the session is not the user's or no longer live: knowing
     * a session id is not enough to end it, since ids travel in front-channel logout URLs. */
-  def invalidateSession(publicId: PublicSessionId, userId: UserId): Task[Boolean]
+  def invalidateSession(publicId: PublicSessionId, userId: UserId, cause: RevocationCause): Task[Boolean]
 
   /** Tells the relying parties of sessions that another change ended in its own transaction (the user's
     * password change, which ends their other sessions and records the revocations with it) and records
@@ -123,10 +123,10 @@ object LogoutService:
       * clients costs one or two deliveries instead of ten — and the RP records one revocation
       * instead of five.
       */
-    override def invalidateSession(publicId: PublicSessionId, userId: UserId): Task[Boolean] =
+    override def invalidateSession(publicId: PublicSessionId, userId: UserId, cause: RevocationCause): Task[Boolean] =
       sessionService.listByUser(userId).map(_.exists(_.publicId == publicId)).flatMap:
         case false => ZIO.succeed(false)
-        case true => end("admin_revoked", RevocationCause.AdminRevoked, Left(publicId), None, None).as(true)
+        case true => end(cause.code, cause, Left(publicId), None, None).as(true)
 
     override def announceEnded(sessions: List[SessionRecord], cause: RevocationCause): Task[Unit] =
       ZIO.foreachDiscard(sessions): session =>

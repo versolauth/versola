@@ -48,9 +48,15 @@ object AuthorizeEndpointController extends Controller:
             case None =>
               answered:
                 ZIO.serviceWithZIO[AuthorizeRequestParser](_.validate(payload.params.view.mapValues(Chunk.fromIterable).toMap, request))
-                  .flatMap(authorizeAndRedirect(_, par = false)),
+                  .flatMap: authorizeRequest =>
+                    authorizeAnd(authorizeRequest, par = false): (authId, started) =>
+                      superseding(authId, payload).as(started),
       )
     }
+
+  /** The session the browser had in the first cell, written on the conversation started for the sign-in handed here. */
+  private def superseding(authId: AuthId, payload: CellHandoff.Payload): ZIO[ConversationRouter, Throwable, Unit] =
+    ZIO.foreachDiscard(payload.superseded)(session => ZIO.serviceWithZIO[ConversationRouter](_.supersedes(authId, session)))
 
   private def handoffRefused(refused: CellHandoff.Refused): UIO[Response] =
     AuthMetrics.authorizeError("handoff_refused") *>
@@ -91,7 +97,8 @@ object AuthorizeEndpointController extends Controller:
                   case false => handoffRefused(CellHandoff.Refused.Replayed)
                   case true =>
                     authorizeAnd(authorizeRequest, par = false): (authId, started) =>
-                      ConversationController.handed(request, authId, authorizeRequest.clientId, submission.passkeyRequest)
+                      (superseding(authId, payload) *>
+                        ConversationController.handed(request, authId, authorizeRequest.clientId, submission.passkeyRequest))
                         .map: response =>
                           // The cookie of the conversation this cell started, unless the answer already ends it.
                           val ended = response.headers(Header.SetCookie).exists(_.value.name == ConversationCookie.name)

@@ -787,7 +787,7 @@ object Observability:
       /** Conversation step (`credential`, `otp`, `password`, ...) the request is currently on. */
       step: Option[String],
       userId: Option[String],
-      /** Id of the device/browser (`SSO_USER_AGENT_ID` cookie), stable across sessions. */
+      /** Id of the device/browser (`__Host-SSO_USER_AGENT_ID` cookie), stable across sessions. */
       userAgentId: Option[String],
       ip: Option[String],
       /** `jti` of the access token issued by the request. */

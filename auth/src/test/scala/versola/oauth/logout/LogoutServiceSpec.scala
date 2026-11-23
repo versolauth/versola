@@ -314,7 +314,7 @@ object LogoutServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.sessionService.listByUser.succeedsWith(Nil)
-          ended <- env.service.invalidateSession(publicSessionId1, userId)
+          ended <- env.service.invalidateSession(publicSessionId1, userId, RevocationCause.AdminRevoked)
         yield assertTrue(!ended, env.sessionService.invalidate.calls.isEmpty)
           .label("a session id travels in front-channel logout URLs, so knowing one proves nothing")
       },
@@ -338,12 +338,47 @@ object LogoutServiceSpec extends UnitSpecBase:
           _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
           _ <- env.configuration.find.succeedsWith(Some(withBackChannel))
           _ <- env.outbox.submit.succeedsWith(())
-          ended <- env.service.invalidateSession(publicSessionId1, userId)
+          ended <- env.service.invalidateSession(publicSessionId1, userId, RevocationCause.AdminRevoked)
         yield assertTrue(
           ended,
           env.sessionService.invalidate.calls == List((Left(publicSessionId1), RevocationCause.AdminRevoked)),
           env.outbox.submit.calls.map(_.audience.toList) == List(List(withBackChannel.id)),
         )
+      },
+    ),
+    suite("invalidateSession as superseded")(
+      test("ends the user's session with the revocation cause superseded, relying parties told") {
+        val env = Env()
+        val withBackChannel = clientA.copy(backChannelLogoutUri = Some(URL.decode("https://rp-a.example/backchannel").toOption.get))
+        for
+          _ <- env.sessionService.listByUser.succeedsWith(List(liveSession))
+          _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
+          _ <- env.configuration.find.succeedsWith(Some(withBackChannel))
+          _ <- env.outbox.submit.succeedsWith(())
+          ended <- env.service.invalidateSession(publicSessionId1, userId, RevocationCause.Superseded)
+        yield assertTrue(
+          ended,
+          env.sessionService.invalidate.calls == List((Left(publicSessionId1), RevocationCause.Superseded)),
+          env.outbox.submit.calls.map(_.audience.toList) == List(List(withBackChannel.id)),
+        )
+      },
+      test("records session.ended with the cause superseded") {
+        val env = Env()
+        for
+          _ <- env.sessionService.listByUser.succeedsWith(List(liveSession))
+          _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
+          _ <- env.configuration.find.succeedsWith(None)
+          ended <- env.service.invalidateSession(publicSessionId1, userId, RevocationCause.Superseded)
+          drafts <- env.audit.recorded
+        yield assertTrue(ended, drafts.map(_.details) == List(AuthAuditDetails.SessionEnded(cause = "superseded", clients = 1)))
+      },
+      test("refuses a session that is not the user's, ending nothing and recording nothing") {
+        val env = Env()
+        for
+          _ <- env.sessionService.listByUser.succeedsWith(Nil)
+          ended <- env.service.invalidateSession(publicSessionId1, userId, RevocationCause.Superseded)
+          drafts <- env.audit.recorded
+        yield assertTrue(!ended, env.sessionService.invalidate.calls.isEmpty, drafts.isEmpty)
       },
     ),
     suite("forgetUserAgent")(
@@ -487,7 +522,7 @@ object LogoutServiceSpec extends UnitSpecBase:
           _ <- env.sessionService.listByUser.succeedsWith(List(listed))
           _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
           _ <- env.configuration.find.succeedsWith(None)
-          ended <- env.service.invalidateSession(publicSessionId1, userId)
+          ended <- env.service.invalidateSession(publicSessionId1, userId, RevocationCause.AdminRevoked)
           drafts <- env.audit.recorded
         yield assertTrue(ended, drafts.map(_.details) == List(AuthAuditDetails.SessionEnded(cause = "admin_revoked", clients = 1)))
       },
@@ -495,7 +530,7 @@ object LogoutServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.sessionService.listByUser.succeedsWith(Nil)
-          ended <- env.service.invalidateSession(publicSessionId1, userId)
+          ended <- env.service.invalidateSession(publicSessionId1, userId, RevocationCause.AdminRevoked)
           drafts <- env.audit.recorded
         yield assertTrue(!ended, drafts.isEmpty)
       },

@@ -223,6 +223,42 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, service) => ZIO.succeed(assertTrue(service.homeCell.calls.isEmpty)),
     ),
     controllerTestCase(
+      description = "superseded session is 204 when the cell ended it, and the service gets the parsed request",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "sessions" / "superseded",
+        body = Body.fromString(s"""{"userId":"$userId","sessionId":"c2lk"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service => service.supersedeSession.succeedsWith(true),
+      authorization = internalAuthorization,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(
+          service.supersedeSession.calls == List(SupersededSessionRequest(userId = userId, sessionId = "c2lk")),
+        )),
+    ),
+    controllerTestCase(
+      description = "superseded session is 404 when the cell does not know the session as the user's",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "sessions" / "superseded",
+        body = Body.fromString(s"""{"userId":"$userId","sessionId":"c2lk"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      setup = service => service.supersedeSession.succeedsWith(false),
+      authorization = internalAuthorization,
+    ),
+    controllerTestCase(
+      description = "superseded session is not served to the admin credential: it is auth's",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "sessions" / "superseded",
+        body = Body.fromString(s"""{"userId":"$userId","sessionId":"c2lk"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Unauthorized,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.supersedeSession.calls.isEmpty)),
+    ),
+    controllerTestCase(
       description = "registered user maps UserIndexConflict to 409 Conflict",
       request = Request(
         method = Method.POST,

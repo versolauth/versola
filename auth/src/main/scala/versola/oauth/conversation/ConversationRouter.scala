@@ -19,6 +19,7 @@ import versola.oauth.client.model.{
 }
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import versola.oauth.handoff.CellHandoff
+import versola.oauth.session.model.SupersededSession
 import versola.user.{UserDirectory, UserRepository}
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.Observability
@@ -45,6 +46,12 @@ trait ConversationRouter:
     * ended it already: of two that submit the same thing at once only one is sent on, so that there are never two seals
     * for one password or one passkey assertion. */
   def end(authId: AuthId, conversation: ConversationRecord): Task[Boolean]
+
+  /** Records, on the conversation this cell has just started for a sign-in handed to it, the session the browser had
+    * in the first cell (versolauth/versola#1048). When the sign-in finishes, that session is ended through central
+    * (`UserDirectory.sessionSuperseded`); until then it is left alone, so that a sign-in that fails or is abandoned
+    * costs the person nothing. */
+  def supersedes(authId: AuthId, session: SupersededSession): Task[Unit]
 
   /** A submission another cell took and handed to this one, for the conversation this cell has just started for it
     * (`CellHandoff`, versolauth/versola#1048). The CSRF token it carries is the first cell's and is not compared: the
@@ -139,9 +146,32 @@ object ConversationRouter:
             else
               val updated = withUiLocale(conversation, uiLocale)
               dispatch(authId, updated, submission, ipAddress, handed = false)
+                .tap(endSuperseded(updated))
                 .tapErrorCause(cause => ZIO.logErrorCause("Couldn't submit auth step", cause))
                 .orElseSucceed(ConversationResult.ServiceUnavailable)
                 .map(_ -> updated)
+
+    override def supersedes(authId: AuthId, session: SupersededSession): Task[Unit] =
+      conversationService.find(authId).flatMap:
+        case None => ZIO.unit
+        case Some(conversation) =>
+          conversationRepository
+            .overwrite(
+              authId,
+              conversation.copy(supersededSessionId = Some(session.sessionId), supersededSessionUserId = Some(session.userId)),
+            )
+            .flatMap(written => ZIO.logWarning("The session a handed sign-in replaces was not recorded; it is left to expire").unless(written))
+            .unit
+
+    /** After a sign-in that was handed here has finished: the session the browser had in the first cell is ended there.
+      * Not a reason to fail a sign-in that is done: a session that could not be ended stays until it expires, as it
+      * did before it was handed over, and that is said in the log. */
+    private def endSuperseded(conversation: ConversationRecord)(result: ConversationResult.Render): UIO[Unit] =
+      (result, conversation.supersededSession) match
+        case (_: ConversationResult.Complete, Some(session)) =>
+          directory.sessionSuperseded(session).catchAllCause: cause =>
+            ZIO.logWarningCause("Could not end the session a handed sign-in replaced; it is left to expire", cause)
+        case _ => ZIO.unit
 
     override def end(authId: AuthId, conversation: ConversationRecord): Task[Boolean] =
       conversationRepository.delete(authId, conversation.version)
@@ -162,7 +192,7 @@ object ConversationRouter:
               .flatMap:
                 case None =>
                   Observability.setError("step_mismatch", Some("a passkey was handed to a request that takes none")).as(ConversationResult.BadRequest)
-                case Some(prepared) => dispatch(authId, prepared, submission, ipAddress, handed = true)
+                case Some(prepared) => dispatch(authId, prepared, submission, ipAddress, handed = true).tap(endSuperseded(prepared))
               .tapErrorCause(cause => ZIO.logErrorCause("Couldn't submit a handed auth step", cause))
               .orElseSucceed(ConversationResult.ServiceUnavailable)
               .map(_ -> located)

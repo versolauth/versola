@@ -763,6 +763,59 @@ object AuthClientSpec extends ZIOSpecDefault:
         ended <- client.endSession(userId, "c2lk")
       yield assertTrue(ended)
     }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("endSession sends DELETE with the user and the session and no cause") {
+      for
+        seen <- Ref.make(Option.empty[Request])
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](req => seen.set(Some(req)).as(Response.status(Status.NoContent))).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        _ <- client.endSession(userId, "c2lk")
+        request <- seen.get
+      yield assertTrue(
+        request.exists(_.method == Method.DELETE),
+        request.exists(_.url.path.segments.toList == List("users", "sessions")),
+        request.flatMap(_.url.queryParams.getAll("userId").headOption).contains(userId.toString),
+        request.flatMap(_.url.queryParams.getAll("sessionId").headOption).contains("c2lk"),
+        request.exists(_.url.queryParams.getAll("cause").isEmpty),
+      )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("supersedeSession sends DELETE with the user, the session and cause=superseded, and answers true on 204") {
+      for
+        seen <- Ref.make(Option.empty[Request])
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](req => seen.set(Some(req)).as(Response.status(Status.NoContent))).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        ended <- client.supersedeSession(userId, "c2lk")
+        request <- seen.get
+      yield assertTrue(
+        ended,
+        request.exists(_.method == Method.DELETE),
+        request.exists(_.url.path.segments.toList == List("users", "sessions")),
+        request.flatMap(_.url.queryParams.getAll("userId").headOption).contains(userId.toString),
+        request.flatMap(_.url.queryParams.getAll("sessionId").headOption).contains("c2lk"),
+        request.flatMap(_.url.queryParams.getAll("cause").headOption).contains("superseded"),
+      )
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("supersedeSession answers false when auth does not know the session as the user's") {
+      for
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.status(Status.NotFound))).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        ended <- client.supersedeSession(userId, "c2lk")
+      yield assertTrue(!ended)
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
+    test("supersedeSession fails when auth answers 500") {
+      for
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](_ => ZIO.succeed(Response.status(Status.InternalServerError))).toRoutes,
+        )
+        client <- ZIO.service[AuthClient]
+        result <- client.supersedeSession(userId, "c2lk").either
+      yield assertTrue(result.isLeft)
+    }.provide(TestClient.layer, ZLayer.succeed(TestCentralConfig.config), tokenServiceLayer, authClientLayer),
     test("getUserSessions decodes the session list") {
       val json = AuthClient.SessionListResponse(List(sessionDto)).toJson
       for

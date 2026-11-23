@@ -31,6 +31,7 @@ object UserController extends AuditedController:
     registeredUserEndpoint,
     lookupUserEndpoint,
     homeCellEndpoint,
+    supersededSessionEndpoint,
     patchUserEndpoint,
     deleteUserEndpoint,
     patchUserClaimsEndpoint,
@@ -207,6 +208,19 @@ object UserController extends AuditedController:
         body <- request.bodyAs[HomeCellRequest]
         home <- service.homeCell(body)
       yield home.fold(Response.status(Status.NotFound))(cell => Response.json(HomeCellResponse(cell).toJson))
+    }
+
+  /** A sign-in that finished in one cell took the place of the session the browser had in another
+    * (versolauth/versola#1048): the cell where it finished says so, and the cell of the session ends it. Internal: only
+    * an `auth` asks, with its token. A session that is gone already answers `404`, which the asker takes as done. */
+  val supersededSessionEndpoint =
+    (Method.POST / "users" / "sessions" / "superseded").audited(Audit.Internal) -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        service <- ZIO.service[UserService]
+        body <- request.bodyAs[SupersededSessionRequest]
+        ended <- service.supersedeSession(body)
+      yield Response.status(if ended then Status.NoContent else Status.NotFound)
     }
 
   val patchUserEndpoint =
