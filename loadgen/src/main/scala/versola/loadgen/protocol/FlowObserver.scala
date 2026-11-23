@@ -69,7 +69,7 @@ enum StepName(val value: String):
     */
   case EdgeCompleteError extends StepName("edge-complete-error")
 
-  /** `GET {auth}/logout` with the `SSO_SESSION` -- the confirmation page a browser lands on,
+  /** `GET {auth}/logout` with the `__Host-SSO_SESSION` -- the confirmation page a browser lands on,
     * auth having been given no `id_token_hint` to act on directly.
     */
   case AuthLogout extends StepName("auth-logout")

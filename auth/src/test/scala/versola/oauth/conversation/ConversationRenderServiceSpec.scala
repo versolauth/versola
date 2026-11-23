@@ -1604,7 +1604,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         yield assertTrue(response.status == Status.SeeOther) &&
           assertTrue(response.header(Header.Location).exists(_.url.encode.contains("code=" + versola.util.Base64Url.encode(code)))) &&
           assertTrue(response.headers.getAll(Header.SetCookie).exists(c =>
-            c.value.name == "SSO_SESSION",
+            c.value.name == "__Host-SSO_SESSION",
           )) &&
           assertTrue(response.headers.getAll(Header.SetCookie).exists(c =>
             c.value.name == "__Host-SSO_CONVERSATION" && c.value.maxAge.contains(Duration.Zero),

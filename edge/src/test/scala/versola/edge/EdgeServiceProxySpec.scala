@@ -2873,7 +2873,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         _ <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
         upstream <- capture.get
       yield assertTrue(
-        IssuerFront.IssuerCookies == Set("__Host-SSO_CONVERSATION", "SSO_SESSION", "SSO_USER_AGENT_ID"),
+        IssuerFront.IssuerCookies == Set("__Host-SSO_CONVERSATION", "__Host-SSO_SESSION", "SSO_USER_AGENT_ID"),
         upstream.exists(_.cookies.map(_.name).toList == List("other")),
       )
     },

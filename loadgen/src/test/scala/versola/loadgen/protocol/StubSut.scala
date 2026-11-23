@@ -154,7 +154,7 @@ object StubSut:
       .seeOther(URL.decode("/challenge").toOption.get)
       .addCookie(Cookie.Response("__Host-SSO_CONVERSATION", conversation))
 
-    // A silent reauthorization (design doc §7.4): the SUT recognized the SSO_SESSION already
+    // A silent reauthorization (design doc §7.4): the SUT recognized the __Host-SSO_SESSION already
     // satisfies the request and answers straight with the code, no conversation started.
     val silentReauthorizeRedirect = Response.seeOther(URL.decode(codeRedirectTo).toOption.get)
 
@@ -166,7 +166,7 @@ object StubSut:
         if finished then
           Response
             .seeOther(URL.decode(codeRedirectTo).toOption.get)
-            .addCookie(Cookie.Response("SSO_SESSION", ssoSession))
+            .addCookie(Cookie.Response("__Host-SSO_SESSION", ssoSession))
         else challengeRedirect
 
     val handled = Routes(
@@ -193,7 +193,7 @@ object StubSut:
         // is no session to name, so it renders the signed-out page -- which carries no token, and
         // so cannot be submitted. The page is a 200 either way, which is why the driver has to
         // read the token rather than the status.
-        else if !request.cookie("SSO_SESSION").map(_.content).contains(ssoSession) then ZIO.succeed(Response.ok)
+        else if !request.cookie("__Host-SSO_SESSION").map(_.content).contains(ssoSession) then ZIO.succeed(Response.ok)
         else
           ssoLive.get.map: live =>
             if live then Response.text(logoutConfirmPage) else Response.ok

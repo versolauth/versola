@@ -396,7 +396,7 @@ object ScenarioEngineSpec extends versola.loadgen.store.LoadgenPostgresSpec:
         } == 0,
       )
     },
-    test("§7.4: a web step-up carries the session's SSO_SESSION, so auth asks only for the missing factor") {
+    test("§7.4: a web step-up carries the session's __Host-SSO_SESSION, so auth asks only for the missing factor") {
       val settings = config(paymentProbability = 1.0, mobileMean = 6.0)
       val plan = planFor(settings, Platform.Web, 1010L)
       for
@@ -410,7 +410,7 @@ object ScenarioEngineSpec extends versola.loadgen.store.LoadgenPostgresSpec:
       yield assertTrue(
         plan.paymentAction.isDefined,
         // Two authorizations -- the login and the step-up -- but only one credential factor: the
-        // step-up is answered on the session the login left behind. Without the `SSO_SESSION` on
+        // step-up is answered on the session the login left behind. Without the `__Host-SSO_SESSION` on
         // the authorize hop the SUT cannot know that, and the second conversation is a full login
         // reported as a step-up.
         hops.count(_ == "GET /authorize") == 2,

@@ -116,7 +116,7 @@ class PostgresDeviceSessionRepository(xa: TransactorZIO) extends DeviceSessionRe
     .unit
 
   /** `COALESCE` on each incoming value, so a step-up that rotated neither the refresh token,
-    * its expiry, nor the `SSO_SESSION` keeps what the row already holds rather than nulling a
+    * its expiry, nor the `__Host-SSO_SESSION` keeps what the row already holds rather than nulling a
     * credential it had no opinion about.
     *
     * Batched into one round trip for the same reason as

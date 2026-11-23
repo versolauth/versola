@@ -6,7 +6,7 @@ info:
     RP-Initiated Logout (OpenID Connect RP-Initiated Logout 1.0) combined with Front-Channel
     Logout. Terminates the user's authentication session and notifies the clients that share it.
 
-    The user is identified either by the `SSO_SESSION` cookie or by `id_token_hint`, and the
+    The user is identified either by the `__Host-SSO_SESSION` cookie or by `id_token_hint`, and the
     behaviour depends on which is present:
 
     - **Cookie only** — `GET` renders a confirmation page, because a bare cookie could be
@@ -17,7 +17,7 @@ info:
       must identify that same session.
     - **Neither** — there is no session to end; the signed-out page is rendered.
 
-    On success the session is deleted, `SSO_SESSION` is expired, and the returned page embeds
+    On success the session is deleted, `__Host-SSO_SESSION` is expired, and the returned page embeds
     a hidden iframe per participating client so each can clear its own local session. Clients
     that registered a back-channel logout URI are notified server-to-server instead.
 
@@ -140,7 +140,7 @@ components:
       example: ru
 
     SessionCookie:
-      name: SSO_SESSION
+      name: __Host-SSO_SESSION
       in: cookie
       required: false
       description: Signed session cookie identifying the session to end.
@@ -174,7 +174,7 @@ components:
         no longer exists, or when `id_token_hint` does not match the cookie's session.
       headers:
         Set-Cookie:
-          description: '`SSO_SESSION`, expired, when a session was actually terminated.'
+          description: '`__Host-SSO_SESSION`, expired, when a session was actually terminated.'
           schema:
             type: string
         Cache-Control:

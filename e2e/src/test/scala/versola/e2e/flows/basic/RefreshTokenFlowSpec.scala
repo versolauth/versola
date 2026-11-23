@@ -19,7 +19,7 @@ object RefreshTokenFlowSpec extends E2ESpec:
 
   private val offlineScope = "openid email offline_access"
 
-  /** A login through the shared email+OTP client, carrying the SSO_SESSION cookie the
+  /** A login through the shared email+OTP client, carrying the __Host-SSO_SESSION cookie the
     * conversation ended with so re-auth tests can continue from it.
     */
   private case class Login(tokens: TokenResult.Success, sessionCookie: String)
@@ -43,7 +43,7 @@ object RefreshTokenFlowSpec extends E2ESpec:
       submit <- auth.submitOtp(cookie, fixedOtp, otp.csrf)
       code <- submit.assertRedirect
       sessionCookie <- ZIO.fromOption(submit.sessionCookie)
-        .orElseFail(RuntimeException("No SSO_SESSION cookie after the OTP submission"))
+        .orElseFail(RuntimeException("No __Host-SSO_SESSION cookie after the OTP submission"))
       tokens <- auth.token(
         code,
         authorize.verifier,

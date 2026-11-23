@@ -45,11 +45,17 @@ object UserAgentsFlowSpec extends E2ESpec:
       otp <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
       submit <- auth.submitOtp(cookie, fixedOtp, otp.csrf)
       _ <- submit.assertRedirect
-      sessionCookie <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("No SSO_SESSION cookie after the OTP submission"))
+      sessionCookie <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("No __Host-SSO_SESSION cookie after the OTP submission"))
     yield sessionCookie
 
   private def silentlyAuthorizes(s: Flows.Setup, auth: OAuthClient, sessionCookie: String): Task[Boolean] =
-    auth.authorizeRaw(clientId = s.clientId, redirectUri = s.redirectUri, scope = Some("openid"), prompt = Some("none"), sessionCookie = Some(sessionCookie))
+    auth.authorizeRaw(
+      clientId = s.clientId,
+      redirectUri = s.redirectUri,
+      scope = Some("openid"),
+      prompt = Some("none"),
+      sessionCookie = Some(sessionCookie),
+    )
       .map(_.location.contains("code="))
 
   private def sessionsOf(auth: OAuthClient, userId: String): Task[Chunk[Json.Obj]] =
@@ -124,7 +130,9 @@ object UserAgentsFlowSpec extends E2ESpec:
       yield assertTrue(ended.status == Status.NoContent, after.size == 2) &&
         assertTrue(chrome.exists(_.isNull("session"))).label("a signed-out device carries session: null, not an absent member") &&
         assertTrue(chrome.flatMap(_.obj("userAgent")).flatMap(_.str("id")).contains(agentId)).label("it is the same user agent, still remembered") &&
-        assertTrue(chrome.exists(_.strings("endedSessionIds").contains(target))).label("the ended session is named, so a refresh token can be tied to the device") &&
+        assertTrue(
+          chrome.exists(_.strings("endedSessionIds").contains(target)),
+        ).label("the ended session is named, so a refresh token can be tied to the device") &&
         assertTrue(chrome.flatMap(_.obj("userAgent")).flatMap(_.str("userAgent")).contains(chromeOnMac)) &&
         assertTrue(safari.exists(_.obj("session").isDefined)).label("the other device is untouched") &&
         assertTrue(sessions.size == 1).label("the sessions listing keeps listing live sessions only") &&

@@ -373,7 +373,7 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
                 "code_challenge_method" -> "S256",
               ).map((name, value) => QueryParams(name -> value)).reduce(_ ++ _),
             ),
-          ).addHeader(Header.Custom("Cookie", s"SSO_SESSION=$session")),
+          ).addHeader(Header.Custom("Cookie", s"__Host-SSO_SESSION=$session")),
         )
         location = resumed.headers.get("Location").getOrElse("")
         resumedCode <- ZIO.fromOption(URL.decode(location).toOption.flatMap(_.queryParams.getAll("code").headOption))

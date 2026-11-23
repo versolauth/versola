@@ -325,10 +325,10 @@ extension (task: Task[PushedAuthorizationResult])
 case class SubmitResult(response: Response):
   val location: String = response.location
 
-  /** `SSO_SESSION` cookie set by the server when an auth conversation finishes. */
+  /** `__Host-SSO_SESSION` cookie set by the server when an auth conversation finishes. */
   val sessionCookie: Option[String] =
     response.headers.getAll(Header.SetCookie)
-      .collectFirst { case h if h.value.name == "SSO_SESSION" => h.value.content }
+      .collectFirst { case h if h.value.name == "__Host-SSO_SESSION" => h.value.content }
 
   def assertRedirect: Task[String] =
     if response.status == Status.SeeOther then
@@ -631,7 +631,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
         Request.get(base.addQueryParams(params)).addHeader(Header.Custom("X-Forwarded-For", address)),
       )
       reqWithSession = sessionCookie.fold(req)(sc =>
-        req.addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_SESSION", sc)))),
+        req.addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("__Host-SSO_SESSION", sc)))),
       )
       response <- Client.batched(reqWithSession).provide(ZLayer.succeed(client))
     yield AuthorizeResult(response, verifier, state, OAuthClient.extractConversationCookie(response))
@@ -1003,7 +1003,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       response <- Client.batched(Request.get(url)).provide(ZLayer.succeed(client))
     yield response
 
-  /** GET /logout?id_token_hint=… with the browser's `SSO_SESSION` cookie, as an RP sends a logout request on behalf of a user
+  /** GET /logout?id_token_hint=… with the browser's `__Host-SSO_SESSION` cookie, as an RP sends a logout request on behalf of a user
     * whose browser holds a session. The hint may name a session other than the cookie's (an ID token issued before a later
     * sign-in), which auth has to ask the user about rather than act on.
     */
@@ -1011,7 +1011,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
     for
       base <- ZIO.fromEither(URL.decode(s"${config.authUrl}/logout")).mapError(RuntimeException(_))
       request = Request.get(base.addQueryParam("id_token_hint", idToken))
-        .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_SESSION", sessionCookie))))
+        .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("__Host-SSO_SESSION", sessionCookie))))
       response <- Client.batched(request).provide(ZLayer.succeed(client))
     yield response
 

@@ -11,7 +11,7 @@ import java.util.{Base64, UUID}
 
 /** Single Sign-On across two different registered clients.
   *
-  * `/authorize` resolves the `SSO_SESSION` cookie without scoping the lookup to the client that
+  * `/authorize` resolves the `__Host-SSO_SESSION` cookie without scoping the lookup to the client that
   * created it, so a second client presenting the same cookie authorizes against the session
   * established by the first one. What the second client still has to satisfy on its own is
   * everything the session does not carry: its own required factors, its own `acr_values`, and its
@@ -112,7 +112,7 @@ object CrossClientSsoFlowSpec extends E2ESpec:
       submit <- auth.submitOtp(cookie, fixedOtp, otp.csrf)
       code <- ZIO.succeed(submit).assertRedirect(auth, cookie)
       sessionCookie <- ZIO.fromOption(submit.sessionCookie)
-        .orElseFail(RuntimeException("No SSO_SESSION cookie in final submission response"))
+        .orElseFail(RuntimeException("No __Host-SSO_SESSION cookie in final submission response"))
       token <- auth.token(
         code,
         authorize.verifier,
@@ -331,7 +331,7 @@ object CrossClientSsoFlowSpec extends E2ESpec:
         // Finishing a conversation rotates the session, so the browser continues under the
         // cookie the consent submission set rather than the one client A's login produced.
         rotated <- ZIO.fromOption(granted.sessionCookie)
-          .orElseFail(RuntimeException("No SSO_SESSION cookie in the consent submission response"))
+          .orElseFail(RuntimeException("No __Host-SSO_SESSION cookie in the consent submission response"))
         code <- auth.authorizeRaw(
           clientId = clientB,
           redirectUri = redirectB,

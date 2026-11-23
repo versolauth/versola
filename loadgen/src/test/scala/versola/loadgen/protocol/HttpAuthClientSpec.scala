@@ -58,7 +58,7 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
         auth <- clientFor(routes)
         _ <- auth.authorize("openid", None, None, Some(SsoSession(StubSut.ssoSession)), None)
         cookie <- recorder.headerOf("/authorize", "cookie")
-      yield assertTrue(cookie == Some("SSO_SESSION=" + StubSut.ssoSession))
+      yield assertTrue(cookie == Some("__Host-SSO_SESSION=" + StubSut.ssoSession))
     },
     test("an unprovisioned client_id is a typed configuration failure, not a thrown exception") {
       for
@@ -201,7 +201,7 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
         confirmation.postLogoutRedirectUri == Some(StubSut.postLogoutRedirect),
         confirmation.url.encode.startsWith(StubSut.authUrl + "/logout"),
         !live,
-        sent == Some("SSO_SESSION=" + StubSut.ssoSession),
+        sent == Some("__Host-SSO_SESSION=" + StubSut.ssoSession),
       )
     },
     test("a logout page auth rendered for no session carries no token, and is not submittable") {

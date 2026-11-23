@@ -161,7 +161,9 @@ object UserAgentCookie:
     mac
 
 object SessionCookie:
-  val name = "SSO_SESSION"
+  /** `__Host-`, for the reason [[ConversationCookie.name]] gives: a session cookie a sibling subdomain planted would
+    * sign the visitor's browser in as whoever the page chose, with no step of a sign-in at all. */
+  val name = "__Host-SSO_SESSION"
 
   /** Under a cell id the content is written behind the routing key, like [[ConversationCookie.responseCookie]]'s: what
     * is in front of the issuer sends a returning browser to the cell of its session by it (versolauth/versola#1044).

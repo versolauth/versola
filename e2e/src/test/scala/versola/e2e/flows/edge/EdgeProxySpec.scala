@@ -433,7 +433,7 @@ object EdgeProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         _ <- stub.reset
         established <- session
         // What a browser sends when the issuer and the edge are one host: the issuer's cookies beside edge's own.
-        beside = "SSO_SESSION=issuer-owned; __Host-SSO_CONVERSATION=issuer-owned; SSO_USER_AGENT_ID=issuer-owned; other=keep-me"
+        beside = "__Host-SSO_SESSION=issuer-owned; __Host-SSO_CONVERSATION=issuer-owned; SSO_USER_AGENT_ID=issuer-owned; other=keep-me"
         auth = established.auth match
           case EdgeAuth.Session(content) => EdgeAuth.Session(s"$content; $beside")
           case other => other

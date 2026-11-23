@@ -44,7 +44,7 @@ object IssuerFront extends Controller:
   val BodyLimit: Int = 256 * 1024
 
   private val ConversationCookie = "__Host-SSO_CONVERSATION"
-  private val SessionCookie = "SSO_SESSION"
+  private val SessionCookie = "__Host-SSO_SESSION"
   private val UserAgentCookie = "SSO_USER_AGENT_ID"
 
   /** The issuer's own cookies. Where the issuer's address is this edge's, a browser sends them with every request to

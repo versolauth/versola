@@ -20,7 +20,7 @@ object StepUpFlowSpec extends E2ESpec:
   // In non-prod the OTP is always the first N digits of "1234567890"; default length is 6.
   private val fixedOtp = "123456"
 
-  /** Complete the email+OTP flow and return the SSO_SESSION cookie value. */
+  /** Complete the email+OTP flow and return the __Host-SSO_SESSION cookie value. */
   private def completeOtpAuth(s: Flows.Setup, auth: OAuthClient): Task[String] =
     for
       authorize <- auth.authorize(
@@ -36,10 +36,10 @@ object StepUpFlowSpec extends E2ESpec:
       submit <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, csrf2)
       _ <- ZIO.succeed(submit).assertRedirect(auth, authorize.conversationCookie.get)
       sessionCookie <- ZIO.fromOption(submit.sessionCookie)
-        .orElseFail(RuntimeException("No SSO_SESSION cookie in final submission response"))
+        .orElseFail(RuntimeException("No __Host-SSO_SESSION cookie in final submission response"))
     yield sessionCookie
 
-  /** Complete the phone+OTP flow and return the SSO_SESSION cookie value. */
+  /** Complete the phone+OTP flow and return the __Host-SSO_SESSION cookie value. */
   private def completePhoneOtpAuth(s: Flows.Setup, auth: OAuthClient): Task[String] =
     for
       authorize <- auth.authorize(
@@ -55,7 +55,7 @@ object StepUpFlowSpec extends E2ESpec:
       submit <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, csrf2)
       _ <- ZIO.succeed(submit).assertRedirect(auth, authorize.conversationCookie.get)
       sessionCookie <- ZIO.fromOption(submit.sessionCookie)
-        .orElseFail(RuntimeException("No SSO_SESSION cookie in final submission response"))
+        .orElseFail(RuntimeException("No __Host-SSO_SESSION cookie in final submission response"))
     yield sessionCookie
 
   def spec = suite("Step-up authorization")(
@@ -130,7 +130,7 @@ object StepUpFlowSpec extends E2ESpec:
           submit <- auth.submitLoginPassword(first.conversationCookie.get, s.login.get, s.password, challenge.csrf)
           _ <- ZIO.succeed(submit).assertRedirect(auth, first.conversationCookie.get)
           sessionCookie <- ZIO.fromOption(submit.sessionCookie)
-            .orElseFail(RuntimeException("No SSO_SESSION cookie in final submission response"))
+            .orElseFail(RuntimeException("No __Host-SSO_SESSION cookie in final submission response"))
           second <- auth.authorizeRaw(
             clientId = s.clientId,
             redirectUri = s.redirectUri,
@@ -230,7 +230,7 @@ object StepUpFlowSpec extends E2ESpec:
           challenge2 <- auth.getChallenge(authorize.conversationCookie.get)
           csrf2 = challenge2.csrf
           submit <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, csrf2)
-          sessionCookie <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("No SSO_SESSION cookie"))
+          sessionCookie <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("No __Host-SSO_SESSION cookie"))
           _ <- auth.deleteUser(userId)
           _ <- auth.flushUserOutbox() // propagate deletion to auth before step-up
           _ <- auth.authorizeRaw(
@@ -256,7 +256,7 @@ object StepUpFlowSpec extends E2ESpec:
           challenge2 <- auth.getChallenge(authorize.conversationCookie.get)
           csrf2 = challenge2.csrf
           submit <- auth.submitOtp(authorize.conversationCookie.get, fixedOtp, csrf2)
-          sessionCookie <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("No SSO_SESSION cookie"))
+          sessionCookie <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("No __Host-SSO_SESSION cookie"))
           _ <- auth.deleteUser(userId)
           _ <- auth.flushUserOutbox()
           _ <- auth.authorizeRaw(
@@ -474,7 +474,7 @@ object StepUpFlowSpec extends E2ESpec:
           csrf1b = challenge1b.csrf
           submit1 <- auth.submitOtp(authorize1.conversationCookie.get, fixedOtp, csrf1b)
           code1 <- submit1.assertRedirect
-          sessionCookie1 <- ZIO.fromOption(submit1.sessionCookie).orElseFail(RuntimeException("No SSO_SESSION cookie 1"))
+          sessionCookie1 <- ZIO.fromOption(submit1.sessionCookie).orElseFail(RuntimeException("No __Host-SSO_SESSION cookie 1"))
           token1 <- auth.token(
             code1,
             authorize1.verifier,
@@ -499,7 +499,7 @@ object StepUpFlowSpec extends E2ESpec:
           csrf2b = challenge2b.csrf
           submit2 <- auth.submitOtp(authorize2.conversationCookie.get, fixedOtp, csrf2b)
           code2 <- submit2.assertRedirect
-          sessionCookie2 <- ZIO.fromOption(submit2.sessionCookie).orElseFail(RuntimeException("No SSO_SESSION cookie 2"))
+          sessionCookie2 <- ZIO.fromOption(submit2.sessionCookie).orElseFail(RuntimeException("No __Host-SSO_SESSION cookie 2"))
           _ <- auth.token(
             code2,
             authorize2.verifier,
@@ -531,7 +531,7 @@ object StepUpFlowSpec extends E2ESpec:
           csrf1b = challenge1b.csrf
           submit1 <- auth.submitOtp(authorize1.conversationCookie.get, fixedOtp, csrf1b)
           code1 <- submit1.assertRedirect
-          sessionCookie1 <- ZIO.fromOption(submit1.sessionCookie).orElseFail(RuntimeException("No SSO_SESSION cookie 1"))
+          sessionCookie1 <- ZIO.fromOption(submit1.sessionCookie).orElseFail(RuntimeException("No __Host-SSO_SESSION cookie 1"))
           token1 <- auth.token(
             code1,
             authorize1.verifier,
@@ -556,7 +556,7 @@ object StepUpFlowSpec extends E2ESpec:
           csrf2b = challenge2b.csrf
           submit2 <- auth.submitOtp(authorize2.conversationCookie.get, fixedOtp, csrf2b)
           code2 <- submit2.assertRedirect
-          sessionCookie2 <- ZIO.fromOption(submit2.sessionCookie).orElseFail(RuntimeException("No SSO_SESSION cookie 2"))
+          sessionCookie2 <- ZIO.fromOption(submit2.sessionCookie).orElseFail(RuntimeException("No __Host-SSO_SESSION cookie 2"))
           _ <- auth.token(
             code2,
             authorize2.verifier,

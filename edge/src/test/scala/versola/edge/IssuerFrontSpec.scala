@@ -113,13 +113,13 @@ object IssuerFrontSpec extends ZIOSpecDefault:
       test("an authorization request goes to the cell of its request_uri, else of the browser's session, else is placed") {
         assertTrue(
           where(routing("authorize", query = Map("request_uri" -> "urn:ietf:params:oauth:request_uri:v1.kz-2.abc"))) == Right(Some("kz-2")),
-          where(routing("authorize", cookies = Map("SSO_SESSION" -> "v1.kz-2.abc.def"))) == Right(Some("kz-2")),
+          where(routing("authorize", cookies = Map("__Host-SSO_SESSION" -> "v1.kz-2.abc.def"))) == Right(Some("kz-2")),
           // the request_uri wins: it is where the pushed request is
           where(
             routing(
               "authorize",
               query = Map("request_uri" -> "urn:ietf:params:oauth:request_uri:v1.kz-1.abc"),
-              cookies = Map("SSO_SESSION" -> "v1.kz-2.abc.def"),
+              cookies = Map("__Host-SSO_SESSION" -> "v1.kz-2.abc.def"),
             ),
           ) == Right(Some("kz-1")),
           where(routing("authorize")) == Right(Some("kz-1")),
@@ -127,7 +127,7 @@ object IssuerFrontSpec extends ZIOSpecDefault:
       },
       test("a logout goes to the cell of the session cookie, else of the sid of the ID token hint") {
         assertTrue(
-          where(routing("logout", cookies = Map("SSO_SESSION" -> "v1.kz-2.abc.def"))) == Right(Some("kz-2")),
+          where(routing("logout", cookies = Map("__Host-SSO_SESSION" -> "v1.kz-2.abc.def"))) == Right(Some("kz-2")),
           where(routing("logout", query = Map("id_token_hint" -> idTokenOf("v1.kz-2.AAAA")))) == Right(Some("kz-2")),
           where(routing("logout", query = Map("id_token_hint" -> "not-a-token"))) == Right(Some("kz-1")),
         )
@@ -135,7 +135,7 @@ object IssuerFrontSpec extends ZIOSpecDefault:
       test("a key that names no cell, or does not spell one, is placed like a request with none: auth answers it") {
         assertTrue(
           where(routing("challenge", cookies = Map("__Host-SSO_CONVERSATION" -> "v1.kz-9.abc.def"))) == Right(Some("kz-1")),
-          where(routing("authorize", cookies = Map("SSO_SESSION" -> "v1.kz-1"))) == Right(Some("kz-1")),
+          where(routing("authorize", cookies = Map("__Host-SSO_SESSION" -> "v1.kz-1"))) == Right(Some("kz-1")),
           where(routing("challenge", cookies = Map("__Host-SSO_CONVERSATION" -> "v1.KZ.abc.def"))) == Right(Some("kz-1")),
         )
       },

@@ -59,7 +59,7 @@ object EdgeSession:
   def apply(value: String): EdgeSession = value
   extension (s: EdgeSession) def value: String = s
 
-/** The auth-side `SSO_SESSION` cookie (§3.2, §7.4). Set once a conversation completes; a driver
+/** The auth-side `__Host-SSO_SESSION` cookie (§3.2, §7.4). Set once a conversation completes; a driver
   * must hold onto it to re-run `/authorize` on the *same* SSO session for a silent
   * reauthorization or an ACR step-up (§7.4: "re-run `/authorize` with `acr_values` on the same
   * SSO session") -- without it, those flows have no way to avoid restarting at credentials.
@@ -88,7 +88,7 @@ case class AuthorizeStarted(
 )
 
 /** Outcome of [[AuthClient.authorize]]: either a conversation actually started, or the SUT
-  * recognized the supplied `SSO_SESSION` as already satisfying the request and answered a
+  * recognized the supplied `__Host-SSO_SESSION` as already satisfying the request and answered a
   * silent reauthorization (design doc §7.4) -- a redirect straight to the code, with no
   * `__Host-SSO_CONVERSATION` cookie and no conversation to walk. `codeVerifier` is still required in
   * both cases: the code was issued for the `code_challenge` this call sent to `/authorize`
@@ -159,7 +159,7 @@ case class LogoutConfirmation(url: URL, csrf: Csrf, postLogoutRedirectUri: Optio
   * `/challenge` again for the next step, which `Redirected` alone deliberately does not
   * distinguish; the caller re-fetches via `challenge` to see which).
   *
-  * `ssoSession` carries the `SSO_SESSION` cookie when this response set one (a completed
+  * `ssoSession` carries the `__Host-SSO_SESSION` cookie when this response set one (a completed
   * conversation, §3.2) -- `None` on every intermediate redirect. The caller must retain it and
   * feed it back into a later [[AuthClient.authorize]] call to reauthorize silently or step up on
   * the same SSO session (§7.4); without it, both flows would incorrectly restart at credentials.
@@ -210,7 +210,7 @@ case class EdgeLoginStarted(authorizeUrl: String, state: Option[String], loginCo
 case class LoginCookie(name: String, value: String)
 
 /** What auth answered at the `/authorize` URL edge sent the browser to (§8.4 hop 2): a
-  * conversation to walk, or -- when the `SSO_SESSION` the browser presented already satisfies the
+  * conversation to walk, or -- when the `__Host-SSO_SESSION` the browser presented already satisfies the
   * request (§7.4's silent reauthorization) -- the end of the flow itself, a redirect straight back
   * to edge carrying a code or a refusal, with no conversation to walk.
   *

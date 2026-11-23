@@ -58,7 +58,7 @@ object WebFlowsSpec extends ZIOSpecDefault:
         // The flow ends in a cookie and not a bearer token -- the one thing §8.4 has that
         // §8.1-8.3, §8.5 and §8.6 do not -- and it carries the expiry vu_sessions needs.
         cookie == EdgeCookie(EdgeSession(StubSut.edgeSession), Some(StubSut.edgeCookieTtl)),
-        // The conversation still leaves an SSO_SESSION behind, even though edge started it.
+        // The conversation still leaves an __Host-SSO_SESSION behind, even though edge started it.
         ssoSession == Some(SsoSession(StubSut.ssoSession)),
         hops == Vector(
           "GET /login/" + StubSut.preset,
@@ -182,7 +182,7 @@ object WebFlowsSpec extends ZIOSpecDefault:
         recorder <- observer
         flows <- flowsFor(routes, recorder)
         (cookie, ssoSession) <- flows.webOtp(request, credentials)
-        sso <- ZIO.fromOption(ssoSession).orElseFail(new AssertionError("login left no SSO_SESSION"))
+        sso <- ZIO.fromOption(ssoSession).orElseFail(new AssertionError("login left no __Host-SSO_SESSION"))
         liveBefore <- sut.ssoLive
         _ <- flows.logout(request, cookie.session, sso)
         liveAfter <- sut.ssoLive
@@ -211,7 +211,7 @@ object WebFlowsSpec extends ZIOSpecDefault:
         // through the page and posted back rather than rebuilt.
         submitted.flatMap(_.get("csrf_token")) == Some(StubSut.logoutCsrf),
         submitted.flatMap(_.get("post_logout_redirect_uri")) == Some(StubSut.postLogoutRedirect),
-        sent == Some("SSO_SESSION=" + StubSut.ssoSession),
+        sent == Some("__Host-SSO_SESSION=" + StubSut.ssoSession),
       )
     },
     test("a confirmation that lost the parameters it was bound to fails instead of reporting a logout") {
@@ -232,7 +232,7 @@ object WebFlowsSpec extends ZIOSpecDefault:
         )
         flows <- flowsFor(stripped, recorder)
         (cookie, ssoSession) <- flows.webOtp(request, credentials)
-        sso <- ZIO.fromOption(ssoSession).orElseFail(new AssertionError("login left no SSO_SESSION"))
+        sso <- ZIO.fromOption(ssoSession).orElseFail(new AssertionError("login left no __Host-SSO_SESSION"))
         failure <- flows.logout(request, cookie.session, sso).either
         live <- sut.ssoLive
       yield assertTrue(

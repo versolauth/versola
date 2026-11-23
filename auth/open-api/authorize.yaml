@@ -454,7 +454,7 @@ components:
         type: string
 
     SessionCookie:
-      name: SSO_SESSION
+      name: __Host-SSO_SESSION
       in: cookie
       required: false
       description: |

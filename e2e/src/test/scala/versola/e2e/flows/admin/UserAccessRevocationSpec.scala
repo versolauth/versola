@@ -39,8 +39,14 @@ object UserAccessRevocationSpec extends E2ESpec:
       otp <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
       submit <- auth.submitOtp(cookie, fixedOtp, otp.csrf)
       code <- submit.assertRedirect
-      sessionCookie <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("No SSO_SESSION cookie after the OTP submission"))
-      tokens <- auth.token(code, authorize.verifier, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret), redirectUri = Some(s.redirectUri)).success
+      sessionCookie <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("No __Host-SSO_SESSION cookie after the OTP submission"))
+      tokens <- auth.token(
+        code,
+        authorize.verifier,
+        clientId = Some(s.clientId),
+        clientSecret = Some(s.clientSecret),
+        redirectUri = Some(s.redirectUri),
+      ).success
     yield Login(tokens, sessionCookie)
 
   private def refreshTokenOf(login: Login): Task[String] =
@@ -60,7 +66,13 @@ object UserAccessRevocationSpec extends E2ESpec:
 
   /** Whether the session cookie still signs the user in without interaction. */
   private def silentlyAuthorizes(s: Flows.Setup, auth: OAuthClient, sessionCookie: String): Task[Boolean] =
-    auth.authorizeRaw(clientId = s.clientId, redirectUri = s.redirectUri, scope = Some("openid"), prompt = Some("none"), sessionCookie = Some(sessionCookie))
+    auth.authorizeRaw(
+      clientId = s.clientId,
+      redirectUri = s.redirectUri,
+      scope = Some("openid"),
+      prompt = Some("none"),
+      sessionCookie = Some(sessionCookie),
+    )
       .map(_.location.contains("code="))
 
   private def sessionsOf(auth: OAuthClient, userId: String): Task[Chunk[Json.Obj]] =

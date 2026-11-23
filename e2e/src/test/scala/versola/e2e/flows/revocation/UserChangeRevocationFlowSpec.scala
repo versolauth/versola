@@ -55,7 +55,7 @@ object UserChangeRevocationFlowSpec extends E2ESpec:
       otp <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
       submit <- auth.submitOtp(cookie, fixedOtp, otp.csrf)
       code <- submit.assertRedirect
-      sessionCookie <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("No SSO_SESSION cookie after the OTP submission"))
+      sessionCookie <- ZIO.fromOption(submit.sessionCookie).orElseFail(RuntimeException("No __Host-SSO_SESSION cookie after the OTP submission"))
       tokens <- auth.token(
         code,
         authorize.verifier,

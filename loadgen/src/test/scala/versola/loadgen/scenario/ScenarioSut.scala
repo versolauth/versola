@@ -131,7 +131,7 @@ object ScenarioSut:
       * that re-ran a full login where the SUT asked for a single re-authentication.
       *
       * Both conditions are load-bearing. `acr_values` alone is a request for an assurance level,
-      * not evidence that anyone is already authenticated: without the `SSO_SESSION` there is no
+      * not evidence that anyone is already authenticated: without the `__Host-SSO_SESSION` there is no
       * session to raise, so auth runs the whole conversation. Shortening it on the ACR alone is
       * what let a driver that never sent the cookie look like it was stepping up.
       */
@@ -148,7 +148,7 @@ object ScenarioSut:
           case _ :: rest => (false, rest)
         .map: finished =>
           if finished then
-            Response.seeOther(URL.decode(codeRedirectTo).toOption.get).addCookie(Cookie.Response("SSO_SESSION", ssoSession))
+            Response.seeOther(URL.decode(codeRedirectTo).toOption.get).addCookie(Cookie.Response("__Host-SSO_SESSION", ssoSession))
           else challengeRedirect
 
     def mint: UIO[(String, String)] =
@@ -225,7 +225,7 @@ object ScenarioSut:
 
     val handled = Routes(
       Method.GET / "authorize" -> handler: (request: Request) =>
-        begin(request.url.queryParams.getAll("acr_values").headOption, request.cookie("SSO_SESSION").map(_.content)),
+        begin(request.url.queryParams.getAll("acr_values").headOption, request.cookie("__Host-SSO_SESSION").map(_.content)),
       Method.GET / "challenge" -> handler: (_: Request) =>
         remaining.get.map(pending => Response.text(page(pending.headOption.getOrElse("credential")))),
       Method.POST / "challenge" / "phone" -> handler((_: Request) => advance),

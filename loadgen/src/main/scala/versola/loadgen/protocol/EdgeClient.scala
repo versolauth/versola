@@ -31,7 +31,7 @@ trait EdgeClient extends ActionClient:
     *
     * Returns the `__Host-SSO_CONVERSATION` the conversation of hops 3-6 is then walked with.
     *
-    * `ssoSession` is the `SSO_SESSION` a browser would already be holding from an earlier login
+    * `ssoSession` is the `__Host-SSO_SESSION` a browser would already be holding from an earlier login
     * on this origin. It is not on the URL and could not be -- it is a cookie, and the query is
     * edge's -- but the driver is the one making this request, so it is the driver's to send. Auth
     * reads it to recognise the session behind a step-up and ask only for the factor the requested
