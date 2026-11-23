@@ -152,7 +152,7 @@ object StubSut:
   ): Routes[Any, Nothing] =
     val challengeRedirect = Response
       .seeOther(URL.decode("/challenge").toOption.get)
-      .addCookie(Cookie.Response("SSO_CONVERSATION", conversation))
+      .addCookie(Cookie.Response("__Host-SSO_CONVERSATION", conversation))
 
     // A silent reauthorization (design doc §7.4): the SUT recognized the SSO_SESSION already
     // satisfies the request and answers straight with the code, no conversation started.

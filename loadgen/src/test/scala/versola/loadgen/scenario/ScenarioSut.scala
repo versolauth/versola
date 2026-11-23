@@ -124,7 +124,7 @@ object ScenarioSut:
   ): Routes[Any, Nothing] =
     val challengeRedirect = Response
       .seeOther(URL.decode("/challenge").toOption.get)
-      .addCookie(Cookie.Response("SSO_CONVERSATION", StubSut.conversation))
+      .addCookie(Cookie.Response("__Host-SSO_CONVERSATION", StubSut.conversation))
 
     /** A step-up asks only for the factor the requested assurance level is missing, which is one
       * page and not the whole conversation again -- folding the two together would hide a driver

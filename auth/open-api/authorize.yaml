@@ -545,7 +545,7 @@ components:
 
         - **Authorized** — back to `redirect_uri` with `code`, `iss` (RFC 9207) and `state`, and
           `id_token` when `response_type=code id_token`.
-        - **Authentication required** — to `/challenge`, setting the `SSO_CONVERSATION`
+        - **Authentication required** — to `/challenge`, setting the `__Host-SSO_CONVERSATION`
           cookie that carries the pending authorization request.
         - **Failed** — back to `redirect_uri` with `error`, `error_description`, `error_uri`
           and `state`.
@@ -583,7 +583,7 @@ components:
               value: https://app.example.com/callback?error=invalid_request&error_description=Missing+required+parameter+-+code_challenge&state=af0ifjsldkj
         Set-Cookie:
           description: |
-            `SSO_CONVERSATION`, set only when redirecting to `/challenge`. Holds the pending
+            `__Host-SSO_CONVERSATION`, set only when redirecting to `/challenge`. Holds the pending
             authorization request and expires with the client's conversation TTL.
           schema:
             type: string

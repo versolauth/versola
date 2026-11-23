@@ -243,7 +243,7 @@ object WebFlowsSpec extends ZIOSpecDefault:
       )
     },
     // §7.4: a step-up the session already satisfies is answered silently, with no conversation to
-    // walk. The web path met it as `malformed: no SSO_CONVERSATION cookie` on 4 of 7 step-ups.
+    // walk. The web path met it as `malformed: no __Host-SSO_CONVERSATION cookie` on 4 of 7 step-ups.
     test("a step-up an existing SSO session already satisfies completes without a conversation") {
       for
         stub <- StubSut.makeWebSilent

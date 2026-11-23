@@ -1607,7 +1607,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
             c.value.name == "SSO_SESSION",
           )) &&
           assertTrue(response.headers.getAll(Header.SetCookie).exists(c =>
-            c.value.name == "SSO_CONVERSATION" && c.value.maxAge.contains(Duration.Zero),
+            c.value.name == "__Host-SSO_CONVERSATION" && c.value.maxAge.contains(Duration.Zero),
           ))
       },
       test("includes id_token if provided in Complete") {

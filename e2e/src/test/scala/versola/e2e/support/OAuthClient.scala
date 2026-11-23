@@ -16,7 +16,7 @@ import scala.annotation.targetName
   * @param response           the raw HTTP response (for status / location assertions)
   * @param verifier           PKCE code verifier — pass to [[OAuthClient.token]]
   * @param state              opaque state value echoed back by the server
-  * @param conversationCookie the SSO_CONVERSATION cookie value — pass to challenge endpoints
+  * @param conversationCookie the __Host-SSO_CONVERSATION cookie value — pass to challenge endpoints
   */
 extension (response: Response)
   def location: String = response.header(Header.Location).map(_.url.encode).getOrElse("")
@@ -520,7 +520,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
     certificate.fold(request)(request.addHeader(OAuthClient.mtlsCertificateHeader, _))
 
   /** GET /authorize — generates PKCE + state, starts a new conversation, extracts the
-    * SSO_CONVERSATION cookie, and returns everything the caller needs for subsequent steps.
+    * __Host-SSO_CONVERSATION cookie, and returns everything the caller needs for subsequent steps.
     */
   def authorize(
       scope: String = "openid",
@@ -553,7 +553,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       response <- Client.batched(request).provide(ZLayer.succeed(client))
       cookie <- ZIO.fromOption(OAuthClient.extractConversationCookie(response))
         .orElseFail(new RuntimeException(
-          s"No SSO_CONVERSATION cookie in /authorize response (status=${response.status})",
+          s"No __Host-SSO_CONVERSATION cookie in /authorize response (status=${response.status})",
         ))
     yield AuthorizeResult(response, verifier, state, Some(cookie))
 
@@ -694,7 +694,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
   def getChallenge(cookie: String, uiLocale: Option[String] = None): Task[ChallengeResult] =
     Client.batched(
       Request.get(s"${config.authUrl}/challenge${uiLocale.fold("")(l => s"?ui_locale=${encode(l)}")}")
-        .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_CONVERSATION", cookie)))),
+        .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("__Host-SSO_CONVERSATION", cookie)))),
     ).provide(ZLayer.succeed(client))
       .flatMap(resp => resp.body.asString.map(ChallengeResult(resp, _)))
 
@@ -740,7 +740,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
   def getPasskeyOptions(cookie: String): Task[Response] =
     Client.batched(
       Request.get(s"${config.authUrl}/challenge/passkey/options")
-        .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_CONVERSATION", cookie)))),
+        .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("__Host-SSO_CONVERSATION", cookie)))),
     ).provide(ZLayer.succeed(client))
 
   /** POST /challenge/passkey — submits a signed assertion to log in with a passkey. */
@@ -2050,7 +2050,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
   private def formPost(url: String, fields: Map[String, String], cookie: String, headers: List[(String, String)] = Nil): Task[Response] =
     val req = headers.foldLeft(
       Request.post(url, formBody(fields))
-        .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_CONVERSATION", cookie))))
+        .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("__Host-SSO_CONVERSATION", cookie))))
         .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`)),
     ) { case (request, (name, value)) => request.addHeader(Header.Custom(name, value)) }
     Client.batched(req).provide(ZLayer.succeed(client))
@@ -2116,7 +2116,7 @@ object OAuthClient:
 
   private[support] def extractConversationCookie(response: Response): Option[String] =
     response.headers.getAll(Header.SetCookie)
-      .collectFirst { case h if h.value.name == "SSO_CONVERSATION" => h.value.content }
+      .collectFirst { case h if h.value.name == "__Host-SSO_CONVERSATION" => h.value.content }
 
   private[support] case class CreateUserResponseBody(id: String) derives JsonDecoder
 

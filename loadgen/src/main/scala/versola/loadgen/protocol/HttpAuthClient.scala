@@ -492,7 +492,7 @@ final class HttpAuthClient(
 private[protocol] case class AuthorizedRedirect(code: AuthCode, state: Option[String], iss: Option[String])
 
 object HttpAuthClient:
-  private[protocol] val conversationCookie = "SSO_CONVERSATION"
+  private[protocol] val conversationCookie = "__Host-SSO_CONVERSATION"
   private[protocol] val ssoSessionCookie = "SSO_SESSION"
 
   // Endpoint labels and expected-status sets are values, not interpolations built per failure:

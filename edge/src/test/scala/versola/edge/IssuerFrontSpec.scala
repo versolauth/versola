@@ -89,10 +89,10 @@ object IssuerFrontSpec extends ZIOSpecDefault:
     suite("which cell")(
       test("a step of a sign-in goes to the cell of its conversation cookie") {
         assertTrue(
-          where(routing("challenge/otp", cookies = Map("SSO_CONVERSATION" -> "v1.kz-2.abc.def"))) == Right(Some("kz-2")),
+          where(routing("challenge/otp", cookies = Map("__Host-SSO_CONVERSATION" -> "v1.kz-2.abc.def"))) == Right(Some("kz-2")),
           // no cookie yet, or one from before cells: a new request, and the configured auth
           where(routing("challenge")) == Right(Some("kz-1")),
-          where(routing("challenge", cookies = Map("SSO_CONVERSATION" -> "abc.def"))) == Right(None),
+          where(routing("challenge", cookies = Map("__Host-SSO_CONVERSATION" -> "abc.def"))) == Right(None),
         )
       },
       test("a sign-in handed to another cell goes to the cell the handoff names, whatever cookie the browser still holds") {
@@ -100,13 +100,13 @@ object IssuerFrontSpec extends ZIOSpecDefault:
           where(routing(
             "challenge/handoff",
             query = Map("handoff" -> "v1.kz-2.sealed"),
-            cookies = Map("SSO_CONVERSATION" -> "v1.kz-1.abc.def"),
+            cookies = Map("__Host-SSO_CONVERSATION" -> "v1.kz-1.abc.def"),
           )) == Right(Some("kz-2")),
           // the parameter means nothing on another page
           where(routing(
             "challenge/otp",
             query = Map("handoff" -> "v1.kz-2.sealed"),
-            cookies = Map("SSO_CONVERSATION" -> "v1.kz-1.abc.def"),
+            cookies = Map("__Host-SSO_CONVERSATION" -> "v1.kz-1.abc.def"),
           )) == Right(Some("kz-1")),
         )
       },
@@ -134,19 +134,19 @@ object IssuerFrontSpec extends ZIOSpecDefault:
       },
       test("a key that names no cell, or does not spell one, is placed like a request with none: auth answers it") {
         assertTrue(
-          where(routing("challenge", cookies = Map("SSO_CONVERSATION" -> "v1.kz-9.abc.def"))) == Right(Some("kz-1")),
+          where(routing("challenge", cookies = Map("__Host-SSO_CONVERSATION" -> "v1.kz-9.abc.def"))) == Right(Some("kz-1")),
           where(routing("authorize", cookies = Map("SSO_SESSION" -> "v1.kz-1"))) == Right(Some("kz-1")),
-          where(routing("challenge", cookies = Map("SSO_CONVERSATION" -> "v1.KZ.abc.def"))) == Right(Some("kz-1")),
+          where(routing("challenge", cookies = Map("__Host-SSO_CONVERSATION" -> "v1.KZ.abc.def"))) == Right(Some("kz-1")),
         )
       },
       test("with no cell registered everything goes to the configured auth, and with none open a new request has nowhere to go") {
         val shut = CellTopology(Vector(cell("kz-1", EdgeCellState.Draining)), None)
         assertTrue(
-          where(routing("challenge", cookies = Map("SSO_CONVERSATION" -> "v1.kz-2.abc.def")), CellTopology.empty) == Right(None),
+          where(routing("challenge", cookies = Map("__Host-SSO_CONVERSATION" -> "v1.kz-2.abc.def")), CellTopology.empty) == Right(None),
           where(routing("authorize"), CellTopology.empty) == Right(None),
           where(routing("authorize"), shut) == Left(CellRoutingError.NoOpenCell),
           // what names the draining cell still reaches it
-          where(routing("challenge", cookies = Map("SSO_CONVERSATION" -> "v1.kz-1.abc.def")), shut) == Right(Some("kz-1")),
+          where(routing("challenge", cookies = Map("__Host-SSO_CONVERSATION" -> "v1.kz-1.abc.def")), shut) == Right(Some("kz-1")),
         )
       },
     ),
@@ -154,14 +154,14 @@ object IssuerFrontSpec extends ZIOSpecDefault:
       test("the request is sent to the cell as it came, with the caller's cookies and body, and the answer is relayed whole") {
         for
           (seen, call) <- front(topology)(_ =>
-            Response.text("page").status(Status.Ok).addHeader(Header.Custom("Set-Cookie", "SSO_CONVERSATION=v1.kz-2.x.y; Path=/challenge")),
+            Response.text("page").status(Status.Ok).addHeader(Header.Custom("Set-Cookie", "__Host-SSO_CONVERSATION=v1.kz-2.x.y; Path=/challenge")),
           )
           response <- call(
             post(
               "challenge/otp?ui_locales=ru",
               "code" -> "123456",
               "csrf" -> "t",
-            ).addHeader(Header.Custom("Cookie", "SSO_CONVERSATION=v1.kz-2.abc.def")),
+            ).addHeader(Header.Custom("Cookie", "__Host-SSO_CONVERSATION=v1.kz-2.abc.def")),
           )
           sent <- seen.get.map(_.head)
           body <- sent.body.asString

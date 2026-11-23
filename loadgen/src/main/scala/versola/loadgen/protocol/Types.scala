@@ -90,7 +90,7 @@ case class AuthorizeStarted(
 /** Outcome of [[AuthClient.authorize]]: either a conversation actually started, or the SUT
   * recognized the supplied `SSO_SESSION` as already satisfying the request and answered a
   * silent reauthorization (design doc §7.4) -- a redirect straight to the code, with no
-  * `SSO_CONVERSATION` cookie and no conversation to walk. `codeVerifier` is still required in
+  * `__Host-SSO_CONVERSATION` cookie and no conversation to walk. `codeVerifier` is still required in
   * both cases: the code was issued for the `code_challenge` this call sent to `/authorize`
   * regardless of which path answered it.
   */

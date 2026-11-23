@@ -37,7 +37,14 @@ case class ConversationCookie(
     )
 
 object ConversationCookie:
-  val name = "SSO_CONVERSATION"
+  /** `__Host-` (RFC 6265bis §4.1.3.2) makes a browser take the cookie only from this host itself: `Secure`, no
+    * `Domain`, `Path=/`. A page on a sibling subdomain can otherwise set a cookie of the same name for the whole site
+    * (`Domain=`), and the conversation cookie is what the CSRF token of every step and the seal of a handed submission
+    * (`CellHandoff`) are tied to: with a cookie it planted, such a page could submit a step of a conversation of its
+    * own in the visitor's browser. The price is the path, which the prefix fixes at `/`: the cookie is sent with every
+    * request to this host and not only under `/challenge`, so an edge in front of the issuer keeps it from the
+    * upstreams it proxies to (`IssuerFront.IssuerCookies`). */
+  val name = "__Host-SSO_CONVERSATION"
 
   /** Serialises the payload as JSON, computes a Blake3 keyed-hash over those bytes,
    *  and produces a cookie whose content is `base64url(json) + "." + base64url(mac)`.
@@ -55,7 +62,7 @@ object ConversationCookie:
       name = name,
       content = cell.fold(s"$payloadB64.$sigB64")(cell => RoutingKey.encode(cell, s"$payloadB64.$sigB64")),
       domain = None,
-      path = Some(Path.root / "challenge"),
+      path = Some(Path.root),
       isSecure = true,
       isHttpOnly = true,
       maxAge = Some(ttl),
@@ -68,7 +75,7 @@ object ConversationCookie:
       name = name,
       content = "",
       domain = None,
-      path = Some(Path.root / "challenge"),
+      path = Some(Path.root),
       isSecure = true,
       isHttpOnly = true,
       maxAge = Some(Duration.Zero),

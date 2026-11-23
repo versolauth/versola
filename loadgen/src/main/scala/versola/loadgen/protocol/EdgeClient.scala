@@ -29,7 +29,7 @@ trait EdgeClient extends ActionClient:
     * is edge's, so there is nothing for [[AuthClient.authorize]] to build, and following another
     * party's `Location` is exactly the browser behaviour this client emulates.
     *
-    * Returns the `SSO_CONVERSATION` the conversation of hops 3-6 is then walked with.
+    * Returns the `__Host-SSO_CONVERSATION` the conversation of hops 3-6 is then walked with.
     *
     * `ssoSession` is the `SSO_SESSION` a browser would already be holding from an earlier login
     * on this origin. It is not on the URL and could not be -- it is a cookie, and the query is

@@ -179,7 +179,7 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
       url <- ZIO.fromEither(URL.decode(s"${config.edgeUrl}${sentOn.location}")).mapError(RuntimeException(_))
       body = form.map((name, value) => s"${URLEncoder.encode(name, "UTF-8")}=${URLEncoder.encode(value, "UTF-8")}").mkString("&")
       request = Request.post(url, Body.fromString(body)).addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
-      response <- client.batched(cookie.fold(request)(content => request.addHeader(Header.Custom("Cookie", s"SSO_CONVERSATION=$content"))))
+      response <- client.batched(cookie.fold(request)(content => request.addHeader(Header.Custom("Cookie", s"__Host-SSO_CONVERSATION=$content"))))
     yield SubmitResult(response)
 
   /** The first page of a sign-in with the login client through edge: placed in cell 1, on the credential card. */
@@ -417,10 +417,10 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         handoff = typed.location
         handoffUrl <- ZIO.fromEither(URL.decode(s"${config.edgeUrl}$handoff")).mapError(RuntimeException(_))
         // The browser follows it, still holding cell 1's cookie: edge goes by the cell the handoff names.
-        taken <- client.batched(Request.get(handoffUrl).addHeader(Header.Custom("Cookie", s"SSO_CONVERSATION=$firstCookie")))
+        taken <- client.batched(Request.get(handoffUrl).addHeader(Header.Custom("Cookie", s"__Host-SSO_CONVERSATION=$firstCookie")))
         secondCookie <- ZIO.fromOption(
           taken.headers.getAll(Header.SetCookie).collectFirst {
-            case h if h.value.name == "SSO_CONVERSATION" && h.value.content.nonEmpty => h.value.content
+            case h if h.value.name == "__Host-SSO_CONVERSATION" && h.value.content.nonEmpty => h.value.content
           },
         ).orElseFail(RuntimeException(s"cell 2 did not take the handoff: ${taken.status}"))
         // Cell 2 knows the user: the address is not asked again, the browser is at the code step.
@@ -464,10 +464,10 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         credential <- front.auth.getChallenge(firstCookie).assertStep(ConversationStep.Credential)
         typed <- front.auth.submitEmail(firstCookie, email, credential.csrf)
         handoffUrl <- ZIO.fromEither(URL.decode(s"${config.edgeUrl}${typed.location}")).mapError(RuntimeException(_))
-        taken <- client.batched(Request.get(handoffUrl).addHeader(Header.Custom("Cookie", s"SSO_CONVERSATION=$firstCookie")))
+        taken <- client.batched(Request.get(handoffUrl).addHeader(Header.Custom("Cookie", s"__Host-SSO_CONVERSATION=$firstCookie")))
         secondCookie <- ZIO.fromOption(
           taken.headers.getAll(Header.SetCookie).collectFirst {
-            case h if h.value.name == "SSO_CONVERSATION" && h.value.content.nonEmpty => h.value.content
+            case h if h.value.name == "__Host-SSO_CONVERSATION" && h.value.content.nonEmpty => h.value.content
           },
         ).orElseFail(RuntimeException(s"cell 2 did not take the handoff: ${taken.status} ${typed.location}"))
         // Cell 2 asks for what its flow asks first: the password, with no code in between and the address not asked again.
@@ -534,7 +534,7 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         other <- repeated(typed, form, Some(otherCookie))
         // Followed as a link: there is no submission to check.
         url <- ZIO.fromEither(URL.decode(s"${config.edgeUrl}${typed.location}")).mapError(RuntimeException(_))
-        followed <- client.batched(Request.get(url).addHeader(Header.Custom("Cookie", s"SSO_CONVERSATION=$firstCookie")))
+        followed <- client.batched(Request.get(url).addHeader(Header.Custom("Cookie", s"__Host-SSO_CONVERSATION=$firstCookie")))
         // The browser it was made in is still served.
         finished <- repeated(typed, form, Some(firstCookie))
         code <- finished.assertRedirect

@@ -2855,6 +2855,28 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         upstream.exists(_.cookies.forall(_.name != EdgeSessionCookie.name)),
       )
     },
+    test("keeps the issuer's cookies from the upstream: its session, its device id and a sign-in in progress") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken()
+        request = IssuerFront.IssuerCookies.toList.sorted
+          .foldLeft(Request.get(URL.empty / "users").addCookie(sessionCookie(token)))((request, name) =>
+            request.addCookie(Cookie.Request(name, "v1.kz-1.issuer-owned")),
+          )
+          .addCookie(Cookie.Request("other", "keep-me"))
+        service = env.buildService(client, security)
+        _ <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(
+        IssuerFront.IssuerCookies == Set("__Host-SSO_CONVERSATION", "SSO_SESSION", "SSO_USER_AGENT_ID"),
+        upstream.exists(_.cookies.map(_.name).toList == List("other")),
+      )
+    },
     test("preserves original query params on the upstream URL") {
       val env = new Env
       for
@@ -4432,7 +4454,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     },
     // A partner's console client has no `offline_access`, so its sessions have no refresh token (by decision): a console session belongs to
     // the edge it was signed in on, and another edge of the group sends the person to sign in, at once and without asking auth.
-    test("a console session bound to another certificate whose row has no refresh token is no session, with the clearing cookie, and auth is not asked") {
+    test(
+      "a console session bound to another certificate whose row has no refresh token is no session, with the clearing cookie, and auth is not asked",
+    ) {
       val env = new Env
       for
         _ <- env.setupDefaults()

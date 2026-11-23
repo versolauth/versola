@@ -1608,8 +1608,9 @@ object EdgeService:
         .addPath(restPath)
         .setQueryParams(request.url.queryParams)
 
+      // Neither edge's own session nor the issuer's cookies are an upstream's to see (`IssuerFront.IssuerCookies`).
       val forwardedCookies = request.cookies
-        .filter(_.name != EdgeSessionCookie.name)
+        .filter(cookie => cookie.name != EdgeSessionCookie.name && !IssuerFront.IssuerCookies.contains(cookie.name))
         .map(_.toRequest)
 
       val baseHeaders = request.headers

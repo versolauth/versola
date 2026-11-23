@@ -78,7 +78,7 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
       yield assertTrue(
         page.step == Some(ConversationStep.Otp),
         page.csrf == Some(Csrf(StubSut.csrf)),
-        cookie == Some("SSO_CONVERSATION=" + StubSut.conversation),
+        cookie == Some("__Host-SSO_CONVERSATION=" + StubSut.conversation),
       )
     },
     test("a submit carries the conversation cookie and the csrf token, and reports the redirect") {
@@ -95,7 +95,7 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
           case SubmitOutcome.Rendered(_) => (None, None)
       yield assertTrue(
         form == Some(Map("code" -> "123456", "csrf" -> StubSut.csrf)),
-        cookie == Some("SSO_CONVERSATION=" + StubSut.conversation),
+        cookie == Some("__Host-SSO_CONVERSATION=" + StubSut.conversation),
         contentType == Some("application/x-www-form-urlencoded"),
         redirected == (Some(StubSut.code), Some(SsoSession(StubSut.ssoSession))),
       )

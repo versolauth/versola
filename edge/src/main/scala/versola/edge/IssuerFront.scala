@@ -43,8 +43,15 @@ object IssuerFront extends Controller:
   /** The most of a request body that is read: the forms of the sign-in steps are far under it. */
   val BodyLimit: Int = 256 * 1024
 
-  private val ConversationCookie = "SSO_CONVERSATION"
+  private val ConversationCookie = "__Host-SSO_CONVERSATION"
   private val SessionCookie = "SSO_SESSION"
+  private val UserAgentCookie = "SSO_USER_AGENT_ID"
+
+  /** The issuer's own cookies. Where the issuer's address is this edge's, a browser sends them with every request to
+    * the host (their path is `/`), the ones edge proxies to a resource among them: they are the session of the person
+    * at the issuer and the state of a sign-in, and an upstream that received them could use them there. Only the
+    * issuer's pages are given them ([[routes]]); the proxy drops them. */
+  val IssuerCookies: Set[String] = Set(ConversationCookie, SessionCookie, UserAgentCookie)
   private val HandoffParameter = "handoff"
   private val RequestUriNamespace = "urn:ietf:params:oauth:request_uri:"
 

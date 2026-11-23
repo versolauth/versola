@@ -20,7 +20,7 @@ case class WebLoginRequest(preset: PresetId, acrValues: Option[List[String]], ss
   *
   * ```
   * GET  {edge}/login/{presetId}          -> 303 {auth}/authorize?...   edge-login
-  * GET  {auth}/authorize?...             -> 303 /challenge, SSO_CONVERSATION   authorize
+  * GET  {auth}/authorize?...             -> 303 /challenge, __Host-SSO_CONVERSATION   authorize
   * ... §8.1 hops 2-5, via ChallengeConversation ...    -> 303 {edge}/complete?code=&state=
   * GET  {edge}/complete?code=&state=     -> 303 app, Set-Cookie EDGE_SESSION   edge-complete
   * ```
