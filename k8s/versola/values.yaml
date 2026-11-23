@@ -769,6 +769,11 @@ ingress:
   # host only ever exposes what you actually list:
   #   oidc     -> auth:    /authorize /token /par /introspect /revoke
   #                        /userinfo /logout /.well-known/ /challenge
+  #   pages    -> edge:    /authorize /logout /challenge -- the pages of a sign-in, on a
+  #                        host whose issuer address is an edge's (several cells). In
+  #                        place of `oidc` on that host, never beside it
+  #   endpoints-> auth:    /token /par /introspect /revoke /userinfo /.well-known/ --
+  #                        `oidc` without the pages, for a client that calls auth itself
   #   login    -> edge:    /login/ /complete /logout/
   #   api      -> edge:    /resources/ /permissions/
   #   native   -> edge:    /native/ -- the endpoints a mobile app calls under FAPI 2.0

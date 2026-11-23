@@ -67,7 +67,7 @@ Namespace variables and no tail quantile. Rows, top to bottom: Decisions (rate b
 was acted on next to what was decided, evaluation failures), Rules (the most frequent, those that count and those that only record),
 Challenges (by kind and outcome, proof-of-work pass rate, pause paid share), SMS budget (refused by reason and mode, ranges not tracked or
 evicted), Event pipeline (enqueued, written, dropped by reason, queue size, backlog growth), Velocity, Lists (hits with the shadow split,
-refresh failures, snapshot and tuning age), Detectors and resets, Storage (partition days ahead with a line at 2, maintenance and rollup
+refresh failures, snapshot and tuning age, policy copy age and failures per auth instance), Detectors and resets, Storage (partition days ahead with a line at 2, maintenance and rollup
 failures, database latency and failures of the antifraud operations, `operation=~".*antifraud.*"`).
 
 Read it in shadow mode as: the would-be share in Decisions is what enforcing would stop, and "let through, would be stopped" is the part of

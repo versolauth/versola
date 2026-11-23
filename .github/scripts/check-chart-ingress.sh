@@ -99,6 +99,27 @@ native_routes_reach_edge() {
   return 0
 }
 
+# Where the issuer's address is an edge's (cells): the pages of a sign-in lead to edge, the endpoints a client calls to
+# auth, and the host that lists `pages` and `endpoints` exposes exactly what `oidc` does, split between the two.
+issuer_pages_reach_edge() {
+  local out
+  out="$(render --set ingress.enabled=true --set ingress.className=nginx \
+                --set ingress.hosts[0].host=id.example.com --set 'ingress.hosts[0].routes={pages,endpoints}')" || {
+    fail "the pages and endpoints route groups failed to render: $(cat /tmp/chart-ingress-err.txt)"
+    return
+  }
+  local path
+  for path in /authorize /logout /challenge; do
+    awk -v p="path: $path\$" '$0 ~ p{f=1} f && /name:/{print; exit}' <<<"$out" | grep -q 'versola-edge' \
+      || fail "$path is not routed to edge by the pages group"
+  done
+  for path in /token /par /introspect /revoke /userinfo /.well-known/; do
+    awk -v p="path: $path\$" '$0 ~ p{f=1} f && /name:/{print; exit}' <<<"$out" | grep -q 'versola-auth' \
+      || fail "$path is not routed to auth by the endpoints group"
+  done
+  return 0
+}
+
 # Everything under `exposure` (design-edge-network.md, H2-H4, H10). The contract:
 #   - nothing is published by default, and the enrollment listener is not even bound;
 #   - a mutual-TLS host is carried by passthrough, never terminated: no `tls:` block on its Ingress;
@@ -299,6 +320,7 @@ check "a named className reaches the rendered Ingress" named_class_reaches_the_i
 check "a disabled ingress needs no className" disabled_ingress_needs_no_class
 check "the Gateway API path renders without a className" gateway_api_needs_no_class
 check "the native route group routes /native/ to edge" native_routes_reach_edge
+check "the pages route group routes the pages of a sign-in to edge and endpoints to auth" issuer_pages_reach_edge
 check "nothing is published by default" exposure_is_off_by_default
 check "mutual-TLS hosts are passed through, never terminated, with no limit annotation" mtls_passthrough_never_terminates
 check "central signs edges with the edge issuer" central_signs_edges_with_the_edge_issuer

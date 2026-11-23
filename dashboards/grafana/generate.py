@@ -1085,6 +1085,15 @@ def build_antifraud() -> Board:
     b.ts("Tuning age", [(f"time() - max by (pod) (antifraud_tuning_refreshed_timestamp_seconds{{{s}}})", "{{pod}}")], unit="s", minimum=0, line=steps((None, GREEN), (600, RED)),
          desc="Seconds since the tuned settings (mode, thresholds, weights) were last read successfully. A few seconds is healthy (the refresh interval). The dashed line is the alert at 10 minutes: a pod that old ignores a switch from shadow to enforce.")
 
+    b.ts("Policy copy age", [(f"time() - max by (pod) (antifraud_policy_synced_timestamp_seconds{{{s}}})", "{{pod}}")], unit="s", minimum=0, line=steps((None, GREEN), (600, RED)),
+         desc="Is every auth instance enforcing the antifraud policy central has right now, and if not, which one is behind and for how long? Seconds since each instance last copied central's antifraud settings and lists; a few seconds is healthy. "
+              "The dashed line is the alert AntifraudPolicyCopyStale (10 minutes). Action: an instance over the line is not learning of changes, so a list entry or a settings change made in central is NOT enforced on it until it catches up; "
+              "check that it reaches central (network, central's health, the sync token) and read the failures panel beside this one. An instance that has never copied has no value and is missing from this panel, not drawn as zero; "
+              "if an instance you expect is absent, treat it as behind. Same expression as the alert, per instance instead of the oldest in the namespace.")
+    b.ts("Policy copy failures / s", [(f"sum by (pod) ({r('antifraud_policy_sync_failed_total')})", "{{pod}}")], unit="ops", minimum=0, overrides=RED_SERIES,
+         desc="Failed attempts to copy the antifraud policy from central, per instance. Empty is healthy. A failing instance keeps enforcing the copy it has, so nothing breaks at once, but changes made in central stop arriving; "
+              "check that the instance reaches central (network, central's health, the sync token). An instance that has never copied appears here and not in the age panel beside it.")
+
     # -- detectors and resets ---------------------------------------------------------------
     b.row("auth — Detectors and resets")
     b.ts("Proposals created / s by kind", [(f"sum by (kind) ({r('antifraud_proposals_created_total')})", "{{kind}}")], unit="ops", minimum=0,

@@ -436,6 +436,8 @@ nothing is exposed that is not listed — there is no catch-all group.
 | Group | Backend | Paths |
 |---|---|---|
 | `oidc` | auth | `/authorize` `/token` `/par` `/introspect` `/revoke` `/userinfo` `/logout` `/.well-known/` `/challenge` |
+| `pages` | edge | `/authorize` `/logout` `/challenge` — the pages of a sign-in, where the issuer's address is an edge's (see "Cells" below); in place of `oidc` on that host, never beside it |
+| `endpoints` | auth | `/token` `/par` `/introspect` `/revoke` `/userinfo` `/.well-known/` — `oidc` without the pages |
 | `login` | edge | `/login/` `/complete` `/logout/` |
 | `api` | edge | `/resources/` `/permissions/` |
 | `native` | edge | `/native/` — what a mobile app calls under FAPI 2.0 (#420); list it on any host with native clients |
@@ -454,6 +456,37 @@ requests get a bare `404` from the controller, which reads as a routing bug rath
 unclaimed resource. Annotating the class as default *afterwards* does not fix an Ingress already
 created without one either — the default is applied at admission, so the object has to be
 recreated or patched with an explicit `spec.ingressClassName`. Name the class up front instead.
+
+### Cells: the issuer's address is an edge's
+
+A deployment of several cells (several `auth`, each with its own database; see the Cells page of the
+documentation, `concepts/cells`) has one issuer address, and it is an edge's: edge serves the pages
+of a sign-in and sends each request to the cell that holds it. Four things have to agree, and none
+of them fails loudly when it does not:
+
+| What | Where | Must be |
+|---|---|---|
+| `jwt.issuer` of every `auth` | `--auth-url` of `gen-env` | the edge's public address, the same in every cell |
+| `versola-url` of the edge | `--auth-url` of `gen-env` | the same address |
+| `versola-internal-url` of the edge | `--auth-internal-url` of `gen-env` | a real address of an `auth`, never the edge's own. It defaults to `--auth-url`, so leaving it out makes the edge call itself. With cells registered the edge calls each cell at the `internalUrl` of its registration instead |
+| `cell-id` of each `auth` | `--cell-id` of `gen-env` | the cell's own id, different in every cell. Set it only once every instance runs a version that knows the `v1.<cell>.` prefix |
+
+On the issuer's host list `pages` in place of `oidc`, so that `/authorize`, `/logout` and `/challenge`
+lead to edge:
+
+```
+--set 'ingress.hosts[0].host=id.example.com' \
+--set 'ingress.hosts[0].routes={pages,login,api,native}'
+```
+
+Edge does not serve `/token`, `/par`, `/userinfo`, `/introspect`, `/revoke` or discovery. A client that
+works through edge does not call them. A client that calls them itself needs an address of an `auth`:
+give that `auth` a host of its own with the `endpoints` group (with one cell, the same host may list
+`pages` and `endpoints` together, which is `oidc` split between edge and auth).
+
+One release of this chart runs one `auth`. A further cell is a further `auth` with its own database
+and its own `cell-id`, registered on the Cells screen of the console with the address the edge reaches
+it at; this chart does not render a second one.
 
 There is no route group for central, but nothing needs one: `loadgen provision` reaches central
 through `auth` (a `client_credentials` token, the `oidc` group's `/token`) and then `edge`'s

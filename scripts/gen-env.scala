@@ -1105,7 +1105,7 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   val passwordsSecret = rand(rng, 16)
   val conversationCookieSecret = rand(rng, 32) // auth only: signs the __Host-SSO_CONVERSATION cookie
   val sessionCookieSecret = rand(rng, 32)
-  val userAgentCookieSecret = rand(rng, 32) // auth only: signs the SSO_USER_AGENT_ID cookie
+  val userAgentCookieSecret = rand(rng, 32) // auth only: signs the __Host-SSO_USER_AGENT_ID cookie
   val edgeTokenEncKey = rand(rng, 32)
   val edgeSessionsSecret = rand(rng, 32)
   val edgeInternalSecret = rand(rng, 32)     // authorizes edge's non-prod /service/configuration/sync
@@ -1970,9 +1970,12 @@ def jwtJwks(jwtKey: EcKey): String = s"""{"keys":[${jwtKey.jwk}]}"""
   // its tokens, so a router can find their home cell without a lookup. Set for the local
   // stack so e2e exercises the prefixed values; every other target starts without one,
   // which leaves it exactly as it was (no prefix, no claim) until an operator names it.
+  // `--cell-id` names it for any target; every cell of a deployment has its own and the same `jwt.issuer`.
   val cellIdLine =
-    if isLocal then "cell-id = \"local-1\""
-    else "# cell-id = \"kz-1\""
+    cliArgs.get("cell-id").filter(_.nonEmpty) match
+      case Some(id) => s"cell-id = \"$id\""
+      case None if isLocal => "cell-id = \"local-1\""
+      case None => "# cell-id = \"kz-1\""
 
   val authConf =
     s"""env = $env

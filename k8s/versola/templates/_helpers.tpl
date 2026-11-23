@@ -310,6 +310,23 @@ oidc:
   - {path: /logout, pathType: Exact, service: {{ $auth }}, port: {{ $authPort }}}
   - {path: /.well-known/, pathType: Prefix, service: {{ $auth }}, port: {{ $authPort }}}
   - {path: /challenge, pathType: Prefix, service: {{ $auth }}, port: {{ $authPort }}}
+# The issuer's address is an edge's (a deployment of several cells, versolauth/versola#547): the pages of a sign-in
+# go to edge, which sends each request to the cell its cookie or its `request_uri` names and places a new one
+# (IssuerFront). Listed INSTEAD of `oidc` on that host, never beside it: both name /authorize, /logout and /challenge.
+# Edge does not serve the endpoints a client calls (/token, /par, /userinfo, /introspect, /revoke, discovery): a client
+# that calls them itself is given an address of an auth, which is the `endpoints` group on a host of that auth.
+pages:
+  - {path: /authorize, pathType: Exact, service: {{ $edge }}, port: {{ $edgePort }}}
+  - {path: /logout, pathType: Exact, service: {{ $edge }}, port: {{ $edgePort }}}
+  - {path: /challenge, pathType: Prefix, service: {{ $edge }}, port: {{ $edgePort }}}
+# What `oidc` is without the pages: the endpoints of auth a client calls itself.
+endpoints:
+  - {path: /token, pathType: Exact, service: {{ $auth }}, port: {{ $authPort }}}
+  - {path: /par, pathType: Exact, service: {{ $auth }}, port: {{ $authPort }}}
+  - {path: /introspect, pathType: Exact, service: {{ $auth }}, port: {{ $authPort }}}
+  - {path: /revoke, pathType: Exact, service: {{ $auth }}, port: {{ $authPort }}}
+  - {path: /userinfo, pathType: Exact, service: {{ $auth }}, port: {{ $authPort }}}
+  - {path: /.well-known/, pathType: Prefix, service: {{ $auth }}, port: {{ $authPort }}}
 login:
   - {path: /login/, pathType: Prefix, service: {{ $edge }}, port: {{ $edgePort }}}
   - {path: /complete, pathType: Exact, service: {{ $edge }}, port: {{ $edgePort }}}
