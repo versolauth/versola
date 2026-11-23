@@ -40,6 +40,12 @@ trait ConversationRouter:
     */
   def startPasskeyOptions(authId: AuthId): Task[Option[String]]
 
+  /** Ends the conversation of a submission that was sealed for another cell ([[ConversationResult.Elsewhere]]): gone
+    * whatever the browser does next, the sign-in continues in the other cell or not at all. False when another request
+    * ended it already: of two that submit the same thing at once only one is sent on, so that there are never two seals
+    * for one password or one passkey assertion. */
+  def end(authId: AuthId, conversation: ConversationRecord): Task[Boolean]
+
   /** A submission another cell took and handed to this one, for the conversation this cell has just started for it
     * (`CellHandoff`, versolauth/versola#1048). The CSRF token it carries is the first cell's and is not compared: the
     * seal it came with, bound to the browser's cookie and taken once, is what says that the browser that started the
@@ -136,6 +142,9 @@ object ConversationRouter:
                 .tapErrorCause(cause => ZIO.logErrorCause("Couldn't submit auth step", cause))
                 .orElseSucceed(ConversationResult.ServiceUnavailable)
                 .map(_ -> updated)
+
+    override def end(authId: AuthId, conversation: ConversationRecord): Task[Boolean] =
+      conversationRepository.delete(authId, conversation.version)
 
     override def submitHanded(
         authId: AuthId,
@@ -509,13 +518,9 @@ object ConversationRouter:
                   ZIO.logWarningCause("Could not ask central which cell a sign-in belongs to; the step is refused", cause) *>
                     Observability.setError("directory_unavailable").as(Some(ConversationResult.ServiceUnavailable)),
                 {
-                  case Some(cell) if cell != own =>
-                    // Gone whatever the browser does next: the sign-in continues in the other cell or not at all. Only the
-                    // request that ended the conversation is sent on: of two that submit the same thing at once, the
-                    // other must not get a second seal for the same password or the same assertion.
-                    conversationRepository.delete(authId, conversation.version).flatMap:
-                      case true => ZIO.some(ConversationResult.Elsewhere(cell, passkeyRequest))
-                      case false => Observability.setError("write_conflict").as(Some(ConversationResult.WriteConflict))
+                  // The conversation is ended by the controller once the seal is made (`end`): a request too large to
+                  // seal keeps its conversation.
+                  case Some(cell) if cell != own => ZIO.some(ConversationResult.Elsewhere(cell, passkeyRequest))
                   case _ => ZIO.none
                 },
               )

@@ -55,8 +55,9 @@ object ConversationResult:
   case class Handoff(location: URL) extends Render
 
   /** What was submitted names a user another cell holds, and is to be checked there: the browser repeats the submission
-    * in `home` (`CellHandoff`, versolauth/versola#1048). This cell's conversation is over. The controller that took
-    * the submission seals it, since the seal is bound to the cookie the request came with.
+    * in `home` (`CellHandoff`, versolauth/versola#1048). The controller that took the submission seals it, since the
+    * seal is bound to the cookie the request came with, and then ends this cell's conversation
+    * (`ConversationRouter.end`).
     *
     * @param passkeyRequest the assertion request a passkey submission answered
     */

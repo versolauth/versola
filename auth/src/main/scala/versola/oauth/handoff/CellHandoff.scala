@@ -50,6 +50,15 @@ trait CellHandoff:
 object CellHandoff:
   val Lifetime: Duration = 1.minute
 
+  /** The most a seal may be, in the characters of its parameter. It travels in a URL, and what is in front of the cells
+    * refuses a request line or a `Location` header past a few kilobytes (8 KiB is the usual default); an authorization
+    * request with a very large `authorization_details` or `claims` would otherwise be lost on the way, after the first
+    * cell had ended its conversation. */
+  val MaxLength = 6000
+
+  /** A request too large to be sealed into a URL ([[MaxLength]]). The caller keeps its conversation. */
+  final case class TooLarge(length: Int) extends RuntimeException(s"a handoff of $length characters is over $MaxLength")
+
   /** The parameter of `/challenge/handoff`. */
   val Parameter = "handoff"
 
@@ -95,7 +104,17 @@ object CellHandoff:
 
   /** The parameters of the request a conversation was started for, with the credential, where there is one, as the login
     * hint. A pushed request and a request object are already resolved in the record, so what is written here is the
-    * request itself. */
+    * request itself.
+    *
+    * What decides whether a session the browser already has may be used is not written, because the home cell has no
+    * such session to decide about: a session cookie names its cell, so a browser with a session in the home cell was
+    * sent there by `/authorize` in the first place. That is `max_age`, `prompt=login` and `prompt=select_account`; the
+    * sign-in in the home cell is always a new authentication, and its `auth_time` says so. `prompt=none` never starts
+    * a conversation, and an `id_token_hint` that names a user starts one that knows its user, which is not handed over.
+    *
+    * What is lost with them is the link to the session the browser had in the first cell (`priorSessionId`): a sign-in
+    * that finishes in the home cell does not end it, or move its refresh tokens, as one that finishes here does. It
+    * stays until it expires or is revoked. */
   private[handoff] def paramsOf(record: ConversationRecord, credential: Option[Either[Email, Phone]]): Map[String, List[String]] =
     def one(name: String, value: Option[String]) = value.map(name -> List(_))
     List(
@@ -146,7 +165,9 @@ object CellHandoff:
         now <- Clock.instant
         payload = Payload(params = params, to = to, expiresAt = now.plus(Lifetime).getEpochSecond, submission = submission)
         ciphertext <- security.encryptAes256(payload.toJson.getBytes(StandardCharsets.UTF_8), key)
-      yield RoutingKey.encode(to, Base64.urlEncode(ciphertext))
+        ticket = RoutingKey.encode(to, Base64.urlEncode(ciphertext))
+        _ <- ZIO.fail(TooLarge(ticket.length)).when(ticket.length > MaxLength)
+      yield ticket
 
     override def open(presented: String): IO[Refused, Payload] =
       for

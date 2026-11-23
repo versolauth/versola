@@ -145,6 +145,21 @@ object CellHandoffSpec extends ZIOSpecDefault:
           payload <- first.sealSubmission(record, home, cookie, None).flatMap(second.open)
         yield assertTrue(!payload.submission.exists(_.cookie.contains(cookie)))
       },
+      test("is not made for a request too large to travel in a URL, and neither is an address seal") {
+        val large = record.copy(state = Some(State("s" * CellHandoff.MaxLength)))
+        for
+          first <- at(Some("kz-1"))
+          submission <- first.sealSubmission(large, home, cookie, None).either
+          passkey <- first.sealSubmission(record, home, cookie, Some("r" * CellHandoff.MaxLength)).either
+          address <- first.seal(large, Left(email), home).either
+          fits <- first.sealSubmission(record, home, cookie, Some("""{"challenge":"c"}""")).either
+        yield assertTrue(
+          submission.left.exists(_.isInstanceOf[CellHandoff.TooLarge]),
+          passkey.left.exists(_.isInstanceOf[CellHandoff.TooLarge]),
+          address.left.exists(_.isInstanceOf[CellHandoff.TooLarge]),
+          fits.exists(_.length <= CellHandoff.MaxLength),
+        )
+      },
       test("two seals of the same submission have different ids") {
         for
           first <- at(Some("kz-1"))

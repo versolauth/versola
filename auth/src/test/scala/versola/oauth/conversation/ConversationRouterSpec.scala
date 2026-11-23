@@ -264,32 +264,34 @@ object ConversationRouterSpec extends UnitSpecBase:
           env.otpConversationService.checkLoginPassword.calls.size == 1,
         )
       },
-      test("not held, with central naming another cell, is sent there: the conversation is deleted and the password is not checked") {
+      test(
+        "not held, with central naming another cell, is sent there: the password is not checked, and the conversation is left to be ended once it is sealed",
+      ) {
         val env = Env(TestEnvConfig.cellCoreConfig)
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
           _ <- env.userRepository.findByLogin.succeedsWith(None)
           _ <- env.directory.homeOfLogin.succeedsWith(Some(otherCell))
-          _ <- env.conversationRepository.delete.succeedsWith(true)
           (result, _) <- env.router.submit(authId, loginSubmission, None, None)
         yield assertTrue(
           result == ConversationResult.Elsewhere(otherCell, None),
           env.directory.homeOfLogin.calls == List(login),
-          env.conversationRepository.delete.calls == List((authId, loginRecord.version)),
+          // ended by the controller, once the seal is made
+          env.conversationRepository.delete.calls.isEmpty,
           env.otpConversationService.checkLoginPassword.calls.isEmpty,
         )
       },
-      test("not held, when another request has ended the conversation already, is not sent on a second time") {
+      test("end deletes the conversation at the version it was read at, and says whether this request was the one that ended it") {
         val env = Env(TestEnvConfig.cellCoreConfig)
         for
-          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
-          _ <- env.userRepository.findByLogin.succeedsWith(None)
-          _ <- env.directory.homeOfLogin.succeedsWith(Some(otherCell))
+          _ <- env.conversationRepository.delete.succeedsWith(true)
+          first <- env.router.end(authId, loginRecord)
           _ <- env.conversationRepository.delete.succeedsWith(false)
-          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+          second <- env.router.end(authId, loginRecord)
         yield assertTrue(
-          result == ConversationResult.WriteConflict,
-          env.otpConversationService.checkLoginPassword.calls.isEmpty,
+          first,
+          !second,
+          env.conversationRepository.delete.calls == List((authId, loginRecord.version), (authId, loginRecord.version)),
         )
       },
       test("not held, with central naming this cell, is checked here") {
@@ -350,12 +352,11 @@ object ConversationRouterSpec extends UnitSpecBase:
           _ <- env.webAuthnService.userFromResponse.succeedsWith(Some(testUserId))
           _ <- env.userRepository.find.succeedsWith(None)
           _ <- env.directory.homeOfUser.succeedsWith(Some(otherCell))
-          _ <- env.conversationRepository.delete.succeedsWith(true)
           (result, _) <- env.router.submit(authId, assertion, None, None)
         yield assertTrue(
           result == ConversationResult.Elsewhere(otherCell, Some(pendingRequest)),
           env.directory.homeOfUser.calls == List(testUserId),
-          env.conversationRepository.delete.calls == List((authId, passkeyRecord.version)),
+          env.conversationRepository.delete.calls.isEmpty,
           env.otpConversationService.finishPasskeyAssertion.calls.isEmpty,
         )
       },

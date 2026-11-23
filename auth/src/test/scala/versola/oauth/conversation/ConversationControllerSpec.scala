@@ -291,6 +291,7 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
         _ <- router.submit.succeedsWith((ConversationResult.Elsewhere(home, passkeyRequest), record))
         _ <- handoff.sealSubmission.succeedsWith("v1.kz-2.sealed")
+        _ <- router.end.succeedsWith(true)
         response <- client.batched(
           Request.post(
             url = target,
@@ -303,7 +304,54 @@ object ConversationControllerSpec extends UnitSpecBase:
         response.header(Header.CacheControl).contains(Header.CacheControl.NoStore),
         response.header(Header.SetCookie).isEmpty,
         handoff.sealSubmission.calls == List((record, home, conversationCookie.value.head.content, passkeyRequest)),
+        router.end.calls.map(_._2) == List(record),
         renderService.renderSubmit.calls.isEmpty,
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
+
+  /** A submission for another cell that is not sent on: the step is rendered as `expected` and no redirect is given.
+    *
+    * @param seal what sealing answers
+    * @param ended what ending the conversation answers, when it is reached
+    */
+  def notSentOnTestCase(description: String, seal: Either[Throwable, String], ended: Boolean, expected: ConversationResult.Render)(using
+      loc: SourceLocation,
+      trace: Trace,
+  ) =
+    test(description) {
+      val home = RoutingKey.CellId.parse("kz-2").toOption.get
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        handoff = stub[CellHandoff]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++
+                ZEnvironment(handoff) ++ tracing,
+            ),
+          ),
+        )
+        _ <- configuration.getPasswordRegex.succeedsWith(".*")
+        _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+        _ <- router.submit.succeedsWith((ConversationResult.Elsewhere(home, None), record))
+        _ <- seal.fold(handoff.sealSubmission.failsWith(_), handoff.sealSubmission.succeedsWith(_))
+        _ <- router.end.succeedsWith(ended)
+        _ <- renderService.renderSubmit.succeedsWith(Response.seeOther(URL.root / "challenge"))
+        response <- client.batched(
+          Request.post(
+            url = URL.empty / "challenge" / "login-password",
+            body = Body.fromURLEncodedForm(Form.fromStrings("login" -> "user", "password" -> "s3cret", "csrf" -> "")),
+          ).addHeader(conversationCookie),
+        )
+      yield assertTrue(
+        response.status == Status.SeeOther,
+        renderService.renderSubmit.calls.map(_._1) == List(expected),
+        router.end.calls.size == (if seal.isRight then 1 else 0),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
@@ -554,6 +602,18 @@ object ConversationControllerSpec extends UnitSpecBase:
         passkeyRequest = Some("""{"challenge":"c"}"""),
         target = (URL.empty / "challenge" / "login-password").addQueryParam("ui_locale", "ru"),
         expectedLocation = "/challenge/handoff?handoff=v1.kz-2.sealed&ui_locale=ru",
+      ),
+      notSentOnTestCase(
+        description = "keeps its conversation and answers the step's service unavailable when the request is too large to seal",
+        seal = Left(CellHandoff.TooLarge(9000)),
+        ended = true,
+        expected = ConversationResult.ServiceUnavailable,
+      ),
+      notSentOnTestCase(
+        description = "gets no redirect when another request has ended the conversation already: one submission, one seal",
+        seal = Right("v1.kz-2.sealed"),
+        ended = false,
+        expected = ConversationResult.WriteConflict,
       ),
     ),
     test("GET /challenge sends the render service's ETag when If-None-Match is present") {
