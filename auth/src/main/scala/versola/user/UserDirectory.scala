@@ -1,7 +1,7 @@
 package versola.user
 
 import versola.oauth.client.CentralSyncTokenService
-import versola.user.model.UserId
+import versola.user.model.{Login, UserId}
 import versola.util.{CoreConfig, Email, Phone, RoutingKey}
 import zio.http.{Body, Header, MediaType, Request, Status}
 import zio.json.*
@@ -27,6 +27,14 @@ trait UserDirectory:
     * (versolauth/versola#1046). */
   def lookup(credential: Either[Email, Phone]): Task[Option[UserDirectory.Claim]]
 
+  /** The cell a sign-in by this login is to be sent to, when this cell does not hold the login
+    * (versolauth/versola#1048). Central answers a cell for a login nobody holds as well, so that sending a sign-in on
+    * does not say that the login exists; `None` only where there is no cell to send it to. */
+  def homeOfLogin(login: Login): Task[Option[RoutingKey.CellId]]
+
+  /** The cell that holds a user this cell does not, as a passkey names it; `None` when no cell does. */
+  def homeOfUser(userId: UserId): Task[Option[RoutingKey.CellId]]
+
 object UserDirectory:
   /** @param cell the cell that holds the user; `None` on an installation with no cell. */
   final case class Claim(userId: UserId, cell: Option[RoutingKey.CellId])
@@ -35,6 +43,10 @@ object UserDirectory:
   private[user] case class ClaimRequest(email: Option[Email], phone: Option[Phone], cell: Option[String]) derives JsonCodec
 
   private[user] case class ClaimResponse(userId: UserId, cell: Option[String]) derives JsonCodec
+
+  private[user] case class HomeRequest(login: Option[Login], userId: Option[UserId]) derives JsonCodec
+
+  private[user] case class HomeResponse(cell: String) derives JsonCodec
 
   val live: URLayer[CoreConfig & CentralSyncTokenService, UserDirectory] =
     ZLayer.fromFunction(Impl(_, _))
@@ -60,6 +72,31 @@ object UserDirectory:
             if response.status == Status.NotFound then ZIO.none
             else if !response.status.isSuccess then ZIO.fail(new Exception(s"Looking a credential up failed with ${response.status}"))
             else response.body.asJsonFromCodec[ClaimResponse].flatMap(read).asSome
+        yield found
+
+    private val HomeUrl = config.central.url / "users" / "home"
+
+    override def homeOfLogin(login: Login): Task[Option[RoutingKey.CellId]] =
+      home(HomeRequest(login = Some(login), userId = None))
+
+    override def homeOfUser(userId: UserId): Task[Option[RoutingKey.CellId]] =
+      home(HomeRequest(login = None, userId = Some(userId)))
+
+    private def home(request: HomeRequest): Task[Option[RoutingKey.CellId]] =
+      ZIO.scoped:
+        for
+          response <- centralSyncTokenService.syncRequest(
+            Request
+              .post(HomeUrl, Body.fromString(request.toJson))
+              .addHeader(Header.ContentType(MediaType.application.json)),
+          )
+          found <-
+            if response.status == Status.NotFound then ZIO.none
+            else if !response.status.isSuccess then ZIO.fail(new Exception(s"Asking for a home cell failed with ${response.status}"))
+            else
+              response.body.asJsonFromCodec[HomeResponse].flatMap: answered =>
+                ZIO.fromEither(RoutingKey.CellId.parse(answered.cell))
+                  .mapBoth(reason => new Exception(s"central answered an invalid cell: $reason"), Some(_))
         yield found
 
     /** A cell id central answers and this build cannot read is a failure, not "no cell": the user would be created

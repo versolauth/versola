@@ -16,8 +16,13 @@ object CellHandoffSpec extends ZIOSpecDefault:
   private val record = ConversationRouterSpec.initialRecord.copy(nonce = Some(Nonce("n-1")), promptConsent = true, uiLocales = Some(List("ru", "kk")))
   private val email = Email("user@example.com")
 
-  private def at(cell: Option[String], config: CoreConfig = TestEnvConfig.coreConfig): URIO[SecurityService, CellHandoff] =
-    ZIO.serviceWith[SecurityService](CellHandoff.Impl(config.copy(cellId = cell.map(RoutingKey.CellId.parse(_).toOption.get)), _))
+  private val cookie = "conversation-cookie-content"
+
+  private def at(cell: Option[String], config: CoreConfig = TestEnvConfig.coreConfig): URIO[SecurityService & SecureRandom, CellHandoff] =
+    for
+      security <- ZIO.service[SecurityService]
+      random <- ZIO.service[SecureRandom]
+    yield CellHandoff.Impl(config.copy(cellId = cell.map(RoutingKey.CellId.parse(_).toOption.get)), security, random)
 
   def spec = suite("CellHandoff")(
     test("the home cell opens what another cell sealed for it: the request's parameters and the address as the login hint") {
@@ -101,4 +106,80 @@ object CellHandoffSpec extends ZIOSpecDefault:
         late <- second.open(ticket).either
       yield assertTrue(inTime.isRight, late == Left(CellHandoff.Refused.Expired))
     },
-  ).provide(SecureRandom.live >>> SecurityService.live)
+    test("an address seal carries no submission") {
+      for
+        first <- at(Some("kz-1"))
+        second <- at(Some("kz-2"))
+        ticket <- first.seal(record, Left(email), home)
+        payload <- second.open(ticket)
+      yield assertTrue(payload.submission.isEmpty)
+    },
+    suite("a submission seal")(
+      test("round-trips with the digest of the cookie, the passkey request and no login hint") {
+        for
+          first <- at(Some("kz-1"))
+          second <- at(Some("kz-2"))
+          ticket <- first.sealSubmission(record, home, cookie, Some("""{"challenge":"c"}"""))
+          payload <- second.open(ticket)
+        yield assertTrue(
+          ticket.startsWith("v1.kz-2."),
+          payload.to == "kz-2",
+          payload.submission.map(_.cookie) == Some(CellHandoff.cookieDigest(cookie)),
+          payload.submission.flatMap(_.passkeyRequest) == Some("""{"challenge":"c"}"""),
+          payload.submission.exists(_.id.nonEmpty),
+          payload.params("client_id") == List(record.clientId: String),
+          !payload.params.contains("login_hint"),
+        )
+      },
+      test("carries no passkey request for a login and password") {
+        for
+          first <- at(Some("kz-1"))
+          second <- at(Some("kz-2"))
+          payload <- first.sealSubmission(record, home, cookie, None).flatMap(second.open)
+        yield assertTrue(payload.submission.exists(_.passkeyRequest.isEmpty))
+      },
+      test("does not carry the cookie itself") {
+        for
+          first <- at(Some("kz-1"))
+          second <- at(Some("kz-2"))
+          payload <- first.sealSubmission(record, home, cookie, None).flatMap(second.open)
+        yield assertTrue(!payload.submission.exists(_.cookie.contains(cookie)))
+      },
+      test("two seals of the same submission have different ids") {
+        for
+          first <- at(Some("kz-1"))
+          second <- at(Some("kz-2"))
+          one <- first.sealSubmission(record, home, cookie, None).flatMap(second.open)
+          two <- first.sealSubmission(record, home, cookie, None).flatMap(second.open)
+        yield assertTrue(one.submission.map(_.id) != two.submission.map(_.id))
+      },
+      test("sameCookie accepts the cookie sealed and refuses another") {
+        for
+          first <- at(Some("kz-1"))
+          second <- at(Some("kz-2"))
+          payload <- first.sealSubmission(record, home, cookie, None).flatMap(second.open)
+          submission = payload.submission.get
+        yield assertTrue(
+          CellHandoff.sameCookie(submission, cookie),
+          !CellHandoff.sameCookie(submission, cookie + "x"),
+          !CellHandoff.sameCookie(submission, ""),
+        )
+      },
+      test("is opened only by the cell it names") {
+        for
+          first <- at(Some("kz-1"))
+          third <- at(Some("kz-3"))
+          ticket <- first.sealSubmission(record, home, cookie, None)
+          elsewhere <- third.open(ticket).either
+        yield assertTrue(elsewhere == Left(CellHandoff.Refused.Elsewhere))
+      },
+    ),
+    suite("paramsOf")(
+      test("has no login_hint without a credential") {
+        assertTrue(!CellHandoff.paramsOf(record, None).contains("login_hint"))
+      },
+      test("has the address as login_hint with a credential") {
+        assertTrue(CellHandoff.paramsOf(record, Some(Left(email)))("login_hint") == List("user@example.com"))
+      },
+    ),
+  ).provide(SecureRandom.live, SecurityService.live)

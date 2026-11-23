@@ -3,13 +3,24 @@ package versola.oauth.authorize
 import org.scalamock.stubs.Stub
 import versola.audit.{AuthActors, AuthAudit, AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents, ClientAuthFailures, ImmediateClientAuthFailures}
 import versola.auth.TestEnvConfig
+import versola.auth.model.Password
 import versola.oauth.authorize.model.Prompt
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseMode, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.clientauth.ClientAssertionRepository
 import versola.oauth.conversation.model.AuthId
+import versola.oauth.conversation.{
+  ConversationRenderService,
+  ConversationResult,
+  ConversationRouter,
+  ConversationRouterSpec,
+  LoginPasswordSubmission,
+  PasskeyAssertionSubmission,
+}
 import versola.oauth.handoff.CellHandoff
-import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod}
+import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod, ConversationCookie}
+import versola.user.model.Login
 import versola.util.UnitSpecBase
 import versola.util.audit.{AuditDraft, AuditEvents, AuditOutcome}
 import versola.util.http.{NoopTracing, Observability}
@@ -18,6 +29,7 @@ import zio.http.*
 import zio.prelude.NonEmptySet
 import zio.test.*
 
+import java.time.Instant
 import java.util.UUID
 
 object AuthorizeEndpointControllerSpec extends UnitSpecBase:
@@ -59,6 +71,9 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
       authService: Stub[AuthorizeEndpointService],
       configService: Stub[OAuthConfigurationService],
       handoff: Stub[CellHandoff],
+      assertions: Stub[ClientAssertionRepository],
+      router: Stub[ConversationRouter],
+      renderService: Stub[ConversationRenderService],
   )
 
   def controllerTestCase(
@@ -69,6 +84,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
       verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
       verifyAudit: List[AuditDraft] => TestResult = _ => assertCompletes,
       audit: CapturingAuditEvents = CapturingAuditEvents.shared(),
+      verifyServices: Services => TestResult = _ => assertCompletes,
   ) =
     test(description) {
       for
@@ -77,9 +93,12 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
         authService = stub[AuthorizeEndpointService]
         configService = stub[OAuthConfigurationService]
         handoff = stub[CellHandoff]
+        assertions = stub[ClientAssertionRepository]
+        router = stub[ConversationRouter]
+        renderService = stub[ConversationRenderService]
         responseService = AuthorizationResponseService.Impl(config, configService, TestEnvConfig.jwksService)
         tracing <- NoopTracing.layer.build
-        services = Services(parser, authService, configService, handoff)
+        services = Services(parser, authService, configService, handoff, assertions, router, renderService)
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             AuthorizeEndpointController.routes
@@ -92,6 +111,9 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
                   ZEnvironment[AuditEvents](audit) ++
                   ZEnvironment[ClientAuthFailures](ImmediateClientAuthFailures(audit)) ++
                   ZEnvironment[CellHandoff](handoff) ++
+                  ZEnvironment(assertions) ++
+                  ZEnvironment(router) ++
+                  ZEnvironment(renderService) ++
                   tracing,
               ),
           ),
@@ -100,8 +122,66 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
         response <- client.batched(request)
         verifyResult <- verify(response)
         drafts <- audit.recorded
-      yield assertTrue(response.status == expectedStatus) && verifyResult && verifyAudit(drafts)
+      yield assertTrue(response.status == expectedStatus) && verifyResult && verifyAudit(drafts) && verifyServices(services)
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
+
+  private val handedCookie = "first-cells-conversation-cookie"
+
+  private def submission(cookie: String, passkeyRequest: Option[String] = None) =
+    CellHandoff.Submission(id = "sub-1", cookie = CellHandoff.cookieDigest(cookie), passkeyRequest = passkeyRequest)
+
+  private def payload(submission: Option[CellHandoff.Submission]) =
+    CellHandoff.Payload(
+      params = Map("client_id" -> List("test-client")),
+      to = "kz-1",
+      expiresAt = 1000L,
+      submission = submission,
+    )
+
+  /** The browser repeating a submission at the cell the first cell sent it to.
+    *
+    * @param opened whether the seal opens for this cell
+    * @param taken what the store of seals answers to this one: true the first time
+    * @param cookie the conversation cookie the browser presents
+    */
+  def handedTestCase(
+      description: String,
+      payload: CellHandoff.Payload,
+      expectedStatus: Status,
+      form: Form = Form.fromStrings("login" -> "user", "password" -> "s3cret", "csrf" -> "first-cells-csrf"),
+      cookie: Option[String] = Some(handedCookie),
+      opened: Boolean = true,
+      taken: Boolean = true,
+      verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
+      verifyServices: Services => TestResult = _ => assertCompletes,
+  ) =
+    val request = cookie.foldLeft(
+      Request.post(
+        (URL.root / "challenge" / "handoff").addQueryParam(CellHandoff.Parameter, "v1.kz-1.sealed"),
+        Body.fromURLEncodedForm(form),
+      ),
+    )((request, content) => request.addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request(ConversationCookie.name, content)))))
+    controllerTestCase(
+      description = description,
+      request = request,
+      expectedStatus = expectedStatus,
+      setup = services =>
+        for
+          _ <- if opened then services.handoff.open.succeedsWith(payload) else services.handoff.open.failsWith(CellHandoff.Refused.Elsewhere)
+          _ <- services.assertions.recordIfAbsent.succeedsWith(taken)
+          _ <- services.parser.validate.succeedsWith(baseRequest)
+          _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+          _ <- services.configService.getIpHeader.succeedsWith("X-Real-IP")
+          _ <- services.configService.getPasswordRegex.succeedsWith(".*")
+          _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
+          _ <- services.router.submitHanded.succeedsWith(
+            (ConversationResult.RenderStep(ConversationRouterSpec.initialRecord.step), ConversationRouterSpec.initialRecord),
+          )
+          _ <- services.renderService.renderSubmit.succeedsWith(Response.seeOther(URL.root / "challenge"))
+        yield (),
+      verify = verify,
+      verifyServices = verifyServices,
+    )
 
   val spec = suite("AuthorizeEndpointController")(
     suite("GET /authorize")(
@@ -151,6 +231,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
                 params = Map("client_id" -> List("test-client"), "login_hint" -> List("user@example.com")),
                 to = "kz-1",
                 expiresAt = 0L,
+                submission = None,
               ),
             )
             _ <- services.parser.validate.succeedsWith(baseRequest)
@@ -174,7 +255,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
         request = Request.get((URL.root / "challenge" / "handoff").addQueryParam(CellHandoff.Parameter, "v1.kz-1.sealed")),
         expectedStatus = Status.BadRequest,
         setup = services =>
-          services.handoff.open.succeedsWith(CellHandoff.Payload(params = Map.empty, to = "kz-1", expiresAt = 0L)) *>
+          services.handoff.open.succeedsWith(CellHandoff.Payload(params = Map.empty, to = "kz-1", expiresAt = 0L, submission = None)) *>
             services.parser.validate.failsWith(Error.BadRequest),
       ),
       controllerTestCase(
@@ -355,6 +436,89 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
             _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
           yield (),
         verify = resp => ZIO.succeed(assertTrue(resp.header(Header.SetCookie).nonEmpty)),
+      ),
+    ),
+    // versolauth/versola#1048: a submission another cell took and sent here with a 307.
+    suite("POST /challenge/handoff")(
+      handedTestCase(
+        description = "refuses a seal that carries no submission, and starts nothing",
+        payload = payload(submission = None),
+        expectedStatus = Status.BadRequest,
+        verifyServices = services =>
+          assertTrue(services.assertions.recordIfAbsent.calls.isEmpty, services.authService.authorize.calls.isEmpty),
+      ),
+      handedTestCase(
+        description = "refuses a request that carries no conversation cookie",
+        payload = payload(submission = Some(submission(cookie = handedCookie))),
+        cookie = None,
+        expectedStatus = Status.BadRequest,
+        verifyServices = services =>
+          assertTrue(services.assertions.recordIfAbsent.calls.isEmpty, services.authService.authorize.calls.isEmpty),
+      ),
+      handedTestCase(
+        description = "refuses a request whose conversation cookie is not the one the seal was made with",
+        payload = payload(submission = Some(submission(cookie = handedCookie))),
+        cookie = Some("another-browsers-cookie"),
+        expectedStatus = Status.BadRequest,
+        verifyServices = services =>
+          assertTrue(services.assertions.recordIfAbsent.calls.isEmpty, services.authService.authorize.calls.isEmpty),
+      ),
+      handedTestCase(
+        description = "refuses a seal that was presented before, and does not authorize the request",
+        payload = payload(submission = Some(submission(cookie = handedCookie))),
+        taken = false,
+        expectedStatus = Status.BadRequest,
+        verifyServices = services =>
+          assertTrue(
+            services.assertions.recordIfAbsent.calls == List(("cell handoff", "sub-1", Instant.ofEpochSecond(1000L))),
+            services.authService.authorize.calls.isEmpty,
+            services.router.submitHanded.calls.isEmpty,
+          ),
+      ),
+      handedTestCase(
+        description = "refuses a seal that is not this cell's to open",
+        payload = payload(submission = Some(submission(cookie = handedCookie))),
+        opened = false,
+        expectedStatus = Status.BadRequest,
+        verifyServices = services => assertTrue(services.assertions.recordIfAbsent.calls.isEmpty),
+      ),
+      handedTestCase(
+        description = "starts the request and has the conversation it starts check the login and password, whose CSRF token is not looked at",
+        payload = payload(submission = Some(submission(cookie = handedCookie))),
+        expectedStatus = Status.SeeOther,
+        verify = resp => ZIO.succeed(assertTrue(resp.headers(Header.SetCookie).exists(_.value.name == ConversationCookie.name))),
+        verifyServices = services =>
+          assertTrue(
+            services.assertions.recordIfAbsent.calls == List(("cell handoff", "sub-1", Instant.ofEpochSecond(1000L))),
+            services.authService.authorize.calls.size == 1,
+            services.router.submitHanded.calls == List(
+              (authId, LoginPasswordSubmission(Login("user"), Password("s3cret"), "first-cells-csrf"), None, None, None),
+            ),
+          ),
+      ),
+      handedTestCase(
+        description = "has the conversation it starts check a passkey with the request the seal carries",
+        payload = payload(submission = Some(submission(cookie = handedCookie, passkeyRequest = Some("""{"challenge":"c"}""")))),
+        form = Form.fromStrings("response" -> """{"id":"cred-1"}""", "csrf" -> "first-cells-csrf"),
+        expectedStatus = Status.SeeOther,
+        verify = resp => ZIO.succeed(assertTrue(resp.headers(Header.SetCookie).exists(_.value.name == ConversationCookie.name))),
+        verifyServices = services =>
+          assertTrue(
+            services.assertions.recordIfAbsent.calls == List(("cell handoff", "sub-1", Instant.ofEpochSecond(1000L))),
+            services.router.submitHanded.calls == List(
+              (authId, PasskeyAssertionSubmission("""{"id":"cred-1"}""", "first-cells-csrf"), Some("""{"challenge":"c"}"""), None, None),
+            ),
+          ),
+      ),
+    ),
+    suite("GET /challenge/handoff with a submission seal")(
+      controllerTestCase(
+        description = "is refused, since a GET has no submission to go with it",
+        request = Request.get((URL.root / "challenge" / "handoff").addQueryParam(CellHandoff.Parameter, "v1.kz-1.sealed")),
+        expectedStatus = Status.BadRequest,
+        setup = services =>
+          services.handoff.open.succeedsWith(payload(submission = Some(submission(cookie = handedCookie)))),
+        verifyAudit = _ => assertCompletes,
       ),
     ),
   )

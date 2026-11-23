@@ -9,11 +9,12 @@ import versola.oauth.authorize.model.ResponseMode
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFlow, ClientId, PhoneRegion, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
+import versola.oauth.handoff.CellHandoff
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, ConversationCookie}
 import versola.user.model.Login
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
-import versola.util.{Email, Phone, UnitSpecBase}
+import versola.util.{Email, Phone, RoutingKey, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.internal.stacktracer.SourceLocation
@@ -145,7 +146,7 @@ object ConversationControllerSpec extends UnitSpecBase:
                   ++ ZEnvironment(TestEnvConfig.coreConfig)
                   ++ ZEnvironment(configuration)
                   ++ formService
-                  ++ tracing,
+                  ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
               ),
           ),
         )
@@ -191,7 +192,9 @@ object ConversationControllerSpec extends UnitSpecBase:
           Observability.handleErrors(
             ConversationController.routes
               .provideEnvironment(
-                ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ formService ++ tracing,
+                ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ formService ++ ZEnvironment(
+                  stub[CellHandoff],
+                ) ++ tracing,
               ),
           ),
         )
@@ -246,7 +249,7 @@ object ConversationControllerSpec extends UnitSpecBase:
                   ++ ZEnvironment(TestEnvConfig.coreConfig)
                   ++ ZEnvironment(configuration)
                   ++ formService
-                  ++ tracing,
+                  ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
               ),
           ),
         )
@@ -259,6 +262,48 @@ object ConversationControllerSpec extends UnitSpecBase:
       yield assertTrue(
         response.status == Status.BadRequest,
         submitCalls.isEmpty,
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
+
+  def sentOnTestCase(description: String, passkeyRequest: Option[String], target: URL, expectedLocation: String)(using
+      loc: SourceLocation,
+      trace: Trace,
+  ) =
+    test(description) {
+      val home = RoutingKey.CellId.parse("kz-2").toOption.get
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        handoff = stub[CellHandoff]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++
+                ZEnvironment(handoff) ++ tracing,
+            ),
+          ),
+        )
+        _ <- configuration.getPasswordRegex.succeedsWith(".*")
+        _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- configuration.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId)))
+        _ <- router.submit.succeedsWith((ConversationResult.Elsewhere(home, passkeyRequest), record))
+        _ <- handoff.sealSubmission.succeedsWith("v1.kz-2.sealed")
+        response <- client.batched(
+          Request.post(
+            url = target,
+            body = Body.fromURLEncodedForm(Form.fromStrings("login" -> "user", "password" -> "s3cret", "csrf" -> "")),
+          ).addHeader(conversationCookie),
+        )
+      yield assertTrue(
+        response.status == Status.TemporaryRedirect,
+        response.header(Header.Location).map(_.url.encode).contains(expectedLocation),
+        response.header(Header.CacheControl).contains(Header.CacheControl.NoStore),
+        response.header(Header.SetCookie).isEmpty,
+        handoff.sealSubmission.calls == List((record, home, conversationCookie.value.head.content, passkeyRequest)),
+        renderService.renderSubmit.calls.isEmpty,
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
@@ -496,6 +541,21 @@ object ConversationControllerSpec extends UnitSpecBase:
       ).addHeader(conversationCookie),
       submission = (authId, ConsentDenySubmission(""), None, None),
     ),
+    // versolauth/versola#1048
+    suite("a submission whose user another cell holds")(
+      sentOnTestCase(
+        description = "is answered with a 307 to the home cell's handoff, with the seal made over the request's own conversation cookie",
+        passkeyRequest = None,
+        target = URL.empty / "challenge" / "login-password",
+        expectedLocation = "/challenge/handoff?handoff=v1.kz-2.sealed",
+      ),
+      sentOnTestCase(
+        description = "carries the passkey request the result names, and the locale the form submitted",
+        passkeyRequest = Some("""{"challenge":"c"}"""),
+        target = (URL.empty / "challenge" / "login-password").addQueryParam("ui_locale", "ru"),
+        expectedLocation = "/challenge/handoff?handoff=v1.kz-2.sealed&ui_locale=ru",
+      ),
+    ),
     test("GET /challenge sends the render service's ETag when If-None-Match is present") {
       for
         client <- ZIO.service[Client]
@@ -506,7 +566,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -535,7 +597,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -557,7 +621,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -577,7 +643,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -597,7 +665,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -626,7 +696,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -662,7 +734,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -692,7 +766,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -718,7 +794,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -735,7 +813,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -757,7 +837,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -779,7 +861,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -811,7 +895,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -835,7 +921,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -861,7 +949,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -890,7 +980,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -916,7 +1008,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -939,7 +1033,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -961,7 +1057,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -983,7 +1081,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -1009,7 +1109,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -1035,7 +1137,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )
@@ -1063,7 +1167,9 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ConversationController.routes.provideEnvironment(
-              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(
+                renderService,
+              ) ++ ZEnvironment(stub[CellHandoff]) ++ tracing,
             ),
           ),
         )

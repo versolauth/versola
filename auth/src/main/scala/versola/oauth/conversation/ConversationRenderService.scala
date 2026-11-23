@@ -450,6 +450,11 @@ object ConversationRenderService:
         case ConversationResult.Handoff(location) =>
           ZIO.succeed(Response.seeOther(location).addCookie(ConversationCookie.expired))
 
+        // Sealed and answered by the controller that took the submission, which has the cookie the seal is bound to
+        // (`ConversationController.sendOn`); a result that reaches this is one a caller forgot to seal.
+        case ConversationResult.Elsewhere(_, _) =>
+          Observability.setError("illegal_state", Some("a submission for another cell was not sealed")).as(Response.internalServerError)
+
         case ConversationResult.Complete(redirectUri, state, code, sessionId, idTokenData, userAgentId, userAgentData) =>
           val encodedCode = AuthorizationCode.present(code)
           for

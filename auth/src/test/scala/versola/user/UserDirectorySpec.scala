@@ -2,7 +2,7 @@ package versola.user
 
 import versola.auth.TestEnvConfig
 import versola.oauth.client.CentralSyncTokenService
-import versola.user.model.UserId
+import versola.user.model.{Login, UserId}
 import versola.util.{Email, Phone}
 import zio.*
 import zio.http.*
@@ -106,4 +106,56 @@ object UserDirectorySpec extends ZIOSpecDefault:
         malformed <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).claim(Right(phone)).exit
       yield assertTrue(malformed.isFailure)
     },
+    // versolauth/versola#1048
+    suite("the home cell of a login or a user")(
+      test("a login is sent as the login alone, and the cell central names is read") {
+        for
+          (client, seen) <- central(Response.json("""{"cell":"kz-2"}"""))
+          home <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).homeOfLogin(Login("alice"))
+          (request, body) <- sent(seen)
+        yield assertTrue(
+          home.map(identity[String]) == Some("kz-2"),
+          request.method == Method.POST,
+          request.url.path.encode.contains("users/home"),
+          body.get("login").contains(Json.Str("alice")),
+          body.get("userId").forall(_ == Json.Null),
+        )
+      },
+      test("a user is sent as the user id alone, and the cell central names is read") {
+        for
+          (client, seen) <- central(Response.json("""{"cell":"kz-2"}"""))
+          home <- UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client)).homeOfUser(userId)
+          (request, body) <- sent(seen)
+        yield assertTrue(
+          home.map(identity[String]) == Some("kz-2"),
+          request.url.path.encode.contains("users/home"),
+          body.get("userId").contains(Json.Str(userId.toString)),
+          body.get("login").forall(_ == Json.Null),
+        )
+      },
+      test("a 404 is no cell, for a login and for a user") {
+        for
+          (client, _) <- central(Response.status(Status.NotFound))
+          directory = UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client))
+          ofLogin <- directory.homeOfLogin(Login("alice"))
+          ofUser <- directory.homeOfUser(userId)
+        yield assertTrue(ofLogin.isEmpty, ofUser.isEmpty)
+      },
+      test("a refusal of central is a failure, not no cell") {
+        for
+          (client, _) <- central(Response.status(Status.InternalServerError))
+          directory = UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client))
+          ofLogin <- directory.homeOfLogin(Login("alice")).exit
+          ofUser <- directory.homeOfUser(userId).exit
+        yield assertTrue(ofLogin.isFailure, ofUser.isFailure)
+      },
+      test("a cell id that is not one is a failure, not a cell") {
+        for
+          (client, _) <- central(Response.json("""{"cell":"KZ.1"}"""))
+          directory = UserDirectory.Impl(TestEnvConfig.cellCoreConfig, tokenService(client))
+          ofLogin <- directory.homeOfLogin(Login("alice")).exit
+          ofUser <- directory.homeOfUser(userId).exit
+        yield assertTrue(ofLogin.isFailure, ofUser.isFailure)
+      },
+    ),
   ).provide(TestClient.layer) @@ TestAspect.silentLogging

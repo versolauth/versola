@@ -25,6 +25,18 @@ object UserServiceSpec extends UnitSpecBase:
   private def held(email: Option[Email] = None, phone: Option[Phone] = None, login: Option[Login] = None) =
     AuthClient.UserDto(email = email, phone = phone, login = login, claims = Json.Obj())
 
+  private def cellRecord(id: CellId) =
+    CellRecord(
+      id = id,
+      regionId = RegionId("almaty"),
+      internalUrl = s"http://$id:9003",
+      mtlsUrl = None,
+      trustedCertificates = Nil,
+      state = CellState.Open,
+      weight = 100,
+    )
+  private val registeredCells = Vector("kz-1", "kz-2", "kz-3").map(CellId(_))
+
   class Env:
     val userRepository = stub[UserRepository]
     val authClient = stub[AuthClient]
@@ -475,6 +487,99 @@ object UserServiceSpec extends UnitSpecBase:
         _ <- env.userRepository.findByIdentifier.succeedsWith(None)
         found <- env.service.lookup(LookupUserRequest(email = Some(email), phone = None, login = None))
       yield assertTrue(found.isEmpty)
+    },
+    // versolauth/versola#1048
+    test("homeCell answers the cell of the user that holds a login, by its MAC") {
+      val env = Env()
+      val login = Login("jdoe")
+      for
+        _ <- env.userRepository.findByIdentifier.succeedsWith(Some(UserDirectoryRecord(userId, Some(cell))))
+        result <- env.service.homeCell(HomeCellRequest(login = Some(login), userId = None))
+      yield assertTrue(
+        result == Some(cell),
+        env.userRepository.findByIdentifier.calls.map(i => (i.kind, i.mac.toList)) == List((IdentifierKind.Login, key.login(login).mac.toList)),
+        env.topology.getCells.calls.isEmpty,
+      )
+    },
+    test("homeCell answers nothing for a login held by a user with no cell, and does not pick a decoy") {
+      val env = Env()
+      for
+        _ <- env.userRepository.findByIdentifier.succeedsWith(Some(UserDirectoryRecord(userId, None)))
+        result <- env.service.homeCell(HomeCellRequest(login = Some(Login("jdoe")), userId = None))
+      yield assertTrue(result.isEmpty, env.topology.getCells.calls.isEmpty)
+    },
+    test("homeCell answers a registered cell for a login nobody holds, the same one every time, picked by the MAC of the login") {
+      val env = Env()
+      val login = Login("nobody")
+      val request = HomeCellRequest(login = Some(login), userId = None)
+      for
+        _ <- env.userRepository.findByIdentifier.succeedsWith(None)
+        _ <- env.topology.getCells.succeedsWith(registeredCells.map(cellRecord))
+        first <- env.service.homeCell(request)
+        second <- env.service.homeCell(request)
+      yield assertTrue(
+        first.exists(registeredCells.contains),
+        second == first,
+        first == UserService.decoyCell(registeredCells, key.login(login).mac),
+      )
+    },
+    test("homeCell answers nothing for a login nobody holds when no cell is registered") {
+      val env = Env()
+      for
+        _ <- env.userRepository.findByIdentifier.succeedsWith(None)
+        _ <- env.topology.getCells.succeedsWith(Vector.empty)
+        result <- env.service.homeCell(HomeCellRequest(login = Some(Login("nobody")), userId = None))
+      yield assertTrue(result.isEmpty)
+    },
+    test("homeCell answers the cell of a known user id") {
+      val env = Env()
+      for
+        _ <- env.userRepository.find.succeedsWith(Some(UserDirectoryRecord(userId, Some(cell))))
+        result <- env.service.homeCell(HomeCellRequest(login = None, userId = Some(userId)))
+      yield assertTrue(result == Some(cell), env.userRepository.find.calls == List(userId), env.topology.getCells.calls.isEmpty)
+    },
+    test("homeCell answers nothing for an unknown user id, not a decoy") {
+      val env = Env()
+      for
+        _ <- env.userRepository.find.succeedsWith(None)
+        result <- env.service.homeCell(HomeCellRequest(login = None, userId = Some(userId)))
+      yield assertTrue(result.isEmpty, env.topology.getCells.calls.isEmpty)
+    },
+    test("homeCell answers nothing for a request with both a login and a user id, and for one with neither") {
+      val env = Env()
+      for
+        both <- env.service.homeCell(HomeCellRequest(login = Some(Login("jdoe")), userId = Some(userId)))
+        neither <- env.service.homeCell(HomeCellRequest(login = None, userId = None))
+      yield assertTrue(
+        both.isEmpty,
+        neither.isEmpty,
+        env.userRepository.findByIdentifier.calls.isEmpty,
+        env.userRepository.find.calls.isEmpty,
+        env.topology.getCells.calls.isEmpty,
+      )
+    },
+    test("decoyCell answers nothing for no cell and the only cell for one") {
+      val mac = IdentifierMac(Array.fill(32)(5.toByte))
+      assertTrue(
+        UserService.decoyCell(Vector.empty, mac).isEmpty,
+        UserService.decoyCell(Vector(cell), mac) == Some(cell),
+      )
+    },
+    test("decoyCell does not depend on the order the cells are given in") {
+      val random = new java.util.Random(42)
+      val macs = Vector.fill(50)(IdentifierMac(Array.fill(32)(random.nextInt().toByte)))
+      assertTrue(
+        macs.forall(mac =>
+          UserService.decoyCell(registeredCells, mac) == UserService.decoyCell(registeredCells.reverse, mac) &&
+            UserService.decoyCell(registeredCells, mac) == UserService.decoyCell(registeredCells.drop(1) ++ registeredCells.take(1), mac),
+        ),
+      )
+    },
+    test("decoyCell spreads logins over every cell") {
+      val cells = Vector("kz-1", "kz-2", "kz-3", "kz-4").map(CellId(_))
+      val random = new java.util.Random(7)
+      val chosen = Vector.fill(200)(IdentifierMac(Array.fill(32)(random.nextInt().toByte))).flatMap(UserService.decoyCell(cells, _))
+      assertTrue(chosen.toSet == cells.toSet)
     },
     test("indexRegistered fails with UserIndexConflict when credentials resolve to multiple users") {
       val env = Env()

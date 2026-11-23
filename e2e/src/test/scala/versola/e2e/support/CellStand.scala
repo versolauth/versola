@@ -26,11 +26,15 @@ import java.util.concurrent.TimeUnit
   *   first read of the configuration; each has an address nobody registered
   * @param passwordClient a client of the same tenant whose sign-in is an email and then a password, registered before
   *   the second cell started too: for a user who registered through one of `setups` and was given a password
+  * @param loginClient a client of the same tenant whose sign-in is a login and password, or a passkey with no address
+  *   typed, registered before the second cell started as well: the two ways to sign in that name the user only when
+  *   they are submitted (versolauth/versola#1048)
   */
 final case class CellStand(
     first: CellStand.Cell,
     second: CellStand.Cell,
     passwordClient: CellStand.RegisteredClient,
+    loginClient: CellStand.RegisteredClient,
     private val setups: Ref[List[Flows.Setup]],
 ):
 
@@ -45,7 +49,7 @@ object CellStand:
   val SecondCellId = "local-2"
 
   /** How many registration setups are made up front. */
-  val Setups = 12
+  val Setups = 18
 
   /** A client as a spec uses it at `/authorize` and `/token`. */
   final case class RegisteredClient(clientId: String, clientSecret: String, redirectUri: String)
@@ -210,6 +214,20 @@ object CellStand:
           allowedScopes = Set("openid", "email"),
           authFlow = Some(emailPasswordAuthFlow),
         ).success
+        // The tenant's settings as `Flows.layer` leaves them (the exact call: it overwrites every field), which this spec
+        // does not run: a passkey is enrolled and used here, and its origin is one of those settings.
+        _ <- oauth.upsertChallengeSettings(
+          acrVocabulary = Map(Acr.OtpLevel -> List("otp"), Acr.PasswordLevel -> List("password"), Acr.PasskeyLevel -> List("passkey")),
+          mtlsCertificateHeader = Some(OAuthClient.mtlsCertificateHeader),
+          mtlsCertificateEncoding = Some("urlEncodedPem"),
+        )
+        loginClientId <- CentralApi.id("cell-stand-login")
+        loginClient <- oauth.registerClient(
+          loginClientId,
+          "Cell stand: login and password, or a passkey",
+          Set(RedirectUri),
+          authFlow = Some(Flows.loginPasswordPasskeyAuthFlow),
+        ).success
         server <- databaseOf(config.authEnvConf)
         database = s"${server.name}_cell2"
         _ <- freshDatabase(server, database)
@@ -230,10 +248,14 @@ object CellStand:
         first = Cell(config.authCellId, oauth, config.authUrl, config.authMutualTlsUrl),
         second = Cell(
           SecondCellId,
-          OAuthClient(client, config.copy(authUrl = secondUrl, authCellId = SecondCellId)),
+          OAuthClient(
+            client,
+            config.copy(authUrl = secondUrl, authAdditionalUrl = s"http://localhost:$AdditionalPort", authCellId = SecondCellId),
+          ),
           secondUrl,
           secondMutualTlsUrl,
         ),
         passwordClient = RegisteredClient(passwordClientId, passwordClient.secret, RedirectUri),
+        loginClient = RegisteredClient(loginClientId, loginClient.secret, RedirectUri),
         setups = unused,
       )

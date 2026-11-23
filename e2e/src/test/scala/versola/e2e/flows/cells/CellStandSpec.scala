@@ -2,10 +2,12 @@ package versola.e2e.flows.cells
 
 import versola.e2e.support.{*, given}
 import zio.*
-import zio.http.{Client, Header, Method, QueryParams, Request, Status, URL}
+import zio.http.{Body, Client, Header, MediaType, Method, QueryParams, Request, Status, URL}
 import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
+
+import java.net.URLEncoder
 
 /** Two cells behind one central and one edge (versolauth/versola#547, #604): what each cell issues names it, the
   * directory in central keeps one user for an address whichever cell is asked (#1041), and the staged edge, told the
@@ -127,6 +129,89 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         redirectUri = Some(setup.redirectUri),
       ).success
     yield Registered(code, authorize.conversationCookie, tokens)
+
+  /** A user of cell 2 who signs in with a login and a password. */
+  private case class LoginUser(userId: java.util.UUID, sub: Option[String], login: String, password: String)
+
+  /** Registers a user at cell 2 and gives it a login and a password through central, which sets both in the cell that
+    * holds the user. The login travels by central's outbox, so a sign-in at cell 2 is repeated, within a bound, until
+    * cell 2 knows the login. */
+  private def loginUserOfSecond(s: CellStand): ZIO[OAuthClient & CentralApi, Throwable, LoginUser] =
+    for
+      auth <- ZIO.service[OAuthClient]
+      central <- ZIO.service[CentralApi]
+      setup <- s.nextRegistration
+      registered <- register(s.second, setup, setup.email.get)
+      sub <- subject(registered.tokens.accessToken)
+      userId <- ZIO.fromOption(sub).mapBoth(_ => RuntimeException("the token has no sub"), java.util.UUID.fromString)
+      login <- CentralApi.login("cell2")
+      password = "Cell-Stand-Pass-2!"
+      patched <- central.patch("/users", Json.Obj("id" -> Json.Str(userId.toString), "login" -> Json.Str(login)))
+      _ <- ZIO.fail(RuntimeException(s"central refused the login: ${patched.status} ${patched.body}")).unless(patched.status.isSuccess)
+      _ <- auth.flushUserOutbox()
+      _ <- auth.setUserPassword(userId, password)
+      user = LoginUser(userId, sub, login, password)
+      _ <- signInAt(s.second, s.loginClient, user).retry(Schedule.spaced(200.millis) && Schedule.recurs(50))
+    yield user
+
+  /** A sign-in with the login and password at `cell` itself, to its tokens. */
+  private def signInAt(cell: CellStand.Cell, client: CellStand.RegisteredClient, user: LoginUser): Task[TokenResult.Success] =
+    for
+      authorize <- cell.auth.authorize(clientId = Some(client.clientId), redirectUri = Some(client.redirectUri)).assertChallengeRedirect
+      cookie = authorize.conversationCookie.get
+      card <- cell.auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+      code <- cell.auth.submitLoginPassword(cookie, user.login, user.password, card.csrf).flatMap(_.assertRedirect)
+      tokens <- cell.auth.token(
+        code,
+        authorize.verifier,
+        clientId = Some(client.clientId),
+        clientSecret = Some(client.clientSecret),
+        redirectUri = Some(client.redirectUri),
+      ).success
+    yield tokens
+
+  /** What a browser does with the `307` a cell answers a submission with: the same POST, with the same form, at the
+    * address it names, through edge; `cookie` is the conversation cookie the browser holds, when it holds one. */
+  private def repeated(sentOn: SubmitResult, form: Map[String, String], cookie: Option[String]): ZIO[E2EConfig & Client, Throwable, SubmitResult] =
+    for
+      config <- ZIO.service[E2EConfig]
+      client <- ZIO.service[Client]
+      url <- ZIO.fromEither(URL.decode(s"${config.edgeUrl}${sentOn.location}")).mapError(RuntimeException(_))
+      body = form.map((name, value) => s"${URLEncoder.encode(name, "UTF-8")}=${URLEncoder.encode(value, "UTF-8")}").mkString("&")
+      request = Request.post(url, Body.fromString(body)).addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+      response <- client.batched(cookie.fold(request)(content => request.addHeader(Header.Custom("Cookie", s"SSO_CONVERSATION=$content"))))
+    yield SubmitResult(response)
+
+  /** The first page of a sign-in with the login client through edge: placed in cell 1, on the credential card. */
+  private def placed(front: CellStand.Cell, client: CellStand.RegisteredClient): Task[(AuthorizeResult, String, ChallengeResult)] =
+    for
+      authorize <- front.auth.authorize(clientId = Some(client.clientId), redirectUri = Some(client.redirectUri)).assertChallengeRedirect
+      cookie = authorize.conversationCookie.get
+      card <- front.auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+    yield (authorize, cookie, card)
+
+  private def sentTo(cell: CellStand.Cell, result: SubmitResult): Boolean =
+    result.response.status == Status.TemporaryRedirect && result.location.contains(s"/challenge/handoff?handoff=v1.${cell.id}.")
+
+  private case class IdTokenSid(sid: String) derives JsonDecoder
+
+  private case class EnrollmentStart(publicKeyOptions: String, ticket: String) derives JsonDecoder
+
+  /** Enrolls a passkey for `user` at cell 2, with the session of a sign-in there. */
+  private def enrollPasskeyAtSecond(s: CellStand, user: LoginUser): Task[TestAuthenticator.Credential] =
+    for
+      tokens <- signInAt(s.second, s.loginClient, user)
+      idToken <- ZIO.fromOption(tokens.idToken).orElseFail(RuntimeException("the token response carries no id_token"))
+      claims <- segment(idToken, 1)
+      sid <- ZIO.fromOption(claims.str("sid")).orElseFail(RuntimeException("the id_token has no sid"))
+      caller = AccountCaller(user.userId, s.loginClient.clientId, sid)
+      started <- s.second.auth.startPasskeyEnrollment(caller)
+      ceremony <- ZIO.fromEither(started.body.fromJson[EnrollmentStart])
+        .mapError(error => RuntimeException(s"unexpected enrollment start [$error]: ${started.body}"))
+      credential <- TestAuthenticator.create(ceremony.publicKeyOptions, Flows.passkeyOrigin)
+      finished <- s.second.auth.finishPasskeyEnrollment(caller, ceremony.ticket, credential.responseJson, "Cell stand passkey")
+      _ <- ZIO.fail(RuntimeException(s"cell 2 did not enroll the passkey: ${finished.status} ${finished.body}")).unless(finished.status.isSuccess)
+    yield credential
 
   def spec = suite("Two cells")(
     test("what a cell issues names that cell, and a value of one cell is nothing to the other") {
@@ -401,6 +486,121 @@ object CellStandSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFi
         assertTrue(secondCookie.startsWith(s"v1.${s.second.id}."), code.startsWith(s"v1.${s.second.id}."))
           .label("the password was asked and checked in cell 2") &&
         assertTrue(subAgain == sub).label("and the sign-in is the user cell 2 holds")
+    },
+    // versolauth/versola#1048: what names the user only when it is submitted is repeated in the cell that holds the user.
+    test("a login and password typed where the sign-in was placed are checked in the cell that holds the user, once, and not asked twice") {
+      for
+        s <- stand
+        front <- front
+        user <- loginUserOfSecond(s)
+        // A new browser through edge: placed in cell 1, which does not hold the login.
+        (authorize, firstCookie, card) <- placed(front, s.loginClient)
+        form = Map("login" -> user.login, "password" -> user.password, "csrf" -> card.csrf)
+        typed <- front.auth.submitLoginPassword(firstCookie, user.login, user.password, card.csrf)
+        // The browser repeats the POST where it was sent, still holding cell 1's cookie: cell 2 checks it and finishes.
+        finished <- repeated(typed, form, Some(firstCookie))
+        code <- finished.assertRedirect
+        tokens <- s.second.auth.token(
+          code,
+          authorize.verifier,
+          clientId = Some(s.loginClient.clientId),
+          clientSecret = Some(s.loginClient.clientSecret),
+          redirectUri = Some(s.loginClient.redirectUri),
+        ).success
+        subAgain <- subject(tokens.accessToken)
+        // The same request a second time: the seal was taken.
+        again <- repeated(typed, form, Some(firstCookie))
+      yield assertTrue(firstCookie.startsWith(s"v1.${s.first.id}.")).label(s"the sign-in was placed in cell 1: $firstCookie") &&
+        assertTrue(sentTo(s.second, typed)).label(s"cell 1 has the browser repeat the POST at cell 2: ${typed.response.status} ${typed.location}") &&
+        assertTrue(!typed.location.contains(user.login), !typed.location.contains(user.password))
+          .label("neither the login nor the password is in the address") &&
+        assertTrue(code.startsWith(s"v1.${s.second.id}."), subAgain == user.sub)
+          .label(s"cell 2 signed its user in, with the PKCE of the request placed in cell 1: $code") &&
+        assertTrue(again.response.status == Status.BadRequest).label(s"a seal is taken once: ${again.response.status}")
+    },
+    test("a submission handed over is refused without the cookie of the browser it was made in, and that does not spend it") {
+      for
+        s <- stand
+        config <- ZIO.service[E2EConfig]
+        client <- ZIO.service[Client]
+        front <- front
+        user <- loginUserOfSecond(s)
+        (_, firstCookie, card) <- placed(front, s.loginClient)
+        form = Map("login" -> user.login, "password" -> user.password, "csrf" -> card.csrf)
+        typed <- front.auth.submitLoginPassword(firstCookie, user.login, user.password, card.csrf)
+        // Posted from somewhere that holds no conversation, and from a browser that holds another one.
+        bare <- repeated(typed, form, None)
+        (_, otherCookie, _) <- placed(front, s.loginClient)
+        other <- repeated(typed, form, Some(otherCookie))
+        // Followed as a link: there is no submission to check.
+        url <- ZIO.fromEither(URL.decode(s"${config.edgeUrl}${typed.location}")).mapError(RuntimeException(_))
+        followed <- client.batched(Request.get(url).addHeader(Header.Custom("Cookie", s"SSO_CONVERSATION=$firstCookie")))
+        // The browser it was made in is still served.
+        finished <- repeated(typed, form, Some(firstCookie))
+        code <- finished.assertRedirect
+      yield assertTrue(sentTo(s.second, typed)).label(s"handed to cell 2: ${typed.response.status} ${typed.location}") &&
+        assertTrue(bare.response.status == Status.BadRequest).label(s"no cookie: ${bare.response.status}") &&
+        assertTrue(other.response.status == Status.BadRequest).label(s"another conversation's cookie: ${other.response.status}") &&
+        assertTrue(followed.status == Status.BadRequest).label(s"a GET of it: ${followed.status}") &&
+        assertTrue(code.startsWith(s"v1.${s.second.id}.")).label("and the refusals did not spend the seal")
+    },
+    test("a wrong password for a login of cell 2 and a login nobody holds end the same way: the credential card, no sign-in") {
+      for
+        s <- stand
+        front <- front
+        user <- loginUserOfSecond(s)
+        // The right login of cell 2 with a wrong password: handed over, and refused there.
+        (_, firstCookie, card) <- placed(front, s.loginClient)
+        wrong = "Wrong-Pass-9!"
+        typed <- front.auth.submitLoginPassword(firstCookie, user.login, wrong, card.csrf)
+        refused <- repeated(typed, Map("login" -> user.login, "password" -> wrong, "csrf" -> card.csrf), Some(firstCookie))
+        // A login nobody holds: central names a cell for it all the same, this one or the other.
+        nobody <- CentralApi.login("nobody")
+        (_, unknownCookie, unknownCard) <- placed(front, s.loginClient)
+        unknown <- front.auth.submitLoginPassword(unknownCookie, nobody, wrong, unknownCard.csrf)
+        ended <-
+          if unknown.response.status == Status.TemporaryRedirect then
+            repeated(unknown, Map("login" -> nobody, "password" -> wrong, "csrf" -> unknownCard.csrf), Some(unknownCookie))
+          else ZIO.succeed(unknown)
+      yield assertTrue(sentTo(s.second, typed)).label(s"the login of cell 2 is handed over: ${typed.response.status}") &&
+        assertTrue(refused.response.status == Status.SeeOther, refused.location.startsWith("/challenge"))
+          .label(s"cell 2 refuses the wrong password on its own credential card: ${refused.response.status} ${refused.location}") &&
+        assertTrue(unknown.response.status == Status.SeeOther || sentTo(s.second, unknown))
+          .label(s"a login nobody holds is answered here or sent on, as a held one is: ${unknown.response.status}") &&
+        assertTrue(ended.response.status == Status.SeeOther, ended.location.startsWith("/challenge"))
+          .label(s"and ends on a credential card like the wrong password did: ${ended.response.status} ${ended.location}")
+    },
+    test("a passkey used with no address typed where the sign-in was placed is verified in the cell that holds the user, with one touch") {
+      for
+        s <- stand
+        front <- front
+        user <- loginUserOfSecond(s)
+        passkey <- enrollPasskeyAtSecond(s, user)
+        // Through edge: cell 1 issues the assertion request, the authenticator answers it for the user of cell 2.
+        (authorize, firstCookie, card) <- placed(front, s.loginClient)
+        options <- front.auth.getPasskeyOptions(firstCookie).flatMap(_.body.asString)
+        assertion <- TestAuthenticator.get(passkey, options, Flows.passkeyOrigin, user.userId)
+        form = Map("response" -> assertion.toJson, "csrf" -> card.csrf)
+        submitted <- front.auth.submitPasskeyAssertion(firstCookie, assertion.toJson, card.csrf)
+        // Cell 2 verifies the same assertion against the request cell 1 issued, which came sealed.
+        finished <- repeated(submitted, form, Some(firstCookie))
+        code <- finished.assertRedirect
+        tokens <- s.second.auth.token(
+          code,
+          authorize.verifier,
+          clientId = Some(s.loginClient.clientId),
+          clientSecret = Some(s.loginClient.clientSecret),
+          redirectUri = Some(s.loginClient.redirectUri),
+        ).success
+        subAgain <- subject(tokens.accessToken)
+        // The assertion a second time, as somebody who captured the request would send it.
+        again <- repeated(submitted, form, Some(firstCookie))
+      yield assertTrue(sentTo(
+        s.second,
+        submitted,
+      )).label(s"cell 1 hands the assertion to cell 2: ${submitted.response.status} ${submitted.location}") &&
+        assertTrue(code.startsWith(s"v1.${s.second.id}."), subAgain == user.sub).label(s"cell 2 signed its user in: $code") &&
+        assertTrue(again.response.status == Status.BadRequest).label(s"the assertion is not good twice: ${again.response.status}")
     },
     test("with the cells registered the staged edge signs a user in and makes its calls at the cell the values name") {
       for

@@ -8,6 +8,7 @@ import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.topology.CellId
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.http.Observability
 import versola.util.{Email, EnvName, JWT, Phone}
@@ -181,6 +182,45 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Unauthorized,
       verify = (_, service) => ZIO.succeed(assertTrue(service.lookup.calls.isEmpty)),
+    ),
+    // versolauth/versola#1048
+    controllerTestCase(
+      description = "home answers the cell of a login to auth's token",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString("""{"login":"jdoe"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Ok,
+      setup = service => service.homeCell.succeedsWith(Some(CellId("kz-1"))),
+      authorization = internalAuthorization,
+      verify = (response, service) =>
+        for body <- response.body.asJson[HomeCellResponse]
+        yield assertTrue(
+          service.homeCell.calls == List(HomeCellRequest(login = Some(Login("jdoe")), userId = None)),
+          body == HomeCellResponse(CellId("kz-1")),
+        ),
+    ),
+    controllerTestCase(
+      description = "home with nowhere to send the sign-in is 404",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString("""{"login":"jdoe"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      setup = service => service.homeCell.succeedsWith(None),
+      authorization = internalAuthorization,
+    ),
+    controllerTestCase(
+      description = "home is not served to the admin credential: it is auth's",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users" / "home",
+        body = Body.fromString("""{"login":"jdoe"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Unauthorized,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.homeCell.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "registered user maps UserIndexConflict to 409 Conflict",

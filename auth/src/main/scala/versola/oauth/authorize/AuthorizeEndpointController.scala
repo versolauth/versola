@@ -5,6 +5,9 @@ import versola.audit.{AuditSupport, AuthActors, AuthAuditDetails, AuthAuditKinds
 import versola.oauth.AuthMetrics
 import versola.oauth.authorize.model.{AuthorizeErrorResponse, AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.clientauth.ClientAssertionRepository
+import versola.oauth.conversation.model.AuthId
+import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRouter}
 import versola.oauth.handoff.CellHandoff
 import versola.oauth.model.{AuthorizationCode, ConversationCookie}
 import versola.util.CoreConfig
@@ -16,14 +19,18 @@ import zio.json.*
 import zio.prelude.NonEmptySet
 import zio.telemetry.opentelemetry.tracing.Tracing
 
+import java.time.Instant
+
 object AuthorizeEndpointController extends Controller:
   type Env = Tracing & AuthorizeRequestParser & AuthorizeEndpointService & AuthorizationResponseService &
-    OAuthConfigurationService & CoreConfig & AuditEvents & ClientAuthFailures & CellHandoff
+    OAuthConfigurationService & CoreConfig & AuditEvents & ClientAuthFailures & CellHandoff & ClientAssertionRepository &
+    ConversationRouter & ConversationRenderService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAuthorizeRoute,
     postAuthorizeRoute,
     handoffRoute,
+    handedSubmissionRoute,
   )
 
   /** A sign-in another cell took and sealed for this one, because this cell holds the user of the address typed there
@@ -33,13 +40,62 @@ object AuthorizeEndpointController extends Controller:
   val handoffRoute: Route[Env, Throwable] =
     Method.GET / "challenge" / "handoff" -> handler { (request: Request) =>
       ZIO.serviceWithZIO[CellHandoff](_.open(request.url.queryParams.getAll(CellHandoff.Parameter).headOption.getOrElse(""))).foldZIO(
-        refused =>
-          AuthMetrics.authorizeError("handoff_refused") *>
-            Observability.setError("handoff_refused", Some(refused.reason)).as(Response.badRequest),
+        handoffRefused,
         payload =>
+          payload.submission match
+            // Made to be followed by the submission it was sealed with; a GET has none.
+            case Some(_) => handoffRefused(CellHandoff.Refused.Submission)
+            case None =>
+              answered:
+                ZIO.serviceWithZIO[AuthorizeRequestParser](_.validate(payload.params.view.mapValues(Chunk.fromIterable).toMap, request))
+                  .flatMap(authorizeAndRedirect(_, par = false)),
+      )
+    }
+
+  private def handoffRefused(refused: CellHandoff.Refused): UIO[Response] =
+    AuthMetrics.authorizeError("handoff_refused") *>
+      Observability.setError("handoff_refused", Some(refused.reason)).as(Response.badRequest)
+
+  /** What a seal's id is recorded under in the store of client assertions, which is a set of values taken once until they
+    * expire and nothing more. No client id has a space, so no assertion of a client shares the name. */
+  private val HandedSubmissions = "cell handoff"
+
+  /** A login and password, or a passkey with no address typed, that another cell took for a user this cell holds
+    * (`CellHandoff`, versolauth/versola#1048): the first cell answered the POST with a `307` here, and this is the
+    * browser repeating it. The request starts as at `/authorize` and the submission is checked in the conversation it
+    * starts, so the person is not asked twice.
+    *
+    * The seal is what stands in for the CSRF token of a conversation this cell never had. It is refused unless the
+    * browser presents the conversation cookie it was sealed with (the first cell's, which a page of another site cannot
+    * put there), and it is taken once, so a passkey assertion that was captured is not good a second time.
+    */
+  val handedSubmissionRoute: Route[Env, Throwable] =
+    Method.POST / "challenge" / "handoff" -> handler { (request: Request) =>
+      val opened =
+        for
+          payload <- ZIO.serviceWithZIO[CellHandoff](_.open(request.url.queryParams.getAll(CellHandoff.Parameter).headOption.getOrElse("")))
+          submission <- ZIO.fromOption(payload.submission).orElseFail(CellHandoff.Refused.NotASubmission)
+          _ <- ZIO.fail(CellHandoff.Refused.AnotherBrowser)
+            .unless(request.cookie(ConversationCookie.name).exists(cookie => CellHandoff.sameCookie(submission, cookie.content)))
+        yield (payload, submission)
+      opened.foldZIO(
+        handoffRefused,
+        (payload, submission) =>
           answered:
             ZIO.serviceWithZIO[AuthorizeRequestParser](_.validate(payload.params.view.mapValues(Chunk.fromIterable).toMap, request))
-              .flatMap(authorizeAndRedirect(_, par = false)),
+              .flatMap: authorizeRequest =>
+                // Taken once the request is known to be one this cell would start, and before anything is started for it.
+                ZIO.serviceWithZIO[ClientAssertionRepository](
+                  _.recordIfAbsent(clientId = HandedSubmissions, jti = submission.id, expiresAt = Instant.ofEpochSecond(payload.expiresAt)),
+                ).flatMap:
+                  case false => handoffRefused(CellHandoff.Refused.Replayed)
+                  case true =>
+                    authorizeAnd(authorizeRequest, par = false): (authId, started) =>
+                      ConversationController.handed(request, authId, authorizeRequest.clientId, submission.passkeyRequest)
+                        .map: response =>
+                          // The cookie of the conversation this cell started, unless the answer already ends it.
+                          val ended = response.headers(Header.SetCookie).exists(_.value.name == ConversationCookie.name)
+                          if ended then response else started.headers(Header.SetCookie).foldLeft(response)((r, cookie) => r.addHeader(cookie)),
       )
     }
 
@@ -145,6 +201,12 @@ object AuthorizeEndpointController extends Controller:
     ).unit
 
   private def authorizeAndRedirect(request: AuthorizeRequest, par: Boolean) =
+    authorizeAnd(request, par)((_, started) => ZIO.succeed(started))
+
+  /** @param onStarted what answers a request that started a conversation, given its id and the redirect to its first
+    *   step, which carries its cookie
+    */
+  private def authorizeAnd[R](request: AuthorizeRequest, par: Boolean)(onStarted: (AuthId, Response) => ZIO[R, Throwable, Response]) =
     for
       authService <- ZIO.service[AuthorizeEndpointService]
       configService <- ZIO.service[OAuthConfigurationService]
@@ -161,7 +223,8 @@ object AuthorizeEndpointController extends Controller:
           ).map(Response.seeOther)
 
         case AuthorizeResponse.Initialize(authId) =>
-          ZIO.succeed(
+          onStarted(
+            authId,
             Response.seeOther(URL.root / "challenge")
               .addCookie(
                 ConversationCookie.responseCookie(

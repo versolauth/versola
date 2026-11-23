@@ -30,6 +30,7 @@ object UserController extends AuditedController:
     createUserEndpoint,
     registeredUserEndpoint,
     lookupUserEndpoint,
+    homeCellEndpoint,
     patchUserEndpoint,
     deleteUserEndpoint,
     patchUserClaimsEndpoint,
@@ -194,6 +195,18 @@ object UserController extends AuditedController:
         body <- request.bodyAs[LookupUserRequest]
         owner <- service.lookup(body)
       yield owner.fold(Response.status(Status.NotFound))(found => Response.json(found.toJson))
+    }
+
+  /** Where a sign-in by a login or by the user of a passkey is to be sent (versolauth/versola#1048). Internal like the
+    * lookup: only an `auth` asks, with its token. */
+  val homeCellEndpoint =
+    (Method.POST / "users" / "home").audited(Audit.Internal) -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        service <- ZIO.service[UserService]
+        body <- request.bodyAs[HomeCellRequest]
+        home <- service.homeCell(body)
+      yield home.fold(Response.status(Status.NotFound))(cell => Response.json(HomeCellResponse(cell).toJson))
     }
 
   val patchUserEndpoint =

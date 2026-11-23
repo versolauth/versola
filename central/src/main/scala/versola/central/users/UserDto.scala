@@ -46,6 +46,12 @@ case class LookupUserRequest(
     login: Option[Login],
 ) derives JsonCodec, Schema
 
+/** Where a sign-in that names a login, or a user, is to be sent (versolauth/versola#1048): asked by a cell that does not
+  * hold it. Exactly one of the two is given. */
+case class HomeCellRequest(login: Option[Login], userId: Option[UserId]) derives JsonCodec, Schema
+
+case class HomeCellResponse(cell: CellId) derives JsonCodec, Schema
+
 case class PatchUserRequest(
     id: UserId,
     email: Option[Patch[Email]],

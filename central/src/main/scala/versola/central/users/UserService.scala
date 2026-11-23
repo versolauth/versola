@@ -3,7 +3,7 @@ package versola.central.users
 import versola.central.configuration.clients.{ClientId, OAuthClientService}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.central.configuration.topology.{CellPlacement, TopologyRepository}
+import versola.central.configuration.topology.{CellId, CellPlacement, TopologyRepository}
 import versola.util.{Email, Patch, Phone, SecureRandom}
 import zio.json.ast.Json
 import zio.{Duration, IO, Random, Task, ZIO, ZLayer, duration2DurationOps}
@@ -52,6 +52,17 @@ trait UserService:
     * nobody holds them, or when they belong to more than one user (which a claim reports, not a lookup). */
   def lookup(request: LookupUserRequest): Task[Option[RegisteredUserResponse]]
 
+  /** The cell a sign-in by this login, or by this user (the user a passkey names), is to be sent to; `None` when there
+    * is nowhere to send it.
+    *
+    * A login nobody holds answers a cell all the same, when cells are registered: the one a keyed hash of the login
+    * picks, always the same for that login. A cell that sends a sign-in on when the login is held elsewhere, and not
+    * when it is held nowhere, would say which logins exist to whoever submits them; this way both are sent on, and the
+    * cell that receives one answers it as it answers any login it does not hold. A user id is not guessed, so an
+    * unknown one answers nothing.
+    */
+  def homeCell(request: HomeCellRequest): Task[Option[CellId]]
+
   def patch(request: PatchUserRequest): IO[UserNotFound | UserConflict | Throwable, Unit]
 
   def patchClaims(id: UserId, patch: Json.Obj): Task[Unit]
@@ -91,6 +102,13 @@ object UserService:
         user.map(u => u.copy(email = patched(u.email, e.email), phone = patched(u.phone, e.phone), login = patched(u.login, e.login)))
       case _: OutboxEvent.DeleteUser => None
       case _: OutboxEvent.UpdateUserRoles => user
+
+  /** The cell a login nobody holds is sent to: chosen by the MAC of the login, which is keyed, so that it cannot be
+    * computed outside central and is the same every time while the cells are the same. */
+  private[users] def decoyCell(cells: Vector[CellId], mac: IdentifierMac): Option[CellId] =
+    Option.when(cells.nonEmpty):
+      val sorted = cells.sortBy(identity[String])
+      sorted((BigInt(1, mac) % sorted.size).toInt)
 
   val live: ZLayer[UserRepository & AuthClient & OAuthClientService & SecureRandom & DirectoryKey & TopologyRepository, Nothing, UserService] =
     ZLayer.fromFunction(Impl(_, _, _, _, _, _))
@@ -254,6 +272,16 @@ object UserService:
         owners.flatten.distinctBy(_.id) match
           case owner :: Nil => Some(RegisteredUserResponse(userId = owner.id, cell = owner.cellId))
           case _ => None
+
+    override def homeCell(request: HomeCellRequest): Task[Option[CellId]] =
+      (request.login, request.userId) match
+        case (Some(login), None) =>
+          val identifier = directoryKey.login(login)
+          userRepository.findByIdentifier(identifier).flatMap:
+            case Some(owner) => ZIO.succeed(owner.cellId)
+            case None => topology.getCells.map(cells => UserService.decoyCell(cells.map(_.id), identifier.mac))
+        case (None, Some(userId)) => userRepository.find(userId).map(_.flatMap(_.cellId))
+        case _ => ZIO.none
 
     override def patch(request: PatchUserRequest): IO[UserNotFound | UserConflict | Throwable, Unit] =
       def change[A](kind: IdentifierKind, patch: Option[Patch[A]])(mac: A => DirectoryIdentifier) =

@@ -129,6 +129,7 @@ object AuditRoutesSpec extends ZIOSpecDefault:
           "DELETE" -> "/service/users",
           "POST" -> "/users/registrations",
           "POST" -> "/users/lookup",
+          "POST" -> "/users/home",
         ),
       )
     },
@@ -137,7 +138,9 @@ object AuditRoutesSpec extends ZIOSpecDefault:
       assertTrue(
         internal.forall((_, path) =>
           path.endsWith("/sync") || path.endsWith("/registry") || path.endsWith("/signing-keys/sync") ||
-            path.startsWith("/service/") || path.startsWith("/est/") || path == "/users/registrations" || path == "/users/lookup",
+            path.startsWith("/service/") || path.startsWith(
+              "/est/",
+            ) || path == "/users/registrations" || path == "/users/lookup" || path == "/users/home",
         ),
         // an administrator's endpoint is never internal: it would go unrecorded
         !internal.exists((_, path) => path.startsWith("/configuration/") && !path.endsWith("sync") && !path.endsWith("registry")),

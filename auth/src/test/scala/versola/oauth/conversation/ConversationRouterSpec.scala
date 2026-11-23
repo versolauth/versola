@@ -4,6 +4,7 @@ import versola.audit.{AuthAuditDetails, AuthAuditKinds, CapturingAuditEvents}
 import versola.auth.TestEnvConfig
 import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.authorize.AcrResolutionService
+import versola.oauth.challenge.passkey.WebAuthnService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{
   Acr,
@@ -210,6 +211,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     val audit = CapturingAuditEvents.shared()
     val directory = stub[UserDirectory]
     val handoff = stub[CellHandoff]
+    val webAuthnService = stub[WebAuthnService]
     val router = ConversationRouter.Impl(
       conversationRepository,
       otpConversationService,
@@ -220,6 +222,7 @@ object ConversationRouterSpec extends UnitSpecBase:
       directory,
       handoff,
       config,
+      webAuthnService,
     )
 
   private val passkeyOnlyAcr = Acr("passkey-level")
@@ -235,7 +238,265 @@ object ConversationRouterSpec extends UnitSpecBase:
   private val poVocabulary = Map(passkeyOnlyAcr -> NonEmptyList(PassedAuthFactor.passkey))
   private val poDenied = ConversationResult.RenderStep(ConversationStep.AccessDenied)
 
+  private val otherCell = RoutingKey.CellId.parse("kz-2").toOption.get
+  private val heldUser = UserRecord(testUserId, None, None, Some(login), Json.Obj(), None)
+  private val loginSubmission = LoginPasswordSubmission(login, password, "test-csrf")
+  private val assertion = PasskeyAssertionSubmission("""{"response":"x"}""", "test-csrf")
+  private val pendingRequest = """{"challenge":"c"}"""
+  private val passkeyFlow = loginFlow.copy(passkey = Some(PasskeyAuthFlow(Nil)))
+  private val passkeyCard = loginRecord.step.asInstanceOf[ConversationStep.Credential].copy(passkey = true)
+  private val passkeyRecord = loginRecord.copy(authFlow = passkeyFlow, step = passkeyCard.copy(passkeyRequest = Some(pendingRequest)))
+  private val checked = ConversationResult.RenderStep(loginRecord.step)
+
+  /** A sign-in that reaches a cell which may not hold its user (versolauth/versola#1048). */
+  val handedSubmissionSuite = suite("a submission that names its user")(
+    suite("a login and password")(
+      test("held by this cell is checked here without asking central") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.userRepository.findByLogin.succeedsWith(Some(heldUser))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(checked)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(
+          result == checked,
+          env.directory.homeOfLogin.calls.isEmpty,
+          env.otpConversationService.checkLoginPassword.calls.size == 1,
+        )
+      },
+      test("not held, with central naming another cell, is sent there: the conversation is deleted and the password is not checked") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.userRepository.findByLogin.succeedsWith(None)
+          _ <- env.directory.homeOfLogin.succeedsWith(Some(otherCell))
+          _ <- env.conversationRepository.delete.succeedsWith(true)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(
+          result == ConversationResult.Elsewhere(otherCell, None),
+          env.directory.homeOfLogin.calls == List(login),
+          env.conversationRepository.delete.calls == List((authId, loginRecord.version)),
+          env.otpConversationService.checkLoginPassword.calls.isEmpty,
+        )
+      },
+      test("not held, when another request has ended the conversation already, is not sent on a second time") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.userRepository.findByLogin.succeedsWith(None)
+          _ <- env.directory.homeOfLogin.succeedsWith(Some(otherCell))
+          _ <- env.conversationRepository.delete.succeedsWith(false)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(
+          result == ConversationResult.WriteConflict,
+          env.otpConversationService.checkLoginPassword.calls.isEmpty,
+        )
+      },
+      test("not held, with central naming this cell, is checked here") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.userRepository.findByLogin.succeedsWith(None)
+          _ <- env.directory.homeOfLogin.succeedsWith(Some(TestEnvConfig.cellId))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(checked)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(
+          result == checked,
+          env.otpConversationService.checkLoginPassword.calls.size == 1,
+          env.conversationRepository.delete.calls.isEmpty,
+        )
+      },
+      test("not held, with central naming no cell, is checked here") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.userRepository.findByLogin.succeedsWith(None)
+          _ <- env.directory.homeOfLogin.succeedsWith(None)
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(checked)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(result == checked, env.otpConversationService.checkLoginPassword.calls.size == 1)
+      },
+      test("not held, with central not answering, is refused as service unavailable and the password is not checked") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.userRepository.findByLogin.succeedsWith(None)
+          _ <- env.directory.homeOfLogin.failsWith(RuntimeException("central is down"))
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(
+          result == ConversationResult.ServiceUnavailable,
+          env.otpConversationService.checkLoginPassword.calls.isEmpty,
+          env.conversationRepository.delete.calls.isEmpty,
+        )
+      },
+      test("is checked here by an auth that is not a cell, which asks nobody") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(checked)
+          (result, _) <- env.router.submit(authId, loginSubmission, None, None)
+        yield assertTrue(
+          result == checked,
+          env.userRepository.findByLogin.calls.isEmpty,
+          env.directory.homeOfLogin.calls.isEmpty,
+        )
+      },
+    ),
+    suite("a passkey with no address typed")(
+      test("of a user this cell does not hold, with central naming another cell, is sent there with the request it answers") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(passkeyRecord))
+          _ <- env.webAuthnService.userFromResponse.succeedsWith(Some(testUserId))
+          _ <- env.userRepository.find.succeedsWith(None)
+          _ <- env.directory.homeOfUser.succeedsWith(Some(otherCell))
+          _ <- env.conversationRepository.delete.succeedsWith(true)
+          (result, _) <- env.router.submit(authId, assertion, None, None)
+        yield assertTrue(
+          result == ConversationResult.Elsewhere(otherCell, Some(pendingRequest)),
+          env.directory.homeOfUser.calls == List(testUserId),
+          env.conversationRepository.delete.calls == List((authId, passkeyRecord.version)),
+          env.otpConversationService.finishPasskeyAssertion.calls.isEmpty,
+        )
+      },
+      test("of a user this cell holds is finished here without asking central") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(passkeyRecord))
+          _ <- env.webAuthnService.userFromResponse.succeedsWith(Some(testUserId))
+          _ <- env.userRepository.find.succeedsWith(Some(heldUser))
+          _ <- env.otpConversationService.finishPasskeyAssertion.succeedsWith(ConversationResult.BadRequest)
+          (result, _) <- env.router.submit(authId, assertion, None, None)
+        yield assertTrue(
+          result == ConversationResult.BadRequest,
+          env.directory.homeOfUser.calls.isEmpty,
+          env.otpConversationService.finishPasskeyAssertion.calls.size == 1,
+        )
+      },
+      test("of a user central names this cell for, or no cell for, is finished here") {
+        def run(home: Option[RoutingKey.CellId]) =
+          val env = Env(TestEnvConfig.cellCoreConfig)
+          for
+            _ <- env.otpConversationService.find.succeedsWith(Some(passkeyRecord))
+            _ <- env.webAuthnService.userFromResponse.succeedsWith(Some(testUserId))
+            _ <- env.userRepository.find.succeedsWith(None)
+            _ <- env.directory.homeOfUser.succeedsWith(home)
+            _ <- env.otpConversationService.finishPasskeyAssertion.succeedsWith(ConversationResult.BadRequest)
+            (result, _) <- env.router.submit(authId, assertion, None, None)
+          yield (result, env.otpConversationService.finishPasskeyAssertion.times)
+        for
+          own <- run(Some(TestEnvConfig.cellId))
+          none <- run(None)
+        yield assertTrue(own == (ConversationResult.BadRequest, 1), none == (ConversationResult.BadRequest, 1))
+      },
+      test("of a user not held, with central not answering, is refused as service unavailable") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(passkeyRecord))
+          _ <- env.webAuthnService.userFromResponse.succeedsWith(Some(testUserId))
+          _ <- env.userRepository.find.succeedsWith(None)
+          _ <- env.directory.homeOfUser.failsWith(RuntimeException("central is down"))
+          (result, _) <- env.router.submit(authId, assertion, None, None)
+        yield assertTrue(result == ConversationResult.ServiceUnavailable, env.otpConversationService.finishPasskeyAssertion.calls.isEmpty)
+      },
+      test("that names no user is finished here") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(passkeyRecord))
+          _ <- env.webAuthnService.userFromResponse.succeedsWith(None)
+          _ <- env.otpConversationService.finishPasskeyAssertion.succeedsWith(ConversationResult.BadRequest)
+          (result, _) <- env.router.submit(authId, assertion, None, None)
+        yield assertTrue(
+          result == ConversationResult.BadRequest,
+          env.userRepository.find.calls.isEmpty,
+          env.directory.homeOfUser.calls.isEmpty,
+          env.otpConversationService.finishPasskeyAssertion.calls.size == 1,
+        )
+      },
+      test("with no request pending is finished here and names nobody to central") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val noRequest = passkeyRecord.copy(step = passkeyCard.copy(passkeyRequest = None))
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(noRequest))
+          _ <- env.otpConversationService.finishPasskeyAssertion.succeedsWith(ConversationResult.BadRequest)
+          (result, _) <- env.router.submit(authId, assertion, None, None)
+        yield assertTrue(
+          result == ConversationResult.BadRequest,
+          env.webAuthnService.userFromResponse.calls.isEmpty,
+          env.directory.homeOfUser.calls.isEmpty,
+          env.otpConversationService.finishPasskeyAssertion.calls.size == 1,
+        )
+      },
+      test("is finished here by an auth that is not a cell, which asks nobody") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(passkeyRecord))
+          _ <- env.webAuthnService.userFromResponse.succeedsWith(Some(testUserId))
+          _ <- env.otpConversationService.finishPasskeyAssertion.succeedsWith(ConversationResult.BadRequest)
+          (result, _) <- env.router.submit(authId, assertion, None, None)
+        yield assertTrue(
+          result == ConversationResult.BadRequest,
+          env.userRepository.find.calls.isEmpty,
+          env.directory.homeOfUser.calls.isEmpty,
+        )
+      },
+    ),
+    suite("submitHanded")(
+      test("fail with ConversationExpired when the conversation does not exist") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(None)
+          exit <- env.router.submitHanded(authId, loginSubmission, None, None, None).exit
+        yield assertTrue(exit == Exit.fail(Error.ConversationExpired))
+      },
+      test("dispatch a login and password without comparing the CSRF token, and never send it on") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          _ <- env.otpConversationService.checkLoginPassword.succeedsWith(checked)
+          (result, _) <- env.router.submitHanded(authId, LoginPasswordSubmission(login, password, "the-first-cells-csrf"), None, None, None)
+        yield assertTrue(
+          result == checked,
+          env.otpConversationService.checkLoginPassword.calls.size == 1,
+          env.userRepository.findByLogin.calls.isEmpty,
+          env.directory.homeOfLogin.calls.isEmpty,
+        )
+      },
+      test("write the handed passkey request into the card before the assertion is finished here") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val fresh = loginRecord.copy(authFlow = passkeyFlow, step = passkeyCard, version = 4)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(fresh))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.webAuthnService.userFromResponse.succeedsWith(Some(testUserId))
+          _ <- env.otpConversationService.finishPasskeyAssertion.succeedsWith(ConversationResult.BadRequest)
+          (result, _) <- env.router.submitHanded(authId, assertion, Some(pendingRequest), None, None)
+          finished = env.otpConversationService.finishPasskeyAssertion.calls.map(_._2)
+        yield assertTrue(
+          result == ConversationResult.BadRequest,
+          finished.map(_.step) == List(passkeyCard.copy(passkeyRequest = Some(pendingRequest))),
+          finished.map(_.version) == List(5L),
+          env.conversationRepository.overwrite.calls.size == 1,
+          env.directory.homeOfUser.calls.isEmpty,
+          env.userRepository.find.calls.isEmpty,
+        )
+      },
+      test("answer BadRequest to a passkey request handed to a card that takes no passkey") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(loginRecord))
+          (result, _) <- env.router.submitHanded(authId, assertion, Some(pendingRequest), None, None)
+        yield assertTrue(
+          result == ConversationResult.BadRequest,
+          env.conversationRepository.overwrite.calls.isEmpty,
+          env.otpConversationService.finishPasskeyAssertion.calls.isEmpty,
+        )
+      },
+    ),
+  )
+
   val spec = suite("ConversationRouter")(
+    handedSubmissionSuite,
     suite("getConversation")(
       test("return conversation record when it exists") {
         val env = Env()
