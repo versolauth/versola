@@ -107,7 +107,8 @@ object StaleConnectionSpec extends ZIOSpecDefault:
   ): ZIO[Scope, Nothing, Peer] =
     ZIO.acquireRelease(ZIO.succeed(Peer(idleClose, drop, reset, closeAfterResponse)))(p => ZIO.succeed(p.close()))
 
-  /** What a counter says for the peer of `port`: a spec peer has a port of its own, so the series is the test's alone. */
+  /** What a counter says for the peer of `port`. A port can come up again in a later test of the same JVM, so a test compares what it reads
+    * after the calls with what it read before them. */
   private def counterOf(name: String, port: Int, more: MetricLabel*): UIO[Double] =
     Metric.counter(name).tagged(Set(MetricLabel("peer", s"localhost:$port")) ++ more).value.map(_.count)
 
@@ -203,11 +204,12 @@ object StaleConnectionSpec extends ZIOSpecDefault:
         ZIO.scoped:
           for
             server <- peer(drop = _ == 2)
+            r0 <- repeatsOf(server.port)
             client <- sharedClientFor(shipped)
             first <- get(client, server.port)
             second <- get(client, server.port)
             repeats <- repeatsOf(server.port)
-          yield assertTrue(first == Right("ok"), second == Right("ok"), server.requests.get == 3, server.connections.get == 2, repeats == 1.0)
+          yield assertTrue(first == Right("ok"), second == Right("ok"), server.requests.get == 3, server.connections.get == 2, repeats - r0 == 1.0)
       },
       test("reset (an RST, not a FIN): a GET through the raw client fails") {
         ZIO.scoped:
@@ -223,11 +225,12 @@ object StaleConnectionSpec extends ZIOSpecDefault:
         ZIO.scoped:
           for
             server <- peer(reset = _ == 2)
+            r0 <- repeatsOf(server.port)
             client <- sharedClientFor(shipped)
             first <- get(client, server.port)
             second <- get(client, server.port)
             repeats <- repeatsOf(server.port)
-          yield assertTrue(first == Right("ok"), second == Right("ok"), server.requests.get == 3, repeats == 1.0)
+          yield assertTrue(first == Right("ok"), second == Right("ok"), server.requests.get == 3, repeats - r0 == 1.0)
       },
       test("closed by the far side right after each answer, which the client may or may not have seen: no request fails") {
         ZIO.scoped:
@@ -241,24 +244,26 @@ object StaleConnectionSpec extends ZIOSpecDefault:
         ZIO.scoped:
           for
             server <- peer(drop = _ == 2)
+            r0 <- repeatsOf(server.port)
             client <- sharedClientFor(shipped)
             first <- get(client, server.port)
             second <- read(client, Request.post(urlOf(server.port), Body.fromString("x")))
             third <- get(client, server.port)
             repeats <- repeatsOf(server.port)
-          yield assertTrue(first == Right("ok"), second.isLeft, third == Right("ok"), server.requests.get == 3, repeats == 0.0)
+          yield assertTrue(first == Right("ok"), second.isLeft, third == Right("ok"), server.requests.get == 3, repeats - r0 == 0.0)
       },
       test("a GET whose body is a stream is not sent again: the first attempt may have consumed it") {
         ZIO.scoped:
           for
             server <- peer(drop = _ == 2)
+            r0 <- repeatsOf(server.port)
             client <- sharedClientFor(shipped)
             first <- get(client, server.port)
             streamed = Body.fromStreamChunked(ZStream.fromChunk(Chunk.fromArray("x".getBytes("UTF-8"))))
             second <- read(client, Request.get(urlOf(server.port)).withBody(streamed))
             third <- get(client, server.port)
             repeats <- repeatsOf(server.port)
-          yield assertTrue(first == Right("ok"), second.isLeft, third == Right("ok"), server.requests.get == 3, repeats == 0.0)
+          yield assertTrue(first == Right("ok"), second.isLeft, third == Right("ok"), server.requests.get == 3, repeats - r0 == 0.0)
       },
       test("a connection that is closed every time is tried twice and then reported, not repeated without end") {
         ZIO.scoped:
@@ -274,6 +279,8 @@ object StaleConnectionSpec extends ZIOSpecDefault:
         ZIO.scoped:
           for
             server <- peer(drop = _ == 2)
+            r0 <- repeatsOf(server.port)
+            d0 <- deniedOf(server.port, "enforce")
             client <- sharedClientFor(shipped, mode = GuardMode.Enforce, budget = RetryBudgetSettings(ratio = 0, minPerSecond = 0))
             first <- get(client, server.port)
             before <- ZTestLogger.logOutput.map(_.size)
@@ -285,8 +292,8 @@ object StaleConnectionSpec extends ZIOSpecDefault:
             first == Right("ok"),
             second.isLeft,
             server.requests.get == 2,
-            repeats == 0.0,
-            denied == 1.0,
+            repeats - r0 == 0.0,
+            denied - d0 == 1.0,
             logs.exists(line => line.logLevel == LogLevel.Error && line.message().contains("not sent again")),
           )
       },
@@ -294,6 +301,8 @@ object StaleConnectionSpec extends ZIOSpecDefault:
         ZIO.scoped:
           for
             server <- peer(drop = _ == 2)
+            r0 <- repeatsOf(server.port)
+            d0 <- deniedOf(server.port, "enforce")
             client <- sharedClientFor(shipped, mode = GuardMode.Enforce)
             first <- get(client, server.port)
             // the budget refills at five tokens a second from the first call, so 300 ms leaves one and a half
@@ -301,29 +310,32 @@ object StaleConnectionSpec extends ZIOSpecDefault:
             second <- get(client, server.port)
             repeats <- repeatsOf(server.port)
             denied <- deniedOf(server.port, "enforce")
-          yield assertTrue(first == Right("ok"), second == Right("ok"), server.requests.get == 3, repeats == 1.0, denied == 0.0)
+          yield assertTrue(first == Right("ok"), second == Right("ok"), server.requests.get == 3, repeats - r0 == 1.0, denied - d0 == 0.0)
       },
       test("in shadow, the default, the repeat is made whatever the budget: a denial is only counted") {
         ZIO.scoped:
           for
             server <- peer(drop = _ == 2)
+            r0 <- repeatsOf(server.port)
+            d0 <- deniedOf(server.port, "shadow")
             client <- sharedClientFor(shipped, mode = GuardMode.Shadow, budget = RetryBudgetSettings(ratio = 0, minPerSecond = 0))
             first <- get(client, server.port)
             second <- get(client, server.port)
             repeats <- repeatsOf(server.port)
             denied <- deniedOf(server.port, "shadow")
-          yield assertTrue(first == Right("ok"), second == Right("ok"), server.requests.get == 3, repeats == 1.0, denied == 1.0)
+          yield assertTrue(first == Right("ok"), second == Right("ok"), server.requests.get == 3, repeats - r0 == 1.0, denied - d0 == 1.0)
       },
       test("with the guard off there is no repeat") {
         ZIO.scoped:
           for
             server <- peer(drop = _ == 2)
+            r0 <- repeatsOf(server.port)
             client <- sharedClientFor(shipped, mode = GuardMode.Off)
             first <- get(client, server.port)
             second <- get(client, server.port)
             third <- get(client, server.port)
             repeats <- repeatsOf(server.port)
-          yield assertTrue(first == Right("ok"), second.isLeft, third == Right("ok"), server.requests.get == 3, repeats == 0.0)
+          yield assertTrue(first == Right("ok"), second.isLeft, third == Right("ok"), server.requests.get == 3, repeats - r0 == 0.0)
       },
       test("an exempt peer is read as shadow in enforce, as the guard leaves it alone: the repeat is made though the budget is spent") {
         ZIO.scoped:
