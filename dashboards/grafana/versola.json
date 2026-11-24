@@ -4160,7 +4160,7 @@
         {
           "type": "timeseries",
           "title": "Calls to other services — repeated on a closed connection / s",
-          "description": "Safe calls (GET, HEAD, OPTIONS) sent a second time because the far side closed the connection while they were being written to it. An occasional one is the race every keep-alive connection has. A peer that stays above zero is closing connections under the client: its idle timeout (or the ingress's or sidecar's in front of it) is shorter than the client's 50 s. Lower the client's idle time or raise the far side's. Empty is healthy.",
+          "description": "Safe calls (GET, HEAD, OPTIONS) sent a second time because the far side closed the connection while they were being written to it. An occasional one is the race every keep-alive connection has. A peer that stays above zero is closing connections under the client: its idle timeout (or the ingress's or sidecar's in front of it) is shorter than the client's 50 s idle timeout, which is not configurable. Raise the far side's idle timeout above 50 s; with a dynamic pool, HTTP_CLIENT_POOL_TTL below it also closes an idle pool before the far side does. Empty is healthy.",
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
@@ -6173,7 +6173,7 @@
         {
           "type": "timeseries",
           "title": "Calls to other services — repeated on a closed connection / s",
-          "description": "Safe calls (GET, HEAD, OPTIONS) sent a second time because the far side closed the connection while they were being written to it. An occasional one is the race every keep-alive connection has. A peer that stays above zero is closing connections under the client: its idle timeout (or the ingress's or sidecar's in front of it) is shorter than the client's 50 s. Lower the client's idle time or raise the far side's. Empty is healthy.",
+          "description": "Safe calls (GET, HEAD, OPTIONS) sent a second time because the far side closed the connection while they were being written to it. An occasional one is the race every keep-alive connection has. A peer that stays above zero is closing connections under the client: its idle timeout (or the ingress's or sidecar's in front of it) is shorter than the client's 50 s idle timeout, which is not configurable. Raise the far side's idle timeout above 50 s; with a dynamic pool, HTTP_CLIENT_POOL_TTL below it also closes an idle pool before the far side does. Empty is healthy.",
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
@@ -9391,7 +9391,7 @@
         {
           "type": "timeseries",
           "title": "Calls to other services — repeated on a closed connection / s",
-          "description": "Safe calls (GET, HEAD, OPTIONS) sent a second time because the far side closed the connection while they were being written to it. An occasional one is the race every keep-alive connection has. A peer that stays above zero is closing connections under the client: its idle timeout (or the ingress's or sidecar's in front of it) is shorter than the client's 50 s. Lower the client's idle time or raise the far side's. Empty is healthy.",
+          "description": "Safe calls (GET, HEAD, OPTIONS) sent a second time because the far side closed the connection while they were being written to it. An occasional one is the race every keep-alive connection has. A peer that stays above zero is closing connections under the client: its idle timeout (or the ingress's or sidecar's in front of it) is shorter than the client's 50 s idle timeout, which is not configurable. Raise the far side's idle timeout above 50 s; with a dynamic pool, HTTP_CLIENT_POOL_TTL below it also closes an idle pool before the far side does. Empty is healthy.",
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
